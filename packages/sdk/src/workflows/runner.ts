@@ -15,6 +15,13 @@ import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { stripAnsi as stripAnsiFn } from '../pty.js';
 
+import {
+  loadCustomSteps,
+  resolveAllCustomSteps,
+  validateCustomStepsUsage,
+  CustomStepsParseError,
+  CustomStepResolutionError,
+} from './custom-steps.js';
 import { InMemoryWorkflowDb } from './memory-db.js';
 import type {
   AgentCli,
@@ -400,14 +407,45 @@ export class WorkflowRunner {
       };
     }
 
-    // 3. Build agent map and validate step→agent references
+    // 3. Load and validate custom steps
+    let customSteps = new Map<string, import('./types.js').CustomStepDefinition>();
+    try {
+      customSteps = loadCustomSteps(this.cwd);
+    } catch (err) {
+      if (err instanceof CustomStepsParseError) {
+        errors.push(`Custom steps file error: ${err.issue}\n${err.suggestion}`);
+      } else {
+        errors.push(`Failed to load custom steps: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // Validate custom step usage in workflow steps
+    const customStepValidation = validateCustomStepsUsage(workflow.steps, customSteps);
+    errors.push(...customStepValidation.errors);
+    warnings.push(...customStepValidation.warnings);
+
+    // Resolve custom steps for further validation
+    let resolvedSteps = workflow.steps;
+    if (customStepValidation.valid) {
+      try {
+        resolvedSteps = resolveAllCustomSteps(workflow.steps, customSteps);
+      } catch (err) {
+        if (err instanceof CustomStepResolutionError) {
+          errors.push(`${err.issue}\n${err.suggestion}`);
+        } else {
+          errors.push(`Failed to resolve custom steps: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+
+    // 4. Build agent map and validate step→agent references
     const agentMap = new Map<string, AgentDefinition>();
     for (const agent of resolved.agents) {
       agentMap.set(agent.name, agent);
     }
 
     const stepAgentCounts = new Map<string, number>();
-    for (const step of workflow.steps) {
+    for (const step of resolvedSteps) {
       // Only validate agent references for agent-type steps
       if (step.agent) {
         if (!agentMap.has(step.agent)) {
@@ -428,7 +466,7 @@ export class WorkflowRunner {
     // 5. Simulate execution waves
     const waves: DryRunWave[] = [];
     const completed = new Set<string>();
-    const allSteps = [...workflow.steps];
+    const allSteps = [...resolvedSteps];
     let waveNum = 0;
 
     while (completed.size < allSteps.length) {
@@ -682,13 +720,18 @@ export class WorkflowRunner {
       );
     }
 
+    // Load and resolve custom step definitions
+    const customSteps = loadCustomSteps(this.cwd);
+    const resolvedSteps = resolveAllCustomSteps(workflow.steps, customSteps);
+    const resolvedWorkflow = { ...workflow, steps: resolvedSteps };
+
     const runId = this.generateId();
     const now = new Date().toISOString();
 
     const run: WorkflowRunRow = {
       id: runId,
       workspaceId: this.workspaceId,
-      workflowName: workflow.name,
+      workflowName: resolvedWorkflow.name,
       pattern: resolved.swarm.pattern,
       status: 'pending',
       config: resolved,
@@ -701,18 +744,20 @@ export class WorkflowRunner {
 
     // Build step rows
     const stepStates = new Map<string, StepState>();
-    for (const step of workflow.steps) {
-      // Handle both agent and deterministic steps
-      const isDeterministic = step.type === 'deterministic';
+    for (const step of resolvedWorkflow.steps) {
+      // Handle agent, deterministic, and worktree steps
+      const isNonAgent = step.type === 'deterministic' || step.type === 'worktree';
 
       const stepRow: WorkflowStepRow = {
         id: this.generateId(),
         runId,
         stepName: step.name,
-        agentName: isDeterministic ? null : (step.agent ?? null),
-        stepType: isDeterministic ? 'deterministic' : 'agent',
+        agentName: isNonAgent ? null : (step.agent ?? null),
+        stepType: isNonAgent ? (step.type as 'deterministic' | 'worktree') : 'agent',
         status: 'pending',
-        task: isDeterministic ? (step.command ?? '') : (step.task ?? ''),
+        task: step.type === 'deterministic' ? (step.command ?? '')
+            : step.type === 'worktree' ? (step.branch ?? '')
+            : (step.task ?? ''),
         dependsOn: step.dependsOn ?? [],
         retryCount: 0,
         createdAt: now,
@@ -724,7 +769,7 @@ export class WorkflowRunner {
 
     return this.runWorkflowCore({
       run,
-      workflow,
+      workflow: resolvedWorkflow,
       config: resolved,
       stepStates,
       isResume: false,
@@ -1197,6 +1242,11 @@ export class WorkflowRunner {
     return step.type === 'deterministic';
   }
 
+  /** Check if a step is a worktree (git worktree setup) step. */
+  private isWorktreeStep(step: WorkflowStep): boolean {
+    return step.type === 'worktree';
+  }
+
   private async executeStep(
     step: WorkflowStep,
     stepStates: Map<string, StepState>,
@@ -1207,6 +1257,11 @@ export class WorkflowRunner {
     // Branch: deterministic steps execute shell commands
     if (this.isDeterministicStep(step)) {
       return this.executeDeterministicStep(step, stepStates, runId);
+    }
+
+    // Branch: worktree steps set up git worktrees
+    if (this.isWorktreeStep(step)) {
+      return this.executeWorktreeStep(step, stepStates, runId);
     }
 
     // Agent step execution
@@ -1345,6 +1400,188 @@ export class WorkflowRunner {
       this.emit({ type: 'step:completed', runId, stepName: step.name, output });
       this.postToChannel(
         `**[${step.name}]** Completed (deterministic)\n${output.slice(0, 500)}${output.length > 500 ? '\n...(truncated)' : ''}`,
+      );
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.postToChannel(`**[${step.name}]** Failed: ${errorMsg}`);
+      await this.markStepFailed(state, errorMsg, runId);
+      throw new Error(`Step "${step.name}" failed: ${errorMsg}`);
+    }
+  }
+
+  /**
+   * Execute a worktree step (git worktree setup).
+   * Fast, reliable, $0 LLM cost.
+   * Outputs the worktree path for downstream steps to use.
+   */
+  private async executeWorktreeStep(
+    step: WorkflowStep,
+    stepStates: Map<string, StepState>,
+    runId: string,
+  ): Promise<void> {
+    const state = stepStates.get(step.name);
+    if (!state) throw new Error(`Step state not found: ${step.name}`);
+
+    this.checkAborted();
+
+    // Mark step as running
+    state.row.status = 'running';
+    state.row.startedAt = new Date().toISOString();
+    await this.db.updateStep(state.row.id, {
+      status: 'running',
+      startedAt: state.row.startedAt,
+      updatedAt: new Date().toISOString(),
+    });
+    this.emit({ type: 'step:started', runId, stepName: step.name });
+    this.postToChannel(`**[${step.name}]** Started (worktree setup)`);
+
+    // Resolve variables in branch name and path
+    const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
+    const branch = this.interpolateStepTask(step.branch ?? '', stepOutputContext);
+    const baseBranch = step.baseBranch
+      ? this.interpolateStepTask(step.baseBranch, stepOutputContext)
+      : 'HEAD';
+    const worktreePath = step.path
+      ? this.interpolateStepTask(step.path, stepOutputContext)
+      : path.join('.worktrees', step.name);
+    const createBranch = step.createBranch !== false;
+
+    if (!branch) {
+      const errorMsg = 'Worktree step missing required "branch" field';
+      await this.markStepFailed(state, errorMsg, runId);
+      throw new Error(`Step "${step.name}" failed: ${errorMsg}`);
+    }
+
+    try {
+      // Build the git worktree command
+      // If createBranch is true and branch doesn't exist, use -b flag
+      const absoluteWorktreePath = path.resolve(this.cwd, worktreePath);
+
+      // First, check if the branch already exists
+      const checkBranchCmd = `git rev-parse --verify --quiet ${branch} 2>/dev/null`;
+      let branchExists = false;
+
+      await new Promise<void>((resolve) => {
+        const checkChild = cpSpawn('sh', ['-c', checkBranchCmd], {
+          stdio: 'pipe',
+          cwd: this.cwd,
+          env: { ...process.env },
+        });
+        checkChild.on('close', (code) => {
+          branchExists = code === 0;
+          resolve();
+        });
+        checkChild.on('error', () => resolve());
+      });
+
+      // Build appropriate worktree add command
+      let worktreeCmd: string;
+      if (branchExists) {
+        // Branch exists, just checkout into worktree
+        worktreeCmd = `git worktree add "${absoluteWorktreePath}" ${branch}`;
+      } else if (createBranch) {
+        // Create new branch from baseBranch
+        worktreeCmd = `git worktree add -b ${branch} "${absoluteWorktreePath}" ${baseBranch}`;
+      } else {
+        // Branch doesn't exist and we're not creating it
+        const errorMsg = `Branch "${branch}" does not exist and createBranch is false`;
+        await this.markStepFailed(state, errorMsg, runId);
+        throw new Error(`Step "${step.name}" failed: ${errorMsg}`);
+      }
+
+      const output = await new Promise<string>((resolve, reject) => {
+        const child = cpSpawn('sh', ['-c', worktreeCmd], {
+          stdio: 'pipe',
+          cwd: this.cwd,
+          env: { ...process.env },
+        });
+
+        const stdoutChunks: string[] = [];
+        const stderrChunks: string[] = [];
+
+        // Wire abort signal
+        const abortSignal = this.abortController?.signal;
+        let abortHandler: (() => void) | undefined;
+        if (abortSignal && !abortSignal.aborted) {
+          abortHandler = () => {
+            child.kill('SIGTERM');
+            setTimeout(() => child.kill('SIGKILL'), 5000);
+          };
+          abortSignal.addEventListener('abort', abortHandler, { once: true });
+        }
+
+        // Handle timeout
+        let timedOut = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        if (step.timeoutMs) {
+          timer = setTimeout(() => {
+            timedOut = true;
+            child.kill('SIGTERM');
+            setTimeout(() => child.kill('SIGKILL'), 5000);
+          }, step.timeoutMs);
+        }
+
+        child.stdout?.on('data', (chunk: Buffer) => {
+          stdoutChunks.push(chunk.toString());
+        });
+
+        child.stderr?.on('data', (chunk: Buffer) => {
+          stderrChunks.push(chunk.toString());
+        });
+
+        child.on('close', (code) => {
+          if (timer) clearTimeout(timer);
+          if (abortHandler && abortSignal) {
+            abortSignal.removeEventListener('abort', abortHandler);
+          }
+
+          if (abortSignal?.aborted) {
+            reject(new Error(`Step "${step.name}" aborted`));
+            return;
+          }
+
+          if (timedOut) {
+            reject(new Error(`Step "${step.name}" timed out after ${step.timeoutMs}ms`));
+            return;
+          }
+
+          const stderr = stderrChunks.join('');
+
+          if (code !== 0 && code !== null) {
+            reject(new Error(`git worktree add failed with exit code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`));
+            return;
+          }
+
+          // Output the worktree path for downstream steps
+          resolve(absoluteWorktreePath);
+        });
+
+        child.on('error', (err) => {
+          if (timer) clearTimeout(timer);
+          if (abortHandler && abortSignal) {
+            abortSignal.removeEventListener('abort', abortHandler);
+          }
+          reject(new Error(`Failed to execute git worktree command: ${err.message}`));
+        });
+      });
+
+      // Mark completed
+      state.row.status = 'completed';
+      state.row.output = output;
+      state.row.completedAt = new Date().toISOString();
+      await this.db.updateStep(state.row.id, {
+        status: 'completed',
+        output,
+        completedAt: state.row.completedAt,
+        updatedAt: new Date().toISOString(),
+      });
+
+      // Persist step output
+      await this.persistStepOutput(runId, step.name, output);
+
+      this.emit({ type: 'step:completed', runId, stepName: step.name, output });
+      this.postToChannel(
+        `**[${step.name}]** Worktree created at: ${output}\n  Branch: ${branch}${!branchExists && createBranch ? ' (created)' : ''}`,
       );
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);

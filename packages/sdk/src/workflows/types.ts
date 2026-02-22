@@ -136,8 +136,54 @@ export interface WorkflowDefinition {
   onError?: 'fail' | 'skip' | 'retry';
 }
 
-/** Step type: agent (LLM-powered) or deterministic (shell command). */
-export type WorkflowStepType = "agent" | "deterministic";
+/** Step type: agent (LLM-powered), deterministic (shell command), or worktree (git worktree setup). */
+export type WorkflowStepType = "agent" | "deterministic" | "worktree";
+
+// ── Custom step definitions ─────────────────────────────────────────────────
+
+/** Parameter definition for a custom step. */
+export interface CustomStepParam {
+  /** Parameter name. */
+  name: string;
+  /** Whether this parameter is required. Default: false. */
+  required?: boolean;
+  /** Default value if not provided. */
+  default?: string;
+  /** Human-readable description of the parameter. */
+  description?: string;
+}
+
+/** A reusable custom step definition stored in .relay/steps.yaml. */
+export interface CustomStepDefinition {
+  /** Parameters that can be passed when using this step. */
+  params?: CustomStepParam[];
+  /** Step type: "deterministic" or "worktree". */
+  type?: "deterministic" | "worktree";
+  /** Shell command to execute (for deterministic steps). Supports {{param}} interpolation. */
+  command?: string;
+  /** Branch name (for worktree steps). Supports {{param}} interpolation. */
+  branch?: string;
+  /** Base branch (for worktree steps). */
+  baseBranch?: string;
+  /** Worktree path (for worktree steps). */
+  path?: string;
+  /** Create branch if missing (for worktree steps). */
+  createBranch?: boolean;
+  /** Fail if command exit code is non-zero. Default: true. */
+  failOnError?: boolean;
+  /** Capture stdout as step output. Default: true. */
+  captureOutput?: boolean;
+  /** Timeout in milliseconds. */
+  timeoutMs?: number;
+  /** Human-readable description of this step. */
+  description?: string;
+}
+
+/** Configuration file for custom step definitions (.relay/steps.yaml). */
+export interface CustomStepsConfig {
+  /** Map of step name to step definition. */
+  steps: Record<string, CustomStepDefinition>;
+}
 
 /**
  * A single step within a workflow.
@@ -151,6 +197,8 @@ export interface WorkflowStep {
   name: string;
   /** Step type: "agent" (default) or "deterministic". */
   type?: WorkflowStepType;
+  /** Reference to a custom step definition from .relay/steps.yaml. */
+  use?: string;
   /** Step names that must complete before this step runs. */
   dependsOn?: string[];
   /** Timeout in milliseconds. */
@@ -175,6 +223,16 @@ export interface WorkflowStep {
   failOnError?: boolean;
   /** Capture stdout as step output for downstream steps. Default: true. */
   captureOutput?: boolean;
+
+  // ── Worktree step fields ──────────────────────────────────────────────────
+  /** Branch name for the worktree (required for worktree steps). */
+  branch?: string;
+  /** Base branch to create the worktree from. Default: HEAD. */
+  baseBranch?: string;
+  /** Explicit path for the worktree. Default: .worktrees/<step-name>. */
+  path?: string;
+  /** Create the branch if it doesn't exist. Default: true. */
+  createBranch?: boolean;
 }
 
 /** Type guard: Check if a step is a deterministic (shell command) step. */
@@ -182,9 +240,19 @@ export function isDeterministicStep(step: WorkflowStep): boolean {
   return step.type === "deterministic";
 }
 
+/** Type guard: Check if a step is a worktree (git worktree setup) step. */
+export function isWorktreeStep(step: WorkflowStep): boolean {
+  return step.type === "worktree";
+}
+
+/** Type guard: Check if a step uses a custom step definition. */
+export function isCustomStep(step: WorkflowStep): boolean {
+  return step.use !== undefined;
+}
+
 /** Type guard: Check if a step is an agent (LLM-powered) step. */
 export function isAgentStep(step: WorkflowStep): boolean {
-  return step.type !== "deterministic";
+  return step.type !== "deterministic" && step.type !== "worktree";
 }
 
 // Legacy type aliases for backward compatibility
@@ -284,12 +352,12 @@ export interface WorkflowStepRow {
   id: string;
   runId: string;
   stepName: string;
-  /** Agent name for agent steps, null for deterministic steps. */
+  /** Agent name for agent steps, null for deterministic/worktree steps. */
   agentName: string | null;
-  /** Step type: agent or deterministic. */
+  /** Step type: agent, deterministic, or worktree. */
   stepType: WorkflowStepType;
   status: WorkflowStepStatus;
-  /** Task description for agent steps, command for deterministic steps. */
+  /** Task description for agent steps, command for deterministic steps, branch for worktree steps. */
   task: string;
   dependsOn: string[];
   output?: string;

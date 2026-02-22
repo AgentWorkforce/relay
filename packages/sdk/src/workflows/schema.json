@@ -285,7 +285,9 @@
     "WorkflowStep": {
       "oneOf": [
         { "$ref": "#/definitions/AgentWorkflowStep" },
-        { "$ref": "#/definitions/DeterministicWorkflowStep" }
+        { "$ref": "#/definitions/DeterministicWorkflowStep" },
+        { "$ref": "#/definitions/WorktreeWorkflowStep" },
+        { "$ref": "#/definitions/CustomWorkflowStep" }
       ]
     },
     "AgentWorkflowStep": {
@@ -369,6 +371,163 @@
           "type": "boolean",
           "default": true,
           "description": "Capture stdout as step output for downstream steps"
+        }
+      }
+    },
+    "WorktreeWorkflowStep": {
+      "type": "object",
+      "required": ["name", "type", "branch"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["worktree"],
+          "description": "Step type - must be 'worktree' for git worktree setup steps"
+        },
+        "name": {
+          "type": "string",
+          "description": "Unique step name within the workflow"
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch name for the worktree. Supports {{variable}} interpolation."
+        },
+        "baseBranch": {
+          "type": "string",
+          "description": "Base branch to create the worktree from. Default: HEAD."
+        },
+        "path": {
+          "type": "string",
+          "description": "Explicit path for the worktree. Default: .worktrees/<step-name>."
+        },
+        "createBranch": {
+          "type": "boolean",
+          "default": true,
+          "description": "Create the branch if it doesn't exist"
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Step names that must complete before this step runs"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "CustomWorkflowStep": {
+      "type": "object",
+      "required": ["name", "use"],
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique step name within the workflow"
+        },
+        "use": {
+          "type": "string",
+          "description": "Reference to a custom step definition from .relay/steps.yaml"
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Step names that must complete before this step runs"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "CustomStepParam": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Parameter name"
+        },
+        "required": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether this parameter is required"
+        },
+        "default": {
+          "type": "string",
+          "description": "Default value if not provided"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the parameter"
+        }
+      }
+    },
+    "CustomStepDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "params": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/CustomStepParam" },
+          "description": "Parameters that can be passed when using this step"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["deterministic", "worktree"],
+          "description": "Step type"
+        },
+        "command": {
+          "type": "string",
+          "description": "Shell command to execute (for deterministic steps)"
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch name (for worktree steps)"
+        },
+        "baseBranch": {
+          "type": "string",
+          "description": "Base branch (for worktree steps)"
+        },
+        "path": {
+          "type": "string",
+          "description": "Worktree path (for worktree steps)"
+        },
+        "createBranch": {
+          "type": "boolean",
+          "description": "Create branch if missing (for worktree steps)"
+        },
+        "failOnError": {
+          "type": "boolean",
+          "default": true,
+          "description": "Fail if command exit code is non-zero"
+        },
+        "captureOutput": {
+          "type": "boolean",
+          "default": true,
+          "description": "Capture stdout as step output"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Timeout in milliseconds"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of this step"
+        }
+      }
+    },
+    "CustomStepsConfig": {
+      "type": "object",
+      "required": ["steps"],
+      "additionalProperties": false,
+      "properties": {
+        "steps": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/CustomStepDefinition" },
+          "description": "Map of step name to step definition"
         }
       }
     },
