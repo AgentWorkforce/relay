@@ -107,7 +107,7 @@ workflows:
       - name: commit
         type: deterministic
         dependsOn: [validate]
-        command: git add -A && git commit -m "refactor: {{steps.design.output | first-line}}"
+        command: 'git add -A && git commit -m "refactor: {{steps.design.output | first-line}}"'
 
       # Deterministic: Push
       - name: push

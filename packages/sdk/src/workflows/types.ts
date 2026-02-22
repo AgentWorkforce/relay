@@ -81,7 +81,8 @@ export type SwarmPattern =
   | 'circuit-breaker'
   | 'blackboard'
   | 'swarm'
-  | 'competitive';
+  | 'competitive'
+  | 'review-loop';
 
 // ── Agent definitions ───────────────────────────────────────────────────────
 
@@ -237,7 +238,8 @@ export interface ErrorHandlingConfig {
 /** A single execution wave in a dry-run simulation. */
 export interface DryRunWave {
   wave: number;
-  steps: Array<{ name: string; agent: string; dependsOn: string[] }>;
+  /** Steps in this wave. Agent is undefined for deterministic steps. */
+  steps: Array<{ name: string; agent?: string; dependsOn: string[] }>;
 }
 
 /** Report produced by a dry-run validation of a workflow config. */

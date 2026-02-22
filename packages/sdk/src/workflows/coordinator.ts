@@ -121,6 +121,19 @@ const PATTERN_HEURISTICS: Array<{
     test: (c) => c.agents.some((a) => a.role === 'supervisor'),
     pattern: 'supervisor',
   },
+  {
+    // Review-loop: implementer + multiple reviewers (code review with feedback loop)
+    test: (c) => {
+      const hasImplementer = c.agents.some(
+        (a) => a.role?.toLowerCase().includes('implement') || a.name.toLowerCase().includes('implement'),
+      );
+      const reviewerCount = c.agents.filter(
+        (a) => a.role?.toLowerCase().includes('reviewer') || a.name.toLowerCase().includes('reviewer'),
+      ).length;
+      return hasImplementer && reviewerCount >= 2;
+    },
+    pattern: 'review-loop',
+  },
 
   // ── Generic hub-based patterns ────────────────────────────────────────
   {
@@ -461,6 +474,34 @@ export class SwarmCoordinator extends EventEmitter {
           edges.set(names[i], neighbors);
         }
         return { pattern: p, agents, edges, hub: hiveMind };
+      }
+
+      case 'review-loop': {
+        // Implementer is hub; reviewers can communicate with implementer AND each other
+        // This enables collaborative review where reviewers can discuss findings
+        const implementer = agents.find(
+          (a) => a.role?.toLowerCase().includes('implement') || a.name.toLowerCase().includes('implement'),
+        )?.name ?? this.pickHub(agents);
+        const reviewers = agents
+          .filter(
+            (a) =>
+              a.name !== implementer &&
+              (a.role?.toLowerCase().includes('reviewer') || a.name.toLowerCase().includes('reviewer')),
+          )
+          .map((a) => a.name);
+        const others = names.filter((n) => n !== implementer && !reviewers.includes(n));
+
+        // Implementer → all reviewers and others
+        edges.set(implementer, [...reviewers, ...others]);
+        // Reviewers → implementer + other reviewers (collaborative review)
+        for (const r of reviewers) {
+          const otherReviewers = reviewers.filter((or) => or !== r);
+          edges.set(r, [implementer, ...otherReviewers]);
+        }
+        // Others → implementer
+        for (const o of others) edges.set(o, [implementer]);
+
+        return { pattern: p, agents, edges, hub: implementer };
       }
 
       default: {

@@ -13,6 +13,7 @@ export const BUILT_IN_TEMPLATE_NAMES = [
   'security-audit',
   'refactor',
   'documentation',
+  'review-loop',
 ] as const;
 
 export type BuiltInTemplateName = (typeof BUILT_IN_TEMPLATE_NAMES)[number];

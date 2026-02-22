@@ -96,7 +96,7 @@ workflows:
       - name: commit
         type: deterministic
         dependsOn: [fix-failures]
-        command: git add -A && git commit -m "feat: {{steps.plan.output | first-line}}"
+        command: 'git add -A && git commit -m "feat: {{steps.plan.output | first-line}}"'
 
       # Agent: Code review
       - name: review

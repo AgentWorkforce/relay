@@ -103,7 +103,7 @@ workflows:
       - name: commit
         type: deterministic
         dependsOn: [verify]
-        command: git add -A && git commit -m "security: address vulnerabilities from audit" 2>/dev/null || echo "No changes to commit"
+        command: 'git add -A && git commit -m "security: address vulnerabilities from audit" 2>/dev/null || echo "No changes to commit"'
 
       # Agent: Final report
       - name: report

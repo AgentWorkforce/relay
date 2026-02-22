@@ -408,10 +408,13 @@ export class WorkflowRunner {
 
     const stepAgentCounts = new Map<string, number>();
     for (const step of workflow.steps) {
-      if (!agentMap.has(step.agent)) {
-        warnings.push(`Step "${step.name}" references unknown agent "${step.agent}"`);
+      // Only validate agent references for agent-type steps
+      if (step.agent) {
+        if (!agentMap.has(step.agent)) {
+          warnings.push(`Step "${step.name}" references unknown agent "${step.agent}"`);
+        }
+        stepAgentCounts.set(step.agent, (stepAgentCounts.get(step.agent) ?? 0) + 1);
       }
-      stepAgentCounts.set(step.agent, (stepAgentCounts.get(step.agent) ?? 0) + 1);
     }
 
     // 4. Build agent summary

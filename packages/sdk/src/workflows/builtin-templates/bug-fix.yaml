@@ -89,7 +89,7 @@ workflows:
       - name: commit
         type: deterministic
         dependsOn: [fix-if-broken]
-        command: git add -A && git commit -m "fix: {{steps.investigate.output | first-line}}"
+        command: 'git add -A && git commit -m "fix: {{steps.investigate.output | first-line}}"'
 
       # Agent: Verify no regressions
       - name: regression-check

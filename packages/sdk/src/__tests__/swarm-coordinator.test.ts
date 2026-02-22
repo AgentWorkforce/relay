@@ -212,6 +212,30 @@ describe('SwarmCoordinator', () => {
       });
       expect(coordinator.selectPattern(config)).toBe('circuit-breaker');
     });
+
+    it('should auto-select review-loop when implementer and multiple reviewers present', () => {
+      const config = makeConfig({
+        swarm: { pattern: '' as any },
+        agents: [
+          { name: 'implementer', cli: 'claude', role: 'Senior developer implementing the task' },
+          { name: 'reviewer-diff', cli: 'codex', role: 'Code quality reviewer' },
+          { name: 'reviewer-arch', cli: 'claude', role: 'Architecture reviewer' },
+        ],
+      });
+      expect(coordinator.selectPattern(config)).toBe('review-loop');
+    });
+
+    it('should auto-select review-loop when agent names contain implementer and reviewer', () => {
+      const config = makeConfig({
+        swarm: { pattern: '' as any },
+        agents: [
+          { name: 'implementer', cli: 'claude' },
+          { name: 'reviewer-1', cli: 'codex' },
+          { name: 'reviewer-2', cli: 'claude' },
+        ],
+      });
+      expect(coordinator.selectPattern(config)).toBe('review-loop');
+    });
   });
 
   // ── Topology resolution ────────────────────────────────────────────────
@@ -613,6 +637,52 @@ describe('SwarmCoordinator', () => {
       // Defenders should reach all attackers
       expect(topology.edges.get('defender-1')).toContain('attacker-1');
       expect(topology.edges.get('defender-1')).toContain('attacker-2');
+    });
+
+    it('should build review-loop topology with implementer as hub and reviewer collaboration', () => {
+      const config = makeConfig({
+        swarm: { pattern: 'review-loop' },
+        agents: [
+          { name: 'implementer', cli: 'claude', role: 'Senior developer implementing the task' },
+          { name: 'reviewer-diff', cli: 'codex', role: 'Code quality reviewer' },
+          { name: 'reviewer-arch', cli: 'claude', role: 'Architecture reviewer' },
+          { name: 'reviewer-security', cli: 'codex', role: 'Security reviewer' },
+        ],
+      });
+      const topology = coordinator.resolveTopology(config);
+      expect(topology.pattern).toBe('review-loop');
+      expect(topology.hub).toBe('implementer');
+      // Implementer can message all reviewers
+      expect(topology.edges.get('implementer')).toContain('reviewer-diff');
+      expect(topology.edges.get('implementer')).toContain('reviewer-arch');
+      expect(topology.edges.get('implementer')).toContain('reviewer-security');
+      // Reviewers can message implementer AND other reviewers (collaborative review)
+      expect(topology.edges.get('reviewer-diff')).toContain('implementer');
+      expect(topology.edges.get('reviewer-diff')).toContain('reviewer-arch');
+      expect(topology.edges.get('reviewer-diff')).toContain('reviewer-security');
+      expect(topology.edges.get('reviewer-arch')).toContain('implementer');
+      expect(topology.edges.get('reviewer-arch')).toContain('reviewer-diff');
+      expect(topology.edges.get('reviewer-security')).toContain('implementer');
+      expect(topology.edges.get('reviewer-security')).toContain('reviewer-diff');
+    });
+
+    it('should build review-loop topology with non-interactive reviewers', () => {
+      const config = makeConfig({
+        swarm: { pattern: 'review-loop' },
+        agents: [
+          { name: 'implementer', cli: 'claude', role: 'Senior developer implementing the task' },
+          { name: 'reviewer-diff', cli: 'codex', role: 'Code quality reviewer', interactive: false },
+          { name: 'reviewer-arch', cli: 'claude', role: 'Architecture reviewer', interactive: false },
+        ],
+      });
+      const topology = coordinator.resolveTopology(config);
+      expect(topology.pattern).toBe('review-loop');
+      expect(topology.hub).toBe('implementer');
+      // Non-interactive reviewers have empty edges
+      expect(topology.edges.get('reviewer-diff')).toEqual([]);
+      expect(topology.edges.get('reviewer-arch')).toEqual([]);
+      // Implementer should not have non-interactive agents in edges
+      expect(topology.edges.get('implementer')).toEqual([]);
     });
   });
 
