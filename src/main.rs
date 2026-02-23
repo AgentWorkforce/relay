@@ -44,6 +44,7 @@ use relay_broker::{
         registration_is_retryable, registration_retry_after_secs, retry_agent_registration,
         RegRetryOutcome, RelaycastAgentEvent, RelaycastHttpClient, RelaycastWsClient, WsControl,
     },
+    replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
     snippets::{configure_relaycast_mcp_with_token, ensure_relaycast_mcp_config},
     telemetry::{TelemetryClient, TelemetryEvent},
     types::{BrokerCommandEvent, BrokerCommandPayload, SenderKind},
@@ -1159,14 +1160,21 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     // Broadcast channel for streaming dashboard-relevant events to WS clients.
     // Created early so the stdout writer task can also broadcast events.
     let (events_tx, _events_rx) = broadcast::channel::<String>(512);
+    let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
 
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(1024);
     let events_tx_for_stdout = events_tx.clone();
+    let replay_buffer_for_stdout = replay_buffer.clone();
     tokio::spawn(async move {
         while let Some(frame) = sdk_out_rx.recv().await {
             // Broadcast dashboard-relevant events to WS clients
             if frame.msg_type == "event" {
-                broadcast_if_relevant(&events_tx_for_stdout, &frame.payload);
+                broadcast_if_relevant(
+                    &events_tx_for_stdout,
+                    &replay_buffer_for_stdout,
+                    &frame.payload,
+                )
+                .await;
             }
             if let Ok(line) = serde_json::to_string(&frame) {
                 use std::io::Write;
@@ -1215,10 +1223,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     // Optional HTTP API (for dashboard proxy)
     let (api_tx, mut api_rx) = if cmd.api_port > 0 {
         let (tx, rx) = mpsc::channel::<ListenApiRequest>(32);
-        let router = listen_api_router(tx.clone(), events_tx.clone()).route(
-            "/api/events/replay",
-            axum::routing::get(crate::listen_api::listen_api_replay),
-        );
+        let router = listen_api_router(tx.clone(), events_tx.clone(), replay_buffer.clone());
         let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", cmd.api_port))
             .await
             .with_context(|| format!("failed to bind API on port {}", cmd.api_port))?;
