@@ -302,19 +302,84 @@ pub(crate) fn terminal_query_responses(chunk: &[u8]) -> Vec<&'static [u8]> {
     parser.feed(chunk)
 }
 
-pub(crate) fn format_injection(from: &str, event_id: &str, body: &str, target: &str) -> String {
-    // If body is already formatted (from orchestrator), don't double-wrap
-    if body.starts_with("Relay message from ") {
-        return body.to_string();
-    }
+fn sender_display_name(from: &str) -> &str {
+    from.strip_prefix("human:")
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(from)
+}
+
+fn detect_channel_context(message: &str, target: &str) -> Option<String> {
     if target.starts_with('#') {
+        return Some(target.trim().to_string());
+    }
+    if let Some(start) = message.find("[#") {
+        let rest = &message[start + 1..];
+        if let Some(end) = rest.find(']') {
+            let channel = rest[..end].trim();
+            if channel.starts_with('#') && channel.len() > 1 {
+                return Some(channel.to_string());
+            }
+        }
+    }
+    if let Some(start) = message.find(" in #") {
+        let rest = &message[start + 4..];
+        let end = rest
+            .find(|c: char| c == ' ' || c == ':' || c == ']' || c == '\n')
+            .unwrap_or(rest.len());
+        let candidate = rest[..end].trim();
+        if candidate.starts_with('#') && candidate.len() > 1 {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+fn build_mcp_reminder(sender: &str, target: &str, relay_line: &str) -> String {
+    let sender_name = sender_display_name(sender);
+    let channel_context = detect_channel_context(relay_line, target);
+    let channel_hint = channel_context
+        .as_deref()
+        .unwrap_or("#general")
+        .trim_start_matches('#');
+
+    let dm_hint = format!(
+        "- For direct replies to \"{sender_name}\", use mcp__relaycast__send_dm (to: \"{sender_name}\")."
+    );
+    let channel_hint_line = format!(
+        "- For channel replies, use mcp__relaycast__post_message (channel: \"{channel_hint}\")."
+    );
+
+    [
+        "<system-reminder>".to_string(),
+        "Relaycast MCP tools are available for replies.".to_string(),
+        dm_hint,
+        channel_hint_line,
+        "- For thread replies, use mcp__relaycast__reply_to_thread.".to_string(),
+        "- To check unread messages/reactions, use mcp__relaycast__check_inbox.".to_string(),
+        "</system-reminder>".to_string(),
+    ]
+    .join("\n")
+}
+
+pub(crate) fn format_injection(from: &str, event_id: &str, body: &str, target: &str) -> String {
+    let sender_name = sender_display_name(from);
+    let relay_line = if body.starts_with("Relay message from ") {
+        body.trim().to_string()
+    } else if target.starts_with('#') {
         format!(
             "Relay message from {} in {} [{}]: {}",
-            from, target, event_id, body
+            sender_name, target, event_id, body
         )
     } else {
-        format!("Relay message from {} [{}]: {}", from, event_id, body)
-    }
+        format!(
+            "Relay message from {} [{}]: {}",
+            sender_name, event_id, body
+        )
+    };
+
+    let reminder = build_mcp_reminder(from, target, &relay_line);
+    format!("{reminder}\n{relay_line}")
 }
 
 /// Find the nearest character boundary at or before the given byte index.
@@ -1042,26 +1107,43 @@ mod tests {
     #[test]
     fn format_injection_dm() {
         let result = format_injection("Alice", "evt_1", "hello world", "Bob");
-        assert_eq!(result, "Relay message from Alice [evt_1]: hello world");
+        assert!(result.contains("<system-reminder>"));
+        assert!(result.contains("Relaycast MCP tools"));
+        assert!(result.contains("mcp__relaycast__send_dm"));
+        assert!(result.contains("Relay message from Alice [evt_1]: hello world"));
     }
 
     #[test]
     fn format_injection_channel() {
         let result = format_injection("Alice", "evt_1", "hello world", "#general");
-        assert_eq!(
-            result,
-            "Relay message from Alice in #general [evt_1]: hello world"
-        );
+        assert!(result.contains("<system-reminder>"));
+        assert!(result.contains("mcp__relaycast__post_message"));
+        assert!(result.contains("channel: \"general\""));
+        assert!(result.contains("Relay message from Alice in #general [evt_1]: hello world"));
     }
 
     #[test]
     fn format_injection_pre_formatted() {
         let body = "Relay message from Bob [evt_0]: previous message";
         let result = format_injection("Alice", "evt_1", body, "Charlie");
-        assert_eq!(
-            result, body,
-            "pre-formatted messages should pass through unchanged"
-        );
+        assert!(result.contains("<system-reminder>"));
+        assert!(result.contains(body));
+    }
+
+    #[test]
+    fn format_injection_strips_human_prefix_from_sender() {
+        let result = format_injection("human:alice", "evt_1", "status?", "Bob");
+        assert!(result.contains("Relay message from alice [evt_1]: status?"));
+        assert!(result.contains("to \"alice\""));
+    }
+
+    #[test]
+    fn format_injection_detects_channel_from_preformatted_body() {
+        let body = "Relay message from bob [abc123] [#dev-team]: Channel update";
+        let result = format_injection("system", "evt_1", body, "Worker");
+        assert!(result.contains("mcp__relaycast__post_message"));
+        assert!(result.contains("channel: \"dev-team\""));
+        assert!(result.contains(body));
     }
 
     // ==================== is_auto_suggestion edge cases ====================

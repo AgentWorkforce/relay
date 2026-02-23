@@ -462,6 +462,24 @@ fn is_system_sender(sender: &str) -> bool {
     sender == "system" || sender == "human:orchestrator" || sender.starts_with("human:")
 }
 
+fn normalize_sender(sender: Option<String>) -> String {
+    let raw = sender
+        .unwrap_or_else(|| "human:orchestrator".to_string())
+        .trim()
+        .to_string();
+    if raw.is_empty() {
+        return "human:orchestrator".to_string();
+    }
+    if let Some(rest) = raw.strip_prefix("human:") {
+        let normalized_rest = rest.trim();
+        if normalized_rest.is_empty() {
+            return "human:orchestrator".to_string();
+        }
+        return format!("human:{normalized_rest}");
+    }
+    raw
+}
+
 struct WorkerRegistry {
     workers: HashMap<String, WorkerHandle>,
     event_tx: mpsc::Sender<WorkerEvent>,
@@ -2448,9 +2466,11 @@ async fn handle_sdk_frame(
         "send_message" => {
             let payload: SendMessagePayload = serde_json::from_value(frame.payload)
                 .context("send_message payload must contain `to` and `text`")?;
-            let from = payload
-                .from
-                .unwrap_or_else(|| "human:orchestrator".to_string());
+            let mut from = normalize_sender(payload.from);
+            if !is_system_sender(&from) && !workers.has_worker(&from) && !from.contains(':') {
+                from = format!("human:{from}");
+            }
+
             if !is_system_sender(&from) && !workers.has_worker(&from) {
                 send_error(
                     out_tx,
@@ -3564,8 +3584,9 @@ mod tests {
         channels_from_csv, continuity_dir, delivery_retry_interval, derive_ws_base_url_from_http,
         detect_bypass_permissions_prompt, drop_pending_for_worker, extract_mcp_message_ids,
         floor_char_boundary, format_injection, is_auto_suggestion, is_bypass_selection_menu,
-        is_in_editor_mode, normalize_channel, normalize_initial_task, parse_relaycast_agent_event,
-        strip_ansi, PendingDelivery, RelaycastAgentEvent, TerminalQueryParser,
+        is_in_editor_mode, normalize_channel, normalize_initial_task, normalize_sender,
+        parse_relaycast_agent_event, strip_ansi, PendingDelivery, RelaycastAgentEvent,
+        TerminalQueryParser,
     };
 
     #[test]
@@ -3609,15 +3630,42 @@ mod tests {
     #[test]
     fn injection_format_preserved() {
         let rendered = format_injection("alice", "evt_1", "hello", "bob");
-        assert_eq!(rendered, "Relay message from alice [evt_1]: hello");
+        assert!(rendered.contains("<system-reminder>"));
+        assert!(rendered.contains("mcp__relaycast__send_dm"));
+        assert!(rendered.contains("Relay message from alice [evt_1]: hello"));
     }
 
     #[test]
     fn injection_format_includes_channel() {
         let rendered = format_injection("alice", "evt_1", "hello", "#general");
+        assert!(rendered.contains("mcp__relaycast__post_message"));
+        assert!(rendered.contains("channel: \"general\""));
+        assert!(rendered.contains("Relay message from alice in #general [evt_1]: hello"));
+    }
+
+    #[test]
+    fn normalize_sender_defaults_to_human_orchestrator() {
+        assert_eq!(normalize_sender(None), "human:orchestrator");
+        assert_eq!(normalize_sender(Some(String::new())), "human:orchestrator");
         assert_eq!(
-            rendered,
-            "Relay message from alice in #general [evt_1]: hello"
+            normalize_sender(Some("   ".to_string())),
+            "human:orchestrator"
+        );
+    }
+
+    #[test]
+    fn normalize_sender_normalizes_human_prefix() {
+        assert_eq!(
+            normalize_sender(Some("human:  Dashboard  ".to_string())),
+            "human:Dashboard"
+        );
+    }
+
+    #[test]
+    fn normalize_sender_preserves_worker_names() {
+        assert_eq!(
+            normalize_sender(Some("WorkerOne".to_string())),
+            "WorkerOne".to_string()
         );
     }
 

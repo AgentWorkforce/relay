@@ -11,22 +11,22 @@ name: Verify Published Package
 on:
   pull_request:
     paths:
-      - ".github/workflows/verify-publish.yml"
-      - "scripts/post-publish-verify/**"
+      - '.github/workflows/verify-publish.yml'
+      - 'scripts/post-publish-verify/**'
   workflow_dispatch:
     inputs:
       version:
-        description: "Package version to verify (default: latest)"
+        description: 'Package version to verify (default: latest)'
         required: false
         type: string
-        default: "latest"
+        default: 'latest'
   workflow_call:
     inputs:
       version:
-        description: "Package version to verify"
+        description: 'Package version to verify'
         required: false
         type: string
-        default: "latest"
+        default: 'latest'
 
 jobs:
   verify:
@@ -35,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["18", "20", "22"]
+        node: ['18', '20', '22']
 
     steps:
       - name: Checkout (for scripts)
@@ -93,14 +93,14 @@ jobs:
           fi
 
       # Test 1: Global npm install
-      - name: "Test: Global npm install"
+      - name: 'Test: Global npm install'
         run: |
           echo "Installing ${{ steps.pkg.outputs.spec }} globally..."
           npm install -g ${{ steps.pkg.outputs.spec }}
           # Add npm global bin to PATH
           echo "$(npm config get prefix)/bin" >> $GITHUB_PATH
 
-      - name: "Test: Global --version"
+      - name: 'Test: Global --version'
         run: |
           # Ensure npm global bin is in PATH
           export PATH="$(npm config get prefix)/bin:$PATH"
@@ -113,12 +113,12 @@ jobs:
             exit 1
           fi
 
-      - name: "Test: Global -V flag"
+      - name: 'Test: Global -V flag'
         run: |
           export PATH="$(npm config get prefix)/bin:$PATH"
           agent-relay -V
 
-      - name: "Test: Global version command"
+      - name: 'Test: Global version command'
         run: |
           export PATH="$(npm config get prefix)/bin:$PATH"
           OUTPUT=$(agent-relay version)
@@ -129,7 +129,7 @@ jobs:
             exit 1
           fi
 
-      - name: "Test: Global --help"
+      - name: 'Test: Global --help'
         run: |
           export PATH="$(npm config get prefix)/bin:$PATH"
           agent-relay --help | head -20
@@ -141,7 +141,7 @@ jobs:
 
       # Test 2: npx execution
       # Note: Don't use `--` separator with npx @version syntax - it causes argument parsing issues
-      - name: "Test: npx --version"
+      - name: 'Test: npx --version'
         run: |
           echo "npx package spec: ${{ steps.pkg.outputs.spec }}"
           if [ -z "${{ steps.pkg.outputs.spec }}" ]; then
@@ -157,10 +157,10 @@ jobs:
             exit 1
           fi
 
-      - name: "Test: npx --help"
+      - name: 'Test: npx --help'
         run: npx ${{ steps.pkg.outputs.spec }} --help | head -20
 
-      - name: "Test: npx version command"
+      - name: 'Test: npx version command'
         run: |
           OUTPUT=$(npx ${{ steps.pkg.outputs.spec }} version 2>&1)
           echo "$OUTPUT"
@@ -171,7 +171,7 @@ jobs:
           fi
 
       # Test: npx binary resolution (critical for spawn - postinstall doesn't run with npx)
-      - name: "Test: npx binary resolution"
+      - name: 'Test: npx binary resolution'
         run: |
           # Clear npm cache to simulate fresh npx usage
           rm -rf ~/.npm/_npx 2>/dev/null || true
@@ -192,7 +192,7 @@ jobs:
             *) ARCH_NAME="$ARCH" ;;
           esac
 
-          PLATFORM_BINARY="relay-pty-${PLATFORM}-${ARCH_NAME}"
+          PLATFORM_BINARY="agent-relay-broker-${PLATFORM}-${ARCH_NAME}"
           echo "Looking for platform binary: $PLATFORM_BINARY"
 
           # Find the binary in npx cache
@@ -211,7 +211,7 @@ jobs:
 
           if [ -z "$FOUND_BINARY" ]; then
             echo "ERROR: Platform-specific binary not found in npx cache!"
-            echo "This will cause 'npx agent-relay up' to fail with 'relay-pty binary not found'"
+            echo "This will cause 'npx agent-relay up' to fail with 'agent-relay-broker binary not found'"
             exit 1
           fi
 
@@ -225,7 +225,7 @@ jobs:
 
           # Test that it works
           OUTPUT=$("$FOUND_BINARY" --help 2>&1) || true
-          if echo "$OUTPUT" | grep -q "PTY wrapper"; then
+          if echo "$OUTPUT" | grep -q "agent-relay-broker"; then
             echo "Platform binary --help works!"
             echo "npx binary resolution test PASSED"
           else
@@ -235,14 +235,14 @@ jobs:
           fi
 
       # Test 3: Local project install
-      - name: "Test: Local project install"
+      - name: 'Test: Local project install'
         run: |
           mkdir -p /tmp/test-project
           cd /tmp/test-project
           npm init -y
           npm install ${{ steps.pkg.outputs.spec }}
 
-      - name: "Test: Local npx execution"
+      - name: 'Test: Local npx execution'
         run: |
           cd /tmp/test-project
           VERSION=$(npx agent-relay --version)
@@ -253,7 +253,7 @@ jobs:
             exit 1
           fi
 
-      - name: "Test: Local bin executable"
+      - name: 'Test: Local bin executable'
         run: |
           cd /tmp/test-project
           if [ -x "./node_modules/.bin/agent-relay" ]; then
@@ -264,49 +264,49 @@ jobs:
             exit 1
           fi
 
-      # Test 4: relay-pty binary verification (critical for spawn)
-      - name: "Test: relay-pty binary exists"
+      # Test 4: agent-relay-broker binary verification (critical for spawn)
+      - name: 'Test: agent-relay-broker binary exists'
         run: |
           cd /tmp/test-project
           BIN_DIR="./node_modules/agent-relay/bin"
-          echo "Checking for relay-pty binaries..."
+          echo "Checking for agent-relay-broker binaries..."
           ls -la "$BIN_DIR" || { echo "Binary directory not found"; exit 1; }
 
-          if [ -f "$BIN_DIR/relay-pty" ]; then
-            echo "relay-pty binary found"
+          if [ -f "$BIN_DIR/agent-relay-broker" ]; then
+            echo "agent-relay-broker binary found"
           else
-            echo "relay-pty binary NOT found - spawn will fail!"
+            echo "agent-relay-broker binary NOT found - spawn will fail!"
             exit 1
           fi
 
-      - name: "Test: relay-pty binary executable"
+      - name: 'Test: agent-relay-broker binary executable'
         run: |
           cd /tmp/test-project
           BIN_DIR="./node_modules/agent-relay/bin"
 
-          if [ -x "$BIN_DIR/relay-pty" ]; then
-            echo "relay-pty is executable"
+          if [ -x "$BIN_DIR/agent-relay-broker" ]; then
+            echo "agent-relay-broker is executable"
           else
-            echo "relay-pty is NOT executable"
+            echo "agent-relay-broker is NOT executable"
             exit 1
           fi
 
-      - name: "Test: relay-pty --help works"
+      - name: 'Test: agent-relay-broker --help works'
         run: |
           cd /tmp/test-project
           BIN_DIR="./node_modules/agent-relay/bin"
 
-          OUTPUT=$("$BIN_DIR/relay-pty" --help 2>&1) || true
+          OUTPUT=$("$BIN_DIR/agent-relay-broker" --help 2>&1) || true
           echo "$OUTPUT"
 
-          if echo "$OUTPUT" | grep -q "PTY wrapper"; then
-            echo "relay-pty --help check passed"
+          if echo "$OUTPUT" | grep -q "agent-relay-broker"; then
+            echo "agent-relay-broker --help check passed"
           else
-            echo "relay-pty --help failed or unexpected output"
+            echo "agent-relay-broker --help failed or unexpected output"
             exit 1
           fi
 
-      - name: "Test: Platform-specific binary"
+      - name: 'Test: Platform-specific binary'
         run: |
           cd /tmp/test-project
           BIN_DIR="./node_modules/agent-relay/bin"
@@ -322,7 +322,7 @@ jobs:
           esac
 
           echo "Platform: $PLATFORM, Architecture: $ARCH_NAME"
-          PLATFORM_BINARY="relay-pty-${PLATFORM}-${ARCH_NAME}"
+          PLATFORM_BINARY="agent-relay-broker-${PLATFORM}-${ARCH_NAME}"
 
           if [ -f "$BIN_DIR/$PLATFORM_BINARY" ]; then
             echo "Platform-specific binary found: $PLATFORM_BINARY"
@@ -333,10 +333,10 @@ jobs:
             fi
           else
             echo "Platform-specific binary not found: $PLATFORM_BINARY"
-            echo "Will rely on generic relay-pty binary"
+            echo "Will rely on generic agent-relay-broker binary"
           fi
 
-      - name: "Test: Binary resolution simulation"
+      - name: 'Test: Binary resolution simulation'
         run: |
           cd /tmp/test-project
           node -e "
@@ -355,15 +355,15 @@ jobs:
           const platformName = platformMap[platform] || platform;
           const archName = archMap[arch] || arch;
 
-          const specificBinary = path.join(binDir, 'relay-pty-' + platformName + '-' + archName);
-          const genericBinary = path.join(binDir, 'relay-pty');
+          const specificBinary = path.join(binDir, 'agent-relay-broker-' + platformName + '-' + archName);
+          const genericBinary = path.join(binDir, 'agent-relay-broker');
 
           console.log('Package dir:', packageDir);
           console.log('Platform binary:', specificBinary, fs.existsSync(specificBinary) ? '✓' : '✗');
           console.log('Generic binary:', genericBinary, fs.existsSync(genericBinary) ? '✓' : '✗');
 
           if (!fs.existsSync(specificBinary) && !fs.existsSync(genericBinary)) {
-            console.error('ERROR: No relay-pty binary found!');
+            console.error('ERROR: No agent-relay-broker binary found!');
             process.exit(1);
           }
 
@@ -386,7 +386,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
 
       - name: Install deps for pack (PR only)
         if: github.event_name == 'pull_request'
@@ -437,14 +437,14 @@ jobs:
             exit 1
           fi
 
-      - name: "Test: npm install"
+      - name: 'Test: npm install'
         run: |
           mkdir -p /tmp/test-project
           cd /tmp/test-project
           npm init -y
           npm install ${{ steps.pkg.outputs.spec }}
 
-      - name: "Test: CLI version"
+      - name: 'Test: CLI version'
         run: |
           cd /tmp/test-project
           VERSION=$(npx agent-relay --version)
@@ -455,52 +455,52 @@ jobs:
             exit 1
           fi
 
-      - name: "Test: relay-pty binary exists"
+      - name: 'Test: agent-relay-broker binary exists'
         run: |
           cd /tmp/test-project
           BIN_DIR="./node_modules/agent-relay/bin"
-          echo "Checking for relay-pty binaries..."
+          echo "Checking for agent-relay-broker binaries..."
           ls -la "$BIN_DIR"
 
-          if [ -f "$BIN_DIR/relay-pty" ]; then
-            echo "relay-pty binary found"
+          if [ -f "$BIN_DIR/agent-relay-broker" ]; then
+            echo "agent-relay-broker binary found"
           else
-            echo "relay-pty binary NOT found!"
+            echo "agent-relay-broker binary NOT found!"
             exit 1
           fi
 
-      - name: "Test: relay-pty is executable"
+      - name: 'Test: agent-relay-broker is executable'
         run: |
           cd /tmp/test-project
           BIN_DIR="./node_modules/agent-relay/bin"
 
-          if [ -x "$BIN_DIR/relay-pty" ]; then
-            echo "relay-pty is executable"
+          if [ -x "$BIN_DIR/agent-relay-broker" ]; then
+            echo "agent-relay-broker is executable"
           else
-            echo "relay-pty is NOT executable"
+            echo "agent-relay-broker is NOT executable"
             exit 1
           fi
 
-      - name: "Test: relay-pty --help"
+      - name: 'Test: agent-relay-broker --help'
         run: |
           cd /tmp/test-project
           BIN_DIR="./node_modules/agent-relay/bin"
 
-          OUTPUT=$("$BIN_DIR/relay-pty" --help 2>&1) || true
+          OUTPUT=$("$BIN_DIR/agent-relay-broker" --help 2>&1) || true
           echo "$OUTPUT"
 
-          if echo "$OUTPUT" | grep -q "PTY wrapper"; then
-            echo "relay-pty --help check passed"
+          if echo "$OUTPUT" | grep -q "agent-relay-broker"; then
+            echo "agent-relay-broker --help check passed"
           else
-            echo "relay-pty --help failed"
+            echo "agent-relay-broker --help failed"
             exit 1
           fi
 
-      - name: "Test: Darwin arm64 binary"
+      - name: 'Test: Darwin arm64 binary'
         run: |
           cd /tmp/test-project
           BIN_DIR="./node_modules/agent-relay/bin"
-          DARWIN_BINARY="relay-pty-darwin-arm64"
+          DARWIN_BINARY="agent-relay-broker-darwin-arm64"
 
           echo "Looking for: $DARWIN_BINARY"
 
@@ -511,7 +511,7 @@ jobs:
             if [ -x "$BIN_DIR/$DARWIN_BINARY" ]; then
               echo "Darwin binary is executable"
               OUTPUT=$("$BIN_DIR/$DARWIN_BINARY" --help 2>&1) || true
-              if echo "$OUTPUT" | grep -q "PTY wrapper"; then
+              if echo "$OUTPUT" | grep -q "agent-relay-broker"; then
                 echo "Darwin binary --help works"
               else
                 echo "WARNING: Darwin binary --help unexpected output"
@@ -523,7 +523,7 @@ jobs:
             fi
           else
             echo "Darwin binary not found, checking if generic works..."
-            if "$BIN_DIR/relay-pty" --help 2>&1 | grep -q "PTY wrapper"; then
+            if "$BIN_DIR/agent-relay-broker" --help 2>&1 | grep -q "agent-relay-broker"; then
               echo "Generic binary works on macOS"
             else
               echo "Neither darwin-specific nor generic binary works!"
@@ -534,7 +534,7 @@ jobs:
       # Test: npx binary resolution on macOS (critical for spawn)
       # This test verifies that the darwin-arm64 binary works correctly
       # after being installed locally (simulating npx agent-relay up)
-      - name: "Test: npx binary resolution (macOS)"
+      - name: 'Test: npx binary resolution (macOS)'
         run: |
           # The test-project already has agent-relay installed from the tarball
           # We test the binary resolution from there
@@ -542,7 +542,7 @@ jobs:
 
           # Verify the darwin-arm64 binary exists and works
           BIN_DIR="./node_modules/agent-relay/bin"
-          DARWIN_BINARY="relay-pty-darwin-arm64"
+          DARWIN_BINARY="agent-relay-broker-darwin-arm64"
 
           echo "Looking for $DARWIN_BINARY in $BIN_DIR..."
 
@@ -565,7 +565,7 @@ jobs:
 
           # Test binary works (important for macOS code signing)
           echo "Testing binary execution..."
-          if "$BIN_DIR/$DARWIN_BINARY" --help 2>&1 | grep -q "PTY wrapper"; then
+          if "$BIN_DIR/$DARWIN_BINARY" --help 2>&1 | grep -q "agent-relay-broker"; then
             echo "Darwin arm64 binary execution PASSED"
           else
             echo "ERROR: Binary found but doesn't work (possible code signing issue)"
@@ -598,7 +598,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["18", "20", "22"]
+        node: ['18', '20', '22']
 
     steps:
       - name: Checkout
@@ -607,7 +607,7 @@ jobs:
       - name: Setup Node.js (for npm view)
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
 
       # Wait for npm to propagate the package (same as other verify jobs)
       - name: Wait for npm propagation
@@ -663,7 +663,7 @@ jobs:
           echo "| Node 20 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Node 22 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### macOS Tests (relay-pty binary)" >> $GITHUB_STEP_SUMMARY
+          echo "### macOS Tests (broker binary)" >> $GITHUB_STEP_SUMMARY
           echo "| Architecture | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| arm64 (M1/M2) | ${{ needs.verify-macos-arm64.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
