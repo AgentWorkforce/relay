@@ -29,7 +29,9 @@ pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
     }
 
     let event_id = extract_event_id(value)?;
-    let from = extract_sender(value).unwrap_or_else(|| "unknown".to_string());
+    let from = normalize_contract_sender_identity(
+        &extract_sender(value).unwrap_or_else(|| "unknown".to_string()),
+    );
     let sender_agent_id = extract_sender_agent_id(value);
     let sender_kind = parse_sender_kind(value);
     let target = extract_target(value, &kind).unwrap_or_else(|| "unknown".to_string());
@@ -55,6 +57,27 @@ pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
         thread_id,
         priority,
     })
+}
+
+fn normalize_contract_sender_identity(sender: &str) -> String {
+    let trimmed = sender.trim();
+    if trimmed.is_empty() {
+        return "unknown".to_string();
+    }
+
+    if trimmed.eq_ignore_ascii_case("human:orchestrator")
+        || trimmed.eq_ignore_ascii_case("dashboard")
+        || trimmed.eq_ignore_ascii_case("human:dashboard")
+    {
+        return "Dashboard".to_string();
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == "broker" || lower.starts_with("broker-") {
+        return "Dashboard".to_string();
+    }
+
+    trimmed.to_string()
 }
 
 /// Map a Relaycast `command.invoked` event to a BrokerCommandEvent.
@@ -501,7 +524,7 @@ pub fn to_inject_request(event: InboundRelayEvent) -> Option<InjectRequest> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     use crate::types::InboundKind;
 
@@ -527,6 +550,49 @@ mod tests {
         assert_eq!(event.target, "#general");
         assert_eq!(event.text, "hello");
         assert!(to_inject_request(event).is_some());
+    }
+
+    #[test]
+    fn contract_identity_fixture_requires_broker_identity_normalization() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../packages/contracts/fixtures/identity-fixtures.json"
+        ))
+        .expect("identity fixture should be valid JSON");
+        let cases = fixture
+            .get("wave0_identity_normalization")
+            .and_then(|v| v.get("cases"))
+            .and_then(Value::as_array)
+            .expect("identity fixture must include wave0_identity_normalization.cases");
+
+        for case in cases {
+            let input = case
+                .get("input")
+                .and_then(Value::as_str)
+                .expect("identity normalization case must include input");
+            let expected = case
+                .get("normalized")
+                .and_then(Value::as_str)
+                .expect("identity normalization case must include normalized");
+
+            let event = map_ws_event(&json!({
+                "type": "message.created",
+                "channel": "general",
+                "message": {
+                    "id": format!("evt_contract_identity_{input}"),
+                    "agent_name": input,
+                    "text": "identity contract probe"
+                }
+            }))
+            .expect("message.created should map for identity contract fixture");
+
+            // TODO(contract-wave1-identity-normalization): normalize broker
+            // and human relay identities to canonical cross-repo display names.
+            assert_eq!(
+                event.from, expected,
+                "sender identity \"{}\" did not normalize to expected \"{}\"",
+                input, expected
+            );
+        }
     }
 
     #[test]

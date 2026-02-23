@@ -1,0 +1,33 @@
+{
+  "replay_cursor_request": {
+    "sinceSeq": 120
+  },
+  "replay_response": {
+    "events": [
+      {
+        "kind": "relay_inbound",
+        "eventId": "evt_replay_1",
+        "seq": 121,
+        "timestamp": "2026-02-23T00:01:00.000Z",
+        "payload": {
+          "from": "Lead",
+          "target": "WorkerA",
+          "body": "replayed message"
+        }
+      }
+    ],
+    "gap": false,
+    "oldestAvailable": 100
+  },
+  "replay_response_with_gap": {
+    "events": [],
+    "gap": true,
+    "oldestAvailable": 240
+  },
+  "wave0_timeout_terminal_semantics": {
+    "event_id": "evt_timeout_contract",
+    "target": "worker",
+    "expected_terminal_status": "failed",
+    "late_event_kind": "delivery_ack"
+  }
+}
