@@ -12,9 +12,8 @@ mod wrap;
 
 use helpers::{
     detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
-    format_injection, format_injection_with_reminder, is_auto_suggestion,
-    is_bypass_selection_menu, is_in_editor_mode,
-    normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
+    format_injection, format_injection_with_reminder, is_auto_suggestion, is_bypass_selection_menu,
+    is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
 
 use anyhow::{Context, Result};
@@ -2392,9 +2391,17 @@ async fn handle_dashboard_ws(
 fn broadcast_if_relevant(events_tx: &broadcast::Sender<String>, payload: &Value) {
     if let Some(kind) = payload.get("kind").and_then(Value::as_str) {
         match kind {
-            "relay_inbound" | "agent_spawned" | "agent_exited" | "agent_released"
-            | "worker_ready" | "agent_idle" | "agent_restarting" | "agent_restarted"
-            | "agent_permanently_dead" | "delivery_verified" | "delivery_failed"
+            "relay_inbound"
+            | "agent_spawned"
+            | "agent_exited"
+            | "agent_released"
+            | "worker_ready"
+            | "agent_idle"
+            | "agent_restarting"
+            | "agent_restarted"
+            | "agent_permanently_dead"
+            | "delivery_verified"
+            | "delivery_failed"
             | "worker_error" => {
                 if let Ok(json) = serde_json::to_string(payload) {
                     let _ = events_tx.send(json);
