@@ -44,3 +44,4 @@ libc = "0.2"
 [dev-dependencies]
 httpmock = "0.7"
 tempfile = "3.19"
+tower = { version = "0.5", features = ["util"] }

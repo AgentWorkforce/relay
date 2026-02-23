@@ -29,6 +29,9 @@ pub enum ListenApiRequest {
     List {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
+    Threads {
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
     Send {
         to: String,
         text: String,
@@ -41,6 +44,7 @@ pub enum ListenApiRequest {
 struct ListenApiState {
     tx: mpsc::Sender<ListenApiRequest>,
     events_tx: broadcast::Sender<String>,
+    broker_api_key: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -51,17 +55,47 @@ pub fn listen_api_router(
     tx: mpsc::Sender<ListenApiRequest>,
     events_tx: broadcast::Sender<String>,
 ) -> axum::Router {
-    use axum::{routing, Router};
+    listen_api_router_with_auth(tx, events_tx, configured_broker_api_key())
+}
 
-    let state = ListenApiState { tx, events_tx };
+fn configured_broker_api_key() -> Option<String> {
+    std::env::var("RELAY_BROKER_API_KEY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
 
-    Router::new()
+fn listen_api_router_with_auth(
+    tx: mpsc::Sender<ListenApiRequest>,
+    events_tx: broadcast::Sender<String>,
+    broker_api_key: Option<String>,
+) -> axum::Router {
+    use axum::{middleware, routing, Router};
+
+    let state = ListenApiState {
+        tx,
+        events_tx,
+        broker_api_key: broker_api_key
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+    };
+
+    let protected = Router::new()
         .route("/api/spawn", routing::post(listen_api_spawn))
         .route("/api/spawned", routing::get(listen_api_list))
+        .route("/api/threads", routing::get(listen_api_threads))
         .route("/api/spawned/{name}", routing::delete(listen_api_release))
         .route("/api/send", routing::post(listen_api_send))
-        .route("/health", routing::get(listen_api_health))
         .route("/ws", routing::get(listen_api_ws))
+        .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            listen_api_auth_middleware,
+        ));
+
+    Router::new()
+        .route("/health", routing::get(listen_api_health))
+        .merge(protected)
         .with_state(state)
 }
 
@@ -74,6 +108,43 @@ async fn listen_api_health() -> axum::Json<Value> {
         "status": "ok",
         "service": "agent-relay-listen",
     }))
+}
+
+fn unauthorized_error_envelope() -> Value {
+    json!({
+        "error": {
+            "code": "unauthorized",
+            "message": "Missing or invalid API key",
+            "retryable": false,
+            "statusCode": 401,
+        }
+    })
+}
+
+async fn listen_api_auth_middleware(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    request: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, (axum::http::StatusCode, axum::Json<Value>)> {
+    let Some(expected) = state.broker_api_key.as_deref() else {
+        return Ok(next.run(request).await);
+    };
+
+    let provided = request
+        .headers()
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    if provided != Some(expected) {
+        return Err((
+            axum::http::StatusCode::UNAUTHORIZED,
+            axum::Json(unauthorized_error_envelope()),
+        ));
+    }
+
+    Ok(next.run(request).await)
 }
 
 async fn listen_api_spawn(
@@ -158,6 +229,24 @@ async fn listen_api_list(
     match reply_rx.await {
         Ok(Ok(val)) => axum::Json(val),
         _ => axum::Json(json!({ "success": false, "agents": [] })),
+    }
+}
+
+async fn listen_api_threads(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> axum::Json<Value> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::Threads { reply: reply_tx })
+        .await
+        .is_err()
+    {
+        return axum::Json(json!({ "threads": [] }));
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => axum::Json(val),
+        _ => axum::Json(json!({ "threads": [] })),
     }
 }
 
@@ -329,6 +418,7 @@ pub fn broadcast_if_relevant(events_tx: &broadcast::Sender<String>, payload: &Va
             | "agent_restarting"
             | "agent_restarted"
             | "agent_permanently_dead"
+            | "delivery_ack"
             | "delivery_verified"
             | "delivery_failed"
             | "worker_error" => {
@@ -338,5 +428,144 @@ pub fn broadcast_if_relevant(events_tx: &broadcast::Sender<String>, payload: &Va
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use serde_json::{json, Value};
+    use tokio::sync::{broadcast, mpsc};
+    use tower::ServiceExt;
+
+    use super::{listen_api_router_with_auth, ListenApiRequest};
+
+    fn test_router(
+        broker_api_key: Option<&str>,
+    ) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
+        let (tx, rx) = mpsc::channel(8);
+        let (events_tx, _events_rx) = broadcast::channel(8);
+        (
+            listen_api_router_with_auth(tx, events_tx, broker_api_key.map(ToString::to_string)),
+            rx,
+        )
+    }
+
+    async fn response_json(response: axum::response::Response) -> Value {
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body should be readable");
+        serde_json::from_slice(&body).expect("response body should be json")
+    }
+
+    #[tokio::test]
+    async fn health_route_is_public_even_when_auth_enabled() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .method("GET")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn api_route_rejects_missing_api_key_when_auth_enabled() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned")
+                    .method("GET")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = response_json(response).await;
+        assert_eq!(
+            body,
+            json!({
+                "error": {
+                    "code": "unauthorized",
+                    "message": "Missing or invalid API key",
+                    "retryable": false,
+                    "statusCode": 401,
+                }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn api_route_accepts_valid_api_key() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let list_replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::List { reply }) = rx.recv().await {
+                let _ = reply.send(Ok(json!({ "agents": [{ "name": "worker-a" }] })));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["agents"][0]["name"], "worker-a");
+
+        list_replier.await.expect("list replier should complete");
+    }
+
+    #[tokio::test]
+    async fn ws_route_rejects_missing_api_key_when_auth_enabled() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/ws")
+                    .method("GET")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ws_route_allows_request_when_auth_disabled() {
+        let (router, _rx) = test_router(None);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/ws")
+                    .method("GET")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }

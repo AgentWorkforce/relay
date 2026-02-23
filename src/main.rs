@@ -13,7 +13,7 @@ mod wrap;
 
 use helpers::{
     detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
-    format_injection, is_auto_suggestion, is_bypass_selection_menu,
+    floor_char_boundary, format_injection, is_auto_suggestion, is_bypass_selection_menu,
     is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
 use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiRequest};
@@ -53,6 +53,7 @@ const DEFAULT_DELIVERY_RETRY_MS: u64 = 1_000;
 const MAX_DELIVERY_RETRIES: u32 = 10;
 const DEFAULT_RELAYCAST_BASE_URL: &str = "https://api.relaycast.dev";
 const DM_PARTICIPANT_CACHE_TTL: Duration = Duration::from_secs(30);
+const THREAD_HISTORY_LIMIT: usize = 1_000;
 
 #[derive(Debug, Parser)]
 #[command(name = "agent-relay-broker")]
@@ -433,6 +434,24 @@ struct AgentMetrics {
 struct DeliveryAckPayload {
     delivery_id: String,
     event_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ThreadInfo {
+    thread_id: String,
+    name: String,
+    unread_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_message_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ThreadAccumulator {
+    info: ThreadInfo,
+    sort_key: i64,
 }
 
 fn is_system_sender(sender: &str) -> bool {
@@ -1215,6 +1234,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let delivery_retry_interval = delivery_retry_interval();
     let mut pending_deliveries = load_pending_deliveries(&paths.pending);
     let mut dm_participants_cache: HashMap<String, (Instant, Vec<String>)> = HashMap::new();
+    let mut recent_thread_messages: VecDeque<Value> = VecDeque::new();
     if !pending_deliveries.is_empty() {
         tracing::info!(
             count = pending_deliveries.len(),
@@ -1353,6 +1373,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             "registration_warning": preregistration_warning.clone(),
                                         }),
                                     ).await;
+                                    publish_agent_state_transition(
+                                        &ws_control_tx,
+                                        &name,
+                                        "spawned",
+                                        Some("http_api_spawn"),
+                                    )
+                                    .await;
                                     let _ = reply.send(Ok(json!({
                                         "success": true,
                                         "name": name,
@@ -1390,6 +1417,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         &sdk_out_tx,
                                         json!({"kind":"agent_exited","name":&name,"code":0,"signal":null}),
                                     ).await;
+                                    publish_agent_state_transition(
+                                        &ws_control_tx,
+                                        &name,
+                                        "exited",
+                                        Some("http_api_release"),
+                                    )
+                                    .await;
                                     let _ = reply.send(Ok(json!({ "success": true, "name": name })));
                                 }
                                 Err(e) => {
@@ -1415,6 +1449,19 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             let event_id = format!("http_{}", Uuid::new_v4().simple());
                             let priority = if normalized_to.starts_with('#') { 3 } else { 2 };
                             let mut delivered = 0usize;
+
+                            record_thread_history_event(
+                                &mut recent_thread_messages,
+                                json!({
+                                    "event_id": event_id.clone(),
+                                    "from": ui_from.clone(),
+                                    "target": normalized_to.clone(),
+                                    "to": normalized_to.clone(),
+                                    "text": text.clone(),
+                                    "thread_id": Value::Null,
+                                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                                }),
+                            );
 
                             let _ = send_event(
                                 &sdk_out_tx,
@@ -1484,6 +1531,21 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         ListenApiRequest::List { reply } => {
                             let _ = reply.send(Ok(json!({ "agents": workers.list() })));
                         }
+                        ListenApiRequest::Threads { reply } => {
+                            let mut messages: Vec<Value> =
+                                recent_thread_messages.iter().cloned().collect();
+                            match relaycast_http.get_dms(&self_name, 200).await {
+                                Ok(dm_messages) => messages.extend(dm_messages),
+                                Err(error) => {
+                                    tracing::debug!(
+                                        error = %error,
+                                        "failed to fetch relaycast dm history for /api/threads"
+                                    );
+                                }
+                            }
+                            let threads = build_thread_infos(&messages, &self_names);
+                            let _ = reply.send(Ok(json!({ "threads": threads })));
+                        }
                     }
                 }
             }
@@ -1501,6 +1563,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 &telemetry,
                                 &mut agent_spawn_count,
                                 Some(&relaycast_http),
+                                Some(&ws_control_tx),
                                 &crash_insights,
                             ).await {
                             Ok(should_shutdown) => {
@@ -1571,6 +1634,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             &sdk_out_tx,
                                             json!({"kind":"agent_exited","name":name,"code":0,"signal":null}),
                                         ).await;
+                                        publish_agent_state_transition(
+                                            &ws_control_tx,
+                                            name,
+                                            "exited",
+                                            Some("relaycast_release"),
+                                        )
+                                        .await;
                                         tracing::info!(child = %name, "released worker via relaycast in broker mode");
                                         eprintln!("[agent-relay] released worker '{}' via relaycast", name);
                                     }
@@ -1669,6 +1739,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 "pre_registered": worker_relay_key.is_some(),
                                             }),
                                         ).await;
+                                        publish_agent_state_transition(
+                                            &ws_control_tx,
+                                            name,
+                                            "spawned",
+                                            Some("relaycast_spawn"),
+                                        )
+                                        .await;
                                         tracing::info!(child = %name, pid, "spawned worker via relaycast WS");
                                         eprintln!("[agent-relay] spawned worker '{}' via relaycast", name);
                                     }
@@ -1771,6 +1848,17 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             event_id = %mapped.event_id,
                             body_len = mapped.text.len(),
                             "broadcasting relay_inbound to dashboard"
+                        );
+                        record_thread_history_event(
+                            &mut recent_thread_messages,
+                            json!({
+                                "event_id": mapped.event_id.clone(),
+                                "from": mapped.from.clone(),
+                                "target": display_target.clone(),
+                                "text": mapped.text.clone(),
+                                "thread_id": mapped.thread_id.clone(),
+                                "timestamp": chrono::Utc::now().to_rfc3339(),
+                            }),
                         );
                         let _ = send_event(
                             &sdk_out_tx,
@@ -1969,6 +2057,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "name": name,
                                         "idle_secs": idle_secs,
                                     })).await;
+                                    publish_agent_state_transition(
+                                        &ws_control_tx,
+                                        &name,
+                                        "idle",
+                                        Some("idle_threshold"),
+                                    )
+                                    .await;
                                 } else if msg_type == "agent_exit" {
                                     let reason = value.get("payload")
                                         .and_then(|p| p.get("reason"))
@@ -2024,6 +2119,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             "signal": signal,
                                         }),
                                     ).await;
+                                    publish_agent_state_transition(
+                                        &ws_control_tx,
+                                        &name,
+                                        "exited",
+                                        Some("worker_exited"),
+                                    )
+                                    .await;
                                     if let Err(error) = relaycast_http.mark_agent_offline(&name).await {
                                         tracing::warn!(
                                             worker = %name,
@@ -2166,6 +2268,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     "delay_ms": delay.as_millis() as u64,
                                 }),
                             ).await;
+                            publish_agent_state_transition(
+                                &ws_control_tx,
+                                name,
+                                "stuck",
+                                Some("restarting"),
+                            )
+                            .await;
                         }
                         Some(RestartDecision::PermanentlyDead { reason }) => {
                             workers.metrics.on_permanent_death(name);
@@ -2185,6 +2294,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 &sdk_out_tx,
                                 json!({"kind":"agent_permanently_dead","name":name,"reason":reason}),
                             ).await;
+                            publish_agent_state_transition(
+                                &ws_control_tx,
+                                name,
+                                "stuck",
+                                Some("permanently_dead"),
+                            )
+                            .await;
                             if let Err(error) = relaycast_http.mark_agent_offline(name).await {
                                 tracing::warn!(
                                     worker = %name,
@@ -2215,6 +2331,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 &sdk_out_tx,
                                 json!({"kind":"agent_exited","name":name,"code":code,"signal":signal}),
                             ).await;
+                            publish_agent_state_transition(
+                                &ws_control_tx,
+                                name,
+                                "exited",
+                                Some("worker_exited"),
+                            )
+                            .await;
                             if let Err(error) = relaycast_http.mark_agent_offline(name).await {
                                 tracing::warn!(
                                     worker = %name,
@@ -2295,6 +2418,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "restart_count": rst.restart_count,
                                     }),
                                 ).await;
+                                publish_agent_state_transition(
+                                    &ws_control_tx,
+                                    &name,
+                                    "spawned",
+                                    Some("restarted"),
+                                )
+                                .await;
                             }
                             Err(e) => {
                                 tracing::error!(name = %name, error = %e, "restart failed");
@@ -2351,8 +2481,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
     Ok(())
 }
-
-
 
 /// Get terminal rows from TIOCGWINSZ.
 #[cfg(unix)]
@@ -2458,6 +2586,7 @@ async fn handle_sdk_frame(
     telemetry: &TelemetryClient,
     agent_spawn_count: &mut u32,
     relaycast_http: Option<&RelaycastHttpClient>,
+    ws_control_tx: Option<&mpsc::Sender<WsControl>>,
     crash_insights: &relay_broker::crash_insights::CrashInsights,
 ) -> Result<bool> {
     let frame: ProtocolEnvelope<Value> =
@@ -2708,6 +2837,10 @@ async fn handle_sdk_frame(
                 }),
             )
             .await?;
+            if let Some(ws_control_tx) = ws_control_tx {
+                publish_agent_state_transition(ws_control_tx, &name, "spawned", Some("sdk_spawn"))
+                    .await;
+            }
             Ok(false)
         }
         "send_message" => {
@@ -3087,6 +3220,15 @@ async fn handle_sdk_frame(
 
             send_ok(out_tx, frame.request_id, json!({"name": payload.name})).await?;
             send_event(out_tx, json!({"kind":"agent_released","name":payload.name})).await?;
+            if let Some(ws_control_tx) = ws_control_tx {
+                publish_agent_state_transition(
+                    ws_control_tx,
+                    &payload.name,
+                    "exited",
+                    Some("sdk_release"),
+                )
+                .await;
+            }
             if dropped > 0 {
                 send_event(
                     out_tx,
@@ -3620,6 +3762,440 @@ fn normalize_channel(raw: &str) -> String {
     }
 }
 
+fn build_agent_state_transition_event(name: &str, state: &str, reason: Option<&str>) -> Value {
+    let mut payload = json!({
+        "type": "agent.state",
+        "state": state,
+        "agent": { "name": name },
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    });
+    if let Some(reason) = reason.map(str::trim).filter(|value| !value.is_empty()) {
+        payload["reason"] = json!(reason);
+    }
+    payload
+}
+
+async fn publish_agent_state_transition(
+    ws_control_tx: &mpsc::Sender<WsControl>,
+    name: &str,
+    state: &str,
+    reason: Option<&str>,
+) {
+    let event = build_agent_state_transition_event(name, state, reason);
+    if let Err(error) = ws_control_tx.send(WsControl::Publish(event)).await {
+        tracing::debug!(
+            agent = %name,
+            state = %state,
+            error = %error,
+            "failed to publish agent state transition"
+        );
+    }
+}
+
+fn normalize_identity_for_thread(raw: &str) -> String {
+    raw.trim().trim_start_matches('@').to_ascii_lowercase()
+}
+
+fn json_scalar_to_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
+}
+
+fn first_string(value: &Value, pointers: &[&str]) -> Option<String> {
+    pointers
+        .iter()
+        .find_map(|pointer| value.pointer(pointer).and_then(json_scalar_to_string))
+}
+
+fn first_bool(value: &Value, pointers: &[&str]) -> Option<bool> {
+    pointers
+        .iter()
+        .find_map(|pointer| value.pointer(pointer).and_then(Value::as_bool))
+}
+
+fn first_u64(value: &Value, pointers: &[&str]) -> Option<u64> {
+    pointers
+        .iter()
+        .find_map(|pointer| value.pointer(pointer).and_then(Value::as_u64))
+}
+
+fn first_i64(value: &Value, pointers: &[&str]) -> Option<i64> {
+    pointers
+        .iter()
+        .find_map(|pointer| value.pointer(pointer).and_then(Value::as_i64))
+}
+
+fn message_sender(value: &Value) -> Option<String> {
+    first_string(
+        value,
+        &[
+            "/from",
+            "/sender",
+            "/author",
+            "/agent_name",
+            "/message/from",
+            "/message/sender",
+            "/message/author",
+            "/payload/from",
+            "/payload/sender",
+            "/payload/author",
+            "/payload/message/from",
+            "/payload/message/sender",
+            "/payload/message/author",
+        ],
+    )
+}
+
+fn message_target(value: &Value) -> Option<String> {
+    first_string(
+        value,
+        &[
+            "/target",
+            "/to",
+            "/recipient",
+            "/channel",
+            "/conversation_id",
+            "/conversationId",
+            "/message/target",
+            "/message/to",
+            "/message/recipient",
+            "/message/channel",
+            "/message/conversation_id",
+            "/message/conversationId",
+            "/payload/target",
+            "/payload/to",
+            "/payload/recipient",
+            "/payload/channel",
+            "/payload/conversation_id",
+            "/payload/conversationId",
+            "/payload/message/target",
+            "/payload/message/to",
+            "/payload/message/recipient",
+            "/payload/message/channel",
+            "/payload/message/conversation_id",
+            "/payload/message/conversationId",
+        ],
+    )
+}
+
+fn message_preview(value: &Value) -> Option<String> {
+    let text = first_string(
+        value,
+        &[
+            "/text",
+            "/body",
+            "/content",
+            "/message/text",
+            "/message/body",
+            "/message/content",
+            "/payload/text",
+            "/payload/body",
+            "/payload/content",
+            "/payload/message/text",
+            "/payload/message/body",
+            "/payload/message/content",
+            "/message",
+            "/payload/message",
+        ],
+    )?;
+    Some(truncate_thread_preview(&text, 200))
+}
+
+fn truncate_thread_preview(input: &str, max_len: usize) -> String {
+    let trimmed = input.trim();
+    if trimmed.len() <= max_len {
+        return trimmed.to_string();
+    }
+    let boundary = floor_char_boundary(trimmed, max_len);
+    let mut out = trimmed[..boundary].to_string();
+    out.push_str("...");
+    out
+}
+
+fn parse_sort_key_from_raw_timestamp(raw: &str) -> Option<i64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(epoch) = trimmed.parse::<i64>() {
+        return Some(epoch);
+    }
+    chrono::DateTime::parse_from_rfc3339(trimmed)
+        .ok()
+        .map(|parsed| parsed.timestamp_millis())
+}
+
+fn message_timestamp_string(value: &Value) -> Option<String> {
+    first_string(
+        value,
+        &[
+            "/created_at",
+            "/createdAt",
+            "/timestamp",
+            "/ts",
+            "/message/created_at",
+            "/message/createdAt",
+            "/message/timestamp",
+            "/message/ts",
+            "/payload/created_at",
+            "/payload/createdAt",
+            "/payload/timestamp",
+            "/payload/ts",
+            "/payload/message/created_at",
+            "/payload/message/createdAt",
+            "/payload/message/timestamp",
+            "/payload/message/ts",
+        ],
+    )
+}
+
+fn message_sort_key(value: &Value, index: usize) -> i64 {
+    if let Some(raw) = message_timestamp_string(value) {
+        if let Some(parsed) = parse_sort_key_from_raw_timestamp(&raw) {
+            return parsed;
+        }
+    }
+
+    first_i64(
+        value,
+        &[
+            "/created_at",
+            "/createdAt",
+            "/timestamp",
+            "/ts",
+            "/message/created_at",
+            "/message/createdAt",
+            "/message/timestamp",
+            "/message/ts",
+            "/payload/created_at",
+            "/payload/createdAt",
+            "/payload/timestamp",
+            "/payload/ts",
+        ],
+    )
+    .unwrap_or(index as i64)
+}
+
+fn message_thread_id(value: &Value) -> Option<String> {
+    if let Some(explicit) = first_string(
+        value,
+        &[
+            "/thread_id",
+            "/threadId",
+            "/parent_id",
+            "/conversation_id",
+            "/conversationId",
+            "/message/thread_id",
+            "/message/threadId",
+            "/message/parent_id",
+            "/message/conversation_id",
+            "/message/conversationId",
+            "/payload/thread_id",
+            "/payload/threadId",
+            "/payload/parent_id",
+            "/payload/conversation_id",
+            "/payload/conversationId",
+            "/payload/message/thread_id",
+            "/payload/message/threadId",
+            "/payload/message/parent_id",
+            "/payload/message/conversation_id",
+            "/payload/message/conversationId",
+        ],
+    ) {
+        return Some(explicit);
+    }
+
+    let target = message_target(value)?;
+    if target.starts_with('#') {
+        return Some(normalize_channel(&target));
+    }
+    if target.starts_with("conv_")
+        || target.starts_with("dm_")
+        || target.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return Some(target);
+    }
+
+    let sender = message_sender(value)?;
+    let sender = normalize_identity_for_thread(&sender);
+    let target = normalize_identity_for_thread(&target);
+    if sender.is_empty() || target.is_empty() {
+        return None;
+    }
+    let (first, second) = if sender <= target {
+        (sender, target)
+    } else {
+        (target, sender)
+    };
+    Some(format!("direct:{first}:{second}"))
+}
+
+fn is_self_identity(value: &str, self_names: &HashSet<String>) -> bool {
+    let normalized = normalize_identity_for_thread(value);
+    !normalized.is_empty()
+        && self_names
+            .iter()
+            .any(|self_name| normalize_identity_for_thread(self_name) == normalized)
+}
+
+fn derive_thread_name(message: &Value, thread_id: &str, self_names: &HashSet<String>) -> String {
+    if let Some(explicit) = first_string(
+        message,
+        &[
+            "/thread_name",
+            "/threadName",
+            "/title",
+            "/subject",
+            "/conversation_name",
+            "/conversationName",
+        ],
+    ) {
+        return explicit;
+    }
+
+    if thread_id.starts_with('#') {
+        return thread_id.to_string();
+    }
+
+    if let Some(sender) = message_sender(message) {
+        if !is_self_identity(&sender, self_names) {
+            return sender.trim().trim_start_matches('@').to_string();
+        }
+    }
+
+    if let Some(target) = message_target(message) {
+        let trimmed = target.trim().trim_start_matches('@');
+        if trimmed.starts_with('#') {
+            return normalize_channel(trimmed);
+        }
+        if !trimmed.is_empty()
+            && !trimmed.eq_ignore_ascii_case(thread_id)
+            && !is_self_identity(trimmed, self_names)
+            && !trimmed.starts_with("conv_")
+            && !trimmed.starts_with("dm_")
+            && !trimmed.chars().all(|ch| ch.is_ascii_digit())
+        {
+            return trimmed.to_string();
+        }
+    }
+
+    thread_id.to_string()
+}
+
+fn thread_unread_increment(message: &Value, self_names: &HashSet<String>) -> usize {
+    if let Some(read) = first_bool(
+        message,
+        &[
+            "/read",
+            "/is_read",
+            "/isRead",
+            "/message/read",
+            "/message/is_read",
+            "/message/isRead",
+            "/payload/read",
+            "/payload/is_read",
+            "/payload/isRead",
+            "/payload/message/read",
+            "/payload/message/is_read",
+            "/payload/message/isRead",
+        ],
+    ) {
+        return usize::from(!read);
+    }
+
+    if let Some(sender) = message_sender(message) {
+        return usize::from(!is_self_identity(&sender, self_names));
+    }
+    0
+}
+
+fn build_thread_infos(messages: &[Value], self_names: &HashSet<String>) -> Vec<ThreadInfo> {
+    let mut by_thread: HashMap<String, ThreadAccumulator> = HashMap::new();
+
+    for (index, message) in messages.iter().enumerate() {
+        let Some(thread_id) = message_thread_id(message) else {
+            continue;
+        };
+
+        let name = derive_thread_name(message, &thread_id, self_names);
+        let sort_key = message_sort_key(message, index);
+        let preview = message_preview(message);
+        let timestamp = message_timestamp_string(message);
+        let explicit_unread = first_u64(
+            message,
+            &[
+                "/unread_count",
+                "/unreadCount",
+                "/message/unread_count",
+                "/message/unreadCount",
+                "/payload/unread_count",
+                "/payload/unreadCount",
+                "/payload/message/unread_count",
+                "/payload/message/unreadCount",
+            ],
+        )
+        .map(|value| value as usize);
+        let unread_delta = thread_unread_increment(message, self_names);
+
+        let entry = by_thread
+            .entry(thread_id.clone())
+            .or_insert_with(|| ThreadAccumulator {
+                info: ThreadInfo {
+                    thread_id: thread_id.clone(),
+                    name: name.clone(),
+                    unread_count: 0,
+                    last_message: None,
+                    last_message_at: None,
+                },
+                sort_key,
+            });
+
+        if entry.info.name == entry.info.thread_id && name != entry.info.thread_id {
+            entry.info.name = name.clone();
+        }
+
+        if let Some(explicit_unread) = explicit_unread {
+            entry.info.unread_count = entry.info.unread_count.max(explicit_unread);
+        } else {
+            entry.info.unread_count = entry.info.unread_count.saturating_add(unread_delta);
+        }
+
+        if sort_key >= entry.sort_key {
+            entry.sort_key = sort_key;
+            entry.info.name = name;
+            entry.info.last_message = preview;
+            entry.info.last_message_at = timestamp;
+        }
+    }
+
+    let mut threads: Vec<ThreadAccumulator> = by_thread.into_values().collect();
+    threads.sort_by(|left, right| {
+        right
+            .sort_key
+            .cmp(&left.sort_key)
+            .then_with(|| left.info.thread_id.cmp(&right.info.thread_id))
+    });
+
+    threads.into_iter().map(|entry| entry.info).collect()
+}
+
+fn record_thread_history_event(history: &mut VecDeque<Value>, event: Value) {
+    if history.len() >= THREAD_HISTORY_LIMIT {
+        let _ = history.pop_front();
+    }
+    history.push_back(event);
+}
+
 /// Get current terminal size via ioctl.
 #[cfg(unix)]
 fn get_terminal_size() -> Option<(u16, u16)> {
@@ -3885,14 +4461,15 @@ mod tests {
 
     use crate::helpers::terminal_query_responses;
     use relay_broker::protocol::RelayDelivery;
+    use serde_json::json;
 
     use super::{
-        channels_from_csv, continuity_dir, delivery_retry_interval, derive_ws_base_url_from_http,
-        detect_bypass_permissions_prompt, display_target_for_dashboard, drop_pending_for_worker,
-        extract_mcp_message_ids, format_injection, is_auto_suggestion, is_bypass_selection_menu,
-        is_in_editor_mode, normalize_channel, normalize_initial_task, normalize_sender,
-        sender_is_dashboard_label, should_clear_pending_delivery_for_event, strip_ansi,
-        PendingDelivery, TerminalQueryParser,
+        build_agent_state_transition_event, build_thread_infos, channels_from_csv, continuity_dir,
+        delivery_retry_interval, derive_ws_base_url_from_http, detect_bypass_permissions_prompt,
+        display_target_for_dashboard, drop_pending_for_worker, extract_mcp_message_ids,
+        format_injection, is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode,
+        normalize_channel, normalize_initial_task, normalize_sender, sender_is_dashboard_label,
+        should_clear_pending_delivery_for_event, strip_ansi, PendingDelivery, TerminalQueryParser,
     };
     use crate::helpers::floor_char_boundary;
     use relay_broker::relaycast_ws::{
@@ -3935,6 +4512,104 @@ mod tests {
             derive_ws_base_url_from_http("http://localhost:8787"),
             "ws://localhost:8787"
         );
+    }
+
+    #[test]
+    fn build_thread_infos_groups_channel_messages() {
+        let messages = vec![
+            json!({
+                "from": "broker",
+                "target": "#general",
+                "text": "outbound",
+                "timestamp": "2026-02-23T10:00:00Z",
+            }),
+            json!({
+                "from": "Lead",
+                "target": "#general",
+                "text": "inbound",
+                "timestamp": "2026-02-23T10:01:00Z",
+            }),
+        ];
+        let self_names = HashSet::from(["broker".to_string()]);
+        let threads = build_thread_infos(&messages, &self_names);
+
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].thread_id, "#general");
+        assert_eq!(threads[0].name, "#general");
+        assert_eq!(threads[0].unread_count, 1);
+        assert_eq!(threads[0].last_message.as_deref(), Some("inbound"));
+    }
+
+    #[test]
+    fn build_thread_infos_groups_direct_messages_case_insensitively() {
+        let messages = vec![
+            json!({
+                "from": "BROKER",
+                "to": "WorkerA",
+                "text": "ping",
+                "timestamp": "2026-02-23T10:00:00Z",
+            }),
+            json!({
+                "from": "workera",
+                "to": "broker",
+                "text": "pong",
+                "timestamp": "2026-02-23T10:01:00Z",
+            }),
+        ];
+        let self_names = HashSet::from(["broker".to_string()]);
+        let threads = build_thread_infos(&messages, &self_names);
+
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].thread_id, "direct:broker:workera");
+        assert_eq!(threads[0].name, "workera");
+        assert_eq!(threads[0].unread_count, 1);
+        assert_eq!(threads[0].last_message.as_deref(), Some("pong"));
+    }
+
+    #[test]
+    fn build_thread_infos_uses_dm_conversation_id_and_sender_name() {
+        let messages = vec![json!({
+            "from": "Planner",
+            "conversation_id": "conv_123",
+            "text": "dm payload",
+            "timestamp": "2026-02-23T10:01:00Z",
+        })];
+        let self_names = HashSet::from(["broker".to_string()]);
+        let threads = build_thread_infos(&messages, &self_names);
+
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].thread_id, "conv_123");
+        assert_eq!(threads[0].name, "Planner");
+        assert_eq!(threads[0].unread_count, 1);
+    }
+
+    #[test]
+    fn build_thread_infos_respects_explicit_unread_count() {
+        let messages = vec![json!({
+            "from": "Planner",
+            "target": "broker",
+            "text": "status",
+            "unread_count": 7,
+            "timestamp": "2026-02-23T10:01:00Z",
+        })];
+        let self_names = HashSet::from(["broker".to_string()]);
+        let threads = build_thread_infos(&messages, &self_names);
+
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].unread_count, 7);
+    }
+
+    #[test]
+    fn build_agent_state_transition_event_has_expected_shape() {
+        let payload = build_agent_state_transition_event("worker-a", "spawned", Some("sdk_spawn"));
+        assert_eq!(payload["type"], "agent.state");
+        assert_eq!(payload["state"], "spawned");
+        assert_eq!(payload["agent"]["name"], "worker-a");
+        assert_eq!(payload["reason"], "sdk_spawn");
+        assert!(payload["timestamp"].as_str().is_some());
+
+        let no_reason = build_agent_state_transition_event("worker-a", "idle", None);
+        assert!(no_reason.get("reason").is_none());
     }
 
     #[test]
