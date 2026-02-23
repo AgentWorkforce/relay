@@ -77,13 +77,62 @@ function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): vo
   }
 }
 
-function getDashboardSpawnArgs(paths: CoreProjectPaths, port: number): string[] {
-  return ['--port', String(port), '--relay-url', 'http://localhost:3889', '--data-dir', paths.dataDir];
+function resolveDashboardStaticDir(dashboardBinary: string | null, deps: CoreDependencies): string | null {
+  const explicitStaticDir = deps.env.RELAY_DASHBOARD_STATIC_DIR ?? deps.env.STATIC_DIR;
+  if (explicitStaticDir && explicitStaticDir.trim()) {
+    return explicitStaticDir;
+  }
+
+  if (!dashboardBinary) {
+    return null;
+  }
+
+  if (dashboardBinary.endsWith('.js') || dashboardBinary.endsWith('.ts')) {
+    const inferredStaticDir = path.resolve(path.dirname(dashboardBinary), '..', 'out');
+    if (deps.fs.existsSync(inferredStaticDir)) {
+      return inferredStaticDir;
+    }
+  }
+
+  return null;
+}
+
+function resolveDashboardRelayUrl(dashboardBinary: string | null, deps: CoreDependencies): string | null {
+  const explicitRelayUrl = deps.env.RELAY_DASHBOARD_RELAY_URL;
+  if (explicitRelayUrl && explicitRelayUrl.trim()) {
+    return explicitRelayUrl.trim();
+  }
+
+  // Local dashboard entrypoints can serve standalone data directly via Relaycast.
+  // Avoid forcing proxy mode unless explicitly requested.
+  if (dashboardBinary && (dashboardBinary.endsWith('.js') || dashboardBinary.endsWith('.ts'))) {
+    return null;
+  }
+
+  return 'http://localhost:3889';
+}
+
+function getDashboardSpawnArgs(
+  paths: CoreProjectPaths,
+  port: number,
+  dashboardBinary: string | null,
+  deps: CoreDependencies
+): string[] {
+  const args = ['--port', String(port), '--data-dir', paths.dataDir];
+  const relayUrl = resolveDashboardRelayUrl(dashboardBinary, deps);
+  if (relayUrl) {
+    args.push('--relay-url', relayUrl);
+  }
+  const staticDir = resolveDashboardStaticDir(dashboardBinary, deps);
+  if (staticDir) {
+    args.push('--static-dir', staticDir);
+  }
+  return args;
 }
 
 function startDashboard(paths: CoreProjectPaths, port: number, deps: CoreDependencies): SpawnedProcess {
   const dashboardBinary = deps.findDashboardBinary();
-  const args = getDashboardSpawnArgs(paths, port);
+  const args = getDashboardSpawnArgs(paths, port, dashboardBinary, deps);
 
   const spawnOpts = {
     stdio: ['ignore', 'pipe', 'pipe'] as unknown,
@@ -212,17 +261,15 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   try {
     deps.log(`Project: ${paths.projectRoot}`);
     deps.log('Mode: broker (stdio)');
+    await relay.getStatus();
+    deps.log('Broker started.');
 
     if (wantsDashboard) {
       dashboardProcess = startDashboard(paths, dashboardPort, deps);
-      deps.log('Broker started.');
       deps.log(`Dashboard: http://localhost:${dashboardPort}`);
 
       // Verify the dashboard is actually reachable (non-blocking)
       waitForDashboard(dashboardPort, dashboardProcess, deps, () => shuttingDown).catch(() => {});
-    } else {
-      await relay.getStatus();
-      deps.log('Broker started.');
     }
 
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);

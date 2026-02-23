@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-02-23T07:30:24.611Z",
+  "lastUpdated": "2026-02-23T07:31:24.443Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -417,9 +417,10 @@
     },
     "traj_w8emy8tcwatn": {
       "title": "Improve local dashboard static-dir workflow",
-      "status": "active",
+      "status": "completed",
       "startedAt": "2026-02-23T07:30:24.589Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/active/traj_w8emy8tcwatn.json"
+      "completedAt": "2026-02-23T07:31:24.296Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_w8emy8tcwatn.json"
     }
   }
 }

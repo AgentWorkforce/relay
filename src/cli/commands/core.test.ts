@@ -62,6 +62,8 @@ function createHarness(options?: {
   relay?: CoreRelay;
   createRelay?: CoreDependencies['createRelay'];
   teamsConfig?: CoreTeamsConfig | null;
+  dashboardBinary?: string | null;
+  env?: NodeJS.ProcessEnv;
   bridgeProjects?: BridgeProject[];
   validBridgeProjects?: BridgeProject[];
   missingBridgeProjects?: BridgeProject[];
@@ -100,7 +102,7 @@ function createHarness(options?: {
     validateBridgeDaemons: vi.fn(() => ({ valid: validBridgeProjects, missing: missingBridgeProjects })),
     getAgentOutboxTemplate: vi.fn(() => '/tmp/project/.agent-relay/outbox'),
     createRelay: options?.createRelay ?? vi.fn(() => relay),
-    findDashboardBinary: vi.fn(() => '/usr/local/bin/relay-dashboard-server'),
+    findDashboardBinary: vi.fn(() => options?.dashboardBinary ?? '/usr/local/bin/relay-dashboard-server'),
     spawnProcess:
       options?.spawnImpl ?? (vi.fn(() => spawnedProcess) as unknown as CoreDependencies['spawnProcess']),
     execCommand: vi.fn(async () => ({ stdout: '', stderr: '' })),
@@ -111,7 +113,7 @@ function createHarness(options?: {
       async () => options?.checkForUpdatesResult ?? { updateAvailable: false, latestVersion: '1.2.3' }
     ) as unknown as CoreDependencies['checkForUpdates'],
     getVersion: vi.fn(() => '1.2.3'),
-    env: {},
+    env: options?.env ?? {},
     argv: ['node', '/tmp/agent-relay.js', 'up'],
     execPath: '/usr/bin/node',
     cliScript: '/tmp/agent-relay.js',
@@ -179,13 +181,30 @@ describe('registerCoreCommands', () => {
     expect(fs.writeFileSync).toHaveBeenCalledWith(brokerPidPath, '4242', 'utf-8');
     expect(deps.spawnProcess).toHaveBeenCalledWith(
       '/usr/local/bin/relay-dashboard-server',
-      expect.arrayContaining(['--integrated', '--port', '4999']),
+      expect.arrayContaining(['--port', '4999', '--relay-url', 'http://localhost:3889']),
       expect.any(Object)
     );
     const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
       .calls[0][1] as string[];
     expect(dashboardArgs).not.toContain('--no-spawn');
-    expect(relay.getStatus).toHaveBeenCalledTimes(0);
+    expect(relay.getStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('up infers static-dir for local dashboard JS entrypoint', async () => {
+    const staticDir = '/tmp/relay-dashboard/packages/dashboard-server/out';
+    const fs = createFsMock({ [staticDir]: '' });
+    const { program, deps } = createHarness({
+      fs,
+      dashboardBinary: '/tmp/relay-dashboard/packages/dashboard-server/dist/start.js',
+    });
+
+    const exitCode = await runCommand(program, ['up', '--port', '4999']);
+
+    expect(exitCode).toBeUndefined();
+    const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    expect(dashboardArgs).not.toContain('--relay-url');
+    expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', staticDir]));
   });
 
   it('up auto-spawns agents from teams config', async () => {
