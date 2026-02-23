@@ -503,13 +503,13 @@ export class RelayACPAgent implements acp.Agent {
       await this.connection.sessionUpdate({
         sessionId,
         update: {
-          sessionUpdate: 'agent_message_chunk',
-          content: {
-            type: 'text',
-            text: 'Failed to send message to relay agents. Please check the relay daemon connection.',
+            sessionUpdate: 'agent_message_chunk',
+            content: {
+              type: 'text',
+              text: 'Failed to send message to relay agents. Please check the relay broker connection.',
+            },
           },
-        },
-      });
+        });
 
       return {
         success: false,

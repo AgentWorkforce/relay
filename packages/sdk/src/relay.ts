@@ -35,8 +35,11 @@ import {
 } from './client.js';
 import type { AgentRuntime, BrokerEvent, BrokerStatus, RestartPolicy } from './protocol.js';
 import {
+  followLogs as followLogsFromFile,
   getLogs as getLogsFromFile,
   listLoggedAgents as listLoggedAgentsFromFile,
+  type FollowLogsOptions,
+  type LogFollowHandle,
   type LogsResult,
 } from './logs.js';
 
@@ -462,6 +465,31 @@ export class AgentRelay {
     const cwd = this.clientOptions.cwd ?? process.cwd();
     const logsDir = path.join(cwd, '.agent-relay', 'team', 'worker-logs');
     return listLoggedAgentsFromFile(logsDir);
+  }
+
+  /**
+   * Follow an agent's local log file with history bootstrap + incremental updates.
+   *
+   * @example
+   * ```ts
+   * const handle = relay.followLogs("Worker1", {
+   *   historyLines: 100,
+   *   onEvent(event) {
+   *     if (event.type === "log") console.log(event.content);
+   *   },
+   * });
+   *
+   * // Later:
+   * handle.unsubscribe();
+   * ```
+   */
+  followLogs(
+    agentName: string,
+    options: Omit<FollowLogsOptions, 'logsDir'>
+  ): LogFollowHandle {
+    const cwd = this.clientOptions.cwd ?? process.cwd();
+    const logsDir = path.join(cwd, '.agent-relay', 'team', 'worker-logs');
+    return followLogsFromFile(agentName, { ...options, logsDir });
   }
 
   // ── Wait helpers ──────────────────────────────────────────────────────

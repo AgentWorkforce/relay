@@ -8,15 +8,17 @@ use std::{
 mod helpers;
 mod listen_api;
 mod pty_worker;
+mod routing;
 mod spawner;
 mod wrap;
 
 use helpers::{
     detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
-    format_injection, is_auto_suggestion, is_bypass_selection_menu,
-    is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
+    format_injection, is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode,
+    normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
 use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiRequest};
+use routing::display_target_for_dashboard;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -42,9 +44,9 @@ use relay_broker::{
         registration_is_retryable, registration_retry_after_secs, retry_agent_registration,
         RegRetryOutcome, RelaycastAgentEvent, RelaycastHttpClient, RelaycastWsClient, WsControl,
     },
-    snippets::{configure_relaycast_mcp, ensure_relaycast_mcp_config},
+    snippets::{configure_relaycast_mcp_with_token, ensure_relaycast_mcp_config},
     telemetry::{TelemetryClient, TelemetryEvent},
-    types::{BrokerCommandEvent, BrokerCommandPayload, InboundKind, SenderKind},
+    types::{BrokerCommandEvent, BrokerCommandPayload, SenderKind},
 };
 
 use spawner::{spawn_env_vars, terminate_child, Spawner};
@@ -464,17 +466,6 @@ fn sender_is_dashboard_label(sender: &str) -> bool {
         || trimmed.eq_ignore_ascii_case("human:orchestrator")
 }
 
-fn display_target_for_dashboard(target: &str, self_names: &HashSet<String>) -> String {
-    if self_names
-        .iter()
-        .any(|name| target.eq_ignore_ascii_case(name))
-    {
-        "Dashboard".to_string()
-    } else {
-        target.to_string()
-    }
-}
-
 struct WorkerRegistry {
     workers: HashMap<String, WorkerHandle>,
     event_tx: mpsc::Sender<WorkerEvent>,
@@ -606,13 +597,14 @@ impl WorkerRegistry {
 
                 // Build MCP config args for CLIs that support dynamic MCP configuration.
                 let cwd = spec.cwd.as_deref().unwrap_or(".");
-                let mcp_args = configure_relaycast_mcp(
+                let mcp_args = configure_relaycast_mcp_with_token(
                     &resolved_cli,
                     &spec.name,
                     self.env_value("RELAY_API_KEY"),
                     self.env_value("RELAY_BASE_URL"),
                     &effective_args,
                     Path::new(cwd),
+                    worker_relay_api_key.as_deref(),
                 )
                 .await?;
 
@@ -637,13 +629,14 @@ impl WorkerRegistry {
                 command.arg("claude");
 
                 // Build MCP config for headless Claude agents.
-                let mcp_args = configure_relaycast_mcp(
+                let mcp_args = configure_relaycast_mcp_with_token(
                     "claude",
                     &spec.name,
                     self.env_value("RELAY_API_KEY"),
                     self.env_value("RELAY_BASE_URL"),
                     &spec.args,
                     Path::new(spec.cwd.as_deref().unwrap_or(".")),
+                    worker_relay_api_key.as_deref(),
                 )
                 .await?;
 
@@ -673,6 +666,7 @@ impl WorkerRegistry {
             command.env("RELAY_AGENT_TOKEN", relay_key);
         }
         command.env("RELAY_AGENT_NAME", &spec.name);
+        command.env("RELAY_AGENT_TYPE", "agent");
         command.env("RELAY_STRICT_AGENT_NAME", "1");
         // Remove CLAUDECODE env var to prevent "nested session" detection
         // when spawning Claude Code agents from within a Claude Code session.
@@ -881,57 +875,29 @@ impl WorkerRegistry {
         Ok(exited)
     }
 
-    fn worker_names_for_channel_delivery(&self, channel: &str, from: &str) -> Vec<String> {
-        let normalized = normalize_channel(channel);
+    fn routing_workers(&self) -> Vec<routing::RoutingWorker<'_>> {
         self.workers
             .iter()
-            .filter_map(|(name, handle)| {
-                if name.eq_ignore_ascii_case(from) {
-                    return None;
-                }
-                let joined: HashSet<String> = handle
-                    .spec
-                    .channels
-                    .iter()
-                    .map(|c| normalize_channel(c))
-                    .collect();
-                if joined.contains(&normalized) {
-                    Some(name.clone())
-                } else {
-                    None
-                }
+            .map(|(name, handle)| routing::RoutingWorker {
+                name,
+                channels: &handle.spec.channels,
             })
             .collect()
+    }
+
+    fn worker_names_for_channel_delivery(&self, channel: &str, from: &str) -> Vec<String> {
+        let workers = self.routing_workers();
+        routing::worker_names_for_channel_delivery(&workers, channel, from)
     }
 
     fn worker_names_for_direct_target(&self, target: &str, from: &str) -> Vec<String> {
-        let trimmed = target.trim();
-        self.workers
-            .keys()
-            .filter(|name| {
-                if name.eq_ignore_ascii_case(from) {
-                    return false;
-                }
-                trimmed.eq_ignore_ascii_case(name)
-                    || trimmed.eq_ignore_ascii_case(&format!("@{name}"))
-            })
-            .cloned()
-            .collect()
+        let workers = self.routing_workers();
+        routing::worker_names_for_direct_target(&workers, target, from)
     }
 
     fn worker_names_for_dm_participants(&self, participants: &[String], from: &str) -> Vec<String> {
-        self.workers
-            .keys()
-            .filter(|name| {
-                if name.eq_ignore_ascii_case(from) {
-                    return false;
-                }
-                participants
-                    .iter()
-                    .any(|participant| participant.eq_ignore_ascii_case(name))
-            })
-            .cloned()
-            .collect()
+        let workers = self.routing_workers();
+        routing::worker_names_for_dm_participants(&workers, participants, from)
     }
 }
 
@@ -1416,19 +1382,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             let priority = if normalized_to.starts_with('#') { 3 } else { 2 };
                             let mut delivered = 0usize;
 
-                            let _ = send_event(
-                                &sdk_out_tx,
-                                json!({
-                                    "kind": "relay_inbound",
-                                    "event_id": event_id,
-                                    "from": ui_from,
-                                    "target": normalized_to,
-                                    "body": text,
-                                    "thread_id": Value::Null,
-                                }),
-                            )
-                            .await;
-
                             let targets = if normalized_to.starts_with('#') {
                                 workers.worker_names_for_channel_delivery(&normalized_to, &delivery_from)
                             } else {
@@ -1456,6 +1409,18 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             }
 
                             if delivered > 0 {
+                                let _ = send_event(
+                                    &sdk_out_tx,
+                                    json!({
+                                        "kind": "relay_inbound",
+                                        "event_id": event_id,
+                                        "from": ui_from,
+                                        "target": normalized_to,
+                                        "body": text,
+                                        "thread_id": Value::Null,
+                                    }),
+                                )
+                                .await;
                                 let _ = reply.send(Ok(json!({
                                     "success": true,
                                     "event_id": event_id,
@@ -1465,6 +1430,18 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             } else {
                                 match relaycast_http.send(&normalized_to, &text).await {
                                     Ok(()) => {
+                                        let _ = send_event(
+                                            &sdk_out_tx,
+                                            json!({
+                                                "kind": "relay_inbound",
+                                                "event_id": event_id,
+                                                "from": ui_from,
+                                                "target": normalized_to,
+                                                "body": text,
+                                                "thread_id": Value::Null,
+                                            }),
+                                        )
+                                        .await;
                                         let _ = reply.send(Ok(json!({
                                             "success": true,
                                             "event_id": event_id,
@@ -1695,9 +1672,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             tracing::info!(event_id = %mapped.event_id, "dropping duplicate event");
                             continue;
                         }
-                        if self_names.contains(&mapped.from)
-                            || mapped.sender_agent_id.as_ref().is_some_and(|id| self_agent_ids.contains(id))
-                        {
+                        if routing::is_self_echo(&mapped, &self_names, &self_agent_ids) {
                             tracing::info!(from = %mapped.from, sender_agent_id = ?mapped.sender_agent_id, self_names = ?self_names, "skipping self-echo in broker loop");
                             continue;
                         }
@@ -1707,64 +1682,70 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             has_thread: mapped.thread_id.is_some(),
                         });
 
-                        let mut display_target = mapped.target.clone();
+                        let mut delivery_plan = {
+                            let worker_view = workers.routing_workers();
+                            routing::resolve_delivery_targets(&mapped, &worker_view)
+                        };
+
                         if mapped.target.starts_with('#') {
-                            let targets = workers.worker_names_for_channel_delivery(&mapped.target, &mapped.from);
-                            tracing::info!(channel = %mapped.target, from = %mapped.from, target_count = targets.len(), targets = ?targets, "channel delivery targets");
-                            for worker_name in targets {
-                                if let Err(error) = queue_and_try_delivery(
-                                    &mut workers,
-                                    &mut pending_deliveries,
-                                    &worker_name,
-                                    &mapped,
-                                    delivery_retry_interval,
-                                ).await {
-                                    let _ = send_error(&sdk_out_tx, None, "delivery_failed", error.to_string(), true, Some(json!({"worker": worker_name}))).await;
-                                }
-                            }
+                            tracing::info!(
+                                channel = %mapped.target,
+                                from = %mapped.from,
+                                target_count = delivery_plan.targets.len(),
+                                targets = ?delivery_plan.targets,
+                                "channel delivery targets"
+                            );
                         } else {
-                            let mut targets = workers.worker_names_for_direct_target(&mapped.target, &mapped.from);
-                            tracing::info!(target = %mapped.target, from = %mapped.from, kind = ?mapped.kind, direct_targets = ?targets, "direct message routing");
+                            tracing::info!(
+                                target = %mapped.target,
+                                from = %mapped.from,
+                                kind = ?mapped.kind,
+                                direct_targets = ?delivery_plan.targets,
+                                "direct message routing"
+                            );
+                        }
 
-                            if targets.is_empty()
-                                && matches!(mapped.kind, InboundKind::DmReceived | InboundKind::GroupDmReceived)
+                        if delivery_plan.needs_dm_resolution {
+                            let conversation_id = mapped.target.clone();
+                            tracing::info!(conversation_id = %conversation_id, "resolving DM participants");
+                            let participants = resolve_dm_participants(
+                                &relaycast_http,
+                                &mut dm_participants_cache,
+                                &conversation_id,
+                            )
+                            .await;
+                            tracing::info!(participants = ?participants, "resolved DM participants");
+
+                            if let Some(participant) = participants
+                                .iter()
+                                .find(|participant| !participant.eq_ignore_ascii_case(&mapped.from))
                             {
-                                let conversation_id = mapped.target.clone();
-                                tracing::info!(conversation_id = %conversation_id, "resolving DM participants");
-                                let participants = resolve_dm_participants(
-                                    &relaycast_http,
-                                    &mut dm_participants_cache,
-                                    &conversation_id,
-                                )
-                                .await;
-                                tracing::info!(participants = ?participants, "resolved DM participants");
-
-                                if let Some(participant) = participants
-                                    .iter()
-                                    .find(|participant| !participant.eq_ignore_ascii_case(&mapped.from))
-                                {
-                                    display_target = participant.clone();
-                                }
-
-                                targets =
-                                    workers.worker_names_for_dm_participants(&participants, &mapped.from);
-                                tracing::info!(dm_targets = ?targets, "DM participant-based routing targets");
+                                delivery_plan.display_target = participant.clone();
                             }
 
-                            for worker_name in targets {
-                                if let Err(error) = queue_and_try_delivery(
-                                    &mut workers,
-                                    &mut pending_deliveries,
-                                    &worker_name,
-                                    &mapped,
-                                    delivery_retry_interval,
-                                ).await {
-                                    let _ = send_error(&sdk_out_tx, None, "delivery_failed", error.to_string(), true, Some(json!({"worker": worker_name}))).await;
-                                }
+                            let worker_view = workers.routing_workers();
+                            delivery_plan.targets = routing::worker_names_for_dm_participants(
+                                &worker_view,
+                                &participants,
+                                &mapped.from,
+                            );
+                            tracing::info!(dm_targets = ?delivery_plan.targets, "DM participant-based routing targets");
+                        }
+
+                        for worker_name in delivery_plan.targets {
+                            if let Err(error) = queue_and_try_delivery(
+                                &mut workers,
+                                &mut pending_deliveries,
+                                &worker_name,
+                                &mapped,
+                                delivery_retry_interval,
+                            ).await {
+                                let _ = send_error(&sdk_out_tx, None, "delivery_failed", error.to_string(), true, Some(json!({"worker": worker_name}))).await;
                             }
                         }
 
-                        let display_target = display_target_for_dashboard(&display_target, &self_names);
+                        let display_target =
+                            display_target_for_dashboard(&delivery_plan.display_target, &self_names);
                         tracing::info!(
                             from = %mapped.from,
                             display_target = %display_target,
@@ -2351,8 +2332,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
     Ok(())
 }
-
-
 
 /// Get terminal rows from TIOCGWINSZ.
 #[cfg(unix)]

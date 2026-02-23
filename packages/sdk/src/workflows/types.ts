@@ -98,6 +98,10 @@ export interface AgentDefinition {
    *  It receives its task as a CLI prompt argument and returns stdout as output.
    *  Default: true (interactive PTY mode). */
   interactive?: boolean;
+  /** Working directory for this agent, resolved relative to the YAML file. */
+  cwd?: string;
+  /** Additional paths the agent needs read/write access to. */
+  additionalPaths?: string[];
 }
 
 export type AgentCli = 'claude' | 'codex' | 'gemini' | 'aider' | 'goose' | 'opencode' | 'droid';
@@ -318,11 +322,15 @@ export interface DryRunReport {
   name: string;
   description?: string;
   pattern: string;
-  agents: Array<{ name: string; cli: string; role?: string; stepCount: number }>;
+  agents: Array<{ name: string; cli: string; role?: string; cwd?: string; stepCount: number }>;
   waves: DryRunWave[];
   totalSteps: number;
   maxConcurrency?: number;
   estimatedWaves: number;
+  /** Estimated peak concurrent agents. */
+  estimatedPeakConcurrency?: number;
+  /** Estimated total agent-steps (counting retries as additional steps). */
+  estimatedTotalAgentSteps?: number;
 }
 
 // ── Database row types ──────────────────────────────────────────────────────

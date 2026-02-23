@@ -239,7 +239,6 @@ pub struct RelaycastHttpClient {
     api_key: String,
     agent_tokens: Arc<Mutex<HashMap<String, String>>>,
     registration_cooldowns: Arc<Mutex<HashMap<String, Instant>>>,
-    global_registration_cooldown: Arc<Mutex<Option<Instant>>>,
     agent_name: String,
     default_cli: String,
 }
@@ -288,21 +287,9 @@ impl RelaycastHttpClient {
             api_key: api_key.into(),
             agent_tokens: Arc::new(Mutex::new(HashMap::new())),
             registration_cooldowns: Arc::new(Mutex::new(HashMap::new())),
-            global_registration_cooldown: Arc::new(Mutex::new(None)),
             agent_name: agent_name.into(),
             default_cli: default_cli.into(),
         }
-    }
-
-    fn global_registration_block_remaining(&self) -> Option<Duration> {
-        let mut guard = self.global_registration_cooldown.lock();
-        let blocked_until = (*guard)?;
-        let now = Instant::now();
-        if blocked_until <= now {
-            *guard = None;
-            return None;
-        }
-        Some(blocked_until - now)
     }
 
     pub fn registration_block_remaining(&self, agent_name: &str) -> Option<Duration> {
@@ -345,13 +332,6 @@ impl RelaycastHttpClient {
 
         if let Some(token) = self.agent_tokens.lock().get(trimmed_name).cloned() {
             return Ok(token);
-        }
-
-        if let Some(remaining) = self.global_registration_block_remaining() {
-            return Err(RelaycastRegistrationError::Blocked {
-                agent_name: trimmed_name.to_string(),
-                retry_after_secs: remaining.as_secs().max(1),
-            });
         }
 
         if let Some(remaining) = self.registration_block_remaining(trimmed_name) {
@@ -406,7 +386,6 @@ impl RelaycastHttpClient {
                 self.registration_cooldowns
                     .lock()
                     .insert(trimmed_name.to_string(), blocked_until);
-                *self.global_registration_cooldown.lock() = Some(blocked_until);
                 return Err(RelaycastRegistrationError::RateLimited {
                     agent_name: trimmed_name.to_string(),
                     retry_after_secs,
@@ -434,7 +413,6 @@ impl RelaycastHttpClient {
             .lock()
             .insert(trimmed_name.to_string(), token.clone());
         self.registration_cooldowns.lock().remove(trimmed_name);
-        *self.global_registration_cooldown.lock() = None;
         Ok(token)
     }
 
@@ -1050,15 +1028,6 @@ mod tests {
     }
 
     #[test]
-    fn global_registration_block_remaining_clears_expired_blocks() {
-        let client =
-            RelaycastHttpClient::new("https://api.relaycast.dev", "key", "agent", "claude");
-        *client.global_registration_cooldown.lock() = Some(Instant::now() - Duration::from_secs(1));
-        assert!(client.global_registration_block_remaining().is_none());
-        assert!(client.global_registration_cooldown.lock().is_none());
-    }
-
-    #[test]
     fn invalidate_cached_registration_removes_token_and_cooldown() {
         let client =
             RelaycastHttpClient::new("https://api.relaycast.dev", "key", "agent", "claude");
@@ -1139,10 +1108,13 @@ mod tests {
     }
 
     #[test]
-    fn register_agent_token_honors_global_registration_block() {
+    fn register_agent_token_honors_agent_scoped_registration_block() {
         let client =
             RelaycastHttpClient::new("https://api.relaycast.dev", "key", "agent", "claude");
-        *client.global_registration_cooldown.lock() = Some(Instant::now() + Duration::from_secs(2));
+        client.registration_cooldowns.lock().insert(
+            "worker-a".to_string(),
+            Instant::now() + Duration::from_secs(2),
+        );
 
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
         let result = runtime.block_on(client.register_agent_token("worker-a", Some("claude")));

@@ -19,7 +19,7 @@ This bridge allows ACP-compatible editors to communicate with Agent Relay agents
                                        Relay Protocol
                                                 │
                                        ┌────────▼────────┐
-                                       │  Relay Daemon   │
+                                       │  Relay Broker   │
                                        └────────┬────────┘
                                                 │
                         ┌───────────────────────┼───────────────────────┐
@@ -45,14 +45,14 @@ npm install @agent-relay/acp-bridge
 relay-acp --name my-agent --debug
 
 # With custom socket path
-relay-acp --socket /tmp/relay/my-workspace/sockets/daemon.sock
+relay-acp --socket /tmp/relay/my-workspace/sockets/relay.sock
 ```
 
 ### With Zed Editor
 
-1. Start the relay daemon:
+1. Start the relay broker:
    ```bash
-   relay-daemon start
+   agent-relay up
    ```
 
 2. Start some relay agents:
@@ -104,7 +104,7 @@ import { RelayACPAgent } from '@agent-relay/acp-bridge';
 
 const agent = new RelayACPAgent({
   agentName: 'my-agent',
-  socketPath: '/tmp/relay-daemon.sock',
+  socketPath: '/tmp/relay.sock',
   debug: true,
   capabilities: {
     supportsSessionLoading: false,
@@ -140,12 +140,12 @@ The panel shows a help block on first message; type `agent-relay help` anytime t
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `agentName` | string | `'relay-acp'` | Name used when connecting to relay daemon |
-| `socketPath` | string | auto | Path to relay daemon socket |
+| `agentName` | string | `'relay-acp'` | Name used when connecting to relay broker |
+| `socketPath` | string | auto | Path to relay broker socket |
 | `debug` | boolean | `false` | Enable debug logging |
 | `capabilities` | object | - | ACP capabilities to advertise |
 
-Connections to the daemon go through `@agent-relay/sdk`, so socket discovery and reconnection match the rest of the Relay tooling. Provide `socketPath` to override detection when needed.
+Connections to the broker go through `@agent-relay/sdk`, so socket discovery and reconnection match the rest of the Relay tooling. Provide `socketPath` to override detection when needed.
 
 ## Environment Variables
 

@@ -1,8 +1,24 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import { AgentRelayClient } from '../client.js';
 import { AgentRelay } from '../relay.js';
 import { PROTOCOL_VERSION, type BrokerEvent } from '../protocol.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+function readWave0Fixture<T>(name: string): T {
+  const fixturePath = path.resolve(
+    __dirname,
+    '../../../../tests/fixtures/contracts/wave0',
+    name
+  );
+  return JSON.parse(fs.readFileSync(fixturePath, 'utf8')) as T;
+}
 
 function createMockFacadeClient() {
   const listeners = new Set<(event: BrokerEvent) => void>();
@@ -440,6 +456,92 @@ describe('AgentRelay orchestration handles', () => {
         status: 'ack',
         targets: ['worker'],
       });
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('sendAndWaitForDelivery timeout remains terminal in delivery state timeline (Wave 0 contract)', async () => {
+    const { client, mock, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const timeoutFixture = readWave0Fixture<{
+      event_id: string;
+      target: string;
+      expected_terminal_status: 'failed';
+      late_event_kind: 'delivery_ack';
+    }>('timeout-terminal-semantics.json');
+
+    mock.sendMessage.mockResolvedValueOnce({
+      event_id: timeoutFixture.event_id,
+      targets: [timeoutFixture.target],
+    });
+
+    const relay = new AgentRelay();
+    try {
+      const result = await relay.sendAndWaitForDelivery(
+        { to: timeoutFixture.target, text: 'timeout contract probe' },
+        5
+      );
+
+      expect(result).toEqual({
+        eventId: timeoutFixture.event_id,
+        status: 'timeout',
+        targets: [timeoutFixture.target],
+      });
+
+      if (timeoutFixture.late_event_kind === 'delivery_ack') {
+        emit({
+          kind: 'delivery_ack',
+          name: timeoutFixture.target,
+          delivery_id: 'del_timeout_contract',
+          event_id: timeoutFixture.event_id,
+        });
+      }
+
+      // TODO(contract-wave0-timeout-terminal): timeout should be a terminal
+      // delivery state recorded for observability and never reopened by late ack.
+      expect(relay.getDeliveryState(timeoutFixture.event_id)).toEqual({
+        eventId: timeoutFixture.event_id,
+        to: timeoutFixture.target,
+        status: timeoutFixture.expected_terminal_status,
+        updatedAt: expect.any(Number),
+      });
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('relay_inbound normalizes broker identities to Dashboard across repos (Wave 0 contract)', async () => {
+    const { client, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const identityFixture = readWave0Fixture<{
+      cases: Array<{ input: string; normalized: string }>;
+    }>('broker-identity-normalization.json');
+
+    const relay = new AgentRelay();
+    const seenFrom: string[] = [];
+    relay.onMessageReceived = (message) => {
+      seenFrom.push(message.from);
+    };
+
+    try {
+      await relay.listAgents(); // Ensure event wiring is initialized.
+
+      for (const entry of identityFixture.cases) {
+        emit({
+          kind: 'relay_inbound',
+          event_id: `evt_identity_${entry.input.replace(/[^a-zA-Z0-9]/g, '_')}`,
+          from: entry.input,
+          target: 'Lead',
+          body: `identity-check:${entry.input}`,
+        });
+      }
+
+      // TODO(contract-wave0-identity-normalization): keep SDK-facing sender
+      // identity normalization in lockstep with broker-side Dashboard mapping.
+      expect(seenFrom).toEqual(identityFixture.cases.map((entry) => entry.normalized));
     } finally {
       await relay.shutdown();
     }

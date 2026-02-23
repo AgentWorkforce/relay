@@ -12,7 +12,7 @@ const CLI_PATH = path.resolve(__dirname, '../../dist/src/cli/index.js');
 const CLI_EXISTS = fs.existsSync(CLI_PATH);
 const describeCli = CLI_EXISTS ? describe : describe.skip;
 
-// Use a temp directory to isolate tests from any running daemon
+// Use a temp directory to isolate tests from any running broker
 let testProjectRoot: string;
 
 beforeAll(() => {
@@ -77,8 +77,8 @@ describeCli('CLI', () => {
   });
 
   describe('status', () => {
-    it('should show status when daemon not running', async () => {
-      // This test assumes daemon isn't running on a test socket
+    it('should show status when broker not running', async () => {
+      // This test assumes broker isn't running on a test socket
       const { stdout } = await runCli('status');
       expect(stdout).toMatch(/Status:/i);
     });

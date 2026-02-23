@@ -10,13 +10,15 @@ import type { WorkflowEvent } from '@agent-relay/sdk/workflows';
 type ExitFn = (code: number) => never;
 type RunInitOptions = {
   yes?: boolean;
-  skipDaemon?: boolean;
+  skipBroker?: boolean;
 };
 type RunWorkflowOptions = {
   workflow?: string;
   dryRun?: boolean;
+  resume?: string;
 };
 type WorkflowRunResult = {
+  id?: string;
   status: string;
   error?: string;
 };
@@ -25,7 +27,7 @@ export interface SetupDependencies {
   runTelemetry: (action?: string) => Promise<void> | void;
   runYamlWorkflow: (
     filePath: string,
-    options: { workflow?: string; dryRun?: boolean; onEvent: (event: WorkflowEvent) => void }
+    options: { workflow?: string; dryRun?: boolean; resume?: string; onEvent: (event: WorkflowEvent) => void }
   ) => Promise<WorkflowRunResult>;
   runScriptWorkflow: (filePath: string) => void;
   log: (...args: unknown[]) => void;
@@ -65,7 +67,7 @@ function logWorkflowEvent(event: WorkflowEvent, log: (...args: unknown[]) => voi
 }
 async function runYamlWorkflowDefault(
   filePath: string,
-  options: { workflow?: string; dryRun?: boolean; onEvent: (event: WorkflowEvent) => void }
+  options: { workflow?: string; dryRun?: boolean; resume?: string; onEvent: (event: WorkflowEvent) => void }
 ): Promise<WorkflowRunResult> {
   const result = await runWorkflow(filePath, options);
   // DryRunReport has 'valid' instead of 'status'
@@ -145,12 +147,12 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
   io.log('');
   const paths = getProjectPaths();
   const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
-  let daemonRunning = false;
+  let brokerRunning = false;
   if (fs.existsSync(brokerPidPath)) {
     const brokerPid = Number(fs.readFileSync(brokerPidPath, 'utf-8').trim());
     try {
       process.kill(brokerPid, 0);
-      daemonRunning = true;
+      brokerRunning = true;
     } catch {
       try {
         fs.unlinkSync(brokerPidPath);
@@ -159,13 +161,14 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
       }
     }
   }
-  if (daemonRunning) {
+  if (brokerRunning) {
     io.log('  ✓  Broker is already running');
   } else {
     io.log('  ○  Broker is not running');
   }
   io.log('');
-  if (!daemonRunning && !options.skipDaemon) {
+  const skipBrokerStartup = options.skipBroker ?? false;
+  if (!brokerRunning && !skipBrokerStartup) {
     io.log('  ┌─ Start the Relay Broker ──────────────────────────────────┐');
     io.log('  │                                                          │');
     io.log('  │  The broker manages agent connections and message        │');
@@ -173,26 +176,26 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
     io.log('  │                                                          │');
     io.log('  └──────────────────────────────────────────────────────────┘');
     io.log('');
-    const shouldStartDaemon = await prompt('  Start the relay broker now?');
-    if (shouldStartDaemon) {
+    const shouldStartBroker = await prompt('  Start the relay broker now?');
+    if (shouldStartBroker) {
       io.log('');
       io.log('  Starting broker...');
-      const daemonProcess = spawnProcess(process.execPath, [process.argv[1], 'up', '--background'], {
+      const brokerProcess = spawnProcess(process.execPath, [process.argv[1], 'up', '--background'], {
         detached: true,
         stdio: 'ignore',
       });
-      daemonProcess.unref();
+      brokerProcess.unref();
       await new Promise((resolve) => setTimeout(resolve, 2000));
       io.log('  ✓  Broker started in background');
       io.log('');
-      daemonRunning = true;
+      brokerRunning = true;
     }
   }
   io.log('  ╭─────────────────────────────────────────────────────────╮');
   io.log('  │                    Setup Complete!                      │');
   io.log('  ╰─────────────────────────────────────────────────────────╯');
   io.log('');
-  if (daemonRunning) {
+  if (brokerRunning) {
     io.log('  Status:');
     io.log('    ✓  Broker running');
     io.log('');
@@ -257,7 +260,11 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
     .command('init', { hidden: true })
     .description('First-time setup wizard - start broker')
     .option('-y, --yes', 'Accept all defaults (non-interactive)')
-    .option('--skip-daemon', 'Skip broker startup prompt')
+    .option('--skip-broker', 'Skip broker startup prompt')
+    .addHelpText(
+      'after',
+      '\nBREAKING CHANGE: daemon options were removed. Use broker terminology only.'
+    )
     .action(async (options: RunInitOptions) => {
       await deps.runInit(options);
     });
@@ -265,7 +272,11 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
     .command('setup', { hidden: true })
     .description('Alias for "init" - first-time setup wizard')
     .option('-y, --yes', 'Accept all defaults')
-    .option('--skip-daemon', 'Skip broker startup')
+    .option('--skip-broker', 'Skip broker startup')
+    .addHelpText(
+      'after',
+      '\nBREAKING CHANGE: daemon options were removed. Use broker terminology only.'
+    )
     .action(async (options: RunInitOptions) => {
       await deps.runInit(options);
     });
@@ -282,10 +293,27 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
     .argument('<file>', 'Path to workflow file (.yaml, .yml, .ts, or .py)')
     .option('-w, --workflow <name>', 'Run a specific workflow by name (default: first, YAML only)')
     .option('--dry-run', 'Validate workflow and show execution plan without running')
+    .option('--resume <runId>', 'Resume a previously failed workflow run from where it left off')
     .action(async (filePath: string, options: RunWorkflowOptions) => {
       try {
         const ext = path.extname(filePath).toLowerCase();
         if (ext === '.yaml' || ext === '.yml') {
+          if (options.resume) {
+            deps.log(`Resuming workflow run ${options.resume} from ${filePath}...`);
+            const result = await deps.runYamlWorkflow(filePath, {
+              workflow: options.workflow,
+              resume: options.resume,
+              onEvent: (event: WorkflowEvent) => logWorkflowEvent(event, deps.log),
+            });
+            if (result.status === 'completed') {
+              deps.log('\nWorkflow resumed and completed successfully.');
+            } else {
+              deps.error(`\nWorkflow ${result.status}${result.error ? `: ${result.error}` : ''}`);
+              deps.error(`Run ID: ${result.id} — resume with: agent-relay run ${filePath} --resume ${result.id}`);
+              deps.exit(1);
+            }
+            return;
+          }
           if (options.dryRun) {
             deps.log(`Dry run: validating workflow from ${filePath}...`);
           } else {
@@ -304,6 +332,7 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
             deps.log('\nWorkflow completed successfully.');
           } else {
             deps.error(`\nWorkflow ${result.status}${result.error ? `: ${result.error}` : ''}`);
+            deps.error(`Run ID: ${result.id} — resume with: agent-relay run ${filePath} --resume ${result.id}`);
             deps.exit(1);
           }
           return;

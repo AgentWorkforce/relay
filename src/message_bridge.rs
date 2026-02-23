@@ -1,3 +1,8 @@
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
+
 use serde_json::{Map, Value};
 
 use crate::types::{
@@ -9,11 +14,46 @@ use crate::types::{
 ///
 /// Supports both current top-level events and older payload-wrapped events.
 pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
-    let event_type = value.get("type")?.as_str()?;
-    let kind = parse_inbound_kind(event_type)?;
+    let accessor = EventAccessor::new(value);
+    let event_type = accessor.field(EventNesting::Top, "type")?.as_str()?;
+    let mut kind = parse_inbound_kind(event_type)?;
+
+    // Relaycast may emit direct messages as `message.created` with a
+    // `conversation_id` and no channel. Treat those as DMs so downstream
+    // participant resolution and worker routing work correctly.
+    if matches!(kind, InboundKind::MessageCreated)
+        && extract_channel(accessor).is_none()
+        && has_conversation_context(accessor)
+    {
+        kind = InboundKind::DmReceived;
+    }
+
+    // Reject message events that lack both a "message" object and inline
+    // text content — these are malformed stubs that cannot be routed.
+    // The "message" object can live at top level or inside a "payload" wrapper.
+    // DM/thread events may carry text/from directly on the payload without a
+    // nested "message" sub-object, so also accept events with extractable text.
+    if matches!(
+        kind,
+        InboundKind::MessageCreated
+            | InboundKind::DmReceived
+            | InboundKind::ThreadReply
+            | InboundKind::GroupDmReceived
+    ) {
+        let has_message = accessor
+            .nested(EventNesting::Message)
+            .is_some_and(Value::is_object)
+            || accessor
+                .nested(EventNesting::PayloadMessage)
+                .is_some_and(Value::is_object);
+        let has_inline_text = extract_text(accessor).is_some();
+        if !has_message && !has_inline_text {
+            return None;
+        }
+    }
 
     if matches!(kind, InboundKind::Presence) {
-        let from = extract_presence_sender(value).unwrap_or_else(|| "unknown".to_string());
+        let from = extract_presence_sender(accessor).unwrap_or_else(|| "unknown".to_string());
         let event_id = format!("presence-{event_type}-{from}");
         return Some(InboundRelayEvent {
             event_id,
@@ -28,13 +68,14 @@ pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
         });
     }
 
-    let event_id = extract_event_id(value)?;
-    let from = extract_sender(value).unwrap_or_else(|| "unknown".to_string());
-    let sender_agent_id = extract_sender_agent_id(value);
-    let sender_kind = parse_sender_kind(value);
-    let target = extract_target(value, &kind).unwrap_or_else(|| "unknown".to_string());
-    let text = extract_text(value).unwrap_or_default();
-    let thread_id = extract_thread_id(value);
+    let from = extract_sender(accessor).unwrap_or_else(|| "unknown".to_string());
+    let sender_agent_id = extract_sender_agent_id(accessor);
+    let sender_kind = parse_sender_kind(accessor);
+    let target = extract_target(accessor, &kind).unwrap_or_else(|| "unknown".to_string());
+    let text = extract_text(accessor).unwrap_or_default();
+    let thread_id = extract_thread_id(accessor);
+    let event_id = extract_event_id(accessor)
+        .unwrap_or_else(|| synth_event_id(event_type, &from, &target, &text, thread_id.as_deref()));
 
     let priority = match kind {
         InboundKind::DmReceived => RelayPriority::P2,
@@ -108,12 +149,114 @@ pub fn map_ws_broker_command(value: &Value) -> Option<BrokerCommandEvent> {
     })
 }
 
+#[derive(Clone, Copy)]
+enum EventNesting {
+    Top,
+    Message,
+    Payload,
+    PayloadMessage,
+}
+
+#[derive(Clone, Copy)]
+struct EventAccessor<'a> {
+    top: &'a Value,
+    message: Option<&'a Value>,
+    payload: Option<&'a Value>,
+    payload_message: Option<&'a Value>,
+}
+
+impl<'a> EventAccessor<'a> {
+    fn new(top: &'a Value) -> Self {
+        let payload = top.get("payload");
+        let message = top.get("message");
+        let payload_message = payload.and_then(|nested| nested.get("message"));
+
+        Self {
+            top,
+            message,
+            payload,
+            payload_message,
+        }
+    }
+
+    fn nested(self, nesting: EventNesting) -> Option<&'a Value> {
+        match nesting {
+            EventNesting::Top => Some(self.top),
+            EventNesting::Message => self.message,
+            EventNesting::Payload => self.payload,
+            EventNesting::PayloadMessage => self.payload_message,
+        }
+    }
+
+    fn field(self, nesting: EventNesting, key: &str) -> Option<&'a Value> {
+        self.nested(nesting)?.get(key)
+    }
+
+    fn agent_name(self, nesting: EventNesting) -> Option<&'a Value> {
+        self.field(nesting, "agent")
+            .and_then(|agent| agent.get("name"))
+    }
+
+    fn first_string<F>(
+        self,
+        candidates: &[(EventNesting, &str)],
+        mut convert: F,
+        require_non_empty: bool,
+    ) -> Option<String>
+    where
+        F: FnMut(&Value) -> Option<String>,
+    {
+        for (nesting, key) in candidates {
+            if let Some(value) = self.field(*nesting, key).and_then(&mut convert) {
+                if !require_non_empty || !value.is_empty() {
+                    return Some(value);
+                }
+            }
+        }
+        None
+    }
+
+    fn first_agent_name(self, nestings: &[EventNesting]) -> Option<String> {
+        for nesting in nestings {
+            if let Some(name) = self.agent_name(*nesting).and_then(scalar_to_string) {
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+        }
+        None
+    }
+
+    fn has_trimmed_non_empty_scalar(self, candidates: &[(EventNesting, &str)]) -> bool {
+        candidates.iter().any(|(nesting, key)| {
+            self.field(*nesting, key)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty())
+        })
+    }
+}
+
 fn parse_inbound_kind(event_type: &str) -> Option<InboundKind> {
     match event_type {
-        "message.created" | "message.received" | "message.new" => Some(InboundKind::MessageCreated),
-        "dm.received" | "dm.created" | "direct_message.received" => Some(InboundKind::DmReceived),
-        "thread.reply" | "thread.message.created" => Some(InboundKind::ThreadReply),
-        "group_dm.received" | "group_dm.created" => Some(InboundKind::GroupDmReceived),
+        "message.created" | "message.received" | "message.new" | "message.sent"
+        | "message.delivered" => Some(InboundKind::MessageCreated),
+        "dm.received"
+        | "dm.created"
+        | "dm.new"
+        | "dm.sent"
+        | "dm.message.created"
+        | "direct_message.received"
+        | "direct_message.created"
+        | "direct_message.new"
+        | "direct_message.sent" => Some(InboundKind::DmReceived),
+        "thread.reply" | "thread.message.created" | "thread.message.sent" => {
+            Some(InboundKind::ThreadReply)
+        }
+        "group_dm.received"
+        | "group_dm.created"
+        | "group_dm.new"
+        | "group_dm.sent"
+        | "group_dm.message.created" => Some(InboundKind::GroupDmReceived),
         "agent.online" | "agent.offline" | "user.online" | "user.offline" => {
             Some(InboundKind::Presence)
         }
@@ -121,152 +264,157 @@ fn parse_inbound_kind(event_type: &str) -> Option<InboundKind> {
     }
 }
 
-fn extract_presence_sender(value: &Value) -> Option<String> {
-    let payload = value.get("payload");
-    for candidate in [
-        value.get("agent").and_then(|a| a.get("name")),
-        payload
-            .and_then(|p| p.get("agent"))
-            .and_then(|a| a.get("name")),
-        value.get("agent_name"),
-        payload.and_then(|p| p.get("agent_name")),
-        value.get("from"),
-        payload.and_then(|p| p.get("from")),
-    ] {
-        if let Some(name) = candidate.and_then(scalar_to_string) {
-            if !name.is_empty() {
-                return Some(name);
-            }
-        }
-    }
-    None
+fn extract_presence_sender(accessor: EventAccessor<'_>) -> Option<String> {
+    const AGENT_NAME_NESTINGS: [EventNesting; 2] = [EventNesting::Top, EventNesting::Payload];
+    const AGENT_NAME_FIELDS: [(EventNesting, &str); 2] = [
+        (EventNesting::Top, "agent_name"),
+        (EventNesting::Payload, "agent_name"),
+    ];
+    const FROM_FIELDS: [(EventNesting, &str); 2] =
+        [(EventNesting::Top, "from"), (EventNesting::Payload, "from")];
+
+    accessor
+        .first_agent_name(&AGENT_NAME_NESTINGS)
+        .or_else(|| accessor.first_string(&AGENT_NAME_FIELDS, scalar_to_string, true))
+        .or_else(|| accessor.first_string(&FROM_FIELDS, scalar_to_string, true))
 }
 
-fn extract_event_id(value: &Value) -> Option<String> {
-    let payload = value.get("payload");
-    for candidate in [
-        value.get("event_id"),
-        value.get("id"),
-        value.get("message").and_then(|m| m.get("event_id")),
-        value.get("message").and_then(|m| m.get("id")),
-        payload.and_then(|p| p.get("event_id")),
-        payload.and_then(|p| p.get("id")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("event_id")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("id")),
-    ] {
-        if let Some(id) = candidate.and_then(scalar_to_string) {
-            if !id.is_empty() {
-                return Some(id);
-            }
-        }
-    }
-    None
+fn extract_event_id(accessor: EventAccessor<'_>) -> Option<String> {
+    const EVENT_ID_FIELDS: [(EventNesting, &str); 12] = [
+        (EventNesting::Top, "event_id"),
+        (EventNesting::Top, "message_id"),
+        (EventNesting::Top, "id"),
+        (EventNesting::Message, "event_id"),
+        (EventNesting::Message, "message_id"),
+        (EventNesting::Message, "id"),
+        (EventNesting::Payload, "event_id"),
+        (EventNesting::Payload, "message_id"),
+        (EventNesting::Payload, "id"),
+        (EventNesting::PayloadMessage, "event_id"),
+        (EventNesting::PayloadMessage, "message_id"),
+        (EventNesting::PayloadMessage, "id"),
+    ];
+
+    accessor.first_string(&EVENT_ID_FIELDS, scalar_to_string, true)
 }
 
 /// Extract the agent_id from the message object in a WS event.
 /// Relaycast includes `agent_id` inside the `message` sub-object.
-fn extract_sender_agent_id(value: &Value) -> Option<String> {
-    value
-        .get("message")
-        .and_then(|m| m.get("agent_id"))
+fn extract_sender_agent_id(accessor: EventAccessor<'_>) -> Option<String> {
+    accessor
+        .field(EventNesting::Message, "agent_id")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(String::from)
 }
 
-fn extract_sender(value: &Value) -> Option<String> {
-    let payload = value.get("payload");
-    for candidate in [
-        value.get("from"),
-        value.get("sender"),
-        value.get("author"),
-        value.get("from_agent"),
-        value.get("agent_name"),
-        value.get("message").and_then(|m| m.get("from")),
-        value.get("message").and_then(|m| m.get("sender")),
-        value.get("message").and_then(|m| m.get("author")),
-        value.get("message").and_then(|m| m.get("agent_name")),
-        payload.and_then(|p| p.get("from")),
-        payload.and_then(|p| p.get("sender")),
-        payload.and_then(|p| p.get("author")),
-        payload.and_then(|p| p.get("from_agent")),
-        payload.and_then(|p| p.get("agent_name")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("from")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("sender")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("author")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("agent_name")),
-    ] {
-        if let Some(name) = candidate.and_then(sender_value_to_string) {
-            if !name.is_empty() {
-                return Some(name);
-            }
-        }
-    }
-    None
+fn extract_sender(accessor: EventAccessor<'_>) -> Option<String> {
+    const TOP_AGENT_NESTINGS: [EventNesting; 1] = [EventNesting::Top];
+    const TOP_FIELDS: [(EventNesting, &str); 6] = [
+        (EventNesting::Top, "from"),
+        (EventNesting::Top, "sender"),
+        (EventNesting::Top, "author"),
+        (EventNesting::Top, "from_agent"),
+        (EventNesting::Top, "agent"),
+        (EventNesting::Top, "agent_name"),
+    ];
+    const MESSAGE_FIELDS: [(EventNesting, &str); 6] = [
+        (EventNesting::Message, "from"),
+        (EventNesting::Message, "sender"),
+        (EventNesting::Message, "author"),
+        (EventNesting::Message, "from_agent"),
+        (EventNesting::Message, "agent"),
+        (EventNesting::Message, "agent_name"),
+    ];
+    const PAYLOAD_AGENT_NESTINGS: [EventNesting; 1] = [EventNesting::Payload];
+    const PAYLOAD_FIELDS: [(EventNesting, &str); 6] = [
+        (EventNesting::Payload, "from"),
+        (EventNesting::Payload, "sender"),
+        (EventNesting::Payload, "author"),
+        (EventNesting::Payload, "from_agent"),
+        (EventNesting::Payload, "agent"),
+        (EventNesting::Payload, "agent_name"),
+    ];
+    const PAYLOAD_MESSAGE_FIELDS: [(EventNesting, &str); 6] = [
+        (EventNesting::PayloadMessage, "from"),
+        (EventNesting::PayloadMessage, "sender"),
+        (EventNesting::PayloadMessage, "author"),
+        (EventNesting::PayloadMessage, "from_agent"),
+        (EventNesting::PayloadMessage, "agent"),
+        (EventNesting::PayloadMessage, "agent_name"),
+    ];
+
+    accessor
+        .first_agent_name(&TOP_AGENT_NESTINGS)
+        .or_else(|| accessor.first_string(&TOP_FIELDS, sender_value_to_string, true))
+        .or_else(|| accessor.first_string(&MESSAGE_FIELDS, sender_value_to_string, true))
+        .or_else(|| accessor.first_agent_name(&PAYLOAD_AGENT_NESTINGS))
+        .or_else(|| accessor.first_string(&PAYLOAD_FIELDS, sender_value_to_string, true))
+        .or_else(|| accessor.first_string(&PAYLOAD_MESSAGE_FIELDS, sender_value_to_string, true))
 }
 
-fn extract_target(value: &Value, kind: &InboundKind) -> Option<String> {
-    let payload = value.get("payload");
+fn extract_target(accessor: EventAccessor<'_>, kind: &InboundKind) -> Option<String> {
+    const EXPLICIT_TARGET_FIELDS: [(EventNesting, &str); 20] = [
+        (EventNesting::Top, "target"),
+        (EventNesting::Top, "to"),
+        (EventNesting::Top, "recipient"),
+        (EventNesting::Top, "to_agent"),
+        (EventNesting::Top, "recipient_agent"),
+        (EventNesting::Message, "target"),
+        (EventNesting::Message, "to"),
+        (EventNesting::Message, "recipient"),
+        (EventNesting::Message, "to_agent"),
+        (EventNesting::Message, "recipient_agent"),
+        (EventNesting::Payload, "target"),
+        (EventNesting::Payload, "to"),
+        (EventNesting::Payload, "recipient"),
+        (EventNesting::Payload, "to_agent"),
+        (EventNesting::Payload, "recipient_agent"),
+        (EventNesting::PayloadMessage, "target"),
+        (EventNesting::PayloadMessage, "to"),
+        (EventNesting::PayloadMessage, "recipient"),
+        (EventNesting::PayloadMessage, "to_agent"),
+        (EventNesting::PayloadMessage, "recipient_agent"),
+    ];
+    const CONVERSATION_DM_FIELDS: [(EventNesting, &str); 2] = [
+        (EventNesting::Top, "conversation_id"),
+        (EventNesting::Payload, "conversation_id"),
+    ];
+    const CONVERSATION_FIELDS: [(EventNesting, &str); 4] = [
+        (EventNesting::Top, "conversation_id"),
+        (EventNesting::Message, "conversation_id"),
+        (EventNesting::Payload, "conversation_id"),
+        (EventNesting::PayloadMessage, "conversation_id"),
+    ];
 
     if matches!(kind, InboundKind::DmReceived | InboundKind::GroupDmReceived) {
-        for candidate in [
-            value.get("conversation_id"),
-            value.get("target"),
-            payload.and_then(|p| p.get("conversation_id")),
-            payload.and_then(|p| p.get("target")),
-            payload
-                .and_then(|p| p.get("message"))
-                .and_then(|m| m.get("target")),
-        ] {
-            if let Some(target) = candidate.and_then(scalar_to_string) {
-                if !target.is_empty() {
-                    return Some(target);
-                }
-            }
+        // Prefer explicit recipient-like fields when available so init-mode
+        // worker routing can match the local worker name for direct delivery.
+        if let Some(target) =
+            accessor.first_string(&EXPLICIT_TARGET_FIELDS, sender_value_to_string, true)
+        {
+            return Some(target);
+        }
+
+        // Fall back to conversation identifiers for legacy/event-shape coverage.
+        if let Some(target) = accessor.first_string(&CONVERSATION_DM_FIELDS, scalar_to_string, true)
+        {
+            return Some(target);
         }
     }
 
-    if let Some(channel) = extract_channel(value) {
+    if let Some(channel) = extract_channel(accessor) {
         return Some(channel);
     }
 
-    for candidate in [
-        value.get("target"),
-        value.get("to"),
-        value.get("recipient"),
-        value.get("message").and_then(|m| m.get("target")),
-        value.get("message").and_then(|m| m.get("to")),
-        value.get("message").and_then(|m| m.get("recipient")),
-        payload.and_then(|p| p.get("target")),
-        payload.and_then(|p| p.get("to")),
-        payload.and_then(|p| p.get("recipient")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("target")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("to")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("recipient")),
-    ] {
-        if let Some(target) = candidate.and_then(scalar_to_string) {
-            if !target.is_empty() {
-                return Some(target);
-            }
-        }
+    if let Some(target) =
+        accessor.first_string(&EXPLICIT_TARGET_FIELDS, sender_value_to_string, true)
+    {
+        return Some(target);
+    }
+
+    if let Some(target) = accessor.first_string(&CONVERSATION_FIELDS, scalar_to_string, true) {
+        return Some(target);
     }
 
     if matches!(kind, InboundKind::ThreadReply) {
@@ -276,17 +424,44 @@ fn extract_target(value: &Value, kind: &InboundKind) -> Option<String> {
     None
 }
 
-fn extract_channel(value: &Value) -> Option<String> {
-    let payload = value.get("payload");
-    for candidate in [
-        value.get("channel"),
-        value.get("message").and_then(|m| m.get("channel")),
-        payload.and_then(|p| p.get("channel")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("channel")),
-    ] {
-        if let Some(raw) = candidate.and_then(scalar_to_string) {
+fn has_conversation_context(accessor: EventAccessor<'_>) -> bool {
+    const CONVERSATION_FIELDS: [(EventNesting, &str); 4] = [
+        (EventNesting::Top, "conversation_id"),
+        (EventNesting::Message, "conversation_id"),
+        (EventNesting::Payload, "conversation_id"),
+        (EventNesting::PayloadMessage, "conversation_id"),
+    ];
+
+    accessor.has_trimmed_non_empty_scalar(&CONVERSATION_FIELDS)
+}
+
+fn synth_event_id(
+    event_type: &str,
+    from: &str,
+    target: &str,
+    text: &str,
+    thread_id: Option<&str>,
+) -> String {
+    let mut hasher = DefaultHasher::new();
+    event_type.hash(&mut hasher);
+    from.hash(&mut hasher);
+    target.hash(&mut hasher);
+    text.hash(&mut hasher);
+    thread_id.unwrap_or_default().hash(&mut hasher);
+    let digest = hasher.finish();
+    format!("synthetic-{event_type}-{digest:016x}")
+}
+
+fn extract_channel(accessor: EventAccessor<'_>) -> Option<String> {
+    const CHANNEL_FIELDS: [(EventNesting, &str); 4] = [
+        (EventNesting::Top, "channel"),
+        (EventNesting::Message, "channel"),
+        (EventNesting::Payload, "channel"),
+        (EventNesting::PayloadMessage, "channel"),
+    ];
+
+    for (nesting, key) in CHANNEL_FIELDS {
+        if let Some(raw) = accessor.field(nesting, key).and_then(scalar_to_string) {
             if raw.is_empty() {
                 continue;
             }
@@ -299,38 +474,34 @@ fn extract_channel(value: &Value) -> Option<String> {
     None
 }
 
-fn extract_text(value: &Value) -> Option<String> {
-    let payload = value.get("payload");
-    for candidate in [
-        value.get("text"),
-        value.get("body"),
-        value.get("content"),
-        value.get("message").and_then(|m| m.get("text")),
-        value.get("message").and_then(|m| m.get("body")),
-        value.get("message").and_then(|m| m.get("content")),
-        payload.and_then(|p| p.get("text")),
-        payload.and_then(|p| p.get("body")),
-        payload.and_then(|p| p.get("content")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("text")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("body")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("content")),
-    ] {
-        if let Some(text) = candidate.and_then(scalar_to_string) {
-            return Some(text);
-        }
+fn extract_text(accessor: EventAccessor<'_>) -> Option<String> {
+    const TEXT_FIELDS: [(EventNesting, &str); 12] = [
+        (EventNesting::Top, "text"),
+        (EventNesting::Top, "body"),
+        (EventNesting::Top, "content"),
+        (EventNesting::Message, "text"),
+        (EventNesting::Message, "body"),
+        (EventNesting::Message, "content"),
+        (EventNesting::Payload, "text"),
+        (EventNesting::Payload, "body"),
+        (EventNesting::Payload, "content"),
+        (EventNesting::PayloadMessage, "text"),
+        (EventNesting::PayloadMessage, "body"),
+        (EventNesting::PayloadMessage, "content"),
+    ];
+
+    if let Some(text) = accessor.first_string(&TEXT_FIELDS, scalar_to_string, false) {
+        return Some(text);
     }
 
-    if let Some(raw_message) = value.get("message").and_then(Value::as_str) {
+    if let Some(raw_message) = accessor
+        .field(EventNesting::Top, "message")
+        .and_then(Value::as_str)
+    {
         return Some(raw_message.to_string());
     }
-    if let Some(raw_message) = payload
-        .and_then(|p| p.get("message"))
+    if let Some(raw_message) = accessor
+        .field(EventNesting::Payload, "message")
         .and_then(Value::as_str)
     {
         return Some(raw_message.to_string());
@@ -339,31 +510,21 @@ fn extract_text(value: &Value) -> Option<String> {
     None
 }
 
-fn extract_thread_id(value: &Value) -> Option<String> {
-    let payload = value.get("payload");
-    for candidate in [
-        value.get("parent_id"),
-        value.get("thread_id"),
-        value.get("threadId"),
-        value.get("message").and_then(|m| m.get("thread_id")),
-        value.get("message").and_then(|m| m.get("threadId")),
-        payload.and_then(|p| p.get("parent_id")),
-        payload.and_then(|p| p.get("thread_id")),
-        payload.and_then(|p| p.get("threadId")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("thread_id")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("threadId")),
-    ] {
-        if let Some(id) = candidate.and_then(scalar_to_string) {
-            if !id.is_empty() {
-                return Some(id);
-            }
-        }
-    }
-    None
+fn extract_thread_id(accessor: EventAccessor<'_>) -> Option<String> {
+    const THREAD_FIELDS: [(EventNesting, &str); 10] = [
+        (EventNesting::Top, "parent_id"),
+        (EventNesting::Top, "thread_id"),
+        (EventNesting::Top, "threadId"),
+        (EventNesting::Message, "thread_id"),
+        (EventNesting::Message, "threadId"),
+        (EventNesting::Payload, "parent_id"),
+        (EventNesting::Payload, "thread_id"),
+        (EventNesting::Payload, "threadId"),
+        (EventNesting::PayloadMessage, "thread_id"),
+        (EventNesting::PayloadMessage, "threadId"),
+    ];
+
+    accessor.first_string(&THREAD_FIELDS, scalar_to_string, true)
 }
 
 fn sender_value_to_string(value: &Value) -> Option<String> {
@@ -392,48 +553,43 @@ fn scalar_to_string(value: &Value) -> Option<String> {
     }
 }
 
-fn parse_sender_kind(value: &Value) -> SenderKind {
-    let payload = value.get("payload");
+fn parse_sender_kind(accessor: EventAccessor<'_>) -> SenderKind {
+    const KIND_FIELDS: [(EventNesting, &str); 24] = [
+        (EventNesting::Top, "from_type"),
+        (EventNesting::Top, "sender_type"),
+        (EventNesting::Top, "actor_type"),
+        (EventNesting::Top, "source_type"),
+        (EventNesting::Top, "origin_type"),
+        (EventNesting::Top, "sender_kind"),
+        (EventNesting::Message, "from_type"),
+        (EventNesting::Message, "sender_type"),
+        (EventNesting::Message, "actor_type"),
+        (EventNesting::Message, "source_type"),
+        (EventNesting::Message, "origin_type"),
+        (EventNesting::Message, "sender_kind"),
+        (EventNesting::Payload, "from_type"),
+        (EventNesting::Payload, "sender_type"),
+        (EventNesting::Payload, "actor_type"),
+        (EventNesting::Payload, "source_type"),
+        (EventNesting::Payload, "origin_type"),
+        (EventNesting::Payload, "sender_kind"),
+        (EventNesting::PayloadMessage, "from_type"),
+        (EventNesting::PayloadMessage, "sender_type"),
+        (EventNesting::PayloadMessage, "actor_type"),
+        (EventNesting::PayloadMessage, "source_type"),
+        (EventNesting::PayloadMessage, "origin_type"),
+        (EventNesting::PayloadMessage, "sender_kind"),
+    ];
+    const CONTAINER_NESTINGS: [EventNesting; 4] = [
+        EventNesting::Top,
+        EventNesting::Message,
+        EventNesting::Payload,
+        EventNesting::PayloadMessage,
+    ];
 
-    for candidate in [
-        value.get("from_type"),
-        value.get("sender_type"),
-        value.get("actor_type"),
-        value.get("source_type"),
-        value.get("origin_type"),
-        value.get("sender_kind"),
-        value.get("message").and_then(|m| m.get("from_type")),
-        value.get("message").and_then(|m| m.get("sender_type")),
-        value.get("message").and_then(|m| m.get("actor_type")),
-        value.get("message").and_then(|m| m.get("source_type")),
-        value.get("message").and_then(|m| m.get("origin_type")),
-        value.get("message").and_then(|m| m.get("sender_kind")),
-        payload.and_then(|p| p.get("from_type")),
-        payload.and_then(|p| p.get("sender_type")),
-        payload.and_then(|p| p.get("actor_type")),
-        payload.and_then(|p| p.get("source_type")),
-        payload.and_then(|p| p.get("origin_type")),
-        payload.and_then(|p| p.get("sender_kind")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("from_type")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("sender_type")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("actor_type")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("source_type")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("origin_type")),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(|m| m.get("sender_kind")),
-    ] {
-        if let Some(kind) = candidate
+    for (nesting, key) in KIND_FIELDS {
+        if let Some(kind) = accessor
+            .field(nesting, key)
             .and_then(Value::as_str)
             .and_then(parse_sender_kind_label)
         {
@@ -441,15 +597,12 @@ fn parse_sender_kind(value: &Value) -> SenderKind {
         }
     }
 
-    for obj in [
-        value.as_object(),
-        value.get("message").and_then(Value::as_object),
-        payload.and_then(Value::as_object),
-        payload
-            .and_then(|p| p.get("message"))
-            .and_then(Value::as_object),
-    ] {
-        if let Some(kind) = obj.and_then(parse_sender_kind_from_containers) {
+    for nesting in CONTAINER_NESTINGS {
+        if let Some(kind) = accessor
+            .nested(nesting)
+            .and_then(Value::as_object)
+            .and_then(parse_sender_kind_from_containers)
+        {
             return kind;
         }
     }
@@ -501,11 +654,84 @@ pub fn to_inject_request(event: InboundRelayEvent) -> Option<InjectRequest> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     use crate::types::InboundKind;
 
-    use super::{map_ws_broker_command, map_ws_event, to_inject_request};
+    use super::{
+        map_ws_broker_command, map_ws_event, to_inject_request, EventAccessor, EventNesting,
+    };
+
+    fn accessor_fixture() -> Value {
+        json!({
+            "event_id": "evt_top",
+            "type": "message.created",
+            "message": {
+                "event_id": "evt_message",
+                "text": "message-level text"
+            },
+            "payload": {
+                "event_id": "evt_payload",
+                "text": "payload-level text",
+                "message": {
+                    "event_id": "evt_payload_message",
+                    "text": "payload-message text"
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn event_accessor_reads_top_level_nesting() {
+        let event = accessor_fixture();
+        let accessor = EventAccessor::new(&event);
+
+        assert_eq!(
+            accessor
+                .field(EventNesting::Top, "event_id")
+                .and_then(Value::as_str),
+            Some("evt_top")
+        );
+    }
+
+    #[test]
+    fn event_accessor_reads_message_nesting() {
+        let event = accessor_fixture();
+        let accessor = EventAccessor::new(&event);
+
+        assert_eq!(
+            accessor
+                .field(EventNesting::Message, "event_id")
+                .and_then(Value::as_str),
+            Some("evt_message")
+        );
+    }
+
+    #[test]
+    fn event_accessor_reads_payload_nesting() {
+        let event = accessor_fixture();
+        let accessor = EventAccessor::new(&event);
+
+        assert_eq!(
+            accessor
+                .field(EventNesting::Payload, "event_id")
+                .and_then(Value::as_str),
+            Some("evt_payload")
+        );
+    }
+
+    #[test]
+    fn event_accessor_reads_payload_message_nesting() {
+        let event = accessor_fixture();
+        let accessor = EventAccessor::new(&event);
+
+        assert_eq!(
+            accessor
+                .field(EventNesting::PayloadMessage, "event_id")
+                .and_then(Value::as_str),
+            Some("evt_payload_message")
+        );
+    }
 
     #[test]
     fn maps_message_created_top_level() {
@@ -547,6 +773,47 @@ mod tests {
         assert_eq!(event.from, "bob");
         assert_eq!(event.target, "conv_1");
         assert_eq!(event.text, "hi there");
+    }
+
+    #[test]
+    fn maps_message_created_conversation_shape_as_dm_received() {
+        let event = map_ws_event(&json!({
+            "type": "message.created",
+            "conversation_id": "conv_9",
+            "message": {
+                "id": "dm_9",
+                "agent_name": "Lead",
+                "text": "reply from relaycast",
+                "to": {
+                    "name": "Dashboard"
+                }
+            }
+        }))
+        .expect("conversation message should map as dm");
+
+        assert_eq!(event.kind, InboundKind::DmReceived);
+        assert_eq!(event.event_id, "dm_9");
+        assert_eq!(event.from, "Lead");
+        assert_eq!(event.target, "Dashboard");
+        assert_eq!(event.text, "reply from relaycast");
+    }
+
+    #[test]
+    fn dm_target_prefers_explicit_recipient_over_conversation_id() {
+        let event = map_ws_event(&json!({
+            "type": "dm.received",
+            "conversation_id": "conv_1",
+            "target": "Lead",
+            "message": {
+                "id": "dm_2",
+                "agent_name": "Dashboard",
+                "text": "hello lead"
+            }
+        }))
+        .expect("should map dm.received");
+
+        assert_eq!(event.kind, InboundKind::DmReceived);
+        assert_eq!(event.target, "Lead");
     }
 
     #[test]
@@ -652,12 +919,17 @@ mod tests {
     #[test]
     fn ignores_malformed_events() {
         assert!(map_ws_event(&json!({"type":"message.created","channel":"general"})).is_none());
-        assert!(map_ws_event(&json!({
+
+        let mapped = map_ws_event(&json!({
             "type":"message.created",
             "channel":"general",
             "message": {"agent_name":"alice","text":"hello"}
         }))
-        .is_none());
+        .expect("message without explicit id should synthesize an event id");
+        assert_eq!(mapped.kind, InboundKind::MessageCreated);
+        assert_eq!(mapped.from, "alice");
+        assert_eq!(mapped.target, "#general");
+        assert!(mapped.event_id.starts_with("synthetic-message.created-"));
     }
 
     #[test]

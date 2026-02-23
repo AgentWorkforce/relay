@@ -317,6 +317,13 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     await relay.getStatus();
     deps.log('Broker started.');
 
+    // Forward broker stderr to console when --verbose is set
+    if (options.verbose) {
+      relay.onBrokerStderr?.((line: string) => {
+        deps.error(`[broker] ${line}`);
+      });
+    }
+
     if (wantsDashboard) {
       dashboardProcess = startDashboard(paths, dashboardPort, deps);
       deps.log(`Dashboard: http://localhost:${dashboardPort}`);

@@ -100,7 +100,7 @@ function log(level: LogLevel, component: string, msg: string, extra?: Record<str
 
 /**
  * Create a logger for a specific component.
- * @param component - Component name (e.g., 'daemon', 'router', 'connection')
+ * @param component - Component name (e.g., 'broker', 'router', 'connection')
  */
 export function createLogger(component: string) {
   return {
@@ -112,7 +112,7 @@ export function createLogger(component: string) {
 }
 
 // Pre-created loggers for common components
-export const daemonLog = createLogger('daemon');
+export const brokerLog = createLogger('broker');
 export const routerLog = createLogger('router');
 export const connectionLog = createLogger('connection');
 

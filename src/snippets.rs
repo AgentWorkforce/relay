@@ -96,7 +96,8 @@ pub fn ensure_relaycast_mcp_config(
 ) -> io::Result<McpInstallReport> {
     let mut report = McpInstallReport::default();
     let path = root.join(MCP_FILE);
-    let relaycast_server = relaycast_server_config(relay_api_key, relay_base_url, relay_agent_name);
+    let relaycast_server =
+        relaycast_server_config(relay_api_key, relay_base_url, relay_agent_name, None);
 
     if !path.exists() {
         let mut servers = Map::new();
@@ -217,7 +218,21 @@ pub fn relaycast_mcp_config_json(
     relay_base_url: Option<&str>,
     relay_agent_name: Option<&str>,
 ) -> String {
-    let server = relaycast_server_config(relay_api_key, relay_base_url, relay_agent_name);
+    relaycast_mcp_config_json_with_token(relay_api_key, relay_base_url, relay_agent_name, None)
+}
+
+pub fn relaycast_mcp_config_json_with_token(
+    relay_api_key: Option<&str>,
+    relay_base_url: Option<&str>,
+    relay_agent_name: Option<&str>,
+    relay_agent_token: Option<&str>,
+) -> String {
+    let server = relaycast_server_config(
+        relay_api_key,
+        relay_base_url,
+        relay_agent_name,
+        relay_agent_token,
+    );
     let mut servers = Map::new();
     servers.insert(RELAYCAST_SERVER.to_string(), server);
     let mut top = Map::new();
@@ -229,16 +244,35 @@ fn relaycast_server_config(
     relay_api_key: Option<&str>,
     relay_base_url: Option<&str>,
     relay_agent_name: Option<&str>,
+    relay_agent_token: Option<&str>,
 ) -> Value {
     let mut server = Map::new();
-    server.insert("command".into(), Value::String("npx".into()));
-    server.insert(
-        "args".into(),
-        Value::Array(vec![
-            Value::String("-y".into()),
-            Value::String("@relaycast/mcp".into()),
-        ]),
-    );
+    // Allow overriding the MCP command for local development/testing.
+    // e.g. RELAYCAST_MCP_COMMAND="node /path/to/relaycast/packages/mcp/dist/stdio.js"
+    if let Ok(custom_cmd) = std::env::var("RELAYCAST_MCP_COMMAND") {
+        let parts: Vec<&str> = custom_cmd.split_whitespace().collect();
+        if let Some((cmd, args_slice)) = parts.split_first() {
+            server.insert("command".into(), Value::String(cmd.to_string()));
+            server.insert(
+                "args".into(),
+                Value::Array(
+                    args_slice
+                        .iter()
+                        .map(|a| Value::String(a.to_string()))
+                        .collect(),
+                ),
+            );
+        }
+    } else {
+        server.insert("command".into(), Value::String("npx".into()));
+        server.insert(
+            "args".into(),
+            Value::Array(vec![
+                Value::String("-y".into()),
+                Value::String("@relaycast/mcp".into()),
+            ]),
+        );
+    }
 
     let mut env = Map::new();
     // NOTE: RELAY_API_KEY is intentionally omitted from .mcp.json — the Relaycast
@@ -250,6 +284,17 @@ fn relaycast_server_config(
     }
     if let Some(name) = relay_agent_name.map(str::trim).filter(|s| !s.is_empty()) {
         env.insert("RELAY_AGENT_NAME".into(), Value::String(name.to_string()));
+        env.insert(
+            "RELAY_AGENT_TYPE".into(),
+            Value::String("agent".to_string()),
+        );
+        env.insert(
+            "RELAY_STRICT_AGENT_NAME".into(),
+            Value::String("1".to_string()),
+        );
+    }
+    if let Some(token) = relay_agent_token.map(str::trim).filter(|s| !s.is_empty()) {
+        env.insert("RELAY_AGENT_TOKEN".into(), Value::String(token.to_string()));
     }
     if !env.is_empty() {
         server.insert("env".into(), Value::Object(env));
@@ -292,6 +337,14 @@ pub fn ensure_opencode_config(
     }
     if let Some(v) = relay_agent_name.map(str::trim).filter(|s| !s.is_empty()) {
         env.insert("RELAY_AGENT_NAME".into(), Value::String(v.to_string()));
+        env.insert(
+            "RELAY_AGENT_TYPE".into(),
+            Value::String("agent".to_string()),
+        );
+        env.insert(
+            "RELAY_STRICT_AGENT_NAME".into(),
+            Value::String("1".to_string()),
+        );
     }
     if !env.is_empty() {
         mcp_server.insert("environment".into(), Value::Object(env));
@@ -383,6 +436,19 @@ pub async fn configure_relaycast_mcp(
     existing_args: &[String],
     cwd: &Path,
 ) -> Result<Vec<String>> {
+    configure_relaycast_mcp_with_token(cli, agent_name, api_key, base_url, existing_args, cwd, None)
+        .await
+}
+
+pub async fn configure_relaycast_mcp_with_token(
+    cli: &str,
+    agent_name: &str,
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    existing_args: &[String],
+    cwd: &Path,
+    agent_token: Option<&str>,
+) -> Result<Vec<String>> {
     let cli_for_detection = Path::new(cli)
         .file_name()
         .and_then(|name| name.to_str())
@@ -400,7 +466,8 @@ pub async fn configure_relaycast_mcp(
     let mut args: Vec<String> = Vec::new();
 
     if is_claude && !existing_args.iter().any(|a| a.contains("mcp-config")) {
-        let mcp_json = relaycast_mcp_config_json(api_key, base_url, Some(agent_name));
+        let mcp_json =
+            relaycast_mcp_config_json_with_token(api_key, base_url, Some(agent_name), agent_token);
         args.push("--mcp-config".to_string());
         args.push(mcp_json);
     } else if is_codex
@@ -430,6 +497,20 @@ pub async fn configure_relaycast_mcp(
             "--config".to_string(),
             format!("mcp_servers.relaycast.env.RELAY_AGENT_NAME={agent_name}"),
         ]);
+        args.extend([
+            "--config".to_string(),
+            "mcp_servers.relaycast.env.RELAY_AGENT_TYPE=agent".to_string(),
+        ]);
+        args.extend([
+            "--config".to_string(),
+            "mcp_servers.relaycast.env.RELAY_STRICT_AGENT_NAME=1".to_string(),
+        ]);
+        if let Some(token) = agent_token.map(str::trim).filter(|s| !s.is_empty()) {
+            args.extend([
+                "--config".to_string(),
+                format!("mcp_servers.relaycast.env.RELAY_AGENT_TOKEN={token}"),
+            ]);
+        }
     } else if is_gemini || is_droid {
         configure_gemini_droid_mcp(cli, api_key, base_url, is_gemini).await?;
     } else if is_opencode && !existing_args.iter().any(|a| a == "--agent") {
@@ -877,6 +958,41 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         assert_eq!(
             json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_NAME"].as_str(),
             Some("my-agent")
+        );
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_TYPE"].as_str(),
+            Some("agent")
+        );
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_STRICT_AGENT_NAME"].as_str(),
+            Some("1")
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_args_include_strict_agent_name_flag() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp(
+            "codex",
+            "Lead",
+            Some("rk_live_test"),
+            Some("https://api.relaycast.dev"),
+            &[],
+            temp.path(),
+        )
+        .await
+        .expect("configure codex mcp args");
+
+        assert!(
+            args.iter()
+                .any(|arg| arg == "mcp_servers.relaycast.env.RELAY_AGENT_TYPE=agent"),
+            "expected fixed agent type codex config arg"
+        );
+
+        assert!(
+            args.iter()
+                .any(|arg| arg == "mcp_servers.relaycast.env.RELAY_STRICT_AGENT_NAME=1"),
+            "expected strict agent name codex config arg"
         );
     }
 }

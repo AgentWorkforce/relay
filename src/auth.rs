@@ -17,6 +17,8 @@ pub struct CredentialCache {
     pub api_key: String,
     #[serde(default)]
     pub agent_name: Option<String>,
+    #[serde(default)]
+    pub agent_token: Option<String>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -34,6 +36,13 @@ pub enum CacheError {
     Corrupt,
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+struct AuthHttpError {
+    status: StatusCode,
+    message: String,
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +165,31 @@ impl AuthClient {
     /// token while keeping the same agent identity and name. Falls back to full
     /// `refresh_session` if the agent no longer exists (404).
     pub async fn rotate_token(&self, cached: &CredentialCache) -> Result<AuthSession> {
+        match self.rotate_token_no_fallback(cached).await {
+            Ok(session) => Ok(session),
+            Err(error) if is_not_found(&error) => {
+                let agent_name = cached
+                    .agent_name
+                    .as_deref()
+                    .context("cannot rotate token without agent name")?;
+                let api_key = normalize_workspace_key(&cached.api_key)
+                    .context("cached api_key is not a valid workspace key")?;
+                tracing::info!(
+                    target = "relay_broker::auth",
+                    agent_name = %agent_name,
+                    "agent not found during token rotation, falling back to re-registration"
+                );
+                let registration = self
+                    .register_agent_with_workspace_key(&api_key, Some(agent_name), false)
+                    .await
+                    .context("failed to re-register after rotate-token 404")?;
+                self.finish_session(api_key, Some(cached.workspace_id.clone()), registration)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn rotate_token_no_fallback(&self, cached: &CredentialCache) -> Result<AuthSession> {
         let agent_name = cached
             .agent_name
             .as_deref()
@@ -172,17 +206,9 @@ impl AuthClient {
             .bearer_auth(&api_key)
             .send()
             .await?;
-
-        if response.status() == StatusCode::NOT_FOUND {
-            tracing::info!(
-                target = "relay_broker::auth",
-                agent_name = %agent_name,
-                "agent not found during token rotation, falling back to re-registration"
-            );
-            return self.refresh_session(cached).await;
+        if !response.status().is_success() {
+            return Err(auth_http_error(response, "rotate-token", Some(agent_name)).await);
         }
-
-        let response = response.error_for_status()?;
         let body: Value = response.json().await?;
         let data = body.get("data").unwrap_or(&body);
         let token = data
@@ -196,6 +222,7 @@ impl AuthClient {
             agent_id: cached.agent_id.clone(),
             api_key: cached.api_key.clone(),
             agent_name: Some(agent_name.to_string()),
+            agent_token: Some(token.clone()),
             updated_at: Utc::now(),
         };
         self.store.save(&creds)?;
@@ -243,6 +270,61 @@ impl AuthClient {
         let preferred_name = requested_name.or(cached.and_then(|c| c.agent_name.as_deref()));
         let mut auth_rejections = Vec::new();
 
+        if !strict_name {
+            if let Some(cached_creds) = cached {
+                if cached_creds.agent_name.is_some() {
+                    if let Some(cached_key) = normalize_workspace_key(&cached_creds.api_key) {
+                        if candidates
+                            .iter()
+                            .any(|(_, existing)| existing == &cached_key)
+                        {
+                            match self.rotate_token_no_fallback(cached_creds).await {
+                                Ok(session) => return Ok(session),
+                                Err(error) if is_rate_limited(&error) => {
+                                    if let Some(session) = cached_session_from_token(
+                                        cached_creds,
+                                        &cached_key,
+                                        requested_name,
+                                        strict_name,
+                                    ) {
+                                        tracing::warn!(
+                                            target = "relay_broker::auth",
+                                            agent_name = ?cached_creds.agent_name,
+                                            "using cached agent token due relaycast rotate-token rate limit"
+                                        );
+                                        return Ok(session);
+                                    }
+                                    tracing::warn!(
+                                        target = "relay_broker::auth",
+                                        error = %error,
+                                        "cached token rotation was rate-limited; falling back to registration"
+                                    );
+                                }
+                                Err(error) if is_not_found(&error) => {
+                                    tracing::info!(
+                                        target = "relay_broker::auth",
+                                        agent_name = ?cached_creds.agent_name,
+                                        "cached agent not found during startup rotation; falling back to registration"
+                                    );
+                                }
+                                Err(error) if is_auth_rejection(&error) => {
+                                    tracing::warn!(
+                                        target = "relay_broker::auth",
+                                        error = %error,
+                                        "cached token rotation rejected; falling back to registration"
+                                    );
+                                }
+                                Err(error) => {
+                                    return Err(error)
+                                        .context("failed rotating cached relaycast token");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         for (source, key) in &candidates {
             match self
                 .register_agent_with_workspace_key(key, preferred_name, strict_name)
@@ -253,6 +335,25 @@ impl AuthClient {
                 }
                 Err(error) if is_auth_rejection(&error) => {
                     auth_rejections.push(format!("{source} key rejected"));
+                }
+                Err(error) if is_rate_limited(&error) => {
+                    if let Some(cached_creds) = cached {
+                        if let Some(session) = cached_session_from_token(
+                            cached_creds,
+                            key,
+                            requested_name,
+                            strict_name,
+                        ) {
+                            tracing::warn!(
+                                target = "relay_broker::auth",
+                                source = %source,
+                                agent_name = ?cached_creds.agent_name,
+                                "using cached agent token due relaycast registration rate limit"
+                            );
+                            return Ok(session);
+                        }
+                    }
+                    auth_rejections.push(format!("{source} key rate-limited"));
                 }
                 Err(error) => {
                     return Err(error).context(format!(
@@ -301,6 +402,7 @@ impl AuthClient {
             agent_id,
             api_key: workspace_key,
             agent_name: Some(agent_name),
+            agent_token: Some(token.clone()),
             updated_at: Utc::now(),
         };
         self.store.save(&creds)?;
@@ -371,7 +473,9 @@ impl AuthClient {
                 }
             }
 
-            let response = response.error_for_status()?;
+            if !response.status().is_success() {
+                return Err(auth_http_error(response, "registration", Some(&name)).await);
+            }
             let body: Value = response.json().await?;
             let data = body.get("data").unwrap_or(&body);
             let token = data
@@ -413,10 +517,119 @@ fn normalize_workspace_key(raw: &str) -> Option<String> {
     }
 }
 
+fn cached_session_from_token(
+    cached: &CredentialCache,
+    workspace_key: &str,
+    requested_name: Option<&str>,
+    strict_name: bool,
+) -> Option<AuthSession> {
+    let normalized_cached_key = normalize_workspace_key(&cached.api_key)?;
+    if normalized_cached_key != workspace_key {
+        return None;
+    }
+
+    if strict_name
+        && requested_name.is_some_and(|requested| cached.agent_name.as_deref() != Some(requested))
+    {
+        return None;
+    }
+
+    let token = cached.agent_token.clone()?;
+    let mut credentials = cached.clone();
+    credentials.updated_at = Utc::now();
+    Some(AuthSession { credentials, token })
+}
+
 fn is_auth_rejection(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<reqwest::Error>()
-        .and_then(reqwest::Error::status)
+    auth_http_status(err)
         .is_some_and(|status| status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN)
+}
+
+fn is_not_found(err: &anyhow::Error) -> bool {
+    auth_http_status(err).is_some_and(|status| status == StatusCode::NOT_FOUND)
+}
+
+fn is_rate_limited(err: &anyhow::Error) -> bool {
+    auth_http_status(err).is_some_and(|status| status == StatusCode::TOO_MANY_REQUESTS)
+}
+
+fn auth_http_status(err: &anyhow::Error) -> Option<StatusCode> {
+    err.downcast_ref::<AuthHttpError>()
+        .map(|e| e.status)
+        .or_else(|| {
+            err.downcast_ref::<reqwest::Error>()
+                .and_then(reqwest::Error::status)
+        })
+}
+
+async fn auth_http_error(
+    response: reqwest::Response,
+    operation: &str,
+    agent_name: Option<&str>,
+) -> anyhow::Error {
+    let status = response.status();
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let body_text = response.text().await.unwrap_or_default();
+    let detail = relaycast_error_detail(&body_text);
+
+    let message = if status == StatusCode::TOO_MANY_REQUESTS {
+        let retry_text = retry_after
+            .map(|value| format!("; retry after {value}s"))
+            .unwrap_or_default();
+        match (agent_name, detail) {
+            (Some(name), Some(detail)) => {
+                format!("relaycast {operation} for '{name}' was rate-limited{retry_text}: {detail}")
+            }
+            (Some(name), None) => {
+                format!("relaycast {operation} for '{name}' was rate-limited{retry_text}")
+            }
+            (None, Some(detail)) => {
+                format!("relaycast {operation} was rate-limited{retry_text}: {detail}")
+            }
+            (None, None) => format!("relaycast {operation} was rate-limited{retry_text}"),
+        }
+    } else {
+        match (agent_name, detail) {
+            (Some(name), Some(detail)) => {
+                format!("relaycast {operation} failed for '{name}' ({status}): {detail}")
+            }
+            (Some(name), None) => format!("relaycast {operation} failed for '{name}' ({status})"),
+            (None, Some(detail)) => format!("relaycast {operation} failed ({status}): {detail}"),
+            (None, None) => format!("relaycast {operation} failed ({status})"),
+        }
+    };
+
+    anyhow::Error::new(AuthHttpError { status, message })
+}
+
+fn relaycast_error_detail(body: &str) -> Option<String> {
+    let parsed: Value = serde_json::from_str(body).ok()?;
+    parsed
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            parsed
+                .pointer("/error/code")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            parsed
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
 }
 
 #[cfg(test)]
@@ -495,6 +708,7 @@ mod tests {
             agent_id: "a_old".into(),
             api_key: "rk_live_cached".into(),
             agent_name: Some("lead".into()),
+            agent_token: None,
             updated_at: chrono::Utc::now(),
         };
         fs::write(&cache_path, serde_json::to_vec(&cached).unwrap()).unwrap();
@@ -565,6 +779,7 @@ mod tests {
             agent_id: "a_old".into(),
             api_key: "rk_live_cached".into(),
             agent_name: Some("lead".into()),
+            agent_token: None,
             updated_at: chrono::Utc::now(),
         };
 
@@ -608,6 +823,7 @@ mod tests {
             agent_id: "a_old".into(),
             api_key: "rk_live_stale".into(),
             agent_name: Some("lead".into()),
+            agent_token: None,
             updated_at: chrono::Utc::now(),
         };
         fs::write(&cache_path, serde_json::to_vec(&cached).unwrap()).unwrap();
@@ -648,6 +864,7 @@ mod tests {
             agent_id: "a_old".into(),
             api_key: "rk_live_cached".into(),
             agent_name: Some("lead".into()),
+            agent_token: None,
             updated_at: chrono::Utc::now(),
         };
         fs::write(&cache_path, serde_json::to_vec(&cached).unwrap()).unwrap();
@@ -696,6 +913,7 @@ mod tests {
             agent_id: "a_old".into(),
             api_key: "rk_live_cached".into(),
             agent_name: Some("lead".into()),
+            agent_token: None,
             updated_at: chrono::Utc::now(),
         };
         fs::write(&cache_path, serde_json::to_vec(&cached).unwrap()).unwrap();
@@ -734,6 +952,7 @@ mod tests {
             agent_id: "a_old".into(),
             api_key: "rk_live_cached".into(),
             agent_name: Some("lead".into()),
+            agent_token: None,
             updated_at: chrono::Utc::now(),
         };
 
@@ -775,6 +994,7 @@ mod tests {
             agent_id: "a_old".into(),
             api_key: "rk_live_cached".into(),
             agent_name: Some("lead".into()),
+            agent_token: None,
             updated_at: chrono::Utc::now(),
         };
 
@@ -783,6 +1003,197 @@ mod tests {
         assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
         rotate_404.assert_hits(1);
         register.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn startup_prefers_rotate_token_over_register() {
+        clear_relay_env();
+        let server = MockServer::start();
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"token":"at_live_rotated_startup"}}"#);
+        });
+        let register = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(500)
+                .header("content-type", "application/json")
+                .body(r#"{"error":"should_not_register"}"#);
+        });
+
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("relaycast.json");
+        let cached = CredentialCache {
+            workspace_id: "ws_cached".into(),
+            agent_id: "a_old".into(),
+            api_key: "rk_live_cached".into(),
+            agent_name: Some("lead".into()),
+            agent_token: None,
+            updated_at: chrono::Utc::now(),
+        };
+        fs::write(&cache_path, serde_json::to_vec(&cached).unwrap()).unwrap();
+
+        let client = AuthClient::new(server.base_url(), CredentialStore::new(cache_path));
+        let session = client.startup_session(Some("lead")).await.unwrap();
+
+        assert_eq!(session.token, "at_live_rotated_startup");
+        rotate.assert_hits(1);
+        register.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn startup_uses_cached_agent_token_when_rotate_is_rate_limited() {
+        clear_relay_env();
+        let server = MockServer::start();
+        let rate_limit_body =
+            include_str!("../tests/fixtures/contracts/wave0/startup-429-rate-limit.json");
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(429)
+                .header("content-type", "application/json")
+                .body(rate_limit_body);
+        });
+        let register = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(429)
+                .header("content-type", "application/json")
+                .body(rate_limit_body);
+        });
+
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("relaycast.json");
+        let cached = CredentialCache {
+            workspace_id: "ws_cached".into(),
+            agent_id: "a_old".into(),
+            api_key: "rk_live_cached".into(),
+            agent_name: Some("lead".into()),
+            agent_token: Some("at_live_cached_token".into()),
+            updated_at: chrono::Utc::now(),
+        };
+        fs::write(&cache_path, serde_json::to_vec(&cached).unwrap()).unwrap();
+
+        let client = AuthClient::new(server.base_url(), CredentialStore::new(cache_path));
+        let session = client.startup_session(Some("lead")).await.unwrap();
+
+        assert_eq!(session.token, "at_live_cached_token");
+        assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
+        rotate.assert_hits(1);
+        register.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn startup_429_degraded_contract_requires_registration_probe() {
+        clear_relay_env();
+        let server = MockServer::start();
+        let rate_limit_body =
+            include_str!("../tests/fixtures/contracts/wave0/startup-429-rate-limit.json");
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(429)
+                .header("content-type", "application/json")
+                .header("retry-after", "60")
+                .body(rate_limit_body);
+        });
+        let register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(429)
+                .header("content-type", "application/json")
+                .header("retry-after", "60")
+                .body(rate_limit_body);
+        });
+
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("relaycast.json");
+        let cached = CredentialCache {
+            workspace_id: "ws_cached".into(),
+            agent_id: "a_old".into(),
+            api_key: "rk_live_cached".into(),
+            agent_name: Some("lead".into()),
+            agent_token: Some("at_live_cached_token".into()),
+            updated_at: chrono::Utc::now(),
+        };
+        fs::write(&cache_path, serde_json::to_vec(&cached).unwrap()).unwrap();
+
+        let client = AuthClient::new(server.base_url(), CredentialStore::new(cache_path));
+        let session = client.startup_session(Some("lead")).await.unwrap();
+
+        assert_eq!(session.token, "at_live_cached_token");
+        rotate.assert_hits(1);
+        // TODO(contract-wave0-startup-429): degraded startup must still perform one
+        // registration-path probe so startup telemetry can explicitly mark 429 mode.
+        register.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn startup_rate_limit_error_includes_retry_hint_when_no_cached_token() {
+        clear_relay_env();
+        let server = MockServer::start();
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(429)
+                .header("content-type", "application/json")
+                .header("retry-after", "60")
+                .body(r#"{"ok":false,"error":{"code":"rate_limit_exceeded","message":"Rate limit exceeded. 60 requests per minute allowed for free plan."}}"#);
+        });
+        let cached_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(429)
+                .header("content-type", "application/json")
+                .header("retry-after", "60")
+                .body(r#"{"ok":false,"error":{"code":"rate_limit_exceeded","message":"Rate limit exceeded. 60 requests per minute allowed for free plan."}}"#);
+        });
+        let workspace = server.mock(|when, then| {
+            when.method(POST).path("/v1/workspaces");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_new"}}"#);
+        });
+        let fresh_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_new");
+            then.status(429)
+                .header("content-type", "application/json")
+                .header("retry-after", "60")
+                .body(r#"{"ok":false,"error":{"code":"rate_limit_exceeded","message":"Rate limit exceeded. 60 requests per minute allowed for free plan."}}"#);
+        });
+
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("relaycast.json");
+        let cached = CredentialCache {
+            workspace_id: "ws_cached".into(),
+            agent_id: "a_old".into(),
+            api_key: "rk_live_cached".into(),
+            agent_name: Some("lead".into()),
+            agent_token: None,
+            updated_at: chrono::Utc::now(),
+        };
+        fs::write(&cache_path, serde_json::to_vec(&cached).unwrap()).unwrap();
+
+        let client = AuthClient::new(server.base_url(), CredentialStore::new(cache_path));
+        let err = client.startup_session(Some("lead")).await.unwrap_err();
+        let rendered = format!("{err:#}");
+
+        assert!(rendered.contains("failed registering agent with fresh workspace key"));
+        assert!(rendered.contains("rate-limited"));
+        assert!(rendered.contains("retry after 60s"));
+        rotate.assert_hits(1);
+        cached_register.assert_hits(1);
+        workspace.assert_hits(1);
+        fresh_register.assert_hits(1);
     }
 
     #[test]

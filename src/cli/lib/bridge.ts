@@ -39,7 +39,7 @@ export async function runBridgeCommand(
   deps.log('Bridge Mode - Multi-Project Orchestration');
   deps.log('─'.repeat(40));
 
-  const { valid, missing } = deps.validateBridgeDaemons(projects);
+  const { valid, missing } = deps.validateBridgeBrokers(projects);
   if (missing.length > 0) {
     deps.error('');
     deps.error('Missing brokers for:');

@@ -5,7 +5,7 @@
 # This script documents and tests the MCP detection logic in check-inbox.sh.
 # The logic checks BOTH conditions before showing MCP tools reference:
 # 1. .mcp.json file exists in PROJECT_ROOT
-# 2. Relay daemon socket is accessible at RELAY_SOCKET path
+# 2. Relay broker socket is accessible at RELAY_SOCKET path
 #
 # Usage:
 #   ./check-inbox.test.sh           # Run all tests

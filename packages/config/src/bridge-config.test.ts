@@ -10,7 +10,7 @@ import {
   resolvePath,
   getDefaultLeadName,
   resolveProjects,
-  validateDaemons,
+  validateBrokers,
 } from './bridge-config.js';
 
 // Mock fs module
@@ -97,8 +97,8 @@ describe('Bridge Config', () => {
     });
   });
 
-  describe('validateDaemons', () => {
-    it('separates projects with and without running daemons', () => {
+  describe('validateBrokers', () => {
+    it('separates projects with and without running brokers', () => {
       vi.mocked(fs.existsSync).mockImplementation((p) => {
         return String(p).includes('auth');
       });
@@ -108,7 +108,7 @@ describe('Bridge Config', () => {
         { path: '/frontend', id: 'frontend', socketPath: '/tmp/frontend/relay.sock', leadName: 'Frontend', cli: 'claude' },
       ];
 
-      const { valid, missing } = validateDaemons(projects);
+      const { valid, missing } = validateBrokers(projects);
 
       expect(valid).toHaveLength(1);
       expect(valid[0].id).toBe('auth');
@@ -116,17 +116,18 @@ describe('Bridge Config', () => {
       expect(missing[0].id).toBe('frontend');
     });
 
-    it('returns all valid when all daemons running', () => {
+    it('returns all valid when all brokers are running', () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
 
       const projects = [
         { path: '/auth', id: 'auth', socketPath: '/tmp/auth/relay.sock', leadName: 'Auth', cli: 'claude' },
       ];
 
-      const { valid, missing } = validateDaemons(projects);
+      const { valid, missing } = validateBrokers(projects);
 
       expect(valid).toHaveLength(1);
       expect(missing).toHaveLength(0);
     });
+
   });
 });

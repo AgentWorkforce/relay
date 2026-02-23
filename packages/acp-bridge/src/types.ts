@@ -7,9 +7,9 @@
  * Configuration for the ACP Bridge
  */
 export interface ACPBridgeConfig {
-  /** Agent name to use when connecting to relay daemon */
+  /** Agent name to use when connecting to relay broker */
   agentName: string;
-  /** Path to relay daemon socket */
+  /** Path to relay broker socket */
   socketPath?: string;
   /** Whether to enable debug logging */
   debug?: boolean;
@@ -76,7 +76,7 @@ export interface SessionMessage {
 }
 
 /**
- * Relay message received from the daemon
+ * Relay message received from the broker
  */
 export interface RelayMessage {
   /** Message ID */

@@ -25,7 +25,8 @@ export function formatDryRunReport(report: DryRunReport): string {
     const maxCliLen = Math.max(...report.agents.map((a) => a.cli.length));
     for (const agent of report.agents) {
       const stepLabel = agent.stepCount === 1 ? '1 step' : `${agent.stepCount} steps`;
-      lines.push(`  ${agent.name.padEnd(maxNameLen)}  ${agent.cli.padEnd(maxCliLen)}  ${stepLabel}`);
+      const cwdInfo = agent.cwd ? ` [cwd: ${agent.cwd}]` : '';
+      lines.push(`  ${agent.name.padEnd(maxNameLen)}  ${agent.cli.padEnd(maxCliLen)}  ${stepLabel}${cwdInfo}`);
     }
     lines.push('');
   }
@@ -40,6 +41,16 @@ export function formatDryRunReport(report: DryRunReport): string {
         const prefix = i === 0 ? `  Wave ${String(wave.wave).padStart(2)}:` : '          ';
         lines.push(`${prefix}  ${step.name} (${step.agent})`);
       }
+    }
+    lines.push('');
+  }
+
+  // Resource estimation
+  if (report.estimatedPeakConcurrency !== undefined) {
+    lines.push(`Resource Estimate:`);
+    lines.push(`  Peak Concurrency: ${report.estimatedPeakConcurrency} agents`);
+    if (report.estimatedTotalAgentSteps !== undefined) {
+      lines.push(`  Total Agent Steps: ${report.estimatedTotalAgentSteps}`);
     }
     lines.push('');
   }

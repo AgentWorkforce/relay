@@ -1,0 +1,53 @@
+{
+  "id": "traj_b16jefg2v83j",
+  "version": 1,
+  "task": {
+    "title": "Fix missing Relaycast->Dashboard message visibility in local dashboard"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-23T14:59:11.218Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-23T15:09:48.421Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_8ddlwpv64idb",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-23T15:09:48.421Z",
+      "events": [
+        {
+          "ts": 1771859388423,
+          "type": "decision",
+          "content": "Route dashboard-originated injections through broker Relaycast identity: Route dashboard-originated injections through broker Relaycast identity",
+          "raw": {
+            "question": "Route dashboard-originated injections through broker Relaycast identity",
+            "chosen": "Route dashboard-originated injections through broker Relaycast identity",
+            "alternatives": [],
+            "reasoning": "Workers were instructed to reply to literal Dashboard, which broker WS cannot receive when broker identity is broker-*; using broker identity for delivery and preserving Dashboard as display fixes inbound visibility."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-23T15:09:53.015Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": [],
+  "_trace": {
+    "startRef": "c9eb63391ce4bad29bc5bfa9f1e40f3fc2f8701f",
+    "endRef": "c9eb63391ce4bad29bc5bfa9f1e40f3fc2f8701f"
+  },
+  "completedAt": "2026-02-23T15:09:53.015Z",
+  "retrospective": {
+    "summary": "Fixed missing Relaycast agent->Dashboard visibility by routing dashboard-originated deliveries through broker identity and normalizing UI target/display back to Dashboard; added DM participant-based target resolution and tests; rebuilt release broker binary.",
+    "approach": "Standard approach",
+    "confidence": 0.87
+  }
+}

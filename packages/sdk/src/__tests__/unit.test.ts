@@ -6,12 +6,13 @@
  */
 import assert from "node:assert/strict";
 import { join, sep } from "node:path";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 import test from "node:test";
 
 import { AgentRelay, type Agent } from "../relay.js";
-import { getLogs, listLoggedAgents } from "../logs.js";
+import { followLogs, getLogs, listLoggedAgents, type LogFollowEvent } from "../logs.js";
 
 // ── waitForAny ──────────────────────────────────────────────────────────────
 
@@ -110,6 +111,22 @@ function makeFakeAgentWithControls(
   };
 }
 
+async function waitForLogEvent(
+  events: LogFollowEvent[],
+  predicate: (event: LogFollowEvent) => boolean,
+  timeoutMs = 2_000,
+): Promise<LogFollowEvent> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const matched = events.find(predicate);
+    if (matched) {
+      return matched;
+    }
+    await sleep(20);
+  }
+  throw new Error("Timed out waiting for log follow event");
+}
+
 test("waitForAny: returns first agent to exit", async () => {
   const fast = makeFakeAgent("fast", 50);
   const slow = makeFakeAgent("slow", 5_000);
@@ -203,6 +220,108 @@ test("listLoggedAgents: lists agent names from log files", async () => {
 test("listLoggedAgents: returns empty for missing directory", async () => {
   const agents = await listLoggedAgents("/tmp/definitely-nonexistent-dir");
   assert.deepEqual(agents, []);
+});
+
+test("followLogs: emits error for missing logs by default", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "relay-test-follow-"));
+  const events: LogFollowEvent[] = [];
+
+  try {
+    const handle = followLogs("MissingAgent", {
+      logsDir: dir,
+      pollMs: 50,
+      onEvent: (event) => events.push(event),
+    });
+
+    const event = await waitForLogEvent(events, (item) => item.type === "error");
+    assert.equal(event.type, "error");
+    if (event.type === "error") {
+      assert.match(event.error, /No local logs/);
+      assert.ok(Array.isArray(event.availableAgents));
+    }
+
+    handle.unsubscribe();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("followLogs: emits history then incremental log content", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "relay-test-follow-"));
+  const logFile = join(dir, "Worker.log");
+  const events: LogFollowEvent[] = [];
+
+  try {
+    await writeFile(logFile, "line1\nline2\n");
+
+    const handle = followLogs("Worker", {
+      logsDir: dir,
+      historyLines: 1,
+      pollMs: 50,
+      onEvent: (event) => events.push(event),
+    });
+
+    const historyEvent = await waitForLogEvent(events, (item) => item.type === "history");
+    assert.equal(historyEvent.type, "history");
+    if (historyEvent.type === "history") {
+      assert.deepEqual(historyEvent.lines, ["line2"]);
+    }
+
+    await appendFile(logFile, "line3\nline4\n");
+    const deltaEvent = await waitForLogEvent(
+      events,
+      (item) => item.type === "log" && item.content.includes("line3"),
+    );
+    assert.equal(deltaEvent.type, "log");
+    if (deltaEvent.type === "log") {
+      assert.match(deltaEvent.content, /line3/);
+      assert.match(deltaEvent.content, /line4/);
+    }
+
+    const logEventsBeforeStop = events.filter((item) => item.type === "log").length;
+    handle.unsubscribe();
+    await appendFile(logFile, "line5\n");
+    await sleep(120);
+    const logEventsAfterStop = events.filter((item) => item.type === "log").length;
+    assert.equal(logEventsAfterStop, logEventsBeforeStop);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("followLogs: allowMissing keeps stream open until file appears", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "relay-test-follow-"));
+  const logFile = join(dir, "LateWorker.log");
+  const events: LogFollowEvent[] = [];
+
+  try {
+    const handle = followLogs("LateWorker", {
+      logsDir: dir,
+      allowMissing: true,
+      pollMs: 50,
+      onEvent: (event) => events.push(event),
+    });
+
+    const historyEvent = await waitForLogEvent(events, (item) => item.type === "history");
+    assert.equal(historyEvent.type, "history");
+    if (historyEvent.type === "history") {
+      assert.deepEqual(historyEvent.lines, []);
+    }
+
+    await writeFile(logFile, "boot\n");
+    const deltaEvent = await waitForLogEvent(
+      events,
+      (item) => item.type === "log" && item.content.includes("boot"),
+    );
+    assert.equal(deltaEvent.type, "log");
+    if (deltaEvent.type === "log") {
+      assert.match(deltaEvent.content, /boot/);
+    }
+
+    handle.unsubscribe();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 // ── waitForIdle ────────────────────────────────────────────────────────────

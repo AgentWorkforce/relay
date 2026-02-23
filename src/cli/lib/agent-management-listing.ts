@@ -8,6 +8,9 @@ type ExitFn = (code: number) => never;
 export interface ListingWorkerInfo {
   name: string;
   runtime?: string;
+  cli?: string;
+  model?: string;
+  team?: string;
   pid?: number;
 }
 
@@ -20,18 +23,19 @@ interface CombinedAgent {
   name: string;
   status: string;
   cli: string;
+  model?: string;
   team?: string;
   pid?: number;
   location?: string;
-  daemonId?: string;
+  brokerId?: string;
 }
 
-interface RemoteDaemonAgentsResponse {
+interface RemoteBrokerAgentsResponse {
   allAgents: Array<{
     name: string;
     status: string;
-    daemonId: string;
-    daemonName: string;
+    brokerId: string;
+    brokerName: string;
   }>;
 }
 
@@ -59,6 +63,12 @@ function shouldHideLocalAgentByDefault(name: string | undefined): boolean {
   return HIDDEN_LOCAL_AGENT_NAMES.has(name);
 }
 
+function getWorkerLogsDirCandidates(projectRoot: string): string[] {
+  const preferredDir = path.join(projectRoot, '.agent-relay', 'team', 'worker-logs');
+  const legacyDir = getWorkerLogsDir(projectRoot);
+  return preferredDir === legacyDir ? [preferredDir] : [preferredDir, legacyDir];
+}
+
 function readCloudConfig(deps: AgentManagementListingDependencies): CloudConfig | undefined {
   const configPath = path.join(deps.getDataDir(), 'cloud-config.json');
   if (!deps.fileExists(configPath)) {
@@ -83,20 +93,26 @@ function readCloudConfig(deps: AgentManagementListingDependencies): CloudConfig 
 async function fetchRemoteAgents(
   deps: AgentManagementListingDependencies,
   config: CloudConfig
-): Promise<RemoteDaemonAgentsResponse | undefined> {
-  const response = await deps.fetch(`${config.cloudUrl}/api/daemons/agents`, {
+): Promise<RemoteBrokerAgentsResponse | undefined> {
+  const requestInit: RequestInit = {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ agents: [] }),
-  });
+  };
+
+  const response = await deps.fetch(`${config.cloudUrl}/api/brokers/agents`, requestInit);
+  if (response.status === 404) {
+    throw new Error(
+      'BREAKING CHANGE: daemon endpoints are no longer supported. Cloud must expose /api/brokers/agents.'
+    );
+  }
   if (!response.ok) {
     return undefined;
   }
-
-  return (await response.json()) as RemoteDaemonAgentsResponse;
+  return (await response.json()) as RemoteBrokerAgentsResponse;
 }
 
 export async function runAgentsCommand(
@@ -112,8 +128,9 @@ export async function runAgentsCommand(
     .map((worker) => ({
       name: worker.name || 'unknown',
       status: 'ONLINE',
-      cli: worker.runtime || '-',
-      team: undefined,
+      cli: worker.cli || worker.runtime || '-',
+      model: worker.model,
+      team: worker.team,
       pid: worker.pid,
       location: 'local',
     }));
@@ -137,8 +154,8 @@ export async function runAgentsCommand(
               name: agent.name,
               status: agent.status.toUpperCase(),
               cli: '-',
-              location: agent.daemonName,
-              daemonId: agent.daemonId,
+              location: agent.brokerName,
+              brokerId: agent.brokerId,
             });
           }
         }
@@ -175,14 +192,15 @@ export async function runAgentsCommand(
       );
     });
   } else {
-    deps.log('NAME            STATUS   CLI       TEAM');
-    deps.log('─'.repeat(50));
+    deps.log('NAME            STATUS   CLI       MODEL          TEAM');
+    deps.log('─'.repeat(65));
     combined.forEach((agent) => {
       deps.log(
         formatTableRow([
           { value: agent.name, width: 15 },
           { value: agent.status, width: 8 },
           { value: agent.cli, width: 9 },
+          { value: agent.model ?? '-', width: 14 },
           { value: agent.team ?? '-' },
         ])
       );
@@ -214,7 +232,7 @@ export async function runWhoCommand(
         .filter((agent) => (options.all ? true : !shouldHideLocalAgentByDefault(agent.name)))
         .map((agent) => ({
           name: agent.name,
-          cli: agent.runtime,
+          cli: agent.cli || agent.runtime,
           lastSeen: deps.nowIso(),
           status: 'ONLINE',
         }))
@@ -253,12 +271,16 @@ export async function runAgentsLogsCommand(
   options: { lines?: string; follow?: boolean },
   deps: AgentManagementListingDependencies
 ): Promise<void> {
-  const logsDir = getWorkerLogsDir(deps.getProjectRoot());
-  const logFile = path.join(logsDir, `${name}.log`);
+  const logFileCandidates = getWorkerLogsDirCandidates(deps.getProjectRoot())
+    .map((logsDir) => path.join(logsDir, `${name}.log`));
+  const logFile = logFileCandidates.find((candidate) => deps.fileExists(candidate));
 
-  if (!deps.fileExists(logFile)) {
+  if (!logFile) {
     deps.error(`No logs found for agent "${name}"`);
-    deps.log(`Log file not found: ${logFile}`);
+    deps.log(`Checked paths:`);
+    for (const candidate of logFileCandidates) {
+      deps.log(`- ${candidate}`);
+    }
     deps.log(`Run 'agent-relay agents' to see available agents`);
     deps.exit(1);
     return;

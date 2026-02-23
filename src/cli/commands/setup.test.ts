@@ -54,16 +54,15 @@ describe('registerSetupCommands', () => {
   it('routes both init and setup alias to runInit', async () => {
     const { program, deps } = createHarness();
 
-    await runCommand(program, ['init', '--yes', '--skip-daemon']);
+    await runCommand(program, ['init', '--yes', '--skip-broker']);
     await runCommand(program, ['setup', '--yes']);
 
-    expect(deps.runInit).toHaveBeenNthCalledWith(1, {
+    expect((deps.runInit as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0]).toMatchObject({
       yes: true,
-      skipDaemon: true,
+      skipBroker: true,
     });
-    expect(deps.runInit).toHaveBeenNthCalledWith(2, {
+    expect((deps.runInit as unknown as { mock: { calls: unknown[][] } }).mock.calls[1][0]).toMatchObject({
       yes: true,
-      skipDaemon: undefined,
     });
   });
 

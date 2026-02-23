@@ -4,7 +4,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 const withId = (schema: unknown, id: string) =>
   Object.assign(schema as Record<string, unknown>, { $id: id });
 
-// Relay connection defaults (used by daemon + wrapper)
+// Relay connection defaults (used by broker + wrapper)
 export const ConnectionConfigSchema = z.object({
   maxFrameBytes: z.number().int().positive(),
   heartbeatMs: z.number().int().positive(),

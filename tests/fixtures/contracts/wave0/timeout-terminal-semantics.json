@@ -1,0 +1,6 @@
+{
+  "event_id": "evt_timeout_contract",
+  "target": "worker",
+  "expected_terminal_status": "failed",
+  "late_event_kind": "delivery_ack"
+}

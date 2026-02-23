@@ -344,17 +344,17 @@ export function listWorkspaceRepos(baseDir: string): string[] {
 }
 
 /**
- * Runtime configuration that the daemon writes when it starts.
+ * Runtime configuration that the broker writes when it starts.
  * CLI commands can read this to use matching storage configuration.
  */
 export interface RuntimeConfig {
-  /** Storage type currently in use by the daemon */
+  /** Storage type currently in use by the broker */
   storageType?: string;
-  /** Daemon PID */
-  daemonPid?: number;
-  /** Timestamp when daemon started */
+  /** Broker PID */
+  brokerPid?: number;
+  /** Timestamp when broker started */
   startedAt?: string;
-  /** Daemon version */
+  /** Broker version */
   version?: string;
 }
 
@@ -362,7 +362,7 @@ const RUNTIME_CONFIG_FILE = 'runtime.json';
 
 /**
  * Save runtime configuration for the current project.
- * Called by the daemon when it starts.
+ * Called by the broker when it starts.
  */
 export function saveRuntimeConfig(config: RuntimeConfig, projectRoot?: string): void {
   const paths = getProjectPaths(projectRoot);
@@ -378,7 +378,7 @@ export function saveRuntimeConfig(config: RuntimeConfig, projectRoot?: string): 
 
 /**
  * Load runtime configuration for the current project.
- * Returns undefined if no runtime config exists or the daemon isn't running.
+ * Returns undefined if no runtime config exists or the broker isn't running.
  */
 export function loadRuntimeConfig(projectRoot?: string): RuntimeConfig | undefined {
   const paths = getProjectPaths(projectRoot);
@@ -397,7 +397,7 @@ export function loadRuntimeConfig(projectRoot?: string): RuntimeConfig | undefin
 }
 
 /**
- * Clear runtime configuration (called when daemon stops).
+ * Clear runtime configuration (called when broker stops).
  */
 export function clearRuntimeConfig(projectRoot?: string): void {
   const paths = getProjectPaths(projectRoot);

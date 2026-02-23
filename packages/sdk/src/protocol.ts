@@ -105,6 +105,9 @@ export interface BrokerStatus {
   agents: Array<{
     name: string;
     runtime: AgentRuntime;
+    cli?: string;
+    model?: string;
+    team?: string;
     channels: string[];
     parent?: string;
     pid?: number;
@@ -170,7 +173,11 @@ export type BrokerEvent =
       kind: "agent_spawned";
       name: string;
       runtime: AgentRuntime;
+      cli?: string;
+      model?: string;
       parent?: string;
+      pid?: number;
+      source?: string;
     }
   | {
       kind: "agent_released";
@@ -257,6 +264,8 @@ export type BrokerEvent =
       kind: "worker_ready";
       name: string;
       runtime: AgentRuntime;
+      cli?: string;
+      model?: string;
     }
   | {
       kind: "worker_error";
