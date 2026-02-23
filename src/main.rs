@@ -12,7 +12,8 @@ mod wrap;
 
 use helpers::{
     detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
-    format_injection, is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode,
+    format_injection, format_injection_with_reminder, is_auto_suggestion,
+    is_bypass_selection_menu, is_in_editor_mode,
     normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
 
@@ -23,7 +24,7 @@ use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
-    sync::mpsc,
+    sync::{broadcast, mpsc},
     time::MissedTickBehavior,
 };
 use uuid::Uuid;
@@ -38,7 +39,7 @@ use relay_broker::{
     relaycast_ws::{RelaycastHttpClient, RelaycastWsClient, WsControl},
     snippets::{configure_relaycast_mcp, ensure_relaycast_mcp_config},
     telemetry::{TelemetryClient, TelemetryEvent},
-    types::{BrokerCommandEvent, BrokerCommandPayload, SenderKind},
+    types::{BrokerCommandEvent, BrokerCommandPayload, InboundKind, SenderKind},
 };
 
 use spawner::{spawn_env_vars, terminate_child, Spawner};
@@ -46,6 +47,7 @@ use spawner::{spawn_env_vars, terminate_child, Spawner};
 const DEFAULT_DELIVERY_RETRY_MS: u64 = 1_000;
 const MAX_DELIVERY_RETRIES: u32 = 10;
 const DEFAULT_RELAYCAST_BASE_URL: &str = "https://api.relaycast.dev";
+const DM_PARTICIPANT_CACHE_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Parser)]
 #[command(name = "agent-relay-broker")]
@@ -452,6 +454,7 @@ struct WorkerRegistry {
     workers: HashMap<String, WorkerHandle>,
     event_tx: mpsc::Sender<WorkerEvent>,
     worker_env: Vec<(String, String)>,
+    worker_logs_dir: PathBuf,
     initial_tasks: HashMap<String, String>,
     supervisor: relay_broker::supervisor::Supervisor,
     metrics: relay_broker::metrics::MetricsCollector,
@@ -461,16 +464,37 @@ impl WorkerRegistry {
     fn new(
         event_tx: mpsc::Sender<WorkerEvent>,
         worker_env: Vec<(String, String)>,
+        worker_logs_dir: PathBuf,
         broker_start: Instant,
     ) -> Self {
+        if let Err(error) = std::fs::create_dir_all(&worker_logs_dir) {
+            tracing::warn!(
+                path = %worker_logs_dir.display(),
+                error = %error,
+                "failed to create worker log directory"
+            );
+        }
+
         Self {
             workers: HashMap::new(),
             event_tx,
             worker_env,
+            worker_logs_dir,
             initial_tasks: HashMap::new(),
             supervisor: relay_broker::supervisor::Supervisor::new(),
             metrics: relay_broker::metrics::MetricsCollector::new(broker_start),
         }
+    }
+
+    fn worker_log_path(&self, worker_name: &str) -> Option<PathBuf> {
+        if worker_name.contains('/') || worker_name.contains('\\') || worker_name.contains('\0') {
+            tracing::warn!(
+                worker = %worker_name,
+                "skipping worker log file creation due to invalid worker name"
+            );
+            return None;
+        }
+        Some(self.worker_logs_dir.join(format!("{worker_name}.log")))
     }
 
     fn list(&self) -> Vec<Value> {
@@ -480,6 +504,9 @@ impl WorkerRegistry {
                 json!({
                     "name": name,
                     "runtime": handle.spec.runtime,
+                    "cli": handle.spec.cli,
+                    "model": handle.spec.model,
+                    "team": handle.spec.team,
                     "channels": handle.spec.channels,
                     "parent": handle.parent,
                     "pid": handle.child.id(),
@@ -624,6 +651,7 @@ impl WorkerRegistry {
         let stdin = child.stdin.take().context("worker missing stdin pipe")?;
         let stdout = child.stdout.take().context("worker missing stdout pipe")?;
         let stderr = child.stderr.take().context("worker missing stderr pipe")?;
+        let log_file = self.worker_log_path(&spec.name);
 
         spawn_worker_reader(
             self.event_tx.clone(),
@@ -631,6 +659,7 @@ impl WorkerRegistry {
             "stdout",
             stdout,
             true,
+            log_file.clone(),
         );
         spawn_worker_reader(
             self.event_tx.clone(),
@@ -638,6 +667,7 @@ impl WorkerRegistry {
             "stderr",
             stderr,
             false,
+            log_file,
         );
 
         let handle = WorkerHandle {
@@ -854,6 +884,21 @@ impl WorkerRegistry {
             .cloned()
             .collect()
     }
+
+    fn worker_names_for_dm_participants(&self, participants: &[String], from: &str) -> Vec<String> {
+        self.workers
+            .keys()
+            .filter(|name| {
+                if name.eq_ignore_ascii_case(from) {
+                    return false;
+                }
+                participants
+                    .iter()
+                    .any(|participant| participant.eq_ignore_ascii_case(name))
+            })
+            .cloned()
+            .collect()
+    }
 }
 
 fn spawn_worker_reader<R>(
@@ -862,14 +907,102 @@ fn spawn_worker_reader<R>(
     stream_name: &'static str,
     reader: R,
     parse_json: bool,
+    log_file_path: Option<PathBuf>,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
+    async fn append_log_chunk(
+        log_file: &mut Option<tokio::fs::File>,
+        log_file_path: &Option<PathBuf>,
+        disable_log_file: &mut bool,
+        worker_name: &str,
+        chunk: &str,
+    ) {
+        if *disable_log_file {
+            return;
+        }
+        let Some(file) = log_file.as_mut() else {
+            return;
+        };
+
+        if let Err(error) = file.write_all(chunk.as_bytes()).await {
+            if let Some(path) = log_file_path.as_ref() {
+                tracing::warn!(
+                    worker = %worker_name,
+                    path = %path.display(),
+                    error = %error,
+                    "failed writing worker log chunk"
+                );
+            }
+            *disable_log_file = true;
+            *log_file = None;
+            return;
+        }
+
+        if !chunk.ends_with('\n') {
+            if let Err(error) = file.write_all(b"\n").await {
+                if let Some(path) = log_file_path.as_ref() {
+                    tracing::warn!(
+                        worker = %worker_name,
+                        path = %path.display(),
+                        error = %error,
+                        "failed writing newline to worker log"
+                    );
+                }
+                *disable_log_file = true;
+                *log_file = None;
+            }
+        }
+    }
+
     tokio::spawn(async move {
+        let mut log_file = match log_file_path.as_ref() {
+            Some(path) => match tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .await
+            {
+                Ok(file) => Some(file),
+                Err(error) => {
+                    tracing::warn!(
+                        worker = %name,
+                        path = %path.display(),
+                        error = %error,
+                        "failed to open worker log file"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+
+        let mut disable_log_file = false;
+
         let mut lines = BufReader::new(reader).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             if parse_json {
                 if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                    if value
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|msg_type| msg_type == "worker_stream")
+                    {
+                        if let Some(chunk) = value
+                            .get("payload")
+                            .and_then(|payload| payload.get("chunk"))
+                            .and_then(Value::as_str)
+                        {
+                            append_log_chunk(
+                                &mut log_file,
+                                &log_file_path,
+                                &mut disable_log_file,
+                                &name,
+                                chunk,
+                            )
+                            .await;
+                        }
+                    }
                     if tx
                         .send(WorkerEvent::Message {
                             name: name.clone(),
@@ -883,6 +1016,15 @@ fn spawn_worker_reader<R>(
                     continue;
                 }
             }
+
+            append_log_chunk(
+                &mut log_file,
+                &log_file_path,
+                &mut disable_log_file,
+                &name,
+                &line,
+            )
+            .await;
 
             let fallback = json!({
                 "v": PROTOCOL_VERSION,
@@ -994,9 +1136,18 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
         ("RELAY_API_KEY".to_string(), relay_workspace_key),
     ];
 
+    // Broadcast channel for streaming dashboard-relevant events to WS clients.
+    // Created early so the stdout writer task can also broadcast events.
+    let (events_tx, _events_rx) = broadcast::channel::<String>(512);
+
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(1024);
+    let events_tx_for_stdout = events_tx.clone();
     tokio::spawn(async move {
         while let Some(frame) = sdk_out_rx.recv().await {
+            // Broadcast dashboard-relevant events to WS clients
+            if frame.msg_type == "event" {
+                broadcast_if_relevant(&events_tx_for_stdout, &frame.payload);
+            }
             if let Ok(line) = serde_json::to_string(&frame) {
                 use std::io::Write;
                 let mut stdout = std::io::stdout().lock();
@@ -1008,7 +1159,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     });
 
     let (worker_event_tx, mut worker_event_rx) = mpsc::channel::<WorkerEvent>(1024);
-    let mut workers = WorkerRegistry::new(worker_event_tx, worker_env, broker_start);
+    let worker_logs_dir = paths
+        .state
+        .parent()
+        .expect("state path should always have a parent")
+        .join("team")
+        .join("worker-logs");
+    let mut workers =
+        WorkerRegistry::new(worker_event_tx, worker_env, worker_logs_dir, broker_start);
 
     // Load crash insights from previous session
     let crash_insights_path = paths.state.parent().unwrap().join("crash-insights.json");
@@ -1021,6 +1179,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let mut dedup = DedupCache::new(Duration::from_secs(300), 8192);
     let delivery_retry_interval = delivery_retry_interval();
     let mut pending_deliveries = load_pending_deliveries(&paths.pending);
+    let mut dm_participants_cache: HashMap<String, (Instant, Vec<String>)> = HashMap::new();
     if !pending_deliveries.is_empty() {
         tracing::info!(
             count = pending_deliveries.len(),
@@ -1034,7 +1193,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     // Optional HTTP API (for dashboard proxy)
     let (api_tx, mut api_rx) = if cmd.api_port > 0 {
         let (tx, rx) = mpsc::channel::<ListenApiRequest>(32);
-        let router = listen_api_router(tx.clone());
+        let router = listen_api_router(tx.clone(), events_tx.clone());
         let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", cmd.api_port))
             .await
             .with_context(|| format!("failed to bind API on port {}", cmd.api_port))?;
@@ -1071,12 +1230,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             result = async { api_rx.as_mut().unwrap().recv().await }, if api_rx.is_some() => {
                 if let Some(req) = result {
                     match req {
-                        ListenApiRequest::Spawn { name, cli, args, reply } => {
+                        ListenApiRequest::Spawn { name, cli, model, args, reply } => {
                             let spec = AgentSpec {
                                 name: name.clone(),
                                 runtime: AgentRuntime::Pty,
                                 cli: Some(cli.clone()),
-                                model: None,
+                                model: model.clone(),
                                 cwd: None,
                                 team: None,
                                 shadow_of: None,
@@ -1085,6 +1244,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 channels: vec!["general".to_string()],
                                 restart_policy: None,
                             };
+                            let spec_for_state = spec.clone();
                             match workers.spawn(spec, Some("Dashboard".to_string()), None).await {
                                 Ok(()) => {
                                     agent_spawn_count += 1;
@@ -1106,7 +1266,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                     .unwrap_or_default()
                                                     .as_secs(),
                                             ),
-                                            spec: None,
+                                            spec: Some(spec_for_state),
                                             restart_policy: None,
                                             initial_task: None,
                                         },
@@ -1114,7 +1274,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     let _ = state.save(&paths.state);
                                     let _ = send_event(
                                         &sdk_out_tx,
-                                        json!({"kind":"agent_spawned","name":&name,"cli":&cli,"pid":pid,"source":"http_api"}),
+                                        json!({"kind":"agent_spawned","name":&name,"runtime":"pty","cli":&cli,"model":&model,"pid":pid,"source":"http_api"}),
                                     ).await;
                                     let _ = reply.send(Ok(json!({ "success": true, "name": name, "pid": pid })));
                                 }
@@ -1127,6 +1287,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         ListenApiRequest::Release { name, reply } => {
                             match workers.release(&name).await {
                                 Ok(()) => {
+                                    if let Err(error) = relaycast_http.mark_agent_offline(&name).await {
+                                        tracing::warn!(
+                                            worker = %name,
+                                            error = %error,
+                                            "failed to mark released worker offline in relaycast"
+                                        );
+                                    }
                                     let dropped = drop_pending_for_worker(&mut pending_deliveries, &name);
                                     if dropped > 0 {
                                         let _ = send_event(
@@ -1145,6 +1312,78 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 Err(e) => {
                                     eprintln!("[agent-relay] HTTP API: failed to release '{}': {}", name, e);
                                     let _ = reply.send(Err(e.to_string()));
+                                }
+                            }
+                        }
+                        ListenApiRequest::Send { to, text, from, reply } => {
+                            let normalized_to = to.trim().to_string();
+                            let normalized_from = normalize_sender(from);
+                            let event_id = format!("http_{}", Uuid::new_v4().simple());
+                            let priority = if normalized_to.starts_with('#') { 3 } else { 2 };
+                            let mut delivered = 0usize;
+
+                            let _ = send_event(
+                                &sdk_out_tx,
+                                json!({
+                                    "kind": "relay_inbound",
+                                    "event_id": event_id,
+                                    "from": normalized_from,
+                                    "target": normalized_to,
+                                    "body": text,
+                                    "thread_id": Value::Null,
+                                }),
+                            )
+                            .await;
+
+                            let targets = if normalized_to.starts_with('#') {
+                                workers.worker_names_for_channel_delivery(&normalized_to, &normalized_from)
+                            } else {
+                                workers.worker_names_for_direct_target(&normalized_to, &normalized_from)
+                            };
+
+                            for worker_name in targets {
+                                if queue_and_try_delivery_raw(
+                                    &mut workers,
+                                    &mut pending_deliveries,
+                                    &worker_name,
+                                    &event_id,
+                                    &normalized_from,
+                                    &normalized_to,
+                                    &text,
+                                    None,
+                                    priority,
+                                    delivery_retry_interval,
+                                )
+                                .await
+                                .is_ok()
+                                {
+                                    delivered = delivered.saturating_add(1);
+                                }
+                            }
+
+                            if delivered > 0 {
+                                let _ = reply.send(Ok(json!({
+                                    "success": true,
+                                    "event_id": event_id,
+                                    "delivered": delivered,
+                                    "local": true,
+                                })));
+                            } else {
+                                match relaycast_http.send(&normalized_to, &text).await {
+                                    Ok(()) => {
+                                        let _ = reply.send(Ok(json!({
+                                            "success": true,
+                                            "event_id": event_id,
+                                            "relaycast_published": true,
+                                            "local": false,
+                                        })));
+                                    }
+                                    Err(error) => {
+                                        let not_found = format!("Agent \"{}\" not found", normalized_to);
+                                        let _ = reply.send(Err(format!(
+                                            "{not_found} and Relaycast publish failed: {error}"
+                                        )));
+                                    }
                                 }
                             }
                         }
@@ -1192,6 +1431,17 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
             ws_msg = ws_inbound_rx.recv() => {
                 if let Some(ws_msg) = ws_msg {
+                    let ws_type = ws_msg
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("<unknown>");
+                    tracing::trace!(
+                        target = "agent_relay::broker",
+                        ws_type = %ws_type,
+                        event = %ws_msg,
+                        "received relaycast ws event"
+                    );
+
                     // Handle agent.release_requested from Relaycast (e.g. agent self-termination via remove_agent MCP)
                     if let Some(rc_event) = parse_relaycast_agent_event(&ws_msg) {
                         match rc_event {
@@ -1200,6 +1450,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 workers.metrics.on_release(name);
                                 match workers.release(name).await {
                                     Ok(()) => {
+                                        if let Err(error) = relaycast_http.mark_agent_offline(name).await {
+                                            tracing::warn!(
+                                                worker = %name,
+                                                error = %error,
+                                                "failed to mark released worker offline in relaycast"
+                                            );
+                                        }
                                         let dropped = drop_pending_for_worker(&mut pending_deliveries, name);
                                         if dropped > 0 {
                                             let _ = send_event(
@@ -1280,7 +1537,58 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 }
                             }
                         } else {
-                            let targets = workers.worker_names_for_direct_target(&mapped.target, &mapped.from);
+                            let mut targets = workers.worker_names_for_direct_target(&mapped.target, &mapped.from);
+
+                            if targets.is_empty()
+                                && matches!(mapped.kind, InboundKind::DmReceived | InboundKind::GroupDmReceived)
+                            {
+                                let conversation_id = mapped.target.clone();
+                                let participants = if let Some((fetched_at, participants)) =
+                                    dm_participants_cache.get(&conversation_id)
+                                {
+                                    if fetched_at.elapsed() < DM_PARTICIPANT_CACHE_TTL {
+                                        participants.clone()
+                                    } else {
+                                        let fetched = relaycast_http
+                                            .get_dm_participants(&conversation_id)
+                                            .await
+                                            .unwrap_or_else(|error| {
+                                                tracing::debug!(
+                                                    conversation_id = %conversation_id,
+                                                    error = %error,
+                                                    "failed resolving DM participants"
+                                                );
+                                                vec![]
+                                            });
+                                        dm_participants_cache.insert(
+                                            conversation_id.clone(),
+                                            (Instant::now(), fetched.clone()),
+                                        );
+                                        fetched
+                                    }
+                                } else {
+                                    let fetched = relaycast_http
+                                        .get_dm_participants(&conversation_id)
+                                        .await
+                                        .unwrap_or_else(|error| {
+                                            tracing::debug!(
+                                                conversation_id = %conversation_id,
+                                                error = %error,
+                                                "failed resolving DM participants"
+                                            );
+                                            vec![]
+                                        });
+                                    dm_participants_cache.insert(
+                                        conversation_id.clone(),
+                                        (Instant::now(), fetched.clone()),
+                                    );
+                                    fetched
+                                };
+
+                                targets =
+                                    workers.worker_names_for_dm_participants(&participants, &mapped.from);
+                            }
+
                             for worker_name in targets {
                                 if let Err(error) = queue_and_try_delivery(
                                     &mut workers,
@@ -1293,6 +1601,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 }
                             }
                         }
+                    } else if ws_type != "broker.connection" && ws_type != "broker.channel_join" {
+                        tracing::debug!(
+                            target = "agent_relay::broker",
+                            ws_type = %ws_type,
+                            "relaycast ws event ignored by inbound mapper"
+                        );
                     }
                 }
             }
@@ -1426,10 +1740,15 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         .and_then(|p| p.get("runtime"))
                                         .and_then(Value::as_str)
                                         .unwrap_or("pty");
+                                    let (cli_val, model_val) = workers.workers.get(&name)
+                                        .map(|h| (h.spec.cli.clone(), h.spec.model.clone()))
+                                        .unwrap_or((None, None));
                                     let _ = send_event(&sdk_out_tx, json!({
                                         "kind": "worker_ready",
                                         "name": name,
                                         "runtime": runtime,
+                                        "cli": cli_val,
+                                        "model": model_val,
                                     })).await;
                                 } else if msg_type == "agent_idle" {
                                     let idle_secs = value.get("payload")
@@ -1496,6 +1815,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             "signal": signal,
                                         }),
                                     ).await;
+                                    if let Err(error) = relaycast_http.mark_agent_offline(&name).await {
+                                        tracing::warn!(
+                                            worker = %name,
+                                            error = %error,
+                                            "failed to mark exited worker offline in relaycast"
+                                        );
+                                    }
                                     state.agents.remove(&name);
                                     if let Err(error) = state.save(&paths.state) {
                                         tracing::warn!(
@@ -1650,6 +1976,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 &sdk_out_tx,
                                 json!({"kind":"agent_permanently_dead","name":name,"reason":reason}),
                             ).await;
+                            if let Err(error) = relaycast_http.mark_agent_offline(name).await {
+                                tracing::warn!(
+                                    worker = %name,
+                                    error = %error,
+                                    "failed to mark permanently dead worker offline in relaycast"
+                                );
+                            }
                             state.agents.remove(name);
                             if let Err(error) = state.save(&paths.state) {
                                 tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
@@ -1673,6 +2006,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 &sdk_out_tx,
                                 json!({"kind":"agent_exited","name":name,"code":code,"signal":signal}),
                             ).await;
+                            if let Err(error) = relaycast_http.mark_agent_offline(name).await {
+                                tracing::warn!(
+                                    worker = %name,
+                                    error = %error,
+                                    "failed to mark exited worker offline in relaycast"
+                                );
+                            }
                             state.agents.remove(name);
                             if let Err(error) = state.save(&paths.state) {
                                 tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
@@ -1728,6 +2068,17 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     });
     telemetry.shutdown();
 
+    let active_workers: Vec<String> = workers.workers.keys().cloned().collect();
+    for worker_name in active_workers {
+        if let Err(error) = relaycast_http.mark_agent_offline(&worker_name).await {
+            tracing::warn!(
+                worker = %worker_name,
+                error = %error,
+                "failed to mark worker offline during shutdown"
+            );
+        }
+    }
+
     // Mark broker agent offline in Relaycast before shutting down WS
     if let Err(error) = relaycast_http.mark_offline().await {
         tracing::warn!(error = %error, "failed to mark broker offline during shutdown");
@@ -1753,6 +2104,7 @@ enum ListenApiRequest {
     Spawn {
         name: String,
         cli: String,
+        model: Option<String>,
         args: Vec<String>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
@@ -1763,23 +2115,35 @@ enum ListenApiRequest {
     List {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
+    Send {
+        to: String,
+        text: String,
+        from: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
 }
 
 #[derive(Clone)]
 struct ListenApiState {
     tx: mpsc::Sender<ListenApiRequest>,
+    events_tx: broadcast::Sender<String>,
 }
 
-fn listen_api_router(tx: mpsc::Sender<ListenApiRequest>) -> axum::Router {
+fn listen_api_router(
+    tx: mpsc::Sender<ListenApiRequest>,
+    events_tx: broadcast::Sender<String>,
+) -> axum::Router {
     use axum::{routing, Router};
 
-    let state = ListenApiState { tx };
+    let state = ListenApiState { tx, events_tx };
 
     Router::new()
         .route("/api/spawn", routing::post(listen_api_spawn))
         .route("/api/spawned", routing::get(listen_api_list))
         .route("/api/spawned/{name}", routing::delete(listen_api_release))
+        .route("/api/send", routing::post(listen_api_send))
         .route("/health", routing::get(listen_api_health))
+        .route("/ws", routing::get(listen_api_ws))
         .with_state(state)
 }
 
@@ -1804,6 +2168,7 @@ async fn listen_api_spawn(
         .and_then(Value::as_str)
         .unwrap_or("claude")
         .to_string();
+    let model = body.get("model").and_then(Value::as_str).map(String::from);
     let args: Vec<String> = body
         .get("args")
         .and_then(Value::as_array)
@@ -1828,6 +2193,7 @@ async fn listen_api_spawn(
         .send(ListenApiRequest::Spawn {
             name: name.clone(),
             cli,
+            model,
             args,
             reply: reply_tx,
         })
@@ -1900,6 +2266,118 @@ async fn listen_api_release(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
         ),
+    }
+}
+
+async fn listen_api_send(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::Json(body): axum::Json<Value>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let to = body
+        .get("to")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let text = body
+        .get("message")
+        .or_else(|| body.get("text"))
+        .or_else(|| body.get("body"))
+        .or_else(|| body.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let from = body.get("from").and_then(Value::as_str).map(String::from);
+
+    if to.is_empty() || text.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(json!({
+                "success": false,
+                "error": "Missing required fields: to, message",
+            })),
+        );
+    }
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::Send {
+            to: to.clone(),
+            text,
+            from,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal channel closed" })),
+        );
+    }
+
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => {
+            let status = if err.contains("Agent \"") && err.contains("not found") {
+                axum::http::StatusCode::NOT_FOUND
+            } else {
+                axum::http::StatusCode::BAD_GATEWAY
+            };
+            (
+                status,
+                axum::Json(json!({
+                    "success": false,
+                    "to": to,
+                    "error": err,
+                })),
+            )
+        }
+        Err(_) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
+        ),
+    }
+}
+
+async fn listen_api_ws(
+    ws: axum::extract::WebSocketUpgrade,
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> impl axum::response::IntoResponse {
+    ws.on_upgrade(move |socket| handle_dashboard_ws(socket, state.events_tx.subscribe()))
+}
+
+async fn handle_dashboard_ws(
+    mut socket: axum::extract::ws::WebSocket,
+    mut rx: broadcast::Receiver<String>,
+) {
+    while let Ok(msg) = rx.recv().await {
+        if socket
+            .send(axum::extract::ws::Message::Text(msg.into()))
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
+}
+
+/// Broadcast an event payload to dashboard WS clients if the event kind is
+/// relevant for real-time UI updates. This is called alongside `send_event`
+/// and does not affect the SDK stdout protocol.
+fn broadcast_if_relevant(events_tx: &broadcast::Sender<String>, payload: &Value) {
+    if let Some(kind) = payload.get("kind").and_then(Value::as_str) {
+        match kind {
+            "relay_inbound" | "agent_spawned" | "agent_exited" | "agent_released"
+            | "worker_ready" | "agent_idle" | "agent_restarting" | "agent_restarted"
+            | "agent_permanently_dead" | "delivery_verified" | "delivery_failed"
+            | "worker_error" => {
+                let _ = events_tx.send(serde_json::to_string(payload).unwrap_or_default());
+            }
+            _ => {}
+        }
     }
 }
 
@@ -2199,6 +2677,8 @@ async fn handle_sdk_frame(
                     "kind": "agent_spawned",
                     "name": name,
                     "runtime": runtime,
+                    "cli": payload.agent.cli,
+                    "model": payload.agent.model,
                     "parent": Value::Null,
                 }),
             )
@@ -2561,6 +3041,15 @@ async fn handle_sdk_frame(
             workers.metrics.on_release(&payload.name);
 
             workers.release(&payload.name).await?;
+            if let Some(http) = relaycast_http {
+                if let Err(error) = http.mark_agent_offline(&payload.name).await {
+                    tracing::warn!(
+                        worker = %payload.name,
+                        error = %error,
+                        "failed to mark released worker offline in relaycast"
+                    );
+                }
+            }
             let dropped = drop_pending_for_worker(pending_deliveries, &payload.name);
             state.agents.remove(&payload.name);
             state.save(state_path)?;
