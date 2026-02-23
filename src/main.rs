@@ -6,15 +6,17 @@ use std::{
 };
 
 mod helpers;
+mod listen_api;
 mod pty_worker;
 mod spawner;
 mod wrap;
 
 use helpers::{
     detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
-    format_injection, format_injection_with_reminder, is_auto_suggestion, is_bypass_selection_menu,
+    format_injection, is_auto_suggestion, is_bypass_selection_menu,
     is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
+use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiRequest};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -35,7 +37,11 @@ use relay_broker::{
     message_bridge::{map_ws_broker_command, map_ws_event},
     protocol::{AgentRuntime, AgentSpec, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION},
     pty::PtySession,
-    relaycast_ws::{RelaycastHttpClient, RelaycastWsClient, WsControl},
+    relaycast_ws::{
+        format_worker_preregistration_error, parse_relaycast_agent_event,
+        registration_is_retryable, registration_retry_after_secs, retry_agent_registration,
+        RegRetryOutcome, RelaycastAgentEvent, RelaycastHttpClient, RelaycastWsClient, WsControl,
+    },
     snippets::{configure_relaycast_mcp, ensure_relaycast_mcp_config},
     telemetry::{TelemetryClient, TelemetryEvent},
     types::{BrokerCommandEvent, BrokerCommandPayload, InboundKind, SenderKind},
@@ -159,6 +165,7 @@ struct RuntimePaths {
 struct RelaySession {
     http_base: String,
     relay_workspace_key: String,
+    self_name: String,
     self_agent_id: String,
     self_names: HashSet<String>,
     self_agent_ids: HashSet<String>,
@@ -275,6 +282,7 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
     Ok(RelaySession {
         http_base,
         relay_workspace_key,
+        self_name: agent_name,
         self_agent_id,
         self_names,
         self_agent_ids,
@@ -449,6 +457,24 @@ fn normalize_sender(sender: Option<String>) -> String {
     raw
 }
 
+fn sender_is_dashboard_label(sender: &str) -> bool {
+    let trimmed = sender.trim();
+    trimmed.eq_ignore_ascii_case("Dashboard")
+        || trimmed.eq_ignore_ascii_case("human:Dashboard")
+        || trimmed.eq_ignore_ascii_case("human:orchestrator")
+}
+
+fn display_target_for_dashboard(target: &str, self_names: &HashSet<String>) -> String {
+    if self_names
+        .iter()
+        .any(|name| target.eq_ignore_ascii_case(name))
+    {
+        "Dashboard".to_string()
+    } else {
+        target.to_string()
+    }
+}
+
 struct WorkerRegistry {
     workers: HashMap<String, WorkerHandle>,
     event_tx: mpsc::Sender<WorkerEvent>,
@@ -535,6 +561,7 @@ impl WorkerRegistry {
         spec: AgentSpec,
         parent: Option<String>,
         idle_threshold_secs: Option<u64>,
+        worker_relay_api_key: Option<String>,
     ) -> Result<()> {
         if self.workers.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' already exists", spec.name);
@@ -639,6 +666,14 @@ impl WorkerRegistry {
         for (key, value) in &self.worker_env {
             command.env(key, value);
         }
+        if let Some(relay_key) = worker_relay_api_key {
+            // Keep RELAY_API_KEY as the workspace key and pass the
+            // pre-registered agent token separately for MCP servers that
+            // support session bootstrap.
+            command.env("RELAY_AGENT_TOKEN", relay_key);
+        }
+        command.env("RELAY_AGENT_NAME", &spec.name);
+        command.env("RELAY_STRICT_AGENT_NAME", "1");
         // Remove CLAUDECODE env var to prevent "nested session" detection
         // when spawning Claude Code agents from within a Claude Code session.
         command.env_remove("CLAUDECODE");
@@ -1113,6 +1148,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let RelaySession {
         http_base,
         relay_workspace_key,
+        self_name,
         self_agent_id: _,
         self_names,
         self_agent_ids,
@@ -1122,12 +1158,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
     // Build HTTP client for forwarding messages to Relaycast REST API
     let relaycast_http = {
-        let agent_name = self_names
-            .iter()
-            .next()
-            .cloned()
-            .unwrap_or_else(|| "broker".to_string());
-        RelaycastHttpClient::new(&http_base, &relay_workspace_key, agent_name)
+        RelaycastHttpClient::new(
+            &http_base,
+            &relay_workspace_key,
+            self_name.clone(),
+            "claude",
+        )
     };
 
     let worker_env = vec![
@@ -1229,7 +1265,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             result = async { api_rx.as_mut().unwrap().recv().await }, if api_rx.is_some() => {
                 if let Some(req) = result {
                     match req {
-                        ListenApiRequest::Spawn { name, cli, model, args, reply } => {
+                        ListenApiRequest::Spawn { name, cli, model, args, task, reply } => {
                             let spec = AgentSpec {
                                 name: name.clone(),
                                 runtime: AgentRuntime::Pty,
@@ -1244,8 +1280,40 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 restart_policy: None,
                             };
                             let spec_for_state = spec.clone();
-                            match workers.spawn(spec, Some("Dashboard".to_string()), None).await {
+                            let mut preregistration_warning: Option<String> = None;
+                            let registration_result = retry_agent_registration(
+                                &relaycast_http, &name, Some(&cli),
+                            ).await;
+                            let worker_relay_key = match registration_result {
+                                Ok(token) => Some(token),
+                                Err(RegRetryOutcome::RetryableExhausted(error)) => {
+                                    let message = format_worker_preregistration_error(&name, &error);
+                                    tracing::warn!(
+                                        worker = %name,
+                                        error = %error,
+                                        "continuing spawn without pre-registration after retries exhausted"
+                                    );
+                                    preregistration_warning = Some(message);
+                                    None
+                                }
+                                Err(RegRetryOutcome::Fatal(error)) => {
+                                    let _ = reply.send(Err(format_worker_preregistration_error(&name, &error)));
+                                    continue;
+                                }
+                            };
+
+                            let effective_task = normalize_initial_task(task);
+
+                            match workers.spawn(
+                                spec,
+                                Some("Dashboard".to_string()),
+                                None,
+                                worker_relay_key.clone(),
+                            ).await {
                                 Ok(()) => {
+                                    if let Some(ref task_text) = effective_task {
+                                        workers.initial_tasks.insert(name.clone(), task_text.clone());
+                                    }
                                     agent_spawn_count += 1;
                                     telemetry.track(TelemetryEvent::AgentSpawn {
                                         cli: cli.clone(),
@@ -1267,15 +1335,31 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             ),
                                             spec: Some(spec_for_state),
                                             restart_policy: None,
-                                            initial_task: None,
+                                            initial_task: effective_task,
                                         },
                                     );
                                     let _ = state.save(&paths.state);
                                     let _ = send_event(
                                         &sdk_out_tx,
-                                        json!({"kind":"agent_spawned","name":&name,"runtime":"pty","cli":&cli,"model":&model,"pid":pid,"source":"http_api"}),
+                                        json!({
+                                            "kind":"agent_spawned",
+                                            "name":&name,
+                                            "runtime":"pty",
+                                            "cli":&cli,
+                                            "model":&model,
+                                            "pid":pid,
+                                            "source":"http_api",
+                                            "pre_registered": worker_relay_key.is_some(),
+                                            "registration_warning": preregistration_warning.clone(),
+                                        }),
                                     ).await;
-                                    let _ = reply.send(Ok(json!({ "success": true, "name": name, "pid": pid })));
+                                    let _ = reply.send(Ok(json!({
+                                        "success": true,
+                                        "name": name,
+                                        "pid": pid,
+                                        "pre_registered": worker_relay_key.is_some(),
+                                        "warning": preregistration_warning,
+                                    })));
                                 }
                                 Err(e) => {
                                     eprintln!("[agent-relay] HTTP API: failed to spawn '{}': {}", name, e);
@@ -1316,7 +1400,18 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         }
                         ListenApiRequest::Send { to, text, from, reply } => {
                             let normalized_to = to.trim().to_string();
-                            let normalized_from = normalize_sender(from);
+                            let normalized_sender = normalize_sender(from);
+                            let from_dashboard = sender_is_dashboard_label(&normalized_sender);
+                            let delivery_from = if from_dashboard {
+                                self_name.clone()
+                            } else {
+                                normalized_sender.clone()
+                            };
+                            let ui_from = if from_dashboard {
+                                "Dashboard".to_string()
+                            } else {
+                                normalized_sender
+                            };
                             let event_id = format!("http_{}", Uuid::new_v4().simple());
                             let priority = if normalized_to.starts_with('#') { 3 } else { 2 };
                             let mut delivered = 0usize;
@@ -1326,7 +1421,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 json!({
                                     "kind": "relay_inbound",
                                     "event_id": event_id,
-                                    "from": normalized_from,
+                                    "from": ui_from,
                                     "target": normalized_to,
                                     "body": text,
                                     "thread_id": Value::Null,
@@ -1335,9 +1430,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             .await;
 
                             let targets = if normalized_to.starts_with('#') {
-                                workers.worker_names_for_channel_delivery(&normalized_to, &normalized_from)
+                                workers.worker_names_for_channel_delivery(&normalized_to, &delivery_from)
                             } else {
-                                workers.worker_names_for_direct_target(&normalized_to, &normalized_from)
+                                workers.worker_names_for_direct_target(&normalized_to, &delivery_from)
                             };
 
                             for worker_name in targets {
@@ -1346,7 +1441,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     &mut pending_deliveries,
                                     &worker_name,
                                     &event_id,
-                                    &normalized_from,
+                                    &delivery_from,
                                     &normalized_to,
                                     &text,
                                     None,
@@ -1434,7 +1529,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         .get("type")
                         .and_then(Value::as_str)
                         .unwrap_or("<unknown>");
-                    tracing::trace!(
+                    tracing::info!(
                         target = "agent_relay::broker",
                         ws_type = %ws_type,
                         event = %ws_msg,
@@ -1486,44 +1581,136 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 }
                                 continue;
                             }
-                            RelaycastAgentEvent::Spawn { ref name, ref cli } => {
-                                // Spawn is not supported in broker init mode — agents are managed by the SDK
-                                tracing::warn!(name = %name, cli = %cli, "ignoring spawn request in broker init mode");
+                            RelaycastAgentEvent::Spawn { ref name, ref cli, ref task, ref channel } => {
+                                tracing::info!(name = %name, cli = %cli, task = ?task, channel = ?channel, "handling spawn request from relaycast WS");
+                                let channels = channel
+                                    .as_deref()
+                                    .map(|ch| vec![ch.to_string()])
+                                    .unwrap_or_else(|| vec!["general".to_string()]);
+                                let spec = AgentSpec {
+                                    name: name.clone(),
+                                    runtime: AgentRuntime::Pty,
+                                    cli: Some(cli.clone()),
+                                    model: None,
+                                    cwd: None,
+                                    team: None,
+                                    shadow_of: None,
+                                    shadow_mode: None,
+                                    args: vec![],
+                                    channels: channels.clone(),
+                                    restart_policy: None,
+                                };
+                                let spec_for_state = spec.clone();
+                                let effective_task = normalize_initial_task(task.clone());
+
+                                // Pre-register with retry
+                                let worker_relay_key = match retry_agent_registration(
+                                    &relaycast_http, name, Some(cli),
+                                ).await {
+                                    Ok(token) => Some(token),
+                                    Err(RegRetryOutcome::RetryableExhausted(error)) => {
+                                        tracing::warn!(
+                                            worker = %name,
+                                            error = %error,
+                                            "continuing spawn without pre-registration after retries exhausted"
+                                        );
+                                        None
+                                    }
+                                    Err(RegRetryOutcome::Fatal(error)) => {
+                                        tracing::error!(worker = %name, error = %error, "non-retryable pre-registration error, skipping spawn");
+                                        continue;
+                                    }
+                                };
+
+                                match workers.spawn(
+                                    spec,
+                                    Some("Relaycast".to_string()),
+                                    None,
+                                    worker_relay_key.clone(),
+                                ).await {
+                                    Ok(()) => {
+                                        if let Some(ref task_text) = effective_task {
+                                            workers.initial_tasks.insert(name.clone(), task_text.clone());
+                                        }
+                                        agent_spawn_count += 1;
+                                        telemetry.track(TelemetryEvent::AgentSpawn {
+                                            cli: cli.clone(),
+                                            runtime: "pty".to_string(),
+                                        });
+                                        let pid = workers.worker_pid(name).unwrap_or(0);
+                                        state.agents.insert(
+                                            name.clone(),
+                                            PersistedAgent {
+                                                runtime: AgentRuntime::Pty,
+                                                parent: Some("Relaycast".to_string()),
+                                                channels,
+                                                pid: workers.worker_pid(name),
+                                                started_at: Some(
+                                                    std::time::SystemTime::now()
+                                                        .duration_since(std::time::UNIX_EPOCH)
+                                                        .unwrap_or_default()
+                                                        .as_secs(),
+                                                ),
+                                                spec: Some(spec_for_state),
+                                                restart_policy: None,
+                                                initial_task: effective_task,
+                                            },
+                                        );
+                                        let _ = state.save(&paths.state);
+                                        let _ = send_event(
+                                            &sdk_out_tx,
+                                            json!({
+                                                "kind": "agent_spawned",
+                                                "name": name,
+                                                "runtime": "pty",
+                                                "cli": cli,
+                                                "pid": pid,
+                                                "source": "relaycast_ws",
+                                                "pre_registered": worker_relay_key.is_some(),
+                                            }),
+                                        ).await;
+                                        tracing::info!(child = %name, pid, "spawned worker via relaycast WS");
+                                        eprintln!("[agent-relay] spawned worker '{}' via relaycast", name);
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(child = %name, error = %e, "failed to spawn worker via relaycast WS");
+                                        eprintln!("[agent-relay] failed to spawn '{}': {}", name, e);
+                                    }
+                                }
                                 continue;
                             }
                         }
                     }
 
                     if let Some(mapped) = map_ws_event(&ws_msg) {
+                        tracing::info!(
+                            from = %mapped.from,
+                            target = %mapped.target,
+                            kind = ?mapped.kind,
+                            event_id = %mapped.event_id,
+                            text_len = mapped.text.len(),
+                            "mapped inbound WS event"
+                        );
                         if !dedup.insert_if_new(&mapped.event_id, Instant::now()) {
+                            tracing::info!(event_id = %mapped.event_id, "dropping duplicate event");
                             continue;
                         }
                         if self_names.contains(&mapped.from)
                             || mapped.sender_agent_id.as_ref().is_some_and(|id| self_agent_ids.contains(id))
                         {
-                            tracing::debug!(from = %mapped.from, sender_agent_id = ?mapped.sender_agent_id, "skipping self-echo in broker loop");
+                            tracing::info!(from = %mapped.from, sender_agent_id = ?mapped.sender_agent_id, self_names = ?self_names, "skipping self-echo in broker loop");
                             continue;
                         }
-
-                        let _ = send_event(
-                            &sdk_out_tx,
-                            json!({
-                                "kind": "relay_inbound",
-                                "event_id": mapped.event_id,
-                                "from": mapped.from,
-                                "target": mapped.target,
-                                "body": mapped.text,
-                                "thread_id": mapped.thread_id,
-                            }),
-                        ).await;
 
                         telemetry.track(TelemetryEvent::MessageSend {
                             is_broadcast: mapped.target.starts_with('#'),
                             has_thread: mapped.thread_id.is_some(),
                         });
 
+                        let mut display_target = mapped.target.clone();
                         if mapped.target.starts_with('#') {
                             let targets = workers.worker_names_for_channel_delivery(&mapped.target, &mapped.from);
+                            tracing::info!(channel = %mapped.target, from = %mapped.from, target_count = targets.len(), targets = ?targets, "channel delivery targets");
                             for worker_name in targets {
                                 if let Err(error) = queue_and_try_delivery(
                                     &mut workers,
@@ -1537,55 +1724,31 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             }
                         } else {
                             let mut targets = workers.worker_names_for_direct_target(&mapped.target, &mapped.from);
+                            tracing::info!(target = %mapped.target, from = %mapped.from, kind = ?mapped.kind, direct_targets = ?targets, "direct message routing");
 
                             if targets.is_empty()
                                 && matches!(mapped.kind, InboundKind::DmReceived | InboundKind::GroupDmReceived)
                             {
                                 let conversation_id = mapped.target.clone();
-                                let participants = if let Some((fetched_at, participants)) =
-                                    dm_participants_cache.get(&conversation_id)
+                                tracing::info!(conversation_id = %conversation_id, "resolving DM participants");
+                                let participants = resolve_dm_participants(
+                                    &relaycast_http,
+                                    &mut dm_participants_cache,
+                                    &conversation_id,
+                                )
+                                .await;
+                                tracing::info!(participants = ?participants, "resolved DM participants");
+
+                                if let Some(participant) = participants
+                                    .iter()
+                                    .find(|participant| !participant.eq_ignore_ascii_case(&mapped.from))
                                 {
-                                    if fetched_at.elapsed() < DM_PARTICIPANT_CACHE_TTL {
-                                        participants.clone()
-                                    } else {
-                                        let fetched = relaycast_http
-                                            .get_dm_participants(&conversation_id)
-                                            .await
-                                            .unwrap_or_else(|error| {
-                                                tracing::debug!(
-                                                    conversation_id = %conversation_id,
-                                                    error = %error,
-                                                    "failed resolving DM participants"
-                                                );
-                                                vec![]
-                                            });
-                                        dm_participants_cache.insert(
-                                            conversation_id.clone(),
-                                            (Instant::now(), fetched.clone()),
-                                        );
-                                        fetched
-                                    }
-                                } else {
-                                    let fetched = relaycast_http
-                                        .get_dm_participants(&conversation_id)
-                                        .await
-                                        .unwrap_or_else(|error| {
-                                            tracing::debug!(
-                                                conversation_id = %conversation_id,
-                                                error = %error,
-                                                "failed resolving DM participants"
-                                            );
-                                            vec![]
-                                        });
-                                    dm_participants_cache.insert(
-                                        conversation_id.clone(),
-                                        (Instant::now(), fetched.clone()),
-                                    );
-                                    fetched
-                                };
+                                    display_target = participant.clone();
+                                }
 
                                 targets =
                                     workers.worker_names_for_dm_participants(&participants, &mapped.from);
+                                tracing::info!(dm_targets = ?targets, "DM participant-based routing targets");
                             }
 
                             for worker_name in targets {
@@ -1600,10 +1763,31 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 }
                             }
                         }
+
+                        let display_target = display_target_for_dashboard(&display_target, &self_names);
+                        tracing::info!(
+                            from = %mapped.from,
+                            display_target = %display_target,
+                            event_id = %mapped.event_id,
+                            body_len = mapped.text.len(),
+                            "broadcasting relay_inbound to dashboard"
+                        );
+                        let _ = send_event(
+                            &sdk_out_tx,
+                            json!({
+                                "kind": "relay_inbound",
+                                "event_id": mapped.event_id,
+                                "from": mapped.from,
+                                "target": display_target,
+                                "body": mapped.text,
+                                "thread_id": mapped.thread_id,
+                            }),
+                        ).await;
                     } else if ws_type != "broker.connection" && ws_type != "broker.channel_join" {
-                        tracing::debug!(
+                        tracing::info!(
                             target = "agent_relay::broker",
                             ws_type = %ws_type,
+                            event = %ws_msg,
                             "relaycast ws event ignored by inbound mapper"
                         );
                     }
@@ -1618,22 +1802,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 if msg_type == "delivery_ack" {
                                     if let Some(payload) = value.get("payload") {
                                         if let Ok(ack) = serde_json::from_value::<DeliveryAckPayload>(payload.clone()) {
-                                            let should_remove = match pending_deliveries.get(&ack.delivery_id) {
-                                                Some(pending) if pending.delivery.event_id != ack.event_id => {
-                                                    tracing::warn!(
-                                                        target = "agent_relay::broker",
-                                                        delivery_id = %ack.delivery_id,
-                                                        expected_event_id = %pending.delivery.event_id,
-                                                        received_event_id = %ack.event_id,
-                                                        "delivery ack event_id mismatch — ignoring stale ack"
-                                                    );
-                                                    false
-                                                }
-                                                _ => true,
-                                            };
-                                            if should_remove {
-                                                pending_deliveries.remove(&ack.delivery_id);
-                                            }
+                                            clear_pending_delivery_if_event_matches(
+                                                &mut pending_deliveries,
+                                                &ack.delivery_id,
+                                                Some(&ack.event_id),
+                                                &name,
+                                                "delivery_ack",
+                                            );
                                         }
                                         let _ = send_event(&sdk_out_tx, json!({
                                             "kind": "delivery_ack",
@@ -1643,8 +1818,31 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             "timestamp": payload.get("timestamp"),
                                         })).await;
                                     }
-                                } else if msg_type == "delivery_queued" || msg_type == "delivery_injected" {
+                                } else if msg_type == "delivery_queued" {
                                     if let Some(payload) = value.get("payload") {
+                                        let _ = send_event(&sdk_out_tx, json!({
+                                            "kind": msg_type,
+                                            "name": name,
+                                            "delivery_id": payload.get("delivery_id"),
+                                            "event_id": payload.get("event_id"),
+                                            "timestamp": payload.get("timestamp"),
+                                        })).await;
+                                    }
+                                } else if msg_type == "delivery_injected" {
+                                    if let Some(payload) = value.get("payload") {
+                                        let delivery_id = payload
+                                            .get("delivery_id")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("");
+                                        let event_id =
+                                            payload.get("event_id").and_then(Value::as_str);
+                                        clear_pending_delivery_if_event_matches(
+                                            &mut pending_deliveries,
+                                            delivery_id,
+                                            event_id,
+                                            &name,
+                                            "delivery_injected",
+                                        );
                                         let _ = send_event(&sdk_out_tx, json!({
                                             "kind": msg_type,
                                             "name": name,
@@ -1664,7 +1862,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             event_id = %event_id,
                                             "delivery verified by echo detection"
                                         );
-                                        pending_deliveries.remove(delivery_id);
+                                        clear_pending_delivery_if_event_matches(
+                                            &mut pending_deliveries,
+                                            delivery_id,
+                                            Some(event_id),
+                                            &name,
+                                            "delivery_verified",
+                                        );
                                         let _ = send_event(&sdk_out_tx, json!({
                                             "kind": "delivery_verified",
                                             "name": name,
@@ -1695,7 +1899,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             reason = %reason,
                                             "delivery failed — echo not detected"
                                         );
-                                        pending_deliveries.remove(delivery_id);
+                                        clear_pending_delivery_if_event_matches(
+                                            &mut pending_deliveries,
+                                            delivery_id,
+                                            Some(event_id),
+                                            &name,
+                                            "delivery_failed",
+                                        );
                                         let _ = send_event(&sdk_out_tx, json!({
                                             "kind": "delivery_failed",
                                             "name": name,
@@ -2024,7 +2234,52 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                 if !shutdown {
                     let pending_restarts = workers.supervisor.pending_restarts();
                     for (name, rst) in pending_restarts {
-                        match workers.spawn(rst.spec.clone(), rst.parent.clone(), None).await {
+                        if let Some(remaining) = relaycast_http.registration_block_remaining(&name)
+                        {
+                            tracing::debug!(
+                                worker = %name,
+                                retry_after_secs = remaining.as_secs().max(1),
+                                "skipping restart while relaycast registration is rate-limited"
+                            );
+                            continue;
+                        }
+
+                        let worker_relay_key = match relaycast_http
+                            .register_agent_token(&name, rst.spec.cli.as_deref())
+                            .await
+                        {
+                            Ok(token) => token,
+                            Err(error) => {
+                                match registration_retry_after_secs(&error) {
+                                    Some(retry_after_secs) => {
+                                        tracing::warn!(
+                                            worker = %name,
+                                            retry_after_secs,
+                                            error = %error,
+                                            "restart blocked by relaycast registration rate limit"
+                                        );
+                                    }
+                                    None => {
+                                        tracing::error!(
+                                            worker = %name,
+                                            error = %error,
+                                            "failed to pre-register worker before restart"
+                                        );
+                                    }
+                                }
+                                continue;
+                            }
+                        };
+
+                        match workers
+                            .spawn(
+                                rst.spec.clone(),
+                                rst.parent.clone(),
+                                None,
+                                Some(worker_relay_key),
+                            )
+                            .await
+                        {
                             Ok(()) => {
                                 workers.supervisor.on_restarted(&name);
                                 workers.metrics.on_restart(&name);
@@ -2097,320 +2352,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     Ok(())
 }
 
-// --- HTTP API types and handlers (used by init --api-port) ---
 
-enum ListenApiRequest {
-    Spawn {
-        name: String,
-        cli: String,
-        model: Option<String>,
-        args: Vec<String>,
-        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
-    },
-    Release {
-        name: String,
-        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
-    },
-    List {
-        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
-    },
-    Send {
-        to: String,
-        text: String,
-        from: Option<String>,
-        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
-    },
-}
-
-#[derive(Clone)]
-struct ListenApiState {
-    tx: mpsc::Sender<ListenApiRequest>,
-    events_tx: broadcast::Sender<String>,
-}
-
-fn listen_api_router(
-    tx: mpsc::Sender<ListenApiRequest>,
-    events_tx: broadcast::Sender<String>,
-) -> axum::Router {
-    use axum::{routing, Router};
-
-    let state = ListenApiState { tx, events_tx };
-
-    Router::new()
-        .route("/api/spawn", routing::post(listen_api_spawn))
-        .route("/api/spawned", routing::get(listen_api_list))
-        .route("/api/spawned/{name}", routing::delete(listen_api_release))
-        .route("/api/send", routing::post(listen_api_send))
-        .route("/health", routing::get(listen_api_health))
-        .route("/ws", routing::get(listen_api_ws))
-        .with_state(state)
-}
-
-async fn listen_api_health() -> axum::Json<Value> {
-    axum::Json(json!({
-        "status": "ok",
-        "service": "agent-relay-listen",
-    }))
-}
-
-async fn listen_api_spawn(
-    axum::extract::State(state): axum::extract::State<ListenApiState>,
-    axum::Json(body): axum::Json<Value>,
-) -> (axum::http::StatusCode, axum::Json<Value>) {
-    let name = body
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let cli = body
-        .get("cli")
-        .and_then(Value::as_str)
-        .unwrap_or("claude")
-        .to_string();
-    let model = body.get("model").and_then(Value::as_str).map(String::from);
-    let args: Vec<String> = body
-        .get("args")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(Value::as_str)
-                .map(String::from)
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if name.is_empty() {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            axum::Json(json!({ "success": false, "error": "Missing required field: name" })),
-        );
-    }
-
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    if state
-        .tx
-        .send(ListenApiRequest::Spawn {
-            name: name.clone(),
-            cli,
-            model,
-            args,
-            reply: reply_tx,
-        })
-        .await
-        .is_err()
-    {
-        return (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({ "success": false, "error": "internal channel closed" })),
-        );
-    }
-
-    match reply_rx.await {
-        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
-        Ok(Err(err)) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({ "success": false, "name": name, "error": err })),
-        ),
-        Err(_) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
-        ),
-    }
-}
-
-async fn listen_api_list(
-    axum::extract::State(state): axum::extract::State<ListenApiState>,
-) -> axum::Json<Value> {
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    if state
-        .tx
-        .send(ListenApiRequest::List { reply: reply_tx })
-        .await
-        .is_err()
-    {
-        return axum::Json(json!({ "success": false, "agents": [] }));
-    }
-    match reply_rx.await {
-        Ok(Ok(val)) => axum::Json(val),
-        _ => axum::Json(json!({ "success": false, "agents": [] })),
-    }
-}
-
-async fn listen_api_release(
-    axum::extract::State(state): axum::extract::State<ListenApiState>,
-    axum::extract::Path(name): axum::extract::Path<String>,
-) -> (axum::http::StatusCode, axum::Json<Value>) {
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    if state
-        .tx
-        .send(ListenApiRequest::Release {
-            name: name.clone(),
-            reply: reply_tx,
-        })
-        .await
-        .is_err()
-    {
-        return (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({ "success": false, "error": "internal channel closed" })),
-        );
-    }
-    match reply_rx.await {
-        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
-        Ok(Err(err)) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({ "success": false, "name": name, "error": err })),
-        ),
-        Err(_) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
-        ),
-    }
-}
-
-async fn listen_api_send(
-    axum::extract::State(state): axum::extract::State<ListenApiState>,
-    axum::Json(body): axum::Json<Value>,
-) -> (axum::http::StatusCode, axum::Json<Value>) {
-    let to = body
-        .get("to")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let text = body
-        .get("message")
-        .or_else(|| body.get("text"))
-        .or_else(|| body.get("body"))
-        .or_else(|| body.get("content"))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let from = body.get("from").and_then(Value::as_str).map(String::from);
-
-    if to.is_empty() || text.is_empty() {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            axum::Json(json!({
-                "success": false,
-                "error": "Missing required fields: to, message",
-            })),
-        );
-    }
-
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    if state
-        .tx
-        .send(ListenApiRequest::Send {
-            to: to.clone(),
-            text,
-            from,
-            reply: reply_tx,
-        })
-        .await
-        .is_err()
-    {
-        return (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({ "success": false, "error": "internal channel closed" })),
-        );
-    }
-
-    match reply_rx.await {
-        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
-        Ok(Err(err)) => {
-            let status = if err.contains("Agent \"") && err.contains("not found") {
-                axum::http::StatusCode::NOT_FOUND
-            } else {
-                axum::http::StatusCode::BAD_GATEWAY
-            };
-            (
-                status,
-                axum::Json(json!({
-                    "success": false,
-                    "to": to,
-                    "error": err,
-                })),
-            )
-        }
-        Err(_) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
-        ),
-    }
-}
-
-async fn listen_api_ws(
-    ws: axum::extract::WebSocketUpgrade,
-    axum::extract::State(state): axum::extract::State<ListenApiState>,
-) -> impl axum::response::IntoResponse {
-    ws.on_upgrade(move |socket| handle_dashboard_ws(socket, state.events_tx.subscribe()))
-}
-
-async fn handle_dashboard_ws(
-    mut socket: axum::extract::ws::WebSocket,
-    mut rx: broadcast::Receiver<String>,
-) {
-    let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
-    loop {
-        tokio::select! {
-            result = rx.recv() => {
-                match result {
-                    Ok(msg) => {
-                        if socket
-                            .send(axum::extract::ws::Message::Text(msg.into()))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(skipped = n, "dashboard WS client lagged, skipped messages");
-                    }
-                    Err(broadcast::error::RecvError::Closed) => break,
-                }
-            }
-            _ = ping_interval.tick() => {
-                if socket
-                    .send(axum::extract::ws::Message::Ping(vec![].into()))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        }
-    }
-}
-
-/// Broadcast an event payload to dashboard WS clients if the event kind is
-/// relevant for real-time UI updates. This is called alongside `send_event`
-/// and does not affect the SDK stdout protocol.
-fn broadcast_if_relevant(events_tx: &broadcast::Sender<String>, payload: &Value) {
-    if let Some(kind) = payload.get("kind").and_then(Value::as_str) {
-        match kind {
-            "relay_inbound"
-            | "agent_spawned"
-            | "agent_exited"
-            | "agent_released"
-            | "worker_ready"
-            | "agent_idle"
-            | "agent_restarting"
-            | "agent_restarted"
-            | "agent_permanently_dead"
-            | "delivery_verified"
-            | "delivery_failed"
-            | "worker_error" => {
-                if let Ok(json) = serde_json::to_string(payload) {
-                    let _ = events_tx.send(json);
-                }
-            }
-            _ => {}
-        }
-    }
-}
 
 /// Get terminal rows from TIOCGWINSZ.
 #[cfg(unix)]
@@ -2648,8 +2590,56 @@ async fn handle_sdk_frame(
                 }
             }
 
+            let mut preregistration_warning: Option<String> = None;
+            let worker_relay_key = if let Some(http) = relaycast_http {
+                match http
+                    .register_agent_token(&name, payload.agent.cli.as_deref())
+                    .await
+                {
+                    Ok(token) => Some(token),
+                    Err(error) => {
+                        if registration_is_retryable(&error) {
+                            preregistration_warning =
+                                Some(format_worker_preregistration_error(&name, &error));
+                            tracing::warn!(
+                                worker = %name,
+                                error = %error,
+                                "continuing spawn without pre-registration due retryable relaycast error"
+                            );
+                            None
+                        } else {
+                            let retry_after_secs = registration_retry_after_secs(&error);
+                            let mut details = json!({
+                                "agent": name,
+                                "registration_error": error.to_string(),
+                            });
+                            if let Some(retry_after) = retry_after_secs {
+                                details["retry_after_secs"] = json!(retry_after);
+                            }
+                            send_error(
+                                out_tx,
+                                frame.request_id,
+                                "worker_registration_failed",
+                                format_worker_preregistration_error(&name, &error),
+                                registration_is_retryable(&error),
+                                Some(details),
+                            )
+                            .await?;
+                            return Ok(false);
+                        }
+                    }
+                }
+            } else {
+                None
+            };
+
             workers
-                .spawn(payload.agent.clone(), None, payload.idle_threshold_secs)
+                .spawn(
+                    payload.agent.clone(),
+                    None,
+                    payload.idle_threshold_secs,
+                    worker_relay_key.clone(),
+                )
                 .await?;
             if let Some(task) = effective_task.clone() {
                 workers.initial_tasks.insert(name.clone(), task);
@@ -2699,6 +2689,8 @@ async fn handle_sdk_frame(
                 json!({
                     "name": name,
                     "runtime": runtime,
+                    "pre_registered": worker_relay_key.is_some(),
+                    "warning": preregistration_warning.clone(),
                 }),
             )
             .await?;
@@ -2711,6 +2703,8 @@ async fn handle_sdk_frame(
                     "cli": payload.agent.cli,
                     "model": payload.agent.model,
                     "parent": Value::Null,
+                    "pre_registered": worker_relay_key.is_some(),
+                    "registration_warning": preregistration_warning,
                 }),
             )
             .await?;
@@ -3262,6 +3256,41 @@ async fn retry_pending_delivery(
     }
 }
 
+async fn resolve_dm_participants(
+    relaycast_http: &RelaycastHttpClient,
+    dm_participants_cache: &mut HashMap<String, (Instant, Vec<String>)>,
+    conversation_id: &str,
+) -> Vec<String> {
+    let conversation_id = conversation_id.trim();
+    if conversation_id.is_empty() {
+        return vec![];
+    }
+
+    if let Some((fetched_at, participants)) = dm_participants_cache.get(conversation_id) {
+        if fetched_at.elapsed() < DM_PARTICIPANT_CACHE_TTL {
+            return participants.clone();
+        }
+    }
+
+    let fetched = relaycast_http
+        .get_dm_participants(conversation_id)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::debug!(
+                conversation_id = %conversation_id,
+                error = %error,
+                "failed resolving DM participants"
+            );
+            vec![]
+        });
+
+    dm_participants_cache.insert(
+        conversation_id.to_string(),
+        (Instant::now(), fetched.clone()),
+    );
+    fetched
+}
+
 fn drop_pending_for_worker(
     pending_deliveries: &mut HashMap<String, PendingDelivery>,
     worker_name: &str,
@@ -3269,6 +3298,50 @@ fn drop_pending_for_worker(
     let before = pending_deliveries.len();
     pending_deliveries.retain(|_, pending| pending.worker_name != worker_name);
     before.saturating_sub(pending_deliveries.len())
+}
+
+fn should_clear_pending_delivery_for_event(
+    pending: Option<&PendingDelivery>,
+    event_id: Option<&str>,
+) -> bool {
+    let Some(pending) = pending else {
+        return true;
+    };
+
+    let Some(event_id) = event_id
+        .map(str::trim)
+        .filter(|event_id| !event_id.is_empty())
+    else {
+        return true;
+    };
+
+    pending.delivery.event_id == event_id
+}
+
+fn clear_pending_delivery_if_event_matches(
+    pending_deliveries: &mut HashMap<String, PendingDelivery>,
+    delivery_id: &str,
+    event_id: Option<&str>,
+    worker_name: &str,
+    worker_signal: &str,
+) {
+    let pending = pending_deliveries.get(delivery_id);
+    if should_clear_pending_delivery_for_event(pending, event_id) {
+        pending_deliveries.remove(delivery_id);
+        return;
+    }
+
+    if let Some(pending) = pending {
+        tracing::warn!(
+            target = "agent_relay::broker",
+            worker = %worker_name,
+            signal = %worker_signal,
+            delivery_id = %delivery_id,
+            expected_event_id = %pending.delivery.event_id,
+            received_event_id = %event_id.unwrap_or(""),
+            "ignoring stale delivery lifecycle event due to event_id mismatch"
+        );
+    }
 }
 
 async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
@@ -3507,38 +3580,6 @@ fn channels_from_csv(raw: &str) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(ToOwned::to_owned)
         .collect()
-}
-
-/// Parsed result from a relaycast `agent.spawn_requested` or `agent.release_requested` WS event.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RelaycastAgentEvent {
-    Spawn { name: String, cli: String },
-    Release { name: String },
-}
-
-/// Parse a raw WS JSON value into a `RelaycastAgentEvent` if it matches
-/// `agent.spawn_requested` or `agent.release_requested`.
-fn parse_relaycast_agent_event(value: &serde_json::Value) -> Option<RelaycastAgentEvent> {
-    let event_type = value.get("type")?.as_str()?;
-    let agent = value.get("agent")?;
-
-    match event_type {
-        "agent.spawn_requested" => {
-            let name = agent.get("name")?.as_str().filter(|s| !s.is_empty())?;
-            let cli = agent.get("cli")?.as_str().filter(|s| !s.is_empty())?;
-            Some(RelaycastAgentEvent::Spawn {
-                name: name.to_string(),
-                cli: cli.to_string(),
-            })
-        }
-        "agent.release_requested" => {
-            let name = agent.get("name")?.as_str().filter(|s| !s.is_empty())?;
-            Some(RelaycastAgentEvent::Release {
-                name: name.to_string(),
-            })
-        }
-        _ => None,
-    }
 }
 
 fn command_targets_self(cmd_event: &BrokerCommandEvent, self_agent_id: &str) -> bool {
@@ -3837,19 +3878,26 @@ impl BrokerState {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, time::Instant};
+    use std::{
+        collections::{HashMap, HashSet},
+        time::Instant,
+    };
 
     use crate::helpers::terminal_query_responses;
     use relay_broker::protocol::RelayDelivery;
 
     use super::{
         channels_from_csv, continuity_dir, delivery_retry_interval, derive_ws_base_url_from_http,
-        detect_bypass_permissions_prompt, drop_pending_for_worker, extract_mcp_message_ids,
-        format_injection, is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode,
-        normalize_channel, normalize_initial_task, normalize_sender, parse_relaycast_agent_event,
-        strip_ansi, PendingDelivery, RelaycastAgentEvent, TerminalQueryParser,
+        detect_bypass_permissions_prompt, display_target_for_dashboard, drop_pending_for_worker,
+        extract_mcp_message_ids, format_injection, is_auto_suggestion, is_bypass_selection_menu,
+        is_in_editor_mode, normalize_channel, normalize_initial_task, normalize_sender,
+        sender_is_dashboard_label, should_clear_pending_delivery_for_event, strip_ansi,
+        PendingDelivery, TerminalQueryParser,
     };
     use crate::helpers::floor_char_boundary;
+    use relay_broker::relaycast_ws::{
+        format_worker_preregistration_error, RelaycastRegistrationError,
+    };
 
     #[test]
     fn parses_channels() {
@@ -3887,6 +3935,27 @@ mod tests {
             derive_ws_base_url_from_http("http://localhost:8787"),
             "ws://localhost:8787"
         );
+    }
+
+    #[test]
+    fn preregistration_error_message_dedupes_retry_after_for_rate_limit() {
+        let error = RelaycastRegistrationError::RateLimited {
+            agent_name: "Foobar".to_string(),
+            retry_after_secs: 60,
+            detail: "{\"ok\":false}".to_string(),
+        };
+        let message = format_worker_preregistration_error("Foobar", &error);
+        assert_eq!(message.matches("retry after").count(), 1);
+    }
+
+    #[test]
+    fn preregistration_error_message_does_not_invent_retry_after_for_transport_errors() {
+        let error = RelaycastRegistrationError::Transport {
+            agent_name: "Foobar".to_string(),
+            detail: "timeout".to_string(),
+        };
+        let message = format_worker_preregistration_error("Foobar", &error);
+        assert!(!message.contains("retry after"));
     }
 
     #[test]
@@ -3928,6 +3997,34 @@ mod tests {
         assert_eq!(
             normalize_sender(Some("WorkerOne".to_string())),
             "WorkerOne".to_string()
+        );
+    }
+
+    #[test]
+    fn sender_is_dashboard_label_accepts_legacy_dashboard_senders() {
+        assert!(sender_is_dashboard_label("Dashboard"));
+        assert!(sender_is_dashboard_label("human:Dashboard"));
+        assert!(sender_is_dashboard_label("human:orchestrator"));
+        assert!(!sender_is_dashboard_label("Lead"));
+    }
+
+    #[test]
+    fn display_target_for_dashboard_maps_self_identity() {
+        let mut self_names = HashSet::new();
+        self_names.insert("broker-951762d5".to_string());
+        self_names.insert("DashProbe".to_string());
+
+        assert_eq!(
+            display_target_for_dashboard("broker-951762d5", &self_names),
+            "Dashboard"
+        );
+        assert_eq!(
+            display_target_for_dashboard("dashprobe", &self_names),
+            "Dashboard"
+        );
+        assert_eq!(
+            display_target_for_dashboard("Lead", &self_names),
+            "Lead".to_string()
         );
     }
 
@@ -3987,6 +4084,61 @@ mod tests {
         assert_eq!(dropped, 1);
         assert!(pending.contains_key("del_2"));
         assert!(!pending.contains_key("del_1"));
+    }
+
+    #[test]
+    fn should_clear_pending_delivery_when_event_id_matches() {
+        let pending = PendingDelivery {
+            worker_name: "A".to_string(),
+            delivery: RelayDelivery {
+                delivery_id: "del_1".to_string(),
+                event_id: "evt_1".to_string(),
+                from: "x".to_string(),
+                target: "#general".to_string(),
+                body: "hello".to_string(),
+                thread_id: None,
+                priority: None,
+            },
+            attempts: 1,
+            next_retry_at: Instant::now(),
+        };
+
+        assert!(should_clear_pending_delivery_for_event(
+            Some(&pending),
+            Some("evt_1")
+        ));
+        assert!(!should_clear_pending_delivery_for_event(
+            Some(&pending),
+            Some("evt_2")
+        ));
+    }
+
+    #[test]
+    fn should_clear_pending_delivery_without_event_id_for_compatibility() {
+        let pending = PendingDelivery {
+            worker_name: "A".to_string(),
+            delivery: RelayDelivery {
+                delivery_id: "del_1".to_string(),
+                event_id: "evt_1".to_string(),
+                from: "x".to_string(),
+                target: "#general".to_string(),
+                body: "hello".to_string(),
+                thread_id: None,
+                priority: None,
+            },
+            attempts: 1,
+            next_retry_at: Instant::now(),
+        };
+
+        assert!(should_clear_pending_delivery_for_event(
+            Some(&pending),
+            None
+        ));
+        assert!(should_clear_pending_delivery_for_event(
+            Some(&pending),
+            Some("")
+        ));
+        assert!(should_clear_pending_delivery_for_event(None, Some("evt_1")));
     }
 
     #[test]
@@ -4374,135 +4526,6 @@ mod tests {
             Some("--full-auto"),
             "unrelated args should not prevent bypass flag"
         );
-    }
-
-    // --- parse_relaycast_agent_event tests ---
-
-    #[test]
-    fn parses_agent_spawn_requested() {
-        let event = parse_relaycast_agent_event(&serde_json::json!({
-            "type": "agent.spawn_requested",
-            "agent": {
-                "name": "Worker1",
-                "cli": "claude",
-                "task": "Do some work",
-                "channel": "general",
-                "already_existed": false
-            }
-        }));
-        assert_eq!(
-            event,
-            Some(RelaycastAgentEvent::Spawn {
-                name: "Worker1".into(),
-                cli: "claude".into(),
-            })
-        );
-    }
-
-    #[test]
-    fn parses_agent_spawn_requested_null_channel() {
-        let event = parse_relaycast_agent_event(&serde_json::json!({
-            "type": "agent.spawn_requested",
-            "agent": {
-                "name": "Worker2",
-                "cli": "codex",
-                "task": "Task text",
-                "channel": null,
-                "already_existed": true
-            }
-        }));
-        assert_eq!(
-            event,
-            Some(RelaycastAgentEvent::Spawn {
-                name: "Worker2".into(),
-                cli: "codex".into(),
-            })
-        );
-    }
-
-    #[test]
-    fn parses_agent_release_requested() {
-        let event = parse_relaycast_agent_event(&serde_json::json!({
-            "type": "agent.release_requested",
-            "agent": { "name": "Worker1" },
-            "reason": "task complete",
-            "deleted": false
-        }));
-        assert_eq!(
-            event,
-            Some(RelaycastAgentEvent::Release {
-                name: "Worker1".into(),
-            })
-        );
-    }
-
-    #[test]
-    fn spawn_requested_missing_name_returns_none() {
-        assert!(parse_relaycast_agent_event(&serde_json::json!({
-            "type": "agent.spawn_requested",
-            "agent": { "cli": "claude", "task": "work" }
-        }))
-        .is_none());
-    }
-
-    #[test]
-    fn spawn_requested_missing_cli_returns_none() {
-        assert!(parse_relaycast_agent_event(&serde_json::json!({
-            "type": "agent.spawn_requested",
-            "agent": { "name": "Worker1", "task": "work" }
-        }))
-        .is_none());
-    }
-
-    #[test]
-    fn spawn_requested_empty_name_returns_none() {
-        assert!(parse_relaycast_agent_event(&serde_json::json!({
-            "type": "agent.spawn_requested",
-            "agent": { "name": "", "cli": "claude", "task": "work" }
-        }))
-        .is_none());
-    }
-
-    #[test]
-    fn release_requested_empty_name_returns_none() {
-        assert!(parse_relaycast_agent_event(&serde_json::json!({
-            "type": "agent.release_requested",
-            "agent": { "name": "" },
-            "reason": null,
-            "deleted": false
-        }))
-        .is_none());
-    }
-
-    #[test]
-    fn release_requested_missing_agent_returns_none() {
-        assert!(parse_relaycast_agent_event(&serde_json::json!({
-            "type": "agent.release_requested",
-            "reason": "done",
-            "deleted": true
-        }))
-        .is_none());
-    }
-
-    #[test]
-    fn unrelated_event_type_returns_none() {
-        assert!(parse_relaycast_agent_event(&serde_json::json!({
-            "type": "message.created",
-            "agent": { "name": "Worker1", "cli": "claude" }
-        }))
-        .is_none());
-    }
-
-    #[test]
-    fn command_invoked_not_matched_by_relaycast_parser() {
-        assert!(parse_relaycast_agent_event(&serde_json::json!({
-            "type": "command.invoked",
-            "command": "/spawn",
-            "channel": "general",
-            "invoked_by": "123",
-            "parameters": { "name": "x", "cli": "y" }
-        }))
-        .is_none());
     }
 
     // ==================== is_pid_alive ====================

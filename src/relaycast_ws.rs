@@ -1,4 +1,9 @@
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
@@ -6,6 +11,7 @@ use parking_lot::Mutex;
 use rand::Rng;
 use reqwest::Url;
 use serde_json::{json, Value};
+use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -231,8 +237,42 @@ pub struct RelaycastHttpClient {
     http: reqwest::Client,
     base_url: String,
     api_key: String,
-    agent_token: Arc<Mutex<Option<String>>>,
+    agent_tokens: Arc<Mutex<HashMap<String, String>>>,
+    registration_cooldowns: Arc<Mutex<HashMap<String, Instant>>>,
+    global_registration_cooldown: Arc<Mutex<Option<Instant>>>,
     agent_name: String,
+    default_cli: String,
+}
+
+#[derive(Debug, Clone, Error)]
+pub enum RelaycastRegistrationError {
+    #[error("invalid agent name for relaycast registration")]
+    InvalidAgentName,
+    #[error(
+        "relaycast registration for '{agent_name}' is blocked for {retry_after_secs}s due to previous rate limiting"
+    )]
+    Blocked {
+        agent_name: String,
+        retry_after_secs: u64,
+    },
+    #[error(
+        "relaycast registration for '{agent_name}' was rate-limited; retry after {retry_after_secs}s: {detail}"
+    )]
+    RateLimited {
+        agent_name: String,
+        retry_after_secs: u64,
+        detail: String,
+    },
+    #[error("relaycast registration failed for '{agent_name}' ({status}): {detail}")]
+    Api {
+        agent_name: String,
+        status: u16,
+        detail: String,
+    },
+    #[error("relaycast registration transport error for '{agent_name}': {detail}")]
+    Transport { agent_name: String, detail: String },
+    #[error("relaycast registration response missing token for '{agent_name}'")]
+    MissingToken { agent_name: String },
 }
 
 impl RelaycastHttpClient {
@@ -240,50 +280,145 @@ impl RelaycastHttpClient {
         base_url: impl Into<String>,
         api_key: impl Into<String>,
         agent_name: impl Into<String>,
+        default_cli: impl Into<String>,
     ) -> Self {
         Self {
             http: reqwest::Client::new(),
             base_url: base_url.into(),
             api_key: api_key.into(),
-            agent_token: Arc::new(Mutex::new(None)),
+            agent_tokens: Arc::new(Mutex::new(HashMap::new())),
+            registration_cooldowns: Arc::new(Mutex::new(HashMap::new())),
+            global_registration_cooldown: Arc::new(Mutex::new(None)),
             agent_name: agent_name.into(),
+            default_cli: default_cli.into(),
         }
     }
 
-    /// Register the broker agent via the spawn endpoint (which rotates the token
-    /// if the agent already exists, avoiding ghost duplicates).
-    async fn ensure_token(&self) -> Result<String> {
-        {
-            let guard = self.agent_token.lock();
-            if let Some(ref tok) = *guard {
-                return Ok(tok.clone());
-            }
+    fn global_registration_block_remaining(&self) -> Option<Duration> {
+        let mut guard = self.global_registration_cooldown.lock();
+        let blocked_until = (*guard)?;
+        let now = Instant::now();
+        if blocked_until <= now {
+            *guard = None;
+            return None;
+        }
+        Some(blocked_until - now)
+    }
+
+    pub fn registration_block_remaining(&self, agent_name: &str) -> Option<Duration> {
+        let trimmed = agent_name.trim();
+        if trimmed.is_empty() {
+            return None;
         }
 
-        // Use /v1/agents/spawn instead of /v1/agents — spawn rotates the token
-        // on conflict rather than returning 409, preventing ghost Broker-* agents.
+        let mut guard = self.registration_cooldowns.lock();
+        let blocked_until = guard.get(trimmed).copied()?;
+        let now = Instant::now();
+        if blocked_until <= now {
+            guard.remove(trimmed);
+            return None;
+        }
+        Some(blocked_until - now)
+    }
+
+    fn invalidate_cached_registration(&self, agent_name: &str) {
+        let trimmed = agent_name.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        self.agent_tokens.lock().remove(trimmed);
+        self.registration_cooldowns.lock().remove(trimmed);
+    }
+
+    /// Register an agent via Relaycast spawn endpoint and cache its token.
+    ///
+    /// This is used for both broker self-registration and worker pre-registration.
+    pub async fn register_agent_token(
+        &self,
+        agent_name: &str,
+        cli_hint: Option<&str>,
+    ) -> std::result::Result<String, RelaycastRegistrationError> {
+        let trimmed_name = agent_name.trim();
+        if trimmed_name.is_empty() {
+            return Err(RelaycastRegistrationError::InvalidAgentName);
+        }
+
+        if let Some(token) = self.agent_tokens.lock().get(trimmed_name).cloned() {
+            return Ok(token);
+        }
+
+        if let Some(remaining) = self.global_registration_block_remaining() {
+            return Err(RelaycastRegistrationError::Blocked {
+                agent_name: trimmed_name.to_string(),
+                retry_after_secs: remaining.as_secs().max(1),
+            });
+        }
+
+        if let Some(remaining) = self.registration_block_remaining(trimmed_name) {
+            return Err(RelaycastRegistrationError::Blocked {
+                agent_name: trimmed_name.to_string(),
+                retry_after_secs: remaining.as_secs().max(1),
+            });
+        }
+
         let url = format!("{}/v1/agents/spawn", self.base_url);
-        let res = self
+        let registration_cli = registration_cli_from_hint(cli_hint, &self.default_cli);
+        let response = self
             .http
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&serde_json::json!({
-                "name": self.agent_name,
-                "cli": "broker",
-                "task": "relay broker engine"
+                "name": trimmed_name,
+                "cli": registration_cli,
+                "task": format!("relay worker session for {}", trimmed_name)
             }))
             .send()
-            .await?;
+            .await
+            .map_err(|error| RelaycastRegistrationError::Transport {
+                agent_name: trimmed_name.to_string(),
+                detail: error.to_string(),
+            })?;
 
-        let status = res.status();
-        let body: Value = res.json().await?;
+        let status = response.status();
+        let mut header_map = HashMap::new();
+        if let Some(retry_after) = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+        {
+            header_map.insert("retry-after".to_string(), retry_after.to_string());
+        }
+
+        let body: Value =
+            response
+                .json()
+                .await
+                .map_err(|error| RelaycastRegistrationError::Transport {
+                    agent_name: trimmed_name.to_string(),
+                    detail: error.to_string(),
+                })?;
 
         if !status.is_success() {
-            anyhow::bail!(
-                "relaycast spawn/register failed ({}): {}",
-                status,
-                serde_json::to_string(&body).unwrap_or_default()
-            );
+            let detail = relaycast_error_detail(&body);
+            if status.as_u16() == 429 {
+                let retry_after_secs = parse_retry_after_seconds(Some(&header_map), Some(&body));
+                let blocked_until = Instant::now() + Duration::from_secs(retry_after_secs);
+                self.registration_cooldowns
+                    .lock()
+                    .insert(trimmed_name.to_string(), blocked_until);
+                *self.global_registration_cooldown.lock() = Some(blocked_until);
+                return Err(RelaycastRegistrationError::RateLimited {
+                    agent_name: trimmed_name.to_string(),
+                    retry_after_secs,
+                    detail,
+                });
+            }
+
+            return Err(RelaycastRegistrationError::Api {
+                agent_name: trimmed_name.to_string(),
+                status: status.as_u16(),
+                detail,
+            });
         }
 
         let token = body
@@ -291,33 +426,54 @@ impl RelaycastHttpClient {
             .or_else(|| body.get("token"))
             .and_then(Value::as_str)
             .map(String::from)
-            .ok_or_else(|| anyhow::anyhow!("no token in spawn response"))?;
+            .ok_or_else(|| RelaycastRegistrationError::MissingToken {
+                agent_name: trimmed_name.to_string(),
+            })?;
 
-        *self.agent_token.lock() = Some(token.clone());
+        self.agent_tokens
+            .lock()
+            .insert(trimmed_name.to_string(), token.clone());
+        self.registration_cooldowns.lock().remove(trimmed_name);
+        *self.global_registration_cooldown.lock() = None;
         Ok(token)
     }
 
-    /// Mark the broker agent as offline via the release endpoint.
-    /// Called during graceful shutdown to prevent ghost agents in the dashboard.
-    pub async fn mark_offline(&self) -> Result<()> {
+    /// Register the broker agent via the spawn endpoint (which rotates the token
+    /// if the agent already exists, avoiding ghost duplicates).
+    async fn ensure_token(&self) -> Result<String> {
+        self.register_agent_token(&self.agent_name, Some(&self.default_cli))
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    /// Mark a specific agent offline via the release endpoint.
+    pub async fn mark_agent_offline(&self, agent_name: &str) -> Result<()> {
         let url = format!("{}/v1/agents/release", self.base_url);
         let res = self
             .http
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&serde_json::json!({
-                "name": self.agent_name
+                "name": agent_name
             }))
             .send()
             .await?;
         if !res.status().is_success() {
             let status = res.status();
             let body = res.text().await.unwrap_or_default();
-            tracing::warn!(status = %status, "failed to mark broker offline: {}", body);
+            tracing::warn!(status = %status, agent = %agent_name, "failed to mark agent offline: {}", body);
         } else {
-            tracing::info!(agent = %self.agent_name, "marked broker agent offline");
+            tracing::info!(agent = %agent_name, "marked agent offline");
         }
+        // Always invalidate local cache so a future spawn uses a fresh registration.
+        self.invalidate_cached_registration(agent_name);
         Ok(())
+    }
+
+    /// Mark the broker agent as offline via the release endpoint.
+    /// Called during graceful shutdown to prevent ghost agents in the dashboard.
+    pub async fn mark_offline(&self) -> Result<()> {
+        self.mark_agent_offline(&self.agent_name).await
     }
 
     /// Send a direct message to a named agent via the Relaycast REST API.
@@ -392,6 +548,33 @@ impl RelaycastHttpClient {
         Ok(messages)
     }
 
+    /// Resolve participant names for a DM conversation ID.
+    pub async fn get_dm_participants(&self, conversation_id: &str) -> Result<Vec<String>> {
+        let url = format!("{}/v1/dm/conversations/all", self.base_url);
+        let res = self
+            .http
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            tracing::warn!(
+                status = %status,
+                conversation_id = %conversation_id,
+                "relaycast get_dm_participants failed: {}",
+                body
+            );
+            return Ok(vec![]);
+        }
+        let body: Value = res.json().await?;
+        Ok(parse_dm_participants_from_conversations(
+            &body,
+            conversation_id,
+        ))
+    }
+
     /// Fetch recent message history from a channel via the Relaycast REST API.
     pub async fn get_channel_messages(&self, channel: &str, limit: usize) -> Result<Vec<Value>> {
         let token = self.ensure_token().await?;
@@ -438,6 +621,41 @@ impl RelaycastHttpClient {
     }
 }
 
+fn parse_dm_participants_from_conversations(body: &Value, conversation_id: &str) -> Vec<String> {
+    let conversations = body
+        .pointer("/data/conversations")
+        .or_else(|| body.get("conversations"))
+        .and_then(Value::as_array)
+        .or_else(|| body.get("data").and_then(Value::as_array))
+        .or_else(|| body.as_array());
+
+    let Some(conversations) = conversations else {
+        return vec![];
+    };
+
+    let Some(conversation) = conversations.iter().find(|entry| {
+        entry
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == conversation_id)
+    }) else {
+        return vec![];
+    };
+
+    conversation
+        .get("participants")
+        .and_then(Value::as_array)
+        .map(|participants| {
+            participants
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn build_ws_stream_url(base_url: &str, token: &str) -> Result<String> {
     let raw = base_url.trim();
     let normalized = if raw.starts_with("wss://") || raw.starts_with("ws://") {
@@ -454,13 +672,17 @@ pub fn build_ws_stream_url(base_url: &str, token: &str) -> Result<String> {
     let path = url.path().trim_end_matches('/').to_string();
 
     let final_path = if path.is_empty() {
-        "/v1/stream".to_string()
-    } else if path.ends_with("/v1/stream") || path.ends_with("/stream") {
+        "/v1/ws".to_string()
+    } else if path.ends_with("/v1/ws") || path.ends_with("/ws") {
         path
+    } else if path.ends_with("/v1/stream") {
+        path.trim_end_matches("/stream").to_string() + "/ws"
+    } else if path.ends_with("/stream") {
+        format!("{}/ws", path.trim_end_matches("/stream"))
     } else if path.ends_with("/v1") {
-        format!("{path}/stream")
+        format!("{path}/ws")
     } else {
-        format!("{path}/v1/stream")
+        format!("{path}/v1/ws")
     };
     url.set_path(&final_path);
 
@@ -482,6 +704,47 @@ pub fn build_ws_stream_url(base_url: &str, token: &str) -> Result<String> {
     Ok(url.to_string())
 }
 
+fn normalize_relaycast_cli(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let candidate = shlex::split(trimmed)
+        .and_then(|parts| parts.into_iter().next())
+        .unwrap_or_else(|| trimmed.to_string());
+
+    let executable = Path::new(&candidate)
+        .file_name()
+        .and_then(|part| part.to_str())
+        .unwrap_or(candidate.as_str());
+
+    let cli = executable
+        .split(':')
+        .next()
+        .unwrap_or(executable)
+        .trim()
+        .to_ascii_lowercase();
+
+    let normalized = match cli.as_str() {
+        "claude" | "claudecode" | "claude-code" | "claude_code" => "claude",
+        "codex" => "codex",
+        "gemini" => "gemini",
+        "aider" => "aider",
+        "goose" => "goose",
+        _ => return None,
+    };
+
+    Some(normalized.to_string())
+}
+
+fn registration_cli_from_hint(cli_hint: Option<&str>, default_cli: &str) -> String {
+    cli_hint
+        .and_then(normalize_relaycast_cli)
+        .or_else(|| normalize_relaycast_cli(default_cli))
+        .unwrap_or_else(|| "claude".to_string())
+}
+
 pub fn reconnect_delay(attempt: u32) -> Duration {
     let base_ms = (1_000u64).saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1)));
     let bounded = base_ms.min(30_000);
@@ -489,9 +752,211 @@ pub fn reconnect_delay(attempt: u32) -> Duration {
     Duration::from_millis(bounded + jitter)
 }
 
+pub(crate) fn parse_retry_after_seconds(
+    headers: Option<&HashMap<String, String>>,
+    body: Option<&Value>,
+) -> u64 {
+    let from_header = headers
+        .and_then(|map| map.get("retry-after"))
+        .and_then(|value| value.trim().parse::<u64>().ok());
+
+    let from_body = body.and_then(|payload| {
+        payload
+            .pointer("/error/retry_after_seconds")
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                payload
+                    .pointer("/retry_after_seconds")
+                    .and_then(Value::as_u64)
+            })
+            .or_else(|| {
+                payload
+                    .pointer("/error/retry_after")
+                    .and_then(Value::as_u64)
+            })
+            .or_else(|| payload.pointer("/retry_after").and_then(Value::as_u64))
+            .or_else(|| {
+                payload
+                    .pointer("/error/retry_after_seconds")
+                    .and_then(Value::as_str)
+                    .and_then(|value| value.parse::<u64>().ok())
+            })
+    });
+
+    from_header.or(from_body).unwrap_or(60).clamp(1, 600)
+}
+
+fn relaycast_error_detail(body: &Value) -> String {
+    let message = body
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .or_else(|| body.pointer("/message").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let code = body
+        .pointer("/error/code")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    match (message, code) {
+        (Some(message), Some(code)) => format!("{message} (code: {code})"),
+        (Some(message), None) => message.to_string(),
+        (None, Some(code)) => format!("Relaycast API error (code: {code})"),
+        (None, None) => {
+            serde_json::to_string(body).unwrap_or_else(|_| "<invalid-json>".to_string())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Agent event parsing (from WS events)
+// ---------------------------------------------------------------------------
+
+/// Parsed result from a relaycast `agent.spawn_requested` or `agent.release_requested` WS event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelaycastAgentEvent {
+    Spawn {
+        name: String,
+        cli: String,
+        task: Option<String>,
+        channel: Option<String>,
+    },
+    Release {
+        name: String,
+    },
+}
+
+/// Parse a raw WS JSON value into a `RelaycastAgentEvent` if it matches
+/// `agent.spawn_requested` or `agent.release_requested`.
+pub fn parse_relaycast_agent_event(value: &serde_json::Value) -> Option<RelaycastAgentEvent> {
+    let event_type = value.get("type")?.as_str()?;
+    let agent = value.get("agent")?;
+
+    match event_type {
+        "agent.spawn_requested" => {
+            let name = agent.get("name")?.as_str().filter(|s| !s.is_empty())?;
+            let cli = agent.get("cli")?.as_str().filter(|s| !s.is_empty())?;
+            let task = agent
+                .get("task")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            let channel = agent
+                .get("channel")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            Some(RelaycastAgentEvent::Spawn {
+                name: name.to_string(),
+                cli: cli.to_string(),
+                task,
+                channel,
+            })
+        }
+        "agent.release_requested" => {
+            let name = agent.get("name")?.as_str().filter(|s| !s.is_empty())?;
+            Some(RelaycastAgentEvent::Release {
+                name: name.to_string(),
+            })
+        }
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Registration retry helpers
+// ---------------------------------------------------------------------------
+
+pub fn registration_retry_after_secs(error: &RelaycastRegistrationError) -> Option<u64> {
+    match error {
+        RelaycastRegistrationError::Blocked {
+            retry_after_secs, ..
+        } => Some(*retry_after_secs),
+        RelaycastRegistrationError::RateLimited {
+            retry_after_secs, ..
+        } => Some(*retry_after_secs),
+        _ => None,
+    }
+}
+
+pub fn registration_is_retryable(error: &RelaycastRegistrationError) -> bool {
+    matches!(
+        error,
+        RelaycastRegistrationError::Blocked { .. }
+            | RelaycastRegistrationError::RateLimited { .. }
+            | RelaycastRegistrationError::Transport { .. }
+    )
+}
+
+pub fn format_worker_preregistration_error(
+    name: &str,
+    error: &RelaycastRegistrationError,
+) -> String {
+    let mut message = format!(
+        "failed to pre-register worker '{}' with relaycast: {}",
+        name, error
+    );
+    if let Some(retry_after_secs) = registration_retry_after_secs(error) {
+        if !message.to_ascii_lowercase().contains("retry after") {
+            message.push_str(&format!(" (retry after {}s)", retry_after_secs));
+        }
+    }
+    message
+}
+
+/// Outcome when agent pre-registration retries are exhausted or fail fatally.
+pub enum RegRetryOutcome {
+    /// All retries exhausted for a retryable error — spawn can proceed without token.
+    RetryableExhausted(RelaycastRegistrationError),
+    /// Non-retryable error — spawn should be aborted.
+    Fatal(RelaycastRegistrationError),
+}
+
+/// Attempt to register an agent token with up to 3 retries for transient errors.
+pub async fn retry_agent_registration(
+    http: &RelaycastHttpClient,
+    name: &str,
+    cli: Option<&str>,
+) -> Result<String, RegRetryOutcome> {
+    const MAX_ATTEMPTS: u32 = 3;
+    for attempt in 0..MAX_ATTEMPTS {
+        match http.register_agent_token(name, cli).await {
+            Ok(token) => return Ok(token),
+            Err(error) if registration_is_retryable(&error) && attempt < MAX_ATTEMPTS - 1 => {
+                tracing::warn!(
+                    worker = %name,
+                    attempt,
+                    error = %error,
+                    "pre-registration failed, retrying..."
+                );
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            Err(error) if registration_is_retryable(&error) => {
+                return Err(RegRetryOutcome::RetryableExhausted(error));
+            }
+            Err(error) => {
+                return Err(RegRetryOutcome::Fatal(error));
+            }
+        }
+    }
+    unreachable!()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{build_ws_stream_url, reconnect_delay, RelaycastHttpClient};
+    use serde_json::json;
+    use std::{
+        collections::HashMap,
+        time::{Duration, Instant},
+    };
+
+    use super::{
+        build_ws_stream_url, parse_dm_participants_from_conversations, parse_relaycast_agent_event,
+        parse_retry_after_seconds, reconnect_delay, registration_cli_from_hint,
+        registration_is_retryable, registration_retry_after_secs, relaycast_error_detail,
+        RelaycastAgentEvent, RelaycastHttpClient, RelaycastRegistrationError,
+    };
 
     #[test]
     fn backoff_with_jitter_stays_bounded() {
@@ -506,53 +971,385 @@ mod tests {
     #[test]
     fn builds_stream_url_from_host_base() {
         let url = build_ws_stream_url("https://api.relaycast.dev", "tok_1").unwrap();
-        assert_eq!(url, "wss://api.relaycast.dev/v1/stream?token=tok_1");
+        assert_eq!(url, "wss://api.relaycast.dev/v1/ws?token=tok_1");
     }
 
     #[test]
     fn avoids_duplicate_v1_when_base_already_has_v1() {
         let url = build_ws_stream_url("https://api.relaycast.dev/v1", "tok_2").unwrap();
-        assert_eq!(url, "wss://api.relaycast.dev/v1/stream?token=tok_2");
+        assert_eq!(url, "wss://api.relaycast.dev/v1/ws?token=tok_2");
     }
 
     #[test]
     fn preserves_custom_stream_path_and_query() {
         let url =
             build_ws_stream_url("wss://rt.relaycast.dev/stream?client=broker", "tok_3").unwrap();
-        assert_eq!(
-            url,
-            "wss://rt.relaycast.dev/stream?client=broker&token=tok_3"
-        );
+        assert_eq!(url, "wss://rt.relaycast.dev/ws?client=broker&token=tok_3");
     }
 
     #[test]
     fn http_client_constructs_with_correct_fields() {
-        let client =
-            RelaycastHttpClient::new("https://api.relaycast.dev", "rk_live_test", "my-broker");
+        let client = RelaycastHttpClient::new(
+            "https://api.relaycast.dev",
+            "rk_live_test",
+            "my-broker",
+            "codex",
+        );
         assert_eq!(client.base_url, "https://api.relaycast.dev");
         assert_eq!(client.api_key, "rk_live_test");
         assert_eq!(client.agent_name, "my-broker");
-        assert!(client.agent_token.lock().is_none());
+        assert_eq!(client.default_cli, "codex");
+        assert!(client.agent_tokens.lock().is_empty());
     }
 
     #[test]
     fn http_client_clone_shares_token() {
-        let client = RelaycastHttpClient::new("https://api.relaycast.dev", "key", "agent");
+        let client =
+            RelaycastHttpClient::new("https://api.relaycast.dev", "key", "agent", "claude");
         let clone = client.clone();
-        *client.agent_token.lock() = Some("tok_123".to_string());
-        assert_eq!(clone.agent_token.lock().as_deref(), Some("tok_123"));
+        client
+            .agent_tokens
+            .lock()
+            .insert("agent".to_string(), "tok_123".to_string());
+        assert_eq!(
+            clone.agent_tokens.lock().get("agent").map(String::as_str),
+            Some("tok_123")
+        );
+    }
+
+    #[test]
+    fn registration_block_remaining_returns_none_when_not_blocked() {
+        let client =
+            RelaycastHttpClient::new("https://api.relaycast.dev", "key", "agent", "claude");
+        assert!(client.registration_block_remaining("agent").is_none());
+    }
+
+    #[test]
+    fn registration_block_remaining_reports_positive_duration() {
+        let client =
+            RelaycastHttpClient::new("https://api.relaycast.dev", "key", "agent", "claude");
+        client
+            .registration_cooldowns
+            .lock()
+            .insert("agent".to_string(), Instant::now() + Duration::from_secs(2));
+        let remaining = client.registration_block_remaining("agent");
+        assert!(remaining.is_some());
+        assert!(remaining.unwrap() <= Duration::from_secs(2));
+    }
+
+    #[test]
+    fn registration_block_remaining_clears_expired_blocks() {
+        let client =
+            RelaycastHttpClient::new("https://api.relaycast.dev", "key", "agent", "claude");
+        client
+            .registration_cooldowns
+            .lock()
+            .insert("agent".to_string(), Instant::now() - Duration::from_secs(1));
+        assert!(client.registration_block_remaining("agent").is_none());
+        assert!(!client.registration_cooldowns.lock().contains_key("agent"));
+    }
+
+    #[test]
+    fn global_registration_block_remaining_clears_expired_blocks() {
+        let client =
+            RelaycastHttpClient::new("https://api.relaycast.dev", "key", "agent", "claude");
+        *client.global_registration_cooldown.lock() = Some(Instant::now() - Duration::from_secs(1));
+        assert!(client.global_registration_block_remaining().is_none());
+        assert!(client.global_registration_cooldown.lock().is_none());
+    }
+
+    #[test]
+    fn invalidate_cached_registration_removes_token_and_cooldown() {
+        let client =
+            RelaycastHttpClient::new("https://api.relaycast.dev", "key", "agent", "claude");
+        client
+            .agent_tokens
+            .lock()
+            .insert("worker-a".to_string(), "tok_abc".to_string());
+        client.registration_cooldowns.lock().insert(
+            "worker-a".to_string(),
+            Instant::now() + Duration::from_secs(30),
+        );
+
+        client.invalidate_cached_registration("worker-a");
+
+        assert!(!client.agent_tokens.lock().contains_key("worker-a"));
+        assert!(!client
+            .registration_cooldowns
+            .lock()
+            .contains_key("worker-a"));
+    }
+
+    #[test]
+    fn parse_retry_after_seconds_prefers_header_then_body_then_default() {
+        let mut headers = HashMap::new();
+        headers.insert("retry-after".to_string(), "12".to_string());
+        let body = json!({"error":{"retry_after_seconds": 34}});
+        assert_eq!(parse_retry_after_seconds(Some(&headers), Some(&body)), 12);
+
+        let headers: HashMap<String, String> = HashMap::new();
+        assert_eq!(parse_retry_after_seconds(Some(&headers), Some(&body)), 34);
+
+        let body = json!({"error":{"message":"rate limited"}});
+        assert_eq!(parse_retry_after_seconds(Some(&headers), Some(&body)), 60);
+    }
+
+    #[test]
+    fn relaycast_error_detail_prefers_structured_message_and_code() {
+        let body = json!({
+            "ok": false,
+            "error": {
+                "code": "rate_limit_exceeded",
+                "message": "Rate limit exceeded. 60 requests per minute allowed for free plan."
+            }
+        });
+        let detail = relaycast_error_detail(&body);
+        assert_eq!(
+            detail,
+            "Rate limit exceeded. 60 requests per minute allowed for free plan. (code: rate_limit_exceeded)"
+        );
+    }
+
+    #[test]
+    fn relaycast_error_detail_falls_back_to_json_when_unstructured() {
+        let body = json!({"unexpected":"payload"});
+        let detail = relaycast_error_detail(&body);
+        assert_eq!(detail, "{\"unexpected\":\"payload\"}");
+    }
+
+    #[test]
+    fn registration_cli_from_hint_prefers_valid_hint() {
+        assert_eq!(
+            registration_cli_from_hint(Some("/usr/local/bin/gemini --model pro"), "claude"),
+            "gemini"
+        );
+        assert_eq!(
+            registration_cli_from_hint(Some("claude:latest"), "codex"),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn registration_cli_from_hint_falls_back_when_hint_invalid() {
+        assert_eq!(registration_cli_from_hint(Some("cat"), "codex"), "codex");
+        assert_eq!(
+            registration_cli_from_hint(Some("cat"), "unknown-cli"),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn register_agent_token_honors_global_registration_block() {
+        let client =
+            RelaycastHttpClient::new("https://api.relaycast.dev", "key", "agent", "claude");
+        *client.global_registration_cooldown.lock() = Some(Instant::now() + Duration::from_secs(2));
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime.block_on(client.register_agent_token("worker-a", Some("claude")));
+        match result {
+            Err(RelaycastRegistrationError::Blocked {
+                retry_after_secs, ..
+            }) => {
+                assert!(retry_after_secs >= 1);
+            }
+            other => panic!("expected blocked error, got {other:?}"),
+        }
     }
 
     #[test]
     fn keeps_existing_stream_endpoint_and_replaces_token() {
         let url = build_ws_stream_url(
-            "wss://api.relaycast.dev/v1/stream?token=old&mode=fast",
+            "wss://api.relaycast.dev/v1/ws?token=old&mode=fast",
             "new_tok",
         )
         .unwrap();
+        assert_eq!(url, "wss://api.relaycast.dev/v1/ws?mode=fast&token=new_tok");
+    }
+
+    #[test]
+    fn parses_dm_participants_from_data_array() {
+        let body = json!({
+            "ok": true,
+            "data": [
+                { "id": "conv_1", "participants": ["Dashboard", "Lead"] },
+                { "id": "conv_2", "participants": ["A", "B"] }
+            ]
+        });
+
+        let participants = parse_dm_participants_from_conversations(&body, "conv_1");
         assert_eq!(
-            url,
-            "wss://api.relaycast.dev/v1/stream?mode=fast&token=new_tok"
+            participants,
+            vec!["Dashboard".to_string(), "Lead".to_string()]
         );
+    }
+
+    #[test]
+    fn parses_dm_participants_from_nested_conversations_shape() {
+        let body = json!({
+            "ok": true,
+            "data": {
+                "conversations": [
+                    { "id": "conv_3", "participants": ["Ops", "Worker"] }
+                ]
+            }
+        });
+
+        let participants = parse_dm_participants_from_conversations(&body, "conv_3");
+        assert_eq!(participants, vec!["Ops".to_string(), "Worker".to_string()]);
+    }
+
+    // --- parse_relaycast_agent_event tests ---
+
+    #[test]
+    fn parses_agent_spawn_requested() {
+        let event = parse_relaycast_agent_event(&json!({
+            "type": "agent.spawn_requested",
+            "agent": {
+                "name": "Worker1",
+                "cli": "claude",
+                "task": "Do some work",
+                "channel": "general",
+                "already_existed": false
+            }
+        }));
+        assert_eq!(
+            event,
+            Some(RelaycastAgentEvent::Spawn {
+                name: "Worker1".into(),
+                cli: "claude".into(),
+                task: Some("Do some work".into()),
+                channel: Some("general".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_agent_spawn_requested_null_channel() {
+        let event = parse_relaycast_agent_event(&json!({
+            "type": "agent.spawn_requested",
+            "agent": {
+                "name": "Worker2",
+                "cli": "codex",
+                "task": "Task text",
+                "channel": null,
+                "already_existed": true
+            }
+        }));
+        assert_eq!(
+            event,
+            Some(RelaycastAgentEvent::Spawn {
+                name: "Worker2".into(),
+                cli: "codex".into(),
+                task: Some("Task text".into()),
+                channel: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_agent_release_requested() {
+        let event = parse_relaycast_agent_event(&json!({
+            "type": "agent.release_requested",
+            "agent": { "name": "Worker1" },
+            "reason": "task complete",
+            "deleted": false
+        }));
+        assert_eq!(
+            event,
+            Some(RelaycastAgentEvent::Release {
+                name: "Worker1".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn spawn_requested_missing_name_returns_none() {
+        assert!(parse_relaycast_agent_event(&json!({
+            "type": "agent.spawn_requested",
+            "agent": { "cli": "claude", "task": "work" }
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn spawn_requested_missing_cli_returns_none() {
+        assert!(parse_relaycast_agent_event(&json!({
+            "type": "agent.spawn_requested",
+            "agent": { "name": "Worker1", "task": "work" }
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn spawn_requested_empty_name_returns_none() {
+        assert!(parse_relaycast_agent_event(&json!({
+            "type": "agent.spawn_requested",
+            "agent": { "name": "", "cli": "claude", "task": "work" }
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn release_requested_empty_name_returns_none() {
+        assert!(parse_relaycast_agent_event(&json!({
+            "type": "agent.release_requested",
+            "agent": { "name": "" },
+            "reason": null,
+            "deleted": false
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn release_requested_missing_agent_returns_none() {
+        assert!(parse_relaycast_agent_event(&json!({
+            "type": "agent.release_requested",
+            "reason": "done",
+            "deleted": true
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn unrelated_event_type_returns_none() {
+        assert!(parse_relaycast_agent_event(&json!({
+            "type": "message.created",
+            "agent": { "name": "Worker1", "cli": "claude" }
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn command_invoked_not_matched_by_relaycast_parser() {
+        assert!(parse_relaycast_agent_event(&json!({
+            "type": "command.invoked",
+            "command": "/spawn",
+            "channel": "general",
+            "invoked_by": "123",
+            "parameters": { "name": "x", "cli": "y" }
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn registration_retryable_for_rate_limited() {
+        let error = RelaycastRegistrationError::RateLimited {
+            agent_name: "test".into(),
+            retry_after_secs: 60,
+            detail: "too many requests".into(),
+        };
+        assert!(registration_is_retryable(&error));
+        assert_eq!(registration_retry_after_secs(&error), Some(60));
+    }
+
+    #[test]
+    fn registration_not_retryable_for_api_error() {
+        let error = RelaycastRegistrationError::Api {
+            agent_name: "test".into(),
+            status: 401,
+            detail: "unauthorized".into(),
+        };
+        assert!(!registration_is_retryable(&error));
+        assert_eq!(registration_retry_after_secs(&error), None);
     }
 }

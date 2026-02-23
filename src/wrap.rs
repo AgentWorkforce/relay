@@ -389,6 +389,7 @@ pub(crate) async fn run_wrap(
     let RelaySession {
         http_base,
         relay_workspace_key,
+        self_name: _,
         self_agent_id,
         self_names,
         self_agent_ids,
