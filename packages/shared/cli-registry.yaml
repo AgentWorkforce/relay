@@ -11,7 +11,8 @@ clis:
   claude:
     name: "Claude Code"
     package: "@anthropic-ai/claude-code"
-    version: "1.0.24"
+    npm_link: "https://www.npmjs.com/package/@anthropic-ai"
+    version: "2.1.50"
     install: "npm install -g @anthropic-ai/claude-code"
     models:
       sonnet:
@@ -28,7 +29,8 @@ clis:
   codex:
     name: "Codex CLI"
     package: "@openai/codex"
-    version: "0.1.2504301707"
+    npm_link: "https://www.npmjs.com/package/@openai/codex"
+    version: "0.104.0"
     install: "npm install -g @openai/codex"
     models:
       gpt_5_2_codex:
@@ -51,7 +53,8 @@ clis:
   gemini:
     name: "Gemini CLI"
     package: "@google/gemini-cli"
-    version: "0.1.17"
+    npm_link: "https://www.npmjs.com/package/@google/gemini-cli"
+    version: "0.29.5"
     install: "npm install -g @google/gemini-cli"
     models:
       gemini_3_pro_preview:

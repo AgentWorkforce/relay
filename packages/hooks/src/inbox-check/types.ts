@@ -23,7 +23,7 @@ export interface HookOutput {
 /**
  * Parsed message from inbox file.
  * Note: This is different from the legacy wire-protocol InboxMessage,
- * which was used for daemon communication.
+ * which was used for broker communication.
  */
 export interface ParsedInboxMessage {
   from: string;

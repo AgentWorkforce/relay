@@ -375,6 +375,14 @@ async fn main() -> Result<()> {
     const BYPASS_PERMS_MAX_SENDS: u32 = 5;
     let mut bypass_perms_buffer = String::new();
 
+    // Claude Code theme picker auto-selection
+    // On first run, Claude Code shows a theme selection prompt:
+    //   "Choose the text style that looks best with your terminal"
+    //   "❯ 1. Dark mode ✔"
+    // Auto-send Enter to accept the default (Dark mode) so the agent isn't stuck.
+    let theme_picker_handled = AtomicBool::new(false);
+    let mut theme_picker_buffer = String::new();
+
     // Codex model upgrade prompt auto-dismissal
     // Codex shows a selection menu when a new model is available:
     //   "› 1. Try new model / 2. Use existing model"
@@ -618,6 +626,30 @@ async fn main() -> Result<()> {
                         } else if in_cooldown {
                             // In cooldown - clear buffer so stale content doesn't accumulate
                             bypass_perms_buffer.clear();
+                        }
+                    }
+
+                    // Auto-select theme in Claude Code's first-run theme picker.
+                    // Claude shows: "Choose the text style..." with "❯ 1. Dark mode ✔" pre-selected.
+                    // Send Enter to accept the default (Dark mode).
+                    if !theme_picker_handled.load(Ordering::SeqCst) {
+                        theme_picker_buffer.push_str(&text);
+                        if theme_picker_buffer.len() > 2500 {
+                            let start = floor_char_boundary(&theme_picker_buffer, theme_picker_buffer.len() - 2000);
+                            theme_picker_buffer = theme_picker_buffer[start..].to_string();
+                        }
+
+                        let clean = strip_ansi(&theme_picker_buffer);
+                        if (clean.contains("Choose the text style") || clean.contains("choose the text style"))
+                            && (clean.contains("Dark mode") || clean.contains("Light mode"))
+                        {
+                            info!("Detected Claude Code theme picker, auto-selecting default (Enter)");
+                            theme_picker_handled.store(true, Ordering::SeqCst);
+                            tokio::time::sleep(Duration::from_millis(300)).await;
+                            if let Err(e) = async_pty.send(b"\r".to_vec()).await {
+                                warn!("Failed to send Enter for theme picker: {}", e);
+                            }
+                            theme_picker_buffer.clear();
                         }
                     }
 

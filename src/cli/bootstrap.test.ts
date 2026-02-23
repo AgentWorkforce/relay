@@ -37,7 +37,7 @@ const expectedLeafCommands = [
   'cloud sync',
   'cloud agents',
   'cloud send',
-  'cloud daemons',
+  'cloud brokers',
 ];
 
 function collectLeafCommandPaths(program: Command): string[] {

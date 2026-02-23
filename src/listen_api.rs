@@ -277,6 +277,7 @@ async fn handle_dashboard_ws(
     mut socket: axum::extract::ws::WebSocket,
     mut rx: broadcast::Receiver<String>,
 ) {
+    tracing::info!("dashboard WS client connected");
     let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
     loop {
         tokio::select! {
@@ -308,6 +309,7 @@ async fn handle_dashboard_ws(
             }
         }
     }
+    tracing::info!("dashboard WS client disconnected");
 }
 
 // ---------------------------------------------------------------------------
@@ -333,10 +335,149 @@ pub fn broadcast_if_relevant(events_tx: &broadcast::Sender<String>, payload: &Va
             | "delivery_failed"
             | "worker_error" => {
                 if let Ok(json) = serde_json::to_string(payload) {
-                    let _ = events_tx.send(json);
+                    match events_tx.send(json) {
+                        Ok(receivers) => {
+                            tracing::debug!(
+                                kind = kind,
+                                receivers = receivers,
+                                "broadcast event to dashboard WS clients"
+                            );
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                kind = kind,
+                                "broadcast event dropped — no dashboard WS clients connected"
+                            );
+                        }
+                    }
                 }
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod wave0_contract_tests {
+    use serde_json::{json, Value};
+    use tokio::sync::broadcast;
+
+    use super::broadcast_if_relevant;
+
+    fn required_broadcast_kinds() -> Vec<String> {
+        let fixture =
+            include_str!("../tests/fixtures/contracts/wave0/dashboard-broadcast-whitelist.json");
+        let parsed: Value = serde_json::from_str(fixture)
+            .expect("dashboard whitelist fixture should be valid JSON");
+        parsed
+            .get("required_kinds")
+            .and_then(Value::as_array)
+            .expect("dashboard whitelist fixture must include required_kinds array")
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn broadcast_whitelist_contract_emits_all_required_event_kinds() {
+        let (events_tx, mut events_rx) = broadcast::channel::<String>(16);
+        let required_kinds = required_broadcast_kinds();
+
+        for kind in required_kinds {
+            broadcast_if_relevant(
+                &events_tx,
+                &json!({
+                    "kind": kind,
+                    "name": "Wave0",
+                    "event_id": "evt_wave0_contract"
+                }),
+            );
+
+            // TODO(contract-wave0-broadcast-whitelist): keep this fixture in sync with
+            // dashboard-required events and make sure every listed kind is broadcast.
+            assert!(
+                events_rx.try_recv().is_ok(),
+                "expected `{}` to be broadcast to dashboard listeners",
+                kind
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::broadcast_if_relevant;
+    use serde_json::{json, Value};
+    use tokio::sync::broadcast;
+
+    #[test]
+    fn broadcast_if_relevant_sends_relay_inbound() {
+        let (tx, mut rx) = broadcast::channel::<String>(8);
+        let payload = json!({
+            "kind": "relay_inbound",
+            "to": "Lead",
+            "from": "Worker",
+            "text": "status",
+        });
+
+        broadcast_if_relevant(&tx, &payload);
+
+        let delivered = rx
+            .try_recv()
+            .expect("relay_inbound should be broadcast to dashboard listeners");
+        let decoded: Value =
+            serde_json::from_str(&delivered).expect("broadcast payload should be valid JSON");
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn broadcast_if_relevant_sends_agent_spawned() {
+        let (tx, mut rx) = broadcast::channel::<String>(8);
+        let payload = json!({
+            "kind": "agent_spawned",
+            "name": "Worker",
+        });
+
+        broadcast_if_relevant(&tx, &payload);
+
+        let delivered = rx
+            .try_recv()
+            .expect("agent_spawned should be broadcast to dashboard listeners");
+        let decoded: Value =
+            serde_json::from_str(&delivered).expect("broadcast payload should be valid JSON");
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn broadcast_if_relevant_ignores_unknown_kind() {
+        let (tx, mut rx) = broadcast::channel::<String>(8);
+        let payload = json!({
+            "kind": "totally_unknown_kind",
+            "name": "Worker",
+        });
+
+        broadcast_if_relevant(&tx, &payload);
+
+        assert!(matches!(
+            rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn broadcast_if_relevant_ignores_missing_kind() {
+        let (tx, mut rx) = broadcast::channel::<String>(8);
+        let payload = json!({
+            "name": "Worker",
+            "status": "online",
+        });
+
+        broadcast_if_relevant(&tx, &payload);
+
+        assert!(matches!(
+            rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
     }
 }

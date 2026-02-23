@@ -25,7 +25,7 @@ fi
 # Count messages
 MSG_COUNT=$(echo "$CONTENT" | grep -c "## Message from")
 
-# Check if MCP is available (requires BOTH .mcp.json AND daemon socket accessible)
+# Check if MCP is available (requires BOTH .mcp.json AND broker socket accessible)
 # Note: Only check PROJECT_ROOT, not cwd, to avoid false positives when hook runs from different dir
 RELAY_SOCKET="${RELAY_SOCKET:-/tmp/agent-relay.sock}"
 MCP_AVAILABLE=0

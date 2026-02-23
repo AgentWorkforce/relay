@@ -14,6 +14,8 @@ export interface CreateRelaycastClientOptions {
   baseUrl?: string;
   cachePath?: string;
   agentName?: string;
+  /** Relaycast registration type. Defaults to "agent". */
+  agentType?: 'agent' | 'human';
 }
 
 /**
@@ -27,6 +29,7 @@ export async function createRelaycastClient(
   const baseUrl = options.baseUrl ?? process.env.RELAYCAST_BASE_URL ?? 'https://api.relaycast.dev';
   const cachePath = options.cachePath ?? join(homedir(), '.agent-relay', 'relaycast.json');
   const agentName = options.agentName ?? `sdk-${randomBytes(4).toString('hex')}`;
+  const agentType = options.agentType ?? 'agent';
 
   // Resolve API key
   let apiKey = options.apiKey ?? process.env.RELAY_API_KEY;
@@ -46,11 +49,11 @@ export async function createRelaycastClient(
   let name = agentName;
   let registration;
   try {
-    registration = await relay.agents.register({ name, type: 'agent' });
+    registration = await relay.agents.register({ name, type: agentType });
   } catch (err) {
     if (err instanceof RelayError && err.code === 'agent_already_exists') {
       name = `${agentName}-${randomBytes(4).toString('hex')}`;
-      registration = await relay.agents.register({ name, type: 'agent' });
+      registration = await relay.agents.register({ name, type: agentType });
     } else {
       throw err;
     }
@@ -97,7 +100,7 @@ export class RelaycastApi {
 
   constructor(options: RelaycastApiOptions = {}) {
     this.baseUrl = options.baseUrl ?? process.env.RELAYCAST_BASE_URL ?? DEFAULT_BASE_URL;
-    // Default to per-project cache (matches the relay daemon's storage) so
+    // Default to per-project cache (matches the relay broker's storage) so
     // concurrent workflows from different repos never share credentials.
     // Falls back to the legacy global path when no project-local cache exists.
     this.cachePath = options.cachePath ?? join(process.cwd(), '.agent-relay', 'relaycast.json');

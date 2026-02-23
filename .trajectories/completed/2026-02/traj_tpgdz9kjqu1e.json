@@ -1,0 +1,53 @@
+{
+  "id": "traj_tpgdz9kjqu1e",
+  "version": 1,
+  "task": {
+    "title": "Add SDK log follow stream helper"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-23T10:21:53.244Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-23T10:24:18.081Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_0x1gekdx2sxl",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-23T10:24:18.081Z",
+      "events": [
+        {
+          "ts": 1771842258082,
+          "type": "decision",
+          "content": "Added SDK followLogs helper (history + incremental polling): Added SDK followLogs helper (history + incremental polling)",
+          "raw": {
+            "question": "Added SDK followLogs helper (history + incremental polling)",
+            "chosen": "Added SDK followLogs helper (history + incremental polling)",
+            "alternatives": [],
+            "reasoning": "Dashboard and other consumers need a shared local log-stream primitive; polling works cross-platform and matches existing standalone behavior until broker-side stream APIs are introduced."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-23T10:24:21.681Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": [],
+  "_trace": {
+    "startRef": "815433126c81ba692879465f91a8a600db9664b8",
+    "endRef": "815433126c81ba692879465f91a8a600db9664b8"
+  },
+  "completedAt": "2026-02-23T10:24:21.681Z",
+  "retrospective": {
+    "summary": "Added SDK followLogs helper with typed subscribe/history/log/error events, AgentRelay wrapper, and passing unit tests for missing/history/incremental follow behavior.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  }
+}

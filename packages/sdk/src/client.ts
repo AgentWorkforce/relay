@@ -70,6 +70,9 @@ export interface SendMessageInput {
 export interface ListAgent {
   name: string;
   runtime: AgentRuntime;
+  cli?: string;
+  model?: string;
+  team?: string;
   channels: string[];
   parent?: string;
   pid?: number;

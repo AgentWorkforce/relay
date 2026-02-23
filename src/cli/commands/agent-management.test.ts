@@ -216,8 +216,8 @@ describe('registerAgentManagementCommands', () => {
           {
             name: 'WorkerRemote',
             status: 'online',
-            daemonId: 'daemon-1',
-            daemonName: 'RemoteHost',
+            brokerId: 'broker-1',
+            brokerName: 'RemoteHost',
           },
         ],
       },
@@ -227,7 +227,7 @@ describe('registerAgentManagementCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.fetch).toHaveBeenCalledWith(
-      'https://cloud.example.com/api/daemons/agents',
+      'https://cloud.example.com/api/brokers/agents',
       expect.objectContaining({ method: 'POST' })
     );
     const output = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls

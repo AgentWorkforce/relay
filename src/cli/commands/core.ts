@@ -72,6 +72,7 @@ export interface CoreRelay {
     pending_delivery_count?: number;
   }>;
   shutdown: () => Promise<unknown>;
+  onBrokerStderr?: (listener: (line: string) => void) => () => void;
 }
 
 export interface CoreFileSystem {
@@ -213,6 +214,7 @@ function createDefaultRelay(cwd: string, apiPort = 0): CoreRelay {
     spawn: (input) => spawnAgentWithClient(client, input),
     getStatus: () => client.getStatus(),
     shutdown: () => client.shutdown(),
+    onBrokerStderr: (listener: (line: string) => void) => client.onBrokerStderr(listener),
   };
 }
 

@@ -140,7 +140,11 @@ export function registerCloudCommands(
 
   const cloudCommand = program
     .command('cloud')
-    .description('Cloud account and sync commands');
+    .description('Cloud account and sync commands')
+    .addHelpText(
+      'afterAll',
+      '\nBREAKING CHANGE: daemon compatibility was removed. Cloud integrations must use /api/brokers/* and brokerId/brokerName.'
+    );
 
   cloudCommand
     .command('link')
@@ -366,24 +370,24 @@ export function registerCloudCommands(
         deps.log('');
         deps.log('Agents across all linked machines:');
         deps.log('');
-        deps.log('NAME            STATUS   DAEMON              MACHINE');
+        deps.log('NAME            STATUS   BROKER              MACHINE');
         deps.log('─'.repeat(65));
 
-        const byDaemon = new Map<string, CloudAgent[]>();
+        const byBroker = new Map<string, CloudAgent[]>();
         for (const agent of agents) {
-          const current = byDaemon.get(agent.daemonName) || [];
+          const current = byBroker.get(agent.brokerName) || [];
           current.push(agent);
-          byDaemon.set(agent.daemonName, current);
+          byBroker.set(agent.brokerName, current);
         }
 
-        for (const [daemonName, daemonAgents] of byDaemon.entries()) {
-          for (const agent of daemonAgents) {
+        for (const [brokerName, brokerAgents] of byBroker.entries()) {
+          for (const agent of brokerAgents) {
             const machine = (agent.machineId || '').substring(0, 20);
             deps.log(
               formatTableRow([
                 { value: agent.name, width: 15 },
                 { value: agent.status, width: 8 },
-                { value: daemonName, width: 18 },
+                { value: brokerName, width: 18 },
                 { value: machine },
               ])
             );
@@ -391,7 +395,7 @@ export function registerCloudCommands(
         }
 
         deps.log('');
-        deps.log(`Total: ${agents.length} agents on ${byDaemon.size} machines`);
+        deps.log(`Total: ${agents.length} agents on ${byBroker.size} machines`);
         deps.log('');
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -425,7 +429,7 @@ export function registerCloudCommands(
           deps.error(`Agent "${agent}" not found.`);
           deps.log('Available agents:');
           for (const availableAgent of allAgents) {
-            deps.log(`  - ${availableAgent.name} (on ${availableAgent.daemonName})`);
+            deps.log(`  - ${availableAgent.name} (on ${availableAgent.brokerName})`);
           }
           deps.exit(1);
           return;
@@ -434,14 +438,14 @@ export function registerCloudCommands(
         await client.sendMessage({
           cloudUrl: config.cloudUrl,
           apiKey: config.apiKey,
-          targetDaemonId: targetAgent.daemonId,
+          targetBrokerId: targetAgent.brokerId,
           targetAgent: agent,
           from: options.from,
           content: message,
         });
 
         deps.log('');
-        deps.log(`Message sent to ${agent} on ${targetAgent.daemonName}`);
+        deps.log(`Message sent to ${agent} on ${targetAgent.brokerName}`);
         deps.log('');
       } catch (err) {
         const messageText = err instanceof Error ? err.message : String(err);
@@ -451,7 +455,7 @@ export function registerCloudCommands(
     });
 
   cloudCommand
-    .command('daemons')
+    .command('brokers')
     .description('List all linked broker instances')
     .option('--json', 'Output as JSON')
     .action(async (options: { json?: boolean }) => {

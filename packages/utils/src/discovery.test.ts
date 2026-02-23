@@ -93,7 +93,7 @@ describe('Discovery (single source of truth)', () => {
 
   describe('getCloudSocketPath', () => {
     it('returns workspace-namespaced socket path', () => {
-      expect(getCloudSocketPath('my-ws')).toBe('/tmp/relay/my-ws/sockets/daemon.sock');
+      expect(getCloudSocketPath('my-ws')).toBe('/tmp/relay/my-ws/sockets/relay.sock');
     });
   });
 
@@ -123,7 +123,7 @@ describe('Discovery (single source of truth)', () => {
       vi.mocked(existsSync).mockReturnValue(false);
 
       const result = discoverSocket();
-      expect(result?.socketPath).toBe('/tmp/relay/cloud-ws/sockets/daemon.sock');
+      expect(result?.socketPath).toBe('/tmp/relay/cloud-ws/sockets/relay.sock');
       expect(result?.source).toBe('cloud');
       expect(result?.isCloud).toBe(true);
     });
@@ -166,7 +166,7 @@ describe('Discovery (single source of truth)', () => {
 
       const result = getConnectionInfo();
       expect(result?.isCloud).toBe(true);
-      expect(result?.daemonUrl).toBe('https://api.example.com');
+      expect(result?.brokerUrl).toBe('https://api.example.com');
       expect(result?.workspace?.workspaceId).toBe('ws-123');
     });
   });

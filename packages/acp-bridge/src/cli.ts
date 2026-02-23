@@ -56,7 +56,7 @@ USAGE:
 
 OPTIONS:
   --name <name>     Agent name for relay identification (default: relay-acp)
-  --socket <path>   Path to relay daemon socket
+  --socket <path>   Path to relay broker socket
   --debug           Enable debug logging to stderr
   --help, -h        Show this help message
   --version, -v     Show version

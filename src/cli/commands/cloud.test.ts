@@ -121,7 +121,7 @@ describe('registerCloudCommands', () => {
 
     expect(cloud).toBeDefined();
     expect(cloud?.commands.map((command) => command.name())).toEqual(
-      expect.arrayContaining(['link', 'unlink', 'status', 'sync', 'agents', 'send', 'daemons'])
+      expect.arrayContaining(['link', 'unlink', 'status', 'sync', 'agents', 'send', 'brokers'])
     );
   });
 
@@ -205,15 +205,15 @@ describe('registerCloudCommands', () => {
         {
           name: 'Planner',
           status: 'online',
-          daemonId: 'daemon-1',
-          daemonName: 'MacBook-Pro',
+          brokerId: 'broker-1',
+          brokerName: 'MacBook-Pro',
           machineId: 'machine-alpha',
         },
         {
           name: 'Reviewer',
           status: 'idle',
-          daemonId: 'daemon-2',
-          daemonName: 'Desktop-Linux',
+          brokerId: 'broker-2',
+          brokerName: 'Desktop-Linux',
           machineId: 'machine-beta',
         },
       ]),
@@ -243,8 +243,8 @@ describe('registerCloudCommands', () => {
         {
           name: 'Planner',
           status: 'online',
-          daemonId: 'daemon-9',
-          daemonName: 'Remote-Machine',
+          brokerId: 'broker-9',
+          brokerName: 'Remote-Machine',
           machineId: 'machine-zeta',
         },
       ]),
@@ -260,7 +260,7 @@ describe('registerCloudCommands', () => {
     expect(client.sendMessage).toHaveBeenCalledWith({
       cloudUrl: 'https://cloud.example.com',
       apiKey: 'ar_live_key',
-      targetDaemonId: 'daemon-9',
+      targetBrokerId: 'broker-9',
       targetAgent: 'Planner',
       from: 'local-cli',
       content: 'Ship it',

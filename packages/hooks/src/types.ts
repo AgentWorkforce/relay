@@ -64,7 +64,7 @@ export interface HookMemory {
 export interface HookRelay {
   /** Send a message to a specific agent or broadcast */
   send(to: string | '*', body: string, options?: Partial<SendPayload>): Promise<void>;
-  /** Check if connected to the relay daemon */
+  /** Check if connected to the relay broker */
   isConnected(): boolean;
   /** Get the current agent's name in the relay */
   getAgentName(): string | undefined;

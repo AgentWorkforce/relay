@@ -201,7 +201,7 @@ export class WorkflowRunner {
     }
 
     // Check cached credentials — prefer per-project cache (written by the local
-    // relay daemon) over the legacy global cache so concurrent workflows from
+    // relay broker) over the legacy global cache so concurrent workflows from
     // different repos never stomp each other's credentials.
     const projectCachePath = path.join(this.cwd, '.agent-relay', 'relaycast.json');
     const globalCachePath = path.join(homedir(), '.agent-relay', 'relaycast.json');
@@ -455,11 +455,105 @@ export class WorkflowRunner {
       }
     }
 
+    // Validate cwd paths
+    for (const agent of resolved.agents) {
+      if (agent.cwd) {
+        const resolvedCwd = path.resolve(this.cwd, agent.cwd);
+        if (!existsSync(resolvedCwd)) {
+          warnings.push(`Agent "${agent.name}" cwd "${agent.cwd}" resolves to "${resolvedCwd}" which does not exist`);
+        }
+      }
+      if (agent.additionalPaths) {
+        for (const ap of agent.additionalPaths) {
+          const resolvedPath = path.resolve(this.cwd, ap);
+          if (!existsSync(resolvedPath)) {
+            warnings.push(`Agent "${agent.name}" additionalPath "${ap}" resolves to "${resolvedPath}" which does not exist`);
+          }
+        }
+      }
+    }
+
+    // Cycle detection via topological sort
+    const stepNames = new Set(resolvedSteps.map((s) => s.name));
+    const inDegree = new Map<string, number>();
+    const adjacency = new Map<string, string[]>();
+    for (const step of resolvedSteps) {
+      inDegree.set(step.name, 0);
+      adjacency.set(step.name, []);
+    }
+    for (const step of resolvedSteps) {
+      for (const dep of step.dependsOn ?? []) {
+        if (stepNames.has(dep)) {
+          adjacency.get(dep)!.push(step.name);
+          inDegree.set(step.name, (inDegree.get(step.name) ?? 0) + 1);
+        }
+      }
+    }
+    const topoQueue: string[] = [];
+    for (const [name, deg] of inDegree) {
+      if (deg === 0) topoQueue.push(name);
+    }
+    let visited = 0;
+    while (topoQueue.length > 0) {
+      const node = topoQueue.shift()!;
+      visited++;
+      for (const neighbor of adjacency.get(node) ?? []) {
+        const newDeg = (inDegree.get(neighbor) ?? 1) - 1;
+        inDegree.set(neighbor, newDeg);
+        if (newDeg === 0) topoQueue.push(neighbor);
+      }
+    }
+    if (visited < resolvedSteps.length) {
+      errors.push(
+        'Dependency cycle detected in workflow steps. Check dependsOn references for circular dependencies.'
+      );
+    }
+
+    // Missing dependency references
+    for (const step of resolvedSteps) {
+      for (const dep of step.dependsOn ?? []) {
+        if (!stepNames.has(dep)) {
+          errors.push(`Step "${step.name}" depends on unknown step "${dep}"`);
+        }
+      }
+    }
+
+    // Unreachable steps (steps that are never depended on and aren't root steps)
+    const dependedOn = new Set<string>();
+    for (const step of resolvedSteps) {
+      for (const dep of step.dependsOn ?? []) {
+        dependedOn.add(dep);
+      }
+    }
+
+    // Timeout warnings
+    for (const step of resolvedSteps) {
+      if (!step.timeoutMs) {
+        const agentDef = step.agent ? agentMap.get(step.agent) : undefined;
+        if (!agentDef?.constraints?.timeoutMs && !resolved.swarm.timeoutMs) {
+          warnings.push(
+            `Step "${step.name}" has no timeout configured (no step, agent, or swarm-level timeout)`
+          );
+        }
+      }
+    }
+
+    // Large dependency fan-in warning (decomposition guidance)
+    for (const step of resolvedSteps) {
+      if ((step.dependsOn?.length ?? 0) >= 5) {
+        warnings.push(
+          `Step "${step.name}" depends on ${step.dependsOn!.length} upstream steps. ` +
+            `Consider decomposing into smaller verification steps to reduce context size.`
+        );
+      }
+    }
+
     // 4. Build agent summary
     const agents = resolved.agents.map((a) => ({
       name: a.name,
       cli: a.cli,
       role: a.role,
+      cwd: a.cwd,
       stepCount: stepAgentCounts.get(a.name) ?? 0,
     }));
 
@@ -498,7 +592,13 @@ export class WorkflowRunner {
       }
     }
 
-    // 6. Check maxConcurrency against wave widths
+    // 6. Resource estimation
+    const peakConcurrency = Math.max(...waves.map((w) => w.steps.length), 0);
+    const totalAgentSteps = resolvedSteps.filter(
+      (s) => s.type !== 'deterministic' && s.type !== 'worktree'
+    ).length;
+
+    // 7. Check maxConcurrency against wave widths
     const maxConcurrency = resolved.swarm.maxConcurrency;
     if (maxConcurrency !== undefined) {
       for (const wave of waves) {
@@ -522,6 +622,8 @@ export class WorkflowRunner {
       totalSteps: workflow.steps.length,
       maxConcurrency,
       estimatedWaves: waves.length,
+      estimatedPeakConcurrency: peakConcurrency,
+      estimatedTotalAgentSteps: totalAgentSteps,
     };
   }
 
@@ -1810,7 +1912,7 @@ export class WorkflowRunner {
       const output = await new Promise<string>((resolve, reject) => {
         const child = cpSpawn(cmd, args, {
           stdio: 'pipe',
-          cwd: this.cwd,
+          cwd: agentDef.cwd ? path.resolve(this.cwd, agentDef.cwd) : this.cwd,
           env: { ...process.env },
         });
 
@@ -1949,10 +2051,12 @@ export class WorkflowRunner {
       agent = await this.relay.spawnPty({
         name: agentName,
         cli: agentDef.cli,
-        args: agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [],
+        model: agentDef.constraints?.model,
+        args: [],
         channels: agentChannels,
         task: taskWithExit,
         idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
+        cwd: agentDef.cwd ? path.resolve(this.cwd, agentDef.cwd) : undefined,
       });
 
       // Re-key PTY maps if broker assigned a different name than requested

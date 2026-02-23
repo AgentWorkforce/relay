@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test, { before } from 'node:test';
 
@@ -158,4 +159,41 @@ test('sdk surfaces process error when binary is missing', async () => {
       return error instanceof AgentRelayProcessError || error instanceof Error;
     }
   );
+});
+
+test('sdk includes broker stderr details when startup fails', async (t) => {
+  const binaryPath = resolveBinaryPath();
+  if (!fs.existsSync(binaryPath)) {
+    t.skip(`agent-relay-broker binary not found at ${binaryPath}`);
+    return;
+  }
+
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-broker-lock-'));
+  const first = await AgentRelayClient.start({
+    binaryPath,
+    cwd,
+    requestTimeoutMs: 8_000,
+    shutdownTimeoutMs: 2_000,
+    env: process.env,
+  });
+
+  try {
+    await assert.rejects(
+      AgentRelayClient.start({
+        binaryPath,
+        cwd,
+        requestTimeoutMs: 2_000,
+        shutdownTimeoutMs: 2_000,
+        env: process.env,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof AgentRelayProcessError || error instanceof Error);
+        assert.match(String((error as Error).message), /another broker instance is already running/i);
+        return true;
+      }
+    );
+  } finally {
+    await first.shutdown();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });

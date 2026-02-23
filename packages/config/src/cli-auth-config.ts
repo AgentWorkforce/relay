@@ -2,7 +2,7 @@
  * Shared CLI Auth Configuration
  *
  * Provider-specific CLI commands and patterns for OAuth authentication.
- * Used by both the cloud API and workspace daemon.
+ * Used by both the cloud API and workspace broker.
  */
 
 /**

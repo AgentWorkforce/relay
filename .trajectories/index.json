@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-02-23T07:31:24.443Z",
+  "lastUpdated": "2026-02-23T19:43:33.125Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -421,6 +421,139 @@
       "startedAt": "2026-02-23T07:30:24.589Z",
       "completedAt": "2026-02-23T07:31:24.296Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_w8emy8tcwatn.json"
+    },
+    "traj_j1gfm3qid9fc": {
+      "title": "Fix local dashboard proxy/trajectory failures in up mode",
+      "status": "completed",
+      "startedAt": "2026-02-23T07:43:21.022Z",
+      "completedAt": "2026-02-23T07:43:27.074Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_j1gfm3qid9fc.json"
+    },
+    "traj_73z7pfe5wnif": {
+      "title": "Fix duplicate up startup failure and broker lock diagnostics",
+      "status": "completed",
+      "startedAt": "2026-02-23T07:54:35.041Z",
+      "completedAt": "2026-02-23T07:56:26.397Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_73z7pfe5wnif.json"
+    },
+    "traj_gh7z3e7axndp": {
+      "title": "Improve duplicate broker startup error reporting",
+      "status": "completed",
+      "startedAt": "2026-02-23T07:58:28.516Z",
+      "completedAt": "2026-02-23T07:58:36.765Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_gh7z3e7axndp.json"
+    },
+    "traj_ulwd55z70auv": {
+      "title": "Replace daemon terminology and logic with broker across CLI/dashboard",
+      "status": "completed",
+      "startedAt": "2026-02-23T08:14:28.359Z",
+      "completedAt": "2026-02-23T08:24:31.800Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_ulwd55z70auv.json"
+    },
+    "traj_okvamt4drwn8": {
+      "title": "Strict hard cut: remove daemon fallbacks/aliases and enforce broker-only warnings",
+      "status": "completed",
+      "startedAt": "2026-02-23T08:34:01.761Z",
+      "completedAt": "2026-02-23T08:34:10.486Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_okvamt4drwn8.json"
+    },
+    "traj_t666pz7x6y0g": {
+      "title": "Migrate integration tests to current SDK API and fix workflow-ci for broker-only constraints",
+      "status": "completed",
+      "startedAt": "2026-02-23T08:55:26.989Z",
+      "completedAt": "2026-02-23T09:39:43.591Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_t666pz7x6y0g.json"
+    },
+    "traj_tpgdz9kjqu1e": {
+      "title": "Add SDK log follow stream helper",
+      "status": "completed",
+      "startedAt": "2026-02-23T10:21:53.244Z",
+      "completedAt": "2026-02-23T10:24:21.681Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_tpgdz9kjqu1e.json"
+    },
+    "traj_z7rab0i4p1vt": {
+      "title": "Add broker HTTP /api/send for local worker delivery",
+      "status": "completed",
+      "startedAt": "2026-02-23T10:53:46.503Z",
+      "completedAt": "2026-02-23T11:04:08.491Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_z7rab0i4p1vt.json"
+    },
+    "traj_0xalqp7ng4pd": {
+      "title": "Debug dashboard send injection to spawned worker",
+      "status": "completed",
+      "startedAt": "2026-02-23T11:36:13.843Z",
+      "completedAt": "2026-02-23T12:39:26.904Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_0xalqp7ng4pd.json"
+    },
+    "traj_ao8p7qsp7vgr": {
+      "title": "Fix spawned worker Relaycast identity registration mismatch",
+      "status": "completed",
+      "startedAt": "2026-02-23T12:40:44.541Z",
+      "completedAt": "2026-02-23T12:47:02.646Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_ao8p7qsp7vgr.json"
+    },
+    "traj_ggmz2iqk25c7": {
+      "title": "Fix dashboard online status and delivery state transitions",
+      "status": "completed",
+      "startedAt": "2026-02-23T12:52:25.467Z",
+      "completedAt": "2026-02-23T13:04:07.151Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_ggmz2iqk25c7.json"
+    },
+    "traj_5d6q5ii76ldm": {
+      "title": "Fix repeated injection + Relaycast rate limits via broker WS event stream",
+      "status": "completed",
+      "startedAt": "2026-02-23T13:09:42.137Z",
+      "completedAt": "2026-02-23T13:15:45.159Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_5d6q5ii76ldm.json"
+    },
+    "traj_yozf7yakdig4": {
+      "title": "Comprehensive broker reliability fixes: pre-registration, delivery finalization, log sanitization",
+      "status": "completed",
+      "startedAt": "2026-02-23T13:28:35.763Z",
+      "completedAt": "2026-02-23T13:46:35.738Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_yozf7yakdig4.json"
+    },
+    "traj_4wdbfc9nv1wi": {
+      "title": "Deduplicate pre-registration rate-limit errors",
+      "status": "completed",
+      "startedAt": "2026-02-23T14:20:33.929Z",
+      "completedAt": "2026-02-23T14:20:34.075Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_4wdbfc9nv1wi.json"
+    },
+    "traj_b16jefg2v83j": {
+      "title": "Fix missing Relaycast->Dashboard message visibility in local dashboard",
+      "status": "completed",
+      "startedAt": "2026-02-23T14:59:11.218Z",
+      "completedAt": "2026-02-23T15:09:53.015Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_b16jefg2v83j.json"
+    },
+    "traj_pp2av7jgvnti": {
+      "title": "Fix broker spawn, task injection, message routing & code refactoring",
+      "status": "completed",
+      "startedAt": "2026-02-23T17:16:40.725Z",
+      "completedAt": "2026-02-23T17:17:28.782Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_pp2av7jgvnti.json"
+    },
+    "traj_n9bi0967039n": {
+      "title": "Systematically fix broker/dashboard relay messaging and registration issues",
+      "status": "completed",
+      "startedAt": "2026-02-23T18:52:30.759Z",
+      "completedAt": "2026-02-23T19:10:05.880Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_n9bi0967039n.json"
+    },
+    "traj_ho4fqeupp7wk": {
+      "title": "Review end-to-end broker/dashboard/relaycast flow after concurrent changes",
+      "status": "completed",
+      "startedAt": "2026-02-23T19:16:38.015Z",
+      "completedAt": "2026-02-23T19:25:28.931Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_ho4fqeupp7wk.json"
+    },
+    "traj_c62jh5fubptj": {
+      "title": "Wave 1A: EventAccessor refactor in message_bridge",
+      "status": "completed",
+      "startedAt": "2026-02-23T19:38:29.107Z",
+      "completedAt": "2026-02-23T19:43:32.923Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_c62jh5fubptj.json"
     }
   }
 }

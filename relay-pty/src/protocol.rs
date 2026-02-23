@@ -421,7 +421,7 @@ impl QueuedMessage {
     }
 
     /// Extract channel name from body if it contains [#channel] pattern
-    fn extract_channel_from_body(&self, body: &str) -> Option<&str> {
+    fn extract_channel_from_body<'a>(&self, body: &'a str) -> Option<&'a str> {
         // Look for [#channel] pattern in the body
         // Example: "Relay message from Alice [abc123] [#general]: Hello"
         if let Some(start) = body.find("[#") {

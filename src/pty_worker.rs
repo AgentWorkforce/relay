@@ -1,10 +1,10 @@
 use super::*;
 use crate::helpers::{
     check_echo_in_output, current_timestamp_ms, delivery_injected_event_payload,
-    delivery_queued_event_payload, floor_char_boundary, parse_cli_command, ActivityDetector,
-    DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
-    ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
-    MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+    delivery_queued_event_payload, floor_char_boundary, format_injection_for_worker,
+    parse_cli_command, ActivityDetector, DeliveryOutcome, PendingActivity, PendingVerification,
+    ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+    VERIFICATION_WINDOW,
 };
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 
@@ -70,6 +70,16 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
         .agent_name
         .clone()
         .unwrap_or_else(|| "pty-worker".to_string());
+    let worker_pre_registered = std::env::var("RELAY_AGENT_TOKEN")
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let assigned_worker_name = std::env::var("RELAY_AGENT_NAME")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    const MCP_REMINDER_COOLDOWN: Duration = Duration::from_secs(300);
+    let mut last_mcp_reminder_at: Option<Instant> = None;
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<String> = HashSet::new();
 
@@ -380,12 +390,21 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.auto_suggestion_visible = false;
                     }
 
-                    let injection = format_injection(
+                    let include_mcp_reminder = last_mcp_reminder_at
+                        .map(|timestamp| timestamp.elapsed() >= MCP_REMINDER_COOLDOWN)
+                        .unwrap_or(true);
+                    let injection = format_injection_for_worker(
                         &pending.delivery.from,
                         &pending.delivery.event_id,
                         &pending.delivery.body,
                         &pending.delivery.target,
+                        include_mcp_reminder,
+                        worker_pre_registered,
+                        assigned_worker_name.as_deref(),
                     );
+                    if include_mcp_reminder {
+                        last_mcp_reminder_at = Some(Instant::now());
+                    }
                     if let Err(e) = pty.write_all(injection.as_bytes()) {
                         tracing::warn!(
                             delivery_id = %pending.delivery.delivery_id,
@@ -419,7 +438,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         expected_echo: injection,
                         injected_at: Instant::now(),
                         attempts: 1,
-                        max_attempts: MAX_VERIFICATION_ATTEMPTS,
+                        max_attempts: 1,
                         request_id: pending.request_id,
                         from: pending.delivery.from,
                         body: pending.delivery.body,
@@ -430,46 +449,31 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
             // --- Verification tick: check for timed-out verifications ---
             _ = verification_tick.tick() => {
-                let mut retry_queue: Vec<PendingVerification> = Vec::new();
                 let mut i = 0;
                 while i < pending_verifications.len() {
                     if pending_verifications[i].injected_at.elapsed() >= VERIFICATION_WINDOW {
-                        let mut pv = pending_verifications.remove(i).unwrap();
-                        if pv.attempts < pv.max_attempts {
-                            // Retry injection
-                            pv.attempts += 1;
-                            tracing::warn!(
-                                delivery_id = %pv.delivery_id,
-                                attempt = pv.attempts,
-                                max = pv.max_attempts,
-                                "echo verification timeout, retrying injection"
-                            );
-                            retry_queue.push(pv);
-                        } else {
-                            // Echo matching can be flaky across CLIs/TTY renderers.
-                            // If injection was attempted multiple times and only echo
-                            // verification failed, mark as verified via timeout fallback
-                            // instead of hard-failing the delivery.
-                            tracing::warn!(
-                                delivery_id = %pv.delivery_id,
-                                attempts = pv.attempts,
-                                "delivery echo not detected after max retries; marking verified via timeout fallback"
-                            );
-                            let _ = send_frame(
-                                &out_tx,
-                                "delivery_verified",
-                                pv.request_id.clone(),
-                                json!({
-                                    "delivery_id": pv.delivery_id,
-                                    "event_id": pv.event_id,
-                                    "verification": "timeout_fallback",
-                                    "reason": format!("echo not detected after {} attempts within {}s window", pv.max_attempts, VERIFICATION_WINDOW.as_secs())
-                                }),
-                            )
-                            .await;
-                            throttle.record(DeliveryOutcome::Success);
-                            pending_worker_delivery_ids.remove(&pv.delivery_id);
-                        }
+                        let pv = pending_verifications.remove(i).unwrap();
+                        // Do not re-inject on verification timeout. Re-injection can duplicate
+                        // already-delivered messages when terminal echo parsing is noisy.
+                        tracing::warn!(
+                            delivery_id = %pv.delivery_id,
+                            attempts = pv.attempts,
+                            "delivery echo not detected within verification window; marking verified via timeout fallback"
+                        );
+                        let _ = send_frame(
+                            &out_tx,
+                            "delivery_verified",
+                            pv.request_id.clone(),
+                            json!({
+                                "delivery_id": pv.delivery_id,
+                                "event_id": pv.event_id,
+                                "verification": "timeout_fallback",
+                                "reason": format!("echo not detected within {}s window", VERIFICATION_WINDOW.as_secs())
+                            }),
+                        )
+                        .await;
+                        throttle.record(DeliveryOutcome::Success);
+                        pending_worker_delivery_ids.remove(&pv.delivery_id);
                     } else {
                         i += 1;
                     }
@@ -486,36 +490,6 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     }
                 }
 
-                // Re-inject retries
-                for mut pv in retry_queue {
-                    tokio::time::sleep(throttle.delay()).await;
-                    let injection = format_injection(&pv.from, &pv.event_id, &pv.body, &pv.target);
-                    if let Err(e) = pty.write_all(injection.as_bytes()) {
-                        tracing::warn!(
-                            delivery_id = %pv.delivery_id,
-                            error = %e,
-                            "retry PTY injection write failed"
-                        );
-                    } else {
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                        let _ = pty.write_all(b"\r");
-                        let _ = send_frame(
-                            &out_tx,
-                            "delivery_injected",
-                            None,
-                            delivery_injected_event_payload(
-                                &pv.delivery_id,
-                                &pv.event_id,
-                                &worker_name,
-                                current_timestamp_ms(),
-                            ),
-                        )
-                        .await;
-                    }
-                    pv.expected_echo = injection;
-                    pv.injected_at = Instant::now();
-                    pending_verifications.push_back(pv);
-                }
             }
 
             // --- Auto-enter for stuck agents ---
@@ -555,23 +529,22 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     })).await;
                     running = false;
                 } else {
-                    // Safety net: if no PTY output for a long time and we
-                    // have no PID to verify, the child is very likely gone.
-                    // This catches the macOS case where has_exited() returns
-                    // false because it has no PID and try_wait is stuck.
+                    // If no PTY output for a long time, the agent is likely
+                    // idle (thinking, waiting for input, etc). Emit an idle
+                    // event instead of killing the process — the broker or
+                    // dashboard can decide what to do with idle agents.
                     let silent_duration = last_pty_output_time.elapsed();
                     if silent_duration >= NO_OUTPUT_EXIT_TIMEOUT {
-                        tracing::warn!(
+                        tracing::info!(
                             target = "agent_relay::worker::pty",
                             silent_secs = silent_duration.as_secs(),
-                            "watchdog: no PTY output for {}s — forcing exit",
+                            "watchdog: no PTY output for {}s — marking idle",
                             silent_duration.as_secs()
                         );
-                        let _ = send_frame(&out_tx, "agent_exit", None, json!({
+                        let _ = send_frame(&out_tx, "agent_idle", None, json!({
                             "reason": "no_output_timeout",
-                            "silent_secs": silent_duration.as_secs(),
+                            "idle_secs": silent_duration.as_secs(),
                         })).await;
-                        running = false;
                     }
                 }
             }
