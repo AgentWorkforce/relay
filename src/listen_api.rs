@@ -461,7 +461,9 @@ async fn handle_dashboard_ws(
             "seq": replay_cutoff_seq,
         });
         if let Ok(msg) = serde_json::to_string(&replay_gap) {
-            let _ = socket.send(axum::extract::ws::Message::Text(msg.into())).await;
+            let _ = socket
+                .send(axum::extract::ws::Message::Text(msg.into()))
+                .await;
         }
     }
     for replayed in replay_events {
@@ -545,32 +547,30 @@ pub async fn broadcast_if_relevant(
             | "delivery_ack"
             | "delivery_verified"
             | "delivery_failed"
-            | "worker_error" => {
-                match replay_buffer.push(payload.clone()).await {
-                    Ok((_seq, event_with_seq)) => {
-                        if let Ok(json) = serde_json::to_string(&event_with_seq) {
-                            match events_tx.send(json) {
-                                Ok(receivers) => {
-                                    tracing::debug!(
-                                        kind = kind,
-                                        receivers = receivers,
-                                        "broadcast event to dashboard WS clients"
-                                    );
-                                }
-                                Err(_) => {
-                                    tracing::warn!(
-                                        kind = kind,
-                                        "broadcast event dropped — no dashboard WS clients connected"
-                                    );
-                                }
+            | "worker_error" => match replay_buffer.push(payload.clone()).await {
+                Ok((_seq, event_with_seq)) => {
+                    if let Ok(json) = serde_json::to_string(&event_with_seq) {
+                        match events_tx.send(json) {
+                            Ok(receivers) => {
+                                tracing::debug!(
+                                    kind = kind,
+                                    receivers = receivers,
+                                    "broadcast event to dashboard WS clients"
+                                );
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                                    kind = kind,
+                                    "broadcast event dropped — no dashboard WS clients connected"
+                                );
                             }
                         }
                     }
-                    Err(error) => {
-                        tracing::warn!(kind = kind, error = %error, "failed to push event to replay buffer");
-                    }
                 }
-            }
+                Err(error) => {
+                    tracing::warn!(kind = kind, error = %error, "failed to push event to replay buffer");
+                }
+            },
             _ => {}
         }
     }
@@ -630,8 +630,8 @@ mod wave0_contract_tests {
 
 #[cfg(test)]
 mod tests {
-    use relay_broker::replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY};
     use super::broadcast_if_relevant;
+    use relay_broker::replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY};
     use serde_json::{json, Value};
     use tokio::sync::broadcast;
 
@@ -725,7 +725,9 @@ mod auth_tests {
 
     use super::{listen_api_router_with_auth, ListenApiRequest};
 
-    fn test_router(broker_api_key: Option<&str>) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
+    fn test_router(
+        broker_api_key: Option<&str>,
+    ) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
         let (tx, rx) = mpsc::channel(8);
         let (events_tx, _events_rx) = broadcast::channel(8);
         let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
