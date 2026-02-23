@@ -4448,13 +4448,13 @@ impl BrokerState {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{HashMap, HashSet},
+        collections::{BTreeSet, HashMap, HashSet},
         time::Instant,
     };
 
     use crate::helpers::terminal_query_responses;
     use relay_broker::protocol::RelayDelivery;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     use super::{
         build_agent_state_transition_event, build_thread_infos, channels_from_csv, continuity_dir,
@@ -4468,6 +4468,46 @@ mod tests {
     use relay_broker::relaycast_ws::{
         format_worker_preregistration_error, RelaycastRegistrationError,
     };
+
+    fn extract_kind_literals(source: &str) -> BTreeSet<String> {
+        let marker = "\"kind\"";
+        let mut kinds = BTreeSet::new();
+        let mut cursor = 0;
+        while let Some(offset) = source[cursor..].find(&marker) {
+            let mut start = cursor + offset + marker.len();
+            if start >= source.len() {
+                break;
+            }
+            if !source[start..].starts_with(':') {
+                cursor = start;
+                continue;
+            }
+            start += 1;
+            while start < source.len() && source.as_bytes()[start].is_ascii_whitespace() {
+                start += 1;
+            }
+            if start >= source.len() || source.as_bytes()[start] != b'"' {
+                cursor = start;
+                continue;
+            }
+            start += 1;
+            if let Some(end) = source[start..].find('"') {
+                let candidate = &source[start..start + end];
+                if !candidate.is_empty()
+                    && candidate
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())
+                {
+                    kinds.insert(candidate.to_string());
+                }
+            }
+            cursor = start;
+            if cursor >= source.len() {
+                break;
+            }
+        }
+        kinds
+    }
 
     #[test]
     fn parses_channels() {
@@ -4504,6 +4544,159 @@ mod tests {
         assert_eq!(
             derive_ws_base_url_from_http("http://localhost:8787"),
             "ws://localhost:8787"
+        );
+    }
+
+    #[tokio::test]
+    async fn contract_health_fixture_requires_rich_listen_health_shape() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../packages/contracts/fixtures/health-fixtures.json"
+        ))
+        .expect("health fixture should be valid JSON");
+        let expected_shape = fixture
+            .get("health_response")
+            .and_then(Value::as_object)
+            .expect("health fixture must include health_response object");
+
+        let actual = build_listen_health_response();
+
+        for required_key in expected_shape.keys() {
+            // TODO(contract-wave1-health-shape): listen-mode /health should
+            // implement the shared BrokerHealthResponse contract fields.
+            assert!(
+                actual.get(required_key).is_some(),
+                "listen /health response is missing required contract field: {}",
+                required_key
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn contract_startup_429_fixture_requires_degraded_health_status() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../packages/contracts/fixtures/health-fixtures.json"
+        ))
+        .expect("health fixture should be valid JSON");
+        let expected = fixture
+            .get("wave0_startup_429_degraded")
+            .and_then(|v| v.get("expected_health_status"))
+            .and_then(Value::as_str)
+            .expect("health fixture must include expected degraded health status");
+        let startup_error_code = fixture
+            .get("wave0_startup_429_degraded")
+            .and_then(|v| v.get("error"))
+            .and_then(|v| v.get("code"))
+            .and_then(Value::as_str)
+            .expect("health fixture must include startup error code");
+        std::env::set_var("AGENT_RELAY_STARTUP_ERROR_CODE", startup_error_code);
+        let actual = listen_api_health()
+            .await
+            .0
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        std::env::remove_var("AGENT_RELAY_STARTUP_ERROR_CODE");
+
+        assert_eq!(
+            actual, expected,
+            "listen /health status \"{}\" does not match startup 429 degraded contract \"{}\"",
+            actual, expected
+        );
+        assert_eq!(startup_health_status(Some(startup_error_code)), expected);
+    }
+
+    #[test]
+    fn contract_replay_fixture_requires_replay_route_exposure() {
+        let replay_fixture: Value = serde_json::from_str(include_str!(
+            "../packages/contracts/fixtures/replay-fixtures.json"
+        ))
+        .expect("replay fixture should be valid JSON");
+        assert!(
+            replay_fixture.get("replay_cursor_request").is_some(),
+            "replay fixture must include replay_cursor_request"
+        );
+        assert!(
+            replay_fixture.get("replay_response").is_some(),
+            "replay fixture must include replay_response"
+        );
+
+        let source = include_str!("main.rs");
+        assert!(
+            source.contains(".route(\"/api/events/replay\""),
+            "listen API router does not expose /api/events/replay"
+        );
+    }
+
+    #[test]
+    fn contract_timeout_fixture_requires_terminal_failed_guard_before_late_ack() {
+        let replay_fixture: Value = serde_json::from_str(include_str!(
+            "../packages/contracts/fixtures/replay-fixtures.json"
+        ))
+        .expect("replay fixture should be valid JSON");
+        let timeout_fixture = replay_fixture
+            .get("wave0_timeout_terminal_semantics")
+            .and_then(Value::as_object)
+            .expect("replay fixture must include wave0_timeout_terminal_semantics object");
+
+        let expected_terminal_status = timeout_fixture
+            .get("expected_terminal_status")
+            .and_then(Value::as_str)
+            .expect("timeout fixture requires expected_terminal_status");
+        let late_event_kind = timeout_fixture
+            .get("late_event_kind")
+            .and_then(Value::as_str)
+            .expect("timeout fixture requires late_event_kind");
+
+        let pending = PendingDelivery {
+            worker_name: "worker-a".to_string(),
+            delivery: RelayDelivery {
+                delivery_id: "del_contract_timeout".to_string(),
+                event_id: "evt_initial".to_string(),
+                from: "Lead".to_string(),
+                target: "worker-a".to_string(),
+                body: "body".to_string(),
+                thread_id: None,
+                priority: None,
+            },
+            attempts: 1,
+            next_retry_at: Instant::now(),
+        };
+
+        assert!(
+            !should_accept_delivery_ack(
+                Some(&pending),
+                late_event_kind,
+                Some(expected_terminal_status),
+            ),
+            "late delivery_ack should be rejected when terminal status is \"{}\"",
+            expected_terminal_status
+        );
+    }
+
+    #[test]
+    fn contract_broadcast_whitelist_fixture_requires_filtering_to_required_kinds() {
+        let event_fixture: Value = serde_json::from_str(include_str!(
+            "../packages/contracts/fixtures/event-fixtures.json"
+        ))
+        .expect("event fixture should be valid JSON");
+        let required = event_fixture
+            .get("wave0_broadcast_whitelist")
+            .and_then(|v| v.get("required_kinds"))
+            .and_then(Value::as_array)
+            .expect("event fixture must include wave0_broadcast_whitelist.required_kinds")
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect::<BTreeSet<String>>();
+
+        let emitted = extract_kind_literals(include_str!("main.rs"));
+
+        assert!(
+            required.is_subset(&emitted),
+            "broker source is missing required broadcast kinds; expected {:?}, got {:?}",
+            required,
+            emitted
         );
     }
 

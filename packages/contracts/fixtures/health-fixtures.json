@@ -1,0 +1,35 @@
+{
+  "health_response": {
+    "status": "ok",
+    "service": "agent-relay-listen",
+    "version": "2.3.14",
+    "uptimeMs": 12345,
+    "workspaceId": "ws_cross_repo",
+    "agentCount": 1,
+    "pendingDeliveryCount": 0,
+    "wsConnections": 1,
+    "memoryMb": 256,
+    "relaycastConnected": true
+  },
+  "spawned_response": {
+    "success": true,
+    "agents": [
+      {
+        "name": "WorkerA",
+        "agentId": "agt_worker_a",
+        "isOnline": true,
+        "isStuck": false,
+        "spawnedAt": "2026-02-23T00:00:00.000Z",
+        "lastHeartbeat": "2026-02-23T00:00:05.000Z"
+      }
+    ]
+  },
+  "wave0_startup_429_degraded": {
+    "ok": false,
+    "error": {
+      "code": "rate_limit_exceeded",
+      "message": "Rate limit exceeded. 60 requests per minute allowed for free plan."
+    },
+    "expected_health_status": "degraded"
+  }
+}
