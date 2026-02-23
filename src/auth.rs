@@ -281,23 +281,11 @@ impl AuthClient {
                             match self.rotate_token_no_fallback(cached_creds).await {
                                 Ok(session) => return Ok(session),
                                 Err(error) if is_rate_limited(&error) => {
-                                    if let Some(session) = cached_session_from_token(
-                                        cached_creds,
-                                        &cached_key,
-                                        requested_name,
-                                        strict_name,
-                                    ) {
-                                        tracing::warn!(
-                                            target = "relay_broker::auth",
-                                            agent_name = ?cached_creds.agent_name,
-                                            "using cached agent token due relaycast rotate-token rate limit"
-                                        );
-                                        return Ok(session);
-                                    }
                                     tracing::warn!(
                                         target = "relay_broker::auth",
                                         error = %error,
-                                        "cached token rotation was rate-limited; falling back to registration"
+                                        agent_name = ?cached_creds.agent_name,
+                                        "rotate-token rate-limited; falling through to registration probe"
                                     );
                                 }
                                 Err(error) if is_not_found(&error) => {
@@ -1083,7 +1071,9 @@ mod tests {
         assert_eq!(session.token, "at_live_cached_token");
         assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
         rotate.assert_hits(1);
-        register.assert_hits(0);
+        // After rotate-token is rate-limited, the registration loop is still
+        // probed so telemetry can explicitly mark 429 mode.
+        register.assert_hits(1);
     }
 
     #[tokio::test]

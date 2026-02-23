@@ -14,6 +14,7 @@ pub mod pty;
 pub mod queue;
 pub mod redact;
 pub mod relaycast_ws;
+pub mod replay_buffer;
 pub mod scheduler;
 pub mod snippets;
 pub mod supervisor;

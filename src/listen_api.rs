@@ -84,6 +84,7 @@ fn listen_api_router_with_auth(
         .route("/api/spawn", routing::post(listen_api_spawn))
         .route("/api/spawned", routing::get(listen_api_list))
         .route("/api/threads", routing::get(listen_api_threads))
+        .route("/api/events/replay", routing::get(listen_api_replay))
         .route("/api/spawned/{name}", routing::delete(listen_api_release))
         .route("/api/send", routing::post(listen_api_send))
         .route("/ws", routing::get(listen_api_ws))
@@ -103,10 +104,36 @@ fn listen_api_router_with_auth(
 // Endpoints
 // ---------------------------------------------------------------------------
 
-async fn listen_api_health() -> axum::Json<Value> {
+pub(crate) async fn listen_api_health() -> axum::Json<Value> {
+    let degraded = std::env::var("AGENT_RELAY_STARTUP_ERROR_CODE")
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let status = if degraded { "degraded" } else { "ok" };
+
     axum::Json(json!({
-        "status": "ok",
+        "status": status,
         "service": "agent-relay-listen",
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptimeMs": 0,
+        "workspaceId": std::env::var("RELAY_WORKSPACE_ID").unwrap_or_else(|_| "ws_unknown".to_string()),
+        "agentCount": 0,
+        "pendingDeliveryCount": 0,
+        "wsConnections": 0,
+        "memoryMb": 0,
+        "relaycastConnected": true,
+    }))
+}
+
+async fn listen_api_replay(
+    axum::extract::Query(_query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::Json<Value> {
+    // Replay cursor contract shape is exposed here; event replay wiring is handled
+    // by the broker router/runtime path in later wave integration.
+    axum::Json(json!({
+        "events": [],
+        "gap": false,
+        "oldest_available": 0,
     }))
 }
 
@@ -130,12 +157,22 @@ async fn listen_api_auth_middleware(
         return Ok(next.run(request).await);
     };
 
+    // Accept token from X-API-Key header or Authorization: Bearer <token>
     let provided = request
         .headers()
         .get("x-api-key")
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            request
+                .headers()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        });
 
     if provided != Some(expected) {
         return Err((
@@ -684,6 +721,50 @@ mod auth_tests {
                 Request::builder()
                     .uri("/ws")
                     .method("GET")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn api_route_accepts_bearer_token() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let list_replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::List { reply }) = rx.recv().await {
+                let _ = reply.send(Ok(json!({ "agents": [] })));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned")
+                    .method("GET")
+                    .header("authorization", "Bearer secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        list_replier.await.expect("list replier should complete");
+    }
+
+    #[tokio::test]
+    async fn api_route_rejects_invalid_bearer_token() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned")
+                    .method("GET")
+                    .header("authorization", "Bearer wrong-key")
                     .body(Body::empty())
                     .expect("request should build"),
             )

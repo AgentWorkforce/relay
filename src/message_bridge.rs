@@ -344,13 +344,33 @@ fn extract_sender(accessor: EventAccessor<'_>) -> Option<String> {
         (EventNesting::PayloadMessage, "agent_name"),
     ];
 
-    accessor
+    let raw = accessor
         .first_agent_name(&TOP_AGENT_NESTINGS)
         .or_else(|| accessor.first_string(&TOP_FIELDS, sender_value_to_string, true))
         .or_else(|| accessor.first_string(&MESSAGE_FIELDS, sender_value_to_string, true))
         .or_else(|| accessor.first_agent_name(&PAYLOAD_AGENT_NESTINGS))
         .or_else(|| accessor.first_string(&PAYLOAD_FIELDS, sender_value_to_string, true))
-        .or_else(|| accessor.first_string(&PAYLOAD_MESSAGE_FIELDS, sender_value_to_string, true))
+        .or_else(|| accessor.first_string(&PAYLOAD_MESSAGE_FIELDS, sender_value_to_string, true))?;
+
+    Some(normalize_sender_identity(&raw))
+}
+
+/// Normalize well-known sender identities to canonical display names.
+///
+/// Broker identities (`broker`, `broker-XXXXXXXX`) and human relay identities
+/// (`human:orchestrator`) are normalized to `"Dashboard"` so downstream
+/// consumers see a stable, human-friendly name regardless of the underlying
+/// relay infrastructure identity.
+fn normalize_sender_identity(raw: &str) -> String {
+    // broker identities: exact "broker" or "broker-" followed by hex/alphanumeric suffix
+    if raw == "broker" || raw.starts_with("broker-") {
+        return "Dashboard".to_string();
+    }
+    // human relay identities: "human:orchestrator" and similar human:* patterns
+    if raw.starts_with("human:") {
+        return "Dashboard".to_string();
+    }
+    raw.to_string()
 }
 
 fn extract_target(accessor: EventAccessor<'_>, kind: &InboundKind) -> Option<String> {

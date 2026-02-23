@@ -116,9 +116,17 @@ pub enum BrokerEvent {
         name: String,
         runtime: AgentRuntime,
         parent: Option<String>,
+        cli: Option<String>,
+        model: Option<String>,
+        pid: Option<u32>,
+        source: Option<String>,
     },
     AgentReleased {
         name: String,
+    },
+    AgentExit {
+        name: String,
+        reason: String,
     },
     AgentExited {
         name: String,
@@ -159,6 +167,22 @@ pub enum BrokerEvent {
         event_id: String,
         reason: String,
     },
+    DeliveryQueued {
+        delivery_id: String,
+        agent: String,
+    },
+    DeliveryInjected {
+        delivery_id: String,
+        agent: String,
+    },
+    DeliveryActive {
+        delivery_id: String,
+        agent: String,
+    },
+    DeliveryAck {
+        delivery_id: String,
+        agent: String,
+    },
     AclDenied {
         name: String,
         sender: String,
@@ -180,6 +204,7 @@ pub enum BrokerEvent {
     },
     AgentRestarting {
         name: String,
+        #[serde(rename = "code")]
         exit_code: Option<i32>,
         signal: Option<String>,
         restart_count: u32,
@@ -313,6 +338,10 @@ mod tests {
             name: "Worker2".into(),
             runtime: AgentRuntime::HeadlessClaude,
             parent: Some("Lead".into()),
+            cli: None,
+            model: None,
+            pid: None,
+            source: None,
         });
         let encoded = serde_json::to_string(&event).unwrap();
         let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();

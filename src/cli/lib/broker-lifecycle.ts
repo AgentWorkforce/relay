@@ -144,13 +144,13 @@ function resolveDashboardStaticDir(dashboardBinary: string | null, deps: CoreDep
   return null;
 }
 
-function resolveDashboardRelayUrl(deps: CoreDependencies): string {
+function resolveDashboardRelayUrl(apiPort: number, deps: CoreDependencies): string {
   const explicitRelayUrl = deps.env.RELAY_DASHBOARD_RELAY_URL;
   if (explicitRelayUrl && explicitRelayUrl.trim()) {
     return explicitRelayUrl.trim();
   }
 
-  return 'http://localhost:3889';
+  return `http://localhost:${apiPort}`;
 }
 
 function getDashboardSpawnEnv(deps: CoreDependencies): NodeJS.ProcessEnv {
@@ -160,11 +160,12 @@ function getDashboardSpawnEnv(deps: CoreDependencies): NodeJS.ProcessEnv {
 function getDashboardSpawnArgs(
   paths: CoreProjectPaths,
   port: number,
+  apiPort: number,
   dashboardBinary: string | null,
   deps: CoreDependencies
 ): string[] {
   const args = ['--port', String(port), '--data-dir', paths.dataDir];
-  args.push('--relay-url', resolveDashboardRelayUrl(deps));
+  args.push('--relay-url', resolveDashboardRelayUrl(apiPort, deps));
   const staticDir = resolveDashboardStaticDir(dashboardBinary, deps);
   if (staticDir) {
     args.push('--static-dir', staticDir);
@@ -172,9 +173,9 @@ function getDashboardSpawnArgs(
   return args;
 }
 
-function startDashboard(paths: CoreProjectPaths, port: number, deps: CoreDependencies): SpawnedProcess {
+function startDashboard(paths: CoreProjectPaths, port: number, apiPort: number, deps: CoreDependencies): SpawnedProcess {
   const dashboardBinary = deps.findDashboardBinary();
-  const args = getDashboardSpawnArgs(paths, port, dashboardBinary, deps);
+  const args = getDashboardSpawnArgs(paths, port, apiPort, dashboardBinary, deps);
 
   const spawnOpts = {
     stdio: ['ignore', 'pipe', 'pipe'] as unknown,
@@ -297,7 +298,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     safeUnlink(brokerPidPath, deps);
   }
 
-  const apiPort = wantsDashboard ? 3889 : 0;
+  const apiPort = wantsDashboard ? dashboardPort + 1 : 0;
   const relay = deps.createRelay(paths.projectRoot, apiPort);
 
   let dashboardProcess: SpawnedProcess | undefined;
@@ -325,7 +326,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     }
 
     if (wantsDashboard) {
-      dashboardProcess = startDashboard(paths, dashboardPort, deps);
+      dashboardProcess = startDashboard(paths, dashboardPort, apiPort, deps);
       deps.log(`Dashboard: http://localhost:${dashboardPort}`);
 
       // Verify the dashboard is actually reachable (non-blocking)

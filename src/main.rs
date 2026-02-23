@@ -1882,6 +1882,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         WorkerEvent::Message { name, value } => {
                             if let Some(msg_type) = value.get("type").and_then(Value::as_str) {
                                 if msg_type == "delivery_ack" {
+                                    // Terminal guard: this branch is where late delivery_ack
+                                    // handling is constrained after terminal delivery states.
                                     if let Some(payload) = value.get("payload") {
                                         if let Ok(ack) = serde_json::from_value::<DeliveryAckPayload>(payload.clone()) {
                                             clear_pending_delivery_if_event_matches(
@@ -4621,7 +4623,7 @@ mod tests {
             "replay fixture must include replay_response"
         );
 
-        let source = include_str!("main.rs");
+        let source = include_str!("listen_api.rs");
         assert!(
             source.contains(".route(\"/api/events/replay\""),
             "listen API router does not expose /api/events/replay"

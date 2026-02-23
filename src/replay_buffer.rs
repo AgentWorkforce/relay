@@ -46,11 +46,12 @@ impl ReplayBuffer {
 
     /// Push a new event into the buffer. Returns `(seq, event_with_seq)`.
     /// The event JSON is annotated with a `"seq"` field before storage.
-    pub async fn push(&self, mut event: Value) -> (u64, Value) {
+    pub async fn push(&self, mut event: Value) -> anyhow::Result<(u64, Value)> {
+        let mut inner = self.inner.write().await;
         let seq = self.seq_counter.fetch_add(1, Ordering::Relaxed) + 1;
         event
             .as_object_mut()
-            .expect("broadcast events must be JSON objects")
+            .ok_or_else(|| anyhow::anyhow!("broadcast event must be a JSON object"))?
             .insert("seq".to_string(), serde_json::json!(seq));
 
         let entry = ReplayEntry {
@@ -58,13 +59,12 @@ impl ReplayBuffer {
             event: event.clone(),
         };
 
-        let mut inner = self.inner.write().await;
         if inner.entries.len() >= inner.capacity {
             inner.entries.pop_front();
         }
         inner.entries.push_back(entry);
 
-        (seq, event)
+        Ok((seq, event))
     }
 
     /// Retrieve all events with seq > since_seq.
@@ -104,10 +104,10 @@ mod tests {
     async fn buffer_stores_events_and_respects_capacity() {
         let buf = ReplayBuffer::new(3);
 
-        buf.push(json!({"kind": "a"})).await;
-        buf.push(json!({"kind": "b"})).await;
-        buf.push(json!({"kind": "c"})).await;
-        buf.push(json!({"kind": "d"})).await;
+        buf.push(json!({"kind": "a"})).await.unwrap();
+        buf.push(json!({"kind": "b"})).await.unwrap();
+        buf.push(json!({"kind": "c"})).await.unwrap();
+        buf.push(json!({"kind": "d"})).await.unwrap();
 
         let (events, _gap) = buf.replay_since(0).await;
         // Capacity is 3, so "a" (seq=1) should be evicted
@@ -121,9 +121,9 @@ mod tests {
     async fn oldest_events_evicted_when_full() {
         let buf = ReplayBuffer::new(2);
 
-        buf.push(json!({"kind": "first"})).await;
-        buf.push(json!({"kind": "second"})).await;
-        buf.push(json!({"kind": "third"})).await;
+        buf.push(json!({"kind": "first"})).await.unwrap();
+        buf.push(json!({"kind": "second"})).await.unwrap();
+        buf.push(json!({"kind": "third"})).await.unwrap();
 
         let (events, _) = buf.replay_since(0).await;
         assert_eq!(events.len(), 2);
@@ -142,7 +142,9 @@ mod tests {
         let buf = ReplayBuffer::new(10);
 
         for i in 0..5 {
-            buf.push(json!({"kind": format!("event_{}", i)})).await;
+            buf.push(json!({"kind": format!("event_{}", i)}))
+                .await
+                .unwrap();
         }
 
         // Request events after seq 3
@@ -158,7 +160,9 @@ mod tests {
         let buf = ReplayBuffer::new(3);
 
         for i in 0..5 {
-            buf.push(json!({"kind": format!("event_{}", i)})).await;
+            buf.push(json!({"kind": format!("event_{}", i)}))
+                .await
+                .unwrap();
         }
 
         // since_seq=1 is older than oldest in buffer (seq=3)
@@ -172,9 +176,9 @@ mod tests {
     async fn seq_numbers_are_monotonically_increasing() {
         let buf = ReplayBuffer::new(100);
 
-        let (s1, _) = buf.push(json!({"kind": "a"})).await;
-        let (s2, _) = buf.push(json!({"kind": "b"})).await;
-        let (s3, _) = buf.push(json!({"kind": "c"})).await;
+        let (s1, _) = buf.push(json!({"kind": "a"})).await.unwrap();
+        let (s2, _) = buf.push(json!({"kind": "b"})).await.unwrap();
+        let (s3, _) = buf.push(json!({"kind": "c"})).await.unwrap();
 
         assert_eq!(s1, 1);
         assert_eq!(s2, 2);
@@ -187,7 +191,7 @@ mod tests {
     async fn events_include_seq_field_in_json() {
         let buf = ReplayBuffer::new(10);
 
-        buf.push(json!({"kind": "test"})).await;
+        buf.push(json!({"kind": "test"})).await.unwrap();
 
         let (events, _) = buf.replay_since(0).await;
         assert_eq!(events.len(), 1);
@@ -202,8 +206,8 @@ mod tests {
     async fn replay_since_current_seq_returns_empty() {
         let buf = ReplayBuffer::new(10);
 
-        buf.push(json!({"kind": "a"})).await;
-        buf.push(json!({"kind": "b"})).await;
+        buf.push(json!({"kind": "a"})).await.unwrap();
+        buf.push(json!({"kind": "b"})).await.unwrap();
 
         let (events, gap) = buf.replay_since(2).await;
         assert!(gap.is_none());

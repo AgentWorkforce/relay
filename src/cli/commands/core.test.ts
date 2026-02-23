@@ -177,10 +177,10 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['up', '--port', '4999']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000);
     expect(deps.spawnProcess).toHaveBeenCalledWith(
       '/usr/local/bin/relay-dashboard-server',
-      expect.arrayContaining(['--port', '4999', '--relay-url', 'http://localhost:3889']),
+      expect.arrayContaining(['--port', '4999', '--relay-url', 'http://localhost:5000']),
       expect.any(Object)
     );
     const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
@@ -250,7 +250,7 @@ describe('registerCoreCommands', () => {
       .calls[0][1] as string[];
     const dashboardOptions = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
       .calls[0][2] as { env?: NodeJS.ProcessEnv };
-    expect(dashboardArgs).toEqual(expect.arrayContaining(['--relay-url', 'http://localhost:3889']));
+    expect(dashboardArgs).toEqual(expect.arrayContaining(['--relay-url', 'http://localhost:5000']));
     expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', staticDir]));
     expect(dashboardOptions.env?.RELAY_URL).toBeUndefined();
   });
