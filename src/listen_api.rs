@@ -125,35 +125,50 @@ fn listen_api_router_with_auth(
 // ---------------------------------------------------------------------------
 
 pub(crate) async fn listen_api_health() -> axum::Json<Value> {
-    let degraded = std::env::var("AGENT_RELAY_STARTUP_ERROR_CODE")
-        .ok()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
-    let status = if degraded { "degraded" } else { "ok" };
+    let startup_error_code = std::env::var("AGENT_RELAY_STARTUP_ERROR_CODE").ok();
+    let status = startup_health_status(startup_error_code.as_deref());
 
     axum::Json(json!({
         "status": status,
         "service": "agent-relay-listen",
         "version": env!("CARGO_PKG_VERSION"),
         "uptimeMs": 0,
-        "workspaceId": std::env::var("RELAY_WORKSPACE_ID").unwrap_or_else(|_| "ws_unknown".to_string()),
+        "workspaceId": std::env::var("RELAY_WORKSPACE_ID")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .filter(|value| value.starts_with("ws_"))
+            .unwrap_or_else(|| "ws_unknown".to_string()),
         "agentCount": 0,
         "pendingDeliveryCount": 0,
         "wsConnections": 0,
         "memoryMb": 0,
-        "relaycastConnected": true,
+        "relaycastConnected": startup_error_code.is_none(),
     }))
 }
 
+fn startup_health_status(startup_error_code: Option<&str>) -> &'static str {
+    let Some(code) = startup_error_code.map(str::trim) else {
+        return "ok";
+    };
+    if code.eq_ignore_ascii_case("rate_limit_exceeded") {
+        "degraded"
+    } else {
+        "ok"
+    }
+}
+
 pub(crate) async fn listen_api_replay(
-    axum::extract::Query(_query): axum::extract::Query<std::collections::HashMap<String, String>>,
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Query(query): axum::extract::Query<ListenReplayQuery>,
 ) -> axum::Json<Value> {
-    // Replay cursor contract shape is exposed here; event replay wiring is handled
-    // by the broker router/runtime path in later wave integration.
+    let since_seq = query.since_seq();
+    let (entries, gap_oldest) = state.replay_buffer.replay_since(since_seq).await;
+    let events: Vec<Value> = entries.into_iter().map(|entry| entry.event).collect();
     axum::Json(json!({
-        "events": [],
-        "gap": false,
-        "oldest_available": 0,
+        "events": events,
+        "gap": gap_oldest.is_some(),
+        "oldestAvailable": gap_oldest.unwrap_or(since_seq),
     }))
 }
 
@@ -415,21 +430,67 @@ async fn listen_api_send(
 async fn listen_api_ws(
     ws: axum::extract::WebSocketUpgrade,
     axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Query(query): axum::extract::Query<ListenReplayQuery>,
 ) -> impl axum::response::IntoResponse {
-    ws.on_upgrade(move |socket| handle_dashboard_ws(socket, state.events_tx.subscribe()))
+    let since_seq = query.since_seq();
+    let replay_buffer = state.replay_buffer.clone();
+    ws.on_upgrade(move |socket| {
+        handle_dashboard_ws(
+            socket,
+            state.events_tx.subscribe(),
+            replay_buffer,
+            since_seq,
+        )
+    })
 }
 
 async fn handle_dashboard_ws(
     mut socket: axum::extract::ws::WebSocket,
     mut rx: broadcast::Receiver<String>,
+    replay_buffer: ReplayBuffer,
+    since_seq: u64,
 ) {
     tracing::info!("dashboard WS client connected");
+    let replay_cutoff_seq = replay_buffer.current_seq();
+    let (replay_events, gap_oldest) = replay_buffer.replay_since(since_seq).await;
+    if let Some(oldest_available) = gap_oldest {
+        let replay_gap = json!({
+            "kind": "replay_gap",
+            "requestedSinceSeq": since_seq,
+            "oldestAvailable": oldest_available,
+            "seq": replay_cutoff_seq,
+        });
+        if let Ok(msg) = serde_json::to_string(&replay_gap) {
+            let _ = socket.send(axum::extract::ws::Message::Text(msg.into())).await;
+        }
+    }
+    for replayed in replay_events {
+        if replayed.seq > replay_cutoff_seq {
+            continue;
+        }
+        if let Ok(msg) = serde_json::to_string(&replayed.event) {
+            if socket
+                .send(axum::extract::ws::Message::Text(msg.into()))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    }
     let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
     loop {
         tokio::select! {
             result = rx.recv() => {
                 match result {
                     Ok(msg) => {
+                        let is_duplicate = serde_json::from_str::<Value>(&msg)
+                            .ok()
+                            .and_then(|value| value.get("seq").and_then(Value::as_u64))
+                            .is_some_and(|seq| seq <= replay_cutoff_seq);
+                        if is_duplicate {
+                            continue;
+                        }
                         if socket
                             .send(axum::extract::ws::Message::Text(msg.into()))
                             .await
@@ -465,7 +526,11 @@ async fn handle_dashboard_ws(
 /// Broadcast an event payload to dashboard WS clients if the event kind is
 /// relevant for real-time UI updates. This is called alongside `send_event`
 /// and does not affect the SDK stdout protocol.
-pub fn broadcast_if_relevant(events_tx: &broadcast::Sender<String>, payload: &Value) {
+pub async fn broadcast_if_relevant(
+    events_tx: &broadcast::Sender<String>,
+    replay_buffer: &ReplayBuffer,
+    payload: &Value,
+) {
     if let Some(kind) = payload.get("kind").and_then(Value::as_str) {
         match kind {
             "relay_inbound"
@@ -481,21 +546,28 @@ pub fn broadcast_if_relevant(events_tx: &broadcast::Sender<String>, payload: &Va
             | "delivery_verified"
             | "delivery_failed"
             | "worker_error" => {
-                if let Ok(json) = serde_json::to_string(payload) {
-                    match events_tx.send(json) {
-                        Ok(receivers) => {
-                            tracing::debug!(
-                                kind = kind,
-                                receivers = receivers,
-                                "broadcast event to dashboard WS clients"
-                            );
+                match replay_buffer.push(payload.clone()).await {
+                    Ok((_seq, event_with_seq)) => {
+                        if let Ok(json) = serde_json::to_string(&event_with_seq) {
+                            match events_tx.send(json) {
+                                Ok(receivers) => {
+                                    tracing::debug!(
+                                        kind = kind,
+                                        receivers = receivers,
+                                        "broadcast event to dashboard WS clients"
+                                    );
+                                }
+                                Err(_) => {
+                                    tracing::warn!(
+                                        kind = kind,
+                                        "broadcast event dropped — no dashboard WS clients connected"
+                                    );
+                                }
+                            }
                         }
-                        Err(_) => {
-                            tracing::warn!(
-                                kind = kind,
-                                "broadcast event dropped — no dashboard WS clients connected"
-                            );
-                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = kind, error = %error, "failed to push event to replay buffer");
                     }
                 }
             }
@@ -506,6 +578,7 @@ pub fn broadcast_if_relevant(events_tx: &broadcast::Sender<String>, payload: &Va
 
 #[cfg(test)]
 mod wave0_contract_tests {
+    use relay_broker::replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY};
     use serde_json::{json, Value};
     use tokio::sync::broadcast;
 
@@ -526,20 +599,23 @@ mod wave0_contract_tests {
             .collect()
     }
 
-    #[test]
-    fn broadcast_whitelist_contract_emits_all_required_event_kinds() {
+    #[tokio::test]
+    async fn broadcast_whitelist_contract_emits_all_required_event_kinds() {
         let (events_tx, mut events_rx) = broadcast::channel::<String>(16);
+        let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
         let required_kinds = required_broadcast_kinds();
 
         for kind in required_kinds {
             broadcast_if_relevant(
                 &events_tx,
+                &replay_buffer,
                 &json!({
                     "kind": kind,
                     "name": "Wave0",
                     "event_id": "evt_wave0_contract"
                 }),
-            );
+            )
+            .await;
 
             // TODO(contract-wave0-broadcast-whitelist): keep this fixture in sync with
             // dashboard-required events and make sure every listed kind is broadcast.
@@ -554,13 +630,15 @@ mod wave0_contract_tests {
 
 #[cfg(test)]
 mod tests {
+    use relay_broker::replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY};
     use super::broadcast_if_relevant;
     use serde_json::{json, Value};
     use tokio::sync::broadcast;
 
-    #[test]
-    fn broadcast_if_relevant_sends_relay_inbound() {
+    #[tokio::test]
+    async fn broadcast_if_relevant_sends_relay_inbound() {
         let (tx, mut rx) = broadcast::channel::<String>(8);
+        let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
         let payload = json!({
             "kind": "relay_inbound",
             "to": "Lead",
@@ -568,43 +646,47 @@ mod tests {
             "text": "status",
         });
 
-        broadcast_if_relevant(&tx, &payload);
+        broadcast_if_relevant(&tx, &replay_buffer, &payload).await;
 
         let delivered = rx
             .try_recv()
             .expect("relay_inbound should be broadcast to dashboard listeners");
         let decoded: Value =
             serde_json::from_str(&delivered).expect("broadcast payload should be valid JSON");
-        assert_eq!(decoded, payload);
+        assert_eq!(decoded["kind"], payload["kind"]);
+        assert!(decoded.get("seq").and_then(Value::as_u64).is_some());
     }
 
-    #[test]
-    fn broadcast_if_relevant_sends_agent_spawned() {
+    #[tokio::test]
+    async fn broadcast_if_relevant_sends_agent_spawned() {
         let (tx, mut rx) = broadcast::channel::<String>(8);
+        let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
         let payload = json!({
             "kind": "agent_spawned",
             "name": "Worker",
         });
 
-        broadcast_if_relevant(&tx, &payload);
+        broadcast_if_relevant(&tx, &replay_buffer, &payload).await;
 
         let delivered = rx
             .try_recv()
             .expect("agent_spawned should be broadcast to dashboard listeners");
         let decoded: Value =
             serde_json::from_str(&delivered).expect("broadcast payload should be valid JSON");
-        assert_eq!(decoded, payload);
+        assert_eq!(decoded["kind"], payload["kind"]);
+        assert!(decoded.get("seq").and_then(Value::as_u64).is_some());
     }
 
-    #[test]
-    fn broadcast_if_relevant_ignores_unknown_kind() {
+    #[tokio::test]
+    async fn broadcast_if_relevant_ignores_unknown_kind() {
         let (tx, mut rx) = broadcast::channel::<String>(8);
+        let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
         let payload = json!({
             "kind": "totally_unknown_kind",
             "name": "Worker",
         });
 
-        broadcast_if_relevant(&tx, &payload);
+        broadcast_if_relevant(&tx, &replay_buffer, &payload).await;
 
         assert!(matches!(
             rx.try_recv(),
@@ -612,15 +694,16 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn broadcast_if_relevant_ignores_missing_kind() {
+    #[tokio::test]
+    async fn broadcast_if_relevant_ignores_missing_kind() {
         let (tx, mut rx) = broadcast::channel::<String>(8);
+        let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
         let payload = json!({
             "name": "Worker",
             "status": "online",
         });
 
-        broadcast_if_relevant(&tx, &payload);
+        broadcast_if_relevant(&tx, &replay_buffer, &payload).await;
 
         assert!(matches!(
             rx.try_recv(),
@@ -635,19 +718,24 @@ mod auth_tests {
         body::{to_bytes, Body},
         http::{Request, StatusCode},
     };
+    use relay_broker::replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY};
     use serde_json::{json, Value};
     use tokio::sync::{broadcast, mpsc};
     use tower::ServiceExt;
 
     use super::{listen_api_router_with_auth, ListenApiRequest};
 
-    fn test_router(
-        broker_api_key: Option<&str>,
-    ) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
+    fn test_router(broker_api_key: Option<&str>) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
         let (tx, rx) = mpsc::channel(8);
         let (events_tx, _events_rx) = broadcast::channel(8);
+        let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
         (
-            listen_api_router_with_auth(tx, events_tx, broker_api_key.map(ToString::to_string)),
+            listen_api_router_with_auth(
+                tx,
+                events_tx,
+                broker_api_key.map(ToString::to_string),
+                replay_buffer,
+            ),
             rx,
         )
     }
