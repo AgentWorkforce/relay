@@ -158,7 +158,7 @@ fn startup_health_status(startup_error_code: Option<&str>) -> &'static str {
     }
 }
 
-pub(crate) async fn listen_api_replay(
+async fn listen_api_replay(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Query(query): axum::extract::Query<ListenReplayQuery>,
 ) -> axum::Json<Value> {
