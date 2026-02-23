@@ -6,6 +6,8 @@
 
 use std::time::Duration;
 
+use relay_broker::replay_buffer::ReplayBuffer;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc};
 
@@ -45,6 +47,21 @@ struct ListenApiState {
     tx: mpsc::Sender<ListenApiRequest>,
     events_tx: broadcast::Sender<String>,
     broker_api_key: Option<String>,
+    replay_buffer: ReplayBuffer,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ListenReplayQuery {
+    #[serde(rename = "sinceSeq")]
+    since_seq_camel: Option<u64>,
+    #[serde(rename = "since_seq")]
+    since_seq_snake: Option<u64>,
+}
+
+impl ListenReplayQuery {
+    fn since_seq(&self) -> u64 {
+        self.since_seq_camel.or(self.since_seq_snake).unwrap_or(0)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -54,8 +71,9 @@ struct ListenApiState {
 pub fn listen_api_router(
     tx: mpsc::Sender<ListenApiRequest>,
     events_tx: broadcast::Sender<String>,
+    replay_buffer: ReplayBuffer,
 ) -> axum::Router {
-    listen_api_router_with_auth(tx, events_tx, configured_broker_api_key())
+    listen_api_router_with_auth(tx, events_tx, configured_broker_api_key(), replay_buffer)
 }
 
 fn configured_broker_api_key() -> Option<String> {
@@ -69,6 +87,7 @@ fn listen_api_router_with_auth(
     tx: mpsc::Sender<ListenApiRequest>,
     events_tx: broadcast::Sender<String>,
     broker_api_key: Option<String>,
+    replay_buffer: ReplayBuffer,
 ) -> axum::Router {
     use axum::{middleware, routing, Router};
 
@@ -78,6 +97,7 @@ fn listen_api_router_with_auth(
         broker_api_key: broker_api_key
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
+        replay_buffer,
     };
 
     let protected = Router::new()
@@ -125,7 +145,7 @@ pub(crate) async fn listen_api_health() -> axum::Json<Value> {
     }))
 }
 
-async fn listen_api_replay(
+pub(crate) async fn listen_api_replay(
     axum::extract::Query(_query): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> axum::Json<Value> {
     // Replay cursor contract shape is exposed here; event replay wiring is handled

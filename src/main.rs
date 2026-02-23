@@ -1199,6 +1199,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let mut dedup = DedupCache::new(Duration::from_secs(300), 8192);
     let delivery_retry_interval = delivery_retry_interval();
     let mut pending_deliveries = load_pending_deliveries(&paths.pending);
+    let mut terminal_failed_deliveries: HashSet<String> = HashSet::new();
     let mut dm_participants_cache: HashMap<String, (Instant, Vec<String>)> = HashMap::new();
     let mut recent_thread_messages: VecDeque<Value> = VecDeque::new();
     if !pending_deliveries.is_empty() {
@@ -1214,7 +1215,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     // Optional HTTP API (for dashboard proxy)
     let (api_tx, mut api_rx) = if cmd.api_port > 0 {
         let (tx, rx) = mpsc::channel::<ListenApiRequest>(32);
-        let router = listen_api_router(tx.clone(), events_tx.clone());
+        let router = listen_api_router(tx.clone(), events_tx.clone()).route(
+            "/api/events/replay",
+            axum::routing::get(crate::listen_api::listen_api_replay),
+        );
         let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", cmd.api_port))
             .await
             .with_context(|| format!("failed to bind API on port {}", cmd.api_port))?;
@@ -1882,9 +1886,25 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         WorkerEvent::Message { name, value } => {
                             if let Some(msg_type) = value.get("type").and_then(Value::as_str) {
                                 if msg_type == "delivery_ack" {
-                                    // Terminal guard: this branch is where late delivery_ack
-                                    // handling is constrained after terminal delivery states.
                                     if let Some(payload) = value.get("payload") {
+                                        let delivery_id = payload
+                                            .get("delivery_id")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("");
+
+                                        // Terminal guard: ignore late delivery_ack events once a
+                                        // delivery has reached terminal failed status.
+                                        if !delivery_id.is_empty()
+                                            && terminal_failed_deliveries.contains(delivery_id)
+                                        {
+                                            tracing::info!(
+                                                worker = %name,
+                                                delivery_id = %delivery_id,
+                                                "ignoring late delivery_ack after terminal failed status"
+                                            );
+                                            continue;
+                                        }
+
                                         if let Ok(ack) = serde_json::from_value::<DeliveryAckPayload>(payload.clone()) {
                                             clear_pending_delivery_if_event_matches(
                                                 &mut pending_deliveries,
@@ -1893,6 +1913,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 &name,
                                                 "delivery_ack",
                                             );
+                                            terminal_failed_deliveries.remove(&ack.delivery_id);
                                         }
                                         let _ = send_event(&sdk_out_tx, json!({
                                             "kind": "delivery_ack",
@@ -1990,6 +2011,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             &name,
                                             "delivery_failed",
                                         );
+                                        if !delivery_id.is_empty() {
+                                            terminal_failed_deliveries
+                                                .insert(delivery_id.to_string());
+                                        }
                                         let _ = send_event(&sdk_out_tx, json!({
                                             "kind": "delivery_failed",
                                             "name": name,
