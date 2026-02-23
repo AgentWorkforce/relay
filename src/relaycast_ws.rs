@@ -23,6 +23,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub enum WsControl {
     Shutdown,
+    Publish(Value),
 }
 
 #[derive(Clone)]
@@ -160,6 +161,29 @@ impl RelaycastWsClient {
                                     Some(WsControl::Shutdown) | None => {
                                         let _ = write.close().await;
                                         shutdown = true;
+                                    }
+                                    Some(WsControl::Publish(payload)) => {
+                                        let encoded = match serde_json::to_string(&payload) {
+                                            Ok(encoded) => encoded,
+                                            Err(error) => {
+                                                tracing::warn!(
+                                                    target = "relay_broker::ws",
+                                                    error = %error,
+                                                    "failed to serialize outbound ws control payload"
+                                                );
+                                                continue;
+                                            }
+                                        };
+                                        if let Err(error) =
+                                            write.send(Message::Text(encoded.into())).await
+                                        {
+                                            tracing::warn!(
+                                                target = "relay_broker::ws",
+                                                error = %error,
+                                                "failed to publish control payload over ws"
+                                            );
+                                            break;
+                                        }
                                     }
                                 }
                             }
