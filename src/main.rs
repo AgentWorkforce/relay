@@ -13,8 +13,8 @@ mod wrap;
 
 use helpers::{
     detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
-    format_injection, is_auto_suggestion, is_bypass_selection_menu,
-    is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
+    format_injection, is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode,
+    normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
 use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiRequest};
 
@@ -2351,8 +2351,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
     Ok(())
 }
-
-
 
 /// Get terminal rows from TIOCGWINSZ.
 #[cfg(unix)]
