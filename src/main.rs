@@ -2353,13 +2353,35 @@ async fn handle_dashboard_ws(
     mut socket: axum::extract::ws::WebSocket,
     mut rx: broadcast::Receiver<String>,
 ) {
-    while let Ok(msg) = rx.recv().await {
-        if socket
-            .send(axum::extract::ws::Message::Text(msg.into()))
-            .await
-            .is_err()
-        {
-            break;
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(msg) => {
+                        if socket
+                            .send(axum::extract::ws::Message::Text(msg.into()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(skipped = n, "dashboard WS client lagged, skipped messages");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            _ = ping_interval.tick() => {
+                if socket
+                    .send(axum::extract::ws::Message::Ping(vec![].into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
         }
     }
 }
@@ -2374,7 +2396,9 @@ fn broadcast_if_relevant(events_tx: &broadcast::Sender<String>, payload: &Value)
             | "worker_ready" | "agent_idle" | "agent_restarting" | "agent_restarted"
             | "agent_permanently_dead" | "delivery_verified" | "delivery_failed"
             | "worker_error" => {
-                let _ = events_tx.send(serde_json::to_string(payload).unwrap_or_default());
+                if let Ok(json) = serde_json::to_string(payload) {
+                    let _ = events_tx.send(json);
+                }
             }
             _ => {}
         }

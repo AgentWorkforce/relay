@@ -12,12 +12,12 @@
  * Update packages/shared/cli-registry.yaml to change versions.
  */
 export const CLIVersions = {
-  /** Claude Code v1.0.24 */
-  CLAUDE: '1.0.24',
-  /** Codex CLI v0.1.2504301707 */
-  CODEX: '0.1.2504301707',
-  /** Gemini CLI v0.1.17 */
-  GEMINI: '0.1.17',
+  /** Claude Code v2.1.50 */
+  CLAUDE: '2.1.50',
+  /** Codex CLI v0.104.0 */
+  CODEX: '0.104.0',
+  /** Gemini CLI v0.29.5 */
+  GEMINI: '0.29.5',
   /** Cursor v0.48.6 */
   CURSOR: '0.48.6',
   /** Aider v0.72.1 */
@@ -273,38 +273,44 @@ export const CLIRegistry = {
   claude: {
     name: 'Claude Code',
     package: '@anthropic-ai/claude-code',
-    version: '1.0.24',
+    version: '2.1.50',
     install: 'npm install -g @anthropic-ai/claude-code',
+    npmLink: 'https://www.npmjs.com/package/@anthropic-ai',
   },
   codex: {
     name: 'Codex CLI',
     package: '@openai/codex',
-    version: '0.1.2504301707',
+    version: '0.104.0',
     install: 'npm install -g @openai/codex',
+    npmLink: 'https://www.npmjs.com/package/@openai/codex',
   },
   gemini: {
     name: 'Gemini CLI',
     package: '@google/gemini-cli',
-    version: '0.1.17',
+    version: '0.29.5',
     install: 'npm install -g @google/gemini-cli',
+    npmLink: 'https://www.npmjs.com/package/@google/gemini-cli',
   },
   cursor: {
     name: 'Cursor',
     package: 'cursor',
     version: '0.48.6',
     install: 'Download from cursor.com',
+    npmLink: undefined,
   },
   aider: {
     name: 'Aider',
     package: 'aider-chat',
     version: '0.72.1',
     install: 'pip install aider-chat',
+    npmLink: undefined,
   },
   goose: {
     name: 'Goose',
     package: 'goose-ai',
     version: '1.0.16',
     install: 'pip install goose-ai',
+    npmLink: undefined,
   },
 } as const;
 

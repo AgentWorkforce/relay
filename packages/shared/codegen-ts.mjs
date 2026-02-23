@@ -199,6 +199,7 @@ for (const [cli, config] of Object.entries(registry.clis)) {
     package: '${config.package}',
     version: '${config.version}',
     install: '${config.install}',
+    npmLink: ${config.npm_link ? `'${config.npm_link}'` : 'undefined'},
   },
 `;
 }
