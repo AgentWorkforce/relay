@@ -209,6 +209,21 @@ pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> R
     Ok(())
 }
 
+pub fn spawn_env_vars<'a>(
+    name: &'a str,
+    api_key: &'a str,
+    base_url: &'a str,
+    channels: &'a str,
+) -> [(&'a str, &'a str); 5] {
+    [
+        ("RELAY_AGENT_NAME", name),
+        ("RELAY_API_KEY", api_key),
+        ("RELAY_BASE_URL", base_url),
+        ("RELAY_CHANNELS", channels),
+        ("RELAY_STRICT_AGENT_NAME", "1"),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

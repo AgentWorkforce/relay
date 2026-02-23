@@ -4,6 +4,7 @@ export interface CreateAgentRelayClientOptions {
   cwd: string;
   channels?: string[];
   binaryPath?: string;
+  binaryArgs?: string[];
   env?: NodeJS.ProcessEnv;
 }
 
@@ -28,11 +29,13 @@ export function createAgentRelayClient(options: CreateAgentRelayClientOptions): 
     cwd,
     channels = ['general'],
     binaryPath = process.env.AGENT_RELAY_BIN,
+    binaryArgs,
     env = process.env,
   } = options;
 
   return new AgentRelayClient({
     binaryPath,
+    binaryArgs,
     channels,
     cwd,
     env,

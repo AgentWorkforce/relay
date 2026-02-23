@@ -99,7 +99,7 @@ function createHarness(options?: {
     })),
     loadTeamsConfig: vi.fn(() => options?.teamsConfig ?? null),
     resolveBridgeProjects: vi.fn(() => bridgeProjects),
-    validateBridgeDaemons: vi.fn(() => ({ valid: validBridgeProjects, missing: missingBridgeProjects })),
+    validateBridgeBrokers: vi.fn(() => ({ valid: validBridgeProjects, missing: missingBridgeProjects })),
     getAgentOutboxTemplate: vi.fn(() => '/tmp/project/.agent-relay/outbox'),
     createRelay: options?.createRelay ?? vi.fn(() => relay),
     findDashboardBinary: vi.fn(() => options?.dashboardBinary ?? '/usr/local/bin/relay-dashboard-server'),
@@ -172,13 +172,12 @@ describe('registerCoreCommands', () => {
     const relay = createRelayMock({
       getStatus: vi.fn(async () => ({ agent_count: 1, pending_delivery_count: 0 })),
     });
-    const { program, deps, fs, brokerPidPath } = createHarness({ relay });
+    const { program, deps } = createHarness({ relay });
 
     const exitCode = await runCommand(program, ['up', '--port', '4999']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project');
-    expect(fs.writeFileSync).toHaveBeenCalledWith(brokerPidPath, '4242', 'utf-8');
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889);
     expect(deps.spawnProcess).toHaveBeenCalledWith(
       '/usr/local/bin/relay-dashboard-server',
       expect.arrayContaining(['--port', '4999', '--relay-url', 'http://localhost:3889']),
@@ -188,6 +187,52 @@ describe('registerCoreCommands', () => {
       .calls[0][1] as string[];
     expect(dashboardArgs).not.toContain('--no-spawn');
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('up exits early when broker pid file points to a running process', async () => {
+    const brokerPidPath = '/tmp/project/.agent-relay/broker.pid';
+    const fs = createFsMock({ [brokerPidPath]: '3030' });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (pid === 3030 && signal === 0) {
+        return;
+      }
+      throw new Error('unexpected kill check');
+    });
+    const relay = createRelayMock();
+    const { program, deps } = createHarness({ fs, killImpl, relay });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('Broker already running for this project (pid: 3030).');
+    expect(deps.error).toHaveBeenCalledWith(
+      'Run `agent-relay status` to inspect it, then `agent-relay down` to stop it.'
+    );
+    expect(relay.getStatus).not.toHaveBeenCalled();
+  });
+
+  it('up reports actionable lock guidance when startup fails with broker lock error', async () => {
+    const relay = createRelayMock({
+      getStatus: vi.fn(async () => {
+        throw new Error(
+          'broker exited (code=1, signal=null): Error: another broker instance is already running in this directory (/tmp/project/.agent-relay)'
+        );
+      }),
+    });
+    const { program, deps } = createHarness({ relay });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      'Broker already running for this project (lock: /tmp/project/.agent-relay).'
+    );
+    expect(deps.error).toHaveBeenCalledWith(
+      'Run `agent-relay status` to inspect it, then `agent-relay down` to stop it.'
+    );
+    expect(deps.error).toHaveBeenCalledWith(
+      'If it still fails, run `agent-relay down --force` to clear stale runtime files.'
+    );
   });
 
   it('up infers static-dir for local dashboard JS entrypoint', async () => {
@@ -203,8 +248,11 @@ describe('registerCoreCommands', () => {
     expect(exitCode).toBeUndefined();
     const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
       .calls[0][1] as string[];
-    expect(dashboardArgs).not.toContain('--relay-url');
+    const dashboardOptions = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][2] as { env?: NodeJS.ProcessEnv };
+    expect(dashboardArgs).toEqual(expect.arrayContaining(['--relay-url', 'http://localhost:3889']));
     expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', staticDir]));
+    expect(dashboardOptions.env?.RELAY_URL).toBeUndefined();
   });
 
   it('up auto-spawns agents from teams config', async () => {

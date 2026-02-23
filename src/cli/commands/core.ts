@@ -9,7 +9,7 @@ import {
   getProjectPaths,
   loadTeamsConfig,
   resolveProjects,
-  validateDaemons,
+  validateBrokers,
   getAgentOutboxTemplate,
 } from '@agent-relay/config';
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
@@ -95,12 +95,12 @@ export interface CoreDependencies {
   getProjectPaths: () => CoreProjectPaths;
   loadTeamsConfig: (projectRoot: string) => CoreTeamsConfig | null;
   resolveBridgeProjects: (projectPaths: string[], cli?: string) => BridgeProject[];
-  validateBridgeDaemons: (projects: BridgeProject[]) => {
+  validateBridgeBrokers: (projects: BridgeProject[]) => {
     valid: BridgeProject[];
     missing: BridgeProject[];
   };
   getAgentOutboxTemplate: () => string;
-  createRelay: (cwd: string) => CoreRelay;
+  createRelay: (cwd: string, apiPort?: number) => CoreRelay;
   findDashboardBinary: () => string | null;
   spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
   execCommand: (command: string) => Promise<{ stdout: string; stderr: string }>;
@@ -203,8 +203,11 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
   return null;
 }
 
-function createDefaultRelay(cwd: string): CoreRelay {
-  const client = createAgentRelayClient({ cwd });
+function createDefaultRelay(cwd: string, apiPort = 0): CoreRelay {
+  const client = createAgentRelayClient({
+    cwd,
+    binaryArgs: apiPort > 0 ? ['--api-port', String(apiPort)] : [],
+  });
 
   return {
     spawn: (input) => spawnAgentWithClient(client, input),
@@ -233,8 +236,8 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
       (loadTeamsConfig(projectRoot) as unknown as CoreTeamsConfig | null) ?? null,
     resolveBridgeProjects: (projectPaths: string[], cli?: string) =>
       resolveProjects(projectPaths, cli) as unknown as BridgeProject[],
-    validateBridgeDaemons: (projects: BridgeProject[]) =>
-      validateDaemons(projects as unknown as Parameters<typeof validateDaemons>[0]) as unknown as {
+    validateBridgeBrokers: (projects: BridgeProject[]) =>
+      validateBrokers(projects as unknown as Parameters<typeof validateBrokers>[0]) as unknown as {
         valid: BridgeProject[];
         missing: BridgeProject[];
       },

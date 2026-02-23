@@ -56,15 +56,14 @@ function spawnBroker(cwd: string, env: NodeJS.ProcessEnv): ChildProcess {
 }
 
 /**
- * Spawn a broker `listen` process in the given cwd.
- * Listen mode doesn't read stdin for SDK protocol — it runs an HTTP API
- * and exits on Ctrl-C / SIGTERM.
+ * Spawn a broker in `init --api-port` mode in the given cwd.
+ * Init mode reads stdin for SDK protocol and optionally starts an HTTP API.
  */
-function spawnListenBroker(cwd: string, env: NodeJS.ProcessEnv, port: number): ChildProcess {
+function spawnInitApiBroker(cwd: string, env: NodeJS.ProcessEnv, port: number): ChildProcess {
   const bin = brokerBin();
   const child = spawn(
     bin,
-    ['listen', '--agent-name', 'listentest', '--channels', 'general', '--port', String(port)],
+    ['init', '--name', 'inittest', '--channels', 'general', '--api-port', String(port)],
     {
       cwd,
       env: { ...env, RUST_LOG: 'info' },
@@ -75,10 +74,10 @@ function spawnListenBroker(cwd: string, env: NodeJS.ProcessEnv, port: number): C
 }
 
 /**
- * Wait for listen-mode broker to be ready by checking stderr for the
- * "[agent-relay] listening" message.
+ * Wait for init-mode broker with --api-port to be ready by checking stderr for the
+ * "[agent-relay] API listening" message.
  */
-async function waitForListenReady(
+async function waitForInitApiReady(
   stderrCollector: { lines: string[] },
   child: ChildProcess,
   timeoutMs = 20_000
@@ -86,16 +85,16 @@ async function waitForListenReady(
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const all = stderrCollector.lines.join('\n');
-    if (all.includes('[agent-relay] listening')) return;
+    if (all.includes('[agent-relay] API listening')) return;
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error(
-        `Listen broker exited before ready (code=${child.exitCode}, signal=${child.signalCode}). Stderr:\n${all}`
+        `Init broker exited before ready (code=${child.exitCode}, signal=${child.signalCode}). Stderr:\n${all}`
       );
     }
     await new Promise((r) => setTimeout(r, 300));
   }
   throw new Error(
-    `Listen broker not ready within ${timeoutMs}ms. Stderr:\n${stderrCollector.lines.join('\n')}`
+    `Init API broker not ready within ${timeoutMs}ms. Stderr:\n${stderrCollector.lines.join('\n')}`
   );
 }
 
@@ -615,43 +614,47 @@ test('lockfile: stdin EOF triggers clean shutdown with PID cleanup', { timeout: 
   }
 });
 
-// ── Listen mode tests ─────────────────────────────────────────────────────
-
-test('lockfile: listen mode — PID file created and cleaned up on SIGTERM', { timeout: 45_000 }, async (t) => {
-  if (skipIfMissing(t)) return;
-  const apiKey = await ensureApiKey();
-  const cwd = makeTempDir();
-  const pidPath = path.join(cwd, '.agent-relay', 'broker.pid');
-  const port = randomPort();
-
-  try {
-    const child = spawnListenBroker(cwd, { ...process.env, RELAY_API_KEY: apiKey }, port);
-    const stderr = collectStderr(child);
-
-    // Wait for PID file
-    const pid = await waitForPidFile(cwd);
-    assert.equal(parseInt(pid, 10), child.pid, 'Listen broker PID file should match process PID');
-
-    // Wait for listen mode to be fully ready (HTTP API bound)
-    await waitForListenReady(stderr, child);
-
-    // Send SIGTERM
-    child.kill('SIGTERM');
-    const { code, signal } = await waitForExit(child);
-
-    const exitedCleanly = code === 0 || signal === 'SIGTERM';
-    assert.ok(exitedCleanly, `Listen broker should exit on SIGTERM, got code=${code} signal=${signal}`);
-
-    // PID file should be cleaned up
-    await new Promise((r) => setTimeout(r, 500));
-    assert.ok(!fs.existsSync(pidPath), 'Listen broker should remove PID file after SIGTERM');
-  } finally {
-    cleanupDir(cwd);
-  }
-});
+// ── Init --api-port mode tests ───────────────────────────────────────────
 
 test(
-  'lockfile: listen mode — second instance in same directory is rejected',
+  'lockfile: init --api-port — PID file created and cleaned up on SIGTERM',
+  { timeout: 45_000 },
+  async (t) => {
+    if (skipIfMissing(t)) return;
+    const apiKey = await ensureApiKey();
+    const cwd = makeTempDir();
+    const pidPath = path.join(cwd, '.agent-relay', 'broker.pid');
+    const port = randomPort();
+
+    try {
+      const child = spawnInitApiBroker(cwd, { ...process.env, RELAY_API_KEY: apiKey }, port);
+      const stderr = collectStderr(child);
+
+      // Wait for PID file
+      const pid = await waitForPidFile(cwd);
+      assert.equal(parseInt(pid, 10), child.pid, 'Init broker PID file should match process PID');
+
+      // Wait for HTTP API to be fully ready
+      await waitForInitApiReady(stderr, child);
+
+      // Send SIGTERM
+      child.kill('SIGTERM');
+      const { code, signal } = await waitForExit(child);
+
+      const exitedCleanly = code === 0 || signal === 'SIGTERM';
+      assert.ok(exitedCleanly, `Init broker should exit on SIGTERM, got code=${code} signal=${signal}`);
+
+      // PID file should be cleaned up
+      await new Promise((r) => setTimeout(r, 500));
+      assert.ok(!fs.existsSync(pidPath), 'Init broker should remove PID file after SIGTERM');
+    } finally {
+      cleanupDir(cwd);
+    }
+  }
+);
+
+test(
+  'lockfile: init --api-port — second instance in same directory is rejected',
   { timeout: 30_000 },
   async (t) => {
     if (skipIfMissing(t)) return;
@@ -662,21 +665,21 @@ test(
 
     let first: ChildProcess | undefined;
     try {
-      first = spawnListenBroker(cwd, { ...process.env, RELAY_API_KEY: apiKey }, port1);
+      first = spawnInitApiBroker(cwd, { ...process.env, RELAY_API_KEY: apiKey }, port1);
       const firstStderr = collectStderr(first);
       await waitForPidFile(cwd);
-      await waitForListenReady(firstStderr, first);
+      await waitForInitApiReady(firstStderr, first);
 
-      // Try starting second listen broker in same directory (different port)
-      const second = spawnListenBroker(cwd, { ...process.env, RELAY_API_KEY: apiKey }, port2);
+      // Try starting second init broker in same directory (different port)
+      const second = spawnInitApiBroker(cwd, { ...process.env, RELAY_API_KEY: apiKey }, port2);
       const secondStderr = collectStderr(second);
       const { code } = await waitForExit(second);
 
-      assert.ok(code !== 0, `Second listen broker should fail, got code ${code}`);
+      assert.ok(code !== 0, `Second init broker should fail, got code ${code}`);
       const allStderr = secondStderr.lines.join('\n');
       assert.ok(
         allStderr.includes('already running'),
-        `Second listen broker should report "already running". Stderr:\n${allStderr}`
+        `Second init broker should report "already running". Stderr:\n${allStderr}`
       );
     } finally {
       if (first && !first.killed) {
@@ -688,7 +691,7 @@ test(
   }
 );
 
-test('lockfile: listen mode — stale lock recovery after SIGKILL', { timeout: 45_000 }, async (t) => {
+test('lockfile: init --api-port — stale lock recovery after SIGKILL', { timeout: 45_000 }, async (t) => {
   if (skipIfMissing(t)) return;
   const apiKey = await ensureApiKey();
   const cwd = makeTempDir();
@@ -697,28 +700,28 @@ test('lockfile: listen mode — stale lock recovery after SIGKILL', { timeout: 4
   const port2 = port1 + 1;
 
   try {
-    // Start and SIGKILL a listen broker
-    const first = spawnListenBroker(cwd, { ...process.env, RELAY_API_KEY: apiKey }, port1);
+    // Start and SIGKILL an init broker
+    const first = spawnInitApiBroker(cwd, { ...process.env, RELAY_API_KEY: apiKey }, port1);
     const oldPid = await waitForPidFile(cwd);
     first.kill('SIGKILL');
     await waitForExit(first).catch(() => {});
 
     assert.ok(fs.existsSync(pidPath), 'PID file should persist after SIGKILL');
 
-    // New listen broker should recover the stale lock
-    const second = spawnListenBroker(cwd, { ...process.env, RELAY_API_KEY: apiKey }, port2);
+    // New init broker should recover the stale lock
+    const second = spawnInitApiBroker(cwd, { ...process.env, RELAY_API_KEY: apiKey }, port2);
     const secondStderr = collectStderr(second);
     const newPid = await waitForNewPid(cwd, oldPid);
-    assert.equal(parseInt(newPid, 10), second.pid, 'Recovered listen broker should write its PID');
+    assert.equal(parseInt(newPid, 10), second.pid, 'Recovered init broker should write its PID');
 
     // Wait for it to be fully ready
-    await waitForListenReady(secondStderr, second);
+    await waitForInitApiReady(secondStderr, second);
 
     // Graceful shutdown — PID should be cleaned up
     second.kill('SIGTERM');
     await waitForExit(second);
     await new Promise((r) => setTimeout(r, 500));
-    assert.ok(!fs.existsSync(pidPath), 'Recovered listen broker should clean up PID on exit');
+    assert.ok(!fs.existsSync(pidPath), 'Recovered init broker should clean up PID on exit');
   } finally {
     cleanupDir(cwd);
   }

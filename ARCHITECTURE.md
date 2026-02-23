@@ -148,10 +148,9 @@ Web UI for monitoring. Shows connected agents, message flow, real-time updates.
 
 The broker is a Rust binary (`agent-relay-broker`) that serves as the core runtime. It has several subcommands:
 
-- **`init`** — Starts as a broker hub, connecting to Relaycast and managing spawned agents via stdio protocol
+- **`init`** — Starts as a broker hub, connecting to Relaycast and managing spawned agents via stdio protocol. Supports `--api-port <port>` to start an HTTP API for dashboard proxy (spawn/release/list endpoints).
 - **`pty`** — Wraps a single CLI in a PTY session with message injection
 - **`headless`** — Runs a provider (Claude, etc.) in headless/API mode
-- **`listen`** — Connects to Relaycast WebSocket for monitoring without wrapping a CLI
 - **`wrap`** — Internal command used by the SDK to wrap a CLI in a PTY with passthrough
 
 #### PTY Session Management
@@ -651,7 +650,7 @@ the target use case of multi-agent coordination across any CLI tool.
 ```
 agent-relay/
 ├── src/
-│   ├── main.rs                  # Broker entry point (init, pty, listen, wrap)
+│   ├── main.rs                  # Broker entry point (init, pty, headless, wrap)
 │   ├── lib.rs                   # Library exports (auth, dedup, protocol, etc.)
 │   ├── spawner.rs               # Agent spawning and process management
 │   ├── config.rs                # Configuration handling

@@ -12,7 +12,7 @@ mod wrap;
 
 use helpers::{
     detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
-    floor_char_boundary, format_injection, is_auto_suggestion, is_bypass_selection_menu,
+    format_injection, is_auto_suggestion, is_bypass_selection_menu,
     is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
 
@@ -41,7 +41,7 @@ use relay_broker::{
     types::{BrokerCommandEvent, BrokerCommandPayload, SenderKind},
 };
 
-use spawner::{terminate_child, Spawner};
+use spawner::{spawn_env_vars, terminate_child, Spawner};
 
 const DEFAULT_DELIVERY_RETRY_MS: u64 = 1_000;
 const MAX_DELIVERY_RETRIES: u32 = 10;
@@ -60,9 +60,6 @@ enum Commands {
     Init(InitCommand),
     Pty(PtyCommand),
     Headless(HeadlessCommand),
-    /// Listen mode: connect to Relaycast WS and log events without wrapping a CLI.
-    /// Useful for monitoring or running as a spawn-only hub.
-    Listen(ListenCommand),
     /// Internal: wraps a CLI in a PTY with interactive passthrough.
     /// Used by the SDK — not for direct user invocation.
     /// Usage: agent-relay-broker wrap codex -- --full-auto
@@ -83,6 +80,10 @@ struct InitCommand {
 
     #[arg(long, default_value = "general")]
     channels: String,
+
+    /// Optional HTTP API port for dashboard proxy (0 = disabled)
+    #[arg(long, default_value = "0")]
+    api_port: u16,
 }
 
 #[derive(Debug, clap::Args, Clone)]
@@ -115,24 +116,6 @@ struct HeadlessCommand {
     agent_name: Option<String>,
 }
 
-#[derive(Debug, clap::Args, Clone)]
-struct ListenCommand {
-    /// Agent name for this listener (default: from RELAY_AGENT_NAME or "listener")
-    #[arg(long)]
-    agent_name: Option<String>,
-
-    /// Comma-separated channels to subscribe to (default: from RELAY_CHANNELS or "general")
-    #[arg(long)]
-    channels: Option<String>,
-
-    /// Subscribe to all channels in the workspace (fetches from Relaycast API at startup)
-    #[arg(long, default_value = "false")]
-    all: bool,
-
-    /// Port for the HTTP API (default: 3889)
-    #[arg(long, default_value = "3889")]
-    port: u16,
-}
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum HeadlessProvider {
@@ -172,7 +155,7 @@ struct RuntimePaths {
     _lock: std::fs::File,
 }
 
-/// Shared Relaycast connection state used by run_init, run_listen, and run_wrap.
+/// Shared Relaycast connection state used by run_init and run_wrap.
 struct RelaySession {
     http_base: String,
     relay_workspace_key: String,
@@ -184,20 +167,6 @@ struct RelaySession {
 }
 
 /// Build the standard env-var array passed to every spawned child agent.
-fn spawn_env_vars<'a>(
-    name: &'a str,
-    api_key: &'a str,
-    base_url: &'a str,
-    channels: &'a str,
-) -> [(&'a str, &'a str); 5] {
-    [
-        ("RELAY_AGENT_NAME", name),
-        ("RELAY_API_KEY", api_key),
-        ("RELAY_BASE_URL", base_url),
-        ("RELAY_CHANNELS", channels),
-        ("RELAY_STRICT_AGENT_NAME", "1"),
-    ]
-}
 
 fn normalize_initial_task(task: Option<String>) -> Option<String> {
     task.and_then(|value| {
@@ -950,7 +919,6 @@ async fn main() -> Result<()> {
         Commands::Init(_) => "init",
         Commands::Pty(_) => "pty",
         Commands::Headless(_) => "headless",
-        Commands::Listen(_) => "listen",
         Commands::Wrap { .. } => "wrap",
     };
     telemetry.track(TelemetryEvent::CliCommandRun {
@@ -961,7 +929,6 @@ async fn main() -> Result<()> {
         Commands::Init(cmd) => run_init(cmd, telemetry).await,
         Commands::Pty(cmd) => pty_worker::run_pty_worker(cmd).await,
         Commands::Headless(cmd) => run_headless_worker(cmd).await,
-        Commands::Listen(cmd) => run_listen(cmd, telemetry).await,
         Commands::Wrap { cli, args } => wrap::run_wrap(cli, args, false, telemetry).await,
     }
 }
@@ -1065,6 +1032,30 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
     let mut shutdown = false;
 
+    // Optional HTTP API (for dashboard proxy)
+    let (api_tx, mut api_rx) = if cmd.api_port > 0 {
+        let (tx, rx) = mpsc::channel::<ListenApiRequest>(32);
+        let router = listen_api_router(tx.clone());
+        let listener =
+            tokio::net::TcpListener::bind(format!("127.0.0.1:{}", cmd.api_port))
+                .await
+                .with_context(|| format!("failed to bind API on port {}", cmd.api_port))?;
+        eprintln!(
+            "[agent-relay] API listening on http://127.0.0.1:{}",
+            cmd.api_port
+        );
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, router).await {
+                tracing::error!(error = %e, "HTTP API server error");
+            }
+        });
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    // Suppress unused-variable warning when api_tx is created but only used for its lifetime
+    let _ = &api_tx;
+
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
     while !shutdown {
@@ -1076,6 +1067,94 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             _ = sigterm.recv() => {
                 tracing::info!("received SIGTERM, shutting down");
                 shutdown = true;
+            }
+
+            // HTTP API requests (when --api-port is active)
+            result = async { api_rx.as_mut().unwrap().recv().await }, if api_rx.is_some() => {
+                if let Some(req) = result {
+                    match req {
+                        ListenApiRequest::Spawn { name, cli, args, reply } => {
+                            let spec = AgentSpec {
+                                name: name.clone(),
+                                runtime: AgentRuntime::Pty,
+                                cli: Some(cli.clone()),
+                                model: None,
+                                cwd: None,
+                                team: None,
+                                shadow_of: None,
+                                shadow_mode: None,
+                                args,
+                                channels: vec!["general".to_string()],
+                                restart_policy: None,
+                            };
+                            match workers.spawn(spec, Some("Dashboard".to_string()), None).await {
+                                Ok(()) => {
+                                    agent_spawn_count += 1;
+                                    telemetry.track(TelemetryEvent::AgentSpawn {
+                                        cli: cli.clone(),
+                                        runtime: "pty".to_string(),
+                                    });
+                                    let pid = workers.worker_pid(&name).unwrap_or(0);
+                                    state.agents.insert(
+                                        name.clone(),
+                                        PersistedAgent {
+                                            runtime: AgentRuntime::Pty,
+                                            parent: Some("Dashboard".to_string()),
+                                            channels: vec!["general".to_string()],
+                                            pid: workers.worker_pid(&name),
+                                            started_at: Some(
+                                                std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap_or_default()
+                                                    .as_secs(),
+                                            ),
+                                            spec: None,
+                                            restart_policy: None,
+                                            initial_task: None,
+                                        },
+                                    );
+                                    let _ = state.save(&paths.state);
+                                    let _ = send_event(
+                                        &sdk_out_tx,
+                                        json!({"kind":"agent_spawned","name":&name,"cli":&cli,"pid":pid,"source":"http_api"}),
+                                    ).await;
+                                    let _ = reply.send(Ok(json!({ "success": true, "name": name, "pid": pid })));
+                                }
+                                Err(e) => {
+                                    eprintln!("[agent-relay] HTTP API: failed to spawn '{}': {}", name, e);
+                                    let _ = reply.send(Err(e.to_string()));
+                                }
+                            }
+                        }
+                        ListenApiRequest::Release { name, reply } => {
+                            match workers.release(&name).await {
+                                Ok(()) => {
+                                    let dropped = drop_pending_for_worker(&mut pending_deliveries, &name);
+                                    if dropped > 0 {
+                                        let _ = send_event(
+                                            &sdk_out_tx,
+                                            json!({"kind":"delivery_dropped","name":&name,"count":dropped,"reason":"agent_released"}),
+                                        ).await;
+                                    }
+                                    state.agents.remove(&name);
+                                    let _ = state.save(&paths.state);
+                                    let _ = send_event(
+                                        &sdk_out_tx,
+                                        json!({"kind":"agent_exited","name":&name,"code":0,"signal":null}),
+                                    ).await;
+                                    let _ = reply.send(Ok(json!({ "success": true, "name": name })));
+                                }
+                                Err(e) => {
+                                    eprintln!("[agent-relay] HTTP API: failed to release '{}': {}", name, e);
+                                    let _ = reply.send(Err(e.to_string()));
+                                }
+                            }
+                        }
+                        ListenApiRequest::List { reply } => {
+                            let _ = reply.send(Ok(json!({ "agents": workers.list() })));
+                        }
+                    }
+                }
             }
 
             line = sdk_lines.next_line() => {
@@ -1670,342 +1749,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     Ok(())
 }
 
-/// Listen mode: connect to Relaycast WS and log events without wrapping a CLI.
-/// Handles spawn/release commands from both WS events and an HTTP API.
-/// The HTTP API (default port 3889) accepts spawn/release/list requests.
-/// Usage: `agent-relay-broker listen --agent-name hub --channels general,ops --port 3889`
-async fn run_listen(cmd: ListenCommand, telemetry: TelemetryClient) -> Result<()> {
-    let broker_start = Instant::now();
-    let mut agent_spawn_count: u32 = 0;
-    telemetry.track(TelemetryEvent::BrokerStart);
-    let requested_name = cmd
-        .agent_name
-        .or_else(|| std::env::var("RELAY_AGENT_NAME").ok())
-        .unwrap_or_else(|| "listener".to_string());
-    let api_port = cmd.port;
-
-    // --- Auth & Relaycast connection ---
-    let runtime_cwd = std::env::current_dir()?;
-    let paths = ensure_runtime_paths(&runtime_cwd)?;
-
-    // Resolve channel list: --all fetches from Relaycast API, otherwise use --channels or default
-    let channel_list = if cmd.all {
-        let fetched = fetch_all_channels(&paths).await.unwrap_or_default();
-        if fetched.is_empty() {
-            eprintln!("[agent-relay] --all: no channels found, falling back to 'general'");
-            vec!["general".to_string()]
-        } else {
-            eprintln!(
-                "[agent-relay] --all: subscribing to {} channels",
-                fetched.len()
-            );
-            fetched
-        }
-    } else {
-        let channels = cmd
-            .channels
-            .or_else(|| std::env::var("RELAY_CHANNELS").ok())
-            .unwrap_or_else(|| "general".to_string());
-        channels_from_csv(&channels)
-    };
-
-    // Build CSV string for child agent env vars
-    let channels = channel_list.join(",");
-
-    eprintln!(
-        "[agent-relay] listen mode (agent: {}, channels: {:?}, api port: {})",
-        requested_name, channel_list, api_port
-    );
-
-    let relay = connect_relay(RelaySessionOptions {
-        paths: &paths,
-        requested_name: &requested_name,
-        channels: channel_list,
-        strict_name: false,
-        read_mcp_identity: false,
-        ensure_mcp_config: false,
-        runtime_cwd: &runtime_cwd,
-    })
-    .await?;
-
-    let RelaySession {
-        http_base,
-        relay_workspace_key,
-        self_agent_id,
-        self_names,
-        self_agent_ids,
-        mut ws_inbound_rx,
-        ws_control_tx,
-    } = relay;
-
-    // Values for child agent env vars
-    let child_api_key = relay_workspace_key;
-    let child_base_url = http_base;
-
-    // Spawner for child agents
-    let mut spawner = Spawner::new();
-
-    // --- HTTP API ---
-    // Handlers send requests through a channel; the main loop processes them
-    // since Spawner isn't Send/Sync (owns Child processes).
-    let (api_tx, mut api_rx) = mpsc::channel::<ListenApiRequest>(32);
-
-    let api_router = listen_api_router(api_tx);
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{api_port}"))
-        .await
-        .with_context(|| format!("failed to bind API on port {api_port}"))?;
-    eprintln!("[agent-relay] API listening on http://127.0.0.1:{api_port}");
-    tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, api_router).await {
-            tracing::error!(error = %e, "HTTP API server error");
-        }
-    });
-
-    eprintln!("[agent-relay] listening — press Ctrl-C to stop");
-
-    let mut dedup = DedupCache::new(Duration::from_secs(300), 8192);
-
-    let mut reap_tick = tokio::time::interval(Duration::from_secs(5));
-    reap_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
-    let mut running = true;
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-
-    while running {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                running = false;
-            }
-
-            _ = sigterm.recv() => {
-                tracing::info!("received SIGTERM, shutting down");
-                running = false;
-            }
-
-            // HTTP API requests
-            Some(req) = api_rx.recv() => {
-                match req {
-                    ListenApiRequest::Spawn { name, cli, args, reply } => {
-                        let env_vars = spawn_env_vars(&name, &child_api_key, &child_base_url, &channels);
-                        match spawner.spawn_wrap(&name, &cli, &args, &env_vars, Some("Dashboard")).await {
-                            Ok(pid) => {
-                                agent_spawn_count += 1;
-                                telemetry.track(TelemetryEvent::AgentSpawn {
-                                    cli: cli.clone(),
-                                    runtime: "pty".to_string(),
-                                });
-                                eprintln!("[agent-relay] spawned child '{}' (pid {})", name, pid);
-                                let _ = reply.send(Ok(json!({ "success": true, "name": name, "pid": pid })));
-                            }
-                            Err(error) => {
-                                eprintln!("[agent-relay] failed to spawn '{}': {}", name, error);
-                                let _ = reply.send(Err(error.to_string()));
-                            }
-                        }
-                    }
-                    ListenApiRequest::Release { name, reply } => {
-                        match spawner.release(&name, Duration::from_secs(2)).await {
-                            Ok(()) => {
-                                telemetry.track(TelemetryEvent::AgentRelease {
-                                    cli: String::new(),
-                                    release_reason: "api_request".to_string(),
-                                    lifetime_seconds: 0,
-                                });
-                                eprintln!("[agent-relay] released child '{}'", name);
-                                let _ = reply.send(Ok(json!({ "success": true, "name": name })));
-                            }
-                            Err(error) => {
-                                eprintln!("[agent-relay] failed to release '{}': {}", name, error);
-                                let _ = reply.send(Err(error.to_string()));
-                            }
-                        }
-                    }
-                    ListenApiRequest::List { reply } => {
-                        let agents = spawner.list_children();
-                        let _ = reply.send(Ok(json!({ "success": true, "agents": agents })));
-                    }
-                }
-            }
-
-            ws_msg = ws_inbound_rx.recv() => {
-                match ws_msg {
-                    Some(ws_msg) => {
-                        // Handle spawn/release broker commands from WS
-                        if let Some(cmd_event) = map_ws_broker_command(&ws_msg) {
-                            if !command_targets_self(&cmd_event, &self_agent_id) {
-                                tracing::debug!(
-                                    command = %cmd_event.command,
-                                    handler_agent_id = ?cmd_event.handler_agent_id,
-                                    self_agent_id = %self_agent_id,
-                                    "ignoring command event for a different handler"
-                                );
-                                continue;
-                            }
-                            match cmd_event.payload {
-                                BrokerCommandPayload::Spawn(ref params) => {
-                                    if params.name.is_empty() || params.cli.is_empty() {
-                                        tracing::error!("spawn command missing name or cli");
-                                        continue;
-                                    }
-                                    let env_vars = spawn_env_vars(&params.name, &child_api_key, &child_base_url, &channels);
-                                    match spawner.spawn_wrap(
-                                        &params.name, &params.cli, &params.args, &env_vars, Some(&cmd_event.invoked_by),
-                                    ).await {
-                                        Ok(pid) => {
-                                            agent_spawn_count += 1;
-                                            telemetry.track(TelemetryEvent::AgentSpawn {
-                                                cli: params.cli.clone(),
-                                                runtime: "pty".to_string(),
-                                            });
-                                            tracing::info!(child = %params.name, cli = %params.cli, pid = pid, invoked_by = %cmd_event.invoked_by, "spawned child agent");
-                                            eprintln!("[agent-relay] spawned child '{}' (pid {})", params.name, pid);
-                                        }
-                                        Err(error) => {
-                                            tracing::error!(child = %params.name, error = %error, "failed to spawn child agent");
-                                            eprintln!("[agent-relay] failed to spawn '{}': {}", params.name, error);
-                                        }
-                                    }
-                                }
-                                BrokerCommandPayload::Release(ref params) => {
-                                    let sender_is_human = is_human_sender(&cmd_event.invoked_by, SenderKind::Unknown);
-                                    let owner = spawner.owner_of(&params.name);
-                                    if can_release_child(owner, &cmd_event.invoked_by, sender_is_human) {
-                                        match spawner.release(&params.name, Duration::from_secs(2)).await {
-                                            Ok(()) => {
-                                                telemetry.track(TelemetryEvent::AgentRelease {
-                                                    cli: String::new(),
-                                                    release_reason: "ws_command".to_string(),
-                                                    lifetime_seconds: 0,
-                                                });
-                                                tracing::info!(child = %params.name, released_by = %cmd_event.invoked_by, "released child agent");
-                                                eprintln!("[agent-relay] released child '{}'", params.name);
-                                            }
-                                            Err(error) => {
-                                                tracing::error!(child = %params.name, error = %error, "failed to release child agent");
-                                                eprintln!("[agent-relay] failed to release '{}': {}", params.name, error);
-                                            }
-                                        }
-                                    } else {
-                                        tracing::warn!(child = %params.name, sender = %cmd_event.invoked_by, "release denied: sender is not owner or human");
-                                    }
-                                }
-                            }
-                            continue;
-                        }
-
-                        // Handle agent.spawn_requested / agent.release_requested from relaycast REST API
-                        if let Some(rc_event) = parse_relaycast_agent_event(&ws_msg) {
-                            match rc_event {
-                                RelaycastAgentEvent::Spawn { ref name, ref cli } => {
-                                    let env_vars = spawn_env_vars(name, &child_api_key, &child_base_url, &channels);
-                                    match spawner.spawn_wrap(
-                                        name, cli, &[], &env_vars, Some("relaycast"),
-                                    ).await {
-                                        Ok(pid) => {
-                                            agent_spawn_count += 1;
-                                            telemetry.track(TelemetryEvent::AgentSpawn {
-                                                cli: cli.clone(),
-                                                runtime: "pty".to_string(),
-                                            });
-                                            tracing::info!(child = %name, cli = %cli, pid = pid, "spawned child agent via relaycast");
-                                            eprintln!("[agent-relay] spawned child '{}' (pid {}) via relaycast", name, pid);
-                                        }
-                                        Err(error) => {
-                                            tracing::error!(child = %name, error = %error, "failed to spawn child agent via relaycast");
-                                            eprintln!("[agent-relay] failed to spawn '{}': {}", name, error);
-                                        }
-                                    }
-                                }
-                                RelaycastAgentEvent::Release { ref name } => {
-                                    match spawner.release(name, Duration::from_secs(2)).await {
-                                        Ok(()) => {
-                                            telemetry.track(TelemetryEvent::AgentRelease {
-                                                cli: String::new(),
-                                                release_reason: "relaycast_release".to_string(),
-                                                lifetime_seconds: 0,
-                                            });
-                                            tracing::info!(child = %name, "released child agent via relaycast");
-                                            eprintln!("[agent-relay] released child '{}' via relaycast", name);
-                                        }
-                                        Err(error) => {
-                                            tracing::error!(child = %name, error = %error, "failed to release child agent via relaycast");
-                                            eprintln!("[agent-relay] failed to release '{}': {}", name, error);
-                                        }
-                                    }
-                                }
-                            }
-                            continue;
-                        }
-
-                        // Log regular relay events
-                        if let Some(mapped) = map_ws_event(&ws_msg) {
-                            if !dedup.insert_if_new(&mapped.event_id, Instant::now()) {
-                                continue;
-                            }
-                            if self_names.contains(&mapped.from)
-                                || mapped.sender_agent_id.as_ref().is_some_and(|id| self_agent_ids.contains(id))
-                            {
-                                tracing::debug!(from = %mapped.from, sender_agent_id = ?mapped.sender_agent_id, "skipping self-echo in listen mode");
-                                continue;
-                            }
-                            eprintln!(
-                                "[relay] {} → {}: {}",
-                                mapped.from,
-                                mapped.target,
-                                if mapped.text.len() > 120 {
-                                    let boundary = floor_char_boundary(&mapped.text, 120);
-                                    format!("{}…", &mapped.text[..boundary])
-                                } else {
-                                    mapped.text.clone()
-                                }
-                            );
-                        }
-                    }
-                    None => {
-                        running = false;
-                    }
-                }
-            }
-
-            _ = reap_tick.tick() => {
-                if let Ok(exited) = spawner.reap_exited().await {
-                    for name in exited {
-                        telemetry.track(TelemetryEvent::AgentCrash {
-                            cli: String::new(),
-                            exit_code: None,
-                            lifetime_seconds: 0,
-                        });
-                        tracing::info!(child = %name, "child agent exited");
-                        eprintln!("[agent-relay] child '{}' exited", name);
-                    }
-                }
-            }
-        }
-    }
-
-    telemetry.track(TelemetryEvent::BrokerStop {
-        uptime_seconds: broker_start.elapsed().as_secs(),
-        agent_spawn_count,
-    });
-    telemetry.shutdown();
-
-    // Cleanup
-    spawner.shutdown_all(Duration::from_secs(2)).await;
-    if let Err(e) = ws_control_tx.send(WsControl::Shutdown).await {
-        tracing::warn!(error = %e, "failed to send WS shutdown in listen cleanup");
-    }
-
-    // Clean up PID file on graceful shutdown
-    let _ = std::fs::remove_file(&paths.pid);
-
-    // Ensure lock is held until after all cleanup is complete
-    drop(paths);
-
-    eprintln!("[agent-relay] listen session ended");
-    Ok(())
-}
-
-// --- Listen-mode HTTP API types and handlers ---
+// --- HTTP API types and handlers (used by init --api-port) ---
 
 enum ListenApiRequest {
     Spawn {
@@ -3583,11 +3327,12 @@ mod tests {
     use super::{
         channels_from_csv, continuity_dir, delivery_retry_interval, derive_ws_base_url_from_http,
         detect_bypass_permissions_prompt, drop_pending_for_worker, extract_mcp_message_ids,
-        floor_char_boundary, format_injection, is_auto_suggestion, is_bypass_selection_menu,
+        format_injection, is_auto_suggestion, is_bypass_selection_menu,
         is_in_editor_mode, normalize_channel, normalize_initial_task, normalize_sender,
         parse_relaycast_agent_event, strip_ansi, PendingDelivery, RelaycastAgentEvent,
         TerminalQueryParser,
     };
+    use crate::helpers::floor_char_boundary;
 
     #[test]
     fn parses_channels() {

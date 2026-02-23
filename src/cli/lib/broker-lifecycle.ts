@@ -20,6 +20,32 @@ function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function isBrokerAlreadyRunningError(message: string): boolean {
+  return /another broker instance is already running in this directory/i.test(message);
+}
+
+function extractBrokerLockDir(message: string): string | null {
+  const match = message.match(/another broker instance is already running in this directory \(([^)]+)\)/i);
+  return match?.[1] ?? null;
+}
+
+function reportAlreadyRunningError(message: string, brokerPidPath: string, deps: CoreDependencies): void {
+  const pid = readPidFile(brokerPidPath, deps);
+  if (pid !== null && isProcessRunning(pid, deps)) {
+    deps.error(`Broker already running for this project (pid: ${pid}).`);
+  } else {
+    const lockDir = extractBrokerLockDir(message);
+    if (lockDir) {
+      deps.error(`Broker already running for this project (lock: ${lockDir}).`);
+    } else {
+      deps.error('Broker already running for this project.');
+    }
+  }
+
+  deps.error('Run `agent-relay status` to inspect it, then `agent-relay down` to stop it.');
+  deps.error('If it still fails, run `agent-relay down --force` to clear stale runtime files.');
+}
+
 function safeUnlink(filePath: string, deps: CoreDependencies): void {
   if (!deps.fs.existsSync(filePath)) return;
   try {
@@ -29,12 +55,33 @@ function safeUnlink(filePath: string, deps: CoreDependencies): void {
   }
 }
 
+function readPidFile(pidPath: string, deps: CoreDependencies): number | null {
+  if (!deps.fs.existsSync(pidPath)) {
+    return null;
+  }
+
+  const raw = deps.fs.readFileSync(pidPath, 'utf-8').trim();
+  const pid = Number.parseInt(raw, 10);
+  if (Number.isNaN(pid) || pid <= 0) {
+    return null;
+  }
+
+  return pid;
+}
+
 function isProcessRunning(pid: number, deps: CoreDependencies): boolean {
   try {
     deps.killProcess(pid, 0);
     return true;
   } catch {
     return false;
+  }
+}
+
+function cleanupBrokerPidIfStopped(brokerPidPath: string, deps: CoreDependencies): void {
+  const pid = readPidFile(brokerPidPath, deps);
+  if (pid === null || !isProcessRunning(pid, deps)) {
+    safeUnlink(brokerPidPath, deps);
   }
 }
 
@@ -97,19 +144,17 @@ function resolveDashboardStaticDir(dashboardBinary: string | null, deps: CoreDep
   return null;
 }
 
-function resolveDashboardRelayUrl(dashboardBinary: string | null, deps: CoreDependencies): string | null {
+function resolveDashboardRelayUrl(deps: CoreDependencies): string {
   const explicitRelayUrl = deps.env.RELAY_DASHBOARD_RELAY_URL;
   if (explicitRelayUrl && explicitRelayUrl.trim()) {
     return explicitRelayUrl.trim();
   }
 
-  // Local dashboard entrypoints can serve standalone data directly via Relaycast.
-  // Avoid forcing proxy mode unless explicitly requested.
-  if (dashboardBinary && (dashboardBinary.endsWith('.js') || dashboardBinary.endsWith('.ts'))) {
-    return null;
-  }
-
   return 'http://localhost:3889';
+}
+
+function getDashboardSpawnEnv(deps: CoreDependencies): NodeJS.ProcessEnv {
+  return { ...deps.env };
 }
 
 function getDashboardSpawnArgs(
@@ -119,10 +164,7 @@ function getDashboardSpawnArgs(
   deps: CoreDependencies
 ): string[] {
   const args = ['--port', String(port), '--data-dir', paths.dataDir];
-  const relayUrl = resolveDashboardRelayUrl(dashboardBinary, deps);
-  if (relayUrl) {
-    args.push('--relay-url', relayUrl);
-  }
+  args.push('--relay-url', resolveDashboardRelayUrl(deps));
   const staticDir = resolveDashboardStaticDir(dashboardBinary, deps);
   if (staticDir) {
     args.push('--static-dir', staticDir);
@@ -136,7 +178,7 @@ function startDashboard(paths: CoreProjectPaths, port: number, deps: CoreDepende
 
   const spawnOpts = {
     stdio: ['ignore', 'pipe', 'pipe'] as unknown,
-    env: deps.env,
+    env: getDashboardSpawnEnv(deps),
   };
 
   let child: SpawnedProcess;
@@ -219,7 +261,7 @@ async function shutdownUpResources(
   }
 
   await relay.shutdown().catch(() => undefined);
-  safeUnlink(brokerPidPath, deps);
+  cleanupBrokerPidIfStopped(brokerPidPath, deps);
 }
 
 // eslint-disable-next-line complexity
@@ -239,13 +281,24 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   }
 
   const paths = deps.getProjectPaths();
-  const relay = deps.createRelay(paths.projectRoot);
   const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
   const wantsDashboard = options.dashboard !== false;
   const dashboardPort = Number.parseInt(options.port ?? '3888', 10) || 3888;
 
   deps.fs.mkdirSync(paths.dataDir, { recursive: true });
-  deps.fs.writeFileSync(brokerPidPath, String(deps.pid), 'utf-8');
+  const existingPid = readPidFile(brokerPidPath, deps);
+  if (existingPid !== null) {
+    if (isProcessRunning(existingPid, deps)) {
+      deps.error(`Broker already running for this project (pid: ${existingPid}).`);
+      deps.error('Run `agent-relay status` to inspect it, then `agent-relay down` to stop it.');
+      deps.exit(1);
+      return;
+    }
+    safeUnlink(brokerPidPath, deps);
+  }
+
+  const apiPort = wantsDashboard ? 3889 : 0;
+  const relay = deps.createRelay(paths.projectRoot, apiPort);
 
   let dashboardProcess: SpawnedProcess | undefined;
   let shuttingDown = false;
@@ -319,10 +372,13 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   } catch (err: unknown) {
     await shutdownOnce();
     const withCode = err as { code?: string };
+    const message = toErrorMessage(err);
     if (withCode.code === 'EADDRINUSE') {
       deps.error(`Dashboard port ${dashboardPort} is already in use.`);
+    } else if (isBrokerAlreadyRunningError(message)) {
+      reportAlreadyRunningError(message, brokerPidPath, deps);
     } else {
-      deps.error(`Failed to start broker: ${toErrorMessage(err)}`);
+      deps.error(`Failed to start broker: ${message}`);
     }
     deps.exit(1);
   }
