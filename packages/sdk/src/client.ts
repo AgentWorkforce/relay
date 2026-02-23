@@ -115,6 +115,7 @@ export class AgentRelayClient {
   private child?: ChildProcessWithoutNullStreams;
   private stdoutRl?: ReadlineInterface;
   private stderrRl?: ReadlineInterface;
+  private lastStderrLine?: string;
   private requestSeq = 0;
   private pending = new Map<string, PendingRequest>();
   private startingPromise?: Promise<void>;
@@ -358,14 +359,15 @@ export class AgentRelayClient {
     if (isExplicitPath(this.options.binaryPath) && !fs.existsSync(resolvedBinary)) {
       throw new AgentRelayProcessError(`broker binary not found: ${this.options.binaryPath}`);
     }
+    this.lastStderrLine = undefined;
 
     const args = [
-      ...this.options.binaryArgs,
       'init',
       '--name',
       this.options.brokerName,
       '--channels',
       this.options.channels.join(','),
+      ...this.options.binaryArgs,
     ];
 
     // Ensure the SDK bin directory (containing agent-relay-broker + relay_send) is on
@@ -394,6 +396,10 @@ export class AgentRelayClient {
     });
 
     this.stderrRl.on('line', (line) => {
+      const trimmed = line.trim();
+      if (trimmed) {
+        this.lastStderrLine = trimmed;
+      }
       for (const listener of this.stderrListeners) {
         listener(line);
       }
@@ -401,8 +407,9 @@ export class AgentRelayClient {
 
     this.exitPromise = new Promise<void>((resolve) => {
       child.once('exit', (code, signal) => {
+        const detail = this.lastStderrLine ? `: ${this.lastStderrLine}` : '';
         const error = new AgentRelayProcessError(
-          `broker exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`
+          `broker exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})${detail}`
         );
         this.failAllPending(error);
         this.disposeProcessHandles();
@@ -423,6 +430,7 @@ export class AgentRelayClient {
     this.stderrRl?.close();
     this.stdoutRl = undefined;
     this.stderrRl = undefined;
+    this.lastStderrLine = undefined;
     this.child = undefined;
     this.exitPromise = undefined;
   }
