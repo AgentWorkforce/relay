@@ -12,8 +12,8 @@ mod wrap;
 
 use helpers::{
     detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
-    format_injection, is_auto_suggestion, is_bypass_selection_menu,
-    is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
+    format_injection, is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode,
+    normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
 
 use anyhow::{Context, Result};
@@ -115,7 +115,6 @@ struct HeadlessCommand {
     #[arg(long)]
     agent_name: Option<String>,
 }
-
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum HeadlessProvider {
@@ -1036,10 +1035,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let (api_tx, mut api_rx) = if cmd.api_port > 0 {
         let (tx, rx) = mpsc::channel::<ListenApiRequest>(32);
         let router = listen_api_router(tx.clone());
-        let listener =
-            tokio::net::TcpListener::bind(format!("127.0.0.1:{}", cmd.api_port))
-                .await
-                .with_context(|| format!("failed to bind API on port {}", cmd.api_port))?;
+        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", cmd.api_port))
+            .await
+            .with_context(|| format!("failed to bind API on port {}", cmd.api_port))?;
         eprintln!(
             "[agent-relay] API listening on http://127.0.0.1:{}",
             cmd.api_port
@@ -3327,10 +3325,9 @@ mod tests {
     use super::{
         channels_from_csv, continuity_dir, delivery_retry_interval, derive_ws_base_url_from_http,
         detect_bypass_permissions_prompt, drop_pending_for_worker, extract_mcp_message_ids,
-        format_injection, is_auto_suggestion, is_bypass_selection_menu,
-        is_in_editor_mode, normalize_channel, normalize_initial_task, normalize_sender,
-        parse_relaycast_agent_event, strip_ansi, PendingDelivery, RelaycastAgentEvent,
-        TerminalQueryParser,
+        format_injection, is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode,
+        normalize_channel, normalize_initial_task, normalize_sender, parse_relaycast_agent_event,
+        strip_ansi, PendingDelivery, RelaycastAgentEvent, TerminalQueryParser,
     };
     use crate::helpers::floor_char_boundary;
 
