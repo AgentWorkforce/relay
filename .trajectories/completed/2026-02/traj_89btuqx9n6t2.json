@@ -1,0 +1,49 @@
+{
+  "id": "traj_89btuqx9n6t2",
+  "version": 1,
+  "task": {
+    "title": "Add agent interrupt endpoint"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-24T21:36:39.408Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-02-24T21:36:39.410Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_4r4pnauyc2f9",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-24T21:43:04.157Z",
+      "events": [
+        {
+          "ts": 1771969384157,
+          "type": "decision",
+          "content": "Reintroduced /api/agents/by-name/{name}/interrupt as a 501 stub: Reintroduced /api/agents/by-name/{name}/interrupt as a 501 stub",
+          "raw": {
+            "question": "Reintroduced /api/agents/by-name/{name}/interrupt as a 501 stub",
+            "chosen": "Reintroduced /api/agents/by-name/{name}/interrupt as a 501 stub",
+            "alternatives": [],
+            "reasoning": "Some dashboards expect this endpoint for agent view ESC/interrupt behavior, but the broker HTTP API doesn't implement interrupts yet."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-24T21:43:09.682Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": [],
+  "completedAt": "2026-02-24T21:43:09.682Z",
+  "retrospective": {
+    "summary": "Added /api/agents/by-name/{name}/interrupt stub (501) to broker listen API and covered it with a unit test.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

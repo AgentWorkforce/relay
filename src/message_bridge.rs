@@ -971,6 +971,26 @@ mod tests {
     }
 
     #[test]
+    fn maps_thread_reply_with_channel() {
+        let event = map_ws_event(&json!({
+            "type": "thread.reply",
+            "channel": "general",
+            "parent_id": "msg_parent",
+            "message": {
+                "id": "msg_reply2",
+                "agent_name": "bob",
+                "text": "a channel reply"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(event.kind, InboundKind::ThreadReply);
+        assert_eq!(event.event_id, "msg_reply2");
+        assert_eq!(event.thread_id.as_deref(), Some("msg_parent"));
+        assert_eq!(event.target, "#general");
+    }
+
+    #[test]
     fn maps_group_dm_top_level() {
         let event = map_ws_event(&json!({
             "type": "group_dm.received",

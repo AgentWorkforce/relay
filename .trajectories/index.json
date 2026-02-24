@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-02-24T14:10:12.214Z",
+  "lastUpdated": "2026-02-24T21:54:05.618Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -330,6 +330,27 @@
       "startedAt": "2026-02-24T14:05:24.164Z",
       "completedAt": "2026-02-24T14:10:12.067Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_thtvk8h1rc6h.json"
+    },
+    "traj_89btuqx9n6t2": {
+      "title": "Add agent interrupt endpoint",
+      "status": "completed",
+      "startedAt": "2026-02-24T21:36:39.408Z",
+      "completedAt": "2026-02-24T21:43:09.682Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_89btuqx9n6t2.json"
+    },
+    "traj_16hrnfwlvid4": {
+      "title": "Fix thread messages not delivered to agents and not rendered in dashboard",
+      "status": "completed",
+      "startedAt": "2026-02-24T21:53:33.678Z",
+      "completedAt": "2026-02-24T21:53:49.432Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_16hrnfwlvid4.json"
+    },
+    "traj_tfwdtzbvj76t": {
+      "title": "Fix codex TOML config parsing: RELAY_STRICT_AGENT_NAME must be quoted string",
+      "status": "completed",
+      "startedAt": "2026-02-24T21:53:54.154Z",
+      "completedAt": "2026-02-24T21:54:05.603Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_tfwdtzbvj76t.json"
     }
   }
 }

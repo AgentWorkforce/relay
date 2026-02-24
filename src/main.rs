@@ -47,7 +47,7 @@ use relay_broker::{
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
     snippets::{configure_relaycast_mcp_with_token, ensure_relaycast_mcp_config},
     telemetry::{TelemetryClient, TelemetryEvent},
-    types::{BrokerCommandEvent, BrokerCommandPayload, SenderKind},
+    types::{BrokerCommandEvent, BrokerCommandPayload, InboundKind, SenderKind},
 };
 
 use spawner::{spawn_env_vars, terminate_child, Spawner};
@@ -1018,6 +1018,10 @@ impl WorkerRegistry {
         routing::worker_names_for_direct_target(&workers, target, from)
     }
 
+    fn has_any_worker(&self) -> bool {
+        !self.workers.is_empty()
+    }
+
     fn has_worker_by_name_ignoring_case(&self, target: &str) -> bool {
         let trimmed = target.trim();
         self.workers.iter().any(|(worker_name, _)| {
@@ -1921,6 +1925,15 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         }
                     }
 
+                    // Preserve the raw channel from the WS event for thread replies.
+                    // The mapper may set target = "thread" (synthetic) when the SDK
+                    // struct lacks a channel field; we use the raw value to fix
+                    // display_target so the dashboard can route the message correctly.
+                    let raw_ws_channel = ws_msg
+                        .get("channel")
+                        .and_then(Value::as_str)
+                        .map(String::from);
+
                     if let Some(mapped) = map_ws_event(&ws_msg) {
                         tracing::info!(
                             from = %mapped.from,
@@ -1938,6 +1951,11 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             !workers
                                 .worker_names_for_channel_delivery(&mapped.target, &mapped.from)
                                 .is_empty()
+                        } else if matches!(mapped.kind, InboundKind::ThreadReply) && mapped.target == "thread" {
+                            // Thread replies target "thread" (synthetic), not a specific worker.
+                            // Treat as having a local target when any worker exists so the
+                            // self-echo filter doesn't drop dashboard-originated thread replies.
+                            workers.has_any_worker()
                         } else {
                             workers.has_worker_by_name_ignoring_case(&mapped.target)
                         };
@@ -1960,6 +1978,27 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             let worker_view = workers.routing_workers();
                             routing::resolve_delivery_targets(&mapped, &worker_view)
                         };
+
+                        // For thread replies with synthetic target "thread", override
+                        // display_target with the actual channel so the dashboard can
+                        // route the message to the correct channel/DM view.
+                        if matches!(mapped.kind, InboundKind::ThreadReply)
+                            && delivery_plan.display_target == "thread"
+                        {
+                            if let Some(ref ch) = raw_ws_channel {
+                                let chan_target = if ch.starts_with('#') {
+                                    ch.clone()
+                                } else {
+                                    format!("#{ch}")
+                                };
+                                tracing::info!(
+                                    original_target = "thread",
+                                    resolved_target = %chan_target,
+                                    "overriding thread reply display_target with raw WS channel"
+                                );
+                                delivery_plan.display_target = chan_target;
+                            }
+                        }
 
                         if mapped.target.starts_with('#') {
                             tracing::info!(

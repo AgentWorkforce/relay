@@ -106,6 +106,10 @@ fn listen_api_router_with_auth(
         .route("/api/threads", routing::get(listen_api_threads))
         .route("/api/events/replay", routing::get(listen_api_replay))
         .route("/api/spawned/{name}", routing::delete(listen_api_release))
+        .route(
+            "/api/agents/by-name/{name}/interrupt",
+            routing::post(listen_api_interrupt),
+        )
         .route("/api/send", routing::post(listen_api_send))
         .route("/ws", routing::get(listen_api_ws))
         .with_state(state.clone())
@@ -352,6 +356,19 @@ async fn listen_api_release(
             axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
         ),
     }
+}
+
+async fn listen_api_interrupt(
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    (
+        axum::http::StatusCode::NOT_IMPLEMENTED,
+        axum::Json(json!({
+            "success": false,
+            "error": "Agent interrupt is not yet supported by the broker HTTP API.",
+            "name": name,
+        })),
+    )
 }
 
 async fn listen_api_send(
@@ -906,5 +923,32 @@ mod auth_tests {
             .expect("request should succeed");
 
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn interrupt_route_returns_501_when_auth_valid() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/agents/by-name/worker%20a/interrupt")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = response_json(response).await;
+        assert_eq!(
+            body,
+            json!({
+                "success": false,
+                "error": "Agent interrupt is not yet supported by the broker HTTP API.",
+                "name": "worker a",
+            })
+        );
     }
 }
