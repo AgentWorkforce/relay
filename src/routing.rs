@@ -191,12 +191,16 @@ pub(crate) fn worker_names_for_dm_participants(
         .collect()
 }
 
-pub(crate) fn display_target_for_dashboard(target: &str, self_names: &HashSet<String>) -> String {
+pub(crate) fn display_target_for_dashboard(
+    target: &str,
+    self_names: &HashSet<String>,
+    primary_name: &str,
+) -> String {
     if self_names
         .iter()
         .any(|name| target.eq_ignore_ascii_case(name))
     {
-        "Dashboard".to_string()
+        primary_name.to_string()
     } else {
         target.to_string()
     }
@@ -378,8 +382,8 @@ mod tests {
         self_names.insert("broker-951762d5".to_string());
 
         assert_eq!(
-            display_target_for_dashboard("dashprobe", &self_names),
-            "Dashboard"
+            display_target_for_dashboard("dashprobe", &self_names, "my-project"),
+            "my-project"
         );
     }
 
@@ -389,7 +393,7 @@ mod tests {
         self_names.insert("DashProbe".to_string());
 
         assert_eq!(
-            display_target_for_dashboard("Lead", &self_names),
+            display_target_for_dashboard("Lead", &self_names, "my-project"),
             "Lead".to_string()
         );
     }

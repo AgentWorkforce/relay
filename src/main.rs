@@ -1563,7 +1563,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 "HTTP API send request"
                             );
                             let ui_from = if from_dashboard {
-                                "Dashboard".to_string()
+                                self_name.clone()
                             } else {
                                 normalized_sender
                             };
@@ -2019,12 +2019,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         }
 
                         let display_target =
-                            display_target_for_dashboard(&delivery_plan.display_target, &self_names);
+                            display_target_for_dashboard(&delivery_plan.display_target, &self_names, &self_name);
                         let display_from = if self_names
                             .iter()
                             .any(|name| mapped.from.eq_ignore_ascii_case(name))
                         {
-                            "Dashboard".to_string()
+                            self_name.clone()
                         } else {
                             mapped.from.clone()
                         };
@@ -5078,17 +5078,18 @@ mod tests {
         let mut self_names = HashSet::new();
         self_names.insert("broker-951762d5".to_string());
         self_names.insert("DashProbe".to_string());
+        let primary = "my-project";
 
         assert_eq!(
-            display_target_for_dashboard("broker-951762d5", &self_names),
-            "Dashboard"
+            display_target_for_dashboard("broker-951762d5", &self_names, primary),
+            "my-project"
         );
         assert_eq!(
-            display_target_for_dashboard("dashprobe", &self_names),
-            "Dashboard"
+            display_target_for_dashboard("dashprobe", &self_names, primary),
+            "my-project"
         );
         assert_eq!(
-            display_target_for_dashboard("Lead", &self_names),
+            display_target_for_dashboard("Lead", &self_names, primary),
             "Lead".to_string()
         );
     }

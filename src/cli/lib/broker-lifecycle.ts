@@ -313,17 +313,17 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     await shutdownPromise;
   };
   try {
-    deps.log(`Project: ${paths.projectRoot}`);
-    deps.log('Mode: broker (stdio)');
-    await relay.getStatus();
-    deps.log('Broker started.');
-
-    // Forward broker stderr to console when --verbose is set
+    // Register stderr listener BEFORE getStatus() so startup logs are captured
     if (options.verbose) {
       relay.onBrokerStderr?.((line: string) => {
         deps.error(`[broker] ${line}`);
       });
     }
+
+    deps.log(`Project: ${paths.projectRoot}`);
+    deps.log('Mode: broker (stdio)');
+    await relay.getStatus();
+    deps.log('Broker started.');
 
     if (wantsDashboard) {
       dashboardProcess = startDashboard(paths, dashboardPort, apiPort, deps);
