@@ -140,7 +140,7 @@ impl AuthClient {
     }
 
     pub async fn startup_session(&self, requested_name: Option<&str>) -> Result<AuthSession> {
-        self.startup_session_with_options(requested_name, false)
+        self.startup_session_with_options(requested_name, false, None)
             .await
     }
 
@@ -148,14 +148,15 @@ impl AuthClient {
         &self,
         requested_name: Option<&str>,
         strict_name: bool,
+        agent_type: Option<&str>,
     ) -> Result<AuthSession> {
         let cached = self.store.load().ok();
-        self.startup_from_sources(requested_name, cached.as_ref(), strict_name)
+        self.startup_from_sources(requested_name, cached.as_ref(), strict_name, agent_type)
             .await
     }
 
     pub async fn refresh_session(&self, cached: &CredentialCache) -> Result<AuthSession> {
-        self.startup_from_sources(cached.agent_name.as_deref(), Some(cached), false)
+        self.startup_from_sources(cached.agent_name.as_deref(), Some(cached), false, None)
             .await
     }
 
@@ -180,7 +181,7 @@ impl AuthClient {
                     "agent not found during token rotation, falling back to re-registration"
                 );
                 let registration = self
-                    .register_agent_with_workspace_key(&api_key, Some(agent_name), false)
+                    .register_agent_with_workspace_key(&api_key, Some(agent_name), false, None)
                     .await
                     .context("failed to re-register after rotate-token 404")?;
                 self.finish_session(api_key, Some(cached.workspace_id.clone()), registration)
@@ -238,6 +239,7 @@ impl AuthClient {
         requested_name: Option<&str>,
         cached: Option<&CredentialCache>,
         strict_name: bool,
+        agent_type: Option<&str>,
     ) -> Result<AuthSession> {
         let env_workspace_key = std::env::var("RELAY_API_KEY")
             .ok()
@@ -315,7 +317,7 @@ impl AuthClient {
 
         for (source, key) in &candidates {
             match self
-                .register_agent_with_workspace_key(key, preferred_name, strict_name)
+                .register_agent_with_workspace_key(key, preferred_name, strict_name, agent_type)
                 .await
             {
                 Ok(registration) => {
@@ -356,7 +358,12 @@ impl AuthClient {
             let (workspace_id, api_key) = self.create_workspace(&ws_name).await?;
             workspace_id_hint = Some(workspace_id);
             match self
-                .register_agent_with_workspace_key(&api_key, preferred_name, strict_name)
+                .register_agent_with_workspace_key(
+                    &api_key,
+                    preferred_name,
+                    strict_name,
+                    agent_type,
+                )
                 .await
             {
                 Ok(registration) => {
@@ -431,6 +438,7 @@ impl AuthClient {
         workspace_key: &str,
         requested_name: Option<&str>,
         strict_name: bool,
+        agent_type: Option<&str>,
     ) -> Result<(String, String, String, Option<String>)> {
         let mut attempted_retry = false;
         let mut name = requested_name
@@ -444,7 +452,7 @@ impl AuthClient {
                 .bearer_auth(workspace_key)
                 .json(&json!({
                     "name": name,
-                    "type": "agent",
+                    "type": agent_type.unwrap_or("agent"),
                 }))
                 .send()
                 .await?;
@@ -859,7 +867,7 @@ mod tests {
 
         let client = AuthClient::new(server.base_url(), CredentialStore::new(cache_path));
         let err = client
-            .startup_session_with_options(Some("lead"), true)
+            .startup_session_with_options(Some("lead"), true, None)
             .await
             .unwrap_err();
 

@@ -21,12 +21,24 @@ pub(crate) fn is_self_echo(
     event: &InboundRelayEvent,
     self_names: &HashSet<String>,
     self_agent_ids: &HashSet<String>,
+    has_local_target: bool,
 ) -> bool {
-    self_names.contains(&event.from)
+    let from_self = self_names.contains(&event.from)
         || event
             .sender_agent_id
             .as_ref()
-            .is_some_and(|id| self_agent_ids.contains(id))
+            .is_some_and(|id| self_agent_ids.contains(id));
+    if !from_self {
+        return false;
+    }
+
+    // Messages emitted under our own identity but targeting local workers/channels
+    // are dashboard-originated and should be delivered.
+    if has_local_target {
+        return false;
+    }
+
+    true
 }
 
 pub(crate) fn resolve_delivery_targets(
@@ -201,7 +213,7 @@ mod tests {
         let self_agent_ids = HashSet::new();
         let event = inbound_event(InboundKind::MessageCreated, "Broker", "#general");
 
-        assert!(is_self_echo(&event, &self_names, &self_agent_ids));
+        assert!(is_self_echo(&event, &self_names, &self_agent_ids, false));
     }
 
     #[test]
@@ -212,7 +224,37 @@ mod tests {
         let mut event = inbound_event(InboundKind::MessageCreated, "Other", "#general");
         event.sender_agent_id = Some("agt_self".to_string());
 
-        assert!(is_self_echo(&event, &self_names, &self_agent_ids));
+        assert!(is_self_echo(&event, &self_names, &self_agent_ids, false));
+    }
+
+    #[test]
+    fn self_echo_not_filtered_when_target_is_local() {
+        let mut self_names = HashSet::new();
+        self_names.insert("Broker".to_string());
+        let self_agent_ids = HashSet::new();
+        let event = inbound_event(InboundKind::DmReceived, "Broker", "WorkerA");
+
+        assert!(!is_self_echo(&event, &self_names, &self_agent_ids, true));
+    }
+
+    #[test]
+    fn self_echo_not_filtered_when_channel_has_local_targets() {
+        let mut self_names = HashSet::new();
+        self_names.insert("Broker".to_string());
+        let self_agent_ids = HashSet::new();
+        let event = inbound_event(InboundKind::MessageCreated, "Broker", "#general");
+
+        assert!(!is_self_echo(&event, &self_names, &self_agent_ids, true));
+    }
+
+    #[test]
+    fn self_echo_filtered_when_target_is_not_local() {
+        let mut self_names = HashSet::new();
+        self_names.insert("Broker".to_string());
+        let self_agent_ids = HashSet::new();
+        let event = inbound_event(InboundKind::DmReceived, "Broker", "ExternalUser");
+
+        assert!(is_self_echo(&event, &self_names, &self_agent_ids, false));
     }
 
     #[test]

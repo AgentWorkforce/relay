@@ -132,7 +132,7 @@ export class AgentRelayClient {
     this.options = {
       binaryPath: options.binaryPath ?? resolveDefaultBinaryPath(),
       binaryArgs: options.binaryArgs ?? [],
-      brokerName: options.brokerName ?? 'broker',
+      brokerName: options.brokerName ?? (path.basename(options.cwd ?? process.cwd()) || 'project'),
       channels: options.channels ?? ['general'],
       cwd: options.cwd ?? process.cwd(),
       env: options.env ?? process.env,

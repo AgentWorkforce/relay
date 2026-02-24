@@ -86,7 +86,7 @@ enum Commands {
 
 #[derive(Debug, clap::Args)]
 struct InitCommand {
-    #[arg(long, default_value = "broker")]
+    #[arg(long, default_value = "")]
     name: String,
 
     #[arg(long, default_value = "general")]
@@ -194,6 +194,7 @@ struct RelaySessionOptions<'a> {
     requested_name: &'a str,
     channels: Vec<String>,
     strict_name: bool,
+    agent_type: Option<&'a str>,
     /// Read .mcp.json for additional self-name identities
     read_mcp_identity: bool,
     /// Write relaycast server entry to .mcp.json
@@ -214,7 +215,7 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
         CredentialStore::new(opts.paths.creds.clone()),
     );
     let session = auth
-        .startup_session_with_options(Some(opts.requested_name), opts.strict_name)
+        .startup_session_with_options(Some(opts.requested_name), opts.strict_name, opts.agent_type)
         .await
         .context("failed to initialize relaycast session")?;
     let relay_workspace_key = session.credentials.api_key.clone();
@@ -479,11 +480,12 @@ fn normalize_sender(sender: Option<String>) -> String {
     raw
 }
 
-fn sender_is_dashboard_label(sender: &str) -> bool {
+fn sender_is_dashboard_label(sender: &str, self_name: &str) -> bool {
     let trimmed = sender.trim();
     trimmed.eq_ignore_ascii_case("Dashboard")
         || trimmed.eq_ignore_ascii_case("human:Dashboard")
         || trimmed.eq_ignore_ascii_case("human:orchestrator")
+        || trimmed.eq_ignore_ascii_case(self_name)
 }
 
 struct WorkerRegistry {
@@ -915,6 +917,14 @@ impl WorkerRegistry {
         routing::worker_names_for_direct_target(&workers, target, from)
     }
 
+    fn has_worker_by_name_ignoring_case(&self, target: &str) -> bool {
+        let trimmed = target.trim();
+        self.workers.iter().any(|(worker_name, _)| {
+            trimmed.eq_ignore_ascii_case(worker_name)
+                || trimmed.eq_ignore_ascii_case(&format!("@{}", worker_name))
+        })
+    }
+
     fn worker_names_for_dm_participants(&self, participants: &[String], from: &str) -> Vec<String> {
         let workers = self.routing_workers();
         routing::worker_names_for_dm_participants(&workers, participants, from)
@@ -1102,6 +1112,16 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let runtime_cwd = std::env::current_dir()?;
     let paths = ensure_runtime_paths(&runtime_cwd)?;
     let mut state = BrokerState::load(&paths.state).unwrap_or_default();
+    let resolved_name = if cmd.name.trim().is_empty() {
+        runtime_cwd
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("project")
+            .to_string()
+    } else {
+        cmd.name.trim().to_string()
+    };
 
     // Clean up agents from previous sessions whose processes have died
     let reaped = state.reap_dead_agents();
@@ -1122,9 +1142,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
     let relay = connect_relay(RelaySessionOptions {
         paths: &paths,
-        requested_name: &cmd.name,
+        requested_name: &resolved_name,
         channels: channels_from_csv(&cmd.channels),
         strict_name: false,
+        agent_type: Some("human"),
         read_mcp_identity: true,
         ensure_mcp_config: true,
         runtime_cwd: &runtime_cwd,
@@ -1410,7 +1431,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         ListenApiRequest::Send { to, text, from, reply } => {
                             let normalized_to = to.trim().to_string();
                             let normalized_sender = normalize_sender(from);
-                            let from_dashboard = sender_is_dashboard_label(&normalized_sender);
+                            let from_dashboard =
+                                sender_is_dashboard_label(&normalized_sender, &self_name);
                             let delivery_from = if from_dashboard {
                                 self_name.clone()
                             } else {
@@ -1437,19 +1459,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     "timestamp": chrono::Utc::now().to_rfc3339(),
                                 }),
                             );
-
-                            let _ = send_event(
-                                &sdk_out_tx,
-                                json!({
-                                    "kind": "relay_inbound",
-                                    "event_id": event_id,
-                                    "from": ui_from,
-                                    "target": normalized_to,
-                                    "body": text,
-                                    "thread_id": Value::Null,
-                                }),
-                            )
-                            .await;
 
                             let targets = if normalized_to.starts_with('#') {
                                 workers.worker_names_for_channel_delivery(&normalized_to, &delivery_from)
@@ -1771,7 +1780,19 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             tracing::info!(event_id = %mapped.event_id, "dropping duplicate event");
                             continue;
                         }
-                        if routing::is_self_echo(&mapped, &self_names, &self_agent_ids) {
+                        let has_local_target = if mapped.target.starts_with('#') {
+                            !workers
+                                .worker_names_for_channel_delivery(&mapped.target, &mapped.from)
+                                .is_empty()
+                        } else {
+                            workers.has_worker_by_name_ignoring_case(&mapped.target)
+                        };
+                        if routing::is_self_echo(
+                            &mapped,
+                            &self_names,
+                            &self_agent_ids,
+                            has_local_target,
+                        ) {
                             tracing::info!(from = %mapped.from, sender_agent_id = ?mapped.sender_agent_id, self_names = ?self_names, "skipping self-echo in broker loop");
                             continue;
                         }
@@ -1845,8 +1866,16 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
                         let display_target =
                             display_target_for_dashboard(&delivery_plan.display_target, &self_names);
+                        let display_from = if self_names
+                            .iter()
+                            .any(|name| mapped.from.eq_ignore_ascii_case(name))
+                        {
+                            "Dashboard".to_string()
+                        } else {
+                            mapped.from.clone()
+                        };
                         tracing::info!(
-                            from = %mapped.from,
+                            from = %display_from,
                             display_target = %display_target,
                             event_id = %mapped.event_id,
                             body_len = mapped.text.len(),
@@ -1856,7 +1885,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             &mut recent_thread_messages,
                             json!({
                                 "event_id": mapped.event_id.clone(),
-                                "from": mapped.from.clone(),
+                                "from": display_from.clone(),
                                 "target": display_target.clone(),
                                 "text": mapped.text.clone(),
                                 "thread_id": mapped.thread_id.clone(),
@@ -1868,7 +1897,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             json!({
                                 "kind": "relay_inbound",
                                 "event_id": mapped.event_id,
-                                "from": mapped.from,
+                                "from": display_from,
                                 "target": display_target,
                                 "body": mapped.text,
                                 "thread_id": mapped.thread_id,
@@ -4886,10 +4915,14 @@ mod tests {
 
     #[test]
     fn sender_is_dashboard_label_accepts_legacy_dashboard_senders() {
-        assert!(sender_is_dashboard_label("Dashboard"));
-        assert!(sender_is_dashboard_label("human:Dashboard"));
-        assert!(sender_is_dashboard_label("human:orchestrator"));
-        assert!(!sender_is_dashboard_label("Lead"));
+        assert!(sender_is_dashboard_label("Dashboard", "my-project"));
+        assert!(sender_is_dashboard_label("human:Dashboard", "my-project"));
+        assert!(sender_is_dashboard_label(
+            "human:orchestrator",
+            "my-project"
+        ));
+        assert!(sender_is_dashboard_label("my-project", "my-project"));
+        assert!(!sender_is_dashboard_label("Lead", "my-project"));
     }
 
     #[test]
