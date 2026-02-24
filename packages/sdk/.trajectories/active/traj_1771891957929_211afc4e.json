@@ -1,0 +1,50 @@
+{
+  "id": "traj_1771891957929_211afc4e",
+  "version": 1,
+  "task": {
+    "title": "default run #e0eb8bb0",
+    "source": {
+      "system": "workflow-runner",
+      "id": "e0eb8bb09b4f17b228b7b97c"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-02-24T00:12:37.929Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-24T00:12:37.929Z"
+    },
+    {
+      "name": "agent-a",
+      "role": "agent-a",
+      "joinedAt": "2026-02-24T00:12:41.616Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_ab277099",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-24T00:12:37.929Z",
+      "events": [
+        {
+          "ts": 1771891957929,
+          "type": "note",
+          "content": "Workflow \"default\" started with 2 steps"
+        },
+        {
+          "ts": 1771891957929,
+          "type": "note",
+          "content": "Parsed 2 steps, 1 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1771891961616,
+          "type": "note",
+          "content": "Step \"step-1\" assigned to agent \"agent-a\""
+        }
+      ]
+    }
+  ]
+}
