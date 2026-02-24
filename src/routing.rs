@@ -35,9 +35,21 @@ pub(crate) fn is_self_echo(
     // Messages emitted under our own identity but targeting local workers/channels
     // are dashboard-originated and should be delivered.
     if has_local_target {
+        tracing::debug!(
+            target = "broker::routing",
+            from = %event.from,
+            target_field = %event.target,
+            "self-echo allowed — local target detected"
+        );
         return false;
     }
 
+    tracing::debug!(
+        target = "broker::routing",
+        from = %event.from,
+        event_id = %event.event_id,
+        "filtering self-echo"
+    );
     true
 }
 
@@ -46,8 +58,16 @@ pub(crate) fn resolve_delivery_targets(
     workers: &[RoutingWorker<'_>],
 ) -> DeliveryPlan {
     if event.target.starts_with('#') {
+        let targets = worker_names_for_channel_delivery(workers, &event.target, &event.from);
+        tracing::debug!(
+            target = "broker::routing",
+            from = %event.from,
+            channel = %event.target,
+            recipients = ?targets,
+            "resolved channel delivery"
+        );
         return DeliveryPlan {
-            targets: worker_names_for_channel_delivery(workers, &event.target, &event.from),
+            targets,
             display_target: event.target.clone(),
             needs_dm_resolution: false,
         };
@@ -62,6 +82,12 @@ pub(crate) fn resolve_delivery_targets(
             .filter(|w| !w.name.eq_ignore_ascii_case(&event.from))
             .map(|w| w.name.to_string())
             .collect();
+        tracing::debug!(
+            target = "broker::routing",
+            from = %event.from,
+            recipients = ?targets,
+            "resolved thread reply broadcast"
+        );
         return DeliveryPlan {
             targets,
             display_target: "thread".to_string(),
@@ -75,6 +101,16 @@ pub(crate) fn resolve_delivery_targets(
             event.kind,
             InboundKind::DmReceived | InboundKind::GroupDmReceived
         );
+
+    tracing::debug!(
+        target = "broker::routing",
+        from = %event.from,
+        to = %event.target,
+        kind = ?event.kind,
+        recipients = ?direct_targets,
+        needs_dm_resolution = needs_dm_resolution,
+        "resolved direct/DM delivery"
+    );
 
     DeliveryPlan {
         targets: direct_targets,

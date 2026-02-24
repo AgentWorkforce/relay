@@ -15,8 +15,20 @@ use crate::types::{
 /// Supports both current top-level events and older payload-wrapped events.
 pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
     let accessor = EventAccessor::new(value);
-    let event_type = accessor.field(EventNesting::Top, "type")?.as_str()?;
-    let mut kind = parse_inbound_kind(event_type)?;
+    let event_type = match accessor.field(EventNesting::Top, "type").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => {
+            tracing::debug!(target = "broker::bridge", "dropping event — missing or non-string 'type' field");
+            return None;
+        }
+    };
+    let mut kind = match parse_inbound_kind(event_type) {
+        Some(k) => k,
+        None => {
+            tracing::debug!(target = "broker::bridge", event_type = %event_type, "ignoring unrecognised event type");
+            return None;
+        }
+    };
 
     // Relaycast may emit direct messages as `message.created` with a
     // `conversation_id` and no channel. Treat those as DMs so downstream
@@ -48,6 +60,11 @@ pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
                 .is_some_and(Value::is_object);
         let has_inline_text = extract_text(accessor).is_some();
         if !has_message && !has_inline_text {
+            tracing::debug!(
+                target = "broker::bridge",
+                event_type = %event_type,
+                "dropping malformed event — no message object or inline text"
+            );
             return None;
         }
     }
@@ -129,6 +146,15 @@ pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
         }
         InboundKind::Presence | InboundKind::ReactionReceived => RelayPriority::P4,
     };
+
+    tracing::debug!(
+        target = "broker::bridge",
+        event_id = %event_id,
+        kind = ?kind,
+        from = %from,
+        to = %target,
+        "mapped WS event"
+    );
 
     Some(InboundRelayEvent {
         event_id,

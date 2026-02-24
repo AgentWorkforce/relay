@@ -94,6 +94,12 @@ impl RelaycastWsClient {
                         "connected"
                     };
                     has_connected = true;
+                    tracing::info!(
+                        target = "broker::ws",
+                        endpoint = %ws_endpoint,
+                        status = %status,
+                        "WebSocket {status}"
+                    );
                     events.emit("connection", json!({"status":status}));
                     let _ = inbound_tx
                         .send(json!({
@@ -106,6 +112,11 @@ impl RelaycastWsClient {
 
                     let channels = self.active_subscriptions();
                     if !channels.is_empty() {
+                        tracing::debug!(
+                            target = "broker::ws",
+                            channels = ?channels,
+                            "subscribing to channels"
+                        );
                         match write
                             .send(Message::Text(
                                 json!({"type":"subscribe","channels":channels}).to_string(),
@@ -113,6 +124,12 @@ impl RelaycastWsClient {
                             .await
                         {
                             Ok(()) => {
+                                tracing::info!(
+                                    target = "broker::ws",
+                                    count = channels.len(),
+                                    channels = ?channels,
+                                    "subscribed to channels"
+                                );
                                 for channel in &channels {
                                     let _ = inbound_tx
                                         .send(json!({
@@ -201,7 +218,16 @@ impl RelaycastWsClient {
                                         }
                                     }
                                     Some(Ok(Message::Binary(_))) => {}
-                                    Some(Ok(Message::Close(_))) | None => {
+                                    Some(Ok(Message::Close(frame))) => {
+                                        tracing::info!(
+                                            target = "broker::ws",
+                                            close_frame = ?frame,
+                                            "WebSocket closed by server"
+                                        );
+                                        break;
+                                    }
+                                    None => {
+                                        tracing::info!(target = "broker::ws", "WebSocket stream ended");
                                         break;
                                     }
                                     Some(Err(error)) => {

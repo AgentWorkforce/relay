@@ -571,10 +571,12 @@ impl AuthClient {
                 )))
             }
             Err(error) if is_auth_rejection(&error) || is_not_found(&error) => {
-                Err(error).context(format!(
-                    "agent name '{}' already exists but cached credentials could not be refreshed",
-                    requested_name
-                ))
+                let detail = format!("{error:#}");
+                anyhow::bail!(
+                    "agent name '{}' already exists but cached credentials could not be refreshed: {}",
+                    requested_name,
+                    detail
+                );
             }
             Err(error) => Err(error).context(format!(
                 "failed to refresh cached credentials for existing agent '{}'",
@@ -989,6 +991,14 @@ mod tests {
                 .header("content-type", "application/json")
                 .body(r#"{"error":"name_taken"}"#);
         });
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"token":"at_live_cached_token","name":"lead"}}"#);
+        });
 
         let dir = tempdir().unwrap();
         let cache_path = dir.path().join("relaycast.json");
@@ -1012,6 +1022,7 @@ mod tests {
         assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
         assert_eq!(session.credentials.agent_id, "a_cached");
         conflict.assert_hits(1);
+        rotate.assert_hits(1);
     }
 
     #[tokio::test]
@@ -1111,6 +1122,7 @@ mod tests {
 
         let rendered = format!("{err:#}");
         assert!(rendered.contains("cached credentials could not be refreshed"));
+        assert!(rendered.contains("rotate-token"));
         conflict.assert_hits(1);
         rotate.assert_hits(1);
     }

@@ -632,6 +632,16 @@ impl WorkerRegistry {
             anyhow::bail!("agent '{}' already exists", spec.name);
         }
 
+        tracing::info!(
+            target = "broker::spawn",
+            name = %spec.name,
+            cli = ?spec.cli,
+            runtime = ?spec.runtime,
+            parent = ?parent,
+            cwd = ?spec.cwd,
+            "spawning worker"
+        );
+
         let mut command =
             Command::new(std::env::current_exe().context("failed to locate current executable")?);
 
@@ -795,6 +805,12 @@ impl WorkerRegistry {
         )
         .await?;
 
+        tracing::info!(
+            target = "broker::spawn",
+            name = %spec.name,
+            "worker spawned and initialised"
+        );
+
         Ok(())
     }
 
@@ -838,11 +854,20 @@ impl WorkerRegistry {
     }
 
     async fn deliver(&mut self, name: &str, delivery: RelayDelivery) -> Result<()> {
+        tracing::debug!(
+            target = "broker::deliver",
+            worker = %name,
+            from = %delivery.from,
+            target = %delivery.target,
+            event_id = %delivery.event_id,
+            "delivering event to worker"
+        );
         self.send_to_worker(name, "deliver_relay", None, serde_json::to_value(delivery)?)
             .await
     }
 
     async fn release(&mut self, name: &str) -> Result<()> {
+        tracing::info!(target = "broker::release", name = %name, "releasing worker");
         self.initial_tasks.remove(name);
         let mut handle = self
             .workers
@@ -860,7 +885,12 @@ impl WorkerRegistry {
         let _ = handle.stdin.write_all(b"\n").await;
         let _ = handle.stdin.flush().await;
 
-        terminate_child(&mut handle.child, Duration::from_secs(2)).await
+        let result = terminate_child(&mut handle.child, Duration::from_secs(2)).await;
+        match &result {
+            Ok(()) => tracing::info!(target = "broker::release", name = %name, "worker released"),
+            Err(error) => tracing::warn!(target = "broker::release", name = %name, error = %error, "worker release failed"),
+        }
+        result
     }
 
     async fn shutdown_all(&mut self) -> Result<()> {
