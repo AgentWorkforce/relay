@@ -407,12 +407,13 @@ impl RelaycastHttpClient {
             });
         }
 
-        let relay = (*self.relay).as_ref().ok_or_else(|| {
-            RelaycastRegistrationError::Transport {
-                agent_name: trimmed_name.to_string(),
-                detail: "SDK relay client not initialized".to_string(),
-            }
-        })?;
+        let relay =
+            (*self.relay)
+                .as_ref()
+                .ok_or_else(|| RelaycastRegistrationError::Transport {
+                    agent_name: trimmed_name.to_string(),
+                    detail: "SDK relay client not initialized".to_string(),
+                })?;
 
         let registration_cli = registration_cli_from_hint(cli_hint, &self.default_cli);
         let request = SpawnAgentRequest {

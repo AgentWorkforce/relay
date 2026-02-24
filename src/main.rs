@@ -286,9 +286,17 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
         &self_token[..self_token.len().min(16)],
         chrono::Utc::now().to_rfc3339()
     );
-    let debug_path = opts.paths.state.parent().unwrap().join("identity-debug.txt");
+    let debug_path = opts
+        .paths
+        .state
+        .parent()
+        .unwrap()
+        .join("identity-debug.txt");
     let _ = std::fs::write(&debug_path, &identity_debug);
-    eprintln!("[agent-relay] identity debug written to {}", debug_path.display());
+    eprintln!(
+        "[agent-relay] identity debug written to {}",
+        debug_path.display()
+    );
     if agent_name != opts.requested_name {
         eprintln!(
             "[agent-relay] WARNING: registered as '{}' (requested '{}')",
@@ -903,7 +911,9 @@ impl WorkerRegistry {
         let result = terminate_child(&mut handle.child, Duration::from_secs(2)).await;
         match &result {
             Ok(()) => tracing::info!(target = "broker::release", name = %name, "worker released"),
-            Err(error) => tracing::warn!(target = "broker::release", name = %name, error = %error, "worker release failed"),
+            Err(error) => {
+                tracing::warn!(target = "broker::release", name = %name, error = %error, "worker release failed")
+            }
         }
         result
     }
@@ -1029,7 +1039,6 @@ impl WorkerRegistry {
                 || trimmed.eq_ignore_ascii_case(&format!("@{}", worker_name))
         })
     }
-
 }
 
 fn spawn_worker_reader<R>(
@@ -3927,7 +3936,6 @@ fn init_tracing() {
         .finish();
     let _ = tracing::subscriber::set_global_default(subscriber);
 }
-
 
 fn channels_from_csv(raw: &str) -> Vec<String> {
     raw.split(',')

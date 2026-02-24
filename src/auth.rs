@@ -643,8 +643,8 @@ fn relay_error_to_anyhow(error: RelayError) -> anyhow::Error {
         RelayError::Api {
             status, message, ..
         } => {
-            let status_code = StatusCode::from_u16(*status)
-                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let status_code =
+                StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             anyhow::Error::new(AuthHttpError {
                 status: status_code,
                 message: message.clone(),
@@ -1231,7 +1231,9 @@ mod tests {
             when.method(POST).path("/v1/agents");
             then.status(500)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":false,"error":{"code":"internal","message":"should_not_register"}}"#);
+                .body(
+                    r#"{"ok":false,"error":{"code":"internal","message":"should_not_register"}}"#,
+                );
         });
 
         let dir = tempdir().unwrap();

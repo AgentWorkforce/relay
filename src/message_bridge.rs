@@ -15,10 +15,16 @@ use crate::types::{
 /// Supports both current top-level events and older payload-wrapped events.
 pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
     let accessor = EventAccessor::new(value);
-    let event_type = match accessor.field(EventNesting::Top, "type").and_then(|v| v.as_str()) {
+    let event_type = match accessor
+        .field(EventNesting::Top, "type")
+        .and_then(|v| v.as_str())
+    {
         Some(t) => t,
         None => {
-            tracing::debug!(target = "broker::bridge", "dropping event — missing or non-string 'type' field");
+            tracing::debug!(
+                target = "broker::bridge",
+                "dropping event — missing or non-string 'type' field"
+            );
             return None;
         }
     };
