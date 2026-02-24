@@ -6,14 +6,14 @@ use std::{
 };
 
 use anyhow::Result;
-use futures::{SinkExt, StreamExt};
 use parking_lot::Mutex;
-use rand::Rng;
-use reqwest::Url;
+use relaycast::{
+    AgentClient, RelayCast, RelayCastOptions, RelayError, ReleaseAgentRequest, SpawnAgentRequest,
+    WsLifecycleEvent,
+};
 use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
 
 use crate::{
     auth::{AuthClient, CredentialCache},
@@ -62,32 +62,30 @@ impl RelaycastWsClient {
         mut control_rx: mpsc::Receiver<WsControl>,
         events: EventEmitter,
     ) {
-        let mut attempt = 0u32;
         let mut has_connected = false;
 
         loop {
             let token = self.token.lock().clone();
-            let ws_url = match build_ws_stream_url(&self.base_url, &token) {
-                Ok(url) => url,
+            let base_url = Some(self.base_url.clone());
+
+            let mut agent = match AgentClient::new(&token, base_url) {
+                Ok(agent) => agent,
                 Err(error) => {
                     tracing::warn!(
                         target = "relay_broker::ws",
-                        base_url = %self.base_url,
                         error = %error,
-                        "invalid websocket base url"
+                        "failed to create SDK agent client"
                     );
-                    attempt += 1;
-                    tokio::time::sleep(reconnect_delay(attempt)).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    if let Err(error) = self.refresh_token().await {
+                        tracing::warn!(target = "relay_broker::ws", error = %error, "token refresh failed");
+                    }
                     continue;
                 }
             };
-            let ws_endpoint = ws_url
-                .split_once('?')
-                .map(|(prefix, _)| prefix)
-                .unwrap_or(&ws_url);
 
-            match tokio_tungstenite::connect_async(&ws_url).await {
-                Ok((ws, _)) => {
+            match agent.connect().await {
+                Ok(()) => {
                     let status = if has_connected {
                         "reconnected"
                     } else {
@@ -96,7 +94,7 @@ impl RelaycastWsClient {
                     has_connected = true;
                     tracing::info!(
                         target = "broker::ws",
-                        endpoint = %ws_endpoint,
+                        base_url = %self.base_url,
                         status = %status,
                         "WebSocket {status}"
                     );
@@ -107,9 +105,8 @@ impl RelaycastWsClient {
                             "payload":{"status":status}
                         }))
                         .await;
-                    attempt = 0;
-                    let (mut write, mut read) = ws.split();
 
+                    // Subscribe to channels
                     let channels = self.active_subscriptions();
                     if !channels.is_empty() {
                         tracing::debug!(
@@ -117,12 +114,7 @@ impl RelaycastWsClient {
                             channels = ?channels,
                             "subscribing to channels"
                         );
-                        match write
-                            .send(Message::Text(
-                                json!({"type":"subscribe","channels":channels}).to_string(),
-                            ))
-                            .await
-                        {
+                        match agent.subscribe_channels(channels.clone()).await {
                             Ok(()) => {
                                 tracing::info!(
                                     target = "broker::ws",
@@ -143,32 +135,35 @@ impl RelaycastWsClient {
                                 tracing::warn!(
                                     target = "relay_broker::ws",
                                     error = %error,
-                                    "batched channel subscribe failed; falling back to per-channel subscribe"
+                                    "channel subscribe failed"
                                 );
-                                for channel in &channels {
-                                    match write
-                                        .send(Message::Text(
-                                            json!({"type":"subscribe","channel":channel})
-                                                .to_string(),
-                                        ))
-                                        .await
-                                    {
-                                        Ok(()) => {
-                                            let _ = inbound_tx
-                                                .send(json!({
-                                                    "type":"broker.channel_join",
-                                                    "payload":{"channel":channel}
-                                                }))
-                                                .await;
-                                        }
-                                        Err(error) => {
-                                            tracing::warn!(target = "relay_broker::ws", channel = %channel, error = %error, "failed to subscribe channel");
-                                        }
-                                    }
-                                }
                             }
                         }
                     }
+
+                    // Get event and lifecycle receivers
+                    let mut event_rx = match agent.subscribe_events() {
+                        Ok(rx) => rx,
+                        Err(error) => {
+                            tracing::warn!(
+                                target = "relay_broker::ws",
+                                error = %error,
+                                "failed to subscribe to SDK events"
+                            );
+                            continue;
+                        }
+                    };
+                    let mut lifecycle_rx = match agent.subscribe_lifecycle() {
+                        Ok(rx) => rx,
+                        Err(error) => {
+                            tracing::warn!(
+                                target = "relay_broker::ws",
+                                error = %error,
+                                "failed to subscribe to SDK lifecycle events"
+                            );
+                            continue;
+                        }
+                    };
 
                     let mut shutdown = false;
                     while !shutdown {
@@ -176,65 +171,73 @@ impl RelaycastWsClient {
                             ctrl = control_rx.recv() => {
                                 match ctrl {
                                     Some(WsControl::Shutdown) | None => {
-                                        let _ = write.close().await;
+                                        agent.disconnect().await;
                                         shutdown = true;
                                     }
                                     Some(WsControl::Publish(payload)) => {
-                                        let encoded = match serde_json::to_string(&payload) {
-                                            Ok(encoded) => encoded,
-                                            Err(error) => {
-                                                tracing::warn!(
-                                                    target = "relay_broker::ws",
-                                                    error = %error,
-                                                    "failed to serialize outbound ws control payload"
-                                                );
-                                                continue;
-                                            }
-                                        };
-                                        if let Err(error) =
-                                            write.send(Message::Text(encoded.into())).await
-                                        {
-                                            tracing::warn!(
-                                                target = "relay_broker::ws",
-                                                error = %error,
-                                                "failed to publish control payload over ws"
-                                            );
-                                            break;
-                                        }
+                                        // SDK doesn't support raw WS publish; loop back locally
+                                        let _ = inbound_tx.send(payload).await;
                                     }
                                 }
                             }
-                            frame = read.next() => {
-                                match frame {
-                                    Some(Ok(Message::Text(text))) => {
-                                        if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                                            let _ = inbound_tx.send(value).await;
-                                        } else {
-                                            tracing::debug!(
-                                                target = "relay_broker::ws",
-                                                raw = %text,
-                                                "ignoring non-json text frame"
-                                            );
+                            event = event_rx.recv() => {
+                                match event {
+                                    Ok(ws_event) => {
+                                        // Serialize SDK WsEvent back to JSON Value for the broker
+                                        match serde_json::to_value(&ws_event) {
+                                            Ok(value) => {
+                                                let _ = inbound_tx.send(value).await;
+                                            }
+                                            Err(error) => {
+                                                tracing::debug!(
+                                                    target = "relay_broker::ws",
+                                                    error = %error,
+                                                    "failed to serialize SDK event to JSON"
+                                                );
+                                            }
                                         }
                                     }
-                                    Some(Ok(Message::Binary(_))) => {}
-                                    Some(Ok(Message::Close(frame))) => {
-                                        tracing::info!(
-                                            target = "broker::ws",
-                                            close_frame = ?frame,
-                                            "WebSocket closed by server"
+                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                        tracing::warn!(
+                                            target = "relay_broker::ws",
+                                            skipped = n,
+                                            "event receiver lagged, skipped events"
                                         );
+                                    }
+                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                        tracing::info!(target = "broker::ws", "SDK event channel closed");
                                         break;
                                     }
-                                    None => {
-                                        tracing::info!(target = "broker::ws", "WebSocket stream ended");
+                                }
+                            }
+                            lifecycle = lifecycle_rx.recv() => {
+                                match lifecycle {
+                                    Ok(WsLifecycleEvent::Close) => {
+                                        tracing::info!(target = "broker::ws", "WebSocket closed by SDK");
                                         break;
                                     }
-                                    Some(Err(error)) => {
-                                        tracing::warn!(target = "relay_broker::ws", error = %error, "ws read error");
+                                    Ok(WsLifecycleEvent::Error(msg)) => {
+                                        tracing::warn!(target = "relay_broker::ws", error = %msg, "SDK lifecycle error");
+                                    }
+                                    Ok(WsLifecycleEvent::Reconnecting { attempt }) => {
+                                        tracing::info!(target = "broker::ws", attempt, "SDK reconnecting");
+                                        events.emit("connection", json!({"status":"reconnecting","attempt":attempt}));
+                                    }
+                                    Ok(WsLifecycleEvent::Open) => {
+                                        tracing::info!(target = "broker::ws", "SDK WebSocket re-opened");
+                                        events.emit("connection", json!({"status":"reconnected"}));
+                                        let _ = inbound_tx
+                                            .send(json!({
+                                                "type":"broker.connection",
+                                                "payload":{"status":"reconnected"}
+                                            }))
+                                            .await;
+                                    }
+                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                        tracing::info!(target = "broker::ws", "SDK lifecycle channel closed");
                                         break;
                                     }
-                                    _ => {}
                                 }
                             }
                         }
@@ -247,9 +250,9 @@ impl RelaycastWsClient {
                 Err(error) => {
                     tracing::warn!(
                         target = "relay_broker::ws",
-                        endpoint = %ws_endpoint,
+                        base_url = %self.base_url,
                         error = %error,
-                        "ws connect failed"
+                        "SDK ws connect failed"
                     );
                 }
             }
@@ -261,11 +264,10 @@ impl RelaycastWsClient {
                     "payload":{"status":"disconnected"}
                 }))
                 .await;
-            attempt += 1;
             if let Err(error) = self.refresh_token().await {
                 tracing::warn!(target = "relay_broker::ws", error = %error, "token refresh failed");
             }
-            tokio::time::sleep(reconnect_delay(attempt)).await;
+            tokio::time::sleep(Duration::from_secs(3)).await;
         }
     }
 
@@ -285,12 +287,13 @@ impl RelaycastWsClient {
 #[derive(Clone)]
 pub struct RelaycastHttpClient {
     http: reqwest::Client,
-    base_url: String,
-    api_key: String,
+    pub base_url: String,
+    pub api_key: String,
+    relay: Arc<Option<RelayCast>>,
     agent_tokens: Arc<Mutex<HashMap<String, String>>>,
     registration_cooldowns: Arc<Mutex<HashMap<String, Instant>>>,
-    agent_name: String,
-    default_cli: String,
+    pub agent_name: String,
+    pub default_cli: String,
 }
 
 #[derive(Debug, Clone, Error)]
@@ -331,15 +334,28 @@ impl RelaycastHttpClient {
         agent_name: impl Into<String>,
         default_cli: impl Into<String>,
     ) -> Self {
+        let base_url = base_url.into();
+        let api_key = api_key.into();
+        let relay = Arc::new(build_relay_client(&api_key, &base_url));
         Self {
             http: reqwest::Client::new(),
-            base_url: base_url.into(),
-            api_key: api_key.into(),
+            base_url,
+            api_key,
+            relay,
             agent_tokens: Arc::new(Mutex::new(HashMap::new())),
             registration_cooldowns: Arc::new(Mutex::new(HashMap::new())),
             agent_name: agent_name.into(),
             default_cli: default_cli.into(),
         }
+    }
+
+    /// Pre-populate the token cache for an agent so that `ensure_token()` skips
+    /// the spawn registration call entirely. Used to seed the broker's own
+    /// session token obtained during auth startup.
+    pub fn seed_agent_token(&self, agent_name: &str, token: &str) {
+        self.agent_tokens
+            .lock()
+            .insert(agent_name.to_string(), token.to_string());
     }
 
     pub fn registration_block_remaining(&self, agent_name: &str) -> Option<Duration> {
@@ -391,84 +407,73 @@ impl RelaycastHttpClient {
             });
         }
 
-        let url = format!("{}/v1/agents/spawn", self.base_url);
-        let registration_cli = registration_cli_from_hint(cli_hint, &self.default_cli);
-        let response = self
-            .http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&serde_json::json!({
-                "name": trimmed_name,
-                "cli": registration_cli,
-                "task": format!("relay worker session for {}", trimmed_name)
-            }))
-            .send()
-            .await
-            .map_err(|error| RelaycastRegistrationError::Transport {
+        let relay = (*self.relay).as_ref().ok_or_else(|| {
+            RelaycastRegistrationError::Transport {
                 agent_name: trimmed_name.to_string(),
-                detail: error.to_string(),
-            })?;
+                detail: "SDK relay client not initialized".to_string(),
+            }
+        })?;
 
-        let status = response.status();
-        let mut header_map = HashMap::new();
-        if let Some(retry_after) = response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-        {
-            header_map.insert("retry-after".to_string(), retry_after.to_string());
-        }
+        let registration_cli = registration_cli_from_hint(cli_hint, &self.default_cli);
+        let request = SpawnAgentRequest {
+            name: trimmed_name.to_string(),
+            cli: registration_cli,
+            task: format!("relay worker session for {}", trimmed_name),
+            channel: None,
+            persona: None,
+            metadata: None,
+        };
 
-        let body: Value =
-            response
-                .json()
-                .await
-                .map_err(|error| RelaycastRegistrationError::Transport {
-                    agent_name: trimmed_name.to_string(),
-                    detail: error.to_string(),
-                })?;
-
-        if !status.is_success() {
-            let detail = relaycast_error_detail(&body);
-            if status.as_u16() == 429 {
-                let retry_after_secs = parse_retry_after_seconds(Some(&header_map), Some(&body));
+        match relay.spawn_agent(request).await {
+            Ok(result) => {
+                self.agent_tokens
+                    .lock()
+                    .insert(trimmed_name.to_string(), result.token.clone());
+                self.registration_cooldowns.lock().remove(trimmed_name);
+                Ok(result.token)
+            }
+            Err(RelayError::Api {
+                status: 429,
+                message,
+                code,
+            }) => {
+                let retry_after_secs = 60u64; // default
                 let blocked_until = Instant::now() + Duration::from_secs(retry_after_secs);
                 self.registration_cooldowns
                     .lock()
                     .insert(trimmed_name.to_string(), blocked_until);
-                return Err(RelaycastRegistrationError::RateLimited {
+                Err(RelaycastRegistrationError::RateLimited {
                     agent_name: trimmed_name.to_string(),
                     retry_after_secs,
-                    detail,
-                });
+                    detail: format!("{message} (code: {code})"),
+                })
             }
-
-            return Err(RelaycastRegistrationError::Api {
+            Err(RelayError::Api {
+                status,
+                message,
+                code,
+            }) => Err(RelaycastRegistrationError::Api {
                 agent_name: trimmed_name.to_string(),
-                status: status.as_u16(),
-                detail,
-            });
+                status,
+                detail: format!("{message} (code: {code})"),
+            }),
+            Err(error) => Err(RelaycastRegistrationError::Transport {
+                agent_name: trimmed_name.to_string(),
+                detail: error.to_string(),
+            }),
         }
-
-        let token = body
-            .pointer("/data/token")
-            .or_else(|| body.get("token"))
-            .and_then(Value::as_str)
-            .map(String::from)
-            .ok_or_else(|| RelaycastRegistrationError::MissingToken {
-                agent_name: trimmed_name.to_string(),
-            })?;
-
-        self.agent_tokens
-            .lock()
-            .insert(trimmed_name.to_string(), token.clone());
-        self.registration_cooldowns.lock().remove(trimmed_name);
-        Ok(token)
     }
 
     /// Register the broker agent via the spawn endpoint (which rotates the token
     /// if the agent already exists, avoiding ghost duplicates).
     async fn ensure_token(&self) -> Result<String> {
+        // Check if we already have a cached/pre-seeded token
+        if let Some(token) = self.agent_tokens.lock().get(&self.agent_name).cloned() {
+            let prefix = &token[..token.len().min(16)];
+            tracing::info!(agent = %self.agent_name, token_prefix = %prefix, "ensure_token: using cached/pre-seeded token (no spawn)");
+            return Ok(token);
+        }
+        tracing::info!(agent = %self.agent_name, "ensure_token: no cached token, will register via spawn");
         self.register_agent_token(&self.agent_name, Some(&self.default_cli))
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))
@@ -476,22 +481,22 @@ impl RelaycastHttpClient {
 
     /// Mark a specific agent offline via the release endpoint.
     pub async fn mark_agent_offline(&self, agent_name: &str) -> Result<()> {
-        let url = format!("{}/v1/agents/release", self.base_url);
-        let res = self
-            .http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&serde_json::json!({
-                "name": agent_name
-            }))
-            .send()
-            .await?;
-        if !res.status().is_success() {
-            let status = res.status();
-            let body = res.text().await.unwrap_or_default();
-            tracing::warn!(status = %status, agent = %agent_name, "failed to mark agent offline: {}", body);
+        if let Some(relay) = (*self.relay).as_ref() {
+            let request = ReleaseAgentRequest {
+                name: agent_name.to_string(),
+                reason: None,
+                delete_agent: None,
+            };
+            match relay.release_agent(request).await {
+                Ok(_) => {
+                    tracing::info!(agent = %agent_name, "marked agent offline");
+                }
+                Err(error) => {
+                    tracing::warn!(agent = %agent_name, error = %error, "failed to mark agent offline");
+                }
+            }
         } else {
-            tracing::info!(agent = %agent_name, "marked agent offline");
+            tracing::warn!(agent = %agent_name, "SDK relay client not initialized; cannot mark agent offline");
         }
         // Always invalidate local cache so a future spawn uses a fresh registration.
         self.invalidate_cached_registration(agent_name);
@@ -507,39 +512,24 @@ impl RelaycastHttpClient {
     /// Send a direct message to a named agent via the Relaycast REST API.
     pub async fn send_dm(&self, to: &str, text: &str) -> Result<()> {
         let token = self.ensure_token().await?;
-        let url = format!("{}/v1/dm", self.base_url);
-        let res = self
-            .http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .json(&serde_json::json!({ "to": to, "text": text }))
-            .send()
-            .await?;
-        if !res.status().is_success() {
-            let status = res.status();
-            let body = res.text().await.unwrap_or_default();
-            anyhow::bail!("relaycast send_dm failed ({}): {}", status, body);
-        }
+        let agent_client = AgentClient::new(&token, Some(self.base_url.clone()))
+            .map_err(|e| anyhow::anyhow!("failed to create agent client: {e}"))?;
+        agent_client
+            .dm(to, text, None)
+            .await
+            .map_err(|e| anyhow::anyhow!("relaycast send_dm failed: {e}"))?;
         Ok(())
     }
 
     /// Post a message to a channel via the Relaycast REST API.
     pub async fn send_to_channel(&self, channel: &str, text: &str) -> Result<()> {
         let token = self.ensure_token().await?;
-        let ch = channel.strip_prefix('#').unwrap_or(channel);
-        let url = format!("{}/v1/channels/{}/messages", self.base_url, ch);
-        let res = self
-            .http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .json(&serde_json::json!({ "text": text }))
-            .send()
-            .await?;
-        if !res.status().is_success() {
-            let status = res.status();
-            let body = res.text().await.unwrap_or_default();
-            anyhow::bail!("relaycast send_to_channel failed ({}): {}", status, body);
-        }
+        let agent_client = AgentClient::new(&token, Some(self.base_url.clone()))
+            .map_err(|e| anyhow::anyhow!("failed to create agent client: {e}"))?;
+        agent_client
+            .send(channel, text, None, None, None)
+            .await
+            .map_err(|e| anyhow::anyhow!("relaycast send_to_channel failed: {e}"))?;
         Ok(())
     }
 
@@ -547,27 +537,45 @@ impl RelaycastHttpClient {
     ///
     /// Creates the channels if they don't already exist, ignoring 409 Conflict errors.
     pub async fn ensure_default_channels(&self) -> Result<()> {
+        let Some(_relay) = (*self.relay).as_ref() else {
+            tracing::warn!("SDK relay client not initialized; cannot ensure default channels");
+            return Ok(());
+        };
         let defaults = [
             ("general", "General discussion"),
             ("engineering", "Engineering discussion"),
         ];
         for (name, topic) in &defaults {
-            let url = format!("{}/v1/channels", self.base_url);
-            let res = self
-                .http
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .json(&serde_json::json!({ "name": name, "topic": topic }))
-                .send()
-                .await?;
-            let status = res.status();
-            if status.is_success() {
-                tracing::info!(channel = %name, "created default channel");
-            } else if status == reqwest::StatusCode::CONFLICT {
-                tracing::debug!(channel = %name, "default channel already exists");
-            } else {
-                let body = res.text().await.unwrap_or_default();
-                tracing::warn!(channel = %name, status = %status, "failed to create default channel: {}", body);
+            let request = relaycast::CreateChannelRequest {
+                name: name.to_string(),
+                topic: Some(topic.to_string()),
+            };
+            // Use the workspace-level agent client (from relay) to create channels
+            // The RelayCast workspace client doesn't have create_channel, so use an agent client
+            let token = match self.ensure_token().await {
+                Ok(token) => token,
+                Err(error) => {
+                    tracing::warn!(error = %error, "failed to get agent token for channel creation");
+                    return Ok(());
+                }
+            };
+            let agent_client = match AgentClient::new(&token, Some(self.base_url.clone())) {
+                Ok(client) => client,
+                Err(error) => {
+                    tracing::warn!(error = %error, "failed to create agent client for channel creation");
+                    return Ok(());
+                }
+            };
+            match agent_client.create_channel(request).await {
+                Ok(_) => {
+                    tracing::info!(channel = %name, "created default channel");
+                }
+                Err(RelayError::Api { status: 409, .. }) => {
+                    tracing::debug!(channel = %name, "default channel already exists");
+                }
+                Err(error) => {
+                    tracing::warn!(channel = %name, error = %error, "failed to create default channel");
+                }
             }
         }
         Ok(())
@@ -636,37 +644,26 @@ impl RelaycastHttpClient {
     /// Fetch recent message history from a channel via the Relaycast REST API.
     pub async fn get_channel_messages(&self, channel: &str, limit: usize) -> Result<Vec<Value>> {
         let token = self.ensure_token().await?;
-        let ch = channel.strip_prefix('#').unwrap_or(channel);
-        let url = format!(
-            "{}/v1/channels/{}/messages?limit={}",
-            self.base_url, ch, limit
-        );
-        let res = self
-            .http
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await?;
-        if !res.status().is_success() {
-            let status = res.status();
-            let body = res.text().await.unwrap_or_default();
-            tracing::warn!(status = %status, "relaycast get_channel_messages failed: {}", body);
-            return Ok(vec![]);
+        let agent_client = AgentClient::new(&token, Some(self.base_url.clone()))
+            .map_err(|e| anyhow::anyhow!("failed to create agent client: {e}"))?;
+        let opts = relaycast::MessageListQuery {
+            limit: Some(limit as i32),
+            ..Default::default()
+        };
+        match agent_client.messages(channel, Some(opts)).await {
+            Ok(messages) => {
+                // Convert SDK typed messages to serde_json::Value for compatibility
+                let values: Vec<Value> = messages
+                    .into_iter()
+                    .filter_map(|msg| serde_json::to_value(msg).ok())
+                    .collect();
+                Ok(values)
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "relaycast get_channel_messages failed");
+                Ok(vec![])
+            }
         }
-        let body: Value = res.json().await?;
-        let messages = body
-            .pointer("/data/messages")
-            .or_else(|| body.get("messages"))
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_else(|| {
-                if body.is_array() {
-                    body.as_array().cloned().unwrap_or_default()
-                } else {
-                    vec![]
-                }
-            });
-        Ok(messages)
     }
 
     /// Smart send: routes to channel or DM based on `#` prefix.
@@ -677,6 +674,12 @@ impl RelaycastHttpClient {
             self.send_dm(to, text).await
         }
     }
+}
+
+/// Build a `RelayCast` workspace client from an API key and base URL.
+fn build_relay_client(api_key: &str, base_url: &str) -> Option<RelayCast> {
+    let opts = RelayCastOptions::new(api_key).with_base_url(base_url);
+    RelayCast::new(opts).ok()
 }
 
 fn parse_dm_participants_from_conversations(body: &Value, conversation_id: &str) -> Vec<String> {
@@ -714,7 +717,9 @@ fn parse_dm_participants_from_conversations(body: &Value, conversation_id: &str)
         .unwrap_or_default()
 }
 
+#[allow(dead_code)]
 pub fn build_ws_stream_url(base_url: &str, token: &str) -> Result<String> {
+    use reqwest::Url;
     let raw = base_url.trim();
     let normalized = if raw.starts_with("wss://") || raw.starts_with("ws://") {
         raw.to_string()
@@ -747,7 +752,7 @@ pub fn build_ws_stream_url(base_url: &str, token: &str) -> Result<String> {
     let mut preserved: Vec<(String, String)> = Vec::new();
     for (k, v) in url.query_pairs() {
         if k != "token" {
-            preserved.push((k.into_owned(), v.into_owned()));
+            preserved.push((k.to_string(), v.to_string()));
         }
     }
     {
@@ -803,13 +808,16 @@ fn registration_cli_from_hint(cli_hint: Option<&str>, default_cli: &str) -> Stri
         .unwrap_or_else(|| "claude".to_string())
 }
 
+#[allow(dead_code)]
 pub fn reconnect_delay(attempt: u32) -> Duration {
+    use rand::Rng;
     let base_ms = (1_000u64).saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1)));
     let bounded = base_ms.min(30_000);
     let jitter = rand::thread_rng().gen_range(0..=250);
     Duration::from_millis(bounded + jitter)
 }
 
+#[allow(dead_code)]
 pub(crate) fn parse_retry_after_seconds(
     headers: Option<&HashMap<String, String>>,
     body: Option<&Value>,
@@ -844,6 +852,7 @@ pub(crate) fn parse_retry_after_seconds(
     from_header.or(from_body).unwrap_or(60).clamp(1, 600)
 }
 
+#[allow(dead_code)]
 fn relaycast_error_detail(body: &Value) -> String {
     let message = body
         .pointer("/error/message")

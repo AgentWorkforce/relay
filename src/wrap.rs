@@ -393,6 +393,7 @@ pub(crate) async fn run_wrap(
         relay_workspace_key,
         self_name: _,
         self_agent_id,
+        self_token: _,
         self_names,
         self_agent_ids,
         mut ws_inbound_rx,

@@ -125,20 +125,6 @@ impl Spawner {
             .and_then(|managed| managed.parent.as_deref())
     }
 
-    /// Return a snapshot of all managed children for the HTTP API.
-    pub fn list_children(&self) -> Vec<serde_json::Value> {
-        self.children
-            .iter()
-            .map(|(name, managed)| {
-                serde_json::json!({
-                    "name": name,
-                    "pid": managed.child.id(),
-                    "source": "spawner",
-                })
-            })
-            .collect()
-    }
-
     pub async fn release(&mut self, name: &str, timeout_duration: Duration) -> Result<()> {
         let mut managed = self
             .children

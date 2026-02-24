@@ -171,6 +171,7 @@ struct RelaySession {
     relay_workspace_key: String,
     self_name: String,
     self_agent_id: String,
+    self_token: String,
     self_names: HashSet<String>,
     self_agent_ids: HashSet<String>,
     ws_inbound_rx: mpsc::Receiver<Value>,
@@ -269,15 +270,28 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
     };
     let relay_workspace_key = session.credentials.api_key.clone();
     let self_agent_id = session.credentials.agent_id.clone();
+    let self_token = session.token.clone();
 
     let agent_name = session
         .credentials
         .agent_name
         .clone()
         .unwrap_or_else(|| opts.requested_name.to_string());
+    // Write identity debug to a file since stderr is not captured during startup
+    let identity_debug = format!(
+        "agent_name='{}'\nrequested='{}'\nagent_id='{}'\ntoken_prefix='{}'\ntimestamp='{}'\n",
+        agent_name,
+        opts.requested_name,
+        self_agent_id,
+        &self_token[..self_token.len().min(16)],
+        chrono::Utc::now().to_rfc3339()
+    );
+    let debug_path = opts.paths.state.parent().unwrap().join("identity-debug.txt");
+    let _ = std::fs::write(&debug_path, &identity_debug);
+    eprintln!("[agent-relay] identity debug written to {}", debug_path.display());
     if agent_name != opts.requested_name {
         eprintln!(
-            "[agent-relay] registered as '{}' (requested '{}')",
+            "[agent-relay] WARNING: registered as '{}' (requested '{}')",
             agent_name, opts.requested_name
         );
     }
@@ -341,6 +355,7 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
         relay_workspace_key,
         self_name: agent_name,
         self_agent_id,
+        self_token,
         self_names,
         self_agent_ids,
         ws_inbound_rx,
@@ -1011,10 +1026,6 @@ impl WorkerRegistry {
         })
     }
 
-    fn worker_names_for_dm_participants(&self, participants: &[String], from: &str) -> Vec<String> {
-        let workers = self.routing_workers();
-        routing::worker_names_for_dm_participants(&workers, participants, from)
-    }
 }
 
 fn spawn_worker_reader<R>(
@@ -1244,6 +1255,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
         relay_workspace_key,
         self_name,
         self_agent_id: _,
+        self_token,
         self_names,
         self_agent_ids,
         mut ws_inbound_rx,
@@ -1252,12 +1264,22 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
     // Build HTTP client for forwarding messages to Relaycast REST API
     let relaycast_http = {
-        RelaycastHttpClient::new(
+        let client = RelaycastHttpClient::new(
             &http_base,
             &relay_workspace_key,
             self_name.clone(),
             "claude",
-        )
+        );
+        // Pre-seed the broker's auth token so ensure_token() never re-registers
+        // via the spawn endpoint (which could return a different identity).
+        let token_prefix = &self_token[..self_token.len().min(16)];
+        tracing::info!(
+            self_name = %self_name,
+            token_prefix = %token_prefix,
+            "pre-seeding broker token into RelaycastHttpClient"
+        );
+        client.seed_agent_token(&self_name, &self_token);
+        client
     };
 
     // Ensure default workspace channels exist (general, engineering).
@@ -1522,7 +1544,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         }
                         ListenApiRequest::Send { to, text, from, reply } => {
                             let normalized_to = to.trim().to_string();
-                            let normalized_sender = normalize_sender(from);
+                            let normalized_sender = normalize_sender(from.clone());
                             let from_dashboard =
                                 sender_is_dashboard_label(&normalized_sender, &self_name);
                             let delivery_from = if from_dashboard {
@@ -1530,6 +1552,16 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             } else {
                                 normalized_sender.clone()
                             };
+                            tracing::info!(
+                                target = "relay_broker::http_api",
+                                raw_from = ?from,
+                                normalized_sender = %normalized_sender,
+                                from_dashboard = %from_dashboard,
+                                delivery_from = %delivery_from,
+                                to = %normalized_to,
+                                self_name = %self_name,
+                                "HTTP API send request"
+                            );
                             let ui_from = if from_dashboard {
                                 "Dashboard".to_string()
                             } else {
@@ -1579,6 +1611,15 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             }
 
                             if delivered > 0 {
+                                tracing::info!(
+                                    target = "relay_broker::http_api",
+                                    event_id = %event_id,
+                                    to = %normalized_to,
+                                    delivery_from = %delivery_from,
+                                    ui_from = %ui_from,
+                                    delivered = %delivered,
+                                    "local delivery succeeded"
+                                );
                                 let _ = send_event(
                                     &sdk_out_tx,
                                     json!({
@@ -1598,8 +1639,22 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     "local": true,
                                 })));
                             } else {
+                                tracing::info!(
+                                    target = "relay_broker::http_api",
+                                    event_id = %event_id,
+                                    to = %normalized_to,
+                                    delivery_from = %delivery_from,
+                                    ui_from = %ui_from,
+                                    "no local workers matched; forwarding to relaycast"
+                                );
                                 match relaycast_http.send(&normalized_to, &text).await {
                                     Ok(()) => {
+                                        tracing::info!(
+                                            target = "relay_broker::http_api",
+                                            event_id = %event_id,
+                                            to = %normalized_to,
+                                            "relaycast publish succeeded"
+                                        );
                                         let _ = send_event(
                                             &sdk_out_tx,
                                             json!({
@@ -1620,6 +1675,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         })));
                                     }
                                     Err(error) => {
+                                        tracing::warn!(
+                                            target = "relay_broker::http_api",
+                                            event_id = %event_id,
+                                            to = %normalized_to,
+                                            error = %error,
+                                            "relaycast publish failed"
+                                        );
                                         let not_found = format!("Agent \"{}\" not found", normalized_to);
                                         let _ = reply.send(Err(format!(
                                             "{not_found} and Relaycast publish failed: {error}"
@@ -3827,41 +3889,6 @@ fn init_tracing() {
     let _ = tracing::subscriber::set_global_default(subscriber);
 }
 
-/// Fetch all channel names from the Relaycast workspace API.
-async fn fetch_all_channels(paths: &RuntimePaths) -> Result<Vec<String>> {
-    let http_base = std::env::var("RELAYCAST_BASE_URL")
-        .ok()
-        .or_else(|| std::env::var("RELAY_BASE_URL").ok())
-        .unwrap_or_else(|| DEFAULT_RELAYCAST_BASE_URL.to_string());
-    let store = CredentialStore::new(paths.creds.clone());
-    let cached = store
-        .load()
-        .map_err(|_| anyhow::anyhow!("no cached credentials"))?;
-    let api_key = &cached.api_key;
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(format!("{http_base}/v1/channels"))
-        .bearer_auth(api_key)
-        .send()
-        .await
-        .context("failed to fetch channels")?;
-
-    if !resp.status().is_success() {
-        anyhow::bail!("channels API returned {}", resp.status());
-    }
-    let body: Value = resp.json().await?;
-    let channels = body
-        .as_array()
-        .or_else(|| body.get("channels").and_then(Value::as_array))
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|ch| ch.get("name").and_then(Value::as_str).map(String::from))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Ok(channels)
-}
 
 fn channels_from_csv(raw: &str) -> Vec<String> {
     raw.split(',')

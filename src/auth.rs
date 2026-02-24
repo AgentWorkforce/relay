@@ -5,9 +5,9 @@ use std::{
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use relaycast::{CreateAgentRequest, RelayCast, RelayCastOptions, RelayError};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,7 +125,6 @@ fn set_owner_only_permissions(_path: &Path) -> Result<()> {
 
 #[derive(Clone)]
 pub struct AuthClient {
-    http: reqwest::Client,
     base_url: String,
     store: CredentialStore,
 }
@@ -133,7 +132,6 @@ pub struct AuthClient {
 impl AuthClient {
     pub fn new(base_url: impl Into<String>, store: CredentialStore) -> Self {
         Self {
-            http: reqwest::Client::new(),
             base_url: base_url.into(),
             store,
         }
@@ -198,25 +196,12 @@ impl AuthClient {
         let api_key = normalize_workspace_key(&cached.api_key)
             .context("cached api_key is not a valid workspace key")?;
 
-        let response = self
-            .http
-            .post(format!(
-                "{}/v1/agents/{}/rotate-token",
-                self.base_url, agent_name
-            ))
-            .bearer_auth(&api_key)
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            return Err(auth_http_error(response, "rotate-token", Some(agent_name)).await);
-        }
-        let body: Value = response.json().await?;
-        let data = body.get("data").unwrap_or(&body);
-        let token = data
-            .get("token")
-            .and_then(Value::as_str)
-            .context("rotate-token response missing token")?
-            .to_string();
+        let relay = build_relay_client(&api_key, &self.base_url)?;
+        let result = relay
+            .rotate_agent_token(agent_name)
+            .await
+            .map_err(relay_error_to_anyhow)?;
+        let token = result.token;
 
         let creds = CredentialCache {
             workspace_id: cached.workspace_id.clone(),
@@ -316,11 +301,25 @@ impl AuthClient {
         }
 
         for (source, key) in &candidates {
+            tracing::info!(
+                target = "relay_broker::auth",
+                source = %source,
+                preferred_name = ?preferred_name,
+                strict_name = %strict_name,
+                agent_type = ?agent_type,
+                "attempting registration with workspace key"
+            );
             match self
                 .register_agent_with_workspace_key(key, preferred_name, strict_name, agent_type)
                 .await
             {
                 Ok(registration) => {
+                    tracing::info!(
+                        target = "relay_broker::auth",
+                        agent_id = %registration.0,
+                        returned_name = %registration.1,
+                        "registration succeeded - this name becomes cached agent_name"
+                    );
                     return self.finish_session(key.clone(), workspace_id_hint, registration);
                 }
                 Err(error) if is_auth_rejection(&error) => {
@@ -409,28 +408,10 @@ impl AuthClient {
     }
 
     async fn create_workspace(&self, name: &str) -> Result<(String, String)> {
-        let response = self
-            .http
-            .post(format!("{}/v1/workspaces", self.base_url))
-            .json(&json!({ "name": name }))
-            .send()
-            .await?
-            .error_for_status()?;
-
-        let body: Value = response.json().await?;
-        let data = body.get("data").unwrap_or(&body);
-        let workspace_id = data
-            .get("workspace_id")
-            .and_then(Value::as_str)
-            .or_else(|| data.get("id").and_then(Value::as_str))
-            .context("workspace create response missing workspace id")?
-            .to_string();
-        let api_key = data
-            .get("api_key")
-            .and_then(Value::as_str)
-            .context("workspace create response missing api_key")?
-            .to_string();
-        Ok((workspace_id, api_key))
+        let result = RelayCast::create_workspace(name, Some(&self.base_url))
+            .await
+            .map_err(relay_error_to_anyhow)?;
+        Ok((result.workspace_id, result.api_key))
     }
 
     async fn register_agent_with_workspace_key(
@@ -440,83 +421,73 @@ impl AuthClient {
         strict_name: bool,
         agent_type: Option<&str>,
     ) -> Result<(String, String, String, Option<String>)> {
+        let relay = build_relay_client(workspace_key, &self.base_url)?;
         let mut attempted_retry = false;
         let mut name = requested_name
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("agent-{}", Uuid::new_v4().simple()));
 
         loop {
-            let response = self
-                .http
-                .post(format!("{}/v1/agents", self.base_url))
-                .bearer_auth(workspace_key)
-                .json(&json!({
-                    "name": name,
-                    "type": agent_type.unwrap_or("agent"),
-                }))
-                .send()
-                .await?;
+            let request = CreateAgentRequest {
+                name: name.clone(),
+                agent_type: Some(agent_type.unwrap_or("agent").to_string()),
+                persona: None,
+                metadata: None,
+            };
 
-            if response.status() == StatusCode::CONFLICT {
-                if strict_name {
-                    if let Some((
-                        cached_agent_id,
-                        cached_agent_name,
-                        cached_token,
-                        cached_workspace_id,
-                    )) = self
-                        .cached_registration_from_store(workspace_key, &name)
-                        .await?
-                    {
-                        tracing::info!(
-                            target = "relay_broker::auth",
-                            agent_name = %name,
-                            "strict-name registration conflict; reusing cached relaycast token"
-                        );
-                        return Ok((
+            match relay.register_agent(request).await {
+                Ok(result) => {
+                    return Ok((
+                        result.id,
+                        result.name,
+                        result.token,
+                        None, // workspace_id not returned in CreateAgentResponse
+                    ));
+                }
+                Err(RelayError::Api { code, status, .. })
+                    if is_conflict_code(&code) || status == 409 =>
+                {
+                    if strict_name {
+                        if let Some((
                             cached_agent_id,
                             cached_agent_name,
                             cached_token,
                             cached_workspace_id,
-                        ));
+                        )) = self
+                            .cached_registration_from_store(workspace_key, &name)
+                            .await?
+                        {
+                            tracing::info!(
+                                target = "relay_broker::auth",
+                                agent_name = %name,
+                                "strict-name registration conflict; reusing cached relaycast token"
+                            );
+                            return Ok((
+                                cached_agent_id,
+                                cached_agent_name,
+                                cached_token,
+                                cached_workspace_id,
+                            ));
+                        }
+                        anyhow::bail!("agent name '{}' already exists", name);
                     }
-                    anyhow::bail!("agent name '{}' already exists", name);
+                    if !attempted_retry {
+                        attempted_retry = true;
+                        let suffix = Uuid::new_v4().simple().to_string();
+                        name = format!("{}-{}", name, &suffix[..8]);
+                        continue;
+                    }
+                    // Second conflict — give up
+                    return Err(relay_error_to_anyhow(RelayError::Api {
+                        code: "agent_already_exists".to_string(),
+                        message: format!("agent name '{}' already exists after retry", name),
+                        status: 409,
+                    }));
                 }
-                if !attempted_retry {
-                    attempted_retry = true;
-                    let suffix = Uuid::new_v4().simple().to_string();
-                    name = format!("{}-{}", name, &suffix[..8]);
-                    continue;
+                Err(error) => {
+                    return Err(relay_error_to_anyhow(error));
                 }
             }
-
-            if !response.status().is_success() {
-                return Err(auth_http_error(response, "registration", Some(&name)).await);
-            }
-            let body: Value = response.json().await?;
-            let data = body.get("data").unwrap_or(&body);
-            let token = data
-                .get("token")
-                .and_then(Value::as_str)
-                .context("agent register response missing token")?
-                .to_string();
-            let agent_id = data
-                .get("id")
-                .and_then(Value::as_str)
-                .or_else(|| data.get("agent_id").and_then(Value::as_str))
-                .unwrap_or(&name)
-                .to_string();
-            let returned_name = data
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or(&name)
-                .to_string();
-            let workspace_id = data
-                .get("workspace_id")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned);
-
-            return Ok((agent_id, returned_name, token, workspace_id));
         }
     }
 
@@ -589,13 +560,15 @@ impl AuthClient {
         let Some(workspace_key) = normalize_workspace_key(workspace_key) else {
             return Ok(false);
         };
-        let response = self
-            .http
-            .get(format!("{}/v1/channels", self.base_url))
-            .bearer_auth(workspace_key)
-            .send()
-            .await?;
-        Ok(response.status().is_success())
+        let relay = match build_relay_client(&workspace_key, &self.base_url) {
+            Ok(relay) => relay,
+            Err(_) => return Ok(false),
+        };
+        match relay.list_channels(false).await {
+            Ok(_) => Ok(true),
+            Err(RelayError::Api { status, .. }) if status == 401 || status == 403 => Ok(false),
+            Err(_) => Ok(false),
+        }
     }
 
     pub fn store(&self) -> &CredentialStore {
@@ -657,74 +630,33 @@ fn auth_http_status(err: &anyhow::Error) -> Option<StatusCode> {
         })
 }
 
-async fn auth_http_error(
-    response: reqwest::Response,
-    operation: &str,
-    agent_name: Option<&str>,
-) -> anyhow::Error {
-    let status = response.status();
-    let retry_after = response
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
-    let body_text = response.text().await.unwrap_or_default();
-    let detail = relaycast_error_detail(&body_text);
-
-    let message = if status == StatusCode::TOO_MANY_REQUESTS {
-        let retry_text = retry_after
-            .map(|value| format!("; retry after {value}s"))
-            .unwrap_or_default();
-        match (agent_name, detail) {
-            (Some(name), Some(detail)) => {
-                format!("relaycast {operation} for '{name}' was rate-limited{retry_text}: {detail}")
-            }
-            (Some(name), None) => {
-                format!("relaycast {operation} for '{name}' was rate-limited{retry_text}")
-            }
-            (None, Some(detail)) => {
-                format!("relaycast {operation} was rate-limited{retry_text}: {detail}")
-            }
-            (None, None) => format!("relaycast {operation} was rate-limited{retry_text}"),
-        }
-    } else {
-        match (agent_name, detail) {
-            (Some(name), Some(detail)) => {
-                format!("relaycast {operation} failed for '{name}' ({status}): {detail}")
-            }
-            (Some(name), None) => format!("relaycast {operation} failed for '{name}' ({status})"),
-            (None, Some(detail)) => format!("relaycast {operation} failed ({status}): {detail}"),
-            (None, None) => format!("relaycast {operation} failed ({status})"),
-        }
-    };
-
-    anyhow::Error::new(AuthHttpError { status, message })
+/// Build a `RelayCast` workspace client from an API key and base URL.
+fn build_relay_client(api_key: &str, base_url: &str) -> Result<RelayCast> {
+    let opts = RelayCastOptions::new(api_key).with_base_url(base_url);
+    RelayCast::new(opts).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
-fn relaycast_error_detail(body: &str) -> Option<String> {
-    let parsed: Value = serde_json::from_str(body).ok()?;
-    parsed
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .or_else(|| {
-            parsed
-                .pointer("/error/code")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-        })
-        .or_else(|| {
-            parsed
-                .get("message")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-        })
+/// Convert a `RelayError` into an `anyhow::Error`, preserving the HTTP status
+/// so that `is_auth_rejection`, `is_not_found`, and `is_rate_limited` still work.
+fn relay_error_to_anyhow(error: RelayError) -> anyhow::Error {
+    match &error {
+        RelayError::Api {
+            status, message, ..
+        } => {
+            let status_code = StatusCode::from_u16(*status)
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            anyhow::Error::new(AuthHttpError {
+                status: status_code,
+                message: message.clone(),
+            })
+        }
+        _ => anyhow::anyhow!("{error}"),
+    }
+}
+
+/// Check if a RelayError error code indicates a conflict (409).
+fn is_conflict_code(code: &str) -> bool {
+    code == "agent_already_exists" || code == "conflict"
 }
 
 #[cfg(test)]
@@ -757,7 +689,7 @@ mod tests {
             when.method(POST).path("/v1/workspaces");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_new"}}"#);
+                .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_new","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
         let register = server.mock(|when, then| {
             when.method(POST)
@@ -765,7 +697,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_new");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a1","name":"lead","token":"at_live_1","workspace_id":"ws_new"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a1","name":"lead","token":"at_live_1","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -787,13 +719,21 @@ mod tests {
     async fn uses_cached_workspace_key_without_creating_workspace() {
         clear_relay_env();
         let server = MockServer::start();
+        let _rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(404)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"not_found","message":"agent not found"}}"#);
+        });
         let register = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents")
                 .header("authorization", "Bearer rk_live_cached");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a2","name":"lead","token":"at_live_2","workspace_id":"ws_cached"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a2","name":"lead","token":"at_live_2","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -826,7 +766,7 @@ mod tests {
             when.method(POST).path("/v1/workspaces");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"workspace_id":"ws_boot","api_key":"rk_live_boot"}}"#);
+                .body(r#"{"ok":true,"data":{"workspace_id":"ws_boot","api_key":"rk_live_boot","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
         let register = server.mock(|when, then| {
             when.method(POST)
@@ -834,7 +774,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_boot");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a3","name":"lead","token":"at_live_3"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a3","name":"lead","token":"at_live_3","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -856,13 +796,21 @@ mod tests {
     async fn refresh_session_uses_cached_workspace_key() {
         clear_relay_env();
         let server = MockServer::start();
+        let _rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(404)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"not_found","message":"agent not found"}}"#);
+        });
         let register = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents")
                 .header("authorization", "Bearer rk_live_cached");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a4","name":"lead","token":"at_live_4","workspace_id":"ws_cached"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a4","name":"lead","token":"at_live_4","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -888,19 +836,27 @@ mod tests {
     async fn unauthorized_cached_key_bootstraps_fresh_workspace() {
         clear_relay_env();
         let server = MockServer::start();
+        let _rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_stale");
+            then.status(401)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"unauthorized","message":"unauthorized"}}"#);
+        });
         let stale_register = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents")
                 .header("authorization", "Bearer rk_live_stale");
             then.status(401)
                 .header("content-type", "application/json")
-                .body(r#"{"error":"unauthorized"}"#);
+                .body(r#"{"ok":false,"error":{"code":"unauthorized","message":"unauthorized"}}"#);
         });
         let workspace = server.mock(|when, then| {
             when.method(POST).path("/v1/workspaces");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_new"}}"#);
+                .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_new","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
         let fresh_register = server.mock(|when, then| {
             when.method(POST)
@@ -908,7 +864,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_new");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a9","name":"lead","token":"at_live_9","workspace_id":"ws_new"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a9","name":"lead","token":"at_live_9","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -949,7 +905,7 @@ mod tests {
                 }));
             then.status(409)
                 .header("content-type", "application/json")
-                .body(r#"{"error":"name_taken"}"#);
+                .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -989,7 +945,7 @@ mod tests {
                 }));
             then.status(409)
                 .header("content-type", "application/json")
-                .body(r#"{"error":"name_taken"}"#);
+                .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
         });
         let rotate = server.mock(|when, then| {
             when.method(POST)
@@ -1039,7 +995,7 @@ mod tests {
                 }));
             then.status(409)
                 .header("content-type", "application/json")
-                .body(r#"{"error":"name_taken"}"#);
+                .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
         });
         let rotate = server.mock(|when, then| {
             when.method(POST)
@@ -1091,7 +1047,7 @@ mod tests {
                 }));
             then.status(409)
                 .header("content-type", "application/json")
-                .body(r#"{"error":"name_taken"}"#);
+                .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
         });
         let rotate = server.mock(|when, then| {
             when.method(POST)
@@ -1099,7 +1055,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_cached");
             then.status(401)
                 .header("content-type", "application/json")
-                .body(r#"{"error":{"message":"unauthorized"}}"#);
+                .body(r#"{"ok":false,"error":{"code":"unauthorized","message":"unauthorized"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -1122,7 +1078,6 @@ mod tests {
 
         let rendered = format!("{err:#}");
         assert!(rendered.contains("cached credentials could not be refreshed"));
-        assert!(rendered.contains("rotate-token"));
         conflict.assert_hits(1);
         rotate.assert_hits(1);
     }
@@ -1131,6 +1086,14 @@ mod tests {
     async fn default_name_conflict_retries_with_suffix_once() {
         clear_relay_env();
         let server = MockServer::start();
+        let _rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(404)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"not_found","message":"agent not found"}}"#);
+        });
         let first_conflict = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents")
@@ -1141,7 +1104,7 @@ mod tests {
                 }));
             then.status(409)
                 .header("content-type", "application/json")
-                .body(r#"{"error":"name_taken"}"#);
+                .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
         });
         let second_success = server.mock(|when, then| {
             when.method(POST)
@@ -1150,7 +1113,7 @@ mod tests {
                 .body_contains("\"name\":\"lead-");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a10","name":"lead-suffixed","token":"at_live_10","workspace_id":"ws_cached"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a10","name":"lead-suffixed","token":"at_live_10","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -1187,7 +1150,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_cached");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"token":"at_live_rotated"}}"#);
+                .body(r#"{"ok":true,"data":{"token":"at_live_rotated","name":"lead"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -1221,7 +1184,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_cached");
             then.status(404)
                 .header("content-type", "application/json")
-                .body(r#"{"error":"not_found"}"#);
+                .body(r#"{"ok":false,"error":{"code":"not_found","message":"not found"}}"#);
         });
         let register = server.mock(|when, then| {
             when.method(POST)
@@ -1229,7 +1192,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_cached");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a_new","name":"lead","token":"at_live_reregistered","workspace_id":"ws_cached"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a_new","name":"lead","token":"at_live_reregistered","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -1262,13 +1225,13 @@ mod tests {
                 .header("authorization", "Bearer rk_live_cached");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"token":"at_live_rotated_startup"}}"#);
+                .body(r#"{"ok":true,"data":{"token":"at_live_rotated_startup","name":"lead"}}"#);
         });
         let register = server.mock(|when, then| {
             when.method(POST).path("/v1/agents");
             then.status(500)
                 .header("content-type", "application/json")
-                .body(r#"{"error":"should_not_register"}"#);
+                .body(r#"{"ok":false,"error":{"code":"internal","message":"should_not_register"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -1345,7 +1308,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_cached");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"[]"#);
+                .body(r#"{"ok":true,"data":[]}"#);
         });
         let client = AuthClient::new(
             server.base_url(),
@@ -1370,7 +1333,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_cached");
             then.status(401)
                 .header("content-type", "application/json")
-                .body(r#"{"error":"unauthorized"}"#);
+                .body(r#"{"ok":false,"error":{"code":"unauthorized","message":"unauthorized"}}"#);
         });
         let client = AuthClient::new(
             server.base_url(),
@@ -1458,7 +1421,7 @@ mod tests {
             when.method(POST).path("/v1/workspaces");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_new"}}"#);
+                .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_new","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
         let fresh_register = server.mock(|when, then| {
             when.method(POST)
@@ -1487,8 +1450,7 @@ mod tests {
         let rendered = format!("{err:#}");
 
         assert!(rendered.contains("failed registering agent with fresh workspace key"));
-        assert!(rendered.contains("rate-limited"));
-        assert!(rendered.contains("retry after 60s"));
+        assert!(rendered.contains("Rate limit exceeded"));
         rotate.assert_hits(1);
         cached_register.assert_hits(1);
         workspace.assert_hits(1);
