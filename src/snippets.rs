@@ -1173,7 +1173,9 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         ));
         assert!(args.contains(&"mcp_servers.relaycast.env.RELAY_AGENT_NAME=CodexAgent".to_string()));
         assert!(args.contains(&"mcp_servers.relaycast.env.RELAY_AGENT_TYPE=agent".to_string()));
-        assert!(args.contains(&"mcp_servers.relaycast.env.RELAY_STRICT_AGENT_NAME=\"1\"".to_string()));
+        assert!(
+            args.contains(&"mcp_servers.relaycast.env.RELAY_STRICT_AGENT_NAME=\"1\"".to_string())
+        );
     }
 
     #[tokio::test]
