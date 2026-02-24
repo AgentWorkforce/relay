@@ -68,6 +68,51 @@ pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
         });
     }
 
+    if matches!(kind, InboundKind::ReactionReceived) {
+        let from = accessor
+            .field(EventNesting::Top, "agent_name")
+            .and_then(scalar_to_string)
+            .unwrap_or_else(|| "unknown".to_string());
+        let emoji = accessor
+            .field(EventNesting::Top, "emoji")
+            .and_then(scalar_to_string)
+            .unwrap_or_else(|| "?".to_string());
+        let message_id = accessor
+            .field(EventNesting::Top, "message_id")
+            .and_then(scalar_to_string)
+            .unwrap_or_default();
+        let channel_name = accessor
+            .field(EventNesting::Top, "channel_name")
+            .and_then(scalar_to_string);
+        // Only inject reactions that have a channel context (public channels).
+        // DM reactions lack routing info and are surfaced via the inbox API instead.
+        let target = match channel_name {
+            Some(ch) if !ch.is_empty() => {
+                if ch.starts_with('#') {
+                    ch
+                } else {
+                    format!("#{ch}")
+                }
+            }
+            _ => return None,
+        };
+        let event_id = format!("reaction-{message_id}-{from}-{emoji}");
+        let text = format!(
+            ":{emoji}: reaction from {from} on message {message_id} (informational — no response required)"
+        );
+        return Some(InboundRelayEvent {
+            event_id,
+            kind,
+            from,
+            sender_agent_id: None,
+            sender_kind: SenderKind::Agent,
+            target,
+            text,
+            thread_id: None,
+            priority: RelayPriority::P4,
+        });
+    }
+
     let from = extract_sender(accessor).unwrap_or_else(|| "unknown".to_string());
     let sender_agent_id = extract_sender_agent_id(accessor);
     let sender_kind = parse_sender_kind(accessor);
@@ -82,7 +127,7 @@ pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
         InboundKind::MessageCreated | InboundKind::ThreadReply | InboundKind::GroupDmReceived => {
             RelayPriority::P3
         }
-        InboundKind::Presence => RelayPriority::P4,
+        InboundKind::Presence | InboundKind::ReactionReceived => RelayPriority::P4,
     };
 
     Some(InboundRelayEvent {
@@ -260,6 +305,7 @@ fn parse_inbound_kind(event_type: &str) -> Option<InboundKind> {
         "agent.online" | "agent.offline" | "user.online" | "user.offline" => {
             Some(InboundKind::Presence)
         }
+        "reaction.added" | "reaction.removed" => Some(InboundKind::ReactionReceived),
         _ => None,
     }
 }
@@ -970,6 +1016,56 @@ mod tests {
 
         assert_eq!(event.from, "bob");
         assert_eq!(event.sender_kind, crate::types::SenderKind::Agent);
+    }
+
+    #[test]
+    fn maps_reaction_added() {
+        let event = map_ws_event(&json!({
+            "type": "reaction.added",
+            "message_id": "msg_42",
+            "emoji": "thumbsup",
+            "agent_name": "alice",
+            "channel_name": "general"
+        }))
+        .expect("should map reaction.added");
+
+        assert_eq!(event.kind, InboundKind::ReactionReceived);
+        assert_eq!(event.from, "alice");
+        assert_eq!(event.target, "#general");
+        assert!(event.text.contains(":thumbsup:"));
+        assert!(event.text.contains("no response required"));
+        assert_eq!(event.event_id, "reaction-msg_42-alice-thumbsup");
+        assert_eq!(event.priority, crate::types::RelayPriority::P4);
+        assert!(to_inject_request(event).is_some());
+    }
+
+    #[test]
+    fn maps_reaction_removed() {
+        let event = map_ws_event(&json!({
+            "type": "reaction.removed",
+            "message_id": "msg_42",
+            "emoji": "thumbsup",
+            "agent_name": "bob",
+            "channel_name": "dev"
+        }))
+        .expect("should map reaction.removed");
+
+        assert_eq!(event.kind, InboundKind::ReactionReceived);
+        assert_eq!(event.from, "bob");
+        assert_eq!(event.target, "#dev");
+    }
+
+    #[test]
+    fn drops_reaction_without_channel() {
+        // Reactions without a channel (e.g. DM reactions) are dropped from PTY
+        // injection — they're surfaced via the inbox API / piggyback instead.
+        assert!(map_ws_event(&json!({
+            "type": "reaction.added",
+            "message_id": "msg_99",
+            "emoji": "rocket",
+            "agent_name": "carol"
+        }))
+        .is_none());
     }
 
     #[test]

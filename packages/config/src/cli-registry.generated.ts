@@ -62,6 +62,8 @@ export const CodexModels = {
   GPT_5_2_CODEX: 'gpt-5.2-codex',
   /** GPT-5.3 Codex — Latest frontier agentic coding model */
   GPT_5_3_CODEX: 'gpt-5.3-codex',
+  /** GPT-5.3 Codex Spark — Ultra-fast coding model */
+  GPT_5_3_CODEX_SPARK: 'gpt-5.3-codex-spark',
   /** GPT-5.1 Codex Max — Deep and fast reasoning */
   GPT_5_1_CODEX_MAX: 'gpt-5.1-codex-max',
   /** GPT-5.2 — Frontier model, knowledge & reasoning */
@@ -159,6 +161,7 @@ export const CLAUDE_MODEL_OPTIONS: ModelOption[] = [
 export const CODEX_MODEL_OPTIONS: ModelOption[] = [
   { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex — Frontier agentic coding model' },
   { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex — Latest frontier agentic coding model' },
+  { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark — Ultra-fast coding model' },
   { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max — Deep and fast reasoning' },
   { value: 'gpt-5.2', label: 'GPT-5.2 — Frontier model, knowledge & reasoning' },
   { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini — Cheaper, faster' },

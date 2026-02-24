@@ -363,6 +363,29 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         }
                     }
                     None => {
+                        // PTY reader closed — child likely exited. Emit
+                        // agent_exit with any echo_buffer tail so the
+                        // dashboard can surface the CLI's last output.
+                        let clean = strip_ansi(&echo_buffer);
+                        let trimmed = if clean.len() > 2000 {
+                            &clean[clean.len() - 2000..]
+                        } else {
+                            &clean
+                        };
+                        if !trimmed.is_empty() {
+                            tracing::info!(
+                                target = "agent_relay::worker::pty",
+                                output_len = trimmed.len(),
+                                "PTY channel closed; captured output available"
+                            );
+                        }
+                        let mut exit_payload = json!({
+                            "reason": "pty_closed",
+                        });
+                        if !trimmed.is_empty() {
+                            exit_payload["last_output"] = json!(trimmed);
+                        }
+                        let _ = send_frame(&out_tx, "agent_exit", None, exit_payload).await;
                         running = false;
                     }
                 }
@@ -520,13 +543,46 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             // falls back to kill(pid, 0) on Unix.
             _ = child_watchdog.tick() => {
                 if pty.has_exited() {
+                    // Drain any remaining PTY output so we can capture error
+                    // messages from CLIs that exit immediately (e.g. codex MCP
+                    // failure). Without this, the output is lost in the race
+                    // between the reader thread and the watchdog.
+                    let mut late_output = String::new();
+                    while let Ok(chunk) = pty_rx.try_recv() {
+                        let text = String::from_utf8_lossy(&chunk).to_string();
+                        late_output.push_str(&text);
+                        let _ = send_frame(&out_tx, "worker_stream", None, json!({
+                            "stream": "stdout",
+                            "chunk": text,
+                        })).await;
+                    }
+                    if !late_output.is_empty() {
+                        let clean = strip_ansi(&late_output);
+                        tracing::warn!(
+                            target = "agent_relay::worker::pty",
+                            output = %clean,
+                            "watchdog: captured late output from exiting child"
+                        );
+                    }
                     tracing::info!(
                         target = "agent_relay::worker::pty",
                         "watchdog: child process exited"
                     );
-                    let _ = send_frame(&out_tx, "agent_exit", None, json!({
+                    let mut exit_payload = json!({
                         "reason": "child_exited",
-                    })).await;
+                    });
+                    if !late_output.is_empty() {
+                        let clean = strip_ansi(&late_output);
+                        // Truncate to avoid huge payloads; last 2000 chars
+                        // are most likely to contain the error message.
+                        let trimmed = if clean.len() > 2000 {
+                            &clean[clean.len() - 2000..]
+                        } else {
+                            &clean
+                        };
+                        exit_payload["last_output"] = json!(trimmed);
+                    }
+                    let _ = send_frame(&out_tx, "agent_exit", None, exit_payload).await;
                     running = false;
                 } else {
                     // If no PTY output for a long time, the agent is likely

@@ -53,6 +53,22 @@ pub(crate) fn resolve_delivery_targets(
         };
     }
 
+    // Thread replies without a channel target are broadcast to all workers
+    // (except the sender). The WS only delivers thread.reply to channel
+    // subscribers so every local worker is a valid recipient.
+    if matches!(event.kind, InboundKind::ThreadReply) && event.target == "thread" {
+        let targets: Vec<String> = workers
+            .iter()
+            .filter(|w| !w.name.eq_ignore_ascii_case(&event.from))
+            .map(|w| w.name.to_string())
+            .collect();
+        return DeliveryPlan {
+            targets,
+            display_target: "thread".to_string(),
+            needs_dm_resolution: false,
+        };
+    }
+
     let direct_targets = worker_names_for_direct_target(workers, &event.target, &event.from);
     let needs_dm_resolution = direct_targets.is_empty()
         && matches!(

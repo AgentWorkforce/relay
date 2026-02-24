@@ -535,6 +535,13 @@ pub async fn broadcast_if_relevant(
 ) {
     if let Some(kind) = payload.get("kind").and_then(Value::as_str) {
         match kind {
+            // High-frequency ephemeral events: broadcast without replay buffer storage
+            "worker_stream" | "delivery_active" => {
+                if let Ok(json) = serde_json::to_string(payload) {
+                    let _ = events_tx.send(json);
+                }
+            }
+            // Durable events: store in replay buffer and broadcast
             "relay_inbound"
             | "agent_spawned"
             | "agent_exited"

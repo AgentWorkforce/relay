@@ -9,9 +9,9 @@ from typing import Final, TypedDict, List
 
 class CLIVersions:
     """CLI tool versions. Update packages/shared/cli-registry.yaml to change versions."""
-    CLAUDE: Final[str] = "1.0.24"  # Claude Code
-    CODEX: Final[str] = "0.1.2504301707"  # Codex CLI
-    GEMINI: Final[str] = "0.1.17"  # Gemini CLI
+    CLAUDE: Final[str] = "2.1.50"  # Claude Code
+    CODEX: Final[str] = "0.104.0"  # Codex CLI
+    GEMINI: Final[str] = "0.29.5"  # Gemini CLI
     CURSOR: Final[str] = "0.48.6"  # Cursor
     AIDER: Final[str] = "0.72.1"  # Aider
     GOOSE: Final[str] = "1.0.16"  # Goose
@@ -38,6 +38,7 @@ class CodexModels:
     """Codex CLI model identifiers."""
     GPT_5_2_CODEX: Final[str] = "gpt-5.2-codex"  # GPT-5.2 Codex — Frontier agentic coding model (default)
     GPT_5_3_CODEX: Final[str] = "gpt-5.3-codex"  # GPT-5.3 Codex — Latest frontier agentic coding model
+    GPT_5_3_CODEX_SPARK: Final[str] = "gpt-5.3-codex-spark"  # GPT-5.3 Codex Spark — Ultra-fast coding model
     GPT_5_1_CODEX_MAX: Final[str] = "gpt-5.1-codex-max"  # GPT-5.1 Codex Max — Deep and fast reasoning
     GPT_5_2: Final[str] = "gpt-5.2"  # GPT-5.2 — Frontier model, knowledge & reasoning
     GPT_5_1_CODEX_MINI: Final[str] = "gpt-5.1-codex-mini"  # GPT-5.1 Codex Mini — Cheaper, faster
@@ -91,6 +92,7 @@ CLAUDE_MODEL_OPTIONS: Final[List[ModelOption]] = [
 CODEX_MODEL_OPTIONS: Final[List[ModelOption]] = [
     {"value": "gpt-5.2-codex", "label": "GPT-5.2 Codex — Frontier agentic coding model"},
     {"value": "gpt-5.3-codex", "label": "GPT-5.3 Codex — Latest frontier agentic coding model"},
+    {"value": "gpt-5.3-codex-spark", "label": "GPT-5.3 Codex Spark — Ultra-fast coding model"},
     {"value": "gpt-5.1-codex-max", "label": "GPT-5.1 Codex Max — Deep and fast reasoning"},
     {"value": "gpt-5.2", "label": "GPT-5.2 — Frontier model, knowledge & reasoning"},
     {"value": "gpt-5.1-codex-mini", "label": "GPT-5.1 Codex Mini — Cheaper, faster"},
@@ -168,19 +170,19 @@ CLI_REGISTRY: Final[dict] = {
     "claude": {
         "name": "Claude Code",
         "package": "@anthropic-ai/claude-code",
-        "version": "1.0.24",
+        "version": "2.1.50",
         "install": "npm install -g @anthropic-ai/claude-code",
     },
     "codex": {
         "name": "Codex CLI",
         "package": "@openai/codex",
-        "version": "0.1.2504301707",
+        "version": "0.104.0",
         "install": "npm install -g @openai/codex",
     },
     "gemini": {
         "name": "Gemini CLI",
         "package": "@google/gemini-cli",
-        "version": "0.1.17",
+        "version": "0.29.5",
         "install": "npm install -g @google/gemini-cli",
     },
     "cursor": {

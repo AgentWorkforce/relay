@@ -2017,8 +2017,22 @@ export class WorkflowRunner {
 
     // Append self-termination instructions to the task
     let agentName = `${step.name}-${this.generateShortId()}`;
+
+    // Only inject delegation guidance for lead/coordinator agents, not spokes/workers.
+    // In non-hub patterns (pipeline, dag, etc.) every agent is autonomous so they all get it.
+    const role = agentDef.role?.toLowerCase() ?? '';
+    const nameLC = agentDef.name.toLowerCase();
+    const isHub =
+      WorkflowRunner.HUB_ROLES.has(nameLC) ||
+      [...WorkflowRunner.HUB_ROLES].some((r) => role.includes(r));
+    const pattern = this.currentConfig?.swarm.pattern;
+    const isHubPattern = pattern && WorkflowRunner.HUB_PATTERNS.has(pattern);
+    const delegationGuidance =
+      isHub || !isHubPattern ? this.buildDelegationGuidance(agentDef.cli, timeoutMs) : '';
+
     const taskWithExit =
       step.task +
+      (delegationGuidance ? '\n\n' + delegationGuidance + '\n' : '') +
       '\n\n---\n' +
       'IMPORTANT: When you have fully completed this task, you MUST self-terminate by outputting ' +
       'the exact text "/exit" on its own line. Do not call any MCP tools to exit — just print /exit. ' +
@@ -2211,6 +2225,16 @@ export class WorkflowRunner {
     'auction',
   ]);
 
+  /** Roles that indicate a coordinator/lead agent (eligible for delegation guidance). */
+  private static readonly HUB_ROLES = new Set([
+    'lead',
+    'hub',
+    'coordinator',
+    'supervisor',
+    'orchestrator',
+    'auctioneer',
+  ]);
+
   /**
    * Wait for agent exit with idle detection and nudging.
    * If no idle nudge config is set, falls through to simple waitForExit.
@@ -2342,7 +2366,6 @@ export class WorkflowRunner {
     }
 
     // Find an interactive agent with a hub-like role
-    const hubRoles = new Set(['lead', 'hub', 'coordinator', 'supervisor', 'orchestrator', 'auctioneer']);
     const agents = this.currentConfig?.agents ?? [];
 
     for (const agentDef of agents) {
@@ -2353,7 +2376,10 @@ export class WorkflowRunner {
       const role = agentDef.role?.toLowerCase() ?? '';
       const nameLC = agentDef.name.toLowerCase();
 
-      if (hubRoles.has(nameLC) || [...hubRoles].some((r) => role.includes(r))) {
+      if (
+        WorkflowRunner.HUB_ROLES.has(nameLC) ||
+        [...WorkflowRunner.HUB_ROLES].some((r) => role.includes(r))
+      ) {
         // Found a hub candidate — check if we have a live handle
         const handle = this.activeAgentHandles.get(agentDef.name);
         if (handle) return handle;
@@ -2508,6 +2534,45 @@ export class WorkflowRunner {
       lines.join('\n') +
       '\n' +
       'Do NOT attempt to message these agents. Use the {{steps.<name>.output}} references above to access their results.'
+    );
+  }
+
+  /**
+   * Build guidance that encourages agents to autonomously delegate subtasks
+   * to helper agents when work is too complex for a single pass.
+   */
+  private buildDelegationGuidance(cli: string, timeoutMs?: number): string {
+    const timeoutNote = timeoutMs
+      ? `You have approximately ${Math.round(timeoutMs / 60000)} minutes before this step times out. ` +
+        'Plan accordingly — delegate early if the work is substantial.\n\n'
+      : '';
+
+    // Option 2 (sub-agents via Task tool) is only available in Claude
+    const subAgentOption =
+      cli === 'claude'
+        ? 'Option 2 — Use built-in sub-agents (Task tool) for research or scoped work:\n' +
+          '  - Good for exploring code, reading files, or making targeted changes\n' +
+          '  - Can run multiple sub-agents in parallel\n\n'
+        : '';
+
+    return (
+      '---\n' +
+      'AUTONOMOUS DELEGATION — READ THIS BEFORE STARTING:\n' +
+      timeoutNote +
+      'Before diving in, assess whether this task is too large or complex for a single agent. ' +
+      'If it involves multiple independent subtasks, touches many files, or could take a long time, ' +
+      'you should break it down and delegate to helper agents to avoid timeouts.\n\n' +
+      'Option 1 — Spawn relay agents (for real parallel coding work):\n' +
+      '  - relay_spawn(name="helper-1", cli="claude", task="Specific subtask description")\n' +
+      '  - Coordinate via relay_send(to="helper-1", message="...")\n' +
+      '  - Check on them with relay_inbox()\n' +
+      '  - Clean up when done: relay_release(name="helper-1")\n\n' +
+      subAgentOption +
+      'Guidelines:\n' +
+      '- You are the lead — delegate but stay in control, track progress, integrate results\n' +
+      '- Give each helper a clear, self-contained task with enough context to work independently\n' +
+      "- For simple or quick work, just do it yourself — don't over-delegate\n" +
+      '- Always release spawned relay agents when their work is complete'
     );
   }
 

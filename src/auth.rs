@@ -459,6 +459,27 @@ impl AuthClient {
 
             if response.status() == StatusCode::CONFLICT {
                 if strict_name {
+                    if let Some((
+                        cached_agent_id,
+                        cached_agent_name,
+                        cached_token,
+                        cached_workspace_id,
+                    )) = self
+                        .cached_registration_from_store(workspace_key, &name)
+                        .await?
+                    {
+                        tracing::info!(
+                            target = "relay_broker::auth",
+                            agent_name = %name,
+                            "strict-name registration conflict; reusing cached relaycast token"
+                        );
+                        return Ok((
+                            cached_agent_id,
+                            cached_agent_name,
+                            cached_token,
+                            cached_workspace_id,
+                        ));
+                    }
                     anyhow::bail!("agent name '{}' already exists", name);
                 }
                 if !attempted_retry {
@@ -497,6 +518,82 @@ impl AuthClient {
 
             return Ok((agent_id, returned_name, token, workspace_id));
         }
+    }
+
+    async fn cached_registration_from_store(
+        &self,
+        workspace_key: &str,
+        requested_name: &str,
+    ) -> Result<Option<(String, String, String, Option<String>)>> {
+        let cached = match self.store.load() {
+            Ok(cached) => cached,
+            Err(_) => return Ok(None),
+        };
+        let cached_session =
+            match cached_session_from_token(&cached, workspace_key, Some(requested_name), true) {
+                Some(session) => session,
+                None => return Ok(None),
+            };
+
+        match self
+            .rotate_token_no_fallback(&cached_session.credentials)
+            .await
+        {
+            Ok(refreshed) => {
+                let workspace_id = if refreshed.credentials.workspace_id.trim().is_empty() {
+                    None
+                } else {
+                    Some(refreshed.credentials.workspace_id)
+                };
+                Ok(Some((
+                    refreshed.credentials.agent_id,
+                    requested_name.to_string(),
+                    refreshed.token,
+                    workspace_id,
+                )))
+            }
+            Err(error) if is_rate_limited(&error) => {
+                tracing::warn!(
+                    target = "relay_broker::auth",
+                    agent_name = %requested_name,
+                    "cached token refresh was rate-limited during strict-name conflict; reusing cached token"
+                );
+                let workspace_id = if cached_session.credentials.workspace_id.trim().is_empty() {
+                    None
+                } else {
+                    Some(cached_session.credentials.workspace_id)
+                };
+                Ok(Some((
+                    cached_session.credentials.agent_id,
+                    requested_name.to_string(),
+                    cached_session.token,
+                    workspace_id,
+                )))
+            }
+            Err(error) if is_auth_rejection(&error) || is_not_found(&error) => {
+                Err(error).context(format!(
+                    "agent name '{}' already exists but cached credentials could not be refreshed",
+                    requested_name
+                ))
+            }
+            Err(error) => Err(error).context(format!(
+                "failed to refresh cached credentials for existing agent '{}'",
+                requested_name
+            )),
+        }
+    }
+
+    pub async fn workspace_key_is_live(&self, workspace_key: &str) -> Result<bool> {
+        let Some(workspace_key) = normalize_workspace_key(workspace_key) else {
+            return Ok(false);
+        };
+        let response = self
+            .http
+            .get(format!("{}/v1/channels", self.base_url))
+            .bearer_auth(workspace_key)
+            .send()
+            .await?;
+        Ok(response.status().is_success())
     }
 
     pub fn store(&self) -> &CredentialStore {
@@ -632,7 +729,7 @@ fn relaycast_error_detail(body: &str) -> Option<String> {
 mod tests {
     use std::fs;
 
-    use httpmock::Method::POST;
+    use httpmock::Method::{GET, POST};
     use httpmock::MockServer;
     use serde_json::json;
     use tempfile::tempdir;
@@ -877,6 +974,148 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn strict_name_conflict_reuses_cached_token_when_name_matches() {
+        clear_relay_env();
+        let server = MockServer::start();
+        let conflict = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_cached")
+                .json_body(json!({
+                    "name": "lead",
+                    "type": "agent"
+                }));
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(r#"{"error":"name_taken"}"#);
+        });
+
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("relaycast.json");
+        let cached = CredentialCache {
+            workspace_id: "ws_cached".into(),
+            agent_id: "a_cached".into(),
+            api_key: "rk_live_cached".into(),
+            agent_name: Some("lead".into()),
+            agent_token: Some("at_live_cached_token".into()),
+            updated_at: chrono::Utc::now(),
+        };
+        fs::write(&cache_path, serde_json::to_vec(&cached).unwrap()).unwrap();
+
+        let client = AuthClient::new(server.base_url(), CredentialStore::new(cache_path));
+        let session = client
+            .startup_session_with_options(Some("lead"), true, None)
+            .await
+            .unwrap();
+
+        assert_eq!(session.token, "at_live_cached_token");
+        assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
+        assert_eq!(session.credentials.agent_id, "a_cached");
+        conflict.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn strict_name_conflict_refreshes_stale_cached_token_before_reuse() {
+        clear_relay_env();
+        let server = MockServer::start();
+        let conflict = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_cached")
+                .json_body(json!({
+                    "name": "lead",
+                    "type": "agent"
+                }));
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(r#"{"error":"name_taken"}"#);
+        });
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"token":"at_live_rotated","name":"lead"}}"#);
+        });
+
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("relaycast.json");
+        let cached = CredentialCache {
+            workspace_id: "ws_cached".into(),
+            agent_id: "a_cached".into(),
+            api_key: "rk_live_cached".into(),
+            agent_name: Some("lead".into()),
+            agent_token: Some("at_revoked_old".into()),
+            updated_at: chrono::Utc::now(),
+        };
+        fs::write(&cache_path, serde_json::to_vec(&cached).unwrap()).unwrap();
+
+        let client = AuthClient::new(server.base_url(), CredentialStore::new(cache_path));
+        let session = client
+            .startup_session_with_options(Some("lead"), true, None)
+            .await
+            .unwrap();
+
+        assert_eq!(session.token, "at_live_rotated");
+        assert_eq!(
+            session.credentials.agent_token.as_deref(),
+            Some("at_live_rotated")
+        );
+        conflict.assert_hits(1);
+        rotate.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn strict_name_conflict_with_unrefreshable_cached_credentials_is_actionable() {
+        clear_relay_env();
+        let server = MockServer::start();
+        let conflict = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_cached")
+                .json_body(json!({
+                    "name": "lead",
+                    "type": "agent"
+                }));
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(r#"{"error":"name_taken"}"#);
+        });
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(401)
+                .header("content-type", "application/json")
+                .body(r#"{"error":{"message":"unauthorized"}}"#);
+        });
+
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("relaycast.json");
+        let cached = CredentialCache {
+            workspace_id: "ws_cached".into(),
+            agent_id: "a_cached".into(),
+            api_key: "rk_live_cached".into(),
+            agent_name: Some("lead".into()),
+            agent_token: Some("at_revoked_old".into()),
+            updated_at: chrono::Utc::now(),
+        };
+        fs::write(&cache_path, serde_json::to_vec(&cached).unwrap()).unwrap();
+
+        let client = AuthClient::new(server.base_url(), CredentialStore::new(cache_path));
+        let err = client
+            .startup_session_with_options(Some("lead"), true, None)
+            .await
+            .unwrap_err();
+
+        let rendered = format!("{err:#}");
+        assert!(rendered.contains("cached credentials could not be refreshed"));
+        conflict.assert_hits(1);
+        rotate.assert_hits(1);
+    }
+
+    #[tokio::test]
     async fn default_name_conflict_retries_with_suffix_once() {
         clear_relay_env();
         let server = MockServer::start();
@@ -1082,6 +1321,56 @@ mod tests {
         // After rotate-token is rate-limited, the registration loop is still
         // probed so telemetry can explicitly mark 429 mode.
         register.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn workspace_key_liveness_probe_returns_true_for_success() {
+        clear_relay_env();
+        let server = MockServer::start();
+        let channels = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/channels")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"[]"#);
+        });
+        let client = AuthClient::new(
+            server.base_url(),
+            CredentialStore::new(tempdir().unwrap().path().join("relaycast.json")),
+        );
+
+        let live = client
+            .workspace_key_is_live("rk_live_cached")
+            .await
+            .unwrap();
+        assert!(live);
+        channels.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn workspace_key_liveness_probe_returns_false_for_unauthorized() {
+        clear_relay_env();
+        let server = MockServer::start();
+        let channels = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/channels")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(401)
+                .header("content-type", "application/json")
+                .body(r#"{"error":"unauthorized"}"#);
+        });
+        let client = AuthClient::new(
+            server.base_url(),
+            CredentialStore::new(tempdir().unwrap().path().join("relaycast.json")),
+        );
+
+        let live = client
+            .workspace_key_is_live("rk_live_cached")
+            .await
+            .unwrap();
+        assert!(!live);
+        channels.assert_hits(1);
     }
 
     #[tokio::test]

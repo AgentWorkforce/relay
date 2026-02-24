@@ -93,6 +93,7 @@ impl ConversationLog {
                 short_id(event.thread_id.as_deref().unwrap_or("?"))
             ),
             crate::types::InboundKind::Presence => "Presence".to_string(),
+            crate::types::InboundKind::ReactionReceived => "Reaction".to_string(),
         };
         let body = truncate(&event.text, 120);
         self.write_row(&event.from, &msg_type, &body);

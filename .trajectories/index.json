@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-02-24T00:07:16.480Z",
+  "lastUpdated": "2026-02-24T14:10:12.214Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -323,6 +323,13 @@
       "startedAt": "2026-02-23T23:44:32.281Z",
       "completedAt": "2026-02-24T00:07:16.389Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_qvb2lcwzi7wu.json"
+    },
+    "traj_thtvk8h1rc6h": {
+      "title": "Fix broker UUID-suffix registration in Relaycast",
+      "status": "completed",
+      "startedAt": "2026-02-24T14:05:24.164Z",
+      "completedAt": "2026-02-24T14:10:12.067Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_thtvk8h1rc6h.json"
     }
   }
 }

@@ -30,6 +30,7 @@ pub enum InboundKind {
     ThreadReply,
     GroupDmReceived,
     Presence,
+    ReactionReceived,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

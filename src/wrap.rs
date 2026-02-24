@@ -376,6 +376,7 @@ pub(crate) async fn run_wrap(
     let relay = connect_relay(RelaySessionOptions {
         paths: &paths,
         requested_name: &requested_name,
+        cached_session: None,
         channels: channel_list,
         strict_name,
         agent_type: None,

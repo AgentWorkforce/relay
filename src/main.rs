@@ -33,7 +33,7 @@ use tokio::{
 use uuid::Uuid;
 
 use relay_broker::{
-    auth::{AuthClient, CredentialStore},
+    auth::{AuthClient, AuthSession, CredentialStore},
     control::{can_release_child, is_human_sender},
     dedup::DedupCache,
     message_bridge::{map_ws_broker_command, map_ws_event},
@@ -192,6 +192,7 @@ fn normalize_initial_task(task: Option<String>) -> Option<String> {
 struct RelaySessionOptions<'a> {
     paths: &'a RuntimePaths,
     requested_name: &'a str,
+    cached_session: Option<AuthSession>,
     channels: Vec<String>,
     strict_name: bool,
     agent_type: Option<&'a str>,
@@ -214,10 +215,58 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
         http_base.clone(),
         CredentialStore::new(opts.paths.creds.clone()),
     );
-    let session = auth
-        .startup_session_with_options(Some(opts.requested_name), opts.strict_name, opts.agent_type)
+    let session = if let Some(cached_session) = opts.cached_session {
+        match auth
+            .workspace_key_is_live(&cached_session.credentials.api_key)
+            .await
+        {
+            Ok(true) => {
+                tracing::info!(
+                    target = "relay_broker::auth",
+                    agent_name = %opts.requested_name,
+                    "reusing cached relaycast agent token; skipping registration"
+                );
+                cached_session
+            }
+            Ok(false) => {
+                tracing::warn!(
+                    target = "relay_broker::auth",
+                    agent_name = %opts.requested_name,
+                    "cached relaycast credentials failed liveness probe; re-running startup auth flow"
+                );
+                auth.startup_session_with_options(
+                    Some(opts.requested_name),
+                    opts.strict_name,
+                    opts.agent_type,
+                )
+                .await
+                .context("failed to initialize relaycast session")?
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target = "relay_broker::auth",
+                    agent_name = %opts.requested_name,
+                    error = %error,
+                    "cached relaycast credential probe failed; re-running startup auth flow"
+                );
+                auth.startup_session_with_options(
+                    Some(opts.requested_name),
+                    opts.strict_name,
+                    opts.agent_type,
+                )
+                .await
+                .context("failed to initialize relaycast session")?
+            }
+        }
+    } else {
+        auth.startup_session_with_options(
+            Some(opts.requested_name),
+            opts.strict_name,
+            opts.agent_type,
+        )
         .await
-        .context("failed to initialize relaycast session")?;
+        .context("failed to initialize relaycast session")?
+    };
     let relay_workspace_key = session.credentials.api_key.clone();
     let self_agent_id = session.credentials.agent_id.clone();
 
@@ -268,10 +317,13 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
 
     let (ws_inbound_tx, ws_inbound_rx) = mpsc::channel(512);
     let (ws_control_tx, ws_control_rx) = mpsc::channel(8);
+    // Use the workspace API key for the WS connection so the broker sees ALL
+    // workspace events (DMs to any agent, channel messages, etc.) rather than
+    // only events visible to its own agent identity.
     let ws = RelaycastWsClient::new(
         ws_base,
         auth,
-        session.token,
+        relay_workspace_key.clone(),
         session.credentials,
         opts.channels,
     );
@@ -611,8 +663,12 @@ impl WorkerRegistry {
                         .any(|a| a.contains("dangerously-skip-permissions"))
                 {
                     Some("--dangerously-skip-permissions")
-                } else if is_codex && !effective_args.iter().any(|a| a.contains("full-auto")) {
-                    Some("--full-auto")
+                } else if is_codex
+                    && !effective_args
+                        .iter()
+                        .any(|a| a.contains("dangerously-bypass") || a.contains("full-auto"))
+                {
+                    Some("--dangerously-bypass-approvals-and-sandbox")
                 } else {
                     None
                 };
@@ -1143,8 +1199,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let relay = connect_relay(RelaySessionOptions {
         paths: &paths,
         requested_name: &resolved_name,
+        cached_session: cached_session_for_requested_name(&paths, &resolved_name),
         channels: channels_from_csv(&cmd.channels),
-        strict_name: false,
+        strict_name: true,
         agent_type: Some("human"),
         read_mcp_identity: true,
         ensure_mcp_config: true,
@@ -1172,6 +1229,11 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             "claude",
         )
     };
+
+    // Ensure default workspace channels exist (general, engineering).
+    if let Err(error) = relaycast_http.ensure_default_channels().await {
+        tracing::warn!(error = %error, "failed to ensure default channels");
+    }
 
     let worker_env = vec![
         ("RELAY_BASE_URL".to_string(), http_base.clone()),
@@ -3779,6 +3841,34 @@ fn channels_from_csv(raw: &str) -> Vec<String> {
         .collect()
 }
 
+fn cached_session_for_requested_name(
+    paths: &RuntimePaths,
+    requested_name: &str,
+) -> Option<AuthSession> {
+    let mut cached = CredentialStore::new(paths.creds.clone()).load().ok()?;
+    if cached.agent_name.as_deref() != Some(requested_name) {
+        return None;
+    }
+    if !cached.api_key.trim().starts_with("rk_") {
+        return None;
+    }
+    if cached.agent_id.trim().is_empty() {
+        return None;
+    }
+
+    let token = cached.agent_token.as_deref()?.trim();
+    if token.is_empty() {
+        return None;
+    }
+
+    let token = token.to_string();
+    cached.agent_token = Some(token.clone());
+    Some(AuthSession {
+        credentials: cached,
+        token,
+    })
+}
+
 fn command_targets_self(cmd_event: &BrokerCommandEvent, self_agent_id: &str) -> bool {
     match cmd_event.handler_agent_id.as_deref() {
         Some(handler_id) => handler_id == self_agent_id,
@@ -4515,6 +4605,7 @@ mod tests {
     };
 
     use crate::helpers::terminal_query_responses;
+    use relay_broker::auth::CredentialCache;
     use relay_broker::protocol::RelayDelivery;
     use serde_json::{json, Value};
 
@@ -5338,7 +5429,7 @@ mod tests {
 
     // ==================== bypass flag selection logic tests ====================
     // Tests for the bypass flag logic used in WorkerRegistry::spawn().
-    // The logic is: claude/claude:* → --dangerously-skip-permissions, codex → --full-auto
+    // The logic is: claude/claude:* → --dangerously-skip-permissions, codex → --dangerously-bypass-approvals-and-sandbox
 
     fn compute_bypass_flag(cli: &str, existing_args: &[String]) -> Option<&'static str> {
         let cli_lower = cli.to_lowercase();
@@ -5348,8 +5439,12 @@ mod tests {
                 .any(|a| a.contains("dangerously-skip-permissions"))
         {
             Some("--dangerously-skip-permissions")
-        } else if cli_lower == "codex" && !existing_args.iter().any(|a| a.contains("full-auto")) {
-            Some("--full-auto")
+        } else if cli_lower == "codex"
+            && !existing_args
+                .iter()
+                .any(|a| a.contains("dangerously-bypass") || a.contains("full-auto"))
+        {
+            Some("--dangerously-bypass-approvals-and-sandbox")
         } else {
             None
         }
@@ -5380,8 +5475,11 @@ mod tests {
     }
 
     #[test]
-    fn bypass_flag_codex_gets_full_auto() {
-        assert_eq!(compute_bypass_flag("codex", &[]), Some("--full-auto"));
+    fn bypass_flag_codex_gets_dangerously_bypass() {
+        assert_eq!(
+            compute_bypass_flag("codex", &[]),
+            Some("--dangerously-bypass-approvals-and-sandbox")
+        );
     }
 
     #[test]
@@ -5416,11 +5514,21 @@ mod tests {
 
     #[test]
     fn bypass_flag_codex_dedup_when_already_present() {
-        let args = vec!["--full-auto".to_string()];
+        let args = vec!["--dangerously-bypass-approvals-and-sandbox".to_string()];
         assert_eq!(
             compute_bypass_flag("codex", &args),
             None,
             "should not duplicate flag"
+        );
+    }
+
+    #[test]
+    fn bypass_flag_codex_dedup_when_full_auto_present() {
+        let args = vec!["--full-auto".to_string()];
+        assert_eq!(
+            compute_bypass_flag("codex", &args),
+            None,
+            "should not add bypass when --full-auto already present"
         );
     }
 
@@ -5440,7 +5548,7 @@ mod tests {
         let args = vec!["--model".to_string(), "gpt-4".to_string()];
         assert_eq!(
             compute_bypass_flag("codex", &args),
-            Some("--full-auto"),
+            Some("--dangerously-bypass-approvals-and-sandbox"),
             "unrelated args should not prevent bypass flag"
         );
     }
@@ -5541,5 +5649,57 @@ mod tests {
         let state_path = std::path::Path::new(".agent-relay/state.json");
         let result = continuity_dir(state_path);
         assert_eq!(result, std::path::PathBuf::from(".agent-relay/continuity"));
+    }
+
+    #[test]
+    fn cached_session_for_requested_name_reuses_matching_token() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let paths =
+            super::ensure_runtime_paths(dir.path()).expect("runtime paths should initialize");
+        let cached = CredentialCache {
+            workspace_id: "ws_cached".to_string(),
+            agent_id: "a_cached".to_string(),
+            api_key: "rk_live_cached".to_string(),
+            agent_name: Some("lead".to_string()),
+            agent_token: Some("at_live_cached_token".to_string()),
+            updated_at: chrono::Utc::now(),
+        };
+        std::fs::write(
+            &paths.creds,
+            serde_json::to_vec(&cached).expect("serialize cache"),
+        )
+        .expect("write cache");
+
+        let session = super::cached_session_for_requested_name(&paths, "lead")
+            .expect("matching cached token should be reused");
+
+        assert_eq!(session.token, "at_live_cached_token");
+        assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
+        assert_eq!(session.credentials.agent_id, "a_cached");
+    }
+
+    #[test]
+    fn cached_session_for_requested_name_rejects_name_mismatch() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let paths =
+            super::ensure_runtime_paths(dir.path()).expect("runtime paths should initialize");
+        let cached = CredentialCache {
+            workspace_id: "ws_cached".to_string(),
+            agent_id: "a_cached".to_string(),
+            api_key: "rk_live_cached".to_string(),
+            agent_name: Some("someone-else".to_string()),
+            agent_token: Some("at_live_cached_token".to_string()),
+            updated_at: chrono::Utc::now(),
+        };
+        std::fs::write(
+            &paths.creds,
+            serde_json::to_vec(&cached).expect("serialize cache"),
+        )
+        .expect("write cache");
+
+        assert!(
+            super::cached_session_for_requested_name(&paths, "lead").is_none(),
+            "requested name mismatch must not reuse cached token"
+        );
     }
 }

@@ -517,6 +517,36 @@ impl RelaycastHttpClient {
         Ok(())
     }
 
+    /// Ensure default workspace channels (general, engineering) exist.
+    ///
+    /// Creates the channels if they don't already exist, ignoring 409 Conflict errors.
+    pub async fn ensure_default_channels(&self) -> Result<()> {
+        let defaults = [
+            ("general", "General discussion"),
+            ("engineering", "Engineering discussion"),
+        ];
+        for (name, topic) in &defaults {
+            let url = format!("{}/v1/channels", self.base_url);
+            let res = self
+                .http
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .json(&serde_json::json!({ "name": name, "topic": topic }))
+                .send()
+                .await?;
+            let status = res.status();
+            if status.is_success() {
+                tracing::info!(channel = %name, "created default channel");
+            } else if status == reqwest::StatusCode::CONFLICT {
+                tracing::debug!(channel = %name, "default channel already exists");
+            } else {
+                let body = res.text().await.unwrap_or_default();
+                tracing::warn!(channel = %name, status = %status, "failed to create default channel: {}", body);
+            }
+        }
+        Ok(())
+    }
+
     /// Fetch recent DM history for an agent via the Relaycast REST API.
     pub async fn get_dms(&self, agent: &str, limit: usize) -> Result<Vec<Value>> {
         let token = self.ensure_token().await?;

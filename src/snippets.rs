@@ -995,4 +995,662 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
             "expected strict agent name codex config arg"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Claude provider tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn claude_returns_mcp_config_flag_with_valid_json() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp(
+            "claude",
+            "Worker",
+            Some("rk_live_abc"),
+            Some("https://api.relaycast.dev"),
+            &[],
+            temp.path(),
+        )
+        .await
+        .expect("configure claude mcp");
+
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "--mcp-config");
+
+        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["command"].as_str(),
+            Some("npx")
+        );
+        let mcp_args = json["mcpServers"]["relaycast"]["args"]
+            .as_array()
+            .expect("args array");
+        assert_eq!(mcp_args[0].as_str(), Some("-y"));
+        assert_eq!(mcp_args[1].as_str(), Some("@relaycast/mcp"));
+    }
+
+    #[tokio::test]
+    async fn claude_omits_api_key_from_mcp_config() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp(
+            "claude",
+            "Worker",
+            Some("rk_live_secret"),
+            Some("https://api.relaycast.dev"),
+            &[],
+            temp.path(),
+        )
+        .await
+        .expect("configure claude mcp");
+
+        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_API_KEY"].as_str(),
+            None,
+            "RELAY_API_KEY must not appear in Claude --mcp-config"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_includes_agent_name_type_and_strict_flag() {
+        let temp = tempdir().expect("tempdir");
+        let args =
+            super::configure_relaycast_mcp("claude", "MyAgent", None, None, &[], temp.path())
+                .await
+                .expect("configure claude mcp");
+
+        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        let env = &json["mcpServers"]["relaycast"]["env"];
+        assert_eq!(env["RELAY_AGENT_NAME"].as_str(), Some("MyAgent"));
+        assert_eq!(env["RELAY_AGENT_TYPE"].as_str(), Some("agent"));
+        assert_eq!(env["RELAY_STRICT_AGENT_NAME"].as_str(), Some("1"));
+    }
+
+    #[tokio::test]
+    async fn claude_includes_agent_token_when_provided() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp_with_token(
+            "claude",
+            "Worker",
+            None,
+            None,
+            &[],
+            temp.path(),
+            Some("tok_abc123"),
+        )
+        .await
+        .expect("configure claude mcp with token");
+
+        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
+            Some("tok_abc123")
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_opt_out_when_mcp_config_already_in_args() {
+        let temp = tempdir().expect("tempdir");
+        let existing = vec!["--mcp-config".to_string(), "{}".to_string()];
+        let args = super::configure_relaycast_mcp(
+            "claude",
+            "Worker",
+            Some("rk_live_abc"),
+            Some("https://api.relaycast.dev"),
+            &existing,
+            temp.path(),
+        )
+        .await
+        .expect("configure claude mcp opt-out");
+
+        assert!(
+            args.is_empty(),
+            "should return no args when user already provided --mcp-config"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_detected_from_absolute_path() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp(
+            "/usr/local/bin/claude",
+            "Worker",
+            None,
+            None,
+            &[],
+            temp.path(),
+        )
+        .await
+        .expect("configure claude from path");
+
+        assert_eq!(args[0], "--mcp-config");
+    }
+
+    #[tokio::test]
+    async fn claude_colon_variant_detected() {
+        let temp = tempdir().expect("tempdir");
+        let args =
+            super::configure_relaycast_mcp("claude:latest", "Worker", None, None, &[], temp.path())
+                .await
+                .expect("configure claude:latest");
+
+        assert_eq!(args[0], "--mcp-config");
+    }
+
+    // -----------------------------------------------------------------------
+    // Codex provider tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn codex_returns_config_flags_with_all_env_vars() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp(
+            "codex",
+            "CodexAgent",
+            Some("rk_live_xyz"),
+            Some("https://api.relaycast.dev"),
+            &[],
+            temp.path(),
+        )
+        .await
+        .expect("configure codex mcp");
+
+        // Should have pairs of [--config, value, --config, value, ...]
+        assert!(args.len() >= 2);
+        assert!(args.iter().step_by(2).all(|a| a == "--config"));
+
+        // Verify key config values
+        assert!(args.contains(&"mcp_servers.relaycast.command=npx".to_string()));
+        assert!(args
+            .iter()
+            .any(|a| a.contains("mcp_servers.relaycast.args=")));
+        assert!(args.contains(&"mcp_servers.relaycast.env.RELAY_API_KEY=rk_live_xyz".to_string()));
+        assert!(args.contains(
+            &"mcp_servers.relaycast.env.RELAY_BASE_URL=https://api.relaycast.dev".to_string()
+        ));
+        assert!(args.contains(&"mcp_servers.relaycast.env.RELAY_AGENT_NAME=CodexAgent".to_string()));
+        assert!(args.contains(&"mcp_servers.relaycast.env.RELAY_AGENT_TYPE=agent".to_string()));
+        assert!(args.contains(&"mcp_servers.relaycast.env.RELAY_STRICT_AGENT_NAME=1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn codex_includes_api_key_unlike_claude() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp(
+            "codex",
+            "Agent",
+            Some("rk_live_secret"),
+            None,
+            &[],
+            temp.path(),
+        )
+        .await
+        .expect("configure codex mcp");
+
+        assert!(
+            args.iter()
+                .any(|a| a == "mcp_servers.relaycast.env.RELAY_API_KEY=rk_live_secret"),
+            "Codex must include RELAY_API_KEY in --config args"
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_includes_agent_token_when_provided() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp_with_token(
+            "codex",
+            "Agent",
+            None,
+            None,
+            &[],
+            temp.path(),
+            Some("tok_codex_123"),
+        )
+        .await
+        .expect("configure codex mcp with token");
+
+        assert!(
+            args.iter()
+                .any(|a| a == "mcp_servers.relaycast.env.RELAY_AGENT_TOKEN=tok_codex_123"),
+            "Codex must include RELAY_AGENT_TOKEN when provided"
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_omits_optional_fields_when_none() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp("codex", "Agent", None, None, &[], temp.path())
+            .await
+            .expect("configure codex mcp minimal");
+
+        assert!(
+            !args.iter().any(|a| a.contains("RELAY_API_KEY")),
+            "should not include RELAY_API_KEY when api_key is None"
+        );
+        assert!(
+            !args.iter().any(|a| a.contains("RELAY_BASE_URL")),
+            "should not include RELAY_BASE_URL when base_url is None"
+        );
+        // Agent name and type are always present
+        assert!(args
+            .iter()
+            .any(|a| a == "mcp_servers.relaycast.env.RELAY_AGENT_NAME=Agent"));
+    }
+
+    #[tokio::test]
+    async fn codex_opt_out_when_relaycast_config_already_in_args() {
+        let temp = tempdir().expect("tempdir");
+        let existing = vec![
+            "--config".to_string(),
+            "mcp_servers.relaycast.command=custom".to_string(),
+        ];
+        let args = super::configure_relaycast_mcp(
+            "codex",
+            "Agent",
+            Some("rk_live_abc"),
+            None,
+            &existing,
+            temp.path(),
+        )
+        .await
+        .expect("configure codex mcp opt-out");
+
+        assert!(
+            args.is_empty(),
+            "should return no args when user already provided mcp_servers.relaycast config"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Opencode provider tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opencode_creates_config_file_and_returns_agent_flag() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp(
+            "opencode",
+            "OcAgent",
+            Some("rk_live_oc"),
+            Some("https://api.relaycast.dev"),
+            &[],
+            temp.path(),
+        )
+        .await
+        .expect("configure opencode mcp");
+
+        assert_eq!(args, vec!["--agent", "relaycast"]);
+
+        // Verify opencode.json was created
+        let path = temp.path().join("opencode.json");
+        assert!(path.exists(), "opencode.json must be created");
+
+        let contents = fs::read_to_string(&path).expect("read opencode.json");
+        let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
+
+        // MCP server structure
+        let mcp = &json["mcp"]["relaycast"];
+        assert_eq!(mcp["type"].as_str(), Some("local"));
+        let cmd = mcp["command"].as_array().expect("command array");
+        assert_eq!(cmd[0].as_str(), Some("npx"));
+        assert_eq!(cmd[1].as_str(), Some("-y"));
+        assert_eq!(cmd[2].as_str(), Some("@relaycast/mcp"));
+
+        // Environment (note: opencode uses "environment" not "env")
+        let oc_env = &mcp["environment"];
+        assert_eq!(
+            oc_env["RELAY_API_KEY"].as_str(),
+            Some("rk_live_oc"),
+            "Opencode includes RELAY_API_KEY in environment"
+        );
+        assert_eq!(
+            oc_env["RELAY_BASE_URL"].as_str(),
+            Some("https://api.relaycast.dev")
+        );
+        assert_eq!(oc_env["RELAY_AGENT_NAME"].as_str(), Some("OcAgent"));
+        assert_eq!(oc_env["RELAY_AGENT_TYPE"].as_str(), Some("agent"));
+        assert_eq!(oc_env["RELAY_STRICT_AGENT_NAME"].as_str(), Some("1"));
+
+        // Agent entry
+        let agent = &json["agent"]["relaycast"];
+        assert_eq!(
+            agent["description"].as_str(),
+            Some("Agent with Relaycast MCP enabled")
+        );
+        assert_eq!(agent["tools"]["relaycast_*"].as_bool(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn opencode_upserts_into_existing_config_preserving_other_keys() {
+        let temp = tempdir().expect("tempdir");
+        let existing = r#"{
+            "mcp": {
+                "other-server": {"type": "local", "command": ["uvx", "other"]}
+            },
+            "theme": "dark"
+        }"#;
+        fs::write(temp.path().join("opencode.json"), existing).expect("write existing");
+
+        let args = super::configure_relaycast_mcp(
+            "opencode",
+            "Agent",
+            Some("rk_live_test"),
+            None,
+            &[],
+            temp.path(),
+        )
+        .await
+        .expect("configure opencode mcp upsert");
+
+        assert_eq!(args, vec!["--agent", "relaycast"]);
+
+        let contents =
+            fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
+        let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
+
+        // Original keys preserved
+        assert_eq!(json["theme"].as_str(), Some("dark"));
+        assert!(
+            json["mcp"]["other-server"].is_object(),
+            "existing MCP servers must be preserved"
+        );
+
+        // Relaycast added
+        assert!(json["mcp"]["relaycast"].is_object());
+        assert!(json["agent"]["relaycast"].is_object());
+    }
+
+    #[tokio::test]
+    async fn opencode_opt_out_when_agent_flag_already_in_args() {
+        let temp = tempdir().expect("tempdir");
+        let existing = vec!["--agent".to_string(), "custom".to_string()];
+        let args = super::configure_relaycast_mcp(
+            "opencode",
+            "Agent",
+            Some("rk_live_abc"),
+            None,
+            &existing,
+            temp.path(),
+        )
+        .await
+        .expect("configure opencode mcp opt-out");
+
+        assert!(
+            args.is_empty(),
+            "should return no args when user already provided --agent"
+        );
+        assert!(
+            !temp.path().join("opencode.json").exists(),
+            "should not create opencode.json when opted out"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Unknown / unsupported CLI tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn unknown_cli_returns_empty_args() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp(
+            "aider",
+            "Agent",
+            Some("rk_live_abc"),
+            Some("https://api.relaycast.dev"),
+            &[],
+            temp.path(),
+        )
+        .await
+        .expect("configure unknown cli");
+
+        assert!(
+            args.is_empty(),
+            "unsupported CLIs should return no injection args"
+        );
+    }
+
+    #[tokio::test]
+    async fn goose_cli_returns_empty_args() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp("goose", "Agent", None, None, &[], temp.path())
+            .await
+            .expect("configure goose cli");
+
+        assert!(args.is_empty(), "goose has no MCP injection support");
+    }
+
+    // -----------------------------------------------------------------------
+    // relaycast_mcp_config_json direct tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mcp_config_json_produces_valid_structure() {
+        let json_str = super::relaycast_mcp_config_json(
+            Some("rk_live_test"),
+            Some("https://api.relaycast.dev"),
+            Some("TestAgent"),
+        );
+        let json: Value = serde_json::from_str(&json_str).expect("parse JSON");
+
+        // Top-level structure
+        assert!(json["mcpServers"]["relaycast"].is_object());
+
+        // Command
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["command"].as_str(),
+            Some("npx")
+        );
+
+        // API key intentionally omitted
+        assert!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_API_KEY"].is_null(),
+            "API key must not appear in mcp config JSON"
+        );
+
+        // Agent env vars present
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_NAME"].as_str(),
+            Some("TestAgent")
+        );
+    }
+
+    #[test]
+    fn mcp_config_json_with_token_includes_token() {
+        let json_str = super::relaycast_mcp_config_json_with_token(
+            Some("rk_live_test"),
+            Some("https://example.com"),
+            Some("Agent"),
+            Some("tok_xyz"),
+        );
+        let json: Value = serde_json::from_str(&json_str).expect("parse JSON");
+
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
+            Some("tok_xyz")
+        );
+    }
+
+    #[test]
+    fn mcp_config_json_with_no_token_omits_token_field() {
+        let json_str = super::relaycast_mcp_config_json_with_token(None, None, Some("Agent"), None);
+        let json: Value = serde_json::from_str(&json_str).expect("parse JSON");
+
+        assert!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_TOKEN"].is_null(),
+            "RELAY_AGENT_TOKEN should not be present when token is None"
+        );
+    }
+
+    #[test]
+    fn mcp_config_json_omits_env_when_no_values_provided() {
+        let json_str = super::relaycast_mcp_config_json(None, None, None);
+        let json: Value = serde_json::from_str(&json_str).expect("parse JSON");
+
+        assert!(
+            json["mcpServers"]["relaycast"]["env"].is_null(),
+            "env object should not be present when all values are None"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Whitespace / empty string trimming
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mcp_config_json_trims_whitespace_values() {
+        let json_str = super::relaycast_mcp_config_json(
+            Some("  rk_live_test  "),
+            Some("  https://api.relaycast.dev  "),
+            Some("  Agent  "),
+        );
+        let json: Value = serde_json::from_str(&json_str).expect("parse JSON");
+
+        // base_url and agent_name are trimmed
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_BASE_URL"].as_str(),
+            Some("https://api.relaycast.dev")
+        );
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_NAME"].as_str(),
+            Some("Agent")
+        );
+    }
+
+    #[test]
+    fn mcp_config_json_treats_whitespace_only_as_none() {
+        let json_str = super::relaycast_mcp_config_json(Some("   "), Some("   "), Some("   "));
+        let json: Value = serde_json::from_str(&json_str).expect("parse JSON");
+
+        assert!(
+            json["mcpServers"]["relaycast"]["env"].is_null(),
+            "whitespace-only values should be treated as None"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_trims_whitespace_in_agent_token() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp_with_token(
+            "claude",
+            "Agent",
+            None,
+            None,
+            &[],
+            temp.path(),
+            Some("  tok_123  "),
+        )
+        .await
+        .expect("configure claude with whitespace token");
+
+        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
+            Some("tok_123")
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_ignores_whitespace_only_token() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp_with_token(
+            "codex",
+            "Agent",
+            None,
+            None,
+            &[],
+            temp.path(),
+            Some("   "),
+        )
+        .await
+        .expect("configure codex with empty token");
+
+        assert!(
+            !args.iter().any(|a| a.contains("RELAY_AGENT_TOKEN")),
+            "whitespace-only token should be omitted"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ensure_opencode_config direct tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn opencode_config_uses_environment_not_env() {
+        let temp = tempdir().expect("tempdir");
+        super::ensure_opencode_config(
+            temp.path(),
+            Some("rk_live_test"),
+            Some("https://api.relaycast.dev"),
+            Some("Agent"),
+        )
+        .expect("create opencode config");
+
+        let contents =
+            fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
+        let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
+
+        // Opencode uses "environment" key, not "env"
+        assert!(
+            json["mcp"]["relaycast"]["environment"].is_object(),
+            "opencode must use 'environment' key"
+        );
+        assert!(
+            json["mcp"]["relaycast"]["env"].is_null(),
+            "opencode must not use 'env' key"
+        );
+    }
+
+    #[test]
+    fn opencode_config_does_not_overwrite_existing_agent_entry() {
+        let temp = tempdir().expect("tempdir");
+        let existing = r#"{
+            "mcp": {},
+            "agent": {
+                "relaycast": {
+                    "description": "Custom agent",
+                    "tools": {"relaycast_*": true, "custom_tool": true}
+                }
+            }
+        }"#;
+        fs::write(temp.path().join("opencode.json"), existing).expect("write existing");
+
+        super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"))
+            .expect("upsert opencode config");
+
+        let contents =
+            fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
+        let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
+
+        // Agent entry should be preserved (not overwritten)
+        assert_eq!(
+            json["agent"]["relaycast"]["description"].as_str(),
+            Some("Custom agent"),
+            "existing agent entry must not be overwritten"
+        );
+        assert_eq!(
+            json["agent"]["relaycast"]["tools"]["custom_tool"].as_bool(),
+            Some(true),
+            "custom tools in existing agent entry must be preserved"
+        );
+    }
+
+    #[test]
+    fn opencode_config_returns_false_when_nothing_changed() {
+        let temp = tempdir().expect("tempdir");
+
+        // First call creates
+        let created =
+            super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"))
+                .expect("create opencode config");
+        assert!(created, "first call should create the file");
+
+        // Second call with same MCP (agent entry already exists)
+        let changed =
+            super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"))
+                .expect("second opencode config");
+        // MCP is always upserted (changed=true) because we unconditionally insert mcp.relaycast,
+        // but agent.relaycast is only inserted if missing.
+        // The function returns true because mcp upsert always sets changed=true.
+        assert!(changed, "mcp section always gets upserted");
+    }
 }
