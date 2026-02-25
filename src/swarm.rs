@@ -19,7 +19,6 @@ const DEFAULT_TEAMS: usize = 2;
 const DEFAULT_TIMEOUT: &str = "300s";
 const DEFAULT_CLI: &str = "codex";
 const DEFAULT_BROKER_NAME: &str = "swarm-orchestrator";
-const SWARM_SENDER: &str = "human:swarm-orchestrator";
 const DEFAULT_SWARM_TOKEN_LIMIT: u64 = 120_000;
 
 fn default_broker_bin() -> String {
@@ -603,8 +602,8 @@ fn build_stage_task(
     };
 
     let mut body = format!(
-        "{}\n\nPrimary task:\n{}\n\nWhen complete, send exactly one relay message to {} with prefix `RESULT:` containing your answer.",
-        header, base_task, SWARM_SENDER
+        "{}\n\nPrimary task:\n{}",
+        header, base_task
     );
 
     if let Some(output) = previous_output {
@@ -612,11 +611,12 @@ fn build_stage_task(
         body.push_str(output);
     }
 
-    // Use a placeholder in the example so the literal text "RESULT:" does not
-    // appear twice in the prompt — the worker_stream parser would otherwise
-    // match the prompt echo itself as a completed result.
+    // Tell the agent how to signal completion. The swarm orchestrator
+    // watches for agent_exited / agent_released events, so the agent
+    // just needs to finish and exit normally.
     body.push_str(
-        "\n\nExample relay output:\n->relay:human:swarm-orchestrator <<<your concise answer>>>\n",
+        "\n\nWhen you are done, use the `relay_release` MCP tool to release yourself, \
+         or simply exit. The orchestrator will collect your output automatically.",
     );
 
     body
@@ -639,6 +639,10 @@ async fn wait_for_worker_results(
     deadline: Instant,
 ) -> Result<BTreeMap<String, String>> {
     let mut results = BTreeMap::new();
+    // Accumulate worker_stream output per worker so we have a complete
+    // picture when the agent exits (rather than checking each chunk in
+    // isolation which misses results that span multiple chunks).
+    let mut stream_buffers: BTreeMap<String, String> = BTreeMap::new();
 
     while !pending.is_empty() {
         let now = Instant::now();
@@ -651,57 +655,163 @@ async fn wait_for_worker_results(
             break;
         };
 
-        if let Some((worker, body)) = extract_worker_result(&event, &pending) {
-            pending.remove(&worker);
-            results.insert(worker, body);
+        let kind = event.get("kind").and_then(Value::as_str).unwrap_or("");
+
+        match kind {
+            // Relay message from the worker — highest priority signal.
+            "relay_inbound" => {
+                if let Some((worker, body)) =
+                    extract_relay_inbound_result(&event, &pending)
+                {
+                    pending.remove(&worker);
+                    results.insert(worker, body);
+                }
+            }
+            // PTY output chunk — accumulate it, and check for an explicit
+            // RESULT: marker sent by the worker through its terminal.
+            "worker_stream" => {
+                let name = event
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if !pending.contains(&name) {
+                    continue;
+                }
+                let chunk = event
+                    .get("chunk")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let clean = helpers::strip_ansi(chunk);
+                stream_buffers
+                    .entry(name.clone())
+                    .or_default()
+                    .push_str(&clean);
+
+                // Check for explicit RESULT: marker in accumulated output
+                // (but reject prompt echoes).
+                if let Some(result) = extract_result_from_stream(&clean) {
+                    pending.remove(&name);
+                    results.insert(name, result);
+                }
+            }
+            // Agent process exited or self-released — use accumulated
+            // stream output as result. Covers:
+            //   - agent_exited: PTY child process exited (e.g. codex finished)
+            //   - agent_exit:   agent requested exit via /exit command
+            //   - agent_released: agent released itself via relay_release MCP tool
+            "agent_exited" | "agent_exit" | "agent_released" => {
+                let name = event
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if !pending.contains(&name) {
+                    continue;
+                }
+                pending.remove(&name);
+
+                // Use the last_output from the exit event if available,
+                // otherwise fall back to what we accumulated from worker_stream.
+                let last_output = event
+                    .get("last_output")
+                    .and_then(Value::as_str)
+                    .map(|s| helpers::strip_ansi(s))
+                    .unwrap_or_default();
+
+                let accumulated = stream_buffers.remove(&name).unwrap_or_default();
+                let output = if !last_output.is_empty() {
+                    last_output
+                } else {
+                    accumulated
+                };
+
+                // Try to extract a RESULT: section; otherwise use the full output.
+                let result = extract_result_from_stream(&output)
+                    .unwrap_or_else(|| summarize_agent_output(&output));
+                results.insert(name, result);
+            }
+            _ => {}
         }
     }
 
     Ok(results)
 }
 
-fn extract_worker_result(event: &Value, pending: &HashSet<String>) -> Option<(String, String)> {
-    let kind = event.get("kind")?.as_str()?;
-
-    match kind {
-        "relay_inbound" => {
-            let from = event.get("from")?.as_str()?.to_string();
-            if !pending.contains(&from) {
-                return None;
-            }
-
-            let body = event
-                .get("body")
-                .and_then(Value::as_str)
-                .map(sanitize_result)
-                .filter(|value| !value.is_empty())?;
-            Some((from, body))
-        }
-        "worker_stream" => {
-            let name = event.get("name")?.as_str()?.to_string();
-            if !pending.contains(&name) {
-                return None;
-            }
-
-            let chunk = event.get("chunk")?.as_str()?;
-            // Strip ANSI escape codes before matching so PTY rendering
-            // artefacts don't pollute the result or cause false positives.
-            let clean = helpers::strip_ansi(chunk);
-            // Look for a relay_send-style result line, not just any
-            // occurrence of "RESULT:" (which could be an echo of the prompt).
-            if !clean.contains("<<<RESULT:") && !clean.contains("RESULT:") {
-                return None;
-            }
-            // Reject prompt echoes: if the chunk contains our instruction
-            // text it's the task being rendered, not actual worker output.
-            if clean.contains("send exactly one relay") || clean.contains("Example relay output") {
-                return None;
-            }
-
-            Some((name, sanitize_result(&clean)))
-        }
-        _ => None,
+/// Extract a result from a `relay_inbound` event.
+fn extract_relay_inbound_result(
+    event: &Value,
+    pending: &HashSet<String>,
+) -> Option<(String, String)> {
+    let from = event.get("from")?.as_str()?.to_string();
+    if !pending.contains(&from) {
+        return None;
     }
+    let body = event
+        .get("body")
+        .and_then(Value::as_str)
+        .map(sanitize_result)
+        .filter(|value| !value.is_empty())?;
+    Some((from, body))
+}
+
+/// Look for an explicit `RESULT:` marker in ANSI-stripped stream output.
+/// Returns `None` if it looks like a prompt echo.
+fn extract_result_from_stream(clean: &str) -> Option<String> {
+    if !clean.contains("RESULT:") {
+        return None;
+    }
+    // Reject prompt echoes
+    if clean.contains("send exactly one relay") || clean.contains("Example relay output") {
+        return None;
+    }
+    Some(sanitize_result(clean))
+}
+
+/// Condense accumulated agent output into a usable result string.
+/// Strips common CLI chrome (spinners, progress bars, etc.) and trims
+/// to a reasonable length.
+fn summarize_agent_output(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "(agent exited with no output)".to_string();
+    }
+
+    // Take the last meaningful portion — CLIs often have startup noise at
+    // the top and the actual result near the bottom.
+    let lines: Vec<&str> = trimmed
+        .lines()
+        .filter(|line| {
+            let l = line.trim();
+            // Skip blank lines and common CLI UI elements
+            !l.is_empty()
+                && !l.starts_with("? for shortcuts")
+                && !l.contains("context left")
+                && !l.starts_with("Thinking")
+                && !l.starts_with("⠋")
+                && !l.starts_with("⠙")
+                && !l.starts_with("⠹")
+                && !l.starts_with("⠸")
+                && !l.starts_with("⠼")
+                && !l.starts_with("⠴")
+                && !l.starts_with("⠦")
+                && !l.starts_with("⠧")
+                && !l.starts_with("⠇")
+                && !l.starts_with("⠏")
+        })
+        .collect();
+
+    if lines.is_empty() {
+        return "(agent exited with no output)".to_string();
+    }
+
+    // Return the last ~50 lines to capture the result, not startup noise.
+    let tail = if lines.len() > 50 {
+        &lines[lines.len() - 50..]
+    } else {
+        &lines
+    };
+    tail.join("\n")
 }
 
 fn sanitize_result(raw: &str) -> String {
