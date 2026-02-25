@@ -696,11 +696,7 @@ async fn wait_for_worker_results(
             // Relay message from the worker — highest priority signal.
             "relay_inbound" => {
                 if let Some((worker, body)) = extract_relay_inbound_result(&event, &pending) {
-                    eprintln!(
-                        "[swarm] {} sent result via relay ({} chars)",
-                        worker,
-                        body.len()
-                    );
+                    log_result_received(&worker, "relay", &body, pending.len() - 1);
                     pending.remove(&worker);
                     results.insert(worker, body);
                 }
@@ -729,11 +725,7 @@ async fn wait_for_worker_results(
                 // Check for explicit RESULT: marker in accumulated output
                 // (but reject prompt echoes).
                 if let Some(result) = extract_result_from_stream(&clean) {
-                    eprintln!(
-                        "[swarm] {} sent explicit RESULT ({} chars)",
-                        name,
-                        result.len()
-                    );
+                    log_result_received(&name, "stream", &result, pending.len() - 1);
                     pending.remove(&name);
                     results.insert(name, result);
                 }
@@ -752,13 +744,6 @@ async fn wait_for_worker_results(
                 if !pending.contains(&name) {
                     continue;
                 }
-                eprintln!(
-                    "[swarm] {} finished ({}), {}/{} remaining",
-                    name,
-                    kind,
-                    pending.len() - 1,
-                    pending.len() + results.len() - 1
-                );
                 pending.remove(&name);
 
                 // Use the last_output from the exit event if available,
@@ -779,6 +764,7 @@ async fn wait_for_worker_results(
                 // Try to extract a RESULT: section; otherwise use the full output.
                 let result = extract_result_from_stream(&output)
                     .unwrap_or_else(|| summarize_agent_output(&output));
+                log_result_received(&name, kind, &result, pending.len());
                 results.insert(name, result);
             }
             "worker_ready" => {
@@ -795,6 +781,36 @@ async fn wait_for_worker_results(
     }
 
     Ok(results)
+}
+
+/// Log a received result with a preview of the content.
+fn log_result_received(worker: &str, via: &str, result: &str, remaining: usize) {
+    // Show a short friendly name instead of the full swarm-team-N-PID-TS
+    let short_name = worker
+        .strip_suffix(worker.rfind('-').map_or("", |i| &worker[i..]))
+        .and_then(|s| s.strip_suffix(s.rfind('-').map_or("", |i| &s[i..])))
+        .unwrap_or(worker);
+
+    let preview = result_preview(result, 120);
+    eprintln!("[swarm] {} completed via {} ({} remaining)", short_name, via, remaining);
+    eprintln!("[swarm]   ↳ {}", preview);
+}
+
+/// Truncate a result to a readable single-line preview.
+fn result_preview(text: &str, max_chars: usize) -> String {
+    let oneline: String = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if oneline.len() <= max_chars {
+        oneline
+    } else {
+        let boundary = helpers::floor_char_boundary(&oneline, max_chars.saturating_sub(3));
+        format!("{}...", &oneline[..boundary])
+    }
 }
 
 /// Extract a result from a `relay_inbound` event.

@@ -1568,7 +1568,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             }
                         }
                         ListenApiRequest::Send {
-                            request_id,
                             to,
                             text,
                             from,
@@ -1585,7 +1584,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             };
                             tracing::info!(
                                 target = "relay_broker::http_api",
-                                request_id = %request_id,
+
                                 raw_from = ?from,
                                 normalized_sender = %normalized_sender,
                                 from_dashboard = %from_dashboard,
@@ -1629,7 +1628,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
                             tracing::info!(
                                 target = "relay_broker::http_api",
-                                request_id = %request_id,
+
                                 event_id = %event_id,
                                 to = %normalized_to,
                                 delivery_from = %delivery_from,
@@ -1662,7 +1661,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         delivery_errors = delivery_errors.saturating_add(1);
                                         tracing::warn!(
                                             target = "relay_broker::http_api",
-                                            request_id = %request_id,
+            
                                             event_id = %event_id,
                                             to = %normalized_to,
                                             worker = %worker_name,
@@ -1674,7 +1673,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         delivery_errors = delivery_errors.saturating_add(1);
                                         tracing::warn!(
                                             target = "relay_broker::http_api",
-                                            request_id = %request_id,
+            
                                             event_id = %event_id,
                                             to = %normalized_to,
                                             worker = %worker_name,
@@ -1688,7 +1687,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             if delivered > 0 {
                                 tracing::info!(
                                     target = "relay_broker::http_api",
-                                    request_id = %request_id,
+    
                                     event_id = %event_id,
                                     to = %normalized_to,
                                     delivery_from = %delivery_from,
@@ -1717,7 +1716,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 }))) {
                                     tracing::warn!(
                                         target = "relay_broker::http_api",
-                                        request_id = %request_id,
+        
                                         event_id = %event_id,
                                         "broker HTTP API reply channel closed before local delivery response"
                                     );
@@ -1725,7 +1724,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             } else {
                                 tracing::info!(
                                     target = "relay_broker::http_api",
-                                    request_id = %request_id,
+    
                                     event_id = %event_id,
                                     to = %normalized_to,
                                     delivery_errors = %delivery_errors,
@@ -1741,7 +1740,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     Ok(Ok(())) => {
                                         tracing::info!(
                                             target = "relay_broker::http_api",
-                                            request_id = %request_id,
+            
                                             event_id = %event_id,
                                             to = %normalized_to,
                                             relaycast_ms = %relaycast_start.elapsed().as_millis(),
@@ -1768,7 +1767,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         }))) {
                                             tracing::warn!(
                                                 target = "relay_broker::http_api",
-                                                request_id = %request_id,
+                
                                                 event_id = %event_id,
                                                 "broker HTTP API reply channel closed before relaycast response"
                                             );
@@ -1777,7 +1776,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     Ok(Err(error)) => {
                                         tracing::warn!(
                                             target = "relay_broker::http_api",
-                                            request_id = %request_id,
+            
                                             event_id = %event_id,
                                             to = %normalized_to,
                                             relaycast_ms = %relaycast_start.elapsed().as_millis(),
@@ -1790,7 +1789,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         ))) {
                                             tracing::warn!(
                                                 target = "relay_broker::http_api",
-                                                request_id = %request_id,
+                
                                                 event_id = %event_id,
                                                 "broker HTTP API reply channel closed before relaycast failure response"
                                             );
@@ -1799,7 +1798,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     Err(_) => {
                                         tracing::warn!(
                                             target = "relay_broker::http_api",
-                                            request_id = %request_id,
+            
                                             event_id = %event_id,
                                             to = %normalized_to,
                                             relaycast_timeout_ms = %relaycast_timeout.as_millis(),
@@ -1813,7 +1812,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         ))) {
                                             tracing::warn!(
                                                 target = "relay_broker::http_api",
-                                                request_id = %request_id,
+                
                                                 event_id = %event_id,
                                                 "broker HTTP API reply channel closed before relaycast timeout response"
                                             );
@@ -1823,7 +1822,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             }
                             tracing::info!(
                                 target = "relay_broker::http_api",
-                                request_id = %request_id,
+
                                 event_id = %event_id,
                                 to = %normalized_to,
                                 total_ms = %request_start.elapsed().as_millis(),
