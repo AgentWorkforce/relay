@@ -1184,6 +1184,11 @@ impl BrokerClient {
         loop {
             let line = self.stdout_lines.next_line().await?;
             let Some(line) = line else {
+                // Stdout closed — broker likely crashed.  Wait briefly for the
+                // stderr reader task to capture the last error line, then
+                // include it in our bail message so callers (e.g.
+                // is_broker_lock_error) can pattern-match on the real cause.
+                let _ = timeout(Duration::from_millis(200), self.child.wait()).await;
                 let detail = self
                     .stderr_last_line
                     .lock()
