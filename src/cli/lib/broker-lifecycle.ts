@@ -258,10 +258,19 @@ function pickDashboardStaticDir(candidates: string[], deps: CoreDependencies): s
     return null;
   }
 
-  const withMetricsPage = existingCandidates
-    .find((candidate) => deps.fs.existsSync(path.join(candidate, 'metrics.html')));
-  if (withMetricsPage) {
-    return withMetricsPage;
+  const pageMarkerPriority = [
+    ['metrics.html', path.join('metrics', 'index.html')],
+    ['app.html'],
+    ['index.html'],
+  ];
+
+  for (const markerGroup of pageMarkerPriority) {
+    const withMarker = existingCandidates.find((candidate) =>
+      markerGroup.some((marker) => deps.fs.existsSync(path.join(candidate, marker)))
+    );
+    if (withMarker) {
+      return withMarker;
+    }
   }
 
   return existingCandidates[0];

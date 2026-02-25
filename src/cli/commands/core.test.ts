@@ -295,6 +295,27 @@ describe('registerCoreCommands', () => {
     expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', dashboardOut]));
   });
 
+  it('up prefers static-dir candidate that includes nested metrics page', async () => {
+    const dashboardServerOut = '/tmp/relay-dashboard/packages/dashboard-server/out';
+    const dashboardOut = '/tmp/relay-dashboard/packages/dashboard/out';
+    const fs = createFsMock({
+      [dashboardServerOut]: '',
+      [dashboardOut]: '',
+      [`${dashboardOut}/metrics/index.html`]: '<html></html>',
+    });
+    const { program, deps } = createHarness({
+      fs,
+      dashboardBinary: '/tmp/relay-dashboard/packages/dashboard-server/dist/start.js',
+    });
+
+    const exitCode = await runCommand(program, ['up', '--port', '4999']);
+
+    expect(exitCode).toBeUndefined();
+    const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', dashboardOut]));
+  });
+
   it('up auto-spawns agents from teams config', async () => {
     const relay = createRelayMock();
     const { program } = createHarness({

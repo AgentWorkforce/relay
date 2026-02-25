@@ -90,6 +90,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut last_mcp_reminder_at: Option<Instant> = None;
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<String> = HashSet::new();
+    let suppress_multiline_mcp_reminder = cli_basename(&resolved_cli).eq_ignore_ascii_case("agent")
+        || cli_basename(&resolved_cli).eq_ignore_ascii_case("cursor-agent")
+        || cmd.cli.to_ascii_lowercase().contains("cursor");
     let verification_window = if cli_basename(&resolved_cli).eq_ignore_ascii_case("droid") {
         Duration::from_secs(3)
     } else {
@@ -428,9 +431,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.auto_suggestion_visible = false;
                     }
 
-                    let include_mcp_reminder = last_mcp_reminder_at
-                        .map(|timestamp| timestamp.elapsed() >= MCP_REMINDER_COOLDOWN)
-                        .unwrap_or(true);
+                    let include_mcp_reminder = if suppress_multiline_mcp_reminder {
+                        false
+                    } else {
+                        last_mcp_reminder_at
+                            .map(|timestamp| timestamp.elapsed() >= MCP_REMINDER_COOLDOWN)
+                            .unwrap_or(true)
+                    };
                     let injection = format_injection_for_worker(
                         &pending.delivery.from,
                         &pending.delivery.event_id,
@@ -495,7 +502,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         let event_id = pv.event_id.clone();
                         // Do not re-inject on verification timeout. Re-injection can duplicate
                         // already-delivered messages when terminal echo parsing is noisy.
-                        tracing::warn!(
+                        tracing::debug!(
                             delivery_id = %delivery_id,
                             attempts = pv.attempts,
                             "delivery echo not detected within verification window; acknowledging via timeout fallback"

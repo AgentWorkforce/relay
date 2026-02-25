@@ -1,12 +1,41 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Write};
 
 use crossterm::{
     cursor, event, execute, queue,
-    style::{self, Stylize},
+    style::{self, Color, Stylize},
     terminal,
 };
 use tokio::sync::mpsc;
+
+// ── Theme (inspired by relay's cyan/green/yellow palette) ───────────────
+
+const CLR_BORDER: Color = Color::DarkGrey;
+const CLR_BORDER_ACCENT: Color = Color::Cyan;
+const CLR_HEADER: Color = Color::Cyan;
+const CLR_ONLINE: Color = Color::Green;
+const CLR_ACTIVE: Color = Color::Yellow;
+const CLR_COMPLETED: Color = Color::Green;
+const CLR_DIM: Color = Color::DarkGrey;
+const CLR_ERROR: Color = Color::Red;
+const CLR_INPUT_PROMPT: Color = Color::Cyan;
+
+// Box-drawing characters.
+const TL: &str = "┌";
+const TR: &str = "┐";
+const BL: &str = "└";
+const BR: &str = "┘";
+const H: &str = "─";
+const V: &str = "│";
+const LT: &str = "├";
+const RT: &str = "┤";
+
+// Status symbols.
+const DOT_ONLINE: &str = "●";
+const DOT_ACTIVE: &str = "●";
+const CHECK: &str = "✓";
+
+// ── Public types ────────────────────────────────────────────────────────
 
 /// Commands sent from the TUI input loop to the swarm event loop.
 pub enum TuiCommand {
@@ -28,14 +57,13 @@ pub enum TuiUpdate {
         pending_count: usize,
         total_count: usize,
     },
-    /// A log line that would normally go to eprintln — displayed briefly
-    /// in the status area instead of writing raw to stderr.
     Log {
         message: String,
     },
 }
 
-/// RAII guard that restores the terminal on drop.
+// ── Terminal guard ──────────────────────────────────────────────────────
+
 struct RawModeGuard;
 
 impl RawModeGuard {
@@ -48,13 +76,13 @@ impl RawModeGuard {
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
         let _ = terminal::disable_raw_mode();
-        // Move to a fresh line so subsequent output isn't mangled.
         let _ = execute!(io::stderr(), cursor::Show, style::ResetColor);
         eprintln!();
     }
 }
 
-/// State for the mini TUI that renders to stderr.
+// ── TUI state ───────────────────────────────────────────────────────────
+
 pub struct SwarmTui {
     input_buf: String,
     workers: BTreeMap<String, WorkerState>,
@@ -62,7 +90,8 @@ pub struct SwarmTui {
     total_count: usize,
     elapsed_secs: u64,
     last_render_lines: usize,
-    status_message: Option<String>,
+    /// Rolling log of recent events (shown in the activity pane).
+    log_lines: VecDeque<LogEntry>,
     term_width: u16,
 }
 
@@ -70,6 +99,13 @@ struct WorkerState {
     activity: String,
     completed: bool,
 }
+
+struct LogEntry {
+    text: String,
+    is_error: bool,
+}
+
+const MAX_LOG_LINES: usize = 6;
 
 impl SwarmTui {
     pub fn new(pattern: &str, total_count: usize) -> Self {
@@ -81,8 +117,15 @@ impl SwarmTui {
             total_count,
             elapsed_secs: 0,
             last_render_lines: 0,
-            status_message: None,
+            log_lines: VecDeque::new(),
             term_width,
+        }
+    }
+
+    fn push_log(&mut self, text: String, is_error: bool) {
+        self.log_lines.push_back(LogEntry { text, is_error });
+        while self.log_lines.len() > MAX_LOG_LINES {
+            self.log_lines.pop_front();
         }
     }
 
@@ -98,7 +141,7 @@ impl SwarmTui {
                         completed: false,
                     });
                 if !entry.completed {
-                    entry.activity = truncate(&activity, 60);
+                    entry.activity = activity;
                 }
             }
             TuiUpdate::WorkerCompleted { name } => {
@@ -111,7 +154,7 @@ impl SwarmTui {
                         completed: false,
                     });
                 entry.completed = true;
-                entry.activity = "completed".to_string();
+                entry.activity = "done".to_string();
             }
             TuiUpdate::Tick {
                 elapsed_secs,
@@ -120,20 +163,27 @@ impl SwarmTui {
             } => {
                 self.elapsed_secs = elapsed_secs;
                 self.total_count = total_count;
-                let _ = pending_count; // derived from worker states
+                let _ = pending_count;
             }
             TuiUpdate::Log { message } => {
-                self.status_message = Some(message);
+                let is_error = message.contains("ERROR") || message.contains("failed");
+                self.push_log(message, is_error);
             }
         }
     }
 
+    // ── Rendering ───────────────────────────────────────────────────────
+
     fn render(&mut self, stderr: &mut io::Stderr) -> io::Result<()> {
-        // Refresh terminal width on each render (handles resize).
         self.term_width = terminal::size().map(|(w, _)| w).unwrap_or(80);
         let w = self.term_width as usize;
+        if w < 30 {
+            return Ok(()); // too narrow
+        }
+        // Inner content width (between the │ borders).
+        let inner = w.saturating_sub(2);
 
-        // Move cursor up to clear previous render.
+        // Erase previous frame.
         if self.last_render_lines > 0 {
             queue!(
                 stderr,
@@ -142,115 +192,264 @@ impl SwarmTui {
             )?;
         }
 
-        let mut phys_lines: usize = 0;
+        let mut lines: usize = 0;
 
-        // Header line.
-        let running = self.workers.values().filter(|w| !w.completed).count();
-        let completed = self.workers.values().filter(|w| w.completed).count();
-        let header = format!(
-            "[swarm] {}s | {} | {}/{} running, {} done",
-            self.elapsed_secs, self.pattern, running, self.total_count, completed,
+        // ── Header bar ──────────────────────────────────────────────────
+        let running = self.workers.values().filter(|ws| !ws.completed).count();
+        let done = self.workers.values().filter(|ws| ws.completed).count();
+
+        let title = " Agent Relay ";
+        let stats = format!(
+            " {} {} {} {}/{} running {} done ",
+            self.pattern,
+            V,
+            format_elapsed(self.elapsed_secs),
+            running,
+            self.total_count,
+            done,
         );
-        let header = clamp(&header, w);
-        queue!(stderr, style::Print(&header), style::Print("\r\n"))?;
-        phys_lines += count_phys_lines(&header, w);
+        // Fill the rest with horizontal lines.
+        let fill_len = w
+            .saturating_sub(TL.len() + title.len() + stats.len() + TR.len())
+            .saturating_sub(2); // 2 extra H chars for padding
+        let fill: String = H.repeat(fill_len);
 
-        // Worker lines.
+        queue!(
+            stderr,
+            style::PrintStyledContent(TL.with(CLR_BORDER)),
+            style::PrintStyledContent(H.with(CLR_BORDER_ACCENT)),
+            style::PrintStyledContent(title.bold().with(CLR_HEADER)),
+            style::PrintStyledContent(H.with(CLR_BORDER_ACCENT)),
+            style::Print(
+                &fill
+                    .chars()
+                    .map(|_| H.chars().next().unwrap())
+                    .collect::<String>()
+            ),
+        )?;
+        // Right side stats.
+        queue!(
+            stderr,
+            style::PrintStyledContent(stats.with(CLR_DIM)),
+            style::PrintStyledContent(TR.with(CLR_BORDER)),
+            style::Print("\r\n"),
+        )?;
+        lines += 1;
+
+        // ── WORKERS section header ──────────────────────────────────────
+        let section = " WORKERS";
+        let pad = " ".repeat(inner.saturating_sub(section.len()));
+        queue!(
+            stderr,
+            style::PrintStyledContent(V.with(CLR_BORDER)),
+            style::PrintStyledContent(section.bold().with(CLR_DIM)),
+            style::Print(&pad),
+            style::PrintStyledContent(V.with(CLR_BORDER)),
+            style::Print("\r\n"),
+        )?;
+        lines += 1;
+
+        // ── Worker rows ─────────────────────────────────────────────────
         for (name, state) in &self.workers {
-            let line = if state.completed {
-                format!("  {}: completed", name)
-            } else if state.activity.is_empty() {
-                format!("  {}: (starting...)", name)
-            } else {
-                format!("  {}: {}", name, state.activity)
-            };
-            let line = clamp(&line, w);
+            queue!(stderr, style::PrintStyledContent(V.with(CLR_BORDER)))?;
+
             if state.completed {
-                // Print with green color for the "completed" part.
-                let prefix = format!("  {}: ", name);
-                let prefix = clamp(&prefix, w);
+                // ✓ name   done
+                let prefix = format!(" {} {} ", CHECK, name);
+                let activity_max = inner.saturating_sub(prefix.len() + 1);
+                let act = pad_or_truncate("done", activity_max);
+                let act_len = act.len();
                 queue!(
                     stderr,
-                    style::Print(&prefix),
-                    style::PrintStyledContent("completed".green()),
-                    style::Print("\r\n"),
+                    style::Print(" "),
+                    style::PrintStyledContent(CHECK.with(CLR_COMPLETED)),
+                    style::Print(" "),
+                    style::PrintStyledContent(name.clone().with(CLR_DIM)),
+                    style::Print("   "),
+                    style::PrintStyledContent(act.with(CLR_COMPLETED)),
                 )?;
+                let used = 1 + CHECK.len() + 1 + name.len() + 3 + act_len;
+                let rem = inner.saturating_sub(used);
+                queue!(stderr, style::Print(" ".repeat(rem)))?;
             } else {
-                queue!(stderr, style::Print(&line), style::Print("\r\n"))?;
-            }
-            phys_lines += count_phys_lines(&line, w);
-        }
+                // ● name   activity...
+                let dot = if state.activity.is_empty() {
+                    DOT_ONLINE
+                } else {
+                    DOT_ACTIVE
+                };
+                let dot_color = if state.activity.is_empty() {
+                    CLR_ONLINE
+                } else {
+                    CLR_ACTIVE
+                };
+                let activity_text = if state.activity.is_empty() {
+                    "starting..."
+                } else {
+                    &state.activity
+                };
+                let prefix_len = 1 + dot.len() + 1 + name.len() + 3;
+                let activity_max = inner.saturating_sub(prefix_len + 1);
+                let act = pad_or_truncate(activity_text, activity_max);
+                let act_len = act.len();
 
-        // Status message (briefly shown after sending or from log).
-        if let Some(msg) = &self.status_message {
-            let line = format!("  {}", msg);
-            let line = clamp(&line, w);
+                queue!(
+                    stderr,
+                    style::Print(" "),
+                    style::PrintStyledContent(dot.with(dot_color)),
+                    style::Print(" "),
+                    style::PrintStyledContent(name.clone().bold().white()),
+                    style::Print("   "),
+                    style::PrintStyledContent(act.with(CLR_DIM)),
+                )?;
+                let used = 1 + dot.len() + 1 + name.len() + 3 + act_len;
+                let rem = inner.saturating_sub(used);
+                queue!(stderr, style::Print(" ".repeat(rem)))?;
+            }
+
             queue!(
                 stderr,
-                style::PrintStyledContent(line.clone().dark_yellow()),
+                style::PrintStyledContent(V.with(CLR_BORDER)),
                 style::Print("\r\n"),
             )?;
-            phys_lines += count_phys_lines(&line, w);
+            lines += 1;
         }
 
-        // Input prompt — clamp the visible portion but keep the buffer intact.
-        let prompt = format!("> {}", self.input_buf);
-        let prompt = clamp(&prompt, w);
-        queue!(stderr, style::Print(&prompt))?;
-        phys_lines += count_phys_lines(&prompt, w);
+        // ── Separator ───────────────────────────────────────────────────
+        let sep: String = H.repeat(inner);
+        queue!(
+            stderr,
+            style::PrintStyledContent(LT.with(CLR_BORDER)),
+            style::PrintStyledContent(sep.clone().with(CLR_BORDER)),
+            style::PrintStyledContent(RT.with(CLR_BORDER)),
+            style::Print("\r\n"),
+        )?;
+        lines += 1;
+
+        // ── Activity log ────────────────────────────────────────────────
+        if self.log_lines.is_empty() {
+            // Empty state.
+            let msg = "waiting for activity...";
+            let pad_left = (inner.saturating_sub(msg.len())) / 2;
+            let pad_right = inner.saturating_sub(pad_left + msg.len());
+            queue!(
+                stderr,
+                style::PrintStyledContent(V.with(CLR_BORDER)),
+                style::Print(" ".repeat(pad_left)),
+                style::PrintStyledContent(msg.with(CLR_DIM)),
+                style::Print(" ".repeat(pad_right)),
+                style::PrintStyledContent(V.with(CLR_BORDER)),
+                style::Print("\r\n"),
+            )?;
+            lines += 1;
+        } else {
+            for entry in &self.log_lines {
+                let color = if entry.is_error { CLR_ERROR } else { CLR_DIM };
+                let text = pad_or_truncate(&format!(" {}", entry.text), inner);
+                queue!(
+                    stderr,
+                    style::PrintStyledContent(V.with(CLR_BORDER)),
+                    style::PrintStyledContent(text.with(color)),
+                    style::PrintStyledContent(V.with(CLR_BORDER)),
+                    style::Print("\r\n"),
+                )?;
+                lines += 1;
+            }
+        }
+
+        // ── Separator ───────────────────────────────────────────────────
+        queue!(
+            stderr,
+            style::PrintStyledContent(LT.with(CLR_BORDER)),
+            style::PrintStyledContent(sep.clone().with(CLR_BORDER)),
+            style::PrintStyledContent(RT.with(CLR_BORDER)),
+            style::Print("\r\n"),
+        )?;
+        lines += 1;
+
+        // ── Input bar ───────────────────────────────────────────────────
+        let prompt_char = "> ";
+        let input_max = inner.saturating_sub(prompt_char.len() + 1);
+        let visible_input = if self.input_buf.len() > input_max {
+            // Show the tail of the input.
+            let start = self.input_buf.len() - input_max;
+            &self.input_buf[start..]
+        } else {
+            &self.input_buf
+        };
+        let input_pad = inner.saturating_sub(prompt_char.len() + visible_input.len());
+        queue!(
+            stderr,
+            style::PrintStyledContent(V.with(CLR_BORDER)),
+            style::PrintStyledContent(prompt_char.with(CLR_INPUT_PROMPT)),
+            style::Print(visible_input),
+            style::Print(" ".repeat(input_pad)),
+            style::PrintStyledContent(V.with(CLR_BORDER)),
+            style::Print("\r\n"),
+        )?;
+        lines += 1;
+
+        // ── Bottom bar (shortcuts) ──────────────────────────────────────
+        let hints = format!(" @name msg {} @all msg {} Ctrl-C quit ", V, V);
+        let bottom_fill = inner.saturating_sub(hints.len());
+        queue!(
+            stderr,
+            style::PrintStyledContent(BL.with(CLR_BORDER)),
+            style::PrintStyledContent(hints.with(CLR_DIM)),
+            style::PrintStyledContent(H.repeat(bottom_fill).with(CLR_BORDER)),
+            style::PrintStyledContent(BR.with(CLR_BORDER)),
+            style::Print("\r\n"),
+        )?;
+        lines += 1;
 
         stderr.flush()?;
-        self.last_render_lines = phys_lines;
+        self.last_render_lines = lines;
         Ok(())
     }
 }
 
-/// Clamp a string to fit within `max_cols` columns to prevent terminal wrapping.
-fn clamp(s: &str, max_cols: usize) -> String {
-    if max_cols == 0 {
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+/// Pad or truncate a string to exactly `max` characters.
+fn pad_or_truncate(s: &str, max: usize) -> String {
+    if max == 0 {
         return String::new();
     }
-    if s.len() <= max_cols {
-        return s.to_string();
+    let char_count = s.chars().count();
+    if char_count <= max {
+        let mut out = s.to_string();
+        for _ in 0..(max - char_count) {
+            out.push(' ');
+        }
+        out
+    } else {
+        let boundary: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{}…", boundary)
     }
-    // Find a safe char boundary.
-    let boundary = s
-        .char_indices()
-        .take_while(|(i, _)| *i < max_cols.saturating_sub(1))
-        .last()
-        .map_or(0, |(i, c)| i + c.len_utf8());
-    s[..boundary].to_string()
 }
 
-/// Count how many physical terminal lines a string occupies (at least 1).
-fn count_phys_lines(s: &str, term_width: usize) -> usize {
-    if term_width == 0 || s.is_empty() {
-        return 1;
+fn format_elapsed(secs: u64) -> String {
+    if secs < 60 {
+        format!("{}s", secs)
+    } else {
+        format!("{}m{}s", secs / 60, secs % 60)
     }
-    let len = s.len();
-    // Ceiling division, but at least 1.
-    ((len + term_width - 1) / term_width).max(1)
 }
 
-/// Resolve a user-typed short name (e.g. "team-1") to a full worker name
-/// by searching the provided list.
+/// Resolve a user-typed short name (e.g. "team-1") to a full worker name.
 pub fn resolve_worker_name<'a>(short: &str, worker_names: &'a [String]) -> Option<&'a str> {
-    // Exact match first.
     if let Some(found) = worker_names.iter().find(|n| n.as_str() == short) {
         return Some(found.as_str());
     }
-    // Try matching against short_name().
     if let Some(found) = worker_names.iter().find(|n| short_name(n) == short) {
         return Some(found.as_str());
     }
-    // Partial suffix match: "team-1" matches "swarm-team-1-12345-67890".
     if let Some(found) = worker_names.iter().find(|n| short_name(n).ends_with(short)) {
         return Some(found.as_str());
     }
     None
 }
 
-/// Parse user input like "@team-1 check your progress" into a TuiCommand.
 fn parse_input(input: &str, worker_names: &[String]) -> Option<(TuiCommand, Option<String>)> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -292,7 +491,6 @@ fn parse_input(input: &str, worker_names: &[String]) -> Option<(TuiCommand, Opti
     }
 
     if target == "all" {
-        // Send to all pending workers — caller handles expanding this.
         return Some((
             TuiCommand::SendMessage {
                 to: "@all".to_string(),
@@ -327,8 +525,8 @@ fn parse_input(input: &str, worker_names: &[String]) -> Option<(TuiCommand, Opti
     }
 }
 
-/// Run the TUI input/render loop. Returns when Ctrl-C is pressed or the
-/// update channel closes.
+// ── Main TUI loop ───────────────────────────────────────────────────────
+
 pub async fn run_tui(
     pattern: String,
     total_count: usize,
@@ -347,10 +545,7 @@ pub async fn run_tui(
     let mut tui = SwarmTui::new(&pattern, total_count);
     let mut stderr = io::stderr();
 
-    // Hide the cursor during TUI operation.
     let _ = execute!(stderr, cursor::Hide);
-
-    // Initial render.
     let _ = tui.render(&mut stderr);
 
     let mut reader = event::EventStream::new();
@@ -374,8 +569,9 @@ pub async fn run_tui(
                             event::KeyCode::Enter => {
                                 let input = std::mem::take(&mut tui.input_buf);
                                 if let Some((cmd, status)) = parse_input(&input, &worker_names) {
-                                    tui.status_message = status;
-                                    // Only send valid commands (non-empty `to`).
+                                    if let Some(msg) = status {
+                                        tui.push_log(msg, false);
+                                    }
                                     match &cmd {
                                         TuiCommand::SendMessage { to, .. } if !to.is_empty() => {
                                             let _ = cmd_tx.send(cmd).await;
@@ -406,10 +602,6 @@ pub async fn run_tui(
                 let Some(update) = maybe_update else {
                     break;
                 };
-                // Clear transient status on non-Log updates.
-                if !matches!(&update, TuiUpdate::Log { .. }) {
-                    tui.status_message = None;
-                }
                 tui.apply_update(update);
                 let _ = tui.render(&mut stderr);
             }
@@ -417,7 +609,8 @@ pub async fn run_tui(
     }
 }
 
-/// Extract a short display name: "swarm-team-1-41675-1772026298" → "swarm-team-1".
+// ── Shared utilities ────────────────────────────────────────────────────
+
 fn short_name(full: &str) -> &str {
     full.strip_suffix(full.rfind('-').map_or("", |i| &full[i..]))
         .and_then(|s| s.strip_suffix(s.rfind('-').map_or("", |i| &s[i..])))
@@ -437,12 +630,10 @@ fn truncate(text: &str, max: usize) -> String {
     }
 }
 
-/// Check if stderr is a TTY (for deciding whether to enable interactive mode).
 pub fn stderr_is_tty() -> bool {
     #[cfg(unix)]
     {
         use std::os::fd::AsFd;
-
         nix::unistd::isatty(std::io::stderr().as_fd()).unwrap_or(false)
     }
     #[cfg(not(unix))]
@@ -450,6 +641,8 @@ pub fn stderr_is_tty() -> bool {
         false
     }
 }
+
+// ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -463,7 +656,6 @@ mod tests {
 
     #[test]
     fn short_name_preserves_no_dash_input() {
-        // No dashes means nothing to strip.
         assert_eq!(short_name("simple"), "simple");
     }
 
@@ -506,29 +698,40 @@ mod tests {
     fn truncate_long_strings_with_ellipsis() {
         let result = truncate("this is a long string", 10);
         assert!(result.ends_with("..."));
-        assert!(result.len() <= 13); // 10 chars + "..."
+        assert!(result.len() <= 13);
     }
 
     #[test]
-    fn clamp_short_string_unchanged() {
-        assert_eq!(clamp("hello", 80), "hello");
+    fn pad_or_truncate_pads_short() {
+        let result = pad_or_truncate("hi", 5);
+        assert_eq!(result, "hi   ");
+        assert_eq!(result.len(), 5);
     }
 
     #[test]
-    fn clamp_long_string_truncated() {
-        let result = clamp("this is a very long string that exceeds width", 20);
-        assert!(result.len() <= 20);
+    fn pad_or_truncate_truncates_long() {
+        let result = pad_or_truncate("this is a very long string", 10);
+        assert!(result.chars().count() <= 10);
+        assert!(result.ends_with('…'));
     }
 
     #[test]
-    fn count_phys_lines_single() {
-        assert_eq!(count_phys_lines("short", 80), 1);
+    fn format_elapsed_seconds() {
+        assert_eq!(format_elapsed(45), "45s");
     }
 
     #[test]
-    fn count_phys_lines_wrapping() {
-        // 100 chars in an 80-col terminal = 2 physical lines.
-        let long = "a".repeat(100);
-        assert_eq!(count_phys_lines(&long, 80), 2);
+    fn format_elapsed_minutes() {
+        assert_eq!(format_elapsed(125), "2m5s");
+    }
+
+    #[test]
+    fn log_ring_buffer_caps_at_max() {
+        let mut tui = SwarmTui::new("fan-out", 2);
+        for i in 0..20 {
+            tui.push_log(format!("line {}", i), false);
+        }
+        assert_eq!(tui.log_lines.len(), MAX_LOG_LINES);
+        assert!(tui.log_lines.back().unwrap().text.contains("19"));
     }
 }

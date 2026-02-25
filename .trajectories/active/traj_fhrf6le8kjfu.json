@@ -31,6 +31,18 @@
             "reasoning": "crossterm is lightweight and well-supported for terminal manipulation; futures-lite provides the necessary StreamExt trait for tokio::select! compatibility with crossterm EventStream"
           },
           "significance": "high"
+        },
+        {
+          "ts": 1772031082368,
+          "type": "decision",
+          "content": "Expanded dashboard static-dir selection markers to include nested metrics and app/index fallbacks: Expanded dashboard static-dir selection markers to include nested metrics and app/index fallbacks",
+          "raw": {
+            "question": "Expanded dashboard static-dir selection markers to include nested metrics and app/index fallbacks",
+            "chosen": "Expanded dashboard static-dir selection markers to include nested metrics and app/index fallbacks",
+            "alternatives": [],
+            "reasoning": "The existing metrics.html-only check could pick dashboard-server/out when sibling dashboard/out has valid routed pages (e.g. metrics/index.html), leading to /metrics 404."
+          },
+          "significance": "high"
         }
       ]
     }
