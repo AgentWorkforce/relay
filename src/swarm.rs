@@ -1,3 +1,4 @@
+use crate::helpers;
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use clap::Parser;
@@ -602,7 +603,7 @@ fn build_stage_task(
     };
 
     let mut body = format!(
-        "{}\n\nPrimary task:\n{}\n\nWhen complete, send exactly one relay response to {} with prefix `RESULT:`.",
+        "{}\n\nPrimary task:\n{}\n\nWhen complete, send exactly one relay message to {} with prefix `RESULT:` containing your answer.",
         header, base_task, SWARM_SENDER
     );
 
@@ -611,8 +612,11 @@ fn build_stage_task(
         body.push_str(output);
     }
 
+    // Use a placeholder in the example so the literal text "RESULT:" does not
+    // appear twice in the prompt — the worker_stream parser would otherwise
+    // match the prompt echo itself as a completed result.
     body.push_str(
-        "\n\nExample relay output:\n->relay:human:swarm-orchestrator <<<RESULT: your concise answer>>>\n",
+        "\n\nExample relay output:\n->relay:human:swarm-orchestrator <<<your concise answer>>>\n",
     );
 
     body
@@ -680,18 +684,39 @@ fn extract_worker_result(event: &Value, pending: &HashSet<String>) -> Option<(St
             }
 
             let chunk = event.get("chunk")?.as_str()?;
-            if !chunk.contains("RESULT:") {
+            // Strip ANSI escape codes before matching so PTY rendering
+            // artefacts don't pollute the result or cause false positives.
+            let clean = helpers::strip_ansi(chunk);
+            // Look for a relay_send-style result line, not just any
+            // occurrence of "RESULT:" (which could be an echo of the prompt).
+            if !clean.contains("<<<RESULT:") && !clean.contains("RESULT:") {
+                return None;
+            }
+            // Reject prompt echoes: if the chunk contains our instruction
+            // text it's the task being rendered, not actual worker output.
+            if clean.contains("send exactly one relay") || clean.contains("Example relay output") {
                 return None;
             }
 
-            Some((name, sanitize_result(chunk)))
+            Some((name, sanitize_result(&clean)))
         }
         _ => None,
     }
 }
 
 fn sanitize_result(raw: &str) -> String {
-    let trimmed = raw.trim();
+    let clean = helpers::strip_ansi(raw);
+    let trimmed = clean.trim();
+
+    // Handle <<<RESULT: ...>>> wrapper
+    if let Some(start) = trimmed.find("<<<RESULT:") {
+        let after = &trimmed[start + "<<<RESULT:".len()..];
+        if let Some(end) = after.find(">>>") {
+            return after[..end].trim().to_string();
+        }
+        return after.trim().trim_end_matches(">>>").trim().to_string();
+    }
+
     if let Some(result) = trimmed.strip_prefix("RESULT:") {
         return result.trim().to_string();
     }
