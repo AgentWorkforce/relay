@@ -300,7 +300,10 @@ pub async fn run_swarm(args: SwarmArgs) -> Result<()> {
     let run_id = swarm_run_id();
     let worker_names = build_worker_names(&pattern, args.teams, &run_id);
 
-    eprintln!("[swarm] pattern={} teams={} timeout={}s cli={}", pattern, args.teams, timeout_secs, args.cli);
+    eprintln!(
+        "[swarm] pattern={} teams={} timeout={}s cli={}",
+        pattern, args.teams, timeout_secs, args.cli
+    );
     eprintln!("[swarm] starting broker...");
 
     let mut broker = match start_broker_ready(
@@ -693,7 +696,11 @@ async fn wait_for_worker_results(
             // Relay message from the worker — highest priority signal.
             "relay_inbound" => {
                 if let Some((worker, body)) = extract_relay_inbound_result(&event, &pending) {
-                    eprintln!("[swarm] {} sent result via relay ({} chars)", worker, body.len());
+                    eprintln!(
+                        "[swarm] {} sent result via relay ({} chars)",
+                        worker,
+                        body.len()
+                    );
                     pending.remove(&worker);
                     results.insert(worker, body);
                 }
@@ -722,7 +729,11 @@ async fn wait_for_worker_results(
                 // Check for explicit RESULT: marker in accumulated output
                 // (but reject prompt echoes).
                 if let Some(result) = extract_result_from_stream(&clean) {
-                    eprintln!("[swarm] {} sent explicit RESULT ({} chars)", name, result.len());
+                    eprintln!(
+                        "[swarm] {} sent explicit RESULT ({} chars)",
+                        name,
+                        result.len()
+                    );
                     pending.remove(&name);
                     results.insert(name, result);
                 }
@@ -771,21 +782,12 @@ async fn wait_for_worker_results(
                 results.insert(name, result);
             }
             "worker_ready" => {
-                let name = event
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("?");
+                let name = event.get("name").and_then(Value::as_str).unwrap_or("?");
                 eprintln!("[swarm] {} is running", name);
             }
             "agent_spawned" => {
-                let name = event
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("?");
-                let cli = event
-                    .get("cli")
-                    .and_then(Value::as_str)
-                    .unwrap_or("?");
+                let name = event.get("name").and_then(Value::as_str).unwrap_or("?");
+                let cli = event.get("cli").and_then(Value::as_str).unwrap_or("?");
                 eprintln!("[swarm] {} spawned (cli={})", name, cli);
             }
             _ => {}
