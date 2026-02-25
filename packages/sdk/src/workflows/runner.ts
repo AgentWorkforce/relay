@@ -1013,18 +1013,33 @@ export class WorkflowRunner {
         const shortName = name.replace(/-[a-f0-9]{6,}$/, '');
         let activity: string | undefined;
         if (/Read\(/.test(stripped)) {
-          const m = stripped.match(/Read\(\s*["']?([^\s"')]+)/);
-          activity = m ? `Reading ${path.basename(m[1])}` : 'Reading file...';
+          // Extract filename — path may be truncated at chunk boundary so require
+          // at least a dir separator or 8+ chars to trust the basename.
+          const m = stripped.match(/Read\(\s*~?([^\s)"']{8,})/);
+          if (m) {
+            const base = path.basename(m[1]);
+            activity = base.length >= 3 ? `Reading ${base}` : 'Reading file...';
+          } else {
+            activity = 'Reading file...';
+          }
         } else if (/Edit\(/.test(stripped)) {
-          const m = stripped.match(/Edit\(\s*["']?([^\s"')]+)/);
-          activity = m ? `Editing ${path.basename(m[1])}` : 'Editing file...';
-        } else if (/Bash\(|Bash:/.test(stripped)) {
-          activity = 'Running command...';
+          const m = stripped.match(/Edit\(\s*~?([^\s)"']{8,})/);
+          if (m) {
+            const base = path.basename(m[1]);
+            activity = base.length >= 3 ? `Editing ${base}` : 'Editing file...';
+          } else {
+            activity = 'Editing file...';
+          }
+        } else if (/Bash\(/.test(stripped)) {
+          // Extract a short preview of the command
+          const m = stripped.match(/Bash\(\s*(.{1,40})/);
+          activity = m ? `Running: ${m[1].trim()}...` : 'Running command...';
         } else if (/Explore\(/.test(stripped)) {
-          activity = 'Exploring codebase...';
+          const m = stripped.match(/Explore\(\s*(.{1,50})/);
+          activity = m ? `Exploring: ${m[1].replace(/\).*/, '').trim()}` : 'Exploring codebase...';
         } else if (/Task\(/.test(stripped)) {
           activity = 'Running sub-agent...';
-        } else if (/Thinking|Coalescing|Cultivating/.test(stripped)) {
+        } else if (/Sublimating|Thinking|Coalescing|Cultivating/.test(stripped)) {
           const m = stripped.match(/(\d+)s/);
           activity = m ? `Thinking... (${m[1]}s)` : 'Thinking...';
         }
@@ -1037,7 +1052,9 @@ export class WorkflowRunner {
       // Wire relay event hooks for rich console logging
       this.relay.onMessageReceived = (msg) => {
         const body = msg.text.length > 120 ? msg.text.slice(0, 117) + '...' : msg.text;
-        this.log(`[msg] ${msg.from} → ${msg.to}: ${body}`);
+        const fromShort = msg.from.replace(/-[a-f0-9]{6,}$/, '');
+        const toShort = msg.to.replace(/-[a-f0-9]{6,}$/, '');
+        this.log(`[msg] ${fromShort} → ${toShort}: ${body}`);
       };
 
       this.relay.onAgentSpawned = (agent) => {
