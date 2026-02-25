@@ -861,7 +861,10 @@ fn is_cli_noise(line: &str) -> bool {
 fn log_result_received(worker: &str, via: &str, result: &str, remaining: usize) {
     let short = short_worker_name(worker);
     let preview = result_preview(result, 120);
-    eprintln!("[swarm] {} completed via {} ({} remaining)", short, via, remaining);
+    eprintln!(
+        "[swarm] {} completed via {} ({} remaining)",
+        short, via, remaining
+    );
     eprintln!("[swarm]   ↳ {}", preview);
 }
 
