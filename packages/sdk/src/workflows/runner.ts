@@ -142,6 +142,10 @@ export class WorkflowRunner {
   >();
   /** Mutex for serializing workers.json file access */
   private workersFileLock: Promise<void> = Promise.resolve();
+  /** Timestamp when the current workflow run started, for elapsed-time logging. */
+  private runStartTime?: number;
+  /** Unsubscribe handle for broker stderr listener wired during a run. */
+  private unsubBrokerStderr?: () => void;
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -150,6 +154,17 @@ export class WorkflowRunner {
     this.cwd = options.cwd ?? process.cwd();
     this.summaryDir = options.summaryDir ?? path.join(this.cwd, '.relay', 'summaries');
     this.workersPath = path.join(this.cwd, '.agent-relay', 'team', 'workers.json');
+  }
+
+  // ── Progress logging ────────────────────────────────────────────────────
+
+  /** Log a progress message with elapsed time since run start. */
+  private log(msg: string): void {
+    const elapsed = this.runStartTime ? Math.round((Date.now() - this.runStartTime) / 1000) : 0;
+    const mins = Math.floor(elapsed / 60);
+    const secs = elapsed % 60;
+    const ts = mins > 0 ? `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}` : `00:${String(secs).padStart(2, '0')}`;
+    console.log(`[workflow ${ts}] ${msg}`);
   }
 
   // ── Relaycast auto-provisioning ────────────────────────────────────────
@@ -939,6 +954,9 @@ export class WorkflowRunner {
     this.paused = false;
     this.currentConfig = config;
     this.currentRunId = runId;
+    this.runStartTime = Date.now();
+
+    this.log(`Starting workflow "${workflow.name}" (${workflow.steps.length} steps)`);
 
     // Initialize trajectory recording
     this.trajectory = new WorkflowTrajectory(config.trajectories, runId, this.cwd);
@@ -970,8 +988,11 @@ export class WorkflowRunner {
         config.swarm.channel = channel;
         await this.db.updateRun(runId, { config });
       }
+      this.log('Resolving Relaycast API key...');
       await this.ensureRelaycastApiKey(channel);
+      this.log('API key resolved');
 
+      this.log('Starting broker...');
       this.relay = new AgentRelay({
         ...this.relayOptions,
         channels: [channel],
@@ -989,12 +1010,20 @@ export class WorkflowRunner {
         apiKey: this.relayApiKey,
         cachePath: path.join(this.cwd, '.agent-relay', 'relaycast.json'),
       });
+
+      // Wire broker stderr to console for observability
+      this.unsubBrokerStderr = this.relay.onBrokerStderr((line: string) => {
+        console.log(`[broker] ${line}`);
+      });
+
+      this.log(`Creating channel: ${channel}...`);
       if (isResume) {
         await this.relaycastApi.createChannel(channel);
       } else {
         await this.relaycastApi.createChannel(channel, workflow.description);
       }
       await this.relaycastApi.joinChannel(channel);
+      this.log('Channel ready');
 
       if (isResume) {
         this.postToChannel(`Workflow **${workflow.name}** resumed — ${pendingCount} pending steps`);
@@ -1014,6 +1043,7 @@ export class WorkflowRunner {
         await this.runPreflightChecks(workflow.preflight, runId);
       }
 
+      this.log(`Executing ${workflow.steps.length} steps (pattern: ${config.swarm.pattern})`);
       await this.executeSteps(workflow, stepStates, agentMap, config.errorHandling, runId);
 
       const allCompleted = [...stepStates.values()].every(
@@ -1021,6 +1051,7 @@ export class WorkflowRunner {
       );
 
       if (allCompleted) {
+        this.log('Workflow completed successfully');
         await this.updateRunStatus(runId, 'completed');
         this.emit({ type: 'run:completed', runId });
 
@@ -1064,8 +1095,12 @@ export class WorkflowRunner {
       this.ptyOutputBuffers.clear();
       this.ptyListeners.clear();
 
+      this.unsubBrokerStderr?.();
+      this.unsubBrokerStderr = undefined;
+      this.log('Shutting down broker...');
       await this.relay?.shutdown();
       this.relay = undefined;
+      this.runStartTime = undefined;
       this.relaycastApi = undefined;
       this.channel = undefined;
       this.trajectory = undefined;
@@ -1763,8 +1798,10 @@ export class WorkflowRunner {
         }
 
         // Spawn agent via AgentRelay
+        this.log(`[${step.name}] Spawning agent "${agentDef.name}" (cli: ${agentDef.cli})`);
         const resolvedStep = { ...step, task: resolvedTask };
         const output = await this.spawnAndWait(agentDef, resolvedStep, timeoutMs);
+        this.log(`[${step.name}] Agent "${agentDef.name}" exited`);
 
         // Run verification if configured
         if (step.verification) {

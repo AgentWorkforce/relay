@@ -241,6 +241,26 @@ export class AgentRelay {
     this.gemini = this.createSpawner('gemini', 'Gemini', 'pty');
   }
 
+  /**
+   * Subscribe to broker stderr output. Listener is wired immediately if the
+   * client is already started, otherwise it is attached when the client starts.
+   * Returns an unsubscribe function.
+   */
+  onBrokerStderr(listener: (line: string) => void): () => void {
+    if (this.client) {
+      return this.client.onBrokerStderr(listener);
+    }
+    // Queue it: once ensureStarted completes, wire it up
+    let unsub: (() => void) | undefined;
+    const queuedUnsub = () => { unsub?.(); };
+    // Use the start promise if one is pending
+    const promise = this.startPromise ?? this.ensureStarted();
+    promise.then((c) => {
+      unsub = c.onBrokerStderr(listener);
+    }).catch(() => {});
+    return queuedUnsub;
+  }
+
   // ── Spawning ────────────────────────────────────────────────────────────
 
   async spawnPty(input: SpawnPtyInput): Promise<Agent> {

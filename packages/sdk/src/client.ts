@@ -384,6 +384,7 @@ export class AgentRelayClient {
       }
     }
 
+    console.log(`[broker] Starting: ${resolvedBinary} ${args.join(' ')}`);
     const child = spawn(resolvedBinary, args, {
       cwd: this.options.cwd,
       env,
@@ -426,6 +427,7 @@ export class AgentRelayClient {
     });
 
     await this.requestHello();
+    console.log('[broker] Broker ready (hello handshake complete)');
   }
 
   private disposeProcessHandles(): void {
