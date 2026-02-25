@@ -601,10 +601,7 @@ fn build_stage_task(
         ),
     };
 
-    let mut body = format!(
-        "{}\n\nPrimary task:\n{}",
-        header, base_task
-    );
+    let mut body = format!("{}\n\nPrimary task:\n{}", header, base_task);
 
     if let Some(output) = previous_output {
         body.push_str("\n\nPrevious stage result:\n");
@@ -660,9 +657,7 @@ async fn wait_for_worker_results(
         match kind {
             // Relay message from the worker — highest priority signal.
             "relay_inbound" => {
-                if let Some((worker, body)) =
-                    extract_relay_inbound_result(&event, &pending)
-                {
+                if let Some((worker, body)) = extract_relay_inbound_result(&event, &pending) {
                     pending.remove(&worker);
                     results.insert(worker, body);
                 }
