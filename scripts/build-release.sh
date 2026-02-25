@@ -62,16 +62,6 @@ info "Release size: $TOTAL_SIZE"
 info "Creating tarball..."
 tar -czf "agent-relay-v$VERSION.tar.gz" agent-relay
 
-# Create platform-specific tarballs with native binaries
-for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
-    if [ -f "$ROOT_DIR/bin/relay-pty-$platform" ]; then
-        info "Creating $platform tarball..."
-        cp "$ROOT_DIR/bin/relay-pty-$platform" agent-relay/bin/relay-pty
-        tar -czf "agent-relay-v$VERSION-$platform.tar.gz" agent-relay
-        rm agent-relay/bin/relay-pty
-    fi
-done
-
 success "Release artifacts created in $RELEASE_DIR"
 ls -la "$RELEASE_DIR"/*.tar.gz
 

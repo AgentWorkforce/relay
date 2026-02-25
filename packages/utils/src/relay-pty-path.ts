@@ -229,16 +229,6 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
     candidates.push(path.join(root, 'bin', 'relay-pty'));
   }
 
-  // Development: local Rust builds
-  const devRoot = normalizedCaller.includes('node_modules')
-    ? null
-    : path.join(callerDirname, '..', '..', '..');
-  if (devRoot) {
-    candidates.push(path.join(devRoot, 'relay-pty', 'target', 'release', 'relay-pty'));
-    candidates.push(path.join(devRoot, 'relay-pty', 'target', 'debug', 'relay-pty'));
-  }
-  candidates.push(path.join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'));
-
   // Bash installer paths (curl | bash install method)
   // install.sh downloads relay-pty to ~/.agent-relay/bin/relay-pty
   if (bashInstallerDir) {

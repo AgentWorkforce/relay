@@ -16,7 +16,6 @@ bin/agent-relay-test
 
 # Rust build artifacts
 target/
-relay-pty/target/
 
 # TypeScript build info (if enabled later)
 *.tsbuildinfo

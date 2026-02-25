@@ -10,6 +10,7 @@ mod listen_api;
 mod pty_worker;
 mod routing;
 mod spawner;
+mod swarm;
 mod wrap;
 
 use helpers::{
@@ -28,7 +29,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
     sync::{broadcast, mpsc},
-    time::MissedTickBehavior,
+    time::{timeout, MissedTickBehavior},
 };
 use uuid::Uuid;
 
@@ -57,6 +58,9 @@ const MAX_DELIVERY_RETRIES: u32 = 10;
 const DEFAULT_RELAYCAST_BASE_URL: &str = "https://api.relaycast.dev";
 const DM_PARTICIPANT_CACHE_TTL: Duration = Duration::from_secs(30);
 const THREAD_HISTORY_LIMIT: usize = 1_000;
+const DEFAULT_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS: u64 = 3_000;
+const DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS: u64 = 20_000;
+const DEFAULT_HTTP_API_EVENT_EMIT_TIMEOUT_MS: u64 = 200;
 
 #[derive(Debug, Parser)]
 #[command(name = "agent-relay-broker")]
@@ -71,6 +75,8 @@ enum Commands {
     Init(InitCommand),
     Pty(PtyCommand),
     Headless(HeadlessCommand),
+    /// Run ad-hoc swarm execution via the relay broker
+    Swarm(swarm::SwarmArgs),
     /// Internal: wraps a CLI in a PTY with interactive passthrough.
     /// Used by the SDK — not for direct user invocation.
     /// Usage: agent-relay-broker wrap codex -- --full-auto
@@ -1200,6 +1206,7 @@ async fn main() -> Result<()> {
         Commands::Init(_) => "init",
         Commands::Pty(_) => "pty",
         Commands::Headless(_) => "headless",
+        Commands::Swarm(_) => "swarm",
         Commands::Wrap { .. } => "wrap",
     };
     telemetry.track(TelemetryEvent::CliCommandRun {
@@ -1210,6 +1217,7 @@ async fn main() -> Result<()> {
         Commands::Init(cmd) => run_init(cmd, telemetry).await,
         Commands::Pty(cmd) => pty_worker::run_pty_worker(cmd).await,
         Commands::Headless(cmd) => run_headless_worker(cmd).await,
+        Commands::Swarm(args) => swarm::run_swarm(args).await,
         Commands::Wrap { cli, args } => wrap::run_wrap(cli, args, false, telemetry).await,
     }
 }
@@ -1518,6 +1526,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             }
                         }
                         ListenApiRequest::Release { name, reply } => {
+                            // Unregister from supervisor before release to prevent
+                            // auto-restart of intentionally released agents.
+                            workers.supervisor.unregister(&name);
+                            workers.metrics.on_release(&name);
                             match workers.release(&name).await {
                                 Ok(()) => {
                                     if let Err(error) = relaycast_http.mark_agent_offline(&name).await {
@@ -1538,7 +1550,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     let _ = state.save(&paths.state);
                                     let _ = send_event(
                                         &sdk_out_tx,
-                                        json!({"kind":"agent_exited","name":&name,"code":0,"signal":null}),
+                                        json!({"kind":"agent_released","name":&name}),
                                     ).await;
                                     publish_agent_state_transition(
                                         &ws_control_tx,
@@ -1555,7 +1567,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 }
                             }
                         }
-                        ListenApiRequest::Send { to, text, from, reply } => {
+                        ListenApiRequest::Send {
+                            request_id,
+                            to,
+                            text,
+                            from,
+                            reply,
+                        } => {
                             let normalized_to = to.trim().to_string();
                             let normalized_sender = normalize_sender(from.clone());
                             let from_dashboard =
@@ -1567,6 +1585,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             };
                             tracing::info!(
                                 target = "relay_broker::http_api",
+                                request_id = %request_id,
                                 raw_from = ?from,
                                 normalized_sender = %normalized_sender,
                                 from_dashboard = %from_dashboard,
@@ -1583,6 +1602,11 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             let event_id = format!("http_{}", Uuid::new_v4().simple());
                             let priority = if normalized_to.starts_with('#') { 3 } else { 2 };
                             let mut delivered = 0usize;
+                            let mut delivery_errors = 0usize;
+                            let request_start = Instant::now();
+                            let local_delivery_timeout = http_api_local_delivery_timeout();
+                            let relaycast_timeout = http_api_relaycast_send_timeout();
+                            let event_emit_timeout = http_api_event_emit_timeout();
 
                             record_thread_history_event(
                                 &mut recent_thread_messages,
@@ -1603,29 +1627,68 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 workers.worker_names_for_direct_target(&normalized_to, &delivery_from)
                             };
 
+                            tracing::info!(
+                                target = "relay_broker::http_api",
+                                request_id = %request_id,
+                                event_id = %event_id,
+                                to = %normalized_to,
+                                delivery_from = %delivery_from,
+                                target_count = %targets.len(),
+                                "resolved HTTP API send targets"
+                            );
+
                             for worker_name in targets {
-                                if queue_and_try_delivery_raw(
-                                    &mut workers,
-                                    &mut pending_deliveries,
-                                    &worker_name,
-                                    &event_id,
-                                    &delivery_from,
-                                    &normalized_to,
-                                    &text,
-                                    None,
-                                    priority,
-                                    delivery_retry_interval,
+                                match timeout(
+                                    local_delivery_timeout,
+                                    queue_and_try_delivery_raw(
+                                        &mut workers,
+                                        &mut pending_deliveries,
+                                        &worker_name,
+                                        &event_id,
+                                        &delivery_from,
+                                        &normalized_to,
+                                        &text,
+                                        None,
+                                        priority,
+                                        delivery_retry_interval,
+                                    ),
                                 )
                                 .await
-                                .is_ok()
                                 {
-                                    delivered = delivered.saturating_add(1);
+                                    Ok(Ok(_)) => {
+                                        delivered = delivered.saturating_add(1);
+                                    }
+                                    Ok(Err(error)) => {
+                                        delivery_errors = delivery_errors.saturating_add(1);
+                                        tracing::warn!(
+                                            target = "relay_broker::http_api",
+                                            request_id = %request_id,
+                                            event_id = %event_id,
+                                            to = %normalized_to,
+                                            worker = %worker_name,
+                                            error = %error,
+                                            "local delivery attempt failed"
+                                        );
+                                    }
+                                    Err(_) => {
+                                        delivery_errors = delivery_errors.saturating_add(1);
+                                        tracing::warn!(
+                                            target = "relay_broker::http_api",
+                                            request_id = %request_id,
+                                            event_id = %event_id,
+                                            to = %normalized_to,
+                                            worker = %worker_name,
+                                            timeout_ms = %local_delivery_timeout.as_millis(),
+                                            "local delivery attempt timed out"
+                                        );
+                                    }
                                 }
                             }
 
                             if delivered > 0 {
                                 tracing::info!(
                                     target = "relay_broker::http_api",
+                                    request_id = %request_id,
                                     event_id = %event_id,
                                     to = %normalized_to,
                                     delivery_from = %delivery_from,
@@ -1633,7 +1696,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     delivered = %delivered,
                                     "local delivery succeeded"
                                 );
-                                let _ = send_event(
+                                emit_http_api_event_with_timeout(
                                     &sdk_out_tx,
                                     json!({
                                         "kind": "relay_inbound",
@@ -1643,32 +1706,48 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "body": text,
                                         "thread_id": Value::Null,
                                     }),
+                                    event_emit_timeout,
                                 )
                                 .await;
-                                let _ = reply.send(Ok(json!({
+                                if let Err(_) = reply.send(Ok(json!({
                                     "success": true,
                                     "event_id": event_id,
                                     "delivered": delivered,
                                     "local": true,
-                                })));
+                                }))) {
+                                    tracing::warn!(
+                                        target = "relay_broker::http_api",
+                                        request_id = %request_id,
+                                        event_id = %event_id,
+                                        "broker HTTP API reply channel closed before local delivery response"
+                                    );
+                                }
                             } else {
                                 tracing::info!(
                                     target = "relay_broker::http_api",
+                                    request_id = %request_id,
                                     event_id = %event_id,
                                     to = %normalized_to,
+                                    delivery_errors = %delivery_errors,
                                     delivery_from = %delivery_from,
                                     ui_from = %ui_from,
-                                    "no local workers matched; forwarding to relaycast"
+                                    relaycast_timeout_ms = %relaycast_timeout.as_millis(),
+                                    "no local deliveries succeeded; forwarding to relaycast"
                                 );
-                                match relaycast_http.send(&normalized_to, &text).await {
-                                    Ok(()) => {
+                                let relaycast_start = Instant::now();
+                                match timeout(relaycast_timeout, relaycast_http.send(&normalized_to, &text))
+                                    .await
+                                {
+                                    Ok(Ok(())) => {
                                         tracing::info!(
                                             target = "relay_broker::http_api",
+                                            request_id = %request_id,
                                             event_id = %event_id,
                                             to = %normalized_to,
+                                            relaycast_ms = %relaycast_start.elapsed().as_millis(),
                                             "relaycast publish succeeded"
                                         );
-                                        let _ = send_event(
+                                        emit_http_api_event_with_timeout(
                                             &sdk_out_tx,
                                             json!({
                                                 "kind": "relay_inbound",
@@ -1678,30 +1757,78 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 "body": text,
                                                 "thread_id": Value::Null,
                                             }),
+                                            event_emit_timeout,
                                         )
                                         .await;
-                                        let _ = reply.send(Ok(json!({
+                                        if let Err(_) = reply.send(Ok(json!({
                                             "success": true,
                                             "event_id": event_id,
                                             "relaycast_published": true,
                                             "local": false,
-                                        })));
+                                        }))) {
+                                            tracing::warn!(
+                                                target = "relay_broker::http_api",
+                                                request_id = %request_id,
+                                                event_id = %event_id,
+                                                "broker HTTP API reply channel closed before relaycast response"
+                                            );
+                                        }
                                     }
-                                    Err(error) => {
+                                    Ok(Err(error)) => {
                                         tracing::warn!(
                                             target = "relay_broker::http_api",
+                                            request_id = %request_id,
                                             event_id = %event_id,
                                             to = %normalized_to,
+                                            relaycast_ms = %relaycast_start.elapsed().as_millis(),
                                             error = %error,
                                             "relaycast publish failed"
                                         );
                                         let not_found = format!("Agent \"{}\" not found", normalized_to);
-                                        let _ = reply.send(Err(format!(
+                                        if let Err(_) = reply.send(Err(format!(
                                             "{not_found} and Relaycast publish failed: {error}"
-                                        )));
+                                        ))) {
+                                            tracing::warn!(
+                                                target = "relay_broker::http_api",
+                                                request_id = %request_id,
+                                                event_id = %event_id,
+                                                "broker HTTP API reply channel closed before relaycast failure response"
+                                            );
+                                        }
+                                    }
+                                    Err(_) => {
+                                        tracing::warn!(
+                                            target = "relay_broker::http_api",
+                                            request_id = %request_id,
+                                            event_id = %event_id,
+                                            to = %normalized_to,
+                                            relaycast_timeout_ms = %relaycast_timeout.as_millis(),
+                                            relaycast_ms = %relaycast_start.elapsed().as_millis(),
+                                            "relaycast publish timed out"
+                                        );
+                                        let not_found = format!("Agent \"{}\" not found", normalized_to);
+                                        if let Err(_) = reply.send(Err(format!(
+                                            "{not_found} and Relaycast publish timed out after {}ms",
+                                            relaycast_timeout.as_millis()
+                                        ))) {
+                                            tracing::warn!(
+                                                target = "relay_broker::http_api",
+                                                request_id = %request_id,
+                                                event_id = %event_id,
+                                                "broker HTTP API reply channel closed before relaycast timeout response"
+                                            );
+                                        }
                                     }
                                 }
                             }
+                            tracing::info!(
+                                target = "relay_broker::http_api",
+                                request_id = %request_id,
+                                event_id = %event_id,
+                                to = %normalized_to,
+                                total_ms = %request_start.elapsed().as_millis(),
+                                "HTTP API send request handling complete"
+                            );
                         }
                         ListenApiRequest::List { reply } => {
                             let _ = reply.send(Ok(json!({ "agents": workers.list() })));
@@ -1807,7 +1934,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         }
                                         let _ = send_event(
                                             &sdk_out_tx,
-                                            json!({"kind":"agent_exited","name":name,"code":0,"signal":null}),
+                                            json!({"kind":"agent_released","name":name}),
                                         ).await;
                                         publish_agent_state_transition(
                                             &ws_control_tx,
@@ -3918,6 +4045,30 @@ async fn send_event(tx: &mpsc::Sender<ProtocolEnvelope<Value>>, payload: Value) 
     send_frame(tx, "event", None, payload).await
 }
 
+async fn emit_http_api_event_with_timeout(
+    tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    payload: Value,
+    timeout_window: Duration,
+) {
+    match timeout(timeout_window, send_event(tx, payload)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(
+                target = "relay_broker::http_api",
+                error = %error,
+                "failed to enqueue HTTP API event"
+            );
+        }
+        Err(_) => {
+            tracing::warn!(
+                target = "relay_broker::http_api",
+                timeout_ms = %timeout_window.as_millis(),
+                "timed out enqueuing HTTP API event"
+            );
+        }
+    }
+}
+
 async fn send_frame(
     tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     msg_type: &str,
@@ -4008,6 +4159,30 @@ fn delivery_retry_interval() -> Duration {
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .unwrap_or(DEFAULT_DELIVERY_RETRY_MS);
     Duration::from_millis(ms.max(50))
+}
+
+fn http_api_local_delivery_timeout() -> Duration {
+    let ms = std::env::var("AGENT_RELAY_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS);
+    Duration::from_millis(ms.max(100))
+}
+
+fn http_api_relaycast_send_timeout() -> Duration {
+    let ms = std::env::var("AGENT_RELAY_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS);
+    Duration::from_millis(ms.max(500))
+}
+
+fn http_api_event_emit_timeout() -> Duration {
+    let ms = std::env::var("AGENT_RELAY_HTTP_API_EVENT_EMIT_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_HTTP_API_EVENT_EMIT_TIMEOUT_MS);
+    Duration::from_millis(ms.max(25))
 }
 
 fn normalize_channel(raw: &str) -> String {
@@ -4725,9 +4900,11 @@ mod tests {
         build_agent_state_transition_event, build_thread_infos, channels_from_csv, continuity_dir,
         delivery_retry_interval, derive_ws_base_url_from_http, detect_bypass_permissions_prompt,
         display_target_for_dashboard, drop_pending_for_worker, extract_mcp_message_ids,
-        format_injection, is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode,
-        normalize_channel, normalize_initial_task, normalize_sender, sender_is_dashboard_label,
-        should_clear_pending_delivery_for_event, strip_ansi, PendingDelivery, TerminalQueryParser,
+        format_injection, http_api_event_emit_timeout, http_api_local_delivery_timeout,
+        http_api_relaycast_send_timeout, is_auto_suggestion, is_bypass_selection_menu,
+        is_in_editor_mode, normalize_channel, normalize_initial_task, normalize_sender,
+        sender_is_dashboard_label, should_clear_pending_delivery_for_event, strip_ansi,
+        PendingDelivery, TerminalQueryParser,
     };
     use crate::helpers::floor_char_boundary;
     use relay_broker::relaycast_ws::{
@@ -5161,6 +5338,37 @@ mod tests {
         assert_eq!(delivery_retry_interval().as_millis(), 50);
 
         std::env::remove_var("AGENT_RELAY_DELIVERY_RETRY_MS");
+    }
+
+    #[test]
+    fn http_api_timeout_windows_use_default_and_env_override() {
+        std::env::remove_var("AGENT_RELAY_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS");
+        std::env::remove_var("AGENT_RELAY_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS");
+        std::env::remove_var("AGENT_RELAY_HTTP_API_EVENT_EMIT_TIMEOUT_MS");
+
+        assert_eq!(http_api_local_delivery_timeout().as_millis(), 3_000);
+        assert_eq!(http_api_relaycast_send_timeout().as_millis(), 20_000);
+        assert_eq!(http_api_event_emit_timeout().as_millis(), 200);
+
+        std::env::set_var("AGENT_RELAY_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS", "10");
+        std::env::set_var("AGENT_RELAY_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS", "100");
+        std::env::set_var("AGENT_RELAY_HTTP_API_EVENT_EMIT_TIMEOUT_MS", "1");
+
+        assert_eq!(http_api_local_delivery_timeout().as_millis(), 100);
+        assert_eq!(http_api_relaycast_send_timeout().as_millis(), 500);
+        assert_eq!(http_api_event_emit_timeout().as_millis(), 25);
+
+        std::env::set_var("AGENT_RELAY_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS", "1500");
+        std::env::set_var("AGENT_RELAY_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS", "12000");
+        std::env::set_var("AGENT_RELAY_HTTP_API_EVENT_EMIT_TIMEOUT_MS", "150");
+
+        assert_eq!(http_api_local_delivery_timeout().as_millis(), 1_500);
+        assert_eq!(http_api_relaycast_send_timeout().as_millis(), 12_000);
+        assert_eq!(http_api_event_emit_timeout().as_millis(), 150);
+
+        std::env::remove_var("AGENT_RELAY_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS");
+        std::env::remove_var("AGENT_RELAY_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS");
+        std::env::remove_var("AGENT_RELAY_HTTP_API_EVENT_EMIT_TIMEOUT_MS");
     }
 
     #[test]

@@ -17,6 +17,7 @@ import { registerMonitoringCommands } from './commands/monitoring.js';
 import { registerAuthCommands } from './commands/auth.js';
 import { registerSetupCommands } from './commands/setup.js';
 import { registerCoreCommands } from './commands/core.js';
+import { registerSwarmCommands } from './commands/swarm.js';
 
 dotenvConfig({ quiet: true });
 
@@ -100,6 +101,7 @@ export function createProgram(): Command {
   registerMonitoringCommands(program);
   registerAuthCommands(program);
   registerSetupCommands(program);
+  registerSwarmCommands(program);
 
   return program;
 }
