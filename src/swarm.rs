@@ -300,6 +300,9 @@ pub async fn run_swarm(args: SwarmArgs) -> Result<()> {
     let run_id = swarm_run_id();
     let worker_names = build_worker_names(&pattern, args.teams, &run_id);
 
+    eprintln!("[swarm] pattern={} teams={} timeout={}s cli={}", pattern, args.teams, timeout_secs, args.cli);
+    eprintln!("[swarm] starting broker...");
+
     let mut broker = match start_broker_ready(
         &args.broker_bin,
         &args.broker_name,
@@ -327,6 +330,8 @@ pub async fn run_swarm(args: SwarmArgs) -> Result<()> {
         Err(error) => return Err(error),
     };
 
+    eprintln!("[swarm] broker ready");
+
     let started_wall = SystemTime::now();
     let started = Instant::now();
     let deadline = started + Duration::from_secs(timeout_secs);
@@ -344,6 +349,7 @@ pub async fn run_swarm(args: SwarmArgs) -> Result<()> {
     )
     .await;
 
+    eprintln!("[swarm] cleaning up workers...");
     cleanup_workers_and_broker(&mut broker, &spawned_workers).await;
 
     if runtime_is_temporary {
@@ -354,6 +360,16 @@ pub async fn run_swarm(args: SwarmArgs) -> Result<()> {
     let mut summary = execution?;
     summary.timeout_secs = timeout_secs;
     summary.elapsed = started.elapsed();
+
+    let completed = summary.results.len();
+    let timed_out_count = summary.timed_out.len();
+    eprintln!(
+        "[swarm] done in {:.1}s — {} completed, {} timed out",
+        summary.elapsed.as_secs_f64(),
+        completed,
+        timed_out_count
+    );
+
     print_structured_output(&summary, &run_id, started_wall, finished_wall)?;
     Ok(())
 }
@@ -522,20 +538,29 @@ async fn execute_swarm(
                 worker_names.len(),
                 previous_output.as_deref(),
             );
+            eprintln!(
+                "[swarm] spawning stage {}/{}: {}",
+                index + 1,
+                worker_names.len(),
+                worker_name
+            );
             broker
                 .spawn_worker(worker_name, cli, project_dir, &stage_task)
                 .await
                 .with_context(|| format!("failed to spawn worker {}", worker_name))?;
             spawned_workers.push(worker_name.clone());
 
+            eprintln!("[swarm] waiting for {} to complete...", worker_name);
             let stage_result =
                 wait_for_specific_worker_result(broker, worker_name, deadline).await?;
             match stage_result {
                 Some(result) => {
+                    eprintln!("[swarm] {} completed ({} chars)", worker_name, result.len());
                     previous_output = Some(result.clone());
                     result_map.insert(worker_name.clone(), result);
                 }
                 None => {
+                    eprintln!("[swarm] {} timed out", worker_name);
                     timed_out.extend(worker_names[index..].iter().cloned());
                     break;
                 }
@@ -544,6 +569,12 @@ async fn execute_swarm(
     } else {
         for (index, worker_name) in worker_names.iter().enumerate() {
             let worker_task = build_stage_task(pattern, task, index, worker_names.len(), None);
+            eprintln!(
+                "[swarm] spawning team {}/{}: {}",
+                index + 1,
+                worker_names.len(),
+                worker_name
+            );
             broker
                 .spawn_worker(worker_name, cli, project_dir, &worker_task)
                 .await
@@ -551,6 +582,10 @@ async fn execute_swarm(
             spawned_workers.push(worker_name.clone());
         }
 
+        eprintln!(
+            "[swarm] all {} workers spawned, waiting for results...",
+            worker_names.len()
+        );
         let pending: HashSet<String> = worker_names.iter().cloned().collect();
         let results = wait_for_worker_results(broker, pending, deadline).await?;
 
@@ -663,6 +698,7 @@ async fn wait_for_worker_results(
                 if let Some((worker, body)) =
                     extract_relay_inbound_result(&event, &pending)
                 {
+                    eprintln!("[swarm] {} sent result via relay ({} chars)", worker, body.len());
                     pending.remove(&worker);
                     results.insert(worker, body);
                 }
@@ -691,6 +727,7 @@ async fn wait_for_worker_results(
                 // Check for explicit RESULT: marker in accumulated output
                 // (but reject prompt echoes).
                 if let Some(result) = extract_result_from_stream(&clean) {
+                    eprintln!("[swarm] {} sent explicit RESULT ({} chars)", name, result.len());
                     pending.remove(&name);
                     results.insert(name, result);
                 }
@@ -709,6 +746,13 @@ async fn wait_for_worker_results(
                 if !pending.contains(&name) {
                     continue;
                 }
+                eprintln!(
+                    "[swarm] {} finished ({}), {}/{} remaining",
+                    name,
+                    kind,
+                    pending.len() - 1,
+                    pending.len() + results.len() - 1
+                );
                 pending.remove(&name);
 
                 // Use the last_output from the exit event if available,
@@ -730,6 +774,24 @@ async fn wait_for_worker_results(
                 let result = extract_result_from_stream(&output)
                     .unwrap_or_else(|| summarize_agent_output(&output));
                 results.insert(name, result);
+            }
+            "worker_ready" => {
+                let name = event
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?");
+                eprintln!("[swarm] {} is running", name);
+            }
+            "agent_spawned" => {
+                let name = event
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?");
+                let cli = event
+                    .get("cli")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?");
+                eprintln!("[swarm] {} spawned (cli={})", name, cli);
             }
             _ => {}
         }
