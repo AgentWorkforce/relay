@@ -1617,7 +1617,9 @@ export class WorkflowRunner {
           }
 
           if (timedOut) {
-            reject(new Error(`Step "${step.name}" timed out after ${step.timeoutMs}ms`));
+            reject(
+              new Error(`Step "${step.name}" timed out (no step timeout set, check global swarm.timeoutMs)`)
+            );
             return;
           }
 
@@ -1803,7 +1805,9 @@ export class WorkflowRunner {
           }
 
           if (timedOut) {
-            reject(new Error(`Step "${step.name}" timed out after ${step.timeoutMs}ms`));
+            reject(
+              new Error(`Step "${step.name}" timed out (no step timeout set, check global swarm.timeoutMs)`)
+            );
             return;
           }
 
@@ -2131,7 +2135,7 @@ export class WorkflowRunner {
           }
 
           if (timedOut) {
-            reject(new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`));
+            reject(new Error(`Step "${step.name}" timed out after ${timeoutMs ?? 'unknown'}ms`));
             return;
           }
 
@@ -2330,11 +2334,11 @@ export class WorkflowRunner {
             // Fall through to read output below
           } else {
             await agent.release();
-            throw new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`);
+            throw new Error(`Step "${step.name}" timed out after ${timeoutMs ?? 'unknown'}ms`);
           }
         } else {
           await agent.release();
-          throw new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`);
+          throw new Error(`Step "${step.name}" timed out after ${timeoutMs ?? 'unknown'}ms`);
         }
       }
     } finally {
@@ -2442,8 +2446,17 @@ export class WorkflowRunner {
       ]);
 
       if (result.source === 'exit') {
-        // Agent exited, released, or timed out naturally
-        return result.result;
+        if (result.result !== 'timeout') {
+          // Agent actually exited or was released — done
+          return result.result;
+        }
+        // The exit-wait window expired but the agent is still running.
+        // This is NOT a step timeout — the nudgeAfterMs window just elapsed
+        // without the agent finishing. Check overall timeout and loop.
+        if (remaining !== undefined && Date.now() - startTime >= remaining) {
+          return 'timeout';
+        }
+        continue;
       }
 
       // Idle detected

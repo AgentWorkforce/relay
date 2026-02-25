@@ -10,8 +10,8 @@ swarm:
   timeoutMs: 7200000
   channel: integration-tests
   idleNudge:
-    nudgeAfterMs: 180000
-    escalateAfterMs: 180000
+    nudgeAfterMs: 600000 # 10 min — agents read files and think before producing output
+    escalateAfterMs: 600000 # 10 min more before force-release
     maxNudges: 2
 
 agents:
