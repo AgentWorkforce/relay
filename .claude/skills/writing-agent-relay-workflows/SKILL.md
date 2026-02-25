@@ -278,18 +278,39 @@ steps:
 - **Downstream steps depend on the lead**, not the workers — the lead gates the signal after verifying worker output.
 - **Separate channels per team** prevent cross-talk: `#harness-track`, `#review-track`, etc.
 
+## Concurrency: Don't Over-Parallelize
+
+**Set `maxConcurrency` to 4–6 for most workflows.** Each agent spawn requires a PTY startup plus a Relaycast registration. Spawning 10+ agents simultaneously overwhelms the broker and causes spawn timeouts.
+
+```yaml
+swarm:
+  pattern: dag
+  maxConcurrency: 5 # good: staggers spawns within each wave
+```
+
+Even if a wave has 10 ready steps, the runner will only start 5 at a time and pick up the next as each finishes. This keeps the broker healthy and prevents the `request timed out after 10000ms (type='spawn_agent')` error that occurs when too many agents register with Relaycast concurrently.
+
+**Rule of thumb by workflow size:**
+
+| Parallel agents needed | `maxConcurrency` |
+| ---------------------- | ---------------- |
+| 2–4                    | 4 (default safe) |
+| 5–10                   | 5                |
+| 10+                    | 6–8 max          |
+
 ## Common Mistakes
 
-| Mistake                                                     | Fix                                                  |
-| ----------------------------------------------------------- | ---------------------------------------------------- |
-| Adding `withExit()` or exit instructions to tasks           | Runner handles this automatically                    |
-| Setting tight `timeoutMs` on agents                         | Use global `.timeout()` only                         |
-| Using `general` channel                                     | Set `.channel('wf-name')` for isolation              |
-| Referencing `{{steps.X.output}}` without `dependsOn: ['X']` | Output won't be available yet                        |
-| Making review steps serial when they could be parallel      | Both reviewers can depend on the same upstream step  |
-| Not using verification gates on critical steps              | Add `output_contains` with a completion marker       |
-| Writing 100-line task prompts                               | Split into lead + workers communicating on a channel |
-| Putting the full spec in every worker's task                | Lead posts the spec to the channel at runtime        |
+| Mistake                                                     | Fix                                                      |
+| ----------------------------------------------------------- | -------------------------------------------------------- |
+| Adding `withExit()` or exit instructions to tasks           | Runner handles this automatically                        |
+| Setting tight `timeoutMs` on agents                         | Use global `.timeout()` only                             |
+| Using `general` channel                                     | Set `.channel('wf-name')` for isolation                  |
+| Referencing `{{steps.X.output}}` without `dependsOn: ['X']` | Output won't be available yet                            |
+| Making review steps serial when they could be parallel      | Both reviewers can depend on the same upstream step      |
+| Not using verification gates on critical steps              | Add `output_contains` with a completion marker           |
+| Writing 100-line task prompts                               | Split into lead + workers communicating on a channel     |
+| Putting the full spec in every worker's task                | Lead posts the spec to the channel at runtime            |
+| `maxConcurrency: 16` with many parallel steps               | Cap at 5–6; broker times out spawning 10+ agents at once |
 
 ## YAML Alternative
 
