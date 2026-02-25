@@ -1925,8 +1925,16 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         eprintln!("[agent-relay] spawned worker '{}' via relaycast", name);
                                     }
                                     Err(e) => {
-                                        tracing::error!(child = %name, error = %e, "failed to spawn worker via relaycast WS");
-                                        eprintln!("[agent-relay] failed to spawn '{}': {}", name, e);
+                                        let msg = e.to_string();
+                                        if msg.contains("already exists") {
+                                            // Agent was already spawned via SDK protocol — this
+                                            // is expected when the workflow runner and Relaycast
+                                            // WS both see the same spawn request.
+                                            tracing::debug!(child = %name, "agent already spawned via SDK, skipping duplicate relaycast WS spawn");
+                                        } else {
+                                            tracing::error!(child = %name, error = %e, "failed to spawn worker via relaycast WS");
+                                            eprintln!("[agent-relay] failed to spawn '{}': {}", name, e);
+                                        }
                                     }
                                 }
                                 continue;
