@@ -792,7 +792,10 @@ fn log_result_received(worker: &str, via: &str, result: &str, remaining: usize) 
         .unwrap_or(worker);
 
     let preview = result_preview(result, 120);
-    eprintln!("[swarm] {} completed via {} ({} remaining)", short_name, via, remaining);
+    eprintln!(
+        "[swarm] {} completed via {} ({} remaining)",
+        short_name, via, remaining
+    );
     eprintln!("[swarm]   ↳ {}", preview);
 }
 
