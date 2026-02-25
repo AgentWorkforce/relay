@@ -146,6 +146,10 @@ export class WorkflowRunner {
   private runStartTime?: number;
   /** Unsubscribe handle for broker stderr listener wired during a run. */
   private unsubBrokerStderr?: () => void;
+  /** Tracks last idle log time per agent to debounce idle warnings (30s multiples). */
+  private readonly lastIdleLog = new Map<string, number>();
+  /** Tracks last logged activity type per agent to avoid duplicate status lines. */
+  private readonly lastActivity = new Map<string, string>();
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -999,10 +1003,66 @@ export class WorkflowRunner {
         env: this.getRelayEnv(),
       });
 
-      // Wire PTY output dispatcher — routes chunks to per-agent listeners
+      // Wire PTY output dispatcher — routes chunks to per-agent listeners + activity logging
       this.relay.onWorkerOutput = ({ name, chunk }) => {
         const listener = this.ptyListeners.get(name);
         if (listener) listener(chunk);
+
+        // Parse PTY output for high-signal activity
+        const stripped = WorkflowRunner.stripAnsi(chunk);
+        const shortName = name.replace(/-[a-f0-9]{6,}$/, '');
+        let activity: string | undefined;
+        if (/Read\(/.test(stripped)) {
+          const m = stripped.match(/Read\(\s*["']?([^\s"')]+)/);
+          activity = m ? `Reading ${path.basename(m[1])}` : 'Reading file...';
+        } else if (/Edit\(/.test(stripped)) {
+          const m = stripped.match(/Edit\(\s*["']?([^\s"')]+)/);
+          activity = m ? `Editing ${path.basename(m[1])}` : 'Editing file...';
+        } else if (/Bash\(|Bash:/.test(stripped)) {
+          activity = 'Running command...';
+        } else if (/Explore\(/.test(stripped)) {
+          activity = 'Exploring codebase...';
+        } else if (/Task\(/.test(stripped)) {
+          activity = 'Running sub-agent...';
+        } else if (/Thinking|Coalescing|Cultivating/.test(stripped)) {
+          const m = stripped.match(/(\d+)s/);
+          activity = m ? `Thinking... (${m[1]}s)` : 'Thinking...';
+        }
+        if (activity && this.lastActivity.get(name) !== activity) {
+          this.lastActivity.set(name, activity);
+          this.log(`[${shortName}] ${activity}`);
+        }
+      };
+
+      // Wire relay event hooks for rich console logging
+      this.relay.onMessageReceived = (msg) => {
+        const body = msg.text.length > 120 ? msg.text.slice(0, 117) + '...' : msg.text;
+        this.log(`[msg] ${msg.from} → ${msg.to}: ${body}`);
+      };
+
+      this.relay.onAgentSpawned = (agent) => {
+        // Skip agents already managed by step execution
+        if (!this.activeAgentHandles.has(agent.name)) {
+          this.log(`[spawned] ${agent.name} (${agent.runtime})`);
+        }
+      };
+
+      this.relay.onAgentExited = (agent) => {
+        this.lastActivity.delete(agent.name);
+        this.lastIdleLog.delete(agent.name);
+        if (!this.activeAgentHandles.has(agent.name)) {
+          this.log(`[exited] ${agent.name} (code: ${agent.exitCode ?? '?'})`);
+        }
+      };
+
+      this.relay.onAgentIdle = ({ name, idleSecs }) => {
+        // Only log at 30s multiples to avoid watchdog spam
+        const bucket = Math.floor(idleSecs / 30) * 30;
+        if (bucket >= 30 && this.lastIdleLog.get(name) !== bucket) {
+          this.lastIdleLog.set(name, bucket);
+          const shortName = name.replace(/-[a-f0-9]{6,}$/, '');
+          this.log(`[idle] ${shortName} silent for ${bucket}s`);
+        }
       };
 
       this.relaycastApi = new RelaycastApi({
@@ -1097,6 +1157,18 @@ export class WorkflowRunner {
 
       this.unsubBrokerStderr?.();
       this.unsubBrokerStderr = undefined;
+
+      // Null out relay event hooks to prevent leaks
+      if (this.relay) {
+        this.relay.onMessageReceived = null;
+        this.relay.onAgentSpawned = null;
+        this.relay.onAgentExited = null;
+        this.relay.onAgentIdle = null;
+        this.relay.onWorkerOutput = null;
+      }
+      this.lastIdleLog.clear();
+      this.lastActivity.clear();
+
       this.log('Shutting down broker...');
       await this.relay?.shutdown();
       this.relay = undefined;
