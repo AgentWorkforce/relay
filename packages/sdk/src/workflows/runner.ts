@@ -1141,6 +1141,7 @@ export class WorkflowRunner {
         });
 
         this.postCompletionReport(workflow.name, outcomes, summary, confidence);
+        this.logRunSummary(workflow.name, outcomes, runId);
       } else {
         const failedStep = [...stepStates.values()].find((s) => s.row.status === 'failed');
         const errorMsg = failedStep?.row.error ?? 'One or more steps failed';
@@ -1149,6 +1150,7 @@ export class WorkflowRunner {
 
         const outcomes = this.collectOutcomes(stepStates, workflow.steps);
         this.postFailureReport(workflow.name, outcomes, errorMsg);
+        this.logRunSummary(workflow.name, outcomes, runId);
         await this.trajectory.abandon(errorMsg);
       }
     } catch (err) {
@@ -2763,6 +2765,85 @@ export class WorkflowRunner {
     ];
 
     this.postToChannel(lines.join('\n'));
+  }
+
+  /**
+   * Log a human-readable run summary to the console after completion or failure.
+   * Extracts the last meaningful lines from each step's raw PTY output.
+   */
+  private logRunSummary(workflowName: string, outcomes: StepOutcome[], runId: string): void {
+    const completed = outcomes.filter((o) => o.status === 'completed');
+    const failed = outcomes.filter((o) => o.status === 'failed');
+    const skipped = outcomes.filter((o) => o.status === 'skipped');
+
+    console.log('');
+    console.log('━'.repeat(70));
+    console.log(`  Workflow "${workflowName}" — ${failed.length === 0 ? 'COMPLETED' : 'FAILED'}`);
+    console.log(`  ${completed.length} passed, ${failed.length} failed, ${skipped.length} skipped`);
+    console.log('━'.repeat(70));
+
+    for (const outcome of outcomes) {
+      const icon = outcome.status === 'completed' ? '✓' : outcome.status === 'failed' ? '✗' : '⊘';
+      const retryNote = outcome.attempts > 1 ? ` (${outcome.attempts} attempts)` : '';
+      console.log(`  ${icon} ${outcome.name} [${outcome.agent}]${retryNote}`);
+
+      if (outcome.error) {
+        console.log(`    Error: ${outcome.error}`);
+      }
+
+      // Extract last meaningful lines from raw PTY output
+      if (outcome.output) {
+        const excerpt = this.extractOutputExcerpt(outcome.output);
+        if (excerpt) {
+          for (const line of excerpt.split('\n')) {
+            console.log(`    ${line}`);
+          }
+        }
+      }
+    }
+
+    // Point to detailed output files
+    const outputDir = this.getStepOutputDir(runId);
+    const logsDir = path.join(this.cwd, '.agent-relay', 'team', 'worker-logs');
+    console.log('');
+    console.log(`  Step output: ${outputDir}`);
+    console.log(`  Agent logs:  ${logsDir}`);
+    console.log('━'.repeat(70));
+    console.log('');
+  }
+
+  /**
+   * Extract a useful excerpt from raw PTY output.
+   * Looks for the agent's final text output (ignoring ANSI, system prompts, tool calls).
+   */
+  private extractOutputExcerpt(rawOutput: string): string {
+    const stripped = WorkflowRunner.stripAnsi(rawOutput);
+
+    // Split into lines, filter out noise
+    const lines = stripped.split('\n').filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      // Skip system/UI chrome
+      if (trimmed.startsWith('╭') || trimmed.startsWith('╰') || trimmed.startsWith('│')) return false;
+      if (trimmed.startsWith('─')) return false;
+      if (trimmed.startsWith('❯') || trimmed.startsWith('⏵')) return false;
+      if (trimmed.startsWith('<system-reminder>') || trimmed.startsWith('</system-reminder>')) return false;
+      if (/^\[?workflow\s/.test(trimmed)) return false;
+      // Skip tool invocations
+      if (/^(Read|Edit|Bash|Glob|Grep|Task|Explore|Write)\(/.test(trimmed)) return false;
+      // Skip thinking indicators
+      if (/^[·✳✻✽⏺]?\s*Sublimating/.test(trimmed)) return false;
+      // Skip very short lines (likely UI fragments)
+      if (trimmed.length < 10) return false;
+      return true;
+    });
+
+    if (lines.length === 0) return '';
+
+    // Take the last few meaningful lines (agent's final words)
+    const tail = lines.slice(-5);
+    const excerpt = tail.map((l) => l.trim().slice(0, 120)).join('\n');
+    return excerpt.length > 0 ? `...\n${excerpt}` : '';
   }
 
   // ── Trajectory helpers ────────────────────────────────────────────────
