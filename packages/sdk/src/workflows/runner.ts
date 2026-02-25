@@ -167,7 +167,10 @@ export class WorkflowRunner {
     const elapsed = this.runStartTime ? Math.round((Date.now() - this.runStartTime) / 1000) : 0;
     const mins = Math.floor(elapsed / 60);
     const secs = elapsed % 60;
-    const ts = mins > 0 ? `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}` : `00:${String(secs).padStart(2, '0')}`;
+    const ts =
+      mins > 0
+        ? `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+        : `00:${String(secs).padStart(2, '0')}`;
     console.log(`[workflow ${ts}] ${msg}`);
   }
 
@@ -479,14 +482,18 @@ export class WorkflowRunner {
       if (agent.cwd) {
         const resolvedCwd = path.resolve(this.cwd, agent.cwd);
         if (!existsSync(resolvedCwd)) {
-          warnings.push(`Agent "${agent.name}" cwd "${agent.cwd}" resolves to "${resolvedCwd}" which does not exist`);
+          warnings.push(
+            `Agent "${agent.name}" cwd "${agent.cwd}" resolves to "${resolvedCwd}" which does not exist`
+          );
         }
       }
       if (agent.additionalPaths) {
         for (const ap of agent.additionalPaths) {
           const resolvedPath = path.resolve(this.cwd, ap);
           if (!existsSync(resolvedPath)) {
-            warnings.push(`Agent "${agent.name}" additionalPath "${ap}" resolves to "${resolvedPath}" which does not exist`);
+            warnings.push(
+              `Agent "${agent.name}" additionalPath "${ap}" resolves to "${resolvedPath}" which does not exist`
+            );
           }
         }
       }
@@ -876,9 +883,12 @@ export class WorkflowRunner {
         agentName: isNonAgent ? null : (step.agent ?? null),
         stepType: isNonAgent ? (step.type as 'deterministic' | 'worktree') : 'agent',
         status: 'pending',
-        task: step.type === 'deterministic' ? (step.command ?? '')
-            : step.type === 'worktree' ? (step.branch ?? '')
-            : (step.task ?? ''),
+        task:
+          step.type === 'deterministic'
+            ? (step.command ?? '')
+            : step.type === 'worktree'
+              ? (step.branch ?? '')
+              : (step.task ?? ''),
         dependsOn: step.dependsOn ?? [],
         retryCount: 0,
         createdAt: now,
@@ -997,8 +1007,14 @@ export class WorkflowRunner {
       this.log('API key resolved');
 
       this.log('Starting broker...');
+      // Include a short run ID suffix in the broker name so each workflow execution
+      // registers a unique identity in Relaycast. Without this, re-running in the same
+      // workspace hits a 409 conflict because the previous run's agent is still registered.
+      const brokerBaseName = path.basename(this.cwd) || 'workflow';
+      const brokerName = `${brokerBaseName}-${runId.slice(0, 8)}`;
       this.relay = new AgentRelay({
         ...this.relayOptions,
+        brokerName,
         channels: [channel],
         env: this.getRelayEnv(),
       });
@@ -1351,10 +1367,7 @@ export class WorkflowRunner {
    * Execute preflight checks before any workflow steps.
    * All checks must pass or the workflow fails immediately.
    */
-  private async runPreflightChecks(
-    checks: PreflightCheck[],
-    runId: string,
-  ): Promise<void> {
+  private async runPreflightChecks(checks: PreflightCheck[], runId: string): Promise<void> {
     this.postToChannel(`Running ${checks.length} preflight check(s)...`);
 
     for (const check of checks) {
@@ -1412,7 +1425,9 @@ export class WorkflowRunner {
             // Non-zero exit code is a failure
             if (code !== 0 && code !== null) {
               const stderr = stderrChunks.join('');
-              reject(new Error(`Preflight check failed (exit ${code})${stderr ? `: ${stderr.slice(0, 200)}` : ''}`));
+              reject(
+                new Error(`Preflight check failed (exit ${code})${stderr ? `: ${stderr.slice(0, 200)}` : ''}`)
+              );
               return;
             }
 
@@ -1503,7 +1518,7 @@ export class WorkflowRunner {
   private async executeDeterministicStep(
     step: WorkflowStep,
     stepStates: Map<string, StepState>,
-    runId: string,
+    runId: string
   ): Promise<void> {
     const state = stepStates.get(step.name);
     if (!state) throw new Error(`Step state not found: ${step.name}`);
@@ -1595,7 +1610,9 @@ export class WorkflowRunner {
           // Check exit code unless failOnError is explicitly false
           const failOnError = step.failOnError !== false;
           if (failOnError && code !== 0 && code !== null) {
-            reject(new Error(`Command failed with exit code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`));
+            reject(
+              new Error(`Command failed with exit code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`)
+            );
             return;
           }
 
@@ -1627,7 +1644,7 @@ export class WorkflowRunner {
 
       this.emit({ type: 'step:completed', runId, stepName: step.name, output });
       this.postToChannel(
-        `**[${step.name}]** Completed (deterministic)\n${output.slice(0, 500)}${output.length > 500 ? '\n...(truncated)' : ''}`,
+        `**[${step.name}]** Completed (deterministic)\n${output.slice(0, 500)}${output.length > 500 ? '\n...(truncated)' : ''}`
       );
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -1645,7 +1662,7 @@ export class WorkflowRunner {
   private async executeWorktreeStep(
     step: WorkflowStep,
     stepStates: Map<string, StepState>,
-    runId: string,
+    runId: string
   ): Promise<void> {
     const state = stepStates.get(step.name);
     if (!state) throw new Error(`Step state not found: ${step.name}`);
@@ -1776,7 +1793,11 @@ export class WorkflowRunner {
           const stderr = stderrChunks.join('');
 
           if (code !== 0 && code !== null) {
-            reject(new Error(`git worktree add failed with exit code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`));
+            reject(
+              new Error(
+                `git worktree add failed with exit code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`
+              )
+            );
             return;
           }
 
@@ -1809,7 +1830,7 @@ export class WorkflowRunner {
 
       this.emit({ type: 'step:completed', runId, stepName: step.name, output });
       this.postToChannel(
-        `**[${step.name}]** Worktree created at: ${output}\n  Branch: ${branch}${!branchExists && createBranch ? ' (created)' : ''}`,
+        `**[${step.name}]** Worktree created at: ${output}\n  Branch: ${branch}${!branchExists && createBranch ? ' (created)' : ''}`
       );
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -1827,7 +1848,7 @@ export class WorkflowRunner {
     stepStates: Map<string, StepState>,
     agentMap: Map<string, AgentDefinition>,
     errorHandling: ErrorHandlingConfig | undefined,
-    runId: string,
+    runId: string
   ): Promise<void> {
     const state = stepStates.get(step.name);
     if (!state) throw new Error(`Step state not found: ${step.name}`);
@@ -2151,8 +2172,7 @@ export class WorkflowRunner {
     const role = agentDef.role?.toLowerCase() ?? '';
     const nameLC = agentDef.name.toLowerCase();
     const isHub =
-      WorkflowRunner.HUB_ROLES.has(nameLC) ||
-      [...WorkflowRunner.HUB_ROLES].some((r) => role.includes(r));
+      WorkflowRunner.HUB_ROLES.has(nameLC) || [...WorkflowRunner.HUB_ROLES].some((r) => role.includes(r));
     const pattern = this.currentConfig?.swarm.pattern;
     const isHubPattern = pattern && WorkflowRunner.HUB_PATTERNS.has(pattern);
     const delegationGuidance =
@@ -2872,9 +2892,12 @@ export class WorkflowRunner {
       outcomes.push({
         name,
         agent: state.row.agentName ?? 'deterministic',
-        status: state.row.status === 'completed' ? 'completed'
-          : state.row.status === 'skipped' ? 'skipped'
-          : 'failed',
+        status:
+          state.row.status === 'completed'
+            ? 'completed'
+            : state.row.status === 'skipped'
+              ? 'skipped'
+              : 'failed',
         attempts: state.row.retryCount + 1,
         output: state.row.output,
         error: state.row.error,
