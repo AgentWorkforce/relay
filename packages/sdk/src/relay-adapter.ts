@@ -29,7 +29,7 @@ import {
 import type { BrokerEvent, BrokerStats, BrokerStatus, CrashInsightsResponse } from './protocol.js';
 
 const WORKFLOW_BOOTSTRAP_TASK =
-  'You are connected to Agent Relay. Wait for relay messages and respond using Relaycast MCP tools.';
+  'You are connected to Agent Relay. Do not reply to this message and wait for relay messages and respond using Relaycast MCP tools.';
 
 const WORKFLOW_CONVENTIONS = [
   'Messaging requirements:',
