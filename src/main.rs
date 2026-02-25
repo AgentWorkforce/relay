@@ -11,6 +11,7 @@ mod pty_worker;
 mod routing;
 mod spawner;
 mod swarm;
+mod swarm_tui;
 mod wrap;
 
 use helpers::{
@@ -1063,6 +1064,7 @@ fn spawn_worker_reader<R>(
         disable_log_file: &mut bool,
         worker_name: &str,
         chunk: &str,
+        append_newline_if_missing: bool,
     ) {
         if *disable_log_file {
             return;
@@ -1085,7 +1087,7 @@ fn spawn_worker_reader<R>(
             return;
         }
 
-        if !chunk.ends_with('\n') {
+        if append_newline_if_missing && !chunk.ends_with('\n') {
             if let Err(error) = file.write_all(b"\n").await {
                 if let Some(path) = log_file_path.as_ref() {
                     tracing::warn!(
@@ -1145,6 +1147,7 @@ fn spawn_worker_reader<R>(
                                 &mut disable_log_file,
                                 &name,
                                 chunk,
+                                false,
                             )
                             .await;
                         }
@@ -1169,6 +1172,7 @@ fn spawn_worker_reader<R>(
                 &mut disable_log_file,
                 &name,
                 &line,
+                true,
             )
             .await;
 
@@ -1572,6 +1576,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             text,
                             from,
                             reply,
+                            ..
                         } => {
                             let normalized_to = to.trim().to_string();
                             let normalized_sender = normalize_sender(from.clone());

@@ -1,4 +1,6 @@
 use crate::helpers;
+use crate::swarm_tui;
+use crate::swarm_tui::{TuiCommand, TuiUpdate};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use clap::Parser;
@@ -11,7 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::time::{timeout, Instant};
+use tokio::sync::mpsc;
+use tokio::time::{interval, timeout, Instant};
 
 const PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_PATTERN: &str = "fan-out";
@@ -340,6 +343,22 @@ pub async fn run_swarm(args: SwarmArgs) -> Result<()> {
     let deadline = started + Duration::from_secs(timeout_secs);
     let mut spawned_workers: Vec<String> = Vec::new();
 
+    // Set up the interactive TUI if stderr is a terminal.
+    let interactive = swarm_tui::stderr_is_tty();
+    let (tui_tx, tui_rx, tui_handle) = if interactive {
+        let (update_tx, update_rx) = mpsc::channel::<TuiUpdate>(64);
+        let (cmd_tx, cmd_rx) = mpsc::channel::<TuiCommand>(16);
+        let tui_pattern = pattern.clone();
+        let tui_workers = worker_names.clone();
+        let tui_count = worker_names.len();
+        let handle = tokio::spawn(async move {
+            swarm_tui::run_tui(tui_pattern, tui_count, tui_workers, cmd_tx, update_rx).await;
+        });
+        (Some(update_tx), Some(cmd_rx), Some(handle))
+    } else {
+        (None, None, None)
+    };
+
     let execution = execute_swarm(
         &mut broker,
         &pattern,
@@ -349,8 +368,16 @@ pub async fn run_swarm(args: SwarmArgs) -> Result<()> {
         &worker_names,
         deadline,
         &mut spawned_workers,
+        tui_tx,
+        tui_rx,
     )
     .await;
+
+    // Drop the TUI task so it cleans up terminal state before we print results.
+    if let Some(handle) = tui_handle {
+        handle.abort();
+        let _ = handle.await;
+    }
 
     eprintln!("[swarm] cleaning up workers...");
     cleanup_workers_and_broker(&mut broker, &spawned_workers).await;
@@ -522,6 +549,8 @@ async fn execute_swarm(
     worker_names: &[String],
     deadline: Instant,
     spawned_workers: &mut Vec<String>,
+    tui_tx: Option<mpsc::Sender<TuiUpdate>>,
+    mut tui_rx: Option<mpsc::Receiver<TuiCommand>>,
 ) -> Result<SwarmSummary> {
     let mut timed_out: Vec<String> = Vec::new();
     let mut result_map: BTreeMap<String, String> = BTreeMap::new();
@@ -590,7 +619,8 @@ async fn execute_swarm(
             worker_names.len()
         );
         let pending: HashSet<String> = worker_names.iter().cloned().collect();
-        let results = wait_for_worker_results(broker, pending, deadline).await?;
+        let results =
+            wait_for_worker_results(broker, pending, deadline, tui_tx, &mut tui_rx).await?;
 
         for (worker, result) in results {
             result_map.insert(worker, result);
@@ -664,7 +694,7 @@ async fn wait_for_specific_worker_result(
 ) -> Result<Option<String>> {
     let mut pending = HashSet::new();
     pending.insert(worker_name.to_string());
-    let results = wait_for_worker_results(broker, pending, deadline).await?;
+    let results = wait_for_worker_results(broker, pending, deadline, None, &mut None).await?;
     Ok(results.get(worker_name).cloned())
 }
 
@@ -672,12 +702,19 @@ async fn wait_for_worker_results(
     broker: &mut BrokerClient,
     mut pending: HashSet<String>,
     deadline: Instant,
+    tui_tx: Option<mpsc::Sender<TuiUpdate>>,
+    tui_rx: &mut Option<mpsc::Receiver<TuiCommand>>,
 ) -> Result<BTreeMap<String, String>> {
     let mut results = BTreeMap::new();
     // Accumulate worker_stream output per worker so we have a complete
     // picture when the agent exits (rather than checking each chunk in
     // isolation which misses results that span multiple chunks).
     let mut stream_buffers: BTreeMap<String, String> = BTreeMap::new();
+    let mut activity = WorkerActivityTracker::new();
+    let start = Instant::now();
+    let mut heartbeat = interval(Duration::from_secs(15));
+    // Consume the first immediate tick so the first heartbeat fires at +15s.
+    heartbeat.tick().await;
 
     while !pending.is_empty() {
         let now = Instant::now();
@@ -686,22 +723,86 @@ async fn wait_for_worker_results(
         }
         let remaining = deadline - now;
 
-        let Some(event) = broker.next_event(remaining).await? else {
-            break;
+        // Wait for the next broker event, heartbeat timer, or TUI command.
+        let event = tokio::select! {
+            result = broker.next_event(remaining) => {
+                match result? {
+                    Some(e) => e,
+                    None => break,
+                }
+            }
+            _ = heartbeat.tick() => {
+                let elapsed = start.elapsed().as_secs();
+                if let Some(tx) = &tui_tx {
+                    let _ = tx.try_send(TuiUpdate::Tick {
+                        elapsed_secs: elapsed,
+                        pending_count: pending.len(),
+                        total_count: pending.len() + results.len(),
+                    });
+                } else {
+                    activity.print_heartbeat(elapsed, &pending);
+                }
+                continue;
+            }
+            Some(cmd) = async {
+                match tui_rx {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match cmd {
+                    TuiCommand::SendMessage { to, text } => {
+                        if to == "@all" {
+                            for worker in &pending {
+                                if let Err(err) = broker.send_message(worker, &text).await {
+                                    if let Some(tx) = &tui_tx {
+                                        let _ = tx.try_send(TuiUpdate::Log {
+                                            message: format!("send to {} failed: {}", short_worker_name(worker), err),
+                                        });
+                                    }
+                                }
+                            }
+                        } else if let Err(err) = broker.send_message(&to, &text).await {
+                            if let Some(tx) = &tui_tx {
+                                let _ = tx.try_send(TuiUpdate::Log {
+                                    message: format!("send to {} failed: {}", short_worker_name(&to), err),
+                                });
+                            }
+                        }
+                    }
+                    TuiCommand::Quit => break,
+                }
+                continue;
+            }
         };
 
         let kind = event.get("kind").and_then(Value::as_str).unwrap_or("");
+
+        // Helper: log to TUI status area when interactive, else eprintln.
+        let tui_log = |tx: &Option<mpsc::Sender<TuiUpdate>>, msg: String| {
+            if let Some(tx) = tx {
+                let _ = tx.try_send(TuiUpdate::Log { message: msg });
+            } else {
+                eprintln!("{}", msg);
+            }
+        };
 
         match kind {
             // Relay message from the worker — highest priority signal.
             "relay_inbound" => {
                 if let Some((worker, body)) = extract_relay_inbound_result(&event, &pending) {
-                    log_result_received(&worker, "relay", &body, pending.len() - 1);
+                    let msg = format_result_log(&worker, "relay", &body, pending.len() - 1);
+                    tui_log(&tui_tx, msg);
                     pending.remove(&worker);
+                    if let Some(tx) = &tui_tx {
+                        let _ = tx.try_send(TuiUpdate::WorkerCompleted {
+                            name: worker.clone(),
+                        });
+                    }
                     results.insert(worker, body);
                 }
             }
-            // PTY output chunk — accumulate it, stream activity to stderr,
+            // PTY output chunk — accumulate it, track activity for heartbeat,
             // and check for an explicit RESULT: marker.
             "worker_stream" => {
                 let name = event
@@ -722,17 +823,62 @@ async fn wait_for_worker_results(
                     .or_default()
                     .push_str(&clean);
 
-                // Show meaningful output lines so the user can see what agents
-                // are doing in real time.
-                log_worker_activity(&name, &clean);
+                // Track the last meaningful line for periodic heartbeat display.
+                activity.update(&name, &clean);
+
+                // Forward activity to TUI if connected.
+                if let Some(tx) = &tui_tx {
+                    if let Some(line) = activity.last_activity.get(&name) {
+                        let _ = tx.try_send(TuiUpdate::WorkerActivity {
+                            name: name.clone(),
+                            activity: line.clone(),
+                        });
+                    }
+                }
 
                 // Check for explicit RESULT: marker in accumulated output
                 // (but reject prompt echoes).
                 if let Some(result) = extract_result_from_stream(&clean) {
-                    log_result_received(&name, "stream", &result, pending.len() - 1);
+                    let msg = format_result_log(&name, "stream", &result, pending.len() - 1);
+                    tui_log(&tui_tx, msg);
                     pending.remove(&name);
+                    if let Some(tx) = &tui_tx {
+                        let _ = tx.try_send(TuiUpdate::WorkerCompleted { name: name.clone() });
+                    }
                     results.insert(name, result);
                 }
+            }
+            // Agent went idle — it finished working but didn't exit.
+            // Treat this as completion and collect the accumulated output.
+            "agent_idle" => {
+                let name = event
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if !pending.contains(&name) {
+                    continue;
+                }
+                let idle_secs = event.get("idle_secs").and_then(Value::as_u64).unwrap_or(0);
+                tui_log(
+                    &tui_tx,
+                    format!(
+                        "[swarm] {} idle for {}s — treating as completed",
+                        short_worker_name(&name),
+                        idle_secs
+                    ),
+                );
+                pending.remove(&name);
+                if let Some(tx) = &tui_tx {
+                    let _ = tx.try_send(TuiUpdate::WorkerCompleted { name: name.clone() });
+                }
+
+                let accumulated = stream_buffers.remove(&name).unwrap_or_default();
+                let result = extract_result_from_stream(&accumulated)
+                    .unwrap_or_else(|| summarize_agent_output(&accumulated));
+                let msg = format_result_log(&name, "idle", &result, pending.len());
+                tui_log(&tui_tx, msg);
+                results.insert(name, result);
             }
             // Agent process exited or self-released — use accumulated
             // stream output as result. Covers:
@@ -749,6 +895,9 @@ async fn wait_for_worker_results(
                     continue;
                 }
                 pending.remove(&name);
+                if let Some(tx) = &tui_tx {
+                    let _ = tx.try_send(TuiUpdate::WorkerCompleted { name: name.clone() });
+                }
 
                 // Use the last_output from the exit event if available,
                 // otherwise fall back to what we accumulated from worker_stream.
@@ -768,17 +917,24 @@ async fn wait_for_worker_results(
                 // Try to extract a RESULT: section; otherwise use the full output.
                 let result = extract_result_from_stream(&output)
                     .unwrap_or_else(|| summarize_agent_output(&output));
-                log_result_received(&name, kind, &result, pending.len());
+                let msg = format_result_log(&name, kind, &result, pending.len());
+                tui_log(&tui_tx, msg);
                 results.insert(name, result);
             }
             "worker_ready" => {
                 let name = event.get("name").and_then(Value::as_str).unwrap_or("?");
-                eprintln!("[swarm] {} is running", name);
+                tui_log(
+                    &tui_tx,
+                    format!("[swarm] {} is running", short_worker_name(name)),
+                );
             }
             "agent_spawned" => {
                 let name = event.get("name").and_then(Value::as_str).unwrap_or("?");
                 let cli = event.get("cli").and_then(Value::as_str).unwrap_or("?");
-                eprintln!("[swarm] {} spawned (cli={})", name, cli);
+                tui_log(
+                    &tui_tx,
+                    format!("[swarm] {} spawned (cli={})", short_worker_name(name), cli),
+                );
             }
             "worker_error" => {
                 let name = event.get("name").and_then(Value::as_str).unwrap_or("?");
@@ -786,7 +942,10 @@ async fn wait_for_worker_results(
                     .get("error")
                     .map(|e| e.to_string())
                     .unwrap_or_else(|| "unknown error".to_string());
-                eprintln!("[swarm] {} ERROR: {}", short_worker_name(name), error);
+                tui_log(
+                    &tui_tx,
+                    format!("[swarm] {} ERROR: {}", short_worker_name(name), error),
+                );
             }
             _ => {}
         }
@@ -804,33 +963,69 @@ fn short_worker_name(full: &str) -> &str {
         .unwrap_or(full)
 }
 
-/// Log worker PTY output so the user can see what agents are doing.
-/// Filters out noise (blank lines, spinner chars, cursor movement, etc.)
-/// and prints meaningful lines prefixed with the worker name.
-fn log_worker_activity(name: &str, clean: &str) {
-    let short = short_worker_name(name);
-    for line in clean.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
+/// Tracks the last meaningful activity line per worker for periodic heartbeat logging.
+struct WorkerActivityTracker {
+    /// Last meaningful line seen per worker.
+    last_activity: BTreeMap<String, String>,
+    /// Lines already printed in the previous heartbeat (avoid repeating).
+    last_printed: BTreeMap<String, String>,
+}
+
+impl WorkerActivityTracker {
+    fn new() -> Self {
+        Self {
+            last_activity: BTreeMap::new(),
+            last_printed: BTreeMap::new(),
         }
-        // Skip common CLI UI noise
-        if is_cli_noise(trimmed) {
-            continue;
+    }
+
+    /// Update the tracked activity for a worker based on new PTY output.
+    fn update(&mut self, name: &str, clean: &str) {
+        // Walk through lines and keep the last meaningful one.
+        for line in clean.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || is_noise(trimmed) {
+                continue;
+            }
+            self.last_activity
+                .insert(name.to_string(), trimmed.to_string());
         }
-        // Truncate long lines
-        let display = if trimmed.len() > 160 {
-            let boundary = helpers::floor_char_boundary(trimmed, 157);
-            format!("{}...", &trimmed[..boundary])
-        } else {
-            trimmed.to_string()
-        };
-        eprintln!("[{}] {}", short, display);
+    }
+
+    /// Print a heartbeat summary showing what each pending worker is doing.
+    /// Only prints if there's new activity since the last heartbeat.
+    fn print_heartbeat(&mut self, elapsed_secs: u64, pending: &HashSet<String>) {
+        let mut parts: Vec<String> = Vec::new();
+        for name in pending {
+            let short = short_worker_name(name);
+            if let Some(activity) = self.last_activity.get(name) {
+                let already_printed = self
+                    .last_printed
+                    .get(name)
+                    .map_or(false, |prev| prev == activity);
+                if already_printed {
+                    parts.push(format!("{}: (working...)", short));
+                } else {
+                    let display = truncate_line(activity, 60);
+                    self.last_printed.insert(name.clone(), activity.clone());
+                    parts.push(format!("{}: {}", short, display));
+                }
+            } else {
+                parts.push(format!("{}: (starting...)", short));
+            }
+        }
+        if !parts.is_empty() {
+            eprintln!("[swarm] {}s elapsed — {}", elapsed_secs, parts.join(", "));
+        }
     }
 }
 
-/// Returns true if the line is CLI chrome / noise that shouldn't be shown.
-fn is_cli_noise(line: &str) -> bool {
+/// Returns true if a line is PTY noise that shouldn't be tracked as meaningful activity.
+fn is_noise(line: &str) -> bool {
+    // Very short fragments are usually character-by-character PTY rendering
+    if line.len() < 4 {
+        return true;
+    }
     // Spinner characters
     if line.starts_with('⠋')
         || line.starts_with('⠙')
@@ -857,12 +1052,24 @@ fn is_cli_noise(line: &str) -> bool {
     false
 }
 
-/// Log a received result with a preview of the content.
-fn log_result_received(worker: &str, via: &str, result: &str, remaining: usize) {
+/// Truncate a line to a maximum character count for display.
+fn truncate_line(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        text.to_string()
+    } else {
+        let boundary = helpers::floor_char_boundary(text, max.saturating_sub(3));
+        format!("{}...", &text[..boundary])
+    }
+}
+
+/// Format a result log message as a single string (for TUI or eprintln).
+fn format_result_log(worker: &str, via: &str, result: &str, remaining: usize) -> String {
     let short = short_worker_name(worker);
-    let preview = result_preview(result, 120);
-    eprintln!("[swarm] {} completed via {} ({} remaining)", short, via, remaining);
-    eprintln!("[swarm]   ↳ {}", preview);
+    let preview = result_preview(result, 80);
+    format!(
+        "[swarm] {} completed via {} ({} remaining) ↳ {}",
+        short, via, remaining, preview
+    )
 }
 
 /// Truncate a result to a readable single-line preview.
@@ -1323,6 +1530,7 @@ impl BrokerClient {
                         "cwd": cwd.display().to_string(),
                     },
                     "initial_task": initial_task,
+                    "idle_threshold_secs": 20,
                 }),
             )
             .await?;
@@ -1339,6 +1547,19 @@ impl BrokerClient {
                 }),
             )
             .await?;
+        Ok(())
+    }
+
+    async fn send_message(&mut self, to: &str, text: &str) -> Result<()> {
+        self.request(
+            "send_message",
+            json!({
+                "to": to,
+                "text": text,
+                "from": "human:swarm-operator",
+            }),
+        )
+        .await?;
         Ok(())
     }
 

@@ -3,5 +3,18 @@
     "allow": [
       "mcp__agent-relay__*"
     ]
+  },
+  "mcpServers": {
+    "relaycast": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@relaycast/mcp"
+      ],
+      "env": {
+        "RELAY_API_KEY": "rk_live_86473124662ae103891008c19fdf88e6",
+        "RELAY_BASE_URL": "https://api.relaycast.dev"
+      }
+    }
   }
 }

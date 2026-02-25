@@ -164,7 +164,7 @@ describe('registerCoreCommands', () => {
     const commandNames = program.commands.map((cmd) => cmd.name());
 
     expect(commandNames).toEqual(
-      expect.arrayContaining(['up', 'down', 'status', 'uninstall', 'version', 'update', 'bridge'])
+      expect.arrayContaining(['up', 'start', 'down', 'status', 'uninstall', 'version', 'update', 'bridge'])
     );
   });
 
@@ -187,6 +187,25 @@ describe('registerCoreCommands', () => {
       .calls[0][1] as string[];
     expect(dashboardArgs).not.toContain('--no-spawn');
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('start dashboard.js logs a focused cli-tools dashboard URL', async () => {
+    const relay = createRelayMock({
+      getStatus: vi.fn(async () => ({ agent_count: 1, pending_delivery_count: 0 })),
+    });
+    const { program, deps } = createHarness({ relay });
+
+    const exitCode = await runCommand(program, ['start', 'dashboard.js', 'claude', '--port', '4999']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000);
+    expect(deps.spawnProcess).toHaveBeenCalledWith(
+      '/usr/local/bin/relay-dashboard-server',
+      expect.arrayContaining(['--port', '4999', '--relay-url', 'http://localhost:5000']),
+      expect.any(Object)
+    );
+    const logCalls = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(logCalls).toEqual(expect.arrayContaining([['Dashboard: http://localhost:4999/dev/cli-tools?tool=claude']]));
   });
 
   it('up exits early when broker pid file points to a running process', async () => {
@@ -255,6 +274,27 @@ describe('registerCoreCommands', () => {
     expect(dashboardOptions.env?.RELAY_URL).toBeUndefined();
   });
 
+  it('up prefers static-dir candidate that includes metrics page', async () => {
+    const dashboardServerOut = '/tmp/relay-dashboard/packages/dashboard-server/out';
+    const dashboardOut = '/tmp/relay-dashboard/packages/dashboard/out';
+    const fs = createFsMock({
+      [dashboardServerOut]: '',
+      [dashboardOut]: '',
+      [`${dashboardOut}/metrics.html`]: '<html></html>',
+    });
+    const { program, deps } = createHarness({
+      fs,
+      dashboardBinary: '/tmp/relay-dashboard/packages/dashboard-server/dist/start.js',
+    });
+
+    const exitCode = await runCommand(program, ['up', '--port', '4999']);
+
+    expect(exitCode).toBeUndefined();
+    const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', dashboardOut]));
+  });
+
   it('up auto-spawns agents from teams config', async () => {
     const relay = createRelayMock();
     const { program } = createHarness({
@@ -311,6 +351,38 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBe(1);
     expect(deps.error).toHaveBeenCalledWith('Dashboard port 3888 is already in use.');
+  });
+
+  it('up retries with next API port when first API port is taken', async () => {
+    const firstRelay = createRelayMock({
+      getStatus: vi.fn(async () => {
+        const error = new Error('Error: failed to bind API on port 3889\nCaused by:\nAddress already in use (os error 48)') as Error & {
+          code?: string;
+        };
+        throw error;
+      }),
+    });
+
+    const secondRelay = createRelayMock();
+    const createRelay = vi
+      .fn()
+      .mockReturnValueOnce(firstRelay)
+      .mockReturnValueOnce(secondRelay) as unknown as CoreDependencies['createRelay'];
+
+    const { program, deps } = createHarness({ createRelay });
+
+    const exitCode = await runCommand(program, ['up', '--port', '3888']);
+
+    expect(exitCode).toBeUndefined();
+    expect(createRelay).toHaveBeenCalledWith('/tmp/project', 3889);
+    expect(createRelay).toHaveBeenCalledWith('/tmp/project', 3890);
+    expect(secondRelay.getStatus).toHaveBeenCalledTimes(1);
+    expect(secondRelay.shutdown).toHaveBeenCalledTimes(0);
+    expect(deps.spawnProcess).toHaveBeenCalledWith(
+      '/usr/local/bin/relay-dashboard-server',
+      expect.arrayContaining(['--port', '3888', '--relay-url', 'http://localhost:3890']),
+      expect.any(Object)
+    );
   });
 
   it('up force exits on repeated SIGINT during hung shutdown and suppresses expected dashboard signal noise', async () => {

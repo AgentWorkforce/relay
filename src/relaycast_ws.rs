@@ -636,10 +636,19 @@ impl RelaycastHttpClient {
             return Ok(vec![]);
         }
         let body: Value = res.json().await?;
-        Ok(parse_dm_participants_from_conversations(
-            &body,
-            conversation_id,
-        ))
+        let participants = parse_dm_participants_from_conversations(&body, conversation_id);
+        if participants.is_empty() {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                "no participants found for DM conversation — message delivery will fail"
+            );
+            tracing::debug!(
+                conversation_id = %conversation_id,
+                response_body = %body,
+                "raw response from /v1/dm/conversations/all"
+            );
+        }
+        Ok(participants)
     }
 
     /// Fetch recent message history from a channel via the Relaycast REST API.
@@ -710,9 +719,31 @@ fn parse_dm_participants_from_conversations(body: &Value, conversation_id: &str)
         .map(|participants| {
             participants
                 .iter()
-                .filter_map(Value::as_str)
+                .filter_map(|v| {
+                    // Handle both string and object participant formats.
+                    // Relaycast may return participants as plain strings ("Alice")
+                    // or as objects ({"agent_name": "Alice", "agent_id": "agt_123"}).
+                    if let Some(name) = v.as_str() {
+                        return Some(name.to_string());
+                    }
+                    if let Some(name) = v.get("agent_name").and_then(Value::as_str) {
+                        if !name.is_empty() {
+                            return Some(name.to_string());
+                        }
+                    }
+                    if let Some(name) = v.get("name").and_then(Value::as_str) {
+                        if !name.is_empty() {
+                            return Some(name.to_string());
+                        }
+                    }
+                    if let Some(id) = v.get("agent_id").and_then(Value::as_str) {
+                        if !id.is_empty() {
+                            return Some(id.to_string());
+                        }
+                    }
+                    None
+                })
                 .filter(|name| !name.trim().is_empty())
-                .map(ToString::to_string)
                 .collect()
         })
         .unwrap_or_default()
@@ -1258,6 +1289,62 @@ mod tests {
 
         let participants = parse_dm_participants_from_conversations(&body, "conv_3");
         assert_eq!(participants, vec!["Ops".to_string(), "Worker".to_string()]);
+    }
+
+    #[test]
+    fn parses_dm_participants_from_object_format() {
+        let body = json!({
+            "ok": true,
+            "data": [
+                {
+                    "id": "conv_4",
+                    "participants": [
+                        { "agent_name": "Alice", "agent_id": "agt_1" },
+                        { "agent_name": "Bob", "agent_id": "agt_2" }
+                    ]
+                }
+            ]
+        });
+
+        let participants = parse_dm_participants_from_conversations(&body, "conv_4");
+        assert_eq!(participants, vec!["Alice".to_string(), "Bob".to_string()]);
+    }
+
+    #[test]
+    fn parses_dm_participants_mixed_string_and_object() {
+        let body = json!({
+            "ok": true,
+            "data": [
+                {
+                    "id": "conv_5",
+                    "participants": [
+                        "Alice",
+                        { "agent_name": "Bob", "agent_id": "agt_2" }
+                    ]
+                }
+            ]
+        });
+
+        let participants = parse_dm_participants_from_conversations(&body, "conv_5");
+        assert_eq!(participants, vec!["Alice".to_string(), "Bob".to_string()]);
+    }
+
+    #[test]
+    fn parses_dm_participants_name_field_fallback() {
+        let body = json!({
+            "ok": true,
+            "data": [
+                {
+                    "id": "conv_6",
+                    "participants": [
+                        { "name": "Charlie", "id": "agt_3" }
+                    ]
+                }
+            ]
+        });
+
+        let participants = parse_dm_participants_from_conversations(&body, "conv_6");
+        assert_eq!(participants, vec!["Charlie".to_string()]);
     }
 
     // --- parse_relaycast_agent_event tests ---

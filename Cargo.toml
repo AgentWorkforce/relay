@@ -34,6 +34,8 @@ tokio = { version = "1.44", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tempfile = "3.19"
+crossterm = { version = "0.28", features = ["event-stream"] }
+futures-lite = "2.6"
 uuid = { version = "1.15", features = ["v4", "serde"] }
 
 [target.'cfg(unix)'.dependencies]

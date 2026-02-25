@@ -4,12 +4,16 @@
 //! that power the dashboard's REST API for spawning/releasing agents and
 //! sending messages.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use relay_broker::replay_buffer::ReplayBuffer;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc};
+use tokio::time::timeout;
+use uuid::Uuid;
+
+const LISTEN_API_SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
 // Request / State types
@@ -111,6 +115,7 @@ fn listen_api_router_with_auth(
             routing::post(listen_api_interrupt),
         )
         .route("/api/send", routing::post(listen_api_send))
+        .route("/api/history/stats", routing::get(listen_api_history_stats))
         .route("/ws", routing::get(listen_api_ws))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
@@ -375,6 +380,7 @@ async fn listen_api_send(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::Json(body): axum::Json<Value>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let request_id = Uuid::new_v4().to_string();
     let to = body
         .get("to")
         .and_then(Value::as_str)
@@ -391,8 +397,20 @@ async fn listen_api_send(
         .trim()
         .to_string();
     let from = body.get("from").and_then(Value::as_str).map(String::from);
+    tracing::info!(
+        target = "relay_broker::http_api",
+        request_id = %request_id,
+        to = %to,
+        from = ?from,
+        "received HTTP API send request"
+    );
 
     if to.is_empty() || text.is_empty() {
+        tracing::warn!(
+            target = "relay_broker::http_api",
+            request_id = %request_id,
+            "HTTP API send request rejected: missing required fields"
+        );
         return (
             axum::http::StatusCode::BAD_REQUEST,
             axum::Json(json!({
@@ -414,34 +432,93 @@ async fn listen_api_send(
         .await
         .is_err()
     {
+        tracing::warn!(
+            target = "relay_broker::http_api",
+            request_id = %request_id,
+            "HTTP API send request dropped before broker consumed it"
+        );
         return (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             axum::Json(json!({ "success": false, "error": "internal channel closed" })),
         );
     }
 
-    match reply_rx.await {
-        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
-        Ok(Err(err)) => {
-            let status = if err.contains("Agent \"") && err.contains("not found") {
+    let started_at = Instant::now();
+    match timeout(LISTEN_API_SEND_TIMEOUT, reply_rx).await {
+        Ok(Ok(Ok(val))) => {
+            tracing::info!(
+                target = "relay_broker::http_api",
+                request_id = %request_id,
+                to = %to,
+                duration_ms = %started_at.elapsed().as_millis(),
+                "HTTP API send request completed successfully"
+            );
+            (axum::http::StatusCode::OK, axum::Json(val))
+        }
+        Ok(Ok(Err(err))) => {
+            let error = err.to_string();
+            let status = if error.contains("Agent \"") && error.contains("not found") {
                 axum::http::StatusCode::NOT_FOUND
             } else {
                 axum::http::StatusCode::BAD_GATEWAY
             };
+            tracing::warn!(
+                target = "relay_broker::http_api",
+                request_id = %request_id,
+                to = %to,
+                status = status.as_u16(),
+                error = %err,
+                duration_ms = %started_at.elapsed().as_millis(),
+                "HTTP API send request completed with broker error"
+            );
             (
                 status,
                 axum::Json(json!({
                     "success": false,
                     "to": to,
-                    "error": err,
+                    "error": error,
                 })),
             )
         }
-        Err(_) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
-        ),
+        Ok(Err(_)) => {
+            tracing::warn!(
+                target = "relay_broker::http_api",
+                request_id = %request_id,
+                to = %to,
+                "HTTP API send request reply channel closed"
+            );
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
+            )
+        }
+        Err(_) => {
+            tracing::warn!(
+                target = "relay_broker::http_api",
+                request_id = %request_id,
+                to = %to,
+                duration_ms = %started_at.elapsed().as_millis(),
+                "HTTP API send request timed out waiting for broker"
+            );
+            (
+                axum::http::StatusCode::GATEWAY_TIMEOUT,
+                axum::Json(json!({
+                    "success": false,
+                    "error": "broker request timed out",
+                })),
+            )
+        }
     }
+}
+
+async fn listen_api_history_stats() -> axum::Json<Value> {
+    axum::Json(json!({
+        "messageCount": 0,
+        "sessionCount": 0,
+        "activeSessions": 0,
+        "uniqueAgents": 0,
+        "oldestMessageDate": null,
+    }))
 }
 
 async fn listen_api_ws(

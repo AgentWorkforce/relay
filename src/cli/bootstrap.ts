@@ -58,6 +58,7 @@ export const VERSION = resolveCliVersion();
 
 const interactiveCommands = new Set([
   'up',
+  'start',
   'down',
   'status',
   'version',

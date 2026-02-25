@@ -15,6 +15,14 @@ struct PendingWorkerInjection {
     queued_at: Instant,
 }
 
+fn cli_basename(command: &str) -> &str {
+    command
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(command)
+}
+
 pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // Disable Claude Code auto-suggestions to prevent accidental acceptance during injection.
     #[allow(deprecated)]
@@ -82,6 +90,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut last_mcp_reminder_at: Option<Instant> = None;
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<String> = HashSet::new();
+    let verification_window = if cli_basename(&resolved_cli).eq_ignore_ascii_case("droid") {
+        Duration::from_secs(3)
+    } else {
+        VERIFICATION_WINDOW
+    };
 
     // Echo verification state
     let mut pending_verifications: VecDeque<PendingVerification> = VecDeque::new();
@@ -107,6 +120,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // safety net for macOS where both EOF detection and has_exited() can fail.
     const NO_OUTPUT_EXIT_TIMEOUT: Duration = Duration::from_secs(120);
     let mut last_pty_output_time = Instant::now();
+    let mut reported_idle = false;
 
     while running {
         tokio::select! {
@@ -210,6 +224,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 match pty_output {
                     Some(chunk) => {
                         last_pty_output_time = Instant::now();
+                        reported_idle = false;
                         // Child is provably alive — reset the no-PID exit counter.
                         pty.reset_no_pid_checks();
                         for response in terminal_query_parser.feed(&chunk) {
@@ -474,29 +489,41 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             _ = verification_tick.tick() => {
                 let mut i = 0;
                 while i < pending_verifications.len() {
-                    if pending_verifications[i].injected_at.elapsed() >= VERIFICATION_WINDOW {
+                    if pending_verifications[i].injected_at.elapsed() >= verification_window {
                         let pv = pending_verifications.remove(i).unwrap();
+                        let delivery_id = pv.delivery_id.clone();
+                        let event_id = pv.event_id.clone();
                         // Do not re-inject on verification timeout. Re-injection can duplicate
                         // already-delivered messages when terminal echo parsing is noisy.
                         tracing::warn!(
-                            delivery_id = %pv.delivery_id,
+                            delivery_id = %delivery_id,
                             attempts = pv.attempts,
-                            "delivery echo not detected within verification window; marking verified via timeout fallback"
+                            "delivery echo not detected within verification window; acknowledging via timeout fallback"
                         );
+                        let _ = send_frame(
+                            &out_tx,
+                            "delivery_ack",
+                            pv.request_id.clone(),
+                            json!({
+                                "delivery_id": delivery_id,
+                                "event_id": event_id
+                            }),
+                        )
+                        .await;
                         let _ = send_frame(
                             &out_tx,
                             "delivery_verified",
                             pv.request_id.clone(),
                             json!({
-                                "delivery_id": pv.delivery_id,
-                                "event_id": pv.event_id,
+                                "delivery_id": delivery_id,
+                                "event_id": event_id,
                                 "verification": "timeout_fallback",
-                                "reason": format!("echo not detected within {}s window", VERIFICATION_WINDOW.as_secs())
+                                "reason": format!("echo not detected within {}s window", verification_window.as_secs())
                             }),
                         )
                         .await;
                         throttle.record(DeliveryOutcome::Success);
-                        pending_worker_delivery_ids.remove(&pv.delivery_id);
+                        pending_worker_delivery_ids.remove(&delivery_id);
                     } else {
                         i += 1;
                     }
@@ -591,16 +618,19 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     // dashboard can decide what to do with idle agents.
                     let silent_duration = last_pty_output_time.elapsed();
                     if silent_duration >= NO_OUTPUT_EXIT_TIMEOUT {
-                        tracing::info!(
-                            target = "agent_relay::worker::pty",
-                            silent_secs = silent_duration.as_secs(),
-                            "watchdog: no PTY output for {}s — marking idle",
-                            silent_duration.as_secs()
-                        );
-                        let _ = send_frame(&out_tx, "agent_idle", None, json!({
-                            "reason": "no_output_timeout",
-                            "idle_secs": silent_duration.as_secs(),
-                        })).await;
+                        if !reported_idle {
+                            tracing::info!(
+                                target = "agent_relay::worker::pty",
+                                silent_secs = silent_duration.as_secs(),
+                                "watchdog: no PTY output for {}s — marking idle",
+                                silent_duration.as_secs()
+                            );
+                            let _ = send_frame(&out_tx, "agent_idle", None, json!({
+                                "reason": "no_output_timeout",
+                                "idle_secs": silent_duration.as_secs(),
+                            })).await;
+                            reported_idle = true;
+                        }
                     }
                 }
             }
