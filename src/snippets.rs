@@ -470,6 +470,11 @@ pub async fn configure_relaycast_mcp_with_token(
             relaycast_mcp_config_json_with_token(api_key, base_url, Some(agent_name), agent_token);
         args.push("--mcp-config".to_string());
         args.push(mcp_json);
+        // Prevent project-level .mcp.json from overriding the broker-injected
+        // config (e.g. a stale relaycast entry without agent credentials).
+        if !existing_args.iter().any(|a| a.contains("strict-mcp-config")) {
+            args.push("--strict-mcp-config".to_string());
+        }
     } else if is_codex
         && !existing_args
             .iter()
@@ -529,16 +534,56 @@ pub async fn configure_relaycast_mcp_with_token(
 }
 
 /// Run `<cli> mcp remove relaycast` then `<cli> mcp add` for Gemini or Droid.
+fn gemini_droid_mcp_env_flag(is_gemini: bool) -> &'static str {
+    if is_gemini {
+        "-e"
+    } else {
+        "--env"
+    }
+}
+
+fn gemini_droid_manual_mcp_add_cmd(cli: &str, is_gemini: bool) -> String {
+    let env_flag = gemini_droid_mcp_env_flag(is_gemini);
+    let cmd_separator = if is_gemini { "" } else { " --" };
+    format!(
+        "{cli} mcp add {env_flag} RELAY_API_KEY=<key> {env_flag} RELAY_BASE_URL=<url> relaycast{cmd_separator} npx -y @relaycast/mcp"
+    )
+}
+
+fn gemini_droid_mcp_add_args(
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    is_gemini: bool,
+) -> Vec<String> {
+    let env_flag = gemini_droid_mcp_env_flag(is_gemini);
+    let mut args = vec!["mcp".to_string(), "add".to_string()];
+    if let Some(key) = api_key {
+        args.push(env_flag.to_string());
+        args.push(format!("RELAY_API_KEY={key}"));
+    }
+    if let Some(url) = base_url {
+        args.push(env_flag.to_string());
+        args.push(format!("RELAY_BASE_URL={url}"));
+    }
+    args.push("relaycast".to_string());
+    // Droid's CLI parser continues parsing options after positional args.
+    // Insert `--` so `-y` is treated as an argument to `npx`.
+    if !is_gemini {
+        args.push("--".to_string());
+    }
+    args.push("npx".to_string());
+    args.push("-y".to_string());
+    args.push("@relaycast/mcp".to_string());
+    args
+}
+
 async fn configure_gemini_droid_mcp(
     cli: &str,
     api_key: Option<&str>,
     base_url: Option<&str>,
     is_gemini: bool,
 ) -> Result<()> {
-    let env_flag = if is_gemini { "-e" } else { "--env" };
-    let manual_cmd = format!(
-        "{cli} mcp add {env_flag} RELAY_API_KEY=<key> {env_flag} RELAY_BASE_URL=<url> relaycast npx -y @relaycast/mcp"
-    );
+    let manual_cmd = gemini_droid_manual_mcp_add_cmd(cli, is_gemini);
 
     // Remove first for idempotency (ignore errors — may not exist yet).
     let _ = std::process::Command::new(cli)
@@ -550,14 +595,7 @@ async fn configure_gemini_droid_mcp(
         .and_then(|mut c| c.wait());
 
     let mut mcp_cmd = Command::new(cli);
-    mcp_cmd.args(["mcp", "add"]);
-    if let Some(key) = api_key {
-        mcp_cmd.arg(env_flag).arg(format!("RELAY_API_KEY={key}"));
-    }
-    if let Some(url) = base_url {
-        mcp_cmd.arg(env_flag).arg(format!("RELAY_BASE_URL={url}"));
-    }
-    mcp_cmd.args(["relaycast", "npx", "-y", "@relaycast/mcp"]);
+    mcp_cmd.args(gemini_droid_mcp_add_args(api_key, base_url, is_gemini));
     mcp_cmd
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1138,6 +1176,53 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
                 .expect("configure claude:latest");
 
         assert_eq!(args[0], "--mcp-config");
+    }
+
+    #[test]
+    fn droid_mcp_add_args_include_option_separator() {
+        let args = super::gemini_droid_mcp_add_args(
+            Some("rk_live_xyz"),
+            Some("https://api.relaycast.dev"),
+            false,
+        );
+
+        let relaycast_idx = args
+            .iter()
+            .position(|arg| arg == "relaycast")
+            .expect("relaycast arg");
+        assert_eq!(args[relaycast_idx + 1], "--");
+        assert_eq!(args[relaycast_idx + 2], "npx");
+        assert_eq!(args[relaycast_idx + 3], "-y");
+        assert_eq!(args[relaycast_idx + 4], "@relaycast/mcp");
+    }
+
+    #[test]
+    fn gemini_mcp_add_args_do_not_include_option_separator() {
+        let args = super::gemini_droid_mcp_add_args(
+            Some("rk_live_xyz"),
+            Some("https://api.relaycast.dev"),
+            true,
+        );
+
+        let relaycast_idx = args
+            .iter()
+            .position(|arg| arg == "relaycast")
+            .expect("relaycast arg");
+        assert_eq!(args[relaycast_idx + 1], "npx");
+        assert!(
+            !args.iter().any(|arg| arg == "--"),
+            "Gemini command should not include `--` argument separator"
+        );
+    }
+
+    #[test]
+    fn droid_manual_mcp_add_command_uses_option_separator() {
+        let droid_cmd = super::gemini_droid_manual_mcp_add_cmd("droid", false);
+        assert!(droid_cmd.contains("relaycast -- npx -y @relaycast/mcp"));
+
+        let gemini_cmd = super::gemini_droid_manual_mcp_add_cmd("gemini", true);
+        assert!(!gemini_cmd.contains("relaycast -- npx -y @relaycast/mcp"));
+        assert!(gemini_cmd.contains("relaycast npx -y @relaycast/mcp"));
     }
 
     // -----------------------------------------------------------------------
