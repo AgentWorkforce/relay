@@ -472,7 +472,10 @@ pub async fn configure_relaycast_mcp_with_token(
         args.push(mcp_json);
         // Prevent project-level .mcp.json from overriding the broker-injected
         // config (e.g. a stale relaycast entry without agent credentials).
-        if !existing_args.iter().any(|a| a.contains("strict-mcp-config")) {
+        if !existing_args
+            .iter()
+            .any(|a| a.contains("strict-mcp-config"))
+        {
             args.push("--strict-mcp-config".to_string());
         }
     } else if is_codex
