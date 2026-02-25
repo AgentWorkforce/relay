@@ -1282,8 +1282,22 @@ export class WorkflowRunner {
         await this.trajectory.beginTrack(trackNames);
       }
 
+      // Stagger spawns when many steps are ready simultaneously.
+      // All agents still run concurrently once spawned — this only delays when
+      // each step's executeStep() begins, preventing Relaycast from receiving
+      // N simultaneous registration requests which causes spawn timeouts.
+      const STAGGER_THRESHOLD = 3;
+      const STAGGER_DELAY_MS = 2_000;
       const results = await Promise.allSettled(
-        readySteps.map((step) => this.executeStep(step, stepStates, agentMap, errorHandling, runId))
+        readySteps.map((step, i) => {
+          const delay = readySteps.length > STAGGER_THRESHOLD ? i * STAGGER_DELAY_MS : 0;
+          if (delay === 0) {
+            return this.executeStep(step, stepStates, agentMap, errorHandling, runId);
+          }
+          return new Promise<void>((resolve) => setTimeout(resolve, delay)).then(() =>
+            this.executeStep(step, stepStates, agentMap, errorHandling, runId)
+          );
+        })
       );
 
       // Collect outcomes from this batch for convergence reflection

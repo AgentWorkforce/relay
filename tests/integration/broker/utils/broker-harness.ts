@@ -310,7 +310,7 @@ export class BrokerHarness {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function resolveBinaryPath(): string {
+export function resolveBinaryPath(): string {
   if (process.env.AGENT_RELAY_BIN) {
     return process.env.AGENT_RELAY_BIN;
   }

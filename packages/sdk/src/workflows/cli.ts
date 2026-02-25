@@ -12,7 +12,8 @@ import type { WorkflowEvent } from './runner.js';
 import { runWorkflow } from './run.js';
 
 function printUsage(): void {
-  console.log(`
+  console.log(
+    `
 Usage: relay-workflow <yaml-path> [options]
 
 Run a relay.yaml workflow file.
@@ -27,7 +28,8 @@ Options:
 Examples:
   relay-workflow workflows/daytona-migration.yaml
   relay-workflow workflows/feature-dev.yaml --workflow build-and-test
-`.trim());
+`.trim()
+  );
 }
 
 function formatEvent(event: WorkflowEvent): string {
@@ -75,12 +77,25 @@ async function main(): Promise<void> {
 
   console.log(`Running workflow from ${yamlPath}...`);
 
+  const isDryRun = !!process.env.DRY_RUN;
+
   const result = await runWorkflow(yamlPath, {
     workflow: workflowName,
     onEvent(event) {
       console.log(formatEvent(event));
     },
   });
+
+  // DryRunReport has `valid` not `status`
+  if (isDryRun) {
+    const report = result as unknown as { valid: boolean; errors: string[] };
+    if (report.valid) {
+      process.exit(0);
+    } else {
+      console.error(`\nDry run failed: ${report.errors.join(', ')}`);
+      process.exit(1);
+    }
+  }
 
   if (result.status === 'completed') {
     console.log(`\nWorkflow completed successfully.`);

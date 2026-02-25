@@ -6,7 +6,7 @@ description: >
   A fix team handles compile errors and test failures. A review team gates approval.
 swarm:
   pattern: dag
-  maxConcurrency: 16
+  maxConcurrency: 5
   timeoutMs: 7200000
   channel: integration-tests
   idleNudge:
@@ -159,9 +159,9 @@ workflows:
         description: 'Confirm existing broker test infrastructure is present'
       - command: ls packages/sdk/src/workflows/runner.ts
         description: 'Confirm WorkflowRunner source is present'
-      - command: git status --porcelain
+      - command: git status --porcelain | grep -v '\.trajectories/' | grep -v 'relay\.integration-tests\.yaml' || true
         failIf: non-empty
-        description: 'Ensure working directory is clean'
+        description: 'Ensure working directory is clean (trajectories and workflow file ignored)'
 
     steps:
       # ── Wave 1: Design ──────────────────────────────────────────────────────
