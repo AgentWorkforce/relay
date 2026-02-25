@@ -701,8 +701,8 @@ async fn wait_for_worker_results(
                     results.insert(worker, body);
                 }
             }
-            // PTY output chunk — accumulate it, and check for an explicit
-            // RESULT: marker sent by the worker through its terminal.
+            // PTY output chunk — accumulate it, stream activity to stderr,
+            // and check for an explicit RESULT: marker.
             "worker_stream" => {
                 let name = event
                     .get("name")
@@ -721,6 +721,10 @@ async fn wait_for_worker_results(
                     .entry(name.clone())
                     .or_default()
                     .push_str(&clean);
+
+                // Show meaningful output lines so the user can see what agents
+                // are doing in real time.
+                log_worker_activity(&name, &clean);
 
                 // Check for explicit RESULT: marker in accumulated output
                 // (but reject prompt echoes).
@@ -776,6 +780,14 @@ async fn wait_for_worker_results(
                 let cli = event.get("cli").and_then(Value::as_str).unwrap_or("?");
                 eprintln!("[swarm] {} spawned (cli={})", name, cli);
             }
+            "worker_error" => {
+                let name = event.get("name").and_then(Value::as_str).unwrap_or("?");
+                let error = event
+                    .get("error")
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "unknown error".to_string());
+                eprintln!("[swarm] {} ERROR: {}", short_worker_name(name), error);
+            }
             _ => {}
         }
     }
@@ -783,19 +795,73 @@ async fn wait_for_worker_results(
     Ok(results)
 }
 
+/// Extract a short display name from a full worker name like
+/// "swarm-team-1-41675-1772026298" → "swarm-team-1".
+fn short_worker_name(full: &str) -> &str {
+    // Strip the last two segments (PID and timestamp)
+    full.strip_suffix(full.rfind('-').map_or("", |i| &full[i..]))
+        .and_then(|s| s.strip_suffix(s.rfind('-').map_or("", |i| &s[i..])))
+        .unwrap_or(full)
+}
+
+/// Log worker PTY output so the user can see what agents are doing.
+/// Filters out noise (blank lines, spinner chars, cursor movement, etc.)
+/// and prints meaningful lines prefixed with the worker name.
+fn log_worker_activity(name: &str, clean: &str) {
+    let short = short_worker_name(name);
+    for line in clean.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Skip common CLI UI noise
+        if is_cli_noise(trimmed) {
+            continue;
+        }
+        // Truncate long lines
+        let display = if trimmed.len() > 160 {
+            let boundary = helpers::floor_char_boundary(trimmed, 157);
+            format!("{}...", &trimmed[..boundary])
+        } else {
+            trimmed.to_string()
+        };
+        eprintln!("[{}] {}", short, display);
+    }
+}
+
+/// Returns true if the line is CLI chrome / noise that shouldn't be shown.
+fn is_cli_noise(line: &str) -> bool {
+    // Spinner characters
+    if line.starts_with('⠋')
+        || line.starts_with('⠙')
+        || line.starts_with('⠹')
+        || line.starts_with('⠸')
+        || line.starts_with('⠼')
+        || line.starts_with('⠴')
+        || line.starts_with('⠦')
+        || line.starts_with('⠧')
+        || line.starts_with('⠇')
+        || line.starts_with('⠏')
+    {
+        return true;
+    }
+    // Common codex/claude UI elements
+    if line.starts_with("? for shortcuts")
+        || line.contains("context left")
+        || line.starts_with("Thinking")
+        || line == "›"
+        || line.starts_with("Find and fix a bug")
+    {
+        return true;
+    }
+    false
+}
+
 /// Log a received result with a preview of the content.
 fn log_result_received(worker: &str, via: &str, result: &str, remaining: usize) {
-    // Show a short friendly name instead of the full swarm-team-N-PID-TS
-    let short_name = worker
-        .strip_suffix(worker.rfind('-').map_or("", |i| &worker[i..]))
-        .and_then(|s| s.strip_suffix(s.rfind('-').map_or("", |i| &s[i..])))
-        .unwrap_or(worker);
-
+    let short = short_worker_name(worker);
     let preview = result_preview(result, 120);
-    eprintln!(
-        "[swarm] {} completed via {} ({} remaining)",
-        short_name, via, remaining
-    );
+    eprintln!("[swarm] {} completed via {} ({} remaining)", short, via, remaining);
     eprintln!("[swarm]   ↳ {}", preview);
 }
 
