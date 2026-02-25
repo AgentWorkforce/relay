@@ -1017,6 +1017,9 @@ export class WorkflowRunner {
         brokerName,
         channels: [channel],
         env: this.getRelayEnv(),
+        // Workflows spawn many agents in parallel waves; each spawn requires a PTY +
+        // Relaycast registration. 10s is too tight when 8-10 agents start simultaneously.
+        requestTimeoutMs: this.relayOptions.requestTimeoutMs ?? 60_000,
       });
 
       // Wire PTY output dispatcher — routes chunks to per-agent listeners + activity logging
@@ -2049,10 +2052,8 @@ export class WorkflowRunner {
       }
     }
 
-    // Post task assignment to channel for observability
-    const taskText = step.task ?? '';
-    const taskPreview = taskText.slice(0, 500) + (taskText.length > 500 ? '...' : '');
-    this.postToChannel(`**[${step.name}]** Assigned to \`${agentName}\` (non-interactive):\n${taskPreview}`);
+    // Post assignment notification (no task content — task arrives via direct broker injection)
+    this.postToChannel(`**[${step.name}]** Assigned to \`${agentName}\` (non-interactive)`);
 
     const stdoutChunks: string[] = [];
     const stderrChunks: string[] = [];
@@ -2292,10 +2293,8 @@ export class WorkflowRunner {
         await this.relaycastApi.inviteToChannel(this.channel, agent.name).catch(() => {});
       }
 
-      // Post task assignment to channel for observability
-      const taskTextForPreview = step.task ?? '';
-      const taskPreview = taskTextForPreview.slice(0, 500) + (taskTextForPreview.length > 500 ? '...' : '');
-      this.postToChannel(`**[${step.name}]** Assigned to \`${agent.name}\`:\n${taskPreview}`);
+      // Post assignment notification (no task content — task arrives via direct broker injection)
+      this.postToChannel(`**[${step.name}]** Assigned to \`${agent.name}\``);
 
       // Register agent handle for hub-mediated nudging
       this.activeAgentHandles.set(agentName, agent);
