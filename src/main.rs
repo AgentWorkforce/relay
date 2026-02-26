@@ -4803,7 +4803,13 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
     // Sanitise name for use in filenames — keep only alphanumeric and hyphens
     let safe_name: String = broker_name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
 
     // Lock and PID files are per-broker-name so concurrent workflows can coexist.
@@ -6058,8 +6064,8 @@ mod tests {
     #[test]
     fn cached_session_for_requested_name_reuses_matching_token() {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
-        let paths =
-            super::ensure_runtime_paths(dir.path(), "test").expect("runtime paths should initialize");
+        let paths = super::ensure_runtime_paths(dir.path(), "test")
+            .expect("runtime paths should initialize");
         let cached = CredentialCache {
             workspace_id: "ws_cached".to_string(),
             agent_id: "a_cached".to_string(),
@@ -6085,8 +6091,8 @@ mod tests {
     #[test]
     fn cached_session_for_requested_name_rejects_name_mismatch() {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
-        let paths =
-            super::ensure_runtime_paths(dir.path(), "test").expect("runtime paths should initialize");
+        let paths = super::ensure_runtime_paths(dir.path(), "test")
+            .expect("runtime paths should initialize");
         let cached = CredentialCache {
             workspace_id: "ws_cached".to_string(),
             agent_id: "a_cached".to_string(),
