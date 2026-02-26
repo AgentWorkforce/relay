@@ -406,12 +406,8 @@ pub(crate) async fn run_wrap(
     // HTTP client for pre-registering child agents before spawn.
     // This ensures the child MCP server starts with a valid agent token
     // (same as the main broker does for directly-spawned PTY agents).
-    let child_http = RelaycastHttpClient::new(
-        &http_base,
-        &relay_workspace_key,
-        &requested_name,
-        "wrap",
-    );
+    let child_http =
+        RelaycastHttpClient::new(&http_base, &relay_workspace_key, &requested_name, "wrap");
 
     // Spawner for child agents
     let mut spawner = Spawner::new();
