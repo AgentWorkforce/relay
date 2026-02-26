@@ -987,12 +987,20 @@ export class WorkflowRunner {
         await this.trajectory.start(
           workflow.name,
           workflow.steps.length,
-          `Resumed run: ${pendingCount} pending steps of ${workflow.steps.length} total`
+          `Resumed run: ${pendingCount} pending steps of ${workflow.steps.length} total`,
+          config.description,
+          config.swarm.pattern
         );
       } else {
         // Analyze DAG for trajectory context on first run
         const dagInfo = this.analyzeDAG(workflow.steps);
-        await this.trajectory.start(workflow.name, workflow.steps.length, dagInfo);
+        await this.trajectory.start(
+          workflow.name,
+          workflow.steps.length,
+          dagInfo,
+          config.description,
+          config.swarm.pattern
+        );
       }
 
       const channel =
@@ -1998,13 +2006,18 @@ export class WorkflowRunner {
       }
     }
 
-    // All retries exhausted — record decision and mark failed
-    await this.trajectory?.stepFailed(step, lastError ?? 'Unknown error', maxRetries + 1, maxRetries);
-    await this.trajectory?.decide(
-      `How to handle ${step.name} failure`,
-      'exhausted',
-      `All ${maxRetries + 1} attempts failed: ${lastError ?? 'Unknown error'}`
-    );
+    // All retries exhausted — record root-cause diagnosis and mark failed
+    const nonInteractive =
+      agentDef.interactive === false || ['worker', 'reviewer', 'analyst'].includes(agentDef.preset ?? '');
+    const verificationValue =
+      typeof step.verification === 'object' && 'value' in step.verification
+        ? String(step.verification.value)
+        : undefined;
+    await this.trajectory?.stepFailed(step, lastError ?? 'Unknown error', maxRetries + 1, maxRetries, {
+      agent: agentName,
+      nonInteractive,
+      verificationValue,
+    });
     this.postToChannel(`**[${step.name}]** Failed: ${lastError ?? 'Unknown error'}`);
     await this.markStepFailed(state, lastError ?? 'Unknown error', runId);
     throw new Error(
