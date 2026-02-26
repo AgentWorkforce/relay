@@ -2,11 +2,11 @@ version: '1.0'
 name: test-trajectory-quality
 description: >
   Verifies that trajectory files capture reasoning (purpose, step intent,
-  failure diagnosis) not just mechanical event logs. Designed to partially
-  fail so verification_mismatch classification is exercised.
+  completion sentinel) not just mechanical event logs.
+  Verification_mismatch classification is covered by trajectory-quality.test.ts.
 
 swarm:
-  pattern: dag
+  pattern: pipeline
   channel: test-traj-quality
   timeoutMs: 300000
 
@@ -19,8 +19,6 @@ agents:
 
 workflows:
   - name: trajectory-quality
-    onError: continue
-
     steps:
       - name: work
         type: agent
@@ -29,15 +27,6 @@ workflows:
         verification:
           type: output_contains
           value: WORK_DONE
-
-      - name: fail-known
-        type: agent
-        agent: worker
-        dependsOn: [work]
-        task: 'Output exactly: TASK_COMPLETE'
-        verification:
-          type: output_contains
-          value: SENTINEL_NEVER_EMITTED
 
       - name: check-trajectory
         type: deterministic
