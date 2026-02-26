@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-02-26T14:21:53.898Z",
+  "lastUpdated": "2026-02-26T21:40:54.265Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -421,6 +421,27 @@
       "startedAt": "2026-02-26T14:16:04.906Z",
       "completedAt": "2026-02-26T14:21:53.887Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_0m0taic2ctno.json"
+    },
+    "traj_he6nsn1sot1b": {
+      "title": "Investigate failing GitHub Actions job 65058860858",
+      "status": "completed",
+      "startedAt": "2026-02-26T21:34:08.932Z",
+      "completedAt": "2026-02-26T21:36:30.993Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-02/traj_he6nsn1sot1b.json"
+    },
+    "traj_v6x4buu8ezjd": {
+      "title": "Switch relaycast Rust dependency to crates.io",
+      "status": "completed",
+      "startedAt": "2026-02-26T21:38:23.619Z",
+      "completedAt": "2026-02-26T21:39:22.578Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-02/traj_v6x4buu8ezjd.json"
+    },
+    "traj_mmb072mr8106": {
+      "title": "Upgrade broker to relaycast crate v0.2.7 compatibility",
+      "status": "completed",
+      "startedAt": "2026-02-26T21:40:01.405Z",
+      "completedAt": "2026-02-26T21:40:54.188Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-02/traj_mmb072mr8106.json"
     }
   }
 }
