@@ -788,17 +788,15 @@ workflows:
         command: npx tsc -p tests/integration/broker/tsconfig.json 2>&1
         captureOutput: true
         failOnError: false
+        timeoutMs: 120000 # 2 min — tsc should never take longer
 
       - name: run-new-tests
         type: deterministic
         dependsOn: [compile-tests]
-        command: >
-          node --test
-            tests/integration/broker/dist/workflow-patterns.test.js
-            tests/integration/broker/dist/workflow-models.test.js
-          2>&1
+        command: 'cd tests/integration/broker && node --test dist/workflow-patterns.test.js dist/workflow-models.test.js 2>&1'
         captureOutput: true
         failOnError: false
+        timeoutMs: 600000 # 10 min hard cap — scoped to integration dir only
 
       # ── Wave 8: Final fix pass if tests fail ──────────────────────────────
 

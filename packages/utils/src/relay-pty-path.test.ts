@@ -59,9 +59,7 @@ describe('findRelayPtyBinary - search path verification', () => {
 
       // Find the first occurrence of the npx cache path
       const npxBasePath = '/Users/testuser/.npm/_npx/abc123/node_modules/agent-relay/bin';
-      const platformIdx = paths.findIndex(
-        (p) => p.startsWith(npxBasePath) && p.includes('relay-pty-')
-      );
+      const platformIdx = paths.findIndex((p) => p.startsWith(npxBasePath) && p.includes('relay-pty-'));
       const genericIdx = paths.findIndex((p) => p === `${npxBasePath}/relay-pty`);
 
       expect(platformIdx).toBeGreaterThanOrEqual(0);
@@ -94,8 +92,7 @@ describe('findRelayPtyBinary - search path verification', () => {
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
 
-      const expectedPath =
-        '/Users/testuser/.nvm/versions/node/v20.0.0/lib/node_modules/agent-relay/bin';
+      const expectedPath = '/Users/testuser/.nvm/versions/node/v20.0.0/lib/node_modules/agent-relay/bin';
       expect(paths.some((p) => p.startsWith(expectedPath))).toBe(true);
     });
   });
@@ -110,9 +107,7 @@ describe('findRelayPtyBinary - search path verification', () => {
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
 
-      expect(paths.some((p) => p.startsWith('/usr/local/lib/node_modules/agent-relay/bin'))).toBe(
-        true
-      );
+      expect(paths.some((p) => p.startsWith('/usr/local/lib/node_modules/agent-relay/bin'))).toBe(true);
     });
 
     it('should include Homebrew Apple Silicon location', () => {
@@ -121,9 +116,7 @@ describe('findRelayPtyBinary - search path verification', () => {
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
 
-      expect(
-        paths.some((p) => p.startsWith('/opt/homebrew/lib/node_modules/agent-relay/bin'))
-      ).toBe(true);
+      expect(paths.some((p) => p.startsWith('/opt/homebrew/lib/node_modules/agent-relay/bin'))).toBe(true);
     });
   });
 
@@ -155,8 +148,7 @@ describe('findRelayPtyBinary - search path verification', () => {
     // ~/.local/share/pnpm/global/node_modules/agent-relay/
 
     it('should include pnpm global location', () => {
-      const callerDirname =
-        '/Users/testuser/.local/share/pnpm/global/node_modules/@agent-relay/sdk/dist';
+      const callerDirname = '/Users/testuser/.local/share/pnpm/global/node_modules/@agent-relay/sdk/dist';
 
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
@@ -182,22 +174,22 @@ describe('findRelayPtyBinary - search path verification', () => {
       expect(paths.some((p) => p.startsWith('/path/to/relay/bin'))).toBe(true);
     });
 
-    it('should include Rust target/release path', () => {
+    it('should include project root platform-specific binary path', () => {
       const callerDirname = '/path/to/relay/packages/bridge/dist';
 
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
 
-      expect(paths.some((p) => p.includes('relay-pty/target/release/relay-pty'))).toBe(true);
+      expect(paths.some((p) => p.startsWith('/path/to/relay/bin/relay-pty-'))).toBe(true);
     });
 
-    it('should include Rust target/debug path', () => {
+    it('should include project root generic binary path', () => {
       const callerDirname = '/path/to/relay/packages/bridge/dist';
 
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
 
-      expect(paths.some((p) => p.includes('relay-pty/target/debug/relay-pty'))).toBe(true);
+      expect(paths).toContain('/path/to/relay/bin/relay-pty');
     });
   });
 
@@ -268,9 +260,7 @@ describe('findRelayPtyBinary - search path verification', () => {
       }
 
       for (const binDir of binDirs) {
-        const platformIdx = paths.findIndex(
-          (p) => p.startsWith(binDir) && p.includes('relay-pty-')
-        );
+        const platformIdx = paths.findIndex((p) => p.startsWith(binDir) && p.includes('relay-pty-'));
         const genericIdx = paths.findIndex((p) => p === `${binDir}/relay-pty`);
 
         // If both exist, platform should come first
@@ -388,11 +378,10 @@ describe('findRelayPtyBinary - search path verification', () => {
 
       findRelayPtyBinary(devPath);
       const paths = getLastSearchPaths();
+      const expectedBinDir = nodePath.join(process.cwd(), 'bin');
 
-      if (process.cwd().includes('relay')) {
-        expect(paths.some((p) => p.includes('relay-pty/target/release/relay-pty'))).toBe(true);
-        expect(paths.some((p) => p.includes('relay-pty/target/debug/relay-pty'))).toBe(true);
-      }
+      expect(paths.some((p) => p.startsWith(expectedBinDir))).toBe(true);
+      expect(paths.some((p) => p.startsWith(expectedBinDir) && p.includes('relay-pty-'))).toBe(true);
     });
   });
 });

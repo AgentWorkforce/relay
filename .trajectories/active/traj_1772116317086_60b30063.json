@@ -1,0 +1,53 @@
+{
+  "id": "traj_1772116317086_60b30063",
+  "version": 1,
+  "task": {
+    "title": "fix-all-bugs run #33b5c6ba",
+    "source": {
+      "system": "workflow-runner",
+      "id": "33b5c6ba7c132dc710d892cf"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-02-26T14:31:57.086Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T14:31:57.086Z"
+    },
+    {
+      "name": "broker-fixer",
+      "role": "broker-fixer",
+      "joinedAt": "2026-02-26T14:32:00.692Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_00044aa7",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T14:31:57.086Z",
+      "events": [
+        {
+          "ts": 1772116317086,
+          "type": "note",
+          "content": "Purpose: Fast-track resume of the bug fix workflow. Investigation and dashboard reproduction tests are already done from the previous run. This picks up at Wave 3 (fixes), skipping investigation and dashboard test writing.\nPrevious run: a9bb0c8110c849cef685dbdb Investigation outputs: .agent-relay/step-outputs/a9bb0c8110c849cef685dbdb/ Dashboard tests: ../relay-dashboard/test/bugs/ (7 files, failing as expected) Still needed: tests/integration/broker/bug-repro.sh"
+        },
+        {
+          "ts": 1772116317086,
+          "type": "note",
+          "content": "Approach: 9-step dag workflow — Parsed 9 steps, 8 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1772116320692,
+          "type": "note",
+          "content": "\"write-broker-reproductions\": Read the broker investigation findings from disk:",
+          "raw": {
+            "agent": "broker-fixer"
+          }
+        }
+      ]
+    }
+  ]
+}

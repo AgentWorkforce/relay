@@ -174,12 +174,16 @@ describe('CLI Helper Functions', () => {
   describe('parseSince', () => {
     // Test through history command
     it('should parse duration strings', async () => {
-      // These should not error
-      const { code: code1 } = await runCli('history --since 1h');
-      const { code: _code2 } = await runCli('history --since 30m');
-      const { code: _code3 } = await runCli('history --since 7d');
-      // Commands should execute (might have no results, but shouldn't crash)
-      expect([0, code1]).toContain(code1);
-    });
+      const results = await Promise.all([
+        runCli('history --since 1h --limit 1'),
+        runCli('history --since 30m --limit 1'),
+        runCli('history --since 7d --limit 1'),
+      ]);
+
+      for (const result of results) {
+        expect(Number.isInteger(result.code)).toBe(true);
+        expect(`${result.stdout}${result.stderr}`).not.toMatch(/(invalid|unknown).+since/i);
+      }
+    }, 20000);
   });
 });

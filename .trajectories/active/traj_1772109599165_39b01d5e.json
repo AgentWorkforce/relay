@@ -1,0 +1,40 @@
+{
+  "id": "traj_1772109599165_39b01d5e",
+  "version": 1,
+  "task": {
+    "title": "trajectory-quality run #265a6a43",
+    "source": {
+      "system": "workflow-runner",
+      "id": "265a6a43561d21063a8ad7ac"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-02-26T12:39:59.165Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T12:39:59.165Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_8f98f72c",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T12:39:59.165Z",
+      "events": [
+        {
+          "ts": 1772109599165,
+          "type": "note",
+          "content": "Purpose: Verifies that trajectory files capture reasoning (purpose, step intent, completion sentinel) not just mechanical event logs. Verification_mismatch classification is covered by trajectory-quality.test.ts."
+        },
+        {
+          "ts": 1772109599165,
+          "type": "note",
+          "content": "Approach: 2-step pipeline workflow — Parsed 2 steps, 1 dependent steps, DAG validated, no cycles"
+        }
+      ]
+    }
+  ]
+}

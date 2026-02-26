@@ -180,7 +180,7 @@ describe('registerCoreCommands', () => {
     expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000);
     expect(deps.spawnProcess).toHaveBeenCalledWith(
       '/usr/local/bin/relay-dashboard-server',
-      expect.arrayContaining(['--port', '4999', '--relay-url', 'http://localhost:5000']),
+      expect.arrayContaining(['--port', '4999', '--relay-url', 'http://127.0.0.1:5000']),
       expect.any(Object)
     );
     const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
@@ -201,11 +201,13 @@ describe('registerCoreCommands', () => {
     expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000);
     expect(deps.spawnProcess).toHaveBeenCalledWith(
       '/usr/local/bin/relay-dashboard-server',
-      expect.arrayContaining(['--port', '4999', '--relay-url', 'http://localhost:5000']),
+      expect.arrayContaining(['--port', '4999', '--relay-url', 'http://127.0.0.1:5000']),
       expect.any(Object)
     );
     const logCalls = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls;
-    expect(logCalls).toEqual(expect.arrayContaining([['Dashboard: http://localhost:4999/dev/cli-tools?tool=claude']]));
+    expect(logCalls).toEqual(
+      expect.arrayContaining([['Dashboard: http://localhost:4999/dev/cli-tools?tool=claude']])
+    );
   });
 
   it('up exits early when broker pid file points to a running process', async () => {
@@ -269,9 +271,9 @@ describe('registerCoreCommands', () => {
       .calls[0][1] as string[];
     const dashboardOptions = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
       .calls[0][2] as { env?: NodeJS.ProcessEnv };
-    expect(dashboardArgs).toEqual(expect.arrayContaining(['--relay-url', 'http://localhost:5000']));
+    expect(dashboardArgs).toEqual(expect.arrayContaining(['--relay-url', 'http://127.0.0.1:5000']));
     expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', staticDir]));
-    expect(dashboardOptions.env?.RELAY_URL).toBeUndefined();
+    expect(dashboardOptions.env?.RELAY_URL).toBe('http://127.0.0.1:5000');
   });
 
   it('up prefers static-dir candidate that includes metrics page', async () => {
@@ -377,7 +379,9 @@ describe('registerCoreCommands', () => {
   it('up retries with next API port when first API port is taken', async () => {
     const firstRelay = createRelayMock({
       getStatus: vi.fn(async () => {
-        const error = new Error('Error: failed to bind API on port 3889\nCaused by:\nAddress already in use (os error 48)') as Error & {
+        const error = new Error(
+          'Error: failed to bind API on port 3889\nCaused by:\nAddress already in use (os error 48)'
+        ) as Error & {
           code?: string;
         };
         throw error;
@@ -401,7 +405,7 @@ describe('registerCoreCommands', () => {
     expect(secondRelay.shutdown).toHaveBeenCalledTimes(0);
     expect(deps.spawnProcess).toHaveBeenCalledWith(
       '/usr/local/bin/relay-dashboard-server',
-      expect.arrayContaining(['--port', '3888', '--relay-url', 'http://localhost:3890']),
+      expect.arrayContaining(['--port', '3888', '--relay-url', 'http://127.0.0.1:3890']),
       expect.any(Object)
     );
   });

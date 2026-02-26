@@ -5,6 +5,7 @@ import { createProgram } from './bootstrap.js';
 
 const expectedLeafCommands = [
   'up',
+  'start',
   'down',
   'status',
   'uninstall',
@@ -29,8 +30,10 @@ const expectedLeafCommands = [
   'auth',
   'init',
   'setup',
+  'swarm',
   'telemetry',
   'run',
+  'workflows list',
   'cloud link',
   'cloud unlink',
   'cloud status',
@@ -71,6 +74,7 @@ describe('bootstrap CLI', () => {
     expect(topLevelCommands).toEqual(
       expect.arrayContaining([
         'up',
+        'start',
         'down',
         'status',
         'uninstall',
@@ -96,8 +100,10 @@ describe('bootstrap CLI', () => {
         'auth',
         'init',
         'setup',
+        'swarm',
         'telemetry',
         'run',
+        'workflows',
       ])
     );
     expect(topLevelCommands).not.toContain('create-agent');
@@ -107,7 +113,7 @@ describe('bootstrap CLI', () => {
     const program = createProgram();
     const leafCommandPaths = collectLeafCommandPaths(program);
 
-    expect(leafCommandPaths).toHaveLength(34);
+    expect(leafCommandPaths).toHaveLength(37);
     expect(leafCommandPaths).toEqual(expect.arrayContaining(expectedLeafCommands));
     expect(leafCommandPaths).not.toContain('create-agent');
   });

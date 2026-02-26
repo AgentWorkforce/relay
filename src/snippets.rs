@@ -315,6 +315,7 @@ pub fn ensure_opencode_config(
     relay_api_key: Option<&str>,
     relay_base_url: Option<&str>,
     relay_agent_name: Option<&str>,
+    relay_agent_token: Option<&str>,
 ) -> io::Result<bool> {
     let path = root.join(OPENCODE_CONFIG);
 
@@ -346,6 +347,9 @@ pub fn ensure_opencode_config(
             "RELAY_STRICT_AGENT_NAME".into(),
             Value::String("1".to_string()),
         );
+    }
+    if let Some(v) = relay_agent_token.map(str::trim).filter(|s| !s.is_empty()) {
+        env.insert("RELAY_AGENT_TOKEN".into(), Value::String(v.to_string()));
     }
     if !env.is_empty() {
         mcp_server.insert("environment".into(), Value::Object(env));
@@ -423,12 +427,69 @@ pub fn ensure_opencode_config(
 /// for idempotency). For Opencode this writes `opencode.json` on disk.
 ///
 /// # Parameters
-/// - `cli`: CLI tool name (e.g. "claude", "codex", "gemini", "droid", "opencode")
+/// Write `.cursor/mcp.json` in the given directory with the Relaycast MCP server
+/// configured with per-agent credentials (name + token).
+/// Returns `true` if the config was created or updated.
+pub fn ensure_cursor_mcp_config(
+    root: &Path,
+    relay_api_key: Option<&str>,
+    relay_base_url: Option<&str>,
+    relay_agent_name: Option<&str>,
+    relay_agent_token: Option<&str>,
+) -> io::Result<bool> {
+    let cursor_dir = root.join(".cursor");
+    fs::create_dir_all(&cursor_dir)?;
+    let path = cursor_dir.join("mcp.json");
+
+    let mcp_json = relaycast_mcp_config_json_with_token(
+        relay_api_key,
+        relay_base_url,
+        relay_agent_name,
+        relay_agent_token,
+    );
+    let new_value: Value = serde_json::from_str(&mcp_json).map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("MCP config serialization error: {e}"))
+    })?;
+
+    if !path.exists() {
+        write_pretty_json(&path, &new_value)?;
+        return Ok(true);
+    }
+
+    let existing = fs::read_to_string(&path)?;
+    let mut parsed: Value = serde_json::from_str(&existing).unwrap_or(Value::Object(Map::new()));
+
+    let changed = if let (Some(existing_servers), Some(new_servers)) = (
+        parsed
+            .as_object_mut()
+            .and_then(|o| o.get_mut("mcpServers"))
+            .and_then(|v| v.as_object_mut()),
+        new_value
+            .as_object()
+            .and_then(|o| o.get("mcpServers"))
+            .and_then(|v| v.as_object()),
+    ) {
+        for (k, v) in new_servers {
+            existing_servers.insert(k.clone(), v.clone());
+        }
+        true
+    } else {
+        parsed = new_value;
+        true
+    };
+
+    if changed {
+        write_pretty_json(&path, &parsed)?;
+    }
+    Ok(changed)
+}
+
+/// - `cli`: CLI tool name (e.g. "claude", "codex", "gemini", "droid", "opencode", "cursor")
 /// - `agent_name`: the name of the agent being spawned
 /// - `api_key`: optional relay API key (empty or `None` means omit)
 /// - `base_url`: optional relay base URL (empty or `None` means omit)
 /// - `existing_args`: args already provided by the user (used to detect opt-outs)
-/// - `cwd`: working directory for the agent (used by opencode config)
+/// - `cwd`: working directory for the agent (used by opencode/cursor config)
 pub async fn configure_relaycast_mcp(
     cli: &str,
     agent_name: &str,
@@ -460,6 +521,7 @@ pub async fn configure_relaycast_mcp_with_token(
     let is_gemini = cli_lower == "gemini";
     let is_droid = cli_lower == "droid";
     let is_opencode = cli_lower == "opencode";
+    let is_cursor = cli_lower == "cursor";
 
     let api_key = api_key.map(str::trim).filter(|s| !s.is_empty());
     let base_url = base_url.map(str::trim).filter(|s| !s.is_empty());
@@ -524,14 +586,20 @@ pub async fn configure_relaycast_mcp_with_token(
             ]);
         }
     } else if is_gemini || is_droid {
-        configure_gemini_droid_mcp(cli, api_key, base_url, is_gemini).await?;
+        configure_gemini_droid_mcp(cli, api_key, base_url, Some(agent_name), agent_token, is_gemini).await?;
     } else if is_opencode && !existing_args.iter().any(|a| a == "--agent") {
-        ensure_opencode_config(cwd, api_key, base_url, Some(agent_name)).with_context(|| {
+        ensure_opencode_config(cwd, api_key, base_url, Some(agent_name), agent_token).with_context(|| {
             "failed to write opencode.json for relaycast MCP. \
              Please configure the relaycast MCP server manually in opencode.json"
         })?;
         args.push("--agent".to_string());
         args.push("relaycast".to_string());
+    } else if is_cursor {
+        ensure_cursor_mcp_config(cwd, api_key, base_url, Some(agent_name), agent_token)
+            .with_context(|| {
+                "failed to write .cursor/mcp.json for relaycast MCP. \
+                 Please configure the relaycast MCP server manually in .cursor/mcp.json"
+            })?;
     }
 
     Ok(args)
@@ -557,6 +625,8 @@ fn gemini_droid_manual_mcp_add_cmd(cli: &str, is_gemini: bool) -> String {
 fn gemini_droid_mcp_add_args(
     api_key: Option<&str>,
     base_url: Option<&str>,
+    agent_name: Option<&str>,
+    agent_token: Option<&str>,
     is_gemini: bool,
 ) -> Vec<String> {
     let env_flag = gemini_droid_mcp_env_flag(is_gemini);
@@ -568,6 +638,18 @@ fn gemini_droid_mcp_add_args(
     if let Some(url) = base_url {
         args.push(env_flag.to_string());
         args.push(format!("RELAY_BASE_URL={url}"));
+    }
+    if let Some(name) = agent_name.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push(env_flag.to_string());
+        args.push(format!("RELAY_AGENT_NAME={name}"));
+        args.push(env_flag.to_string());
+        args.push("RELAY_AGENT_TYPE=agent".to_string());
+        args.push(env_flag.to_string());
+        args.push("RELAY_STRICT_AGENT_NAME=1".to_string());
+    }
+    if let Some(token) = agent_token.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push(env_flag.to_string());
+        args.push(format!("RELAY_AGENT_TOKEN={token}"));
     }
     args.push("relaycast".to_string());
     // Droid's CLI parser continues parsing options after positional args.
@@ -585,6 +667,8 @@ async fn configure_gemini_droid_mcp(
     cli: &str,
     api_key: Option<&str>,
     base_url: Option<&str>,
+    agent_name: Option<&str>,
+    agent_token: Option<&str>,
     is_gemini: bool,
 ) -> Result<()> {
     let manual_cmd = gemini_droid_manual_mcp_add_cmd(cli, is_gemini);
@@ -599,7 +683,7 @@ async fn configure_gemini_droid_mcp(
         .and_then(|mut c| c.wait());
 
     let mut mcp_cmd = Command::new(cli);
-    mcp_cmd.args(gemini_droid_mcp_add_args(api_key, base_url, is_gemini));
+    mcp_cmd.args(gemini_droid_mcp_add_args(api_key, base_url, agent_name, agent_token, is_gemini));
     mcp_cmd
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1188,6 +1272,8 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         let args = super::gemini_droid_mcp_add_args(
             Some("rk_live_xyz"),
             Some("https://api.relaycast.dev"),
+            None,
+            None,
             false,
         );
 
@@ -1206,6 +1292,8 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         let args = super::gemini_droid_mcp_add_args(
             Some("rk_live_xyz"),
             Some("https://api.relaycast.dev"),
+            None,
+            None,
             true,
         );
 
@@ -1677,6 +1765,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
             Some("rk_live_test"),
             Some("https://api.relaycast.dev"),
             Some("Agent"),
+            None,
         )
         .expect("create opencode config");
 
@@ -1709,7 +1798,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         }"#;
         fs::write(temp.path().join("opencode.json"), existing).expect("write existing");
 
-        super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"))
+        super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"), None)
             .expect("upsert opencode config");
 
         let contents =
@@ -1735,13 +1824,13 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
 
         // First call creates
         let created =
-            super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"))
+            super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"), None)
                 .expect("create opencode config");
         assert!(created, "first call should create the file");
 
         // Second call with same MCP (agent entry already exists)
         let changed =
-            super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"))
+            super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"), None)
                 .expect("second opencode config");
         // MCP is always upserted (changed=true) because we unconditionally insert mcp.relaycast,
         // but agent.relaycast is only inserted if missing.

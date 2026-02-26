@@ -40,7 +40,11 @@ function isAddressInUseError(message: string): boolean {
   return /Address already in use/i.test(message) || /EADDRINUSE/i.test(message);
 }
 
-function isApiPortBindingError(message: string, attemptedApiPort: number, detectedApiPort: number | null): boolean {
+function isApiPortBindingError(
+  message: string,
+  attemptedApiPort: number,
+  detectedApiPort: number | null
+): boolean {
   if (detectedApiPort === attemptedApiPort) {
     return true;
   }
@@ -131,7 +135,7 @@ function isPortInUse(port: number): Promise<boolean> {
 async function resolveDashboardPortWithFallback(
   dashboardPort: number,
   dashboardPortCandidates: number,
-  deps: CoreDependencies,
+  deps: CoreDependencies
 ): Promise<number> {
   for (let attempt = 0; attempt < dashboardPortCandidates; attempt += 1) {
     const candidatePort = dashboardPort + attempt;
@@ -252,8 +256,9 @@ function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): vo
 }
 
 function pickDashboardStaticDir(candidates: string[], deps: CoreDependencies): string | null {
-  const existingCandidates = Array.from(new Set(candidates))
-    .filter((candidate) => deps.fs.existsSync(candidate));
+  const existingCandidates = Array.from(new Set(candidates)).filter((candidate) =>
+    deps.fs.existsSync(candidate)
+  );
   if (existingCandidates.length === 0) {
     return null;
   }
@@ -288,7 +293,13 @@ function resolveDashboardStaticDir(dashboardBinary: string | null, deps: CoreDep
 
   if (dashboardBinary.endsWith('.js') || dashboardBinary.endsWith('.ts')) {
     const dashboardServerOutDir = path.resolve(path.dirname(dashboardBinary), '..', 'out');
-    const siblingDashboardOutDir = path.resolve(path.dirname(dashboardBinary), '..', '..', 'dashboard', 'out');
+    const siblingDashboardOutDir = path.resolve(
+      path.dirname(dashboardBinary),
+      '..',
+      '..',
+      'dashboard',
+      'out'
+    );
     return pickDashboardStaticDir([dashboardServerOutDir, siblingDashboardOutDir], deps);
   }
 
@@ -433,11 +444,7 @@ function startDashboard(
   };
   let stderrBuf = '';
 
-  const logChunk = (
-    chunk: Buffer,
-    logger: (line: string) => void,
-    prefix: string,
-  ) => {
+  const logChunk = (chunk: Buffer, logger: (line: string) => void, prefix: string) => {
     if (!shouldEnableVerbose) {
       return;
     }
@@ -516,9 +523,7 @@ async function resolveStartedDashboardPort(
           ? Buffer.from(firstChunk)
           : Buffer.from(JSON.stringify(firstChunk));
 
-      const match = chunk
-        .toString()
-        .match(/Server running at http:\/\/localhost:(\d+)/i);
+      const match = chunk.toString().match(/Server running at http:\/\/localhost:(\d+)/i);
       if (!match?.[1]) {
         return;
       }
@@ -628,11 +633,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   const requestedDashboardPort = Number.parseInt(options.port ?? '3888', 10) || 3888;
   const shouldReuseExistingBroker = options.reuseExistingBroker === true;
   const dashboardPort = wantsDashboard
-    ? await resolveDashboardPortWithFallback(
-      requestedDashboardPort,
-      MAX_DASHBOARD_PORT_ATTEMPTS,
-      deps
-    )
+    ? await resolveDashboardPortWithFallback(requestedDashboardPort, MAX_DASHBOARD_PORT_ATTEMPTS, deps)
     : requestedDashboardPort;
   if (wantsDashboard && dashboardPort !== requestedDashboardPort) {
     deps.warn(
@@ -665,101 +666,103 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   try {
     if (existingPid !== null) {
       if (isProcessRunning(existingPid, deps)) {
-        if (shouldReuseExistingBroker && wantsDashboard) {
-          apiPort = await discoverExistingBrokerApiPort(Math.max(1, apiPort), MAX_API_PORT_ATTEMPTS, deps);
-          const reusableRelay = deps.createRelay(paths.projectRoot, apiPort);
-          try {
-            await reusableRelay.getStatus();
-          } catch {
-            await reusableRelay.shutdown().catch(() => undefined);
+        if (!shouldReuseExistingBroker || !wantsDashboard) {
+          deps.error(`Broker already running for this project (pid: ${existingPid}).`);
+          deps.error('Run `agent-relay status` to inspect it, then `agent-relay down` to stop it.');
+          deps.exit(1);
+          return;
+        }
+
+        apiPort = await discoverExistingBrokerApiPort(Math.max(1, apiPort), MAX_API_PORT_ATTEMPTS, deps);
+        const reusableRelay = deps.createRelay(paths.projectRoot, apiPort);
+        try {
+          await reusableRelay.getStatus();
+        } catch {
+          await reusableRelay.shutdown().catch(() => undefined);
+          deps.warn(
+            `Broker already running for this project (pid: ${existingPid}), but API port ${apiPort} is not responding.`
+          );
+          deps.warn('Treating this as stale broker state and starting a fresh broker.');
+          safeUnlink(brokerPidPath, deps);
+          existingPid = null;
+        }
+
+        if (existingPid === null) {
+          // fallthrough and start a fresh broker
+        } else {
+          relay = reusableRelay;
+          ownsBroker = false;
+          const dashboardRelayUrl = resolveDashboardRelayUrl(apiPort, deps);
+          const expectedRelayUrl = getDefaultDashboardRelayUrl(apiPort);
+          if (
+            deps.env.RELAY_DASHBOARD_RELAY_URL &&
+            deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== '' &&
+            deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== expectedRelayUrl
+          ) {
             deps.warn(
-              `Broker already running for this project (pid: ${existingPid}), but API port ${apiPort} is not responding.`
+              `RELAY_DASHBOARD_RELAY_URL is set to ${deps.env.RELAY_DASHBOARD_RELAY_URL.trim()}, ` +
+                `but this session computed ${expectedRelayUrl}.`
             );
-            deps.warn('Treating this as stale broker state and starting a fresh broker.');
-            safeUnlink(brokerPidPath, deps);
-            existingPid = null;
           }
+          deps.log(`Relay API: ${dashboardRelayUrl}`);
+          if (dashboardVerbose) {
+            deps.log(`[dashboard] relay target resolved from config: ${dashboardRelayUrl}`);
+          }
+          deps.log(`Project: ${paths.projectRoot}`);
+          deps.log('Mode: broker (stdio)');
+          deps.log('Broker already running for this project; reusing existing broker.');
 
-          if (existingPid === null) {
-            // fallthrough and start a fresh broker
-          } else {
-            relay = reusableRelay;
-            ownsBroker = false;
-            const dashboardRelayUrl = resolveDashboardRelayUrl(apiPort, deps);
-            const expectedRelayUrl = getDefaultDashboardRelayUrl(apiPort);
-            if (
-              deps.env.RELAY_DASHBOARD_RELAY_URL &&
-              deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== '' &&
-              deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== expectedRelayUrl
-            ) {
+          if (wantsDashboard) {
+            dashboardProcess = startDashboard(paths, dashboardPort, apiPort, deps, dashboardVerbose);
+            const startedDashboardPort = await resolveStartedDashboardPort(
+              dashboardProcess as DashboardStartupProcess,
+              dashboardPort,
+              deps
+            );
+            if (startedDashboardPort !== dashboardPort) {
               deps.warn(
-                `RELAY_DASHBOARD_RELAY_URL is set to ${deps.env.RELAY_DASHBOARD_RELAY_URL.trim()}, `
-                + `but this session computed ${expectedRelayUrl}.`
+                `Dashboard port ${dashboardPort} was already in use, so dashboard started on ${startedDashboardPort}`
               );
             }
-            deps.log(`Relay API: ${dashboardRelayUrl}`);
-            if (dashboardVerbose) {
-              deps.log(`[dashboard] relay target resolved from config: ${dashboardRelayUrl}`);
-            }
-            deps.log(`Project: ${paths.projectRoot}`);
-            deps.log('Mode: broker (stdio)');
-            deps.log('Broker already running for this project; reusing existing broker.');
+            const dashboardPath = normalizeDashboardPath(options.dashboardPath);
+            const dashboardUrl = dashboardPath
+              ? `http://localhost:${startedDashboardPort}${dashboardPath}`
+              : `http://localhost:${startedDashboardPort}`;
+            deps.log(`Dashboard: ${dashboardUrl}`);
 
-            if (wantsDashboard) {
-              dashboardProcess = startDashboard(paths, dashboardPort, apiPort, deps, dashboardVerbose);
-              const startedDashboardPort = await resolveStartedDashboardPort(
-                dashboardProcess as DashboardStartupProcess,
-                dashboardPort,
-                deps
-              );
-              if (startedDashboardPort !== dashboardPort) {
-                deps.warn(
-                  `Dashboard port ${dashboardPort} was already in use, so dashboard started on ${startedDashboardPort}`
-                );
-              }
-              const dashboardPath = normalizeDashboardPath(options.dashboardPath);
-              const dashboardUrl = dashboardPath
-                ? `http://localhost:${startedDashboardPort}${dashboardPath}`
-                : `http://localhost:${startedDashboardPort}`;
-              deps.log(`Dashboard: ${dashboardUrl}`);
-
-              waitForDashboard(startedDashboardPort, dashboardProcess, deps, () => shuttingDown).catch(() => {});
-            }
-
-            deps.onSignal('SIGINT', async () => {
-              sigintCount += 1;
-              if (shuttingDown) {
-                if (sigintCount >= 2) {
-                  deps.warn('Force exiting...');
-                  deps.exit(130);
-                }
-                return;
-              }
-              deps.log('\nStopping...');
-              await shutdownOnce();
-              deps.exit(0);
-            });
-            deps.onSignal('SIGTERM', async () => {
-              if (shuttingDown) {
-                return;
-              }
-              await shutdownOnce();
-              deps.exit(0);
-            });
-
-            await deps.holdOpen();
-            return;
+            waitForDashboard(startedDashboardPort, dashboardProcess, deps, () => shuttingDown).catch(
+              () => {}
+            );
           }
 
-          if (existingPid !== null) {
-            deps.error(`Broker already running for this project (pid: ${existingPid}).`);
-            deps.error('Run `agent-relay status` to inspect it, then `agent-relay down` to stop it.');
-            deps.exit(1);
-            return;
-          }
+          deps.onSignal('SIGINT', async () => {
+            sigintCount += 1;
+            if (shuttingDown) {
+              if (sigintCount >= 2) {
+                deps.warn('Force exiting...');
+                deps.exit(130);
+              }
+              return;
+            }
+            deps.log('\nStopping...');
+            await shutdownOnce();
+            deps.exit(0);
+          });
+          deps.onSignal('SIGTERM', async () => {
+            if (shuttingDown) {
+              return;
+            }
+            await shutdownOnce();
+            deps.exit(0);
+          });
+
+          await deps.holdOpen();
+          return;
         }
       }
+
       safeUnlink(brokerPidPath, deps);
+      existingPid = null;
     }
 
     const started = await startBrokerWithPortFallback(
@@ -779,8 +782,8 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== expectedRelayUrl
     ) {
       deps.warn(
-        `RELAY_DASHBOARD_RELAY_URL is set to ${deps.env.RELAY_DASHBOARD_RELAY_URL.trim()}, `
-        + `but this session computed ${expectedRelayUrl}.`
+        `RELAY_DASHBOARD_RELAY_URL is set to ${deps.env.RELAY_DASHBOARD_RELAY_URL.trim()}, ` +
+          `but this session computed ${expectedRelayUrl}.`
       );
     }
     deps.log(`Relay API: ${dashboardRelayUrl}`);

@@ -29,17 +29,11 @@ pub(crate) fn parse_cli_command(raw: &str) -> Result<(String, Vec<String>)> {
     let (command, args) = parts
         .split_first()
         .ok_or_else(|| anyhow!("CLI command cannot be empty"))?;
-    let mut command = command.to_string();
+    let command = command.to_string();
     let mut args = args.to_vec();
 
     let cli_lower = normalize_cli_name(&command).to_lowercase();
     if cli_lower == "cursor" {
-        command = "agent".to_string();
-
-        if args.first().is_some_and(|arg| arg == "agent") {
-            args.remove(0);
-        }
-
         if !args.iter().any(|arg| arg == "--force") {
             args.insert(0, "--force".to_string());
         }
@@ -1445,20 +1439,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_cli_command_maps_cursor_to_agent_with_force() {
+    fn parse_cli_command_maps_cursor_to_force() {
         let (cli, args) = parse_cli_command("cursor").unwrap();
-        assert_eq!(cli, "agent");
+        assert_eq!(cli, "cursor");
         assert_eq!(args, vec!["--force".to_string()]);
     }
 
     #[test]
-    fn parse_cli_command_maps_cursor_agent_to_agent_with_force() {
+    fn parse_cli_command_maps_cursor_agent_to_cursor_with_force() {
         let (cli, args) = parse_cli_command("cursor agent --model opus").unwrap();
-        assert_eq!(cli, "agent");
+        assert_eq!(cli, "cursor");
         assert_eq!(
             args,
             vec![
                 "--force".to_string(),
+                "agent".to_string(),
                 "--model".to_string(),
                 "opus".to_string()
             ]
@@ -1468,7 +1463,7 @@ mod tests {
     #[test]
     fn parse_cli_command_dedups_force_for_cursor() {
         let (cli, args) = parse_cli_command("cursor --force --model opus").unwrap();
-        assert_eq!(cli, "agent");
+        assert_eq!(cli, "cursor");
         assert_eq!(
             args,
             vec![

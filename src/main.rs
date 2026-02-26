@@ -1379,7 +1379,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 shadow_of: None,
                                 shadow_mode: None,
                                 args,
-                                channels: vec!["general".to_string()],
+                                channels: default_spawn_channels(),
                                 restart_policy: None,
                             };
                             let spec_for_state = spec.clone();
@@ -1428,7 +1428,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         PersistedAgent {
                                             runtime: AgentRuntime::Pty,
                                             parent: Some("Dashboard".to_string()),
-                                            channels: vec!["general".to_string()],
+                                            channels: default_spawn_channels(),
                                             pid: workers.worker_pid(&name),
                                             started_at: Some(
                                                 std::time::SystemTime::now()
@@ -1909,8 +1909,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 tracing::info!(name = %name, cli = %cli, task = ?task, channel = ?channel, "handling spawn request from relaycast WS");
                                 let channels = channel
                                     .as_deref()
-                                    .map(|ch| vec![ch.to_string()])
-                                    .unwrap_or_else(|| vec!["general".to_string()]);
+                                    .map(|ch| {
+                                        let mut chs = default_spawn_channels();
+                                        if !chs.contains(&ch.to_string()) {
+                                            chs.push(ch.to_string());
+                                        }
+                                        chs
+                                    })
+                                    .unwrap_or_else(default_spawn_channels);
                                 let spec = AgentSpec {
                                     name: name.clone(),
                                     runtime: AgentRuntime::Pty,
@@ -4277,6 +4283,21 @@ fn channels_from_csv(raw: &str) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+/// Default channels for freshly spawned agents.
+/// Reads RELAY_DEFAULT_CHANNELS (comma-separated) or falls back to the
+/// broker's default channels: vec!["general", "engineering"] — both created
+/// at startup by ensure_default_channels().
+fn default_spawn_channels() -> Vec<String> {
+    if let Ok(raw) = std::env::var("RELAY_DEFAULT_CHANNELS") {
+        let parsed = channels_from_csv(&raw);
+        if !parsed.is_empty() {
+            return parsed;
+        }
+    }
+    // channels: ["general", "engineering"] (must match ensure_default_channels)
+    vec!["general".to_string(), "engineering".to_string()]
 }
 
 fn command_targets_self(cmd_event: &BrokerCommandEvent, self_agent_id: &str) -> bool {

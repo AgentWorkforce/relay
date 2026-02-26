@@ -110,6 +110,11 @@ export class WorkflowRunnerHarness {
   async stop(): Promise<void> {
     if (!this.started) return;
 
+    // Abort any in-flight workflow run so its broker handles are released.
+    // Without this, node:test's timeout marks the test failed but the process
+    // stays alive forever waiting on pending broker I/O.
+    this.currentRunner?.abort();
+
     await this.brokerHarness.stop();
     this.started = false;
     this.currentRunner = undefined;
