@@ -38,7 +38,7 @@ export async function createRelaycastClient(
   try {
     registration = await relay.agents.register({ name, type: agentType });
   } catch (err) {
-    if (err instanceof RelayError && err.code === 'agent_already_exists') {
+    if (err instanceof RelayError && err.code === 'name_conflict') {
       name = `${agentName}-${randomBytes(4).toString('hex')}`;
       registration = await relay.agents.register({ name, type: agentType });
     } else {
@@ -127,7 +127,7 @@ export class RelaycastApi {
     try {
       registration = await relay.agents.register({ name, type: 'agent' });
     } catch (err) {
-      if (err instanceof RelayError && err.code === 'agent_already_exists') {
+      if (err instanceof RelayError && err.code === 'name_conflict') {
         name = `${this.agentName}-${randomBytes(4).toString('hex')}`;
         registration = await relay.agents.register({ name, type: 'agent' });
       } else {
@@ -167,7 +167,7 @@ export class RelaycastApi {
       await agent.channels.create({ name, ...(topic ? { topic } : {}) });
     } catch (err) {
       // Ignore "already exists" errors
-      if (err instanceof RelayError && err.code === 'channel_already_exists') {
+      if (err instanceof RelayError && err.code === 'name_conflict') {
         return;
       }
       throw err;
@@ -197,7 +197,7 @@ export class RelaycastApi {
       const reg = await relay.agents.register({ name, type: 'agent', ...(persona ? { persona } : {}) });
       return relay.as(reg.token);
     } catch (err) {
-      if (err instanceof RelayError && err.code === 'agent_already_exists') {
+      if (err instanceof RelayError && err.code === 'name_conflict') {
         return null;
       }
       throw err;
@@ -220,14 +220,14 @@ export class RelaycastApi {
   async getMessages(
     channel: string,
     opts?: { limit?: number; before?: string; after?: string }
-  ): Promise<Array<{ id: string; agent_name: string; text: string; created_at: string }>> {
+  ): Promise<Array<{ id: string; agentName: string; text: string; createdAt: string }>> {
     const agent = await this.ensure();
     const messages = await agent.messages(channel, opts);
     return messages.map((m) => ({
       id: m.id,
-      agent_name: m.agent_name,
+      agentName: m.agentName,
       text: m.text,
-      created_at: m.created_at,
+      createdAt: m.createdAt,
     }));
   }
 }
@@ -241,7 +241,7 @@ export interface RelaycastAgent {
   type: string;
   status: string;
   persona: string | null;
-  last_seen: string | null;
+  lastSeen: string | null;
   metadata: Record<string, unknown> | null;
 }
 
@@ -250,19 +250,19 @@ export interface RelaycastChannel {
   id: string;
   name: string;
   topic: string | null;
-  member_count: number;
-  created_at: string;
-  is_archived: boolean;
+  memberCount: number;
+  createdAt: string;
+  isArchived: boolean;
 }
 
 /** Message as returned by the Relaycast API. */
 export interface RelaycastMessage {
   id: string;
-  agent_name: string;
+  agentName: string;
   text: string;
-  created_at: string;
-  reply_count?: number;
-  thread_id?: string;
+  createdAt: string;
+  replyCount?: number;
+  threadId?: string;
 }
 
 /** Read-only workspace client for listing agents, channels, and messages. */
