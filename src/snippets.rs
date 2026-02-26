@@ -448,7 +448,10 @@ pub fn ensure_cursor_mcp_config(
         relay_agent_token,
     );
     let new_value: Value = serde_json::from_str(&mcp_json).map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("MCP config serialization error: {e}"))
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("MCP config serialization error: {e}"),
+        )
     })?;
 
     if !path.exists() {
@@ -586,12 +589,21 @@ pub async fn configure_relaycast_mcp_with_token(
             ]);
         }
     } else if is_gemini || is_droid {
-        configure_gemini_droid_mcp(cli, api_key, base_url, Some(agent_name), agent_token, is_gemini).await?;
+        configure_gemini_droid_mcp(
+            cli,
+            api_key,
+            base_url,
+            Some(agent_name),
+            agent_token,
+            is_gemini,
+        )
+        .await?;
     } else if is_opencode && !existing_args.iter().any(|a| a == "--agent") {
-        ensure_opencode_config(cwd, api_key, base_url, Some(agent_name), agent_token).with_context(|| {
-            "failed to write opencode.json for relaycast MCP. \
+        ensure_opencode_config(cwd, api_key, base_url, Some(agent_name), agent_token)
+            .with_context(|| {
+                "failed to write opencode.json for relaycast MCP. \
              Please configure the relaycast MCP server manually in opencode.json"
-        })?;
+            })?;
         args.push("--agent".to_string());
         args.push("relaycast".to_string());
     } else if is_cursor {
@@ -683,7 +695,13 @@ async fn configure_gemini_droid_mcp(
         .and_then(|mut c| c.wait());
 
     let mut mcp_cmd = Command::new(cli);
-    mcp_cmd.args(gemini_droid_mcp_add_args(api_key, base_url, agent_name, agent_token, is_gemini));
+    mcp_cmd.args(gemini_droid_mcp_add_args(
+        api_key,
+        base_url,
+        agent_name,
+        agent_token,
+        is_gemini,
+    ));
     mcp_cmd
         .stdin(Stdio::null())
         .stdout(Stdio::null())
