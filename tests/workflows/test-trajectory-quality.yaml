@@ -52,7 +52,7 @@ workflows:
           const files=dirs.flatMap(d=>fs.existsSync(d)?fs.readdirSync(d).filter(f=>f.endsWith('.json')).map(f=>d+'/'+f):[]);
           if(!files.length){console.error('No trajectory files found');process.exit(1);}
           const parsed=files.map(f=>{try{return JSON.parse(fs.readFileSync(f,'utf8'));}catch{return null;}}).filter(Boolean);
-          const t=parsed.find(x=>x.task&&x.task.title&&x.task.title.includes('traj-quality'));
+          const t=parsed.find(x=>x.task&&x.task.title&&x.task.title.includes('trajectory-quality'));
           if(!t){console.error('No trajectory for this run. Titles:',parsed.map(x=>x.task&&x.task.title));process.exit(1);}
           const events=t.chapters.flatMap(c=>c.events);
           const has=s=>events.some(e=>e.content.includes(s));
