@@ -550,6 +550,7 @@ impl RelaycastHttpClient {
             let request = relaycast::CreateChannelRequest {
                 name: name.to_string(),
                 topic: Some(topic.to_string()),
+                metadata: None,
             };
             // Use the workspace-level agent client (from relay) to create channels
             // The RelayCast workspace client doesn't have create_channel, so use an agent client
