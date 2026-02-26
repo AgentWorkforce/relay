@@ -138,7 +138,7 @@
     "update:cli-versions": "node scripts/check-cli-versions.mjs --update && npm run codegen:models",
     "codegen:models:ts": "node packages/shared/codegen-ts.mjs",
     "codegen:models:py": "node packages/shared/codegen-py.mjs",
-    "prepare": "husky"
+    "prepare": "node scripts/prepare-husky.cjs"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
