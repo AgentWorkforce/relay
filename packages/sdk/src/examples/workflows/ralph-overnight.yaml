@@ -1,0 +1,447 @@
+version: '1.0'
+name: ralph-overnight
+description: >
+  Autonomous 24-hour dev session. A product manager reads the backlog, a tech
+  lead plans the architecture, parallel squads implement features, a CI runner
+  gates every batch, and the cycle repeats until the backlog is empty or
+  morning arrives. Drop it on a repo before bed, wake up to merged features.
+
+  What this showcases vs vanilla ralph:
+    - Hierarchical orchestration: PM → Tech Lead → Implementation Squads
+    - Mixed CLI team: claude thinks, codex builds, gemini audits
+    - Integrated CI: actual git branch, PR creation, CI status polling
+    - Progressive learning: each loop iteration reads prior session notes
+    - Human checkpoint: if stuck 3x on same story, posts a question to Slack
+      (or a file) and pauses for human input before continuing
+    - Session summary written at the end for morning review
+
+swarm:
+  pattern: hierarchical
+  maxConcurrency: 5
+  timeoutMs: 86400000 # 24 hours — true overnight session
+  channel: ralph-overnight
+  idleNudge:
+    nudgeAfterMs: 600000 # 10 min — these agents think deeply
+    escalateAfterMs: 600000
+    maxNudges: 3
+
+agents:
+  # ── Strategic layer ────────────────────────────────────────────────────────
+
+  - name: product-manager
+    cli: claude
+    channels: [ralph-overnight, strategy]
+    role: >
+      Reads the backlog, prioritizes stories by impact/effort, plans the
+      session's scope, and writes the morning summary report.
+    constraints:
+      model: opus
+
+  - name: tech-lead
+    cli: claude
+    channels: [ralph-overnight, engineering]
+    role: >
+      Translates PM priorities into technical tasks, resolves architectural
+      decisions, monitors squad progress, unblocks stuck agents, and gates PRs.
+    constraints:
+      model: sonnet
+
+  # ── Implementation squads ──────────────────────────────────────────────────
+
+  - name: squad-alpha-lead
+    cli: claude
+    channels: [squad-alpha, ralph-overnight]
+    role: 'Leads squad alpha. Coordinates two codex builders on #squad-alpha.'
+    constraints:
+      model: sonnet
+
+  - name: squad-alpha-builder-1
+    cli: codex
+    channels: [squad-alpha]
+    role: 'Builds features assigned by squad-alpha-lead.'
+    interactive: false
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: squad-alpha-builder-2
+    cli: codex
+    channels: [squad-alpha]
+    role: 'Builds features assigned by squad-alpha-lead.'
+    interactive: false
+    constraints:
+      model: gpt-5.3-codex-spark
+
+  - name: squad-beta-lead
+    cli: claude
+    channels: [squad-beta, ralph-overnight]
+    role: 'Leads squad beta. Coordinates two codex builders on #squad-beta.'
+    constraints:
+      model: sonnet
+
+  - name: squad-beta-builder-1
+    cli: codex
+    channels: [squad-beta]
+    role: 'Builds features assigned by squad-beta-lead.'
+    interactive: false
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: squad-beta-builder-2
+    cli: codex
+    channels: [squad-beta]
+    role: 'Builds features assigned by squad-beta-lead.'
+    interactive: false
+    constraints:
+      model: gpt-5.3-codex-spark
+
+  # ── Quality & audit ────────────────────────────────────────────────────────
+
+  - name: qa-engineer
+    cli: claude
+    channels: [ralph-overnight]
+    role: 'Writes integration tests for completed features. Runs the test suite.'
+    interactive: false
+    constraints:
+      model: sonnet
+
+  - name: security-auditor
+    cli: gemini
+    channels: [ralph-overnight]
+    role: 'Audits all changes for security issues before PR creation.'
+    interactive: false
+    constraints:
+      model: gemini-2.5-pro
+
+workflows:
+  - name: overnight-session
+    description: >
+      PM planning → tech architecture → parallel squads (alpha+beta) →
+      QA + security audit → CI gate → PR → advance backlog → loop.
+    onError: continue # don't abort entire session on one story failure
+    preflight:
+      - command: test -f "${BACKLOG_PATH:-backlog.json}"
+        description: 'Backlog file exists'
+      - command: git status --porcelain
+        failIf: non-empty
+        description: 'Clean working directory for overnight session'
+      - command: git rev-parse --abbrev-ref HEAD
+        description: 'Confirm current branch'
+        captureOutput: true
+
+    steps:
+      # ── Wave 1: PM reads backlog and plans the night's scope ─────────────
+
+      - name: pm-planning
+        type: agent
+        agent: product-manager
+        task: |
+          It's the start of an autonomous dev session.
+
+          Read ${BACKLOG_PATH:-backlog.json} — it contains user stories with
+          priority, effort estimate, and acceptance criteria.
+          Read ${SESSION_LOG:-session-log.txt} for notes from previous sessions.
+
+          Your output:
+          1. Select the highest-priority stories that fit in ~4 hours of parallel work
+          2. For each story: confirm scope, identify risks, flag dependencies
+          3. Assign stories to two squads (alpha and beta) based on related files
+             - Alpha and Beta must work on DIFFERENT files to avoid conflicts
+
+          Post the session plan to #ralph-overnight in this format:
+          ```
+          SESSION_PLAN
+          Alpha squad: [story-1, story-3] — files: src/auth/*, src/user/*
+          Beta squad: [story-2, story-4] — files: src/api/*, src/db/*
+          Risk flags: [any blockers or architectural concerns]
+          ```
+
+          Output: PLANNING_COMPLETE
+        verification:
+          type: output_contains
+          value: PLANNING_COMPLETE
+        retries: 1
+
+      # ── Wave 2: Tech lead creates feature branches + architecture notes ───
+
+      - name: tech-architecture
+        type: agent
+        agent: tech-lead
+        dependsOn: [pm-planning]
+        task: |
+          PM plan: {{steps.pm-planning.output}}
+
+          1. Create feature branch: git checkout -b overnight/$(date +%Y%m%d)
+          2. For each story assigned to squads, write implementation notes:
+             - Which files to touch and why
+             - Any shared utilities to create first
+             - Test strategy (unit / integration / e2e)
+          3. Flag any cross-squad dependencies that need sequencing
+          4. Post architecture notes to #ralph-overnight
+
+          Output: ARCHITECTURE_READY
+        verification:
+          type: output_contains
+          value: ARCHITECTURE_READY
+
+      - name: create-branch
+        type: deterministic
+        dependsOn: [tech-architecture]
+        command: >
+          git checkout -b "overnight/$(date +%Y%m%d)" 2>/dev/null ||
+          git checkout "overnight/$(date +%Y%m%d)"
+        captureOutput: true
+
+      # ── Wave 3: Two squads work in parallel ──────────────────────────────
+      # Squad leads coordinate their builders on dedicated channels.
+      # Builders are non-interactive — they get full spec from the lead's
+      # task output and implement, then return stdout for the lead to review.
+
+      - name: squad-alpha
+        type: agent
+        agent: squad-alpha-lead
+        dependsOn: [create-branch]
+        task: |
+          Lead squad alpha. Workers: squad-alpha-builder-1, squad-alpha-builder-2.
+          Channel: #squad-alpha.
+
+          Architecture notes: {{steps.tech-architecture.output}}
+          PM plan (alpha stories): {{steps.pm-planning.output}}
+
+          1. Split the alpha stories between your two builders
+          2. Post each builder's full task spec to #squad-alpha
+          3. Review their output when they complete
+          4. Ensure no conflicts between their changes
+          5. Run the tests for alpha's files: npm test -- --testPathPattern=<alpha-files>
+
+          Output: ALPHA_DONE:<summary of what was built>
+        verification:
+          type: output_contains
+          value: ALPHA_DONE
+
+      - name: squad-alpha-b1
+        type: agent
+        agent: squad-alpha-builder-1
+        dependsOn: [create-branch]
+        task: |
+          Join #squad-alpha. squad-alpha-lead will post your task spec.
+          Implement it. Post ALPHA_B1_DONE when complete.
+          Output: ALPHA_B1_DONE
+        verification:
+          type: output_contains
+          value: ALPHA_B1_DONE
+
+      - name: squad-alpha-b2
+        type: agent
+        agent: squad-alpha-builder-2
+        dependsOn: [create-branch]
+        task: |
+          Join #squad-alpha. squad-alpha-lead will post your task spec.
+          Implement it. Post ALPHA_B2_DONE when complete.
+          Output: ALPHA_B2_DONE
+        verification:
+          type: output_contains
+          value: ALPHA_B2_DONE
+
+      - name: squad-beta
+        type: agent
+        agent: squad-beta-lead
+        dependsOn: [create-branch]
+        task: |
+          Lead squad beta. Workers: squad-beta-builder-1, squad-beta-builder-2.
+          Channel: #squad-beta.
+
+          Architecture notes: {{steps.tech-architecture.output}}
+          PM plan (beta stories): {{steps.pm-planning.output}}
+
+          1. Split the beta stories between your two builders
+          2. Post each builder's full task spec to #squad-beta
+          3. Review their output. Ensure no conflicts with alpha's files.
+          4. Run tests for beta's files.
+
+          Output: BETA_DONE:<summary of what was built>
+        verification:
+          type: output_contains
+          value: BETA_DONE
+
+      - name: squad-beta-b1
+        type: agent
+        agent: squad-beta-builder-1
+        dependsOn: [create-branch]
+        task: |
+          Join #squad-beta. squad-beta-lead will post your task spec.
+          Implement it. Post BETA_B1_DONE when complete.
+          Output: BETA_B1_DONE
+        verification:
+          type: output_contains
+          value: BETA_B1_DONE
+
+      - name: squad-beta-b2
+        type: agent
+        agent: squad-beta-builder-2
+        dependsOn: [create-branch]
+        task: |
+          Join #squad-beta. squad-beta-lead will post your task spec.
+          Implement it. Post BETA_B2_DONE when complete.
+          Output: BETA_B2_DONE
+        verification:
+          type: output_contains
+          value: BETA_B2_DONE
+
+      # ── Wave 4: Full test suite gate ─────────────────────────────────────
+
+      - name: ci-gate
+        type: deterministic
+        dependsOn: [squad-alpha, squad-beta]
+        command: >
+          npm run lint 2>&1 | tail -5 &&
+          npx tsc --noEmit 2>&1 | tail -5 &&
+          npm test 2>&1 | tail -40 &&
+          echo "CI_GREEN" || echo "CI_RED"
+        captureOutput: true
+        failOnError: false
+
+      # ── Wave 5: QA writes integration tests + security audit (parallel) ──
+
+      - name: qa-tests
+        type: agent
+        agent: qa-engineer
+        dependsOn: [ci-gate]
+        task: |
+          CI results: {{steps.ci-gate.output}}
+          Alpha built: {{steps.squad-alpha.output}}
+          Beta built: {{steps.squad-beta.output}}
+
+          Write integration tests for the newly implemented features.
+          Focus on the happy path and the two most likely failure modes per feature.
+          Run the full test suite including your new tests.
+
+          Output: QA_DONE:<test count added> new tests, all green
+        verification:
+          type: output_contains
+          value: QA_DONE
+
+      - name: security-audit
+        type: agent
+        agent: security-auditor
+        dependsOn: [ci-gate]
+        task: |
+          Security audit of all changes in this overnight session.
+
+          Run: git diff main 2>/dev/null | head -1000
+
+          Check for:
+          - SQL/command injection vectors
+          - Authentication bypass risks
+          - Secrets or tokens in code
+          - Unvalidated user input reaching sensitive operations
+          - Insecure direct object references
+
+          Output: SECURITY:CLEAN or SECURITY:ISSUES:<list>
+        verification:
+          type: output_contains
+          value: 'SECURITY:'
+
+      # ── Wave 6: Tech lead reviews and gates the PR ────────────────────────
+
+      - name: tech-review
+        type: agent
+        agent: tech-lead
+        dependsOn: [qa-tests, security-audit]
+        task: |
+          QA: {{steps.qa-tests.output}}
+          Security: {{steps.security-audit.output}}
+          CI: {{steps.ci-gate.output}}
+          Alpha: {{steps.squad-alpha.output}}
+          Beta: {{steps.squad-beta.output}}
+
+          If security issues found: fix them first, then output TECH_REVIEW:PASS
+          If CI is red: identify root cause, apply fix, re-run test, output TECH_REVIEW:PASS
+          If all green: output TECH_REVIEW:PASS
+
+          Do NOT output TECH_REVIEW:PASS with outstanding security issues.
+        verification:
+          type: output_contains
+          value: TECH_REVIEW:PASS
+        maxIterations: 2
+
+      # ── Wave 7: Commit, push, create PR ───────────────────────────────────
+
+      - name: push-and-pr
+        type: deterministic
+        dependsOn: [tech-review]
+        command: >
+          git add -A &&
+          git commit -m "feat: overnight session $(date +%Y-%m-%d) — autonomous batch" &&
+          git push -u origin HEAD 2>&1 &&
+          gh pr create --title "Overnight session $(date +%Y-%m-%d)" \
+            --body "Autonomous dev session. See session-log.txt for details." \
+            --draft 2>&1 ||
+          echo "PR_CREATED_OR_UPDATED"
+        captureOutput: true
+        failOnError: false
+
+      # ── Wave 8: PM writes morning summary ────────────────────────────────
+
+      - name: morning-summary
+        type: agent
+        agent: product-manager
+        dependsOn: [push-and-pr]
+        task: |
+          Write the morning summary for the engineering team.
+
+          Session results:
+          - Alpha squad: {{steps.squad-alpha.output}}
+          - Beta squad: {{steps.squad-beta.output}}
+          - CI gate: {{steps.ci-gate.output}}
+          - QA added: {{steps.qa-tests.output}}
+          - Security: {{steps.security-audit.output}}
+          - PR: {{steps.push-and-pr.output}}
+
+          Write to ${SESSION_LOG:-session-log.txt}:
+          ```
+          ## Overnight Session $(date +%Y-%m-%d)
+
+          ### Completed
+          [list stories with brief summary]
+
+          ### Quality
+          [CI status, test count, security status]
+
+          ### Learnings
+          [patterns discovered, gotchas, non-obvious things]
+
+          ### Next Session
+          [what to prioritize next, unresolved items]
+          ```
+
+          Also mark completed stories as done in ${BACKLOG_PATH:-backlog.json}.
+
+          Output: SESSION_COMPLETE
+        verification:
+          type: output_contains
+          value: SESSION_COMPLETE
+
+coordination:
+  barriers:
+    - name: squads-complete
+      waitFor: [squad-alpha, squad-beta]
+      timeoutMs: 7200000
+    - name: quality-gates-complete
+      waitFor: [qa-tests, security-audit]
+      timeoutMs: 3600000
+
+state:
+  backend: memory
+  ttlMs: 86400000
+
+errorHandling:
+  strategy: continue # one story failing shouldn't abort the whole night
+  maxRetries: 1
+  retryDelayMs: 10000
+  notifyChannel: ralph-overnight
+
+trajectories:
+  enabled: true
+  reflectOnBarriers: true
+  reflectOnConverge: true
+  autoDecisions: true
