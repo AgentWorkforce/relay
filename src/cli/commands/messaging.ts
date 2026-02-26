@@ -9,29 +9,29 @@ type ExitFn = (code: number) => never;
 
 interface RelaycastMessage {
   id: string;
-  agent_name: string;
+  agentName: string;
   text: string;
-  created_at: string;
+  createdAt: string;
 }
 
 interface RelaycastUnreadChannel {
-  channel_name: string;
-  unread_count: number;
+  channelName: string;
+  unreadCount: number;
 }
 
 interface RelaycastMention {
   id: string;
-  channel_name: string;
-  agent_name: string;
+  channelName: string;
+  agentName: string;
   text: string;
-  created_at: string;
+  createdAt: string;
 }
 
 interface RelaycastUnreadDm {
-  conversation_id: string;
+  conversationId: string;
   from: string;
-  unread_count: number;
-  last_message: string | null;
+  unreadCount: number;
+  lastMessage: string | null;
 }
 
 interface RelaycastInbox {
@@ -74,7 +74,7 @@ function createDefaultClient(cwd: string): MessagingBrokerClient {
 async function createDefaultRelaycastClient(options: {
   agentName: string;
 }): Promise<MessagingRelaycastClient> {
-  return createRelaycastClientSdk(options) as Promise<MessagingRelaycastClient>;
+  return createRelaycastClientSdk(options) as unknown as Promise<MessagingRelaycastClient>;
 }
 
 function withDefaults(overrides: Partial<MessagingDependencies> = {}): MessagingDependencies {
@@ -139,9 +139,9 @@ export function registerMessagingCommands(
 
       try {
         const msg = await relaycast.message(messageId);
-        deps.log(`From: ${msg.agent_name}`);
+        deps.log(`From: ${msg.agentName}`);
         deps.log('To: #channel');
-        deps.log(`Time: ${new Date(msg.created_at).toISOString()}`);
+        deps.log(`Time: ${new Date(msg.createdAt).toISOString()}`);
         deps.log('---');
         deps.log(msg.text);
       } catch (err: any) {
@@ -190,8 +190,8 @@ export function registerMessagingCommands(
           });
 
           let messages = rawMessages.filter((msg) => {
-            if (options.from && msg.agent_name !== options.from) return false;
-            if (sinceTs && Date.parse(msg.created_at) < sinceTs) return false;
+            if (options.from && msg.agentName !== options.from) return false;
+            if (sinceTs && Date.parse(msg.createdAt) < sinceTs) return false;
             return true;
           });
 
@@ -200,9 +200,9 @@ export function registerMessagingCommands(
           if (options.json) {
             const payload = messages.map((msg) => ({
               id: msg.id,
-              ts: Date.parse(msg.created_at),
-              timestamp: new Date(msg.created_at).toISOString(),
-              from: msg.agent_name,
+              ts: Date.parse(msg.createdAt),
+              timestamp: new Date(msg.createdAt).toISOString(),
+              from: msg.agentName,
               to: `#${channel}`,
               thread: null,
               kind: 'message',
@@ -219,9 +219,9 @@ export function registerMessagingCommands(
           }
 
           messages.forEach((msg) => {
-            const ts = new Date(msg.created_at).toISOString();
+            const ts = new Date(msg.createdAt).toISOString();
             const body = msg.text.length > 200 ? `${msg.text.slice(0, 197)}...` : msg.text;
-            deps.log(`[${ts}] ${msg.agent_name} -> #${channel}: ${body}`);
+            deps.log(`[${ts}] ${msg.agentName} -> #${channel}: ${body}`);
           });
         } catch (err: any) {
           deps.error(`Failed to fetch history: ${err?.message || String(err)}`);
@@ -263,7 +263,7 @@ export function registerMessagingCommands(
         if (inbox.unread_channels.length > 0) {
           deps.log('Unread Channels:');
           for (const item of inbox.unread_channels) {
-            deps.log(`  #${item.channel_name}: ${item.unread_count}`);
+            deps.log(`  #${item.channelName}: ${item.unreadCount}`);
           }
           deps.log('');
         }
@@ -272,7 +272,7 @@ export function registerMessagingCommands(
           deps.log('Mentions:');
           for (const mention of inbox.mentions) {
             const preview = mention.text.length > 120 ? `${mention.text.slice(0, 117)}...` : mention.text;
-            deps.log(`  [${mention.created_at}] #${mention.channel_name} @${mention.agent_name}: ${preview}`);
+            deps.log(`  [${mention.createdAt}] #${mention.channelName} @${mention.agentName}: ${preview}`);
           }
           deps.log('');
         }
@@ -280,7 +280,7 @@ export function registerMessagingCommands(
         if (inbox.unread_dms.length > 0) {
           deps.log('Unread DMs:');
           for (const dm of inbox.unread_dms) {
-            deps.log(`  ${dm.from}: ${dm.unread_count}`);
+            deps.log(`  ${dm.from}: ${dm.unreadCount}`);
           }
         }
       } catch (err: any) {
