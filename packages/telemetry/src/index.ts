@@ -2,14 +2,7 @@
  * @agent-relay/telemetry - Anonymous usage analytics (opt-out via env or CLI)
  */
 
-export {
-  initTelemetry,
-  track,
-  shutdown,
-  isEnabled,
-  getAnonymousId,
-  getStatus,
-} from './client.js';
+export { initTelemetry, track, shutdown, isEnabled, getAnonymousId, getStatus } from './client.js';
 
 export {
   isTelemetryEnabled,
@@ -28,8 +21,8 @@ export type {
   CommonProperties,
   ActionSource,
   ReleaseReason,
-  DaemonStartEvent,
-  DaemonStopEvent,
+  BrokerStartEvent,
+  BrokerStopEvent,
   AgentSpawnEvent,
   AgentReleaseEvent,
   AgentCrashEvent,
@@ -39,8 +32,4 @@ export type {
   TelemetryEventMap,
 } from './events.js';
 
-export {
-  loadMachineId,
-  createAnonymousId,
-  getMachineIdPath,
-} from './machine-id.js';
+export { loadMachineId, createAnonymousId, getMachineIdPath } from './machine-id.js';

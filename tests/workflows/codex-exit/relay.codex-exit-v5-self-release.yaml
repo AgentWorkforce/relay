@@ -1,0 +1,70 @@
+version: '1.0'
+name: codex-exit-v5-self-release
+description: >
+  EXIT EXPERIMENT #5: Codex self-releases via relay MCP tools.
+  Tests whether codex can terminate itself by calling remove_agent() on its
+  own agent name, which tells the broker to release the PTY process.
+  Secondary fallback: if remove_agent fails, output /exit.
+  This tests the "agent asks the broker to release me" mechanism.
+
+swarm:
+  pattern: pipeline
+  maxConcurrency: 1
+  timeoutMs: 300000 # 5 min
+  channel: codex-exit-v5
+  idleNudge:
+    nudgeAfterMs: 90000 # give extra time for relay round-trip to broker
+    escalateAfterMs: 60000
+    maxNudges: 2
+
+agents:
+  - name: codex-worker
+    cli: codex
+    channels: [codex-exit-v5]
+    role: >
+      Completes a trivial task, finds its own relay agent name via relay_who(),
+      then calls remove_agent() on itself to terminate the session.
+
+workflows:
+  - name: test-v5-self-release
+    description: >
+      Codex uses the relay MCP tools to self-terminate:
+        1. Do trivial task
+        2. Call relay_who() to find own registered name
+        3. Call remove_agent(name: "<own-name>") to ask broker to release self
+      Fallback: if remove_agent doesn't work, output /exit.
+    steps:
+      - name: do-and-self-release
+        type: agent
+        agent: codex-worker
+        task: |
+          Your task has FOUR parts. Complete them in order.
+
+          PART 1 — THE TASK:
+          Output the following to your terminal:
+            SELF_RELEASE_TEST
+
+          PART 2 — GET YOUR OWN AGENT NAME:
+          Run this shell command to get your registered agent name:
+            echo $RELAY_AGENT_NAME
+
+          Output the result:
+            FOUND_NAME: <value of $RELAY_AGENT_NAME>
+
+          PART 3 — SELF-RELEASE:
+          Call the remove_agent MCP tool using the name from Part 2.
+          This is the ONLY termination method for this task — do not output /exit.
+
+          Tool call:
+            remove_agent(name: "<value from $RELAY_AGENT_NAME>", reason: "task completed")
+
+          After calling remove_agent, output:
+            REMOVE_AGENT_CALLED
+
+          Then stop. The broker will terminate your session via the tool call.
+
+          Begin now: output SELF_RELEASE_TEST, run `echo $RELAY_AGENT_NAME`,
+          call remove_agent, output REMOVE_AGENT_CALLED.
+        verification:
+          type: output_contains
+          value: REMOVE_AGENT_CALLED

@@ -1,0 +1,103 @@
+version: '1.0'
+name: competitive
+description: 'Multiple agents independently implement solutions, then compare and select the best approach.'
+swarm:
+  pattern: competitive
+  maxConcurrency: 4
+  timeoutMs: 5400000
+  channel: swarm-competitive
+agents:
+  - name: lead
+    cli: claude
+    role: 'Defines spec, judges implementations, and selects winner'
+  - name: team-alpha
+    cli: claude
+    role: 'Independent implementation team A'
+  - name: team-beta
+    cli: codex
+    role: 'Independent implementation team B'
+  - name: team-gamma
+    cli: gemini
+    role: 'Independent implementation team C'
+workflows:
+  - name: competitive-build
+    description: 'Independent parallel implementations followed by comparison and selection.'
+    onError: fail
+    steps:
+      - name: define-spec
+        agent: lead
+        task: |
+          Define clear requirements, acceptance criteria, and evaluation rubric:
+          {{task}}
+        verification:
+          type: output_contains
+          value: SPEC_COMPLETE
+      - name: implement-alpha
+        agent: team-alpha
+        dependsOn: [define-spec]
+        task: |
+          Implement solution independently based on spec:
+          {{steps.define-spec.output}}
+
+          Do not coordinate with other teams. Focus on your best approach.
+        verification:
+          type: output_contains
+          value: IMPLEMENTATION_COMPLETE
+      - name: implement-beta
+        agent: team-beta
+        dependsOn: [define-spec]
+        task: |
+          Implement solution independently based on spec:
+          {{steps.define-spec.output}}
+
+          Do not coordinate with other teams. Focus on your best approach.
+        verification:
+          type: output_contains
+          value: IMPLEMENTATION_COMPLETE
+      - name: implement-gamma
+        agent: team-gamma
+        dependsOn: [define-spec]
+        task: |
+          Implement solution independently based on spec:
+          {{steps.define-spec.output}}
+
+          Do not coordinate with other teams. Focus on your best approach.
+        verification:
+          type: output_contains
+          value: IMPLEMENTATION_COMPLETE
+      - name: compare-solutions
+        agent: lead
+        dependsOn: [implement-alpha, implement-beta, implement-gamma]
+        task: |
+          Compare all implementations against the evaluation rubric.
+
+          Team Alpha: {{steps.implement-alpha.output}}
+          Team Beta: {{steps.implement-beta.output}}
+          Team Gamma: {{steps.implement-gamma.output}}
+
+          Analyze trade-offs, strengths, and weaknesses of each approach.
+        verification:
+          type: output_contains
+          value: COMPARISON_COMPLETE
+      - name: select-winner
+        agent: lead
+        dependsOn: [compare-solutions]
+        task: |
+          Select the winning implementation or synthesize the best elements.
+          Provide rationale and integration plan.
+        verification:
+          type: output_contains
+          value: DONE
+coordination:
+  barriers:
+    - name: implementations-complete
+      waitFor: [implement-alpha, implement-beta, implement-gamma]
+      timeoutMs: 3600000
+  consensusStrategy: majority
+state:
+  backend: memory
+  ttlMs: 21600000
+  namespace: competitive
+errorHandling:
+  strategy: continue
+  notifyChannel: swarm-competitive

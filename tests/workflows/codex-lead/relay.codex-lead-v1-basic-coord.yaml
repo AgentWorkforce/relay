@@ -1,0 +1,86 @@
+version: '1.0'
+name: codex-lead-v1-basic-coord
+description: >
+  CODEX LEAD EXPERIMENT #1: Basic channel coordination.
+  Tests whether a codex lead can post an assignment to a channel,
+  a claude worker reads it, completes the task, and signals back.
+  Verifies the fundamental lead→channel→worker→channel→lead loop works
+  when the lead is codex (not claude).
+
+swarm:
+  pattern: dag
+  maxConcurrency: 2
+  timeoutMs: 300000 # 5 min
+  channel: codex-lead-v1
+  idleNudge:
+    nudgeAfterMs: 90000
+    escalateAfterMs: 60000
+    maxNudges: 2
+
+agents:
+  - name: codex-lead
+    cli: codex
+    channels: [codex-lead-v1]
+    role: >
+      Lead agent. Posts an assignment to #codex-lead-v1, waits for the worker
+      to signal completion, then confirms and self-terminates.
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: claude-worker
+    cli: claude
+    channels: [codex-lead-v1]
+    role: >
+      Worker agent. Reads the assignment from #codex-lead-v1, completes
+      the task, posts completion signal back to the channel.
+    constraints:
+      model: sonnet
+
+workflows:
+  - name: test-v1-basic-coord
+    description: >
+      Both agents start simultaneously. Codex lead posts task to channel.
+      Claude worker reads it, does the task, posts WORKER_DONE.
+      Codex lead sees WORKER_DONE and outputs LEAD_DONE then terminates.
+    steps:
+      - name: lead
+        type: agent
+        agent: codex-lead
+        task: |
+          You are the lead. Post an assignment to #codex-lead-v1, then wait
+          for the worker to complete it.
+
+          STEP 1 — Post this assignment to #codex-lead-v1:
+            "ASSIGNMENT: Write the string 'HELLO_FROM_WORKER' to your terminal output.
+             Then post WORKER_DONE to #codex-lead-v1."
+
+          STEP 2 — Poll #codex-lead-v1 every 5 seconds until you see "WORKER_DONE".
+
+          STEP 3 — When you see WORKER_DONE, output:
+            LEAD_DONE
+
+          Then terminate using remove_agent with $RELAY_AGENT_NAME.
+        verification:
+          type: output_contains
+          value: LEAD_DONE
+
+      - name: worker
+        type: agent
+        agent: claude-worker
+        task: |
+          You are the worker. Wait for an assignment from the lead on #codex-lead-v1.
+
+          STEP 1 — Poll #codex-lead-v1 until you see a message containing "ASSIGNMENT:".
+
+          STEP 2 — Complete the assignment: output the following to your terminal:
+            HELLO_FROM_WORKER
+
+          STEP 3 — Post "WORKER_DONE" to #codex-lead-v1.
+
+          STEP 4 — Output:
+            WORKER_COMPLETE
+
+          Then /exit.
+        verification:
+          type: output_contains
+          value: WORKER_COMPLETE

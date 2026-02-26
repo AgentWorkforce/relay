@@ -16,7 +16,7 @@ import {
   encodeFrameLegacy,
   FrameParser,
   PROTOCOL_VERSION,
-} from '@agent-relay/protocol';
+} from './legacy-protocol.js';
 
 /**
  * Common return type aliases to ensure consistency between SDK and MCP
@@ -58,11 +58,7 @@ export interface RequestOptions {
 /**
  * Response matching logic for request/response operations
  */
-export function isMatchingResponse(
-  response: Envelope,
-  requestId: string,
-  correlationId?: string
-): boolean {
+export function isMatchingResponse(response: Envelope, requestId: string, correlationId?: string): boolean {
   const responsePayload = response.payload as {
     replyTo?: string;
     correlationId?: string;
@@ -75,8 +71,7 @@ export function isMatchingResponse(
     response.id === requestId ||
     responsePayload?.replyTo === requestId ||
     (!!correlationId &&
-      (responsePayload?.correlationId === correlationId ||
-        ackPayload?.correlationId === correlationId))
+      (responsePayload?.correlationId === correlationId || ackPayload?.correlationId === correlationId))
   );
 }
 
@@ -96,9 +91,7 @@ export function handleResponse<T>(
   };
 
   if (response.type === 'ERROR') {
-    reject(
-      new Error(responsePayload?.message || responsePayload?.code || 'Unknown error')
-    );
+    reject(new Error(responsePayload?.message || responsePayload?.code || 'Unknown error'));
   } else if (
     response.type === 'ACK' ||
     response.type === 'SPAWN_RESULT' ||
@@ -135,8 +128,7 @@ export function createRequestEnvelope(
   };
 
   if (options?.payloadMeta) {
-    (envelope as unknown as Record<string, unknown>).payload_meta =
-      options.payloadMeta;
+    (envelope as unknown as Record<string, unknown>).payload_meta = options.payloadMeta;
   }
 
   return envelope;

@@ -19,6 +19,9 @@ module.exports = {
     'no-useless-escape': 'off',
     // Useful signal, but too noisy for this early release.
     '@typescript-eslint/no-explicit-any': 'off',
+    // Empty interfaces / empty object types are common patterns in this codebase.
+    '@typescript-eslint/no-empty-object-type': 'off',
+    '@typescript-eslint/no-empty-interface': 'off',
     '@typescript-eslint/no-unused-vars': [
       'warn',
       {
@@ -27,6 +30,22 @@ module.exports = {
         caughtErrorsIgnorePattern: '^_',
       },
     ],
+    '@typescript-eslint/naming-convention': [
+      'warn',
+      {
+        selector: 'variable',
+        format: ['camelCase', 'UPPER_CASE', 'PascalCase'],
+        leadingUnderscore: 'allow',
+      },
+      {
+        selector: 'typeLike',
+        format: ['PascalCase'],
+      },
+    ],
+    complexity: ['warn', 15],
+    'max-depth': ['warn', 4],
+    // Benchmark and cleanup code intentionally uses empty catch blocks.
+    'no-empty': ['error', { allowEmptyCatch: true }],
   },
   ignorePatterns: ['dist/**', 'node_modules/**', 'coverage/**', '**/out/**'],
 };

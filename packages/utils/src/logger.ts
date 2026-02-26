@@ -62,9 +62,13 @@ function formatMessage(entry: LogEntry): string {
     return JSON.stringify(entry);
   }
   const { ts, level, component, msg, ...extra } = entry;
-  const extraStr = Object.keys(extra).length > 0
-    ? ' ' + Object.entries(extra).map(([k, v]) => `${k}=${v}`).join(' ')
-    : '';
+  const extraStr =
+    Object.keys(extra).length > 0
+      ? ' ' +
+        Object.entries(extra)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(' ')
+      : '';
   return `${ts} [${level}] [${component}] ${msg}${extraStr}`;
 }
 
@@ -100,7 +104,7 @@ function log(level: LogLevel, component: string, msg: string, extra?: Record<str
 
 /**
  * Create a logger for a specific component.
- * @param component - Component name (e.g., 'daemon', 'router', 'connection')
+ * @param component - Component name (e.g., 'broker', 'router', 'connection')
  */
 export function createLogger(component: string) {
   return {
@@ -112,7 +116,7 @@ export function createLogger(component: string) {
 }
 
 // Pre-created loggers for common components
-export const daemonLog = createLogger('daemon');
+export const brokerLog = createLogger('broker');
 export const routerLog = createLogger('router');
 export const connectionLog = createLogger('connection');
 

@@ -3,19 +3,9 @@
  * Real-time agent-to-agent communication system.
  */
 
-export * from './protocol/index.js';
-export * from './daemon/index.js';
-export * from './wrapper/index.js';
+export * from '@agent-relay/sdk';
 export * from './utils/index.js';
 export * from './hooks/index.js';
-
-// Storage types for external consumers (e.g., agent-trajectories)
-export {
-  type StoredMessage,
-  type MessageQuery,
-  type StorageAdapter,
-  type StorageConfig,
-} from '@agent-relay/storage/adapter';
 
 // Memory types and adapters for external consumers
 export {
@@ -40,17 +30,3 @@ export {
   type CompactionConfig,
   type CompactionResult,
 } from './memory/index.js';
-
-// Dead Letter Queue adapters
-export {
-  type DLQStorageAdapter,
-  type DeadLetter,
-  type DLQConfig,
-  type DLQStats,
-  type DLQQuery,
-  SQLiteDLQAdapter,
-  PostgresDLQAdapter,
-  InMemoryDLQAdapter,
-  createDLQAdapter,
-  DEFAULT_DLQ_CONFIG,
-} from '@agent-relay/storage/dlq-adapter';

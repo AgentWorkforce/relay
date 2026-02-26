@@ -1,17 +1,13 @@
 ---
-title: "Cloud Features"
-description: "Connect to Agent Relay Cloud for persistent workspaces, cross-machine messaging, and team collaboration"
+title: 'Cloud Features'
+description: 'Connect to Agent Relay Cloud for persistent workspaces, cross-machine messaging, and team collaboration'
 ---
 
 # Cloud Features
 
-Agent Relay Cloud extends your local relay with persistent workspaces, cross-machine messaging, and team collaboration features. Link your local daemon to access cloud capabilities.
+Agent Relay Cloud extends your local relay with persistent workspaces, cross-machine messaging, and team collaboration features. Link your local broker to access cloud capabilities.
 
-<video
-  controls
-  className="w-full aspect-video rounded-xl"
-  src="/videos/agent-relay-cloud.mp4"
->
+<video controls className="w-full aspect-video rounded-xl" src="/videos/agent-relay-cloud.mp4">
   Your browser does not support the video tag.
 </video>
 
@@ -54,6 +50,7 @@ Connect your local relay to Agent Relay Cloud:
     ```
     API Key: ar_live_xxxxxxxxxxxx
     ```
+
   </Step>
   <Step title="Verify connection">
     ```bash
@@ -69,9 +66,10 @@ Connect your local relay to Agent Relay Cloud:
       Cloud URL: https://cloud.agent-relay.com
       Linked: 1/15/2024, 10:30:00 AM
 
-      Daemon: Running
+      Broker: Running
       Cloud connection: Online
     ```
+
   </Step>
 </Steps>
 
@@ -93,7 +91,7 @@ Cloud sync: Enabled
   Cloud URL: https://cloud.agent-relay.com
   Linked: 1/15/2024, 10:30:00 AM
 
-  Daemon: Running
+  Broker: Running
   Cloud connection: Online
 ```
 
@@ -128,6 +126,7 @@ agent-relay agents --remote
 ```
 
 Output:
+
 ```
 NAME          STATUS   CLI     LOCATION
 Lead          ONLINE   claude  my-macbook
@@ -142,17 +141,11 @@ Reviewer      OFFLINE  claude  work-pc
 agent-relay cloud send Designer "Please review the mockups"
 ```
 
-Or from within an agent:
+Or from within an agent using MCP tools:
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/remote << 'EOF'
-TO: cloud:Designer
-
-Please review the latest mockups when you have time.
-EOF
+```typescript
+relay_send(to: "cloud:Designer", message: "Please review the latest mockups when you have time.")
 ```
-
-Then: `->relay-file:remote`
 
 ## Credential Sync
 
@@ -168,24 +161,24 @@ agent-relay cloud sync
 
 ### Supported Credentials
 
-| Provider | Auto-Sync |
-|----------|-----------|
-| GitHub | Yes (via Nango OAuth) |
-| Anthropic | CLI-based (manual) |
-| OpenAI | CLI-based (manual) |
-| Google | OAuth device flow |
+| Provider  | Auto-Sync             |
+| --------- | --------------------- |
+| GitHub    | Yes (via Nango OAuth) |
+| Anthropic | CLI-based (manual)    |
+| OpenAI    | CLI-based (manual)    |
+| Google    | OAuth device flow     |
 
 ## Cloud Commands Reference
 
-| Command | Description |
-|---------|-------------|
-| `agent-relay cloud link` | Link machine to cloud |
-| `agent-relay cloud unlink` | Unlink from cloud |
-| `agent-relay cloud status` | Show connection status |
-| `agent-relay cloud sync` | Sync credentials from cloud |
-| `agent-relay cloud agents` | List all agents across machines |
-| `agent-relay cloud send <agent> <message>` | Send to remote agent |
-| `agent-relay cloud daemons` | List linked daemon instances |
+| Command                                    | Description                     |
+| ------------------------------------------ | ------------------------------- |
+| `agent-relay cloud link`                   | Link machine to cloud           |
+| `agent-relay cloud unlink`                 | Unlink from cloud               |
+| `agent-relay cloud status`                 | Show connection status          |
+| `agent-relay cloud sync`                   | Sync credentials from cloud     |
+| `agent-relay cloud agents`                 | List all agents across machines |
+| `agent-relay cloud send <agent> <message>` | Send to remote agent            |
+| `agent-relay cloud brokers`                | List linked broker instances    |
 
 ## Team Collaboration
 
@@ -200,12 +193,12 @@ Team members can access the same workspace:
 
 ### User Roles
 
-| Role | Permissions |
-|------|-------------|
-| Owner | Full control, billing, invite members |
-| Admin | Manage agents, view all messages |
-| Member | Send messages, view assigned agents |
-| Viewer | Read-only access |
+| Role   | Permissions                           |
+| ------ | ------------------------------------- |
+| Owner  | Full control, billing, invite members |
+| Admin  | Manage agents, view all messages      |
+| Member | Send messages, view assigned agents   |
+| Viewer | Read-only access                      |
 
 ## Webhook Integrations
 
@@ -309,10 +302,10 @@ agent-relay cloud workspace create staging
 
 ### Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `AGENT_RELAY_CLOUD_URL` | Cloud API URL | `https://cloud.agent-relay.com` |
-| `AGENT_RELAY_DATA_DIR` | Local data directory | `~/.local/share/agent-relay` |
+| Variable                | Description          | Default                         |
+| ----------------------- | -------------------- | ------------------------------- |
+| `AGENT_RELAY_CLOUD_URL` | Cloud API URL        | `https://cloud.agent-relay.com` |
+| `AGENT_RELAY_DATA_DIR`  | Local data directory | `~/.local/share/agent-relay`    |
 
 ### Config File Location
 
@@ -326,36 +319,32 @@ This file contains your API key and is secured with `600` permissions.
 
 ## Plans and Limits
 
-| Feature | Free | Pro | Team | Enterprise |
-|---------|------|-----|------|------------|
-| Machines | 1 | 3 | 10 | Unlimited |
-| Agents | 3 | 10 | 25 | Unlimited |
-| Message History | 7 days | 30 days | 90 days | Unlimited |
-| Webhooks | 2 | 10 | 50 | Unlimited |
-| Team Members | - | - | 10 | Unlimited |
+| Feature         | Free   | Pro     | Team    | Enterprise |
+| --------------- | ------ | ------- | ------- | ---------- |
+| Machines        | 1      | 3       | 10      | Unlimited  |
+| Agents          | 3      | 10      | 25      | Unlimited  |
+| Message History | 7 days | 30 days | 90 days | Unlimited  |
+| Webhooks        | 2      | 10      | 50      | Unlimited  |
+| Team Members    | -      | -       | 10      | Unlimited  |
 
 ## Troubleshooting
 
 <AccordionGroup>
   <Accordion title="Link fails with invalid API key">
-    1. Ensure you copied the full key starting with `ar_live_`
-    2. Check for whitespace or line breaks in the key
-    3. Verify your cloud account is active
+    1. Ensure you copied the full key starting with `ar_live_` 2. Check for whitespace or line breaks in the
+    key 3. Verify your cloud account is active
   </Accordion>
   <Accordion title="Cloud connection shows offline">
-    1. Check internet connectivity
-    2. Verify daemon is running: `agent-relay status`
-    3. Try relinking: `agent-relay cloud unlink && agent-relay cloud link`
+    1. Check internet connectivity 2. Verify broker is running: `agent-relay status` 3. Try relinking:
+    `agent-relay cloud unlink && agent-relay cloud link`
   </Accordion>
   <Accordion title="Remote agents not visible">
-    1. Ensure all machines are linked to the same account
-    2. Verify daemons are running on remote machines
-    3. Check cloud sync is enabled: `agent-relay cloud status`
+    1. Ensure all machines are linked to the same account 2. Verify brokers are running on remote machines 3.
+    Check cloud sync is enabled: `agent-relay cloud status`
   </Accordion>
   <Accordion title="Webhook not triggering">
-    1. Verify webhook secret matches
-    2. Check webhook configuration in cloud dashboard
-    3. Review webhook logs for delivery errors
+    1. Verify webhook secret matches 2. Check webhook configuration in cloud dashboard 3. Review webhook logs
+    for delivery errors
   </Accordion>
 </AccordionGroup>
 

@@ -207,6 +207,10 @@ describe('stripAnsiFast', () => {
     expect(stripAnsiFast('\x1b[?25l')).toBe(''); // Hide cursor
   });
 
+  it('preserves cursor-forward spacing for ANSI CSI sequences', () => {
+    expect(stripAnsiFast('\x1b[1CYes,\x1b[2CI\x1b[1Caccept')).toBe(' Yes,  I accept');
+  });
+
   it('strips OSC sequences', () => {
     expect(stripAnsiFast('\x1b]0;title\x07text')).toBe('text');
     expect(stripAnsiFast('\x1b]0;title\x1b\\text')).toBe('text');
@@ -219,6 +223,10 @@ describe('stripAnsiFast', () => {
   it('strips orphaned CSI sequences', () => {
     expect(stripAnsiFast('[?25h visible')).toBe('visible');
     expect(stripAnsiFast('[0m text')).toBe('text');
+  });
+
+  it('preserves cursor-forward spacing for orphaned CSI sequences', () => {
+    expect(stripAnsiFast('[1CYes,[2CI[1Caccept')).toBe(' Yes,  I accept');
   });
 
   it('preserves non-CSI brackets', () => {

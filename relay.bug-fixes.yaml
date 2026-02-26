@@ -1,0 +1,545 @@
+version: '1.0'
+name: bug-fixes
+description: >
+  Ralph loop across 11 bugs in two repos: relay-dashboard (metrics, trajectories,
+  DM display, invite, input area, threads, session resume) and relay-cli-uses-broker
+  broker (engineering channel, gemini injection, opencode/cursor MCP).
+
+  Level 5 workflow: reproduce bugs as failing tests → fix → E2E verify →
+  red team → iterate until ALL_FIXED → regression → PRs.
+
+swarm:
+  pattern: dag
+  maxConcurrency: 5
+  timeoutMs: 14400000
+  channel: bug-fixes
+  idleNudge:
+    nudgeAfterMs: 600000
+    escalateAfterMs: 600000
+    maxNudges: 2
+
+agents:
+  - name: dashboard-investigator
+    cli: claude
+    channels: [bug-fixes, dashboard-track]
+    role: 'Investigates relay-dashboard bugs. Reads code, finds root causes, writes failing reproduction tests.'
+    constraints:
+      model: opus
+
+  - name: broker-investigator
+    cli: claude
+    channels: [bug-fixes, broker-track]
+    role: 'Investigates Rust broker bugs. Reads src/*.rs, finds root causes, writes failing reproduction tests.'
+    constraints:
+      model: opus
+
+  - name: dashboard-fixer
+    cli: claude
+    channels: [dashboard-track]
+    role: 'Fixes relay-dashboard bugs. Success = reproduction tests green + E2E verify passes.'
+    constraints:
+      model: sonnet
+
+  - name: broker-fixer
+    cli: claude
+    channels: [broker-track]
+    role: 'Fixes Rust broker bugs. Success = reproduction tests green + cargo build clean.'
+    constraints:
+      model: sonnet
+
+  - name: red-team
+    cli: claude
+    channels: [bug-fixes]
+    role: 'Adversarially tests every fix. Tries to find edge cases and regressions.'
+    interactive: false
+    constraints:
+      model: opus
+
+workflows:
+  - name: fix-all-bugs
+    description: >
+      Reproduce → Fix → E2E verify → Red team → iterate until done → Regression → PRs.
+    onError: continue
+    preflight:
+      - command: ls ../relay-dashboard/package.json
+        description: 'relay-dashboard repo exists at ../relay-dashboard'
+      - command: ls src/main.rs
+        description: 'Rust broker source present'
+      - command: git status --porcelain | grep -v '\.trajectories/' | grep -v 'relay\.' || true
+        failIf: non-empty
+        description: 'Working directory clean'
+
+    steps:
+      # ── Wave 1: Parallel investigation with full bug context ─────────────
+
+      - name: investigate-dashboard
+        type: agent
+        agent: dashboard-investigator
+        task: |
+          Investigate these 7 bugs in ../relay-dashboard. For each bug you
+          have: the symptom, what good behavior looks like, and where to start.
+          Your output for each: exact file:line, root cause, and a failing
+          test (curl / vitest / Cypress) that reproduces it right now.
+
+          BUG 1 — Metrics API returning 404 or 500
+          Symptom: the dashboard metrics panel is empty or shows an error.
+          Good behavior: GET /api/metrics returns JSON with agent counts,
+            message counts, uptime etc.
+          Where to look: find the metrics route in the Next.js/Express router.
+            Check if the handler exists and is wired up. Check if the data
+            source (broker client, DB, or Relaycast) is reachable from the handler.
+          Reproduction test: curl http://localhost:PORT/api/metrics
+
+          BUG 2 — Trajectories API returning 404 or 500
+          Symptom: trajectory viewer in dashboard shows nothing / error.
+          Good behavior: GET /api/trajectories returns a list of trajectory
+            objects with id, status, steps array.
+          Where to look: find the trajectories route. Check if it reads from
+            .trajectories/ directory or a DB. Check if the path resolution
+            is correct relative to the server's cwd.
+          Reproduction test: curl http://localhost:PORT/api/trajectories
+
+          BUG 3 — Invite to channel (dashboard UI)
+          Symptom: clicking "invite agent to channel" in the dashboard does
+            nothing or shows an error.
+          Good behavior: agent appears as a member of the selected channel
+            after inviting.
+          Where to look: find the invite-to-channel button's click handler,
+            the API route it calls, and the Relaycast API call it makes.
+            Check if it's using the right workspace key and channel name format.
+
+          BUG 4 — Inter-agent DMs show in Relaycast but not in dashboard
+          Symptom: two agents DM each other, messages visible in Relaycast
+            dashboard but the relay-dashboard DM view shows nothing.
+          Good behavior: DM thread visible in dashboard with sender/receiver
+            and message text.
+          Where to look: find where DMs are fetched (polling? websocket?).
+            Check if the fetch filters for DMs specifically (vs channel messages).
+            Check if the component that renders DMs handles the message type
+            correctly. DMs in Relaycast may have a different structure than
+            channel messages.
+
+          BUG 5 — Input area inconsistency (DM vs channel)
+          Symptom: the text input behaves differently when composing a DM
+            vs posting to a channel (different styling, placeholder, submit
+            behavior, or keyboard shortcuts).
+          Good behavior: consistent behavior regardless of context.
+          Where to look: find the message compose component. Check if it's
+            the same component with props, or two separate components.
+
+          BUG 6 — Threads: verify reply → agent PTY injection
+          Symptom: thread replies exist in Relaycast but the agent whose
+            session the thread is in doesn't receive the injected reply in
+            their PTY.
+          Good behavior: when a human replies in a thread attached to an
+            agent's message, the agent sees that reply injected into their
+            active PTY session.
+          Where to look: trace the flow from "post thread reply" in the UI →
+            API route → how it reaches the broker → broker's thread injection
+            path (check if threads go through the same delivery pipeline as DMs).
+
+          BUG 7 — Resumed session loses context
+          Symptom: clicking "resume session" in the dashboard starts claude
+            with --resume flag but the agent doesn't have the prior conversation
+            history. It starts fresh.
+          Good behavior: agent picks up exactly where it left off.
+          Where to look: find where "resume session" constructs the CLI
+            command. Check if the session ID / conversation file path is being
+            passed to claude --resume. Check if the conversation file exists
+            in the expected location on disk.
+
+          Post findings to #dashboard-track for dashboard-fixer.
+          Write your reproduction tests to ../relay-dashboard/test/bugs/.
+          Output: DASHBOARD_INVESTIGATION_COMPLETE
+        verification:
+          type: output_contains
+          value: DASHBOARD_INVESTIGATION_COMPLETE
+        retries: 1
+
+      - name: investigate-broker
+        type: agent
+        agent: broker-investigator
+        task: |
+          Investigate these 4 bugs in src/*.rs. For each you have: the
+          symptom, what good behavior looks like, and where to start in the
+          codebase. Your output: exact file:line, root cause, reproduction
+          test or verification command.
+
+          BUG 8 — Engineering channel: agents only auto-join 'general'
+          Symptom: when the dashboard spawns an agent, it joins #general
+            but does NOT join #engineering, even though the dashboard has
+            an #engineering channel.
+          Good behavior: spawned agents join both #general and #engineering
+            (and potentially other configured default channels).
+          Where to look: src/main.rs — find where agent channels are assigned
+            during spawn. Look for hardcoded "general" string. Check if there
+            is a config or env var RELAY_DEFAULT_CHANNELS that should be read.
+            Also check src/wrap.rs and message_bridge.rs for channel assignment.
+          Verification: spawn an agent, run list_agents, check its channels field.
+
+          BUG 9 — Gemini PTY injection: messages not received by gemini
+          Symptom: send a message to a running gemini agent via Relaycast,
+            the broker receives it and tries to inject it into the PTY, but
+            gemini never sees the message and never uses MCP to respond.
+          Good behavior: injected text appears in gemini's terminal input,
+            gemini processes it and responds via relay_send MCP tool.
+          Where to look:
+            - src/pty_worker.rs: find where relay messages are injected into
+              the PTY stdin. Does gemini need a different injection mechanism
+              than claude? (claude uses \n, gemini may need different terminator)
+            - src/wrap.rs: handle_gemini_action() — is auto-approval working?
+            - src/helpers.rs: detect_gemini_action_required() — does it
+              detect the correct prompt text from the current gemini version?
+            - Check if gemini's MCP config is being set up correctly so it
+              has relay_send available.
+          Verification: spawn gemini, send a DM, watch broker logs for injection.
+
+          BUG 10 — Opencode MCP: wrong API token / wrong agent name
+          Symptom: opencode spawns but doesn't join the right Relaycast
+            workspace and can't respond to messages because it either has the
+            workspace key instead of the agent token, or its agent name in
+            MCP config doesn't match what the broker registered.
+          Good behavior: opencode MCP client connects to Relaycast with the
+            agent's token (not the workspace key) and its registered agent name.
+          Where to look: find configure_relaycast_mcp_with_token() or
+            equivalent for opencode CLI. Compare the env vars set for opencode
+            vs claude (claude gets RELAY_AGENT_TOKEN, RELAY_AGENT_NAME).
+            Check if opencode MCP config uses a different env var structure.
+          Verification: spawn opencode, check env vars passed to MCP config.
+
+          BUG 11 — Cursor MCP: spawns but doesn't respond to messages
+          Symptom: cursor agent spawns successfully, MCP config is generated,
+            but cursor never responds to injected messages. It appears to
+            ignore relay_send and relay_inbox tools.
+          Good behavior: cursor receives injected messages and uses the
+            Relaycast MCP tools to respond.
+          Where to look: find cursor-specific MCP config generation. Check if
+            cursor's MCP config format is different from claude's (cursor may
+            use a different config file location or JSON structure). Check if
+            the relaycast MCP server is being loaded by cursor at all.
+          Verification: check cursor's MCP config file on disk after spawn.
+
+          Post findings to #broker-track for broker-fixer.
+          Output: BROKER_INVESTIGATION_COMPLETE
+        verification:
+          type: output_contains
+          value: BROKER_INVESTIGATION_COMPLETE
+        retries: 1
+
+      # ── Wave 2: Write failing reproduction tests ─────────────────────────
+
+      - name: write-dashboard-reproductions
+        type: agent
+        agent: dashboard-investigator
+        dependsOn: [investigate-dashboard]
+        task: |
+          Using your investigation findings:
+          {{steps.investigate-dashboard.output}}
+
+          Write concrete failing tests to ../relay-dashboard/test/bugs/:
+          - bugs/metrics.test.ts  — asserts GET /api/metrics returns 200 + data
+          - bugs/trajectories.test.ts — asserts GET /api/trajectories returns 200 + array
+          - bugs/dms.test.ts — asserts DMs fetched via the dashboard API appear in list
+          - bugs/threads.test.ts — asserts thread reply triggers broker injection
+
+          Run all four tests and confirm they FAIL right now:
+          cd ../relay-dashboard && npx vitest run test/bugs/ 2>&1 | tail -30
+
+          Output: DASHBOARD_REPRODUCTIONS_FAILING
+        verification:
+          type: output_contains
+          value: DASHBOARD_REPRODUCTIONS_FAILING
+
+      - name: write-broker-reproductions
+        type: agent
+        agent: broker-investigator
+        dependsOn: [investigate-broker]
+        task: |
+          Using your investigation findings:
+          {{steps.investigate-broker.output}}
+
+          Write shell verification commands that fail right now:
+          - Test 8: spawn an agent via SDK, assert it has 'engineering' in channels
+          - Test 9: spawn gemini, send DM, grep broker logs for injection attempt
+          - Test 10: spawn opencode, check MCP config env for RELAY_AGENT_TOKEN
+          - Test 11: spawn cursor, verify relaycast MCP appears in cursor's config
+
+          Save as tests/integration/broker/bug-repro.sh and run it:
+          bash tests/integration/broker/bug-repro.sh 2>&1 | tail -40
+
+          Output: BROKER_REPRODUCTIONS_FAILING
+        verification:
+          type: output_contains
+          value: BROKER_REPRODUCTIONS_FAILING
+
+      # ── Wave 3: Fix everything ───────────────────────────────────────────
+
+      - name: fix-dashboard
+        type: agent
+        agent: dashboard-fixer
+        dependsOn: [write-dashboard-reproductions]
+        task: |
+          Fix all 7 dashboard bugs. Your success criterion is the reproduction
+          tests turning green, not your own judgment.
+
+          Investigation: {{steps.investigate-dashboard.output}}
+          Failing tests: {{steps.write-dashboard-reproductions.output}}
+
+          After each fix, run the relevant test:
+          cd ../relay-dashboard && npx vitest run test/bugs/ 2>&1 | tail -20
+
+          Fixes to implement:
+          1. Metrics API — register/implement the missing endpoint
+          2. Trajectories API — register/implement the missing endpoint
+          3. Invite to channel — fix the action and/or API call
+          4. DM display — fix the fetch or render path for DMs
+          5. Input area — unify DM and channel input component
+          6. Thread injection — wire thread replies to broker injection
+          7. Session resume — pass conversation history to --resume
+
+          When ALL 4 test files pass:
+          cd ../relay-dashboard && npx vitest run test/bugs/ 2>&1 | tail -10
+          Output: DASHBOARD_FIXES_DONE
+        verification:
+          type: output_contains
+          value: DASHBOARD_FIXES_DONE
+        maxIterations: 3
+        retries: 1
+
+      - name: fix-broker
+        type: agent
+        agent: broker-fixer
+        dependsOn: [write-broker-reproductions]
+        task: |
+          Fix all 4 Rust broker bugs. Your success criterion is the reproduction
+          tests turning green and cargo build clean.
+
+          Investigation: {{steps.investigate-broker.output}}
+          Failing tests: {{steps.write-broker-reproductions.output}}
+
+          Fixes to implement:
+          8. Engineering channel — add 'engineering' to default agent channels
+          9. Gemini injection — fix PTY injection so gemini receives messages
+          10. Opencode MCP — use agent token + correct agent name in MCP env
+          11. Cursor MCP — fix config format/location for cursor
+
+          After ALL fixes: cargo build --release 2>&1 | tail -10
+          Then run: bash tests/integration/broker/bug-repro.sh 2>&1 | tail -20
+
+          Output: BROKER_FIXES_DONE
+        verification:
+          type: output_contains
+          value: BROKER_FIXES_DONE
+        maxIterations: 3
+        retries: 1
+
+      # ── Wave 4: Build gates ──────────────────────────────────────────────
+
+      - name: build-dashboard
+        type: deterministic
+        dependsOn: [fix-dashboard]
+        command: >
+          cd ../relay-dashboard &&
+          npm run lint 2>&1 | tail -5 &&
+          npm run build 2>&1 | tail -10 &&
+          npx vitest run test/bugs/ 2>&1 | tail -15 &&
+          echo "DASHBOARD_OK" || echo "DASHBOARD_FAILED"
+        captureOutput: true
+        failOnError: false
+
+      - name: build-broker
+        type: deterministic
+        dependsOn: [fix-broker]
+        command: >
+          ~/.cargo/bin/cargo build --release --bin agent-relay-broker 2>&1 | tail -10 &&
+          cp target/release/agent-relay-broker packages/sdk/bin/agent-relay-broker &&
+          bash tests/integration/broker/bug-repro.sh 2>&1 | tail -20 &&
+          echo "BROKER_OK" || echo "BROKER_FAILED"
+        captureOutput: true
+        failOnError: false
+
+      # ── Wave 5: Fix build failures ───────────────────────────────────────
+
+      - name: fix-build-failures
+        type: agent
+        agent: dashboard-fixer
+        dependsOn: [build-dashboard, build-broker]
+        task: |
+          Dashboard build: {{steps.build-dashboard.output}}
+          Broker build: {{steps.build-broker.output}}
+
+          Fix any remaining build or test failures. Don't weaken tests.
+          If DASHBOARD_OK and BROKER_OK: output BUILD_ALL_GREEN:none
+          Otherwise fix and confirm green.
+          Output: BUILD_ALL_GREEN
+        verification:
+          type: output_contains
+          value: BUILD_ALL_GREEN
+        maxIterations: 2
+
+      # ── Wave 6: E2E verify + Red team (parallel) ─────────────────────────
+
+      - name: e2e-verify
+        type: deterministic
+        dependsOn: [fix-build-failures]
+        command: >
+          cd ../relay-dashboard && npm run dev &
+          DEV_PID=$! && sleep 8 &&
+          curl -sf http://localhost:3000/api/metrics | jq '.data' &&
+          curl -sf http://localhost:3000/api/trajectories | jq '.[0]' &&
+          kill $DEV_PID 2>/dev/null &&
+          echo "E2E_PASSED" || (kill $DEV_PID 2>/dev/null; echo "E2E_FAILED")
+        captureOutput: true
+        failOnError: false
+
+      - name: red-team-review
+        type: agent
+        agent: red-team
+        dependsOn: [fix-build-failures]
+        task: |
+          Dashboard fixes: {{steps.fix-dashboard.output}}
+          Broker fixes: {{steps.fix-broker.output}}
+          Build results: {{steps.build-dashboard.output}} | {{steps.build-broker.output}}
+
+          Adversarially review every fix. Your job is to find what breaks, not approve.
+
+          For each fix, ask:
+          - Does the DM display fix correctly handle the empty state (no DMs yet)?
+          - Does the thread injection fix handle thread replies to non-active agents?
+          - Does the engineering channel fix break existing single-channel spawns?
+          - Does the gemini injection fix affect claude or codex injection paths?
+          - Does the opencode MCP fix work when RELAY_AGENT_TOKEN is not yet set?
+          - Does cursor MCP config override conflict with existing cursor settings?
+
+          Run: git -C ../relay-dashboard diff HEAD | head -400
+          Run: git diff HEAD src/ | head -400
+
+          Output: RED_TEAM_CLEAN or RED_TEAM_ISSUES:<specific findings>
+        verification:
+          type: output_contains
+          value: 'RED_TEAM_CLEAN|RED_TEAM_ISSUES'
+
+      # ── Wave 7: Address red team issues if any ───────────────────────────
+
+      - name: address-red-team
+        type: agent
+        agent: dashboard-fixer
+        dependsOn: [e2e-verify, red-team-review]
+        task: |
+          E2E results: {{steps.e2e-verify.output}}
+          Red team findings: {{steps.red-team-review.output}}
+
+          If E2E_FAILED: fix the failing endpoints and re-run.
+          If RED_TEAM_ISSUES: address each issue found.
+          If both clean: output ALL_FIXED
+
+          Be honest — only output ALL_FIXED when you've verified it.
+          Output: ALL_FIXED
+        maxIterations: 3
+        verification:
+          type: output_contains
+          value: ALL_FIXED
+
+      # ── Wave 8: Full regression suite ───────────────────────────────────
+
+      - name: regression-dashboard
+        type: deterministic
+        dependsOn: [address-red-team]
+        command: >
+          cd ../relay-dashboard &&
+          npm test 2>&1 | tail -20 &&
+          echo "REGRESSION_PASSED" || echo "REGRESSION_FAILED"
+        captureOutput: true
+        failOnError: false
+
+      - name: regression-broker
+        type: deterministic
+        dependsOn: [address-red-team]
+        command: >
+          npx tsc -p tests/integration/broker/tsconfig.json 2>&1 | tail -5 &&
+          node --test tests/integration/broker/dist/workflow-ci.test.js 2>&1 | tail -20 &&
+          echo "REGRESSION_PASSED" || echo "REGRESSION_FAILED"
+        captureOutput: true
+        failOnError: false
+
+      # ── Wave 9: PRs ──────────────────────────────────────────────────────
+
+      - name: pr-dashboard
+        type: deterministic
+        dependsOn: [regression-dashboard, regression-broker]
+        command: >
+          cd ../relay-dashboard &&
+          git add -A &&
+          git commit -m "fix: metrics, trajectories, DMs, threads, session resume, invite, input" &&
+          git push -u origin HEAD &&
+          gh pr create
+            --title "fix: 7 dashboard bugs"
+            --body "$(cat <<PR
+          ## Bugs Fixed
+          - Metrics API (404 → returns agent/message counts)
+          - Trajectories API (404 → returns trajectory list)
+          - Inter-agent DMs not showing in dashboard
+          - Invite to channel UI
+          - Input area DM vs channel inconsistency
+          - Thread replies not injected into agent PTY
+          - Session resume loses conversation context
+
+          ## Tests
+          All bugs have reproduction tests in test/bugs/ that were failing
+          before and are green after.
+          PR
+          )"
+            --draft 2>&1 || echo "PR_DONE"
+        captureOutput: true
+        failOnError: false
+
+      - name: pr-broker
+        type: deterministic
+        dependsOn: [regression-dashboard, regression-broker]
+        command: >
+          git add src/ packages/sdk/bin/ tests/integration/broker/bug-repro.sh &&
+          git commit -m "fix: engineering channel, gemini injection, opencode/cursor MCP" &&
+          git push -u origin HEAD &&
+          gh pr create
+            --title "fix: 4 broker bugs (channels, gemini, opencode, cursor)"
+            --body "$(cat <<PR
+          ## Bugs Fixed
+          - Engineering channel auto-invite (agents now join both general + engineering)
+          - Gemini PTY injection (messages now reach gemini's terminal input)
+          - Opencode MCP token (agent token used, agent name set correctly)
+          - Cursor MCP config (cursor now receives and responds to messages)
+
+          ## Verification
+          Reproduction tests in tests/integration/broker/bug-repro.sh.
+          PR
+          )"
+            --draft 2>&1 || echo "PR_DONE"
+        captureOutput: true
+        failOnError: false
+
+coordination:
+  barriers:
+    - name: investigations-complete
+      waitFor: [investigate-dashboard, investigate-broker]
+      timeoutMs: 3600000
+    - name: reproductions-written
+      waitFor: [write-dashboard-reproductions, write-broker-reproductions]
+      timeoutMs: 1800000
+    - name: builds-green
+      waitFor: [build-dashboard, build-broker]
+      timeoutMs: 1800000
+
+state:
+  backend: memory
+  ttlMs: 86400000
+
+errorHandling:
+  strategy: continue
+  maxRetries: 1
+  retryDelayMs: 10000
+  notifyChannel: bug-fixes
+
+trajectories:
+  enabled: true
+  reflectOnBarriers: true
+  autoDecisions: true

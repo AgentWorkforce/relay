@@ -1,0 +1,53 @@
+{
+  "strict_registration_success": {
+    "request": {
+      "mode": "strict",
+      "name": "Lead",
+      "workspaceId": "ws_cross_repo"
+    },
+    "response": {
+      "agentId": "agt_lead_001",
+      "name": "Lead",
+      "workspaceId": "ws_cross_repo"
+    }
+  },
+  "name_conflict_error": {
+    "code": "name_conflict",
+    "message": "Agent name \"Lead\" is already registered",
+    "retryable": false,
+    "statusCode": 409
+  },
+  "broker_identity_shapes": {
+    "valid": [
+      {
+        "name": "broker",
+        "pattern": "broker"
+      },
+      {
+        "name": "broker-951762d5",
+        "pattern": "broker-*"
+      },
+      {
+        "name": "broker-wave1",
+        "pattern": "broker-*"
+      }
+    ],
+    "invalid": ["Broker", "human:orchestrator", "Lead", "broker_951762d5"]
+  },
+  "wave0_identity_normalization": {
+    "cases": [
+      {
+        "input": "broker-951762d5",
+        "normalized": "Dashboard"
+      },
+      {
+        "input": "human:orchestrator",
+        "normalized": "Dashboard"
+      },
+      {
+        "input": "Lead",
+        "normalized": "Lead"
+      }
+    ]
+  }
+}

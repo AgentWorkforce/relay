@@ -2,7 +2,7 @@
  * Shared CLI Auth Configuration
  *
  * Provider-specific CLI commands and patterns for OAuth authentication.
- * Used by both the cloud API and workspace daemon.
+ * Used by both the cloud API and workspace broker.
  */
 
 /**
@@ -96,7 +96,8 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
       },
       {
         // Login method selection - "Select login method:" with Claude account or Console options
-        pattern: /select\s*login\s*method|how\s*would\s*you\s*like\s*to\s*authenticate|choose.*auth.*method|select.*auth|subscription\s*or.*api\s*key/i,
+        pattern:
+          /select\s*login\s*method|how\s*would\s*you\s*like\s*to\s*authenticate|choose.*auth.*method|select.*auth|subscription\s*or.*api\s*key/i,
         response: '\r', // Press enter for first option (Claude account with subscription)
         delay: 100,
         description: 'Login method selection',
@@ -113,7 +114,8 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
         // "Quick safety check: Is this a project you created or one you trust?"
         // "Yes, I trust this folder"
         // "Do you trust the files in this folder?"
-        pattern: /trust\s*(this|the)?\s*(files|directory|folder|workspace)|do\s*you\s*trust|safety\s*check|yes,?\s*i\s*trust/i,
+        pattern:
+          /trust\s*(this|the)?\s*(files|directory|folder|workspace)|do\s*you\s*trust|safety\s*check|yes,?\s*i\s*trust/i,
         response: '\r', // Press enter for first option (Yes, proceed)
         delay: 300, // Slightly longer delay for menu to render
         description: 'Trust directory prompt',
@@ -132,7 +134,8 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
         // Shows "1. No, exit" (default selected) and "2. Yes, I accept"
         // We need to select option 2 (down arrow) then confirm (enter)
         // This is safe because cloud workspaces are sandboxed containers
-        pattern: /bypass\s*permissions\s*mode|will\s*not\s*ask\s*for\s*your\s*approval|sandboxed\s*container/i,
+        pattern:
+          /bypass\s*permissions\s*mode|will\s*not\s*ask\s*for\s*your\s*approval|sandboxed\s*container/i,
         response: '\x1b[B\r', // Down arrow to select "Yes, I accept", then Enter
         delay: 500, // Longer delay to ensure menu is fully rendered
         description: 'Bypass permissions mode prompt',
@@ -210,14 +213,16 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
     prompts: [
       {
         // Trust directory prompt - numbered menu: 1. Trust this folder, 2. Trust parent, 3. Don't trust
-        pattern: /trust\s*(this|the)?\s*(files|directory|folder|workspace|parent)|do\s*you\s*trust|don't\s*trust|safety\s*check/i,
+        pattern:
+          /trust\s*(this|the)?\s*(files|directory|folder|workspace|parent)|do\s*you\s*trust|don't\s*trust|safety\s*check/i,
         response: '1\r',
         delay: 200,
         description: 'Trust directory prompt',
       },
       {
         // Auth method selection - select first option (Login with Google for OAuth)
-        pattern: /login\s*with\s*google|google\s*account|choose.*auth|how\s*would\s*you\s*like\s*to\s*authenticate/i,
+        pattern:
+          /login\s*with\s*google|google\s*account|choose.*auth|how\s*would\s*you\s*like\s*to\s*authenticate/i,
         response: '\r',
         delay: 200,
         description: 'Auth method selection',
@@ -262,7 +267,13 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
       },
     ],
     // Success patterns include credential added and existing credentials list
-    successPatterns: [/success/i, /authenticated/i, /logged\s*in/i, /credential\s*added/i, /\d+\s*credentials?/i],
+    successPatterns: [
+      /success/i,
+      /authenticated/i,
+      /logged\s*in/i,
+      /credential\s*added/i,
+      /\d+\s*credentials?/i,
+    ],
   },
   droid: {
     command: 'droid',
@@ -302,7 +313,8 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
         // "Do you want to mark this workspace as trusted?"
         // "[a] Trust this workspace"
         // "[q] Quit"
-        pattern: /workspace\s*trust|mark\s*this\s*workspace\s*as\s*trusted|trust\s*this\s*workspace|\[a\]\s*trust/i,
+        pattern:
+          /workspace\s*trust|mark\s*this\s*workspace\s*as\s*trusted|trust\s*this\s*workspace|\[a\]\s*trust/i,
         response: 'a',
         delay: 300,
         description: 'Workspace trust prompt',
@@ -372,7 +384,8 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
       },
       {
         // Login success - press enter to continue
-        pattern: /login\s*successful|logged\s*in.*press\s*enter|press\s*enter\s*to\s*continue|authentication\s*complete/i,
+        pattern:
+          /login\s*successful|logged\s*in.*press\s*enter|press\s*enter\s*to\s*continue|authentication\s*complete/i,
         response: '\r',
         delay: 200,
         description: 'Login success prompt',
@@ -385,7 +398,13 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
         description: 'Generic enter prompt',
       },
     ],
-    successPatterns: [/success/i, /authenticated/i, /logged\s*in/i, /you.*(?:are|now).*logged/i, /authentication\s*complete/i],
+    successPatterns: [
+      /success/i,
+      /authenticated/i,
+      /logged\s*in/i,
+      /you.*(?:are|now).*logged/i,
+      /authentication\s*complete/i,
+    ],
     errorPatterns: [
       {
         pattern: /oauth\s*error|auth.*failed|authentication\s*error/i,
@@ -414,8 +433,8 @@ export function stripAnsiCodes(text: string): string {
   // - Simple escapes: ESC letter
   return text
     .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '') // CSI sequences including private modes (?2026h, etc.)
-    .replace(/\x1b\][^\x07]*\x07/g, '')     // OSC sequences (title, etc.)
-    .replace(/\x1b[a-zA-Z]/g, '');          // Simple escape sequences
+    .replace(/\x1b\][^\x07]*\x07/g, '') // OSC sequences (title, etc.)
+    .replace(/\x1b[a-zA-Z]/g, ''); // Simple escape sequences
 }
 /* eslint-enable no-control-regex */
 
@@ -448,10 +467,7 @@ export function findMatchingPrompt(
 /**
  * Check if text matches any error pattern and return the matched error
  */
-export function findMatchingError(
-  text: string,
-  errorPatterns?: ErrorPattern[]
-): ErrorPattern | null {
+export function findMatchingError(text: string, errorPatterns?: ErrorPattern[]): ErrorPattern | null {
   if (!errorPatterns || errorPatterns.length === 0) return null;
   const cleanText = stripAnsiCodes(text);
   for (const error of errorPatterns) {
@@ -484,10 +500,7 @@ export function getSupportedProviders(): { id: string; displayName: string; comm
  * Validate a provider's CLI auth configuration
  * Returns null if valid, or an error message if invalid
  */
-export function validateProviderConfig(
-  providerId: string,
-  config: CLIAuthConfig
-): string | null {
+export function validateProviderConfig(providerId: string, config: CLIAuthConfig): string | null {
   if (!config.command || typeof config.command !== 'string') {
     return `${providerId}: missing or invalid 'command'`;
   }

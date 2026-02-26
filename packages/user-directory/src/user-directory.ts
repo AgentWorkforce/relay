@@ -22,7 +22,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { createLogger } from '@agent-relay/resiliency';
+import { createLogger } from '@agent-relay/utils';
 
 const logger = createLogger('user-directory');
 
@@ -75,7 +75,7 @@ const ALL_PROVIDERS = Object.keys(PROVIDER_CONFIGS);
 const VALID_PROVIDERS = new Set([
   ...ALL_PROVIDERS,
   'anthropic', // alias for claude
-  'google',    // alias for gemini
+  'google', // alias for gemini
 ]);
 
 /**
@@ -186,9 +186,7 @@ export class UserDirectoryService {
   listUsers(): string[] {
     try {
       const entries = fs.readdirSync(this.usersDir, { withFileTypes: true });
-      return entries
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name);
+      return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     } catch {
       return [];
     }

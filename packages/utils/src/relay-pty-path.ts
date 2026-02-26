@@ -108,7 +108,7 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
   const packageRoots: string[] = [];
 
   // Find node_modules root from caller path
-  // Matches: /path/to/node_modules/@agent-relay/bridge/dist/
+  // Matches: /path/to/node_modules/@agent-relay/sdk/dist/
   // Or: /path/to/node_modules/agent-relay/dist/src/cli/
   const scopedMatch = normalizedCaller.match(/^(.+?\/node_modules)\/@agent-relay\//);
   const directMatch = normalizedCaller.match(/^(.+?\/node_modules\/agent-relay)/);
@@ -160,47 +160,69 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
 
     // volta (increasingly popular)
     packageRoots.push(
-      path.join(home, '.volta', 'tools', 'image', 'packages', 'agent-relay', 'lib', 'node_modules', 'agent-relay')
+      path.join(
+        home,
+        '.volta',
+        'tools',
+        'image',
+        'packages',
+        'agent-relay',
+        'lib',
+        'node_modules',
+        'agent-relay'
+      )
     );
 
     // fnm (fast Node manager)
     packageRoots.push(
-      path.join(home, '.fnm', 'node-versions', process.version, 'installation', 'lib', 'node_modules', 'agent-relay')
+      path.join(
+        home,
+        '.fnm',
+        'node-versions',
+        process.version,
+        'installation',
+        'lib',
+        'node_modules',
+        'agent-relay'
+      )
     );
 
     // n (simple Node version manager)
-    packageRoots.push(
-      path.join(home, 'n', 'lib', 'node_modules', 'agent-relay')
-    );
+    packageRoots.push(path.join(home, 'n', 'lib', 'node_modules', 'agent-relay'));
 
     // asdf (universal version manager)
     packageRoots.push(
-      path.join(home, '.asdf', 'installs', 'nodejs', process.version.replace('v', ''), 'lib', 'node_modules', 'agent-relay')
+      path.join(
+        home,
+        '.asdf',
+        'installs',
+        'nodejs',
+        process.version.replace('v', ''),
+        'lib',
+        'node_modules',
+        'agent-relay'
+      )
     );
 
     // pnpm global
-    packageRoots.push(
-      path.join(home, '.local', 'share', 'pnpm', 'global', 'node_modules', 'agent-relay')
-    );
+    packageRoots.push(path.join(home, '.local', 'share', 'pnpm', 'global', 'node_modules', 'agent-relay'));
 
     // yarn global (yarn 1.x)
-    packageRoots.push(
-      path.join(home, '.config', 'yarn', 'global', 'node_modules', 'agent-relay')
-    );
+    packageRoots.push(path.join(home, '.config', 'yarn', 'global', 'node_modules', 'agent-relay'));
 
     // yarn global (alternative location)
-    packageRoots.push(
-      path.join(home, '.yarn', 'global', 'node_modules', 'agent-relay')
-    );
+    packageRoots.push(path.join(home, '.yarn', 'global', 'node_modules', 'agent-relay'));
   }
 
   // Bash installer locations (curl | bash install method)
   // install.sh puts relay-pty at $INSTALL_DIR/bin/ (default: ~/.agent-relay/bin/)
   const bashInstallerDir = process.env.AGENT_RELAY_INSTALL_DIR
     ? path.join(process.env.AGENT_RELAY_INSTALL_DIR, 'bin')
-    : home ? path.join(home, '.agent-relay', 'bin') : null;
-  const bashInstallerBinDir = process.env.AGENT_RELAY_BIN_DIR
-    || (home ? path.join(home, '.local', 'bin') : null);
+    : home
+      ? path.join(home, '.agent-relay', 'bin')
+      : null;
+  const bashInstallerBinDir =
+    process.env.AGENT_RELAY_BIN_DIR || (home ? path.join(home, '.local', 'bin') : null);
 
   // Universal: derive global node_modules from Node's own executable path.
   // This covers ALL Node installations regardless of version manager
@@ -228,16 +250,6 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
     // Generic binary (requires postinstall to have run)
     candidates.push(path.join(root, 'bin', 'relay-pty'));
   }
-
-  // Development: local Rust builds
-  const devRoot = normalizedCaller.includes('node_modules')
-    ? null
-    : path.join(callerDirname, '..', '..', '..');
-  if (devRoot) {
-    candidates.push(path.join(devRoot, 'relay-pty', 'target', 'release', 'relay-pty'));
-    candidates.push(path.join(devRoot, 'relay-pty', 'target', 'debug', 'relay-pty'));
-  }
-  candidates.push(path.join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'));
 
   // Bash installer paths (curl | bash install method)
   // install.sh downloads relay-pty to ~/.agent-relay/bin/relay-pty
@@ -320,7 +332,11 @@ function isPlatformCompatibleBinary(filePath: string): boolean {
     return true;
   } finally {
     if (fd !== undefined) {
-      try { fs.closeSync(fd); } catch { /* ignore close errors */ }
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* ignore close errors */
+      }
     }
   }
 }
@@ -336,7 +352,7 @@ function isMachOBinary(magic: number): boolean {
     magic === 0xcefaedfe || // MH_CIGAM    — 32-bit, byte-swapped
     magic === 0xfeedface || // MH_MAGIC    — 32-bit, native byte order
     magic === 0xcafebabe || // FAT_MAGIC   — universal/fat binary
-    magic === 0xbebafeca    // FAT_CIGAM   — universal/fat binary, byte-swapped
+    magic === 0xbebafeca // FAT_CIGAM   — universal/fat binary, byte-swapped
   );
 }
 

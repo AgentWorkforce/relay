@@ -1,0 +1,50 @@
+{
+  "id": "traj_1772097298752_54bf57d3",
+  "version": 1,
+  "task": {
+    "title": "fix-step-output-noise run #cf76cb6e",
+    "source": {
+      "system": "workflow-runner",
+      "id": "cf76cb6ee5ae351a76e8c2fc"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-02-26T09:14:58.752Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T09:14:58.752Z"
+    },
+    {
+      "name": "analyst",
+      "role": "analyst",
+      "joinedAt": "2026-02-26T09:15:03.337Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_e0f0aac3",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T09:14:58.752Z",
+      "events": [
+        {
+          "ts": 1772097298752,
+          "type": "note",
+          "content": "Workflow \"fix-step-output-noise\" started with 4 steps"
+        },
+        {
+          "ts": 1772097298752,
+          "type": "note",
+          "content": "Parsed 4 steps, 3 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1772097303337,
+          "type": "note",
+          "content": "Step \"analyze\" assigned to agent \"analyst\""
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+[package]
+name = "agent-relay-broker"
+version = "3.0.0"
+edition = "2021"
+autobins = false
+
+[lib]
+name = "relay_broker"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agent-relay-broker"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+axum = { version = "0.8", features = ["ws"] }
+chrono = { version = "0.4", features = ["serde", "clock"] }
+clap = { version = "4.5", features = ["derive"] }
+dirs = "6.0"
+hostname = "0.4"
+parking_lot = "0.12"
+portable-pty = "0.8"
+rand = "0.8"
+regex = "1.11"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+shlex = "1.3"
+thiserror = "2.0"
+relaycast = { path = "../relaycast/packages/sdk-rust" }
+tokio = { version = "1.44", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tempfile = "3.19"
+crossterm = { version = "0.28", features = ["event-stream"] }
+futures-lite = "2.6"
+uuid = { version = "1.15", features = ["v4", "serde"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30", features = ["signal", "process", "term", "fs"] }
+libc = "0.2"
+
+[dev-dependencies]
+httpmock = "0.7"
+tempfile = "3.19"
+tower = { version = "0.5", features = ["util"] }

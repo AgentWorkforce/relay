@@ -1,0 +1,129 @@
+version: '1.0'
+name: security-audit
+description: 'Blueprint-style security assessment with deterministic scanning and agent triage.'
+swarm:
+  pattern: pipeline
+  maxConcurrency: 1
+  timeoutMs: 5400000
+  channel: swarm-security-audit
+  idleNudge:
+    nudgeAfterMs: 120000
+    escalateAfterMs: 120000
+    maxNudges: 1
+agents:
+  - name: lead
+    cli: claude
+    role: 'Owns final risk sign-off and recommendations'
+  - name: analyst
+    cli: claude
+    role: 'Prioritizes findings and recommends mitigations'
+  - name: remediator
+    cli: codex
+    role: 'Implements approved remediations'
+    interactive: false
+  - name: verifier
+    cli: gemini
+    role: 'Verifies fixes and residual exposure'
+workflows:
+  - name: audit-pipeline
+    description: 'Scan, triage, remediate, verify, and report security posture.'
+    onError: fail
+    preflight:
+      - command: npm audit --json 2>/dev/null | head -100 || echo "{}"
+        description: 'Run npm audit preflight check'
+      - command: git diff --check 2>/dev/null || echo "clean"
+        description: 'Check for whitespace errors'
+    steps:
+      # Deterministic: Run npm audit
+      - name: scan-npm
+        type: deterministic
+        command: npm audit --json 2>/dev/null || echo '{"vulnerabilities":{}}'
+        captureOutput: true
+
+      # Deterministic: Run additional security scans if available
+      - name: scan-extra
+        type: deterministic
+        dependsOn: [scan-npm]
+        command: |
+          if command -v semgrep &> /dev/null; then
+            semgrep --config auto --json . 2>/dev/null || echo '{"results":[]}'
+          else
+            echo '{"results":[],"note":"semgrep not installed"}'
+          fi
+
+      # Agent: Triage findings
+      - name: triage
+        type: agent
+        agent: analyst
+        dependsOn: [scan-npm, scan-extra]
+        task: |
+          Prioritize security findings by severity and exploitability:
+
+          NPM Audit: {{steps.scan-npm.output}}
+          Additional Scans: {{steps.scan-extra.output}}
+
+          Task context: {{task}}
+        verification:
+          type: output_contains
+          value: TRIAGE_COMPLETE
+
+      # Agent: Implement remediations
+      - name: remediate
+        type: agent
+        agent: remediator
+        dependsOn: [triage]
+        task: |
+          Implement mitigations for approved findings:
+          {{steps.triage.output}}
+        retries: 1
+        verification:
+          type: output_contains
+          value: REMEDIATION_COMPLETE
+
+      # Deterministic: Re-run tests
+      - name: test
+        type: deterministic
+        dependsOn: [remediate]
+        command: npm test 2>/dev/null || echo "No tests configured"
+
+      # Agent: Verify fixes
+      - name: verify
+        type: agent
+        agent: verifier
+        dependsOn: [test]
+        task: |
+          Re-test security posture and confirm mitigations hold:
+          {{steps.remediate.output}}
+          Test results: {{steps.test.output}}
+        verification:
+          type: output_contains
+          value: VERIFICATION_COMPLETE
+
+      # Deterministic: Commit security fixes
+      - name: commit
+        type: deterministic
+        dependsOn: [verify]
+        command: 'git add -A && git commit -m "security: address vulnerabilities from audit" 2>/dev/null || echo "No changes to commit"'
+
+      # Agent: Final report
+      - name: report
+        type: agent
+        agent: lead
+        dependsOn: [commit]
+        task: |
+          Produce final audit report with residual risk and next actions.
+        verification:
+          type: output_contains
+          value: DONE
+coordination:
+  barriers:
+    - name: audit-complete
+      waitFor: [scan-npm, triage, remediate, verify]
+      timeoutMs: 1200000
+state:
+  backend: memory
+  ttlMs: 86400000
+  namespace: security-audit
+errorHandling:
+  strategy: fail-fast
+  notifyChannel: swarm-security-audit

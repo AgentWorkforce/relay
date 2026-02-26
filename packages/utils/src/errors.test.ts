@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   RelayError,
-  DaemonNotRunningError,
+  BrokerNotRunningError,
   AgentNotFoundError,
   TimeoutError,
   ConnectionError,
@@ -20,17 +20,12 @@ describe('Error Classes (single source of truth)', () => {
     });
   });
 
-  describe('DaemonNotRunningError', () => {
-    it('creates error with default message', () => {
-      const err = new DaemonNotRunningError();
-      expect(err.message).toContain('Relay daemon is not running');
-      expect(err.name).toBe('DaemonNotRunningError');
+  describe('BrokerNotRunningError', () => {
+    it('uses broker wording by default', () => {
+      const err = new BrokerNotRunningError();
+      expect(err.message).toContain('Relay broker is not running');
+      expect(err.name).toBe('BrokerNotRunningError');
       expect(err).toBeInstanceOf(RelayError);
-    });
-
-    it('creates error with custom message', () => {
-      const err = new DaemonNotRunningError('Custom msg');
-      expect(err.message).toBe('Custom msg');
     });
   });
 

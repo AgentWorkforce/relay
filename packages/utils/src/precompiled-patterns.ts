@@ -99,16 +99,16 @@ export function getCompiledPatterns(
  */
 const INSTRUCTIONAL_COMBINED = new RegExp(
   [
-    String.raw`\bSEND:\s*$`,           // "SEND:" at end (instruction prefix)
+    String.raw`\bSEND:\s*$`, // "SEND:" at end (instruction prefix)
     String.raw`\bPROTOCOL:\s*\(\d+\)`, // "PROTOCOL: (1)" - numbered instructions
-    String.raw`\bExample:`,             // "Example:" marker
-    String.raw`\\->relay:`,             // Escaped relay prefix (documentation)
-    String.raw`\\->thinking:`,          // Escaped thinking prefix (documentation)
-    String.raw`^AgentName\s+`,          // Body starting with "AgentName"
-    String.raw`^Target\s+`,             // Body starting with "Target"
-    String.raw`\[Agent Relay\]`,        // Injected instruction header
-    String.raw`MULTI-LINE:`,            // Multi-line format instruction
-    String.raw`RECEIVE:`,               // Receive instruction marker
+    String.raw`\bExample:`, // "Example:" marker
+    String.raw`\\->relay:`, // Escaped relay prefix (documentation)
+    String.raw`\\->thinking:`, // Escaped thinking prefix (documentation)
+    String.raw`^AgentName\s+`, // Body starting with "AgentName"
+    String.raw`^Target\s+`, // Body starting with "Target"
+    String.raw`\[Agent Relay\]`, // Injected instruction header
+    String.raw`MULTI-LINE:`, // Multi-line format instruction
+    String.raw`RECEIVE:`, // Receive instruction marker
   ].join('|'),
   'i' // Case insensitive
 );
@@ -157,10 +157,40 @@ export function isPlaceholderTargetFast(target: string): boolean {
 // eslint-disable-next-line no-control-regex
 const ANSI_PATTERN_COMPILED = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)|\r/g;
 
+// eslint-disable-next-line no-control-regex
+const CURSOR_FORWARD_CSI_COMPILED = /\x1b\[(\d*)C/g;
+
+const ORPHANED_CURSOR_FORWARD_CSI_COMPILED = /\[(\d*)C/g;
+
 /**
  * Precompiled orphaned CSI pattern.
  */
 const ORPHANED_CSI_COMPILED = /^\s*(\[(?:\?|\d)\d*[A-Za-z])+\s*/g;
+
+const ORPHANED_CSI_TOKEN_COMPILED = /\[(?:\?|\d)\d*[A-Za-z]/g;
+
+function cursorForwardSpaces(countText: string | undefined): string {
+  const count = Number.parseInt(countText || '1', 10);
+  const width = Number.isFinite(count) && count > 0 ? count : 1;
+  return ' '.repeat(width);
+}
+
+function replaceOrphanedCsiPrefix(match: string): string {
+  ORPHANED_CSI_TOKEN_COMPILED.lastIndex = 0;
+
+  let replacement = '';
+  let token = ORPHANED_CSI_TOKEN_COMPILED.exec(match);
+
+  while (token) {
+    const value = token[0];
+    if (value.endsWith('C')) {
+      replacement += cursorForwardSpaces(value.slice(1, -1));
+    }
+    token = ORPHANED_CSI_TOKEN_COMPILED.exec(match);
+  }
+
+  return replacement;
+}
 
 /**
  * Strip ANSI escape codes from a string.
@@ -168,11 +198,19 @@ const ORPHANED_CSI_COMPILED = /^\s*(\[(?:\?|\d)\d*[A-Za-z])+\s*/g;
  */
 export function stripAnsiFast(str: string): string {
   // Reset lastIndex for global patterns
+  CURSOR_FORWARD_CSI_COMPILED.lastIndex = 0;
+  ORPHANED_CURSOR_FORWARD_CSI_COMPILED.lastIndex = 0;
   ANSI_PATTERN_COMPILED.lastIndex = 0;
   ORPHANED_CSI_COMPILED.lastIndex = 0;
 
-  let result = str.replace(ANSI_PATTERN_COMPILED, '');
-  result = result.replace(ORPHANED_CSI_COMPILED, '');
+  let result = str.replace(CURSOR_FORWARD_CSI_COMPILED, (_match, count: string) =>
+    cursorForwardSpaces(count)
+  );
+  result = result.replace(ANSI_PATTERN_COMPILED, '');
+  result = result.replace(ORPHANED_CURSOR_FORWARD_CSI_COMPILED, (_match, count: string) =>
+    cursorForwardSpaces(count)
+  );
+  result = result.replace(ORPHANED_CSI_COMPILED, replaceOrphanedCsiPrefix);
   return result;
 }
 
@@ -236,16 +274,16 @@ export const StaticPatterns = {
  * Check if line is a spawn or release command.
  */
 export function isSpawnOrReleaseCommandFast(line: string): boolean {
-  return StaticPatterns.SPAWN_COMMAND.test(line) ||
-         StaticPatterns.RELEASE_COMMAND.test(line);
+  return StaticPatterns.SPAWN_COMMAND.test(line) || StaticPatterns.RELEASE_COMMAND.test(line);
 }
 
 /**
  * Check if a line contains an escaped fence end.
  */
 export function isEscapedFenceEndFast(line: string): boolean {
-  return StaticPatterns.ESCAPED_FENCE_END_CHECK.test(line) ||
-         StaticPatterns.ESCAPED_FENCE_START_CHECK.test(line);
+  return (
+    StaticPatterns.ESCAPED_FENCE_END_CHECK.test(line) || StaticPatterns.ESCAPED_FENCE_START_CHECK.test(line)
+  );
 }
 
 /**

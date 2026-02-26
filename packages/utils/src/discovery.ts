@@ -1,7 +1,7 @@
 /**
  * Socket Discovery & Cloud Workspace Detection
  *
- * Single source of truth for discovering relay daemon sockets,
+ * Single source of truth for discovering relay broker sockets,
  * cloud workspace environments, and agent identity.
  *
  * Previously duplicated in @agent-relay/mcp (cloud.ts). Now consolidated
@@ -44,7 +44,7 @@ export interface CloudConnectionInfo {
   project: string;
   isCloud: boolean;
   workspace?: CloudWorkspace;
-  daemonUrl?: string;
+  brokerUrl?: string;
 }
 
 // ============================================================================
@@ -91,12 +91,12 @@ export function isCloudWorkspace(): boolean {
  * Get the workspace-namespaced socket path.
  *
  * In cloud workspaces, sockets are stored at:
- * /tmp/relay/{WORKSPACE_ID}/sockets/daemon.sock
+ * /tmp/relay/{WORKSPACE_ID}/sockets/relay.sock
  *
  * This provides multi-tenant isolation on shared infrastructure.
  */
 export function getCloudSocketPath(workspaceId: string): string {
-  return `/tmp/relay/${workspaceId}/sockets/daemon.sock`;
+  return `/tmp/relay/${workspaceId}/sockets/relay.sock`;
 }
 
 /**
@@ -120,15 +120,12 @@ function getDataDir(): string {
   } else if (platform === 'win32') {
     return join(process.env.APPDATA || homedir(), 'agent-relay');
   } else {
-    return join(
-      process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'),
-      'agent-relay'
-    );
+    return join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'agent-relay');
   }
 }
 
 /**
- * Discover relay daemon socket with cloud-awareness.
+ * Discover relay broker socket with cloud-awareness.
  *
  * Priority order:
  * 1. RELAY_SOCKET environment variable (explicit path)
@@ -174,7 +171,7 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
 
   // 2. Cloud workspace socket (highest priority for cloud environments)
   // Return the determined path even if the socket file doesn't exist yet
-  // (daemon may not have started)
+  // (broker may not have started)
   const workspace = detectCloudWorkspace();
   if (workspace) {
     const cloudSocket = getCloudSocketPath(workspace.workspaceId);
@@ -191,7 +188,7 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
   const projectEnv = process.env.RELAY_PROJECT;
   if (projectEnv) {
     const dataDir = getDataDir();
-    const projectSocket = join(dataDir, 'projects', projectEnv, 'daemon.sock');
+    const projectSocket = join(dataDir, 'projects', projectEnv, 'relay.sock');
     return {
       socketPath: projectSocket,
       project: projectEnv,
@@ -200,7 +197,7 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
     };
   }
 
-  // 4. Project-local socket (created by daemon in project's .agent-relay directory)
+  // 4. Project-local socket (created by broker in project's .agent-relay directory)
   // This is the primary path for local development
   // First try cwd, then scan up to find project root
   const projectRoot = findProjectRoot(process.cwd());
@@ -264,7 +261,7 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
         .map((d) => d.name);
 
       for (const project of projects) {
-        const socketPath = join(projectsDir, project, 'daemon.sock');
+        const socketPath = join(projectsDir, project, 'relay.sock');
         if (existsSync(socketPath)) {
           return {
             socketPath,
@@ -282,14 +279,17 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
     }
   }
 
-  // 6. Check active daemon marker file (~/.agent-relay/active-daemon.json)
+  // 6. Check active broker marker file (~/.agent-relay/active-broker.json)
   // This allows discovery when cwd doesn't contain .agent-relay/
   try {
-    const markerPath = join(homedir(), '.agent-relay', 'active-daemon.json');
-    if (existsSync(markerPath)) {
+    const markerCandidates = [join(homedir(), '.agent-relay', 'active-broker.json')];
+    for (const markerPath of markerCandidates) {
+      if (!existsSync(markerPath)) {
+        continue;
+      }
       const marker = JSON.parse(readFileSync(markerPath, 'utf-8'));
       if (marker.pid && marker.socketPath) {
-        // Verify the daemon process is still alive
+        // Verify the broker process is still alive
         let alive = false;
         try {
           process.kill(marker.pid, 0);
@@ -355,10 +355,7 @@ export async function getWorkspaceStatus(
   workspace: CloudWorkspace
 ): Promise<{ status: string; agents?: string[] } | null> {
   try {
-    const response = await cloudApiRequest(
-      workspace,
-      `/api/workspaces/${workspace.workspaceId}/status`
-    );
+    const response = await cloudApiRequest(workspace, `/api/workspaces/${workspace.workspaceId}/status`);
 
     if (!response.ok) {
       return null;
@@ -375,18 +372,16 @@ export async function getWorkspaceStatus(
 // ============================================================================
 
 /**
- * Get connection info for the relay daemon.
+ * Get connection info for the relay broker.
  *
- * This function determines the best way to connect to the daemon:
+ * This function determines the best way to connect to the broker:
  * - In cloud environments: Uses workspace-namespaced socket
  * - In local environments: Uses standard socket discovery
  *
  * @param options - Optional configuration overrides
- * @returns Connection info or null if daemon not found
+ * @returns Connection info or null if broker not found
  */
-export function getConnectionInfo(
-  options: CloudConnectionOptions = {}
-): CloudConnectionInfo | null {
+export function getConnectionInfo(options: CloudConnectionOptions = {}): CloudConnectionInfo | null {
   const discovery = discoverSocket(options);
 
   if (!discovery) {
@@ -400,9 +395,9 @@ export function getConnectionInfo(
     workspace: discovery.workspace,
   };
 
-  // In cloud environments, we may also have a daemon URL for HTTP API access
+  // In cloud environments, we may also have a broker URL for HTTP API access
   if (discovery.workspace?.cloudApiUrl) {
-    info.daemonUrl = discovery.workspace.cloudApiUrl;
+    info.brokerUrl = discovery.workspace.cloudApiUrl;
   }
 
   return info;

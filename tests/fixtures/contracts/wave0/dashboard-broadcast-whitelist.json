@@ -1,0 +1,3 @@
+{
+  "required_kinds": ["relay_inbound", "agent_spawned", "agent_exited", "delivery_ack"]
+}

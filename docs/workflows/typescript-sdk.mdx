@@ -1,0 +1,397 @@
+---
+title: 'TypeScript SDK'
+description: 'Build workflows programmatically with the TypeScript SDK'
+---
+
+# TypeScript SDK for Workflows
+
+The TypeScript SDK provides a fluent builder API for defining and running multi-agent workflows with full type safety.
+
+## Installation
+
+```bash
+npm install @agent-relay/sdk
+```
+
+## Quick Start
+
+```typescript
+import { workflow, Models } from '@agent-relay/sdk/workflows';
+
+const result = await workflow('my-feature')
+  .pattern('dag')
+  .agent('planner', { cli: 'claude', model: Models.Claude.OPUS })
+  .agent('developer', { cli: 'codex', model: Models.Codex.CODEX_5_3 })
+  .step('plan', { agent: 'planner', task: 'Create implementation plan' })
+  .step('implement', { agent: 'developer', task: 'Build it', dependsOn: ['plan'] })
+  .run();
+
+console.log(result.status); // 'completed' | 'failed'
+```
+
+## Model Enums
+
+Use type-safe model enums instead of strings:
+
+```typescript
+import { Models } from '@agent-relay/sdk';
+
+// Claude models
+Models.Claude.OPUS; // 'opus'
+Models.Claude.SONNET; // 'sonnet'
+Models.Claude.HAIKU; // 'haiku'
+
+// Codex models
+Models.Codex.CODEX_5_3; // 'gpt-5.3-codex'
+Models.Codex.O3; // 'o3'
+Models.Codex.O4_MINI; // 'o4-mini'
+
+// Gemini models
+Models.Gemini.PRO_2_5; // 'gemini-2.5-pro'
+Models.Gemini.FLASH_2_5; // 'gemini-2.5-flash'
+
+// Cursor models (for Cursor IDE)
+Models.Cursor.CLAUDE_SONNET; // 'claude-3.5-sonnet'
+Models.Cursor.GPT_4O; // 'gpt-4o'
+```
+
+## Full Example: Feature Development
+
+```typescript
+import { workflow, Models, SwarmPatterns } from '@agent-relay/sdk/workflows';
+
+async function buildFeature(task: string) {
+  const result = await workflow('feature-build')
+    // Choose coordination pattern
+    .pattern(SwarmPatterns.HUB_SPOKE)
+
+    // Define agents with their CLIs and models
+    .agent('lead', {
+      cli: 'claude',
+      model: Models.Claude.OPUS,
+      role: 'Technical lead who coordinates the team',
+    })
+    .agent('backend', {
+      cli: 'codex',
+      model: Models.Codex.CODEX_5_3,
+      role: 'Backend developer',
+    })
+    .agent('frontend', {
+      cli: 'claude',
+      model: Models.Claude.SONNET,
+      role: 'Frontend developer',
+    })
+    .agent('reviewer', {
+      cli: 'claude',
+      model: Models.Claude.OPUS,
+      role: 'Code reviewer',
+    })
+
+    // Define workflow steps with dependencies
+    .step('plan', {
+      agent: 'lead',
+      task: `Break down this feature into tasks: ${task}`,
+    })
+    .step('backend-impl', {
+      agent: 'backend',
+      task: 'Implement the backend based on: {{steps.plan.output}}',
+      dependsOn: ['plan'],
+    })
+    .step('frontend-impl', {
+      agent: 'frontend',
+      task: 'Implement the frontend based on: {{steps.plan.output}}',
+      dependsOn: ['plan'],
+    })
+    .step('review', {
+      agent: 'reviewer',
+      task: 'Review the implementation',
+      dependsOn: ['backend-impl', 'frontend-impl'],
+    })
+    .step('finalize', {
+      agent: 'lead',
+      task: 'Finalize and merge based on review: {{steps.review.output}}',
+      dependsOn: ['review'],
+    })
+
+    // Error handling
+    .onError('retry', { maxRetries: 2, retryDelayMs: 5000 })
+
+    // Execute
+    .run();
+
+  return result;
+}
+
+// Run it
+const result = await buildFeature('Add user authentication with OAuth2');
+console.log('Status:', result.status);
+console.log('Steps:', result.steps);
+```
+
+## Workflow Builder API
+
+### `workflow(name)`
+
+Create a new workflow builder:
+
+```typescript
+const builder = workflow('my-workflow');
+```
+
+### `.pattern(pattern)`
+
+Set the coordination pattern:
+
+```typescript
+import { SwarmPatterns } from '@agent-relay/sdk/workflows';
+
+builder.pattern(SwarmPatterns.DAG); // Dependency-based execution
+builder.pattern(SwarmPatterns.HUB_SPOKE); // Central coordinator
+builder.pattern(SwarmPatterns.FAN_OUT); // Parallel execution
+builder.pattern(SwarmPatterns.PIPELINE); // Sequential stages
+builder.pattern(SwarmPatterns.CONSENSUS); // Voting/agreement
+builder.pattern(SwarmPatterns.MESH); // Full connectivity
+```
+
+### `.agent(name, options)`
+
+Define an agent:
+
+```typescript
+builder.agent('worker', {
+  cli: 'claude', // Required: claude, codex, gemini, cursor, aider, goose
+  model: Models.Claude.SONNET, // Optional: model to use
+  role: 'Implements features', // Optional: role description
+  interactive: true, // Optional: PTY mode (default: true)
+  retries: 2, // Optional: retry count
+  timeoutMs: 600000, // Optional: timeout in ms
+});
+```
+
+### `.step(name, options)`
+
+Define a workflow step:
+
+```typescript
+builder.step('implement', {
+  agent: 'worker', // Required: which agent runs this
+  task: 'Build the API', // Required: task description
+  dependsOn: ['plan'], // Optional: step dependencies
+  verification: {
+    // Optional: completion check
+    type: 'output_contains',
+    value: 'DONE',
+  },
+  retries: 1, // Optional: step-specific retries
+  timeoutMs: 300000, // Optional: step-specific timeout
+});
+```
+
+### `.onError(strategy, options)`
+
+Configure error handling:
+
+```typescript
+builder.onError('retry', { maxRetries: 2, retryDelayMs: 5000 });
+builder.onError('fail'); // Stop on first error
+builder.onError('skip'); // Skip failed steps, continue others
+```
+
+### `.maxConcurrency(n)`
+
+Limit parallel agents:
+
+```typescript
+builder.maxConcurrency(3); // Max 3 agents running simultaneously
+```
+
+### `.timeout(ms)`
+
+Set global timeout:
+
+```typescript
+builder.timeout(3600000); // 1 hour timeout for entire workflow
+```
+
+### `.channel(name)`
+
+Set relay channel for agent communication:
+
+```typescript
+builder.channel('feature-123'); // Agents communicate on this channel
+```
+
+## Execution Methods
+
+### `.run()`
+
+Execute the workflow and wait for completion:
+
+```typescript
+const result = await builder.run();
+
+console.log(result.status); // 'completed' | 'failed'
+console.log(result.steps); // Step results
+console.log(result.duration); // Execution time in ms
+```
+
+### `.toYaml()`
+
+Export workflow as YAML:
+
+```typescript
+const yaml = builder.toYaml();
+console.log(yaml);
+// version: "1.0"
+// name: my-workflow
+// agents:
+//   - name: worker
+//     cli: claude
+// ...
+```
+
+### `.toConfig()`
+
+Get the raw configuration object:
+
+```typescript
+const config = builder.toConfig();
+// Use with WorkflowRunner directly
+```
+
+## WorkflowRunner
+
+For more control, use `WorkflowRunner` directly:
+
+```typescript
+import { WorkflowRunner } from '@agent-relay/sdk/workflows';
+
+const runner = new WorkflowRunner({
+  cwd: '/path/to/project',
+  relay: { port: 3000 },
+});
+
+// Listen to events
+runner.on((event) => {
+  switch (event.type) {
+    case 'step:started':
+      console.log(`Starting: ${event.stepName}`);
+      break;
+    case 'step:completed':
+      console.log(`Completed: ${event.stepName}`);
+      break;
+    case 'step:failed':
+      console.error(`Failed: ${event.stepName}`, event.error);
+      break;
+  }
+});
+
+// Parse and execute
+const config = await runner.parseYamlFile('workflow.yaml');
+const run = await runner.execute(config, 'default', {
+  task: 'Build the feature',
+});
+
+// Control execution
+runner.pause();
+runner.unpause();
+runner.abort();
+
+// Resume a failed run
+const resumed = await runner.resume(run.id);
+```
+
+## Convenience Function
+
+For simple cases, use `runWorkflow`:
+
+```typescript
+import { runWorkflow } from '@agent-relay/sdk/workflows';
+
+const result = await runWorkflow('workflow.yaml', {
+  workflow: 'deploy',
+  vars: { environment: 'staging' },
+  onEvent: (event) => console.log(event.type),
+});
+```
+
+## Template Variables
+
+Reference previous step outputs in task descriptions:
+
+```typescript
+builder.step('plan', { agent: 'planner', task: 'Create a plan for: {{task}}' }).step('implement', {
+  agent: 'developer',
+  task: 'Implement based on: {{steps.plan.output}}', // Reference plan output
+  dependsOn: ['plan'],
+});
+```
+
+## Complete Example: Code Review Pipeline
+
+```typescript
+import { workflow, Models, SwarmPatterns } from '@agent-relay/sdk/workflows';
+
+async function reviewCode(prNumber: number) {
+  return await workflow('code-review')
+    .pattern(SwarmPatterns.FAN_OUT)
+
+    .agent('security', {
+      cli: 'claude',
+      model: Models.Claude.OPUS,
+      role: 'Security reviewer',
+    })
+    .agent('performance', {
+      cli: 'claude',
+      model: Models.Claude.SONNET,
+      role: 'Performance reviewer',
+    })
+    .agent('style', {
+      cli: 'codex',
+      model: Models.Codex.O3,
+      role: 'Style and best practices reviewer',
+    })
+    .agent('lead', {
+      cli: 'claude',
+      model: Models.Claude.OPUS,
+      role: 'Lead reviewer who synthesizes feedback',
+    })
+
+    // Parallel reviews
+    .step('security-review', {
+      agent: 'security',
+      task: `Review PR #${prNumber} for security issues`,
+    })
+    .step('perf-review', {
+      agent: 'performance',
+      task: `Review PR #${prNumber} for performance issues`,
+    })
+    .step('style-review', {
+      agent: 'style',
+      task: `Review PR #${prNumber} for code style and best practices`,
+    })
+
+    // Synthesis
+    .step('synthesize', {
+      agent: 'lead',
+      task: `Synthesize reviews and provide final recommendation:
+        Security: {{steps.security-review.output}}
+        Performance: {{steps.perf-review.output}}
+        Style: {{steps.style-review.output}}`,
+      dependsOn: ['security-review', 'perf-review', 'style-review'],
+    })
+
+    .run();
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Python SDK" icon="python" href="/workflows/python-sdk">
+    Same fluent API in Python.
+  </Card>
+  <Card title="Cloud Execution" icon="cloud" href="/workflows/cloud-execution">
+    Run workflows 24/7 in the cloud.
+  </Card>
+</CardGroup>

@@ -6,13 +6,8 @@
 
 import { randomUUID } from 'node:crypto';
 import * as acp from '@agentclientprotocol/sdk';
-import { RelayClient, type ClientConfig } from '@agent-relay/sdk';
-import type {
-  ACPBridgeConfig,
-  SessionState,
-  RelayMessage,
-  BridgePromptResult,
-} from './types.js';
+import { AgentRelay, type Agent, type Message } from '@agent-relay/sdk';
+import type { ACPBridgeConfig, SessionState, RelayMessage, BridgePromptResult } from './types.js';
 
 /**
  * Bounded circular cache for message deduplication.
@@ -62,7 +57,7 @@ export class RelayACPAgent implements acp.Agent {
   private static readonly RECONNECT_COOLDOWN_MS = 10_000;
 
   private readonly config: ACPBridgeConfig;
-  private relayClient: RelayClient | null = null;
+  private relay: AgentRelay | null = null;
   private connection: acp.AgentSideConnection | null = null;
   private sessions = new Map<string, SessionState>();
   private messageBuffer = new Map<string, RelayMessage[]>();
@@ -73,36 +68,21 @@ export class RelayACPAgent implements acp.Agent {
 
   constructor(config: ACPBridgeConfig) {
     this.config = config;
+    this.relay = this.createRelay();
   }
 
   /**
    * Start the ACP agent with stdio transport
    */
   async start(): Promise<void> {
-    // Connect to relay daemon
-    const relayConfig: Partial<ClientConfig> = {
-      agentName: this.config.agentName,
-      program: '@agent-relay/acp-bridge',
-      cli: 'acp-bridge',
-      quiet: true,
-    };
-
-    if (this.config.socketPath) {
-      relayConfig.socketPath = this.config.socketPath;
-    }
-
-    this.relayClient = new RelayClient(relayConfig);
+    this.relay = this.relay ?? this.createRelay();
     this.setupRelayHandlers();
 
     try {
-      await this.relayClient.connect();
-      this.debug('Connected to relay daemon via SDK');
-
-      // Subscribe to #general channel to receive broadcast messages
-      this.relayClient.subscribe('#general');
-      this.debug('Subscribed to #general channel');
+      await this.relay.getStatus();
+      this.debug('Connected to relay broker via broker SDK');
     } catch (err) {
-      this.debug('Failed to connect to relay daemon via SDK:', err);
+      this.debug('Failed to connect to relay broker via broker SDK:', err);
       // Continue anyway - we can still function without relay
     }
 
@@ -134,141 +114,101 @@ export class RelayACPAgent implements acp.Agent {
     this.dedupeCache.clear();
     this.closedSessionIds.clear();
 
-    this.relayClient?.destroy();
-    this.relayClient = null;
+    try {
+      await this.relay?.shutdown();
+    } catch (err) {
+      this.debug('Error during relay shutdown:', err);
+    }
+    this.relay = null;
     this.connection = null;
     this.debug('ACP agent stopped');
   }
 
   /**
-   * Wire up message, channel, state change, and error handlers on the relay client.
+   * Create a relay facade configured for this ACP bridge.
+   */
+  private createRelay(): AgentRelay {
+    return new AgentRelay({
+      brokerName: this.config.agentName,
+      channels: ['general'],
+    });
+  }
+
+  /**
+   * Wire up relay message handlers.
    */
   private setupRelayHandlers(): void {
-    if (!this.relayClient) return;
+    if (!this.relay) return;
 
-    this.relayClient.onMessage = (from, payload, messageId) => {
-      if (typeof payload.body !== 'string') {
-        return;
-      }
-
+    this.relay.onMessageReceived = (msg: Message) => {
       this.handleRelayMessage({
-        id: messageId,
-        from,
-        body: payload.body,
-        thread: payload.thread,
-        timestamp: Date.now(),
-        data: payload.data as Record<string, unknown> | undefined,
-      });
-    };
-
-    this.relayClient.onChannelMessage = (from, channel, body) => {
-      this.debug('Received channel message:', from, channel, body.substring(0, 50));
-
-      this.handleRelayMessage({
-        id: `channel-${randomUUID()}`,
-        from: `${from} [${channel}]`,
-        body,
+        id: msg.eventId,
+        from: msg.from,
+        body: msg.text,
+        thread: msg.threadId,
         timestamp: Date.now(),
       });
-    };
-
-    this.relayClient.onStateChange = (state) => {
-      this.debug('Relay client state:', state);
-
-      // Re-subscribe to #general on successful reconnect
-      if (state === 'READY' && this.relayClient) {
-        this.relayClient.subscribe('#general');
-        this.debug('Re-subscribed to #general after reconnect');
-      }
-    };
-
-    this.relayClient.onError = (error) => {
-      this.debug('Relay client error:', error);
     };
   }
 
   /**
-   * Attempt to reconnect to the relay daemon.
-   * Creates a fresh RelayClient to reset reconnect attempt counters.
+   * Attempt to reconnect to the relay broker with a fresh AgentRelay instance.
    */
   private async reconnectToRelay(): Promise<boolean> {
-    this.debug('Attempting to reconnect to relay daemon...');
+    this.debug('Attempting to reconnect to relay broker...');
 
-    if (this.relayClient) {
-      this.relayClient.destroy();
-      this.relayClient = null;
+    if (this.relay) {
+      try {
+        await this.relay.shutdown();
+      } catch (err) {
+        this.debug('Error shutting down stale relay instance:', err);
+      }
     }
 
-    const relayConfig: Partial<ClientConfig> = {
-      agentName: this.config.agentName,
-      program: '@agent-relay/acp-bridge',
-      cli: 'acp-bridge',
-      quiet: true,
-    };
-
-    if (this.config.socketPath) {
-      relayConfig.socketPath = this.config.socketPath;
-    }
-
-    this.relayClient = new RelayClient(relayConfig);
+    this.relay = this.createRelay();
     this.setupRelayHandlers();
 
     try {
-      await this.relayClient.connect();
-      this.debug('Reconnected to relay daemon');
-      this.relayClient.subscribe('#general');
-      this.debug('Re-subscribed to #general channel');
+      await this.relay.getStatus();
+      this.debug('Reconnected to relay broker');
       return true;
     } catch (err) {
-      this.debug('Failed to reconnect to relay daemon:', err);
+      this.debug('Failed to reconnect to relay broker:', err);
       return false;
     }
   }
 
   /**
-   * Ensure the relay client is connected and ready.
-   * If disconnected (SDK exhausted reconnect attempts), creates a fresh client.
-   * If in a transient state, waits briefly for READY.
+   * Ensure relay is responsive. Recreate relay instance if the broker is unavailable.
    */
   private async ensureRelayReady(): Promise<boolean> {
-    if (this.relayClient?.state === 'READY') {
-      return true;
+    if (!this.relay) {
+      return this.reconnectToRelay();
     }
 
-    if (!this.relayClient || this.relayClient.state === 'DISCONNECTED') {
-      // Deduplicate concurrent reconnect attempts
-      if (this.reconnectPromise) {
-        return this.reconnectPromise;
-      }
+    try {
+      await this.relay.getStatus();
+      return true;
+    } catch (err) {
+      this.debug('Relay status check failed:', err);
+    }
 
-      // Enforce cooldown to avoid rapid reconnect attempts
-      const elapsed = Date.now() - this.lastReconnectAttempt;
-      if (elapsed < RelayACPAgent.RECONNECT_COOLDOWN_MS) {
-        return false;
-      }
-
-      this.lastReconnectAttempt = Date.now();
-      this.reconnectPromise = this.reconnectToRelay().finally(() => {
-        this.reconnectPromise = null;
-      });
+    // Deduplicate concurrent reconnect attempts
+    if (this.reconnectPromise) {
       return this.reconnectPromise;
     }
 
-    // In a transient state (CONNECTING, HANDSHAKING, BACKOFF) — wait briefly.
-    // State changes asynchronously during await, so re-check the full type.
-    const client = this.relayClient;
-    const waitMs = 5000;
-    const startWait = Date.now();
-    while (Date.now() - startWait < waitMs) {
-      const currentState = client.state as string;
-      if (currentState === 'READY') return true;
-      if (currentState === 'DISCONNECTED') {
-        return this.ensureRelayReady();
-      }
-      await this.sleep(100);
+    // Enforce cooldown to avoid rapid reconnect attempts
+    const elapsed = Date.now() - this.lastReconnectAttempt;
+    if (elapsed < RelayACPAgent.RECONNECT_COOLDOWN_MS) {
+      return false;
     }
 
-    return false;
+    this.lastReconnectAttempt = Date.now();
+    this.reconnectPromise = this.reconnectToRelay().finally(() => {
+      this.reconnectPromise = null;
+    });
+    return this.reconnectPromise;
   }
 
   /**
@@ -463,14 +403,14 @@ export class RelayACPAgent implements acp.Agent {
       };
     }
 
-    if (!await this.ensureRelayReady()) {
+    if (!(await this.ensureRelayReady())) {
       await this.connection.sessionUpdate({
         sessionId,
         update: {
           sessionUpdate: 'agent_message_chunk',
           content: {
             type: 'text',
-            text: 'Agent Relay daemon is not connected. Please ensure the relay daemon is running.',
+            text: 'Agent Relay broker is not connected. Please ensure the relay broker is running.',
           },
         },
       });
@@ -509,7 +449,7 @@ export class RelayACPAgent implements acp.Agent {
 
     // Send "thinking" indicator with target info
     const targetInfo = hasTargets
-      ? `Sending to ${targets.map(t => `@${t}`).join(', ')}...\n\n`
+      ? `Sending to ${targets.map((t) => `@${t}`).join(', ')}...\n\n`
       : 'Broadcasting to all agents...\n\n';
 
     await this.connection.sessionUpdate({
@@ -524,28 +464,44 @@ export class RelayACPAgent implements acp.Agent {
     });
 
     // Send to specific agents or broadcast
-    // relayClient is guaranteed non-null after ensureRelayReady() succeeds
-    const relay = this.relayClient!;
-    let sent = false;
+    const relay = this.relay!;
+    const human = relay.human({ name: this.config.agentName });
+    let sentCount = 0;
     if (hasTargets) {
       // Send to each mentioned agent
       for (const target of targets) {
-        const result = relay.sendMessage(target, cleanMessage, 'message', undefined, session.id);
-        if (result) sent = true;
+        try {
+          await human.sendMessage({
+            to: target,
+            text: cleanMessage,
+            threadId: session.id,
+          });
+          sentCount += 1;
+        } catch (err) {
+          this.debug(`Failed to send message to @${target}:`, err);
+        }
       }
     } else {
-      // Broadcast to all agents
-      sent = relay.sendMessage('*', userMessage, 'message', undefined, session.id);
+      try {
+        await human.sendMessage({
+          to: '*',
+          text: userMessage,
+          threadId: session.id,
+        });
+        sentCount = 1;
+      } catch (err) {
+        this.debug('Failed to broadcast message:', err);
+      }
     }
 
-    if (!sent) {
+    if (sentCount === 0) {
       await this.connection.sessionUpdate({
         sessionId,
         update: {
           sessionUpdate: 'agent_message_chunk',
           content: {
             type: 'text',
-            text: 'Failed to send message to relay agents. Please check the relay daemon connection.',
+            text: 'Failed to send message to relay agents. Please check the relay broker connection.',
           },
         },
       });
@@ -770,8 +726,8 @@ export class RelayACPAgent implements acp.Agent {
       return true;
     }
 
-    if (!await this.ensureRelayReady()) {
-      await this.sendTextUpdate(sessionId, 'Relay daemon is not connected (cannot spawn).');
+    if (!(await this.ensureRelayReady())) {
+      await this.sendTextUpdate(sessionId, 'Relay broker is not connected (cannot spawn).');
       return true;
     }
 
@@ -779,18 +735,20 @@ export class RelayACPAgent implements acp.Agent {
     await this.sendTextUpdate(sessionId, `Spawning ${name} (${cli})${task ? `: ${task}` : ''}`);
 
     try {
-      const result = await this.relayClient!.spawn({
+      const relay = this.relay!;
+      const agent = await relay.spawnPty({
         name,
         cli,
         task,
-        waitForReady: true,
       });
-
-      if (result.success) {
-        const readyText = result.ready ? ' (ready)' : '';
-        await this.sendTextUpdate(sessionId, `Spawned ${name}${readyText}.`);
-      } else {
-        await this.sendTextUpdate(sessionId, `Failed to spawn ${name}: ${result.error || 'unknown error'}`);
+      try {
+        await relay.waitForAgentReady(name, 60_000);
+        await this.sendTextUpdate(sessionId, `Spawned ${agent.name} (ready).`);
+      } catch (readyErr) {
+        await this.sendTextUpdate(
+          sessionId,
+          `Spawned ${agent.name}, but it did not report ready within 60s: ${(readyErr as Error).message}`
+        );
       }
     } catch (err) {
       await this.sendTextUpdate(sessionId, `Spawn error for ${name}: ${(err as Error).message}`);
@@ -806,20 +764,23 @@ export class RelayACPAgent implements acp.Agent {
       return true;
     }
 
-    if (!await this.ensureRelayReady()) {
-      await this.sendTextUpdate(sessionId, 'Relay daemon is not connected (cannot release).');
+    if (!(await this.ensureRelayReady())) {
+      await this.sendTextUpdate(sessionId, 'Relay broker is not connected (cannot release).');
       return true;
     }
 
     await this.sendTextUpdate(sessionId, `Releasing ${name}...`);
 
     try {
-      const result = await this.relayClient!.release(name);
-      if (result.success) {
-        await this.sendTextUpdate(sessionId, `Released ${name}.`);
-      } else {
-        await this.sendTextUpdate(sessionId, `Failed to release ${name}: ${result.error || 'unknown error'}`);
+      const relay = this.relay!;
+      const agents: Agent[] = await relay.listAgents();
+      const agent = agents.find((entry) => entry.name === name);
+      if (!agent) {
+        await this.sendTextUpdate(sessionId, `Failed to release ${name}: agent not found.`);
+        return true;
       }
+      await agent.release();
+      await this.sendTextUpdate(sessionId, `Released ${name}.`);
     } catch (err) {
       await this.sendTextUpdate(sessionId, `Release error for ${name}: ${(err as Error).message}`);
     }
@@ -828,17 +789,17 @@ export class RelayACPAgent implements acp.Agent {
   }
 
   private async handleListAgentsCommand(sessionId: string): Promise<boolean> {
-    if (!await this.ensureRelayReady()) {
-      await this.sendTextUpdate(sessionId, 'Relay daemon is not connected (cannot list agents).');
+    if (!(await this.ensureRelayReady())) {
+      await this.sendTextUpdate(sessionId, 'Relay broker is not connected (cannot list agents).');
       return true;
     }
 
     try {
-      const agents = await this.relayClient!.listConnectedAgents();
+      const agents = await this.relay!.listAgents();
       if (!agents.length) {
         await this.sendTextUpdate(sessionId, 'No agents are currently connected.');
       } else {
-        const lines = agents.map((agent) => `- ${agent.name}${agent.cli ? ` (${agent.cli})` : ''}`);
+        const lines = agents.map((agent) => `- ${agent.name} (${agent.runtime})`);
         await this.sendTextUpdate(sessionId, ['Connected agents:', ...lines].join('\n'));
       }
     } catch (err) {
@@ -851,26 +812,23 @@ export class RelayACPAgent implements acp.Agent {
   private async handleStatusCommand(sessionId: string): Promise<boolean> {
     const lines: string[] = ['Agent Relay Status', ''];
 
-    if (!this.relayClient) {
+    if (!this.relay) {
       lines.push('Relay client: Not initialized');
       await this.sendTextUpdate(sessionId, lines.join('\n'));
       return true;
     }
 
-    const state = this.relayClient.state;
-    const isConnected = state === 'READY';
-
+    const isConnected = await this.ensureRelayReady();
     lines.push(`Connection: ${isConnected ? 'Connected' : 'Disconnected'}`);
-    lines.push(`State: ${state}`);
     lines.push(`Agent name: ${this.config.agentName}`);
 
     if (isConnected) {
-      // Try to get connected agents count
       try {
-        const agents = await this.relayClient.listConnectedAgents();
-        lines.push(`Connected agents: ${agents.length}`);
-      } catch {
-        // Ignore errors when listing agents
+        const status = await this.relay.getStatus();
+        lines.push(`Connected agents: ${status.agent_count}`);
+        lines.push(`Pending deliveries: ${status.pending_delivery_count}`);
+      } catch (err) {
+        lines.push(`Status details unavailable: ${(err as Error).message}`);
       }
     }
 

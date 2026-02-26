@@ -1,0 +1,82 @@
+version: '1.0'
+name: codex-exit-v3-file-sentinel
+description: >
+  EXIT EXPERIMENT #3: File sentinel + /exit combo.
+  Tests whether writing a completion file before /exit is more reliable than
+  /exit alone. Also confirms the file was actually written via a deterministic
+  verification step. Belt-and-suspenders: if codex writes the file but /exit
+  fails, the deterministic verify step still shows the file exists.
+
+swarm:
+  pattern: pipeline
+  maxConcurrency: 1
+  timeoutMs: 300000 # 5 min
+  channel: codex-exit-v3
+  idleNudge:
+    nudgeAfterMs: 60000
+    escalateAfterMs: 60000
+    maxNudges: 2
+
+agents:
+  - name: codex-worker
+    cli: codex
+    channels: [codex-exit-v3]
+    role: >
+      Writes a sentinel file to /tmp/codex-exit-test/sentinel.txt,
+      outputs FILE_WRITTEN, then immediately outputs /exit.
+
+workflows:
+  - name: test-v3-file-sentinel
+    description: >
+      Codex writes a file to prove it completed work, then /exits.
+      A deterministic step reads the file to confirm it was written.
+      If codex exits cleanly, both steps pass. If codex hangs after file write,
+      we learn /exit failed even with prior file evidence.
+    preflight:
+      - command: mkdir -p /tmp/codex-exit-test && rm -f /tmp/codex-exit-test/sentinel.txt
+        description: 'Clean slate — remove any prior sentinel file'
+
+    steps:
+      - name: write-and-exit
+        type: agent
+        agent: codex-worker
+        task: |
+          Your task has THREE parts. Complete them in strict order.
+
+          PART 1 — CREATE THE DIRECTORY:
+          Run this shell command (use your bash/terminal tool):
+            mkdir -p /tmp/codex-exit-test
+
+          PART 2 — WRITE THE SENTINEL FILE:
+          Write the following text to /tmp/codex-exit-test/sentinel.txt:
+            SENTINEL_WRITTEN
+
+          Use any method available to you (bash echo, file write tool, etc).
+          Then output to your terminal:
+            FILE_WRITTEN
+
+          PART 3 — TERMINATE IMMEDIATELY:
+          Output the following EXACTLY on its own line with nothing else:
+
+          /exit
+
+          The sequence of your terminal output should be:
+            FILE_WRITTEN
+            /exit
+
+          Do NOT output anything after /exit.
+          Do NOT wait for input after /exit.
+          The session ends when you output /exit.
+        verification:
+          type: output_contains
+          value: FILE_WRITTEN
+
+      - name: verify-sentinel
+        type: deterministic
+        dependsOn: [write-and-exit]
+        command: >
+          cat /tmp/codex-exit-test/sentinel.txt
+          && echo "VERIFY_PASSED"
+          || echo "VERIFY_FAILED: sentinel file not found"
+        captureOutput: true
+        failOnError: false

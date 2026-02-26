@@ -1,0 +1,43 @@
+version: '1.0'
+name: test-deterministic-pipeline
+description: >
+  Tests a pure deterministic pipeline with shell steps and output chaining.
+  No agents involved. Validates: step sequencing, captureOutput, {{steps.X.output}}
+  interpolation, failOnError, and the overall pipeline pattern.
+
+swarm:
+  pattern: pipeline
+  channel: test-det-pipeline
+  timeoutMs: 60000
+
+workflows:
+  - name: deterministic-only
+    steps:
+      - name: generate
+        type: deterministic
+        command: printf 'hello from step one\nvalue=42\n'
+        captureOutput: true
+        failOnError: true
+
+      - name: transform
+        type: deterministic
+        dependsOn: [generate]
+        command: >
+          echo "{{steps.generate.output}}" |
+          tr '[:lower:]' '[:upper:]'
+        captureOutput: true
+        failOnError: true
+
+      - name: verify
+        type: deterministic
+        dependsOn: [transform]
+        command: |
+          output="{{steps.transform.output}}"
+          if echo "$output" | grep -q "HELLO FROM STEP ONE"; then
+            echo "PIPELINE_OK"
+          else
+            echo "PIPELINE_FAIL: unexpected output: $output" >&2
+            exit 1
+          fi
+        captureOutput: true
+        failOnError: true

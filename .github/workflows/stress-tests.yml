@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'relay-pty/src/**'
+      - 'src/**'
       - 'packages/daemon/src/orchestrator.ts'
       - 'packages/daemon/src/relay-*.ts'
       - 'scripts/stress-test-*.sh'
@@ -14,7 +14,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'relay-pty/src/**'
+      - 'src/**'
       - 'packages/daemon/src/orchestrator.ts'
       - 'packages/daemon/src/relay-*.ts'
       - 'scripts/stress-test-*.sh'
@@ -25,63 +25,13 @@ on:
   workflow_dispatch:
   # Run weekly to catch performance regressions
   schedule:
-    - cron: '0 6 * * 1'  # Every Monday at 6 AM UTC
+    - cron: '0 6 * * 1' # Every Monday at 6 AM UTC
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  stress-test-relay-pty:
-    name: Relay-PTY Stress Tests
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        node-version: [20]
-      fail-fast: false
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run relay-pty stress tests
-        id: relay-pty-stress
-        run: |
-          chmod +x scripts/stress-test-relay-pty.sh
-          ./scripts/stress-test-relay-pty.sh > relay-pty-results.json || echo "exit_code=$?" >> $GITHUB_OUTPUT
-          cat relay-pty-results.json
-        continue-on-error: true
-
-      - name: Upload relay-pty results
-        uses: actions/upload-artifact@v4
-        with:
-          name: relay-pty-stress-results-${{ matrix.os }}-node${{ matrix.node-version }}
-          path: relay-pty-results.json
-          retention-days: 30
-
-      - name: Check relay-pty results
-        run: |
-          if ! node -e "
-            const fs = require('fs');
-            const results = JSON.parse(fs.readFileSync('relay-pty-results.json', 'utf8'));
-            const allPassed = Object.values(results).every(r => r.passed);
-            console.log('All tests passed:', allPassed);
-            process.exit(allPassed ? 0 : 1);
-          "; then
-            echo "::error::Relay-PTY stress tests failed"
-            exit 1
-          fi
-
   stress-test-orchestrator:
     name: Orchestrator Stress Tests
     runs-on: ${{ matrix.os }}
@@ -194,7 +144,7 @@ jobs:
 
   stress-test-summary:
     name: Stress Test Summary
-    needs: [stress-test-relay-pty, stress-test-orchestrator, stress-test-orchestrator-integration]
+    needs: [stress-test-orchestrator, stress-test-orchestrator-integration]
     runs-on: ubuntu-latest
     if: always()
 
@@ -208,20 +158,6 @@ jobs:
         run: |
           echo "## Stress Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Relay-PTY Tests" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          for file in stress-results/relay-pty-*/relay-pty-results.json; do
-            if [ -f "$file" ]; then
-              dirname=$(dirname "$file" | xargs basename)
-              echo "#### $dirname" >> $GITHUB_STEP_SUMMARY
-              echo '```json' >> $GITHUB_STEP_SUMMARY
-              cat "$file" >> $GITHUB_STEP_SUMMARY
-              echo '```' >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
-
           echo "### Orchestrator Mock Tests" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
@@ -251,7 +187,7 @@ jobs:
           done
 
       - name: Check overall status
-        if: needs.stress-test-relay-pty.result == 'failure' || needs.stress-test-orchestrator.result == 'failure' || needs.stress-test-orchestrator-integration.result == 'failure'
+        if: needs.stress-test-orchestrator.result == 'failure' || needs.stress-test-orchestrator-integration.result == 'failure'
         run: |
           echo "::error::One or more stress tests failed"
           exit 1

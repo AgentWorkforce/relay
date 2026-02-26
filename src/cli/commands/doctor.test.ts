@@ -5,7 +5,6 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
 let tempRoot: string;
 let dataDir: string;
-let storageConfig: { type?: string; path?: string };
 let mockStore: Map<string, string>;
 
 // Store availability in an object to ensure closure works correctly across module resets
@@ -22,9 +21,8 @@ vi.mock('@agent-relay/config', () => ({
   }),
 }));
 
-vi.mock('@agent-relay/storage/adapter', () => ({
-  getStorageConfigFromEnv: () => storageConfig,
-}));
+// doctor.ts now reads AGENT_RELAY_STORAGE_TYPE and AGENT_RELAY_STORAGE_PATH
+// env vars directly instead of importing getStorageConfigFromEnv
 
 vi.mock('better-sqlite3', () => {
   class MockBetterSqlite {
@@ -46,8 +44,7 @@ vi.mock('better-sqlite3', () => {
       }
       if (sql.includes('SELECT value FROM doctor_diagnostics')) {
         return {
-          get: (key: string) =>
-            this.store.has(key) ? { value: this.store.get(key) } : undefined,
+          get: (key: string) => (this.store.has(key) ? { value: this.store.get(key) } : undefined),
         };
       }
       if (sql.includes('DELETE FROM doctor_diagnostics')) {
@@ -86,41 +83,40 @@ vi.mock('node:sqlite', () => {
       }
     }
 
-        exec(_sql: string) {
-          // no-op
-        }
+    exec(_sql: string) {
+      // no-op
+    }
 
-        prepare(sql: string) {
-          if (sql.includes('INSERT OR REPLACE INTO doctor_diagnostics')) {
-            return {
-              run: (key: string, value: string) => {
-                this.store.set(key, value);
-              },
-            };
-          }
-          if (sql.includes('SELECT value FROM doctor_diagnostics')) {
-            return {
-              get: (key: string) =>
-                this.store.has(key) ? { value: this.store.get(key) } : undefined,
-            };
-          }
-          if (sql.includes('DELETE FROM doctor_diagnostics')) {
-            return {
-              run: (key: string) => {
-                this.store.delete(key);
-              },
-            };
-          }
-          return {
-            run: () => {},
-            get: () => ({ result: 1 }),
-          };
-        }
-
-        close() {
-          // no-op
-        }
+    prepare(sql: string) {
+      if (sql.includes('INSERT OR REPLACE INTO doctor_diagnostics')) {
+        return {
+          run: (key: string, value: string) => {
+            this.store.set(key, value);
+          },
+        };
       }
+      if (sql.includes('SELECT value FROM doctor_diagnostics')) {
+        return {
+          get: (key: string) => (this.store.has(key) ? { value: this.store.get(key) } : undefined),
+        };
+      }
+      if (sql.includes('DELETE FROM doctor_diagnostics')) {
+        return {
+          run: (key: string) => {
+            this.store.delete(key);
+          },
+        };
+      }
+      return {
+        run: () => {},
+        get: () => ({ result: 1 }),
+      };
+    }
+
+    close() {
+      // no-op
+    }
+  }
 
   return { DatabaseSync: MockNodeSqlite };
 });
@@ -145,10 +141,8 @@ function collectLogs() {
 beforeEach(() => {
   tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-test-'));
   dataDir = path.join(tempRoot, '.agent-relay');
-  storageConfig = {
-    type: 'sqlite',
-    path: path.join(dataDir, 'messages.sqlite'),
-  };
+  process.env.AGENT_RELAY_STORAGE_TYPE = 'sqlite';
+  process.env.AGENT_RELAY_STORAGE_PATH = path.join(dataDir, 'messages.sqlite');
   mockStore = new Map<string, string>();
   mockAvailability.betterAvailable = true;
   mockAvailability.nodeAvailable = true;
@@ -163,6 +157,8 @@ afterEach(() => {
   delete process.env.AGENT_RELAY_DOCTOR_NODE_VERSION;
   delete process.env.AGENT_RELAY_DOCTOR_NODE_SQLITE_AVAILABLE;
   delete process.env.AGENT_RELAY_DOCTOR_FORCE_BETTER_SQLITE3;
+  delete process.env.AGENT_RELAY_STORAGE_TYPE;
+  delete process.env.AGENT_RELAY_STORAGE_PATH;
   process.exitCode = undefined;
   vi.restoreAllMocks();
 });

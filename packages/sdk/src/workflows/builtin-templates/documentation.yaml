@@ -1,0 +1,120 @@
+version: '1.0'
+name: documentation
+description: 'Blueprint-style documentation workflow with deterministic file operations.'
+swarm:
+  pattern: handoff
+  maxConcurrency: 1
+  timeoutMs: 3000000
+  channel: swarm-documentation
+  idleNudge:
+    nudgeAfterMs: 120000
+    escalateAfterMs: 120000
+    maxNudges: 1
+agents:
+  - name: lead
+    cli: claude
+    role: 'Owns final editorial sign-off'
+  - name: researcher
+    cli: codex
+    role: 'Collects technical context and source details'
+    interactive: false
+  - name: writer
+    cli: codex
+    role: 'Drafts user-facing documentation'
+    interactive: false
+  - name: editor
+    cli: claude
+    role: 'Edits for accuracy, clarity, and structure'
+workflows:
+  - name: docs-production
+    description: 'Gather context, draft docs, edit, and publish summary.'
+    onError: skip
+    preflight:
+      - command: git status --porcelain
+        failIf: non-empty
+        description: 'Ensure working directory is clean'
+    steps:
+      # Deterministic: List existing docs
+      - name: list-docs
+        type: deterministic
+        command: find . -name "*.md" -o -name "*.mdx" 2>/dev/null | head -50 || echo "No docs found"
+
+      # Agent: Gather context
+      - name: gather-context
+        type: agent
+        agent: researcher
+        dependsOn: [list-docs]
+        task: |
+          Collect source context and required updates:
+          {{task}}
+
+          Existing documentation files:
+          {{steps.list-docs.output}}
+        verification:
+          type: output_contains
+          value: CONTEXT_COMPLETE
+
+      # Deterministic: Create docs branch
+      - name: create-branch
+        type: deterministic
+        dependsOn: [gather-context]
+        command: git checkout -b docs/{{branch-name}}
+
+      # Agent: Draft documentation
+      - name: draft
+        type: agent
+        agent: writer
+        dependsOn: [create-branch]
+        task: |
+          Draft documentation updates based on gathered context:
+          {{steps.gather-context.output}}
+        verification:
+          type: output_contains
+          value: DRAFT_COMPLETE
+
+      # Agent: Edit draft
+      - name: edit
+        type: agent
+        agent: editor
+        dependsOn: [draft]
+        task: |
+          Edit the draft for technical accuracy and readability:
+          {{steps.draft.output}}
+        verification:
+          type: output_contains
+          value: EDIT_COMPLETE
+
+      # Deterministic: Commit docs
+      - name: commit
+        type: deterministic
+        dependsOn: [edit]
+        command: 'git add -A && git commit -m "docs: {{steps.gather-context.output | first-line}}"'
+
+      # Deterministic: Push
+      - name: push
+        type: deterministic
+        dependsOn: [commit]
+        command: git push origin docs/{{branch-name}}
+
+      # Agent: Publish summary
+      - name: publish-summary
+        type: agent
+        agent: lead
+        dependsOn: [push]
+        task: |
+          Publish a final summary of documentation changes and open items.
+        verification:
+          type: output_contains
+          value: DONE
+coordination:
+  barriers:
+    - name: docs-ready
+      waitFor: [gather-context, draft, edit]
+      timeoutMs: 600000
+state:
+  backend: memory
+  ttlMs: 259200000
+  namespace: documentation
+errorHandling:
+  strategy: continue
+  notifyChannel: swarm-documentation

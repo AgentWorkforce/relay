@@ -1,0 +1,50 @@
+{
+  "id": "traj_1771528576300_f599cb22",
+  "version": 1,
+  "task": {
+    "title": "broker-sdk-superiority-workflow run #2ba5fad3",
+    "source": {
+      "system": "workflow-runner",
+      "id": "2ba5fad3c59e6e7e4e3f9446"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-02-19T19:16:16.300Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-19T19:16:16.300Z"
+    },
+    {
+      "name": "spec-analyst",
+      "role": "spec-analyst",
+      "joinedAt": "2026-02-19T19:16:20.816Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_52b133fb",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-19T19:16:16.300Z",
+      "events": [
+        {
+          "ts": 1771528576300,
+          "type": "note",
+          "content": "Workflow \"broker-sdk-superiority-workflow\" started with 24 steps"
+        },
+        {
+          "ts": 1771528576300,
+          "type": "note",
+          "content": "Parsed 24 steps, 23 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1771528580816,
+          "type": "note",
+          "content": "Step \"codebase-analysis\" assigned to agent \"spec-analyst\""
+        }
+      ]
+    }
+  ]
+}

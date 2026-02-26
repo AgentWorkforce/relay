@@ -1,0 +1,25 @@
+{
+  "id": "traj_mwiddu8j1xek",
+  "version": 1,
+  "task": {
+    "title": "Wave 4 stabilization: make cross-repo contract red tests green"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-23T20:55:22.810Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-contract-green",
+  "tags": [],
+  "_trace": {
+    "startRef": "3025a281c13783589e63dd7ae628691e7d961e0b",
+    "endRef": "3025a281c13783589e63dd7ae628691e7d961e0b"
+  },
+  "completedAt": "2026-02-23T21:04:54.926Z",
+  "retrospective": {
+    "summary": "Stabilized cross-repo contract fixtures in broker by implementing health/replay/ack guards and identity normalization; all six contract tests and full cargo suite are green.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

@@ -1,0 +1,223 @@
+version: '1.0'
+name: review-loop
+description: 'Implement a task with automated multi-perspective code review loop. Inspired by claude-review-loop pattern.'
+swarm:
+  pattern: review-loop
+  maxConcurrency: 4
+  timeoutMs: 3600000
+  channel: swarm-review-loop
+  idleNudge:
+    nudgeAfterMs: 180000
+    escalateAfterMs: 180000
+    maxNudges: 2
+agents:
+  - name: implementer
+    cli: claude
+    role: 'Senior developer implementing the task and addressing review feedback'
+  - name: reviewer-diff
+    cli: codex
+    role: 'Code quality reviewer focusing on git diff, tests, and potential bugs'
+    interactive: false
+  - name: reviewer-architecture
+    cli: claude
+    role: 'Architecture and design reviewer assessing structure and maintainability'
+    interactive: false
+  - name: reviewer-security
+    cli: codex
+    role: 'Security reviewer checking for OWASP Top 10 vulnerabilities'
+    interactive: false
+workflows:
+  - name: review-loop-workflow
+    description: 'Implement task, run parallel reviews, consolidate feedback, and address issues.'
+    onError: fail
+    steps:
+      # Phase 1: Implementation
+      - name: implement
+        type: agent
+        agent: implementer
+        task: |
+          Implement the following task:
+          {{task}}
+
+          When complete, output: IMPLEMENTATION COMPLETE
+        verification:
+          type: output_contains
+          value: IMPLEMENTATION COMPLETE
+
+      # Deterministic: Capture diff for review
+      - name: capture-diff
+        type: deterministic
+        dependsOn: [implement]
+        command: git diff HEAD~1 2>/dev/null || git diff 2>/dev/null || echo "No changes"
+        captureOutput: true
+
+      # Deterministic: Capture file list
+      - name: capture-files
+        type: deterministic
+        dependsOn: [capture-diff]
+        command: git diff --name-only HEAD~1 2>/dev/null || git diff --name-only 2>/dev/null || echo "No files"
+        captureOutput: true
+
+      # Phase 2: Parallel Reviews (fan-out)
+      - name: review-diff
+        type: agent
+        agent: reviewer-diff
+        dependsOn: [capture-files]
+        task: |
+          Review the git diff for code quality issues:
+
+          Focus areas:
+          - Code readability and clarity
+          - Test coverage (are new features tested?)
+          - Potential bugs or edge cases
+          - Error handling completeness
+
+          Changed files: {{steps.capture-files.output}}
+
+          Diff:
+          {{steps.capture-diff.output}}
+
+          Output format:
+          - If all looks good: REVIEW:PASS
+          - If issues found: REVIEW:ISSUES followed by numbered list of issues
+        verification:
+          type: output_contains
+          value: 'REVIEW:'
+
+      - name: review-architecture
+        type: agent
+        agent: reviewer-architecture
+        dependsOn: [capture-files]
+        task: |
+          Review the architecture and design:
+
+          Focus areas:
+          - Design patterns and best practices
+          - Separation of concerns
+          - Code organization and maintainability
+          - API design (if applicable)
+
+          Changed files: {{steps.capture-files.output}}
+
+          Diff:
+          {{steps.capture-diff.output}}
+
+          Output format:
+          - If all looks good: REVIEW:PASS
+          - If issues found: REVIEW:ISSUES followed by numbered list of issues
+        verification:
+          type: output_contains
+          value: 'REVIEW:'
+
+      - name: review-security
+        type: agent
+        agent: reviewer-security
+        dependsOn: [capture-files]
+        task: |
+          Security review for OWASP Top 10 vulnerabilities:
+
+          Focus areas:
+          - Injection vulnerabilities (SQL, command, XSS)
+          - Authentication and authorization issues
+          - Sensitive data exposure
+          - Security misconfiguration
+          - Input validation
+
+          Changed files: {{steps.capture-files.output}}
+
+          Diff:
+          {{steps.capture-diff.output}}
+
+          Output format:
+          - If secure: REVIEW:PASS
+          - If vulnerabilities found: REVIEW:ISSUES followed by numbered list with severity
+        verification:
+          type: output_contains
+          value: 'REVIEW:'
+
+      # Phase 3: Consolidate reviews
+      - name: consolidate
+        type: agent
+        agent: implementer
+        dependsOn: [review-diff, review-architecture, review-security]
+        task: |
+          Review all feedback from the code reviewers and consolidate findings:
+
+          ## Diff Review
+          {{steps.review-diff.output}}
+
+          ## Architecture Review
+          {{steps.review-architecture.output}}
+
+          ## Security Review
+          {{steps.review-security.output}}
+
+          Tasks:
+          1. Analyze each review's findings
+          2. Identify which issues are valid and should be addressed
+          3. Note any conflicting feedback
+          4. Create a prioritized action plan
+
+          Output: CONSOLIDATED with summary of issues to address (or NO_ISSUES if all reviews passed)
+        verification:
+          type: output_contains
+          value: CONSOLIDATED
+
+      # Phase 4: Address feedback (the loop)
+      - name: address-feedback
+        type: agent
+        agent: implementer
+        dependsOn: [consolidate]
+        task: |
+          Address the consolidated review feedback:
+
+          {{steps.consolidate.output}}
+
+          For each valid issue:
+          1. Make the necessary code changes
+          2. Explain what was fixed and why
+
+          If there were no issues to address, confirm the implementation is complete.
+
+          Output: ADDRESSED followed by summary of changes made (or NO_CHANGES_NEEDED)
+        verification:
+          type: output_contains
+          value: ADDRESSED
+        retries: 2
+        maxIterations: 3
+
+      # Final step: Completion summary
+      - name: complete
+        type: agent
+        agent: implementer
+        dependsOn: [address-feedback]
+        task: |
+          Provide a final summary of the completed work:
+
+          Original task: {{task}}
+
+          Include:
+          1. What was implemented
+          2. Key decisions made
+          3. Review feedback that was addressed
+          4. Any remaining considerations or follow-up items
+
+          Output: DONE
+        verification:
+          type: output_contains
+          value: DONE
+
+coordination:
+  barriers:
+    - name: reviews-complete
+      waitFor: [review-diff, review-architecture, review-security]
+      timeoutMs: 900000
+  consensusStrategy: majority
+state:
+  backend: memory
+  ttlMs: 21600000
+  namespace: review-loop
+errorHandling:
+  strategy: continue
+  maxRetries: 2
+  notifyChannel: swarm-review-loop

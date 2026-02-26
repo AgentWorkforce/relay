@@ -1,0 +1,53 @@
+{
+  "id": "traj_73z7pfe5wnif",
+  "version": 1,
+  "task": {
+    "title": "Fix duplicate up startup failure and broker lock diagnostics"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-23T07:54:35.041Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-23T07:56:23.029Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_4fpspuwsz44y",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-23T07:56:23.029Z",
+      "events": [
+        {
+          "ts": 1771833383031,
+          "type": "decision",
+          "content": "Prevent duplicate up from clobbering broker.pid and hide lock cause: Prevent duplicate up from clobbering broker.pid and hide lock cause",
+          "raw": {
+            "question": "Prevent duplicate up from clobbering broker.pid and hide lock cause",
+            "chosen": "Prevent duplicate up from clobbering broker.pid and hide lock cause",
+            "alternatives": [],
+            "reasoning": "A second up was overwriting or deleting pid state and surfacing only code=1; preflight checks plus stderr context make failure deterministic and actionable"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-23T07:56:26.397Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": [],
+  "_trace": {
+    "startRef": "e0c3cbdf20f4e7d08e69f5a5490594bf5a186e03",
+    "endRef": "e0c3cbdf20f4e7d08e69f5a5490594bf5a186e03"
+  },
+  "completedAt": "2026-02-23T07:56:26.397Z",
+  "retrospective": {
+    "summary": "Improved up startup diagnostics and duplicate-run protection; broker lock failures now surface root cause; validated with tests and live repro",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  }
+}

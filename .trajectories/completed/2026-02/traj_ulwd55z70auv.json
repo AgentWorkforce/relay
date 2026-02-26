@@ -1,0 +1,53 @@
+{
+  "id": "traj_ulwd55z70auv",
+  "version": 1,
+  "task": {
+    "title": "Replace daemon terminology and logic with broker across CLI/dashboard"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-23T08:14:28.359Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-23T08:24:27.280Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_wnb1afll8fww",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-23T08:24:27.280Z",
+      "events": [
+        {
+          "ts": 1771835067281,
+          "type": "decision",
+          "content": "Adopt broker-first cloud endpoints with daemon fallback: Adopt broker-first cloud endpoints with daemon fallback",
+          "raw": {
+            "question": "Adopt broker-first cloud endpoints with daemon fallback",
+            "chosen": "Adopt broker-first cloud endpoints with daemon fallback",
+            "alternatives": [],
+            "reasoning": "Cloud/server versions may still expose /api/daemons, so use /api/brokers first and transparently fall back on 404 to avoid breakage during rollout."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-23T08:24:31.800Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": [],
+  "_trace": {
+    "startRef": "e0c3cbdf20f4e7d08e69f5a5490594bf5a186e03",
+    "endRef": "e0c3cbdf20f4e7d08e69f5a5490594bf5a186e03"
+  },
+  "completedAt": "2026-02-23T08:24:31.800Z",
+  "retrospective": {
+    "summary": "Replaced daemon terminology with broker across CLI, config/utils, and dashboard; switched to broker-first cloud endpoints with compatibility fallbacks and validated via tests/typecheck.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

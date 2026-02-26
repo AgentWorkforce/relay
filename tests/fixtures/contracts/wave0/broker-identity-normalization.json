@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {
+      "input": "broker-951762d5",
+      "normalized": "Dashboard"
+    },
+    {
+      "input": "human:orchestrator",
+      "normalized": "Dashboard"
+    },
+    {
+      "input": "Lead",
+      "normalized": "Lead"
+    }
+  ]
+}

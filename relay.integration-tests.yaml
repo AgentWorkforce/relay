@@ -1,0 +1,614 @@
+version: '1.0'
+name: integration-test-suite
+description: >
+  Multi-team DAG: a director designs the harness spec, then five parallel teams
+  (each a lead + workers on a dedicated channel) implement their test track.
+  A fix team handles compile errors and test failures. A review team gates approval.
+swarm:
+  pattern: dag
+  maxConcurrency: 5
+  timeoutMs: 7200000
+  channel: integration-tests
+  idleNudge:
+    nudgeAfterMs: 600000 # 10 min — agents read files and think before producing output
+    escalateAfterMs: 600000 # 10 min more before force-release
+    maxNudges: 2
+
+agents:
+  # ── Director ────────────────────────────────────────────────────────────────
+  - name: director
+    cli: claude
+    channels: [integration-tests]
+    role: 'Designs the overall harness spec. Posts to #integration-tests for all teams.'
+    constraints:
+      model: opus # Highest-stakes design: reads entire codebase, produces authoritative spec
+
+  # ── Harness track (P0): WorkflowRunner integration + fake-CLI shim ──────────
+  - name: harness-lead
+    cli: claude
+    channels: [harness-track, integration-tests]
+    role: 'Leads P0. Assigns files to workers on #harness-track, reviews output.'
+    constraints:
+      model: sonnet # Coordination + code review within a focused track
+
+  - name: harness-worker-util
+    cli: codex
+    channels: [harness-track]
+    role: 'Writes workflow-runner-harness.ts (fake-CLI shim + WorkflowRunnerHarness class).'
+    constraints:
+      model: gpt-5.3-codex # Non-trivial TypeScript class + bash shim; deep reasoning
+
+  - name: harness-worker-tests
+    cli: codex
+    channels: [harness-track]
+    role: 'Writes workflow-runner.test.ts (5 runner integration tests).'
+    constraints:
+      model: gpt-5.3-codex-spark # Well-specified tests from lead's channel post; speed matters
+
+  # ── Chaining track (P1): output variable interpolation ──────────────────────
+  - name: chaining-lead
+    cli: claude
+    channels: [chaining-track, integration-tests]
+    role: 'Leads P1. Assigns and reviews output-chaining.test.ts.'
+    constraints:
+      model: sonnet
+
+  - name: chaining-worker
+    cli: codex
+    channels: [chaining-track]
+    role: 'Writes output-chaining.test.ts (5 interpolation tests).'
+    constraints:
+      model: gpt-5.3-codex-spark # Mechanical test writing from spec
+
+  # ── Observability track (P2): trajectories + onEvent + Relaycast ────────────
+  - name: obs-lead
+    cli: claude
+    channels: [obs-track, integration-tests]
+    role: 'Leads P2. Assigns trajectory and event tests to workers on #obs-track.'
+    constraints:
+      model: sonnet
+
+  - name: obs-worker-trajectory
+    cli: codex
+    channels: [obs-track]
+    role: 'Writes trajectory.test.ts (file lifecycle and chapter recording tests).'
+    constraints:
+      model: gpt-5.3-codex-spark
+
+  - name: obs-worker-events
+    cli: codex
+    channels: [obs-track]
+    role: 'Writes events-relaycast.test.ts (onEvent order and Relaycast channel tests).'
+    constraints:
+      model: gpt-5.3-codex-spark
+
+  # ── CLI track (P3): binary integration ──────────────────────────────────────
+  - name: cli-lead
+    cli: claude
+    channels: [cli-track, integration-tests]
+    role: 'Leads P3. Assigns and reviews cli-commands.test.ts.'
+    constraints:
+      model: sonnet
+
+  - name: cli-worker
+    cli: codex
+    channels: [cli-track]
+    role: 'Writes cli-commands.test.ts (version, dry-run, spawn/release/send tests).'
+    constraints:
+      model: gpt-5.3-codex # Process spawning + binary resolution; needs careful reasoning
+
+  # ── Patterns track (P4): swarm pattern semantics ────────────────────────────
+  - name: patterns-lead
+    cli: claude
+    channels: [patterns-track, integration-tests]
+    role: 'Leads P4. Assigns DAG and error-handling tests to workers on #patterns-track.'
+    constraints:
+      model: sonnet
+
+  - name: patterns-worker-dag
+    cli: codex
+    channels: [patterns-track]
+    role: 'Writes swarm-dag.test.ts (serial, parallel-fan, maxConcurrency tests).'
+    constraints:
+      model: gpt-5.3-codex-spark
+
+  - name: patterns-worker-errors
+    cli: codex
+    channels: [patterns-track]
+    role: 'Writes swarm-errors.test.ts (retry, fail-fast, maxIterations tests).'
+    constraints:
+      model: gpt-5.3-codex-spark
+
+  # ── Fix team: compile errors and test failures ───────────────────────────────
+  - name: fix-lead
+    cli: claude
+    channels: [fix-track, integration-tests]
+    role: 'Triages errors. Posts assignments to #fix-track. Gates on worker completion.'
+    constraints:
+      model: sonnet # Diagnosis requires reasoning; coordination is the main job
+
+  - name: fix-worker
+    cli: codex
+    channels: [fix-track]
+    role: 'Applies fixes directed by fix-lead on #fix-track.'
+    constraints:
+      model: gpt-5.3-codex-spark # Mechanical fix application from precise instructions
+
+  # ── Review team ──────────────────────────────────────────────────────────────
+  - name: review-lead
+    cli: claude
+    channels: [review-track, integration-tests]
+    role: 'Coordinates final review on #review-track. Gates DONE signal.'
+    constraints:
+      model: opus # Final quality gate; must catch subtle assertion or coverage gaps
+
+  - name: reviewer
+    cli: claude
+    channels: [review-track]
+    role: 'Reviews test files: assertions, cleanup, CI-safety, import conventions.'
+    constraints:
+      model: opus # Detailed correctness review benefits from full reasoning capacity
+
+workflows:
+  - name: build-integration-tests
+    description: >
+      Design → 5 parallel teams → fix gates → review team.
+    onError: retry
+    preflight:
+      - command: ls tests/integration/broker/workflow-ci.test.ts
+        description: 'Confirm existing broker test infrastructure is present'
+      - command: ls packages/sdk/src/workflows/runner.ts
+        description: 'Confirm WorkflowRunner source is present'
+      #- command: git status --porcelain | grep -v '\.trajectories/' | grep -v 'relay\.integration-tests\.yaml' || true
+      #failIf: non-empty
+      #description: 'Ensure working directory is clean (trajectories and workflow file ignored)'
+
+    steps:
+      # ── Wave 1: Design ──────────────────────────────────────────────────────
+
+      - name: design
+        type: agent
+        agent: director
+        task: |
+          Analyze the codebase and produce the integration test harness spec.
+
+          Read:
+            tests/integration/broker/workflow-ci.test.ts
+            tests/integration/broker/utils/broker-harness.ts
+            packages/sdk/src/workflows/runner.ts
+            packages/sdk/src/workflows/builder.ts
+            packages/sdk/src/workflows/types.ts
+
+          Spec must cover:
+          1. Fake-CLI shim: bash script named "claude", reads stdin, prints
+             $FAKE_OUTPUT (default: "DONE"), exits 0. Goes in tmp dir on PATH.
+          2. WorkflowRunnerHarness class: start/stop, runWorkflow(config, vars),
+             getEvents(), getTrajectory(cwd). Wraps BrokerHarness internally.
+          3. Per-track file assignments and their key imports/interfaces.
+          4. Import conventions: .js extensions, @agent-relay/sdk subpaths.
+          5. Shared assertion helpers needed across tracks.
+
+          Post the complete spec to #integration-tests.
+          All five track leads will read it from there.
+          Output: DESIGN_COMPLETE
+        verification:
+          type: output_contains
+          value: DESIGN_COMPLETE
+
+      # ── Wave 2: Five parallel implementation teams ──────────────────────────
+      # All teams start together after design. Each coordinates on its own channel.
+
+      # ─ Harness team ─────────────────────────────────────────────────────────
+
+      - name: harness-lead-coord
+        type: agent
+        agent: harness-lead
+        dependsOn: [design]
+        task: |
+          Lead the P0 harness track. Channel: #harness-track.
+          Workers: harness-worker-util, harness-worker-tests.
+
+          1. Read the spec from #integration-tests (director just posted it).
+          2. Post to #harness-track:
+             - For harness-worker-util: the WorkflowRunnerHarness class interface,
+               the fake-CLI shim script, and the BrokerHarness import path.
+             - For harness-worker-tests: the 5 test cases (single step, serial dag,
+               parallel fan, retry, deterministic+agent mix) with exact assertions.
+          3. Answer questions from workers via #harness-track.
+          4. When both post completion, read their files and verify consistency.
+          5. Request fixes on the channel if needed.
+          Output: HARNESS_COMPLETE
+        verification:
+          type: output_contains
+          value: HARNESS_COMPLETE
+
+      - name: harness-util
+        type: agent
+        agent: harness-worker-util
+        dependsOn: [design]
+        task: |
+          Join #harness-track. harness-lead will post your assignment there.
+          Write: tests/integration/broker/utils/workflow-runner-harness.ts
+          Ask questions on the channel. Post UTIL_WRITTEN when done.
+          Output: UTIL_WRITTEN
+        verification:
+          type: output_contains
+          value: UTIL_WRITTEN
+
+      - name: harness-tests
+        type: agent
+        agent: harness-worker-tests
+        dependsOn: [design]
+        task: |
+          Join #harness-track. harness-lead will post your assignment there.
+          Write: tests/integration/broker/workflow-runner.test.ts
+          Ask questions on the channel. Post RUNNER_TESTS_WRITTEN when done.
+          Output: RUNNER_TESTS_WRITTEN
+        verification:
+          type: output_contains
+          value: RUNNER_TESTS_WRITTEN
+
+      # ─ Chaining team ────────────────────────────────────────────────────────
+
+      - name: chaining-lead-coord
+        type: agent
+        agent: chaining-lead
+        dependsOn: [design]
+        task: |
+          Lead the P1 chaining track. Channel: #chaining-track.
+          Worker: chaining-worker.
+
+          1. Read the spec from #integration-tests.
+          2. Post to #chaining-track the 5 test cases for output-chaining.test.ts:
+             single-hop interpolation, multi-hop A→B→C, top-level vars, deterministic
+             output into agent task, missing reference error.
+          3. Confirm the worker's file is correct and complete.
+          Output: CHAINING_COMPLETE
+        verification:
+          type: output_contains
+          value: CHAINING_COMPLETE
+
+      - name: chaining-impl
+        type: agent
+        agent: chaining-worker
+        dependsOn: [design]
+        task: |
+          Join #chaining-track. chaining-lead will post your assignment.
+          Write: tests/integration/broker/output-chaining.test.ts
+          Post CHAINING_WRITTEN when done.
+          Output: CHAINING_WRITTEN
+        verification:
+          type: output_contains
+          value: CHAINING_WRITTEN
+
+      # ─ Observability team ───────────────────────────────────────────────────
+
+      - name: obs-lead-coord
+        type: agent
+        agent: obs-lead
+        dependsOn: [design]
+        task: |
+          Lead the P2 observability track. Channel: #obs-track.
+          Workers: obs-worker-trajectory, obs-worker-events.
+
+          1. Read the spec from #integration-tests.
+          2. Post to #obs-track:
+             - For obs-worker-trajectory: 4 tests — file written during run, moves to
+               completed/, chapters recorded, agent names in chapters.
+             - For obs-worker-events: 2 tests — onEvent fires in order (run:started →
+               step:started → step:completed → run:completed), Relaycast channel
+               receives messages (skip if no RELAY_API_KEY).
+          3. The two files must not overlap in what they test.
+          4. Confirm both files are correct.
+          Output: OBS_COMPLETE
+        verification:
+          type: output_contains
+          value: OBS_COMPLETE
+
+      - name: obs-trajectory
+        type: agent
+        agent: obs-worker-trajectory
+        dependsOn: [design]
+        task: |
+          Join #obs-track. obs-lead will post your assignment.
+          Write: tests/integration/broker/trajectory.test.ts
+          Post TRAJECTORY_WRITTEN when done.
+          Output: TRAJECTORY_WRITTEN
+        verification:
+          type: output_contains
+          value: TRAJECTORY_WRITTEN
+
+      - name: obs-events
+        type: agent
+        agent: obs-worker-events
+        dependsOn: [design]
+        task: |
+          Join #obs-track. obs-lead will post your assignment.
+          Write: tests/integration/broker/events-relaycast.test.ts
+          Post EVENTS_WRITTEN when done.
+          Output: EVENTS_WRITTEN
+        verification:
+          type: output_contains
+          value: EVENTS_WRITTEN
+
+      # ─ CLI team ─────────────────────────────────────────────────────────────
+
+      - name: cli-lead-coord
+        type: agent
+        agent: cli-lead
+        dependsOn: [design]
+        task: |
+          Lead the P3 CLI track. Channel: #cli-track.
+          Worker: cli-worker.
+
+          1. Read the spec from #integration-tests.
+          2. Post to #cli-track the 4 test cases for cli-commands.test.ts:
+             version exits 0, swarm --dry-run prints plan, workflows list shows
+             templates, spawn+agents+release lifecycle (skip if no broker binary).
+          3. Include the resolveCliBin() helper approach.
+          4. Confirm the worker's file is correct.
+          Output: CLI_COMPLETE
+        verification:
+          type: output_contains
+          value: CLI_COMPLETE
+
+      - name: cli-impl
+        type: agent
+        agent: cli-worker
+        dependsOn: [design]
+        task: |
+          Join #cli-track. cli-lead will post your assignment.
+          Write: tests/integration/broker/cli-commands.test.ts
+          Post CLI_WRITTEN when done.
+          Output: CLI_WRITTEN
+        verification:
+          type: output_contains
+          value: CLI_WRITTEN
+
+      # ── Wave 3: Patterns team (starts after harness is confirmed done) ───────
+
+      - name: patterns-lead-coord
+        type: agent
+        agent: patterns-lead
+        dependsOn: [harness-lead-coord]
+        task: |
+          Lead the P4 patterns track. Channel: #patterns-track.
+          Workers: patterns-worker-dag, patterns-worker-errors.
+          WorkflowRunnerHarness is now written and available.
+
+          1. Read the spec from #integration-tests.
+          2. Post to #patterns-track:
+             - For patterns-worker-dag: serial A→B→C (timestamp ordering), parallel fan
+               A→{B,C}→D (concurrent start), maxConcurrency:2 with 4 steps.
+             - For patterns-worker-errors: retry (fail twice then pass), fail-fast
+               (first failure aborts), maxIterations loop (3 iterations).
+          3. Confirm both files import from workflow-runner-harness.js correctly.
+          Output: PATTERNS_COMPLETE
+        verification:
+          type: output_contains
+          value: PATTERNS_COMPLETE
+
+      - name: patterns-dag
+        type: agent
+        agent: patterns-worker-dag
+        dependsOn: [harness-lead-coord]
+        task: |
+          Join #patterns-track. patterns-lead will post your assignment.
+          Write: tests/integration/broker/swarm-dag.test.ts
+          Post DAG_WRITTEN when done.
+          Output: DAG_WRITTEN
+        verification:
+          type: output_contains
+          value: DAG_WRITTEN
+
+      - name: patterns-errors
+        type: agent
+        agent: patterns-worker-errors
+        dependsOn: [harness-lead-coord]
+        task: |
+          Join #patterns-track. patterns-lead will post your assignment.
+          Write: tests/integration/broker/swarm-errors.test.ts
+          Post ERRORS_WRITTEN when done.
+          Output: ERRORS_WRITTEN
+        verification:
+          type: output_contains
+          value: ERRORS_WRITTEN
+
+      # ── Wave 4: Compile gate ────────────────────────────────────────────────
+
+      - name: compile
+        type: deterministic
+        dependsOn:
+          - harness-lead-coord
+          - chaining-lead-coord
+          - obs-lead-coord
+          - cli-lead-coord
+          - patterns-lead-coord
+        command: >
+          npx tsc -p tests/integration/broker/tsconfig.json --noEmit 2>&1
+          || echo "COMPILE_FAILED"
+        captureOutput: true
+        failOnError: false
+
+      # ── Wave 5: Compile fix team (if needed) ────────────────────────────────
+
+      - name: compile-fix-lead
+        type: agent
+        agent: fix-lead
+        dependsOn: [compile]
+        task: |
+          Compile output: {{steps.compile.output}}
+
+          If COMPILE_FAILED is present, lead the fix on #fix-track with fix-worker.
+          For each error: post file + line + error to #fix-track. Assign to fix-worker.
+          Common issues: missing .js import extensions, wrong type imports,
+          @agent-relay/sdk subpath not exported.
+          When fix-worker resolves all errors, output: COMPILE_FIXED
+          If no errors, output: COMPILE_OK
+        verification:
+          type: output_contains
+          value: 'COMPILE_FIXED|COMPILE_OK'
+
+      - name: compile-fix-worker
+        type: agent
+        agent: fix-worker
+        dependsOn: [compile]
+        task: |
+          Join #fix-track. fix-lead will post any compile errors to fix.
+          Apply each fix. Post FIX_APPLIED after each change.
+          Output: FIXES_DONE
+        verification:
+          type: output_contains
+          value: FIXES_DONE
+
+      # ── Wave 6: Final compile ────────────────────────────────────────────────
+
+      - name: compile-final
+        type: deterministic
+        dependsOn: [compile-fix-lead]
+        command: npx tsc -p tests/integration/broker/tsconfig.json
+        failOnError: true
+
+      # ── Wave 7: Run tests ────────────────────────────────────────────────────
+
+      - name: run-tests
+        type: deterministic
+        dependsOn: [compile-final]
+        command: >
+          node --test
+            tests/integration/broker/dist/workflow-runner.test.js
+            tests/integration/broker/dist/output-chaining.test.js
+            tests/integration/broker/dist/trajectory.test.js
+            tests/integration/broker/dist/events-relaycast.test.js
+            tests/integration/broker/dist/cli-commands.test.js
+            tests/integration/broker/dist/swarm-dag.test.js
+            tests/integration/broker/dist/swarm-errors.test.js
+          2>&1
+        captureOutput: true
+        failOnError: false
+
+      # ── Wave 8: Test fix team (if needed) ───────────────────────────────────
+
+      - name: test-fix-lead
+        type: agent
+        agent: fix-lead
+        dependsOn: [run-tests]
+        task: |
+          Test output: {{steps.run-tests.output}}
+
+          Lead the test-fix team on #fix-track with fix-worker.
+          For each failing test, post to #fix-track:
+            - Test name, failure message, file location
+            - Diagnosis: test logic error vs implementation gap vs timing issue
+            - Prescribed fix
+          Direct fix-worker. Review each fix. Confirm the correction is right
+          before moving to the next. Never weaken assertions — add t.skip with
+          a reason instead if the behavior truly requires a real LLM key.
+          When all tests pass, output: TESTS_FIXED
+          If tests were already green, output: TESTS_OK
+        maxIterations: 3
+        verification:
+          type: output_contains
+          value: 'TESTS_FIXED|TESTS_OK'
+
+      - name: test-fix-worker
+        type: agent
+        agent: fix-worker
+        dependsOn: [run-tests]
+        task: |
+          Join #fix-track. fix-lead will post failing tests and prescribe fixes.
+          Apply each fix exactly as directed. Post FIX_APPLIED after each change.
+          If you disagree with a fix, say so on the channel before applying.
+          Output: FIXES_DONE
+        verification:
+          type: output_contains
+          value: FIXES_DONE
+
+      # ── Wave 9: Final test run (must be green) ───────────────────────────────
+
+      - name: run-final
+        type: deterministic
+        dependsOn: [test-fix-lead]
+        command: >
+          npx tsc -p tests/integration/broker/tsconfig.json &&
+          node --test
+            tests/integration/broker/dist/workflow-runner.test.js
+            tests/integration/broker/dist/output-chaining.test.js
+            tests/integration/broker/dist/trajectory.test.js
+            tests/integration/broker/dist/events-relaycast.test.js
+            tests/integration/broker/dist/cli-commands.test.js
+            tests/integration/broker/dist/swarm-dag.test.js
+            tests/integration/broker/dist/swarm-errors.test.js
+          2>&1
+        captureOutput: true
+        failOnError: true
+
+      # ── Wave 10: Review team ────────────────────────────────────────────────
+
+      - name: review-coord
+        type: agent
+        agent: review-lead
+        dependsOn: [run-final]
+        task: |
+          Lead the final review on #review-track with reviewer.
+          Tests are green: {{steps.run-final.output}}
+
+          Post to #review-track the 8 files to review and these criteria:
+            1. Assertions are precise — not just assert.ok(value) but assert.equal/deepEqual
+            2. Every test body has finally { await harness.stop() }
+            3. Tests that need RELAY_API_KEY start with: if (!process.env.RELAY_API_KEY) { t.skip(...); return; }
+            4. All import paths end in .js
+            5. No test was weakened to pass (no empty test bodies)
+            6. Each of the 5 gap areas (P0–P4) has ≥ 3 meaningful cases
+
+          Collect reviewer's findings. If any file fails a criterion, post back to
+          #integration-tests tagging the relevant track lead to fix it.
+          When all criteria pass, output: DONE
+        verification:
+          type: output_contains
+          value: DONE
+
+      - name: review-pass
+        type: agent
+        agent: reviewer
+        dependsOn: [run-final]
+        task: |
+          Join #review-track. review-lead will post the files and criteria.
+          Review each file against the criteria. Post findings per file.
+          Be specific: file:line for each issue.
+          Post REVIEW_DONE when your pass is complete.
+          Output: REVIEW_DONE
+        verification:
+          type: output_contains
+          value: REVIEW_DONE
+
+coordination:
+  barriers:
+    - name: all-tracks-done
+      waitFor:
+        - harness-lead-coord
+        - chaining-lead-coord
+        - obs-lead-coord
+        - cli-lead-coord
+        - patterns-lead-coord
+      timeoutMs: 3600000
+    - name: tests-green
+      waitFor: [run-final]
+      timeoutMs: 600000
+
+state:
+  backend: memory
+  ttlMs: 86400000
+  namespace: integration-tests
+
+errorHandling:
+  strategy: retry
+  maxRetries: 1
+  retryDelayMs: 10000
+  notifyChannel: integration-tests
+
+trajectories:
+  enabled: true
+  reflectOnBarriers: true
+  reflectOnConverge: true
+  autoDecisions: true

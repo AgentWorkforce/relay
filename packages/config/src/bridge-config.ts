@@ -13,7 +13,7 @@ export interface ProjectConfig {
   path: string;
   /** Project identifier (derived from path hash) */
   id: string;
-  /** Socket path for this project's daemon */
+  /** Socket path for this project's broker */
   socketPath: string;
   /** Lead agent name (auto-generated from dirname if not specified) */
   leadName: string;
@@ -27,10 +27,13 @@ const CONFIG_PATHS = [
 ];
 
 interface BridgeConfigFile {
-  projects?: Record<string, {
-    lead?: string;
-    cli?: string;
-  }>;
+  projects?: Record<
+    string,
+    {
+      lead?: string;
+      cli?: string;
+    }
+  >;
   defaultCli?: string;
 }
 
@@ -73,10 +76,7 @@ export function getDefaultLeadName(projectPath: string): string {
 /**
  * Resolve projects from CLI args and/or config file
  */
-export function resolveProjects(
-  cliPaths: string[],
-  cliOverride?: string
-): ProjectConfig[] {
+export function resolveProjects(cliPaths: string[], cliOverride?: string): ProjectConfig[] {
   const config = loadBridgeConfig();
   const projects: ProjectConfig[] = [];
 
@@ -130,9 +130,9 @@ export function resolveProjects(
 }
 
 /**
- * Validate that daemons are running for all projects
+ * Validate that brokers are running for all projects
  */
-export function validateDaemons(projects: ProjectConfig[]): {
+export function validateBrokers(projects: ProjectConfig[]): {
   valid: ProjectConfig[];
   missing: ProjectConfig[];
 } {
@@ -151,25 +151,23 @@ export function validateDaemons(projects: ProjectConfig[]): {
 }
 
 /**
- * Start daemons for missing projects
+ * Start brokers for missing projects
  */
-export async function startMissingDaemons(
-  projects: ProjectConfig[]
-): Promise<void> {
+export async function startMissingBrokers(projects: ProjectConfig[]): Promise<void> {
   const { execAsync } = await import('./bridge-utils.js');
 
   for (const project of projects) {
-    console.log(`[bridge] Starting daemon for ${project.id}...`);
+    console.log(`[bridge] Starting broker for ${project.id}...`);
     try {
-      // Start daemon in background
+      // Start broker in background
       await execAsync(`cd "${project.path}" && agent-relay up &`, {
         timeout: 5000,
       });
       // Wait for socket to appear
       await waitForSocket(project.socketPath, 10000);
-      console.log(`[bridge] Daemon started for ${project.id}`);
+      console.log(`[bridge] Broker started for ${project.id}`);
     } catch (err) {
-      console.error(`[bridge] Failed to start daemon for ${project.id}:`, err);
+      console.error(`[bridge] Failed to start broker for ${project.id}:`, err);
     }
   }
 }
@@ -183,7 +181,7 @@ async function waitForSocket(socketPath: string, timeoutMs: number): Promise<voi
     if (fs.existsSync(socketPath)) {
       return;
     }
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 200));
   }
   throw new Error(`Timeout waiting for socket: ${socketPath}`);
 }

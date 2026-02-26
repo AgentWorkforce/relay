@@ -5,7 +5,7 @@ description: Wire protocol specification for agent-relay communication
 
 # Protocol Reference
 
-Agent Relay uses a binary-framed JSON protocol for communication between agents and the daemon. This document specifies the wire format, message types, and handshake flow.
+Agent Relay uses a binary-framed JSON protocol for communication between agents and the broker. This document specifies the wire format, message types, and handshake flow.
 
 ## Protocol Version
 
@@ -27,10 +27,10 @@ Messages are transmitted as length-prefixed frames with an optional format indic
 +----------------+------------------+-------------------+
 ```
 
-| Field | Size | Description |
-|-------|------|-------------|
-| Format | 1 byte | `0x00` = JSON, `0x01` = MessagePack |
-| Length | 4 bytes | Big-endian payload length |
+| Field   | Size    | Description                          |
+| ------- | ------- | ------------------------------------ |
+| Format  | 1 byte  | `0x00` = JSON, `0x01` = MessagePack  |
+| Length  | 4 bytes | Big-endian payload length            |
 | Payload | N bytes | JSON or MessagePack encoded envelope |
 
 ### Legacy Frame Format
@@ -47,10 +47,10 @@ Legacy format always uses JSON encoding.
 
 ### Limits
 
-| Parameter | Value |
-|-----------|-------|
-| Max frame size | 1 MiB (1,048,576 bytes) |
-| Header size | 5 bytes (modern) or 4 bytes (legacy) |
+| Parameter      | Value                                |
+| -------------- | ------------------------------------ |
+| Max frame size | 1 MiB (1,048,576 bytes)              |
+| Header size    | 5 bytes (modern) or 4 bytes (legacy) |
 
 ---
 
@@ -60,14 +60,14 @@ Every message is wrapped in an envelope with standard metadata:
 
 ```typescript
 interface Envelope<T = unknown> {
-  v: number;          // Protocol version (1)
-  type: MessageType;  // Message type
-  id: string;         // Unique message ID
-  ts: number;         // Unix timestamp (milliseconds)
-  from?: string;      // Sender agent name
-  to?: string | '*';  // Recipient or broadcast
-  topic?: string;     // Optional topic for pub/sub
-  payload: T;         // Type-specific payload
+  v: number; // Protocol version (1)
+  type: MessageType; // Message type
+  id: string; // Unique message ID
+  ts: number; // Unix timestamp (milliseconds)
+  from?: string; // Sender agent name
+  to?: string | '*'; // Recipient or broadcast
+  topic?: string; // Optional topic for pub/sub
+  payload: T; // Type-specific payload
 }
 ```
 
@@ -94,65 +94,65 @@ interface Envelope<T = unknown> {
 
 ### Handshake Messages
 
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `HELLO` | Client -> Daemon | Initial connection handshake |
-| `WELCOME` | Daemon -> Client | Handshake acknowledgment |
-| `BYE` | Client -> Daemon | Graceful disconnect |
+| Type      | Direction        | Description                  |
+| --------- | ---------------- | ---------------------------- |
+| `HELLO`   | Client -> Broker | Initial connection handshake |
+| `WELCOME` | Broker -> Client | Handshake acknowledgment     |
+| `BYE`     | Client -> Broker | Graceful disconnect          |
 
 ### Core Messaging
 
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `SEND` | Client -> Daemon | Send message to agent(s) |
-| `DELIVER` | Daemon -> Client | Deliver message to recipient |
-| `ACK` | Bidirectional | Acknowledge message receipt |
-| `NACK` | Daemon -> Client | Negative acknowledgment |
+| Type      | Direction        | Description                  |
+| --------- | ---------------- | ---------------------------- |
+| `SEND`    | Client -> Broker | Send message to agent(s)     |
+| `DELIVER` | Broker -> Client | Deliver message to recipient |
+| `ACK`     | Bidirectional    | Acknowledge message receipt  |
+| `NACK`    | Broker -> Client | Negative acknowledgment      |
 
 ### Flow Control
 
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `PING` | Daemon -> Client | Heartbeat request |
-| `PONG` | Client -> Daemon | Heartbeat response |
-| `BUSY` | Daemon -> Client | Backpressure signal |
-| `RESUME` | Daemon -> Client | Resume after backpressure |
+| Type     | Direction        | Description               |
+| -------- | ---------------- | ------------------------- |
+| `PING`   | Broker -> Client | Heartbeat request         |
+| `PONG`   | Client -> Broker | Heartbeat response        |
+| `BUSY`   | Broker -> Client | Backpressure signal       |
+| `RESUME` | Broker -> Client | Resume after backpressure |
 
 ### State Management
 
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `STATE` | Bidirectional | State update |
-| `SYNC` | Daemon -> Client | Session sync (legacy) |
-| `SYNC_SNAPSHOT` | Daemon -> Client | Full state snapshot |
-| `SYNC_DELTA` | Daemon -> Client | Incremental state update |
-| `SUBSCRIBE` | Client -> Daemon | Subscribe to topic |
-| `UNSUBSCRIBE` | Client -> Daemon | Unsubscribe from topic |
+| Type            | Direction        | Description              |
+| --------------- | ---------------- | ------------------------ |
+| `STATE`         | Bidirectional    | State update             |
+| `SYNC`          | Broker -> Client | Session sync (legacy)    |
+| `SYNC_SNAPSHOT` | Broker -> Client | Full state snapshot      |
+| `SYNC_DELTA`    | Broker -> Client | Incremental state update |
+| `SUBSCRIBE`     | Client -> Broker | Subscribe to topic       |
+| `UNSUBSCRIBE`   | Client -> Broker | Unsubscribe from topic   |
 
 ### Shadow Agents
 
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `SHADOW_BIND` | Client -> Daemon | Attach as shadow to primary |
-| `SHADOW_UNBIND` | Client -> Daemon | Detach from primary |
+| Type            | Direction        | Description                 |
+| --------------- | ---------------- | --------------------------- |
+| `SHADOW_BIND`   | Client -> Broker | Attach as shadow to primary |
+| `SHADOW_UNBIND` | Client -> Broker | Detach from primary         |
 
 ### Channel Messaging
 
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `CHANNEL_JOIN` | Client -> Daemon | Join a channel |
-| `CHANNEL_LEAVE` | Client -> Daemon | Leave a channel |
-| `CHANNEL_MESSAGE` | Bidirectional | Message to channel |
-| `CHANNEL_INFO` | Daemon -> Client | Channel metadata |
-| `CHANNEL_MEMBERS` | Daemon -> Client | Channel member list |
-| `CHANNEL_TYPING` | Client -> Daemon | Typing indicator |
+| Type              | Direction        | Description         |
+| ----------------- | ---------------- | ------------------- |
+| `CHANNEL_JOIN`    | Client -> Broker | Join a channel      |
+| `CHANNEL_LEAVE`   | Client -> Broker | Leave a channel     |
+| `CHANNEL_MESSAGE` | Bidirectional    | Message to channel  |
+| `CHANNEL_INFO`    | Broker -> Client | Channel metadata    |
+| `CHANNEL_MEMBERS` | Broker -> Client | Channel member list |
+| `CHANNEL_TYPING`  | Client -> Broker | Typing indicator    |
 
 ### Utility
 
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `LOG` | Client -> Daemon | Agent output for streaming |
-| `ERROR` | Daemon -> Client | Protocol error |
+| Type    | Direction        | Description                |
+| ------- | ---------------- | -------------------------- |
+| `LOG`   | Client -> Broker | Agent output for streaming |
+| `ERROR` | Broker -> Client | Protocol error             |
 
 ---
 
@@ -161,7 +161,7 @@ interface Envelope<T = unknown> {
 ### Connection Sequence
 
 ```
-Client                          Daemon
+Client                          Broker
    |                               |
    |-------- HELLO --------------->|
    |                               |
@@ -175,23 +175,23 @@ Client                          Daemon
 
 ```typescript
 interface HelloPayload {
-  agent: string;                    // Agent name (required)
+  agent: string; // Agent name (required)
   capabilities: {
-    ack: boolean;                   // Supports ACK messages
-    resume: boolean;                // Supports session resume
-    max_inflight: number;           // Max concurrent messages
-    supports_topics: boolean;       // Supports pub/sub topics
+    ack: boolean; // Supports ACK messages
+    resume: boolean; // Supports session resume
+    max_inflight: number; // Max concurrent messages
+    supports_topics: boolean; // Supports pub/sub topics
   };
-  entityType?: 'agent' | 'user';    // Entity type (default: 'agent')
-  cli?: string;                     // CLI identifier
-  program?: string;                 // Program identifier
-  model?: string;                   // Model identifier
-  task?: string;                    // Task/role description
-  workingDirectory?: string;        // Working directory
-  displayName?: string;             // Display name (users)
-  avatarUrl?: string;               // Avatar URL (users)
+  entityType?: 'agent' | 'user'; // Entity type (default: 'agent')
+  cli?: string; // CLI identifier
+  program?: string; // Program identifier
+  model?: string; // Model identifier
+  task?: string; // Task/role description
+  workingDirectory?: string; // Working directory
+  displayName?: string; // Display name (users)
+  avatarUrl?: string; // Avatar URL (users)
   session?: {
-    resume_token?: string;          // Token for session resume
+    resume_token?: string; // Token for session resume
   };
 }
 ```
@@ -221,11 +221,11 @@ interface HelloPayload {
 
 ```typescript
 interface WelcomePayload {
-  session_id: string;        // Assigned session ID
-  resume_token?: string;     // Token for future session resume
+  session_id: string; // Assigned session ID
+  resume_token?: string; // Token for future session resume
   server: {
     max_frame_bytes: number; // Server's max frame size
-    heartbeat_ms: number;    // Heartbeat interval
+    heartbeat_ms: number; // Heartbeat interval
   };
 }
 ```
@@ -257,10 +257,10 @@ interface WelcomePayload {
 
 ```typescript
 interface SendPayload {
-  kind: PayloadKind;              // Message type
-  body: string;                   // Message content
+  kind: PayloadKind; // Message type
+  body: string; // Message content
   data?: Record<string, unknown>; // Structured data
-  thread?: string;                // Thread ID for grouping
+  thread?: string; // Thread ID for grouping
 }
 
 type PayloadKind = 'message' | 'action' | 'state' | 'thinking';
@@ -272,17 +272,17 @@ Optional metadata can be attached to SEND messages:
 
 ```typescript
 interface SendMeta {
-  requires_ack?: boolean;   // Require recipient ACK
-  ttl_ms?: number;          // Time-to-live in ms
-  importance?: number;      // 0-100, higher is more important
-  replyTo?: string;         // Correlation ID for replies
-  sync?: SyncMeta;          // For synchronous messaging
+  requires_ack?: boolean; // Require recipient ACK
+  ttl_ms?: number; // Time-to-live in ms
+  importance?: number; // 0-100, higher is more important
+  replyTo?: string; // Correlation ID for replies
+  sync?: SyncMeta; // For synchronous messaging
 }
 
 interface SyncMeta {
-  correlationId: string;    // For matching response
-  timeoutMs?: number;       // Timeout for blocking
-  blocking: boolean;        // Block until ACK
+  correlationId: string; // For matching response
+  timeoutMs?: number; // Timeout for blocking
+  blocking: boolean; // Block until ACK
 }
 ```
 
@@ -313,9 +313,9 @@ Delivered messages include additional delivery metadata:
 
 ```typescript
 interface DeliveryInfo {
-  seq: number;           // Sequence number for this stream
-  session_id: string;    // Recipient's session ID
-  originalTo?: string;   // Original 'to' field ('*' for broadcasts)
+  seq: number; // Sequence number for this stream
+  session_id: string; // Recipient's session ID
+  originalTo?: string; // Original 'to' field ('*' for broadcasts)
 }
 ```
 
@@ -344,13 +344,13 @@ interface DeliveryInfo {
 
 ```typescript
 interface AckPayload {
-  ack_id: string;          // ID of acknowledged message
-  seq: number;             // Sequence number
+  ack_id: string; // ID of acknowledged message
+  seq: number; // Sequence number
   cumulative_seq?: number; // Cumulative acknowledgment
-  sack?: number[];         // Selective ACK list
-  correlationId?: string;  // For sync messaging
-  response?: boolean;      // Has response data
-  responseData?: unknown;  // Response payload
+  sack?: number[]; // Selective ACK list
+  correlationId?: string; // For sync messaging
+  response?: boolean; // Has response data
+  responseData?: unknown; // Response payload
 }
 ```
 
@@ -358,10 +358,10 @@ interface AckPayload {
 
 ```typescript
 interface NackPayload {
-  ack_id: string;                               // Message ID
+  ack_id: string; // Message ID
   code?: 'BUSY' | 'INVALID' | 'FORBIDDEN' | 'STALE';
-  reason?: string;                               // Legacy
-  message?: string;                              // Error description
+  reason?: string; // Legacy
+  message?: string; // Error description
 }
 ```
 
@@ -369,17 +369,12 @@ interface NackPayload {
 
 ```typescript
 interface ErrorPayload {
-  code: ErrorCode;    // Error code
-  message: string;    // Error description
-  fatal: boolean;     // Connection should close
+  code: ErrorCode; // Error code
+  message: string; // Error description
+  fatal: boolean; // Connection should close
 }
 
-type ErrorCode =
-  | 'BAD_REQUEST'
-  | 'UNAUTHORIZED'
-  | 'NOT_FOUND'
-  | 'INTERNAL'
-  | 'RESUME_TOO_OLD';
+type ErrorCode = 'BAD_REQUEST' | 'UNAUTHORIZED' | 'NOT_FOUND' | 'INTERNAL' | 'RESUME_TOO_OLD';
 ```
 
 ---
@@ -390,10 +385,10 @@ type ErrorCode =
 
 ```typescript
 interface ChannelJoinPayload {
-  channel: string;        // Channel name (e.g., '#general')
-  displayName?: string;   // Display name for member list
-  avatarUrl?: string;     // Avatar URL
-  member?: string;        // Admin: add this member
+  channel: string; // Channel name (e.g., '#general')
+  displayName?: string; // Display name for member list
+  avatarUrl?: string; // Avatar URL
+  member?: string; // Admin: add this member
 }
 ```
 
@@ -401,21 +396,21 @@ interface ChannelJoinPayload {
 
 ```typescript
 interface ChannelMessagePayload {
-  channel: string;                     // Target channel
-  body: string;                        // Message content
-  thread?: string;                     // Thread ID
-  attachments?: MessageAttachment[];   // File attachments
-  data?: Record<string, unknown>;      // Metadata
-  mentions?: string[];                 // Mentioned users/agents
+  channel: string; // Target channel
+  body: string; // Message content
+  thread?: string; // Thread ID
+  attachments?: MessageAttachment[]; // File attachments
+  data?: Record<string, unknown>; // Metadata
+  mentions?: string[]; // Mentioned users/agents
 }
 ```
 
 ### Channel Naming Conventions
 
-| Pattern | Type | Example |
-|---------|------|---------|
-| `#name` | Public channel | `#general`, `#dev` |
-| `dm:a:b` | Direct message | `dm:alice:bob` |
+| Pattern        | Type            | Example              |
+| -------------- | --------------- | -------------------- |
+| `#name`        | Public channel  | `#general`, `#dev`   |
+| `dm:a:b`       | Direct message  | `dm:alice:bob`       |
 | `private:name` | Private channel | `private:team-leads` |
 
 ---
@@ -426,25 +421,20 @@ interface ChannelMessagePayload {
 
 ```typescript
 interface ShadowBindPayload {
-  primaryAgent: string;            // Agent to shadow
-  speakOn?: SpeakOnTrigger[];      // When to speak
-  receiveIncoming?: boolean;       // Receive messages TO primary
-  receiveOutgoing?: boolean;       // Receive messages FROM primary
+  primaryAgent: string; // Agent to shadow
+  speakOn?: SpeakOnTrigger[]; // When to speak
+  receiveIncoming?: boolean; // Receive messages TO primary
+  receiveOutgoing?: boolean; // Receive messages FROM primary
 }
 
-type SpeakOnTrigger =
-  | 'SESSION_END'
-  | 'CODE_WRITTEN'
-  | 'REVIEW_REQUEST'
-  | 'EXPLICIT_ASK'
-  | 'ALL_MESSAGES';
+type SpeakOnTrigger = 'SESSION_END' | 'CODE_WRITTEN' | 'REVIEW_REQUEST' | 'EXPLICIT_ASK' | 'ALL_MESSAGES';
 ```
 
 ### SHADOW_UNBIND Payload
 
 ```typescript
 interface ShadowUnbindPayload {
-  primaryAgent: string;   // Agent to stop shadowing
+  primaryAgent: string; // Agent to stop shadowing
 }
 ```
 
@@ -452,23 +442,23 @@ interface ShadowUnbindPayload {
 
 ## Heartbeat
 
-The daemon sends periodic PING messages to verify client connectivity:
+The broker sends periodic PING messages to verify client connectivity:
 
 ```typescript
 interface PingPayload {
-  nonce: string;   // Random string to echo back
+  nonce: string; // Random string to echo back
 }
 
 interface PongPayload {
-  nonce: string;   // Echoed nonce from PING
+  nonce: string; // Echoed nonce from PING
 }
 ```
 
 **Default Configuration:**
 
-| Parameter | Value |
-|-----------|-------|
-| Heartbeat interval | 5000ms |
+| Parameter          | Value          |
+| ------------------ | -------------- |
+| Heartbeat interval | 5000ms         |
 | Timeout multiplier | 6x (30s total) |
 
 Clients should respond to PING with PONG within the timeout period.
@@ -477,12 +467,12 @@ Clients should respond to PING with PONG within the timeout period.
 
 ## Backpressure
 
-When the daemon is overloaded, it sends a BUSY message:
+When the broker is overloaded, it sends a BUSY message:
 
 ```typescript
 interface BusyPayload {
-  retry_after_ms: number;   // Wait before sending
-  queue_depth: number;      // Current queue size
+  retry_after_ms: number; // Wait before sending
+  queue_depth: number; // Current queue size
 }
 ```
 
@@ -515,7 +505,7 @@ const frame = encodeFrame({
   id: generateId(),
   ts: Date.now(),
   to: 'Agent',
-  payload: { kind: 'message', body: 'Hello' }
+  payload: { kind: 'message', body: 'Hello' },
 });
 socket.write(frame);
 ```
@@ -538,6 +528,7 @@ if (hasMessagePack()) {
 ```
 
 MessagePack provides:
+
 - Smaller message sizes
 - Faster serialization/deserialization
 - Binary data support

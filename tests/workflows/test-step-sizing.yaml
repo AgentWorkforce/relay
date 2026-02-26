@@ -1,0 +1,66 @@
+version: '1.0'
+name: test-step-sizing
+description: >
+  Demonstrates the correct step-sizing principle: one agent step = one clear,
+  bounded deliverable. Compares a correctly-sized step (succeeds fast) against
+  a deliberately oversized step (too many concerns in one prompt) to show why
+  splitting matters. Use this as a reference for authoring durable workflows.
+
+swarm:
+  pattern: dag
+  channel: test-step-sizing
+  timeoutMs: 300000 # 5 min
+
+agents:
+  - name: worker
+    cli: claude
+    preset: worker
+    constraints:
+      model: sonnet
+
+workflows:
+  - name: step-sizing
+    steps:
+      # GOOD: one step, one deliverable, small input injected directly
+      - name: good-small-task
+        type: agent
+        agent: worker
+        task: |
+          Count the number of vowels in this string: "the quick brown fox"
+
+          Output only: VOWEL_COUNT=<number>
+          Then: TASK_DONE
+        verification:
+          type: output_contains
+          value: TASK_DONE
+
+      # GOOD: chained — second step gets the output of the first injected, not discovered
+      - name: good-chained-task
+        type: agent
+        agent: worker
+        dependsOn: [good-small-task]
+        task: |
+          The previous step produced this output:
+
+          {{steps.good-small-task.output}}
+
+          Extract the number from VOWEL_COUNT=<number> and output:
+          DOUBLED=<that number times 2>
+          Then: CHAIN_DONE
+        verification:
+          type: output_contains
+          value: CHAIN_DONE
+
+      # GOOD: deterministic validation requires no agent
+      - name: validate
+        type: deterministic
+        dependsOn: [good-chained-task]
+        command: |
+          output='{{steps.good-chained-task.output}}'
+          if echo "$output" | grep -q 'DOUBLED='; then
+            echo "VALIDATION_PASS"
+          else
+            echo "VALIDATION_FAIL" >&2; exit 1
+          fi
+        captureOutput: true
+        failOnError: true

@@ -1,0 +1,54 @@
+{
+  "id": "traj_fhrf6le8kjfu",
+  "version": 1,
+  "task": {
+    "title": "Implement Swarm Mini TUI for interactive worker messaging"
+  },
+  "status": "active",
+  "startedAt": "2026-02-25T14:05:30.669Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-02-25T14:05:30.670Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_gus91ra70dx4",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-25T14:11:22.767Z",
+      "events": [
+        {
+          "ts": 1772028682773,
+          "type": "decision",
+          "content": "Used crossterm with event-stream for async keystroke reading, and futures-lite for StreamExt on EventStream: Used crossterm with event-stream for async keystroke reading, and futures-lite for StreamExt on EventStream",
+          "raw": {
+            "question": "Used crossterm with event-stream for async keystroke reading, and futures-lite for StreamExt on EventStream",
+            "chosen": "Used crossterm with event-stream for async keystroke reading, and futures-lite for StreamExt on EventStream",
+            "alternatives": [],
+            "reasoning": "crossterm is lightweight and well-supported for terminal manipulation; futures-lite provides the necessary StreamExt trait for tokio::select! compatibility with crossterm EventStream"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1772031082368,
+          "type": "decision",
+          "content": "Expanded dashboard static-dir selection markers to include nested metrics and app/index fallbacks: Expanded dashboard static-dir selection markers to include nested metrics and app/index fallbacks",
+          "raw": {
+            "question": "Expanded dashboard static-dir selection markers to include nested metrics and app/index fallbacks",
+            "chosen": "Expanded dashboard static-dir selection markers to include nested metrics and app/index fallbacks",
+            "alternatives": [],
+            "reasoning": "The existing metrics.html-only check could pick dashboard-server/out when sibling dashboard/out has valid routed pages (e.g. metrics/index.html), leading to /metrics 404."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": []
+}

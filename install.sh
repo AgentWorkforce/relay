@@ -152,30 +152,29 @@ check_node() {
     return 1
 }
 
-# Download relay-pty binary
-download_relay_pty() {
-    step "Downloading relay-pty binary..."
+# Download broker binary (Rust broker for workflow/SDK agent spawning)
+download_broker_binary() {
+    step "Downloading broker binary..."
 
-    local binary_name="relay-pty-${PLATFORM}"
+    local binary_name="agent-relay-broker-${PLATFORM}"
     local download_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}"
-    local target_path="$INSTALL_DIR/bin/relay-pty"
+    local target_path="$INSTALL_DIR/bin/agent-relay-broker"
 
     mkdir -p "$INSTALL_DIR/bin"
 
-    # Try to download - curl -f will fail on 404
     if curl -fsSL "$download_url" -o "$target_path" 2>/dev/null; then
         chmod +x "$target_path"
-        # Verify binary works
+        # Verify binary works (Rust clap binary supports --help)
         if "$target_path" --help &>/dev/null; then
-            success "Downloaded relay-pty binary"
+            success "Downloaded broker binary (workflow agent spawning)"
             return 0
         else
-            warn "relay-pty binary failed verification"
+            warn "broker binary failed verification"
             rm -f "$target_path"
             return 1
         fi
     else
-        warn "No prebuilt relay-pty binary for $PLATFORM"
+        warn "No prebuilt broker binary for $PLATFORM"
         return 1
     fi
 }
@@ -602,6 +601,9 @@ Or use nvm: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/instal
     # Install ACP bridge for Zed editor integration
     install_acp_bridge || true
 
+    # Download broker binary for workflow/SDK agent spawning
+    download_broker_binary || true
+
     success "Installed via npm"
 }
 
@@ -736,8 +738,8 @@ main() {
     # Try standalone binary first - works without Node.js
     if download_standalone_binary; then
         INSTALL_METHOD="binary"
-        # Also download relay-pty binary if available
-        download_relay_pty || true
+        # Download broker binary for workflow/SDK agent spawning
+        download_broker_binary || true
         # Download dashboard-server binary if available
         download_dashboard_binary || true
         # Download dashboard UI files (required for standalone binary to serve the UI)

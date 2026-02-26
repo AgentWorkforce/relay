@@ -1,0 +1,74 @@
+version: '1.0'
+name: test-non-interactive-bounded
+description: >
+  Validates that non-interactive (preset: worker/analyst/reviewer) agents
+  complete reliably when the task is small and self-contained.
+  Key rule: non-interactive agents must NEVER discover information via tools —
+  all file content is injected by a prior deterministic step.
+
+swarm:
+  pattern: pipeline
+  channel: test-ni-bounded
+  timeoutMs: 300000 # 5 min total — any step taking longer is a bug
+
+agents:
+  - name: summarizer
+    cli: claude
+    preset: worker
+    constraints:
+      model: sonnet
+
+  - name: validator
+    cli: claude
+    preset: reviewer
+    constraints:
+      model: sonnet
+
+workflows:
+  - name: bounded-non-interactive
+    steps:
+      # Step 1: deterministic — read a small file and inject its content
+      - name: read-file
+        type: deterministic
+        command: >
+          echo "FILE_CONTENT_START" &&
+          head -30 packages/sdk/src/workflows/types.ts &&
+          echo "FILE_CONTENT_END"
+        captureOutput: true
+        failOnError: true
+
+      # Step 2: non-interactive agent receives the content directly — no tool use needed
+      - name: summarize
+        type: agent
+        agent: summarizer
+        dependsOn: [read-file]
+        task: |
+          Summarize the following TypeScript type definitions in 3 bullet points.
+          Do not read any files — all content is provided below.
+
+          {{steps.read-file.output}}
+
+          Output exactly:
+          SUMMARY_START
+          - <bullet 1>
+          - <bullet 2>
+          - <bullet 3>
+          SUMMARY_DONE
+        verification:
+          type: output_contains
+          value: SUMMARY_DONE
+
+      # Step 3: reviewer validates the summary — also gets content injected
+      - name: review
+        type: agent
+        agent: validator
+        dependsOn: [summarize]
+        task: |
+          Check that the following summary contains exactly 3 bullet points
+          and each bullet is non-empty. Reply REVIEW_PASS if correct,
+          REVIEW_FAIL with a reason if not.
+
+          {{steps.summarize.output}}
+        verification:
+          type: output_contains
+          value: REVIEW_PASS

@@ -1,0 +1,89 @@
+version: '1.0'
+name: codex-lead-v5-dm-worker
+description: >
+  CODEX LEAD EXPERIMENT #5: Codex lead uses direct messaging (DM) to assign
+  work to a specific claude worker, rather than broadcasting to a channel.
+  Tests whether codex can use relay_send with a worker name (not a channel)
+  and whether claude correctly reads its inbox for the DM assignment.
+  This is the pattern needed when the lead must send different tasks to
+  different workers without cross-contaminating their channels.
+
+swarm:
+  pattern: dag
+  maxConcurrency: 2
+  timeoutMs: 300000 # 5 min
+  channel: codex-lead-v5
+  idleNudge:
+    nudgeAfterMs: 90000
+    escalateAfterMs: 60000
+    maxNudges: 2
+
+agents:
+  - name: codex-lead
+    cli: codex
+    channels: [codex-lead-v5]
+    role: >
+      Lead that sends a DM assignment directly to claude-worker by name,
+      then waits for the completion signal on #codex-lead-v5.
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: claude-worker
+    cli: claude
+    channels: [codex-lead-v5]
+    role: >
+      Worker that checks its relay inbox for a DM from codex-lead,
+      completes the assigned task, and posts completion to the channel.
+    constraints:
+      model: sonnet
+
+workflows:
+  - name: test-v5-dm-worker
+    description: >
+      Both start simultaneously. Codex lead looks up the worker's registered
+      name, sends a DM with the task. Worker checks inbox, completes task,
+      posts WORKER_DM_DONE to channel. Lead confirms and terminates.
+    steps:
+      - name: lead
+        type: agent
+        agent: codex-lead
+        task: |
+          You are the lead. Send a task directly to claude-worker via DM.
+
+          STEP 1 — Find the claude-worker's registered name:
+          Call relay_who() or list_agents to find the agent whose name starts
+          with "worker-" (it will be registered as "worker-<id>").
+
+          STEP 2 — Send a DM to that agent:
+            relay_send(to: "<worker-agent-name>", message: "DM_TASK: Output the string 'DM_RECEIVED_AND_DONE' to your terminal, then post WORKER_DM_DONE to #codex-lead-v5.")
+
+          STEP 3 — Poll #codex-lead-v5 until you see "WORKER_DM_DONE".
+
+          STEP 4 — Output:
+            DM_COORD_COMPLETE
+
+          Then terminate using remove_agent with $RELAY_AGENT_NAME.
+        verification:
+          type: output_contains
+          value: DM_COORD_COMPLETE
+
+      - name: worker
+        type: agent
+        agent: claude-worker
+        task: |
+          You are the worker. Wait for a DM from the lead with your task.
+
+          STEP 1 — Poll your relay inbox every 5 seconds until you receive
+          a DM containing "DM_TASK:".
+
+          STEP 2 — Complete the task from the DM: output to your terminal:
+            DM_RECEIVED_AND_DONE
+
+          STEP 3 — Post "WORKER_DM_DONE" to #codex-lead-v5.
+
+          STEP 4 — Output: WORKER_DM_COMPLETE
+
+          Then /exit.
+        verification:
+          type: output_contains
+          value: WORKER_DM_COMPLETE

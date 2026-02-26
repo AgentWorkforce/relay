@@ -14,8 +14,8 @@ bin/relay-pty
 bin/relay-pty-*
 bin/agent-relay-test
 
-# Rust build artifacts (relay-pty)
-relay-pty/target/
+# Rust build artifacts
+target/
 
 # TypeScript build info (if enabled later)
 *.tsbuildinfo
@@ -32,6 +32,7 @@ pnpm-debug.log*
 .vscode/
 .idea/
 .claude/settings.local.json
+.gemini/settings.json
 
 # Relay runtime artifacts
 *.sock
@@ -41,6 +42,9 @@ pnpm-debug.log*
 .agent-relay-test-*/
 .tmp/
 .tmp-*/
+
+# Git worktrees (development only)
+.worktrees/
 
 # Coverage output
 coverage/
@@ -54,9 +58,20 @@ coverage/
 .env.local
 .env
 .env.production
+codex.toml
 
 # Turborepo
 .turbo/
 .build-standalone/
 bin/agent-relay-bundle
 bin/agent-relay-standalone
+
+# SDK bundled broker binary (built/downloaded at install time)
+packages/broker-sdk/bin/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/

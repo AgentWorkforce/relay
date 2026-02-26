@@ -21,7 +21,14 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { SpeakOnTrigger } from '@agent-relay/protocol/types';
+
+/** Triggers for when a shadow agent should speak */
+export type SpeakOnTrigger =
+  | 'ALL_MESSAGES'
+  | 'EXPLICIT_ASK'
+  | 'SESSION_END'
+  | 'CODE_WRITTEN'
+  | 'REVIEW_REQUEST';
 
 /** Shadow role definition */
 export interface ShadowRoleConfig {
@@ -83,10 +90,7 @@ const ROLE_PRESETS: Record<string, SpeakOnTrigger[]> = {
  * Possible locations for .agent-relay.json (in order of precedence)
  */
 function getConfigPaths(projectRoot: string): string[] {
-  return [
-    path.join(projectRoot, '.agent-relay', 'config.json'),
-    path.join(projectRoot, '.agent-relay.json'),
-  ];
+  return [path.join(projectRoot, '.agent-relay', 'config.json'), path.join(projectRoot, '.agent-relay.json')];
 }
 
 /**

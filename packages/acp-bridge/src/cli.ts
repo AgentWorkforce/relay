@@ -7,7 +7,7 @@
  *
  * Options:
  *   --name <name>     Agent name (default: relay-acp)
- *   --socket <path>   Relay daemon socket path
+ *   --socket <path>   Relay broker socket path
  *   --debug           Enable debug logging
  *
  * Environment:
@@ -56,7 +56,7 @@ USAGE:
 
 OPTIONS:
   --name <name>     Agent name for relay identification (default: relay-acp)
-  --socket <path>   Path to relay daemon socket
+  --socket <path>   Path to relay broker socket
   --debug           Enable debug logging to stderr
   --help, -h        Show this help message
   --version, -v     Show version
@@ -72,7 +72,7 @@ EXAMPLE:
   # See: https://zed.dev/docs/agents
 
 NOTES:
-  - Requires a running Agent Relay daemon
+  - Requires a running Agent Relay broker
   - Communicates with editors via stdin/stdout (ACP protocol)
   - Debug output goes to stderr to avoid interfering with ACP protocol
 `);

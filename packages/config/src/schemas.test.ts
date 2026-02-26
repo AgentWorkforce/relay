@@ -41,6 +41,54 @@ describe('config schemas', () => {
     expect(CloudConfigSchema.parse(cfg)).toEqual(cfg);
   });
 
+  it('validates cloud config with daytona provider', () => {
+    const cfg = {
+      port: 4567,
+      publicUrl: 'http://localhost:4567',
+      appUrl: 'http://localhost:3000',
+      sessionSecret: 'secret',
+      databaseUrl: 'postgres://user:pass@localhost:5432/db',
+      redisUrl: 'redis://localhost:6379',
+      github: { clientId: 'id', clientSecret: 'secret' },
+      providers: {},
+      vault: { masterKey: '0123456789abcdef0123456789abcdef' },
+      compute: { provider: 'daytona' },
+      nango: { secretKey: 'nango-secret' },
+      stripe: {
+        secretKey: 'sk',
+        publishableKey: 'pk',
+        webhookSecret: 'whsec',
+        priceIds: {},
+      },
+      adminUsers: [],
+    };
+    expect(CloudConfigSchema.parse(cfg)).toEqual(cfg);
+  });
+
+  it('rejects invalid compute provider', () => {
+    const cfg = {
+      port: 4567,
+      publicUrl: 'http://localhost:4567',
+      appUrl: 'http://localhost:3000',
+      sessionSecret: 'secret',
+      databaseUrl: 'postgres://user:pass@localhost:5432/db',
+      redisUrl: 'redis://localhost:6379',
+      github: { clientId: 'id', clientSecret: 'secret' },
+      providers: {},
+      vault: { masterKey: '0123456789abcdef0123456789abcdef' },
+      compute: { provider: 'invalid_provider' },
+      nango: { secretKey: 'nango-secret' },
+      stripe: {
+        secretKey: 'sk',
+        publishableKey: 'pk',
+        webhookSecret: 'whsec',
+        priceIds: {},
+      },
+      adminUsers: [],
+    };
+    expect(() => CloudConfigSchema.parse(cfg)).toThrow();
+  });
+
   it('validates bridge config shape', () => {
     const cfg = {
       projects: {

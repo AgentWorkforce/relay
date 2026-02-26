@@ -1,0 +1,33 @@
+{
+  "id": "traj_5d6q5ii76ldm",
+  "version": 1,
+  "task": {
+    "title": "Fix repeated injection + Relaycast rate limits via broker WS event stream"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-23T13:09:42.137Z",
+  "agents": [],
+  "chapters": [],
+  "commits": ["c9eb6339", "647c7f5d"],
+  "filesChanged": [
+    "Cargo.lock",
+    "Cargo.toml",
+    "package.json",
+    "packages/config/src/cli-registry.generated.ts",
+    "packages/shared/codegen-ts.mjs",
+    "src/main.rs"
+  ],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": [],
+  "_trace": {
+    "startRef": "815433126c81ba692879465f91a8a600db9664b8",
+    "endRef": "c9eb63391ce4bad29bc5bfa9f1e40f3fc2f8701f",
+    "traceId": "trace_93y3g908y3ie"
+  },
+  "completedAt": "2026-02-23T13:15:45.159Z",
+  "retrospective": {
+    "summary": "Added /ws WebSocket event stream to broker and hybrid WS handler to dashboard, eliminating Relaycast REST API polling. Fixed lint-staged codegen path and added npm_link to CLIRegistry.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  }
+}
