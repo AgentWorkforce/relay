@@ -1,8 +1,9 @@
 /**
  * Two agents collaborate on a marketing plan for the Agent Relay SDK.
  *
- * Claude proposes pillars, Codex builds on them and writes the final plan —
- * no API key required, the SDK provisions a fresh workspace automatically.
+ * Claude posts its pillars to #marketing, Codex receives them automatically
+ * (the broker injects channel messages into subscribed agent PTYs) and
+ * writes the final plan — no API key required.
  *
  * Run:
  *   npm run build && npm run marketing-plan --workspace=packages/sdk
@@ -17,61 +18,51 @@ const { apiKey } = await RelaycastApi.createWorkspace(`marketing-plan-${randomBy
 
 const relay = new AgentRelay({ env: { ...process.env, RELAY_API_KEY: apiKey } });
 
-// Spawn Claude and Codex.
+// Stream the conversation to the terminal as it happens.
+relay.onMessageReceived = ({ from, text }) => {
+  if (text.trim()) console.log(`\n[${from}]: ${text}`);
+};
+
+// Spawn both agents into the same channel.
 const [claude, codex] = await Promise.all([
   relay.claude.spawn({ channels: ['marketing'] }),
   relay.codex.spawn({ channels: ['marketing'] }),
 ]);
 
-console.log('Agents online. Starting brainstorm...\n');
+console.log('Agents online. Kicking off...\n');
 
 const system = relay.human({ name: 'System' });
 
-// ── Step 1: Claude proposes the pillars ─────────────────────────────────────
-
-// Wait for Claude's response before looping in Codex.
-const claudeResponse = await new Promise<string>((resolve) => {
-  relay.onMessageReceived = ({ from, text }) => {
-    if (from === claude.name && text.trim().length > 0) {
-      console.log(`[${from}]: ${text}\n`);
-      resolve(text);
-    }
-  };
-
-  system.sendMessage({
-    to: claude.name,
-    text: `Propose 3 core messaging pillars for the Agent Relay SDK —
-a tool that lets developers run multiple AI agents (Claude, Codex, Gemini) in parallel,
-have them communicate in real-time, and coordinate complex multi-step tasks.
-Keep it punchy. One sentence per pillar.`,
-  });
+// Tell Claude to post to #marketing — the broker will inject it into Codex's PTY.
+await system.sendMessage({
+  to: claude.name,
+  text: `Post 3 punchy messaging pillars for the Agent Relay SDK to the #marketing channel
+using relay_send. The SDK lets developers run Claude, Codex, and Gemini in parallel,
+with real-time inter-agent messaging and workflow orchestration.`,
 });
 
-// ── Step 2: Codex gets Claude's pillars and writes the final plan ────────────
+// Tell Codex to watch #marketing, build on Claude's pillars, and post the final plan.
+await system.sendMessage({
+  to: codex.name,
+  text: `Watch the #marketing channel. When ${claude.name} posts its pillars,
+add your perspective on developer experience and multi-model flexibility,
+then post the complete "## Marketing Plan" to #marketing.`,
+});
 
+// Wait for Codex to post the finished plan (or 2 min timeout).
 await new Promise<void>((resolve) => {
-  const timeout = setTimeout(resolve, 90_000);
+  const timeout = setTimeout(resolve, 120_000);
 
   relay.onMessageReceived = ({ from, text }) => {
-    console.log(`[${from}]: ${text}\n`);
+    if (text.trim()) console.log(`\n[${from}]: ${text}`);
     if (from === codex.name && text.includes('## Marketing Plan')) {
       clearTimeout(timeout);
       resolve();
     }
   };
-
-  system.sendMessage({
-    to: codex.name,
-    text: `${claude.name} proposed these pillars for the Agent Relay SDK:
-
-${claudeResponse}
-
-Add your perspective on developer experience and multi-model flexibility,
-then write the complete "## Marketing Plan" (channels, tactics, target audience).`,
-  });
 });
 
-console.log('Done. Shutting down...');
+console.log('\nDone. Shutting down...');
 await claude.release();
 await codex.release();
 await relay.shutdown();
