@@ -19,6 +19,15 @@ console.log(`\nWorkspace API key: ${apiKey}\nObserver: https://observer.relaycas
 
 const relay = new AgentRelay({ env: { ...process.env, RELAY_API_KEY: apiKey } });
 
+// Lifecycle hooks for visibility.
+relay.onAgentSpawned = ({ name }) => console.log(`[relay] spawned:  ${name}`);
+relay.onAgentReady = ({ name }) => console.log(`[relay] ready:    ${name}`);
+relay.onAgentExited = ({ name, exitCode }) => console.log(`[relay] exited:   ${name} (code=${exitCode})`);
+relay.onAgentReleased = ({ name }) => console.log(`[relay] released: ${name}`);
+
+// Broker stderr — shows MCP startup errors, injection failures, etc.
+relay.onBrokerStderr((line) => console.log(`[broker] ${line}`));
+
 // Show when agents are thinking (PTY output chunks).
 relay.onWorkerOutput = ({ name }) => {
   process.stdout.write(`\r\x1b[2K[${name} is thinking...]`);
