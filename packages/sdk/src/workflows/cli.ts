@@ -5,6 +5,7 @@
  *
  * Usage:
  *   relay-workflow <yaml-path> [--workflow <name>]
+ *   relay-workflow --resume <run-id>
  *   npx @agent-relay/sdk run <yaml-path> [--workflow <name>]
  */
 
@@ -15,6 +16,7 @@ function printUsage(): void {
   console.log(
     `
 Usage: relay-workflow <yaml-path> [options]
+       relay-workflow --resume <run-id>
 
 Run a relay.yaml workflow file.
 
@@ -23,11 +25,14 @@ Arguments:
 
 Options:
   --workflow <name>        Run a specific workflow by name (default: first)
+  --resume <run-id>        Resume a failed or interrupted run by its run ID
+  --validate               Validate workflow YAML for common issues without running
   --help                   Show this help message
 
 Examples:
   relay-workflow workflows/daytona-migration.yaml
   relay-workflow workflows/feature-dev.yaml --workflow build-and-test
+  relay-workflow --resume f409ce1d1788710bcc6abb55
 `.trim()
   );
 }
@@ -67,20 +72,6 @@ async function main(): Promise<void> {
     process.exit(args.includes('--help') ? 0 : 1);
   }
 
-  const yamlPath = args[0];
-  let workflowName: string | undefined;
-
-  const workflowIdx = args.indexOf('--workflow');
-  if (workflowIdx !== -1 && args[workflowIdx + 1]) {
-    workflowName = args[workflowIdx + 1];
-  }
-
-  console.log(`Running workflow from ${yamlPath}...`);
-
-  const isDryRun = !!process.env.DRY_RUN;
-
-  // Wire up signal handlers so Ctrl+C / SIGTERM always shuts the broker down
-  // cleanly rather than leaving an orphaned process behind.
   const runner = new WorkflowRunner();
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
@@ -93,7 +84,49 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
+  // ── Resume mode ────────────────────────────────────────────────────────────
+  const resumeIdx = args.indexOf('--resume');
+  if (resumeIdx !== -1) {
+    const runId = args[resumeIdx + 1];
+    if (!runId) {
+      console.error('Error: --resume requires a run ID');
+      process.exit(1);
+    }
+    console.log(`Resuming run ${runId}...`);
+    runner.on((event) => console.log(formatEvent(event)));
+    const result = await runner.resume(runId);
+    if (result.status === 'completed') {
+      console.log(`\nWorkflow completed successfully.`);
+      process.exit(0);
+    } else {
+      console.error(`\nWorkflow ${result.status}${result.error ? `: ${result.error}` : ''}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // ── Normal / validate / dry-run mode ──────────────────────────────────────
+  const yamlPath = args[0];
+  let workflowName: string | undefined;
+
+  const workflowIdx = args.indexOf('--workflow');
+  if (workflowIdx !== -1 && args[workflowIdx + 1]) {
+    workflowName = args[workflowIdx + 1];
+  }
+
+  const isValidate = args.includes('--validate');
+
+  console.log(`Running workflow from ${yamlPath}...`);
+
+  const isDryRun = !!process.env.DRY_RUN;
+
   const config = await runner.parseYamlFile(yamlPath);
+  if (isValidate) {
+    const { validateWorkflow, formatValidationReport } = await import('./validator.js');
+    const issues = validateWorkflow(config);
+    console.log(formatValidationReport(issues, yamlPath));
+    process.exit(issues.some((i) => i.severity === 'error') ? 1 : 0);
+  }
   if (isDryRun) {
     const { formatDryRunReport } = await import('./dry-run-format.js');
     const report = runner.dryRun(config, workflowName);
