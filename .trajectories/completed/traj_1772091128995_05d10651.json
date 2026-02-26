@@ -1,0 +1,80 @@
+{
+  "id": "traj_1772091128995_05d10651",
+  "version": 1,
+  "task": {
+    "title": "test-v3-file-sentinel run #0b3153d2",
+    "source": {
+      "system": "workflow-runner",
+      "id": "0b3153d2938acaa2865da15c"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-02-26T07:32:08.995Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T07:32:08.995Z"
+    },
+    {
+      "name": "codex-worker",
+      "role": "codex-worker",
+      "joinedAt": "2026-02-26T07:32:12.258Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_e631cdbc",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T07:32:08.995Z",
+      "events": [
+        {
+          "ts": 1772091128995,
+          "type": "note",
+          "content": "Workflow \"test-v3-file-sentinel\" started with 2 steps"
+        },
+        {
+          "ts": 1772091128995,
+          "type": "note",
+          "content": "Parsed 2 steps, 1 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1772091132258,
+          "type": "note",
+          "content": "Step \"write-and-exit\" assigned to agent \"codex-worker\""
+        },
+        {
+          "ts": 1772091149114,
+          "type": "finding",
+          "content": "Step \"write-and-exit\" completed: <system-reminder>\r\nRelaycast MCP tools are available for replies.\r\nYou are pre-registered by the broker under your assigned worker name.\r\nDo not call mcp__relaycast__register unless a send/reply fails...",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-02-26T07:32:29.120Z"
+    },
+    {
+      "id": "ch_46caec18",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T07:32:29.120Z",
+      "events": [
+        {
+          "ts": 1772091149120,
+          "type": "reflection",
+          "content": "Workflow completed in 20 seconds. 2/2 steps passed. (completed in 20 seconds)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-26T07:32:29.120Z"
+    }
+  ],
+  "completedAt": "2026-02-26T07:32:29.120Z",
+  "retrospective": {
+    "summary": "Workflow completed in 20 seconds. 2/2 steps passed.",
+    "approach": "workflow-runner DAG execution",
+    "confidence": 0.875,
+    "learnings": [],
+    "challenges": []
+  }
+}

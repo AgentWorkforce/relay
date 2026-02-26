@@ -84,7 +84,7 @@ export class WorkflowRunnerHarness {
     const fakeCliDir = ensureFakeCliDir();
     const existingPath = process.env.PATH ?? '';
     const mergedPath = existingPath ? `${fakeCliDir}${path.delimiter}${existingPath}` : fakeCliDir;
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       PATH: mergedPath,
     };

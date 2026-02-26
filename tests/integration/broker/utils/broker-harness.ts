@@ -43,6 +43,8 @@ export async function ensureApiKey(): Promise<string> {
 export interface BrokerHarnessOptions {
   /** Path to the agent-relay-broker binary. Auto-resolved if not set. */
   binaryPath?: string;
+  /** Unique broker name registered in Relaycast. Auto-generated if not set. */
+  brokerName?: string;
   /** Channels for the broker to subscribe to. Default: ["general"] */
   channels?: string[];
   /** Request timeout in ms. Default: 10_000 */
@@ -77,6 +79,9 @@ export class BrokerHarness {
   constructor(options: BrokerHarnessOptions = {}) {
     this.opts = {
       binaryPath: options.binaryPath ?? resolveBinaryPath(),
+      brokerName:
+        options.brokerName ??
+        `test-harness-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
       channels: options.channels ?? ['general'],
       requestTimeoutMs: options.requestTimeoutMs ?? 10_000,
       shutdownTimeoutMs: options.shutdownTimeoutMs ?? 3_000,
@@ -99,6 +104,7 @@ export class BrokerHarness {
 
     const clientOpts: AgentRelayClientOptions = {
       binaryPath: this.opts.binaryPath,
+      brokerName: this.opts.brokerName,
       channels: this.opts.channels,
       requestTimeoutMs: this.opts.requestTimeoutMs,
       shutdownTimeoutMs: this.opts.shutdownTimeoutMs,
@@ -119,6 +125,7 @@ export class BrokerHarness {
     // Create a high-level facade sharing the same binary/options
     this.relay = new AgentRelay({
       binaryPath: this.opts.binaryPath,
+      brokerName: this.opts.brokerName,
       channels: this.opts.channels,
       requestTimeoutMs: this.opts.requestTimeoutMs,
       shutdownTimeoutMs: this.opts.shutdownTimeoutMs,

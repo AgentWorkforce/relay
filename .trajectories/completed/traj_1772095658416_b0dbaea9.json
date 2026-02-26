@@ -1,0 +1,96 @@
+{
+  "id": "traj_1772095658416_b0dbaea9",
+  "version": 1,
+  "task": {
+    "title": "test-v2-step-chaining run #8f5f1a7f",
+    "source": {
+      "system": "workflow-runner",
+      "id": "8f5f1a7f767efe18a9863720"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-02-26T08:47:38.416Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T08:47:38.416Z"
+    },
+    {
+      "name": "claude-worker",
+      "role": "claude-worker",
+      "joinedAt": "2026-02-26T08:47:41.537Z"
+    },
+    {
+      "name": "codex-lead",
+      "role": "codex-lead",
+      "joinedAt": "2026-02-26T08:49:14.158Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_5b4cc6a0",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T08:47:38.416Z",
+      "events": [
+        {
+          "ts": 1772095658416,
+          "type": "note",
+          "content": "Workflow \"test-v2-step-chaining\" started with 2 steps"
+        },
+        {
+          "ts": 1772095658416,
+          "type": "note",
+          "content": "Parsed 2 steps, 1 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1772095661537,
+          "type": "note",
+          "content": "Step \"worker\" assigned to agent \"claude-worker\""
+        },
+        {
+          "ts": 1772095754151,
+          "type": "finding",
+          "content": "Step \"worker\" completed: \r\r\n▗ ▗   ▖ ▖  Claude Code v2.1.52\r\r\n           Sonnet 4.6 · Claude Max\r\r\n  ▘▘ ▝▝    ~/Projects/agent-workforce/relay-cli-uses-broker\r\r\n\r\r\n──────────────────────────────────────────────────────────────...",
+          "significance": "medium"
+        },
+        {
+          "ts": 1772095754158,
+          "type": "note",
+          "content": "Step \"lead-review\" assigned to agent \"codex-lead\""
+        },
+        {
+          "ts": 1772095761951,
+          "type": "finding",
+          "content": "Step \"lead-review\" completed: REVIEW_RESULT: PASS\nLEAD_REVIEW_DONE\n",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-02-26T08:49:21.954Z"
+    },
+    {
+      "id": "ch_7dddd8c0",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T08:49:21.954Z",
+      "events": [
+        {
+          "ts": 1772095761954,
+          "type": "reflection",
+          "content": "Workflow completed in 2 minutes. 2/2 steps passed. (completed in 2 minutes)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-26T08:49:21.954Z"
+    }
+  ],
+  "completedAt": "2026-02-26T08:49:21.954Z",
+  "retrospective": {
+    "summary": "Workflow completed in 2 minutes. 2/2 steps passed.",
+    "approach": "workflow-runner DAG execution",
+    "confidence": 0.875,
+    "learnings": [],
+    "challenges": []
+  }
+}

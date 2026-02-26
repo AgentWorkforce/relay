@@ -14,6 +14,7 @@ import {
   assertRunCompleted,
   assertRunFailed,
   assertStepCompleted,
+  assertStepFailed,
   assertStepOutput,
   assertWorkflowEventOrder,
 } from './utils/workflow-assert-helpers.js';

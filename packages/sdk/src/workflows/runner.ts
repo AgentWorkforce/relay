@@ -112,7 +112,8 @@ export class WorkflowRunner {
   private readonly cwd: string;
   private readonly summaryDir: string;
 
-  private relay?: AgentRelay;
+  /** @internal exposed for CLI signal-handler shutdown only */
+  relay?: AgentRelay;
   private relaycastApi?: RelaycastApi;
   private relayApiKey?: string;
   private channel?: string;
@@ -1017,9 +1018,10 @@ export class WorkflowRunner {
         brokerName,
         channels: [channel],
         env: this.getRelayEnv(),
-        // Workflows spawn many agents in parallel waves; each spawn requires a PTY +
-        // Relaycast registration. 10s is too tight when 8-10 agents start simultaneously.
-        requestTimeoutMs: this.relayOptions.requestTimeoutMs ?? 60_000,
+        // Workflows spawn agents across multiple waves; each spawn requires a PTY +
+        // Relaycast registration. 60s is too tight when the broker is saturated with
+        // long-running PTY processes from earlier steps. 120s gives room to breathe.
+        requestTimeoutMs: this.relayOptions.requestTimeoutMs ?? 120_000,
       });
 
       // Wire PTY output dispatcher — routes chunks to per-agent listeners + activity logging
@@ -2015,7 +2017,9 @@ export class WorkflowRunner {
   ): { cmd: string; args: string[] } {
     switch (cli) {
       case 'claude':
-        return { cmd: 'claude', args: ['-p', task, ...extraArgs] };
+        // --dangerously-skip-permissions prevents any tool-use permission prompt
+        // from blocking the process when stdio is piped (no TTY available).
+        return { cmd: 'claude', args: ['-p', '--dangerously-skip-permissions', task, ...extraArgs] };
       case 'codex':
         return { cmd: 'codex', args: ['exec', task, ...extraArgs] };
       case 'gemini':
@@ -2229,9 +2233,10 @@ export class WorkflowRunner {
       step.task +
       (delegationGuidance ? '\n\n' + delegationGuidance + '\n' : '') +
       '\n\n---\n' +
-      'IMPORTANT: When you have fully completed this task, you MUST self-terminate by outputting ' +
-      'the exact text "/exit" on its own line. Do not call any MCP tools to exit — just print /exit. ' +
-      'Do not wait for further input — output /exit immediately after finishing.';
+      'IMPORTANT: When you have fully completed this task, you MUST self-terminate by either: ' +
+      '(a) calling remove_agent(name: "<your-agent-name>", reason: "task completed") — preferred, or ' +
+      '(b) outputting the exact text "/exit" on its own line as a fallback. ' +
+      'Do not wait for further input — terminate immediately after finishing.';
 
     // Register PTY output listener before spawning so we capture everything
     this.ptyOutputBuffers.set(agentName, []);
@@ -2976,6 +2981,75 @@ export class WorkflowRunner {
     return stripAnsiFn(text);
   }
 
+  /**
+   * Strip TUI chrome from PTY-captured output before posting to a channel.
+   * Removes: ANSI codes, unicode spinner/thinking characters, cursor-movement
+   * artifacts, and collapses runs of blank lines to a single blank line.
+   * The raw (ANSI-stripped) output is still written to disk for step chaining.
+   */
+  private static scrubForChannel(text: string): string {
+    const withoutSystemReminders = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/giu, '');
+    const ansiStripped = stripAnsiFn(withoutSystemReminders);
+    const spinnerRe =
+      /[\u2756\u2738\u2739\u273a\u273b\u273c\u273d\u2731\u2732\u2733\u2734\u2735\u2736\u2737\u2743\u2745\u2746\u25d6\u25d7\u25d8\u25d9\u2022\u25cf\u25cb\u25a0\u25a1\u25b6\u25c0\u23f5\u23f6\u23f7\u23f8\u23f9\u25e2\u25e3\u25e4\u25e5\u2597\u2596\u2598\u259d\u2bc8\u2bc7\u2bc5\u2bc6]/gu;
+    const boxDrawingOnlyRe = /^[\s\u2500-\u257f\u2580-\u259f\u25a0-\u25ff\-_=~]{3,}$/u;
+    const claudeHeaderRe =
+      /^(?:[✢*]\s*)?(?:Claude\s+Code(?:\s+v?[\d.]+)?|(?:Sonnet|Haiku|Opus)\s*[\d.]+|claude-(?:sonnet|haiku|opus)-[\w.-]+|Running\s+on\s+claude)\b/iu;
+    const uiHintRe = /\b(?:Press\s+up\s+to\s+edit|tab\s+to\s+queue|bypass\s+permissions)\b/iu;
+    const thinkingLineRe =
+      /^[\s\u2756\u2738\u2739\u273a\u273b\u273c\u273d\u2731\u2732\u2733\u2734\u2735\u2736\u2737\u2743\u2745\u2746\u25d6\u25d7\u25d8\u25d9\u2022\u25cf\u25cb\u25a0\u25a1\u25b6\u25c0\u23f5\u23f6\u23f7\u23f8\u23f9\u25e2\u25e3\u25e4\u25e5\u2597\u2596\u2598\u259d\u2bc8\u2bc7\u2bc5\u2bc6]*\s*(?:thinking|musing|working)\W*$/iu;
+    const cursorOnlyRe = /^[\s❯⎿›»◀▶←→↑↓⟨⟩⟪⟫]+$/u;
+    const mcpJsonKvRe =
+      /^\s*"(?:type|method|params|result|id|jsonrpc|tool|name|arguments|content|role|metadata)"\s*:/u;
+    const meaningfulContentRe = /[a-zA-Z0-9]/u;
+
+    const countJsonDepth = (line: string): number => {
+      let depth = 0;
+      for (const ch of line) {
+        if (ch === '{' || ch === '[') depth += 1;
+        if (ch === '}' || ch === ']') depth -= 1;
+      }
+      return depth;
+    };
+
+    const lines = ansiStripped.split('\n');
+    const meaningful: string[] = [];
+    let jsonDepth = 0;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      if (jsonDepth > 0) {
+        jsonDepth += countJsonDepth(line);
+        if (jsonDepth <= 0) jsonDepth = 0;
+        continue;
+      }
+
+      if (trimmed.length === 0) continue;
+
+      if (trimmed.startsWith('{') || /^\[\s*\{/.test(trimmed)) {
+        jsonDepth = Math.max(countJsonDepth(line), 0);
+        continue;
+      }
+
+      if (mcpJsonKvRe.test(line)) continue;
+      if (line.replace(spinnerRe, '').trim().length === 0) continue;
+      if (boxDrawingOnlyRe.test(trimmed)) continue;
+      if (claudeHeaderRe.test(trimmed)) continue;
+      if (uiHintRe.test(trimmed)) continue;
+      if (thinkingLineRe.test(trimmed)) continue;
+      if (cursorOnlyRe.test(trimmed)) continue;
+      if (!meaningfulContentRe.test(trimmed)) continue;
+
+      meaningful.push(line);
+    }
+
+    return meaningful
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
   /** Sanitize a workflow name into a valid channel name. */
   private sanitizeChannelName(name: string): string {
     return name
@@ -3002,19 +3076,16 @@ export class WorkflowRunner {
       // Non-critical
     }
 
-    // 2. Post full output as a threaded channel message for retrieval via Relaycast
-    const cleaned = WorkflowRunner.stripAnsi(output);
-    const maxMsg = 4000; // Relaycast message size limit
-    if (cleaned.length <= maxMsg) {
-      this.postToChannel(`**[${stepName}] Output:**\n\`\`\`\n${cleaned}\n\`\`\``);
-    } else {
-      // Split into chunks for large outputs
-      const chunks = Math.ceil(cleaned.length / maxMsg);
-      for (let i = 0; i < chunks; i++) {
-        const slice = cleaned.slice(i * maxMsg, (i + 1) * maxMsg);
-        this.postToChannel(`**[${stepName}] Output (${i + 1}/${chunks}):**\n\`\`\`\n${slice}\n\`\`\``);
-      }
+    // 2. Post scrubbed output as a single channel message (most recent tail only)
+    const scrubbed = WorkflowRunner.scrubForChannel(output);
+    if (scrubbed.length === 0) {
+      this.postToChannel(`**[${stepName}]** Step completed — output written to disk`);
+      return;
     }
+
+    const maxMsg = 2000;
+    const preview = scrubbed.length > maxMsg ? scrubbed.slice(-maxMsg) : scrubbed;
+    this.postToChannel(`**[${stepName}] Output:**\n\`\`\`\n${preview}\n\`\`\``);
   }
 
   /** Load persisted step output from disk. */

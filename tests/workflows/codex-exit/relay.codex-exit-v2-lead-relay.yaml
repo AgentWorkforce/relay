@@ -1,0 +1,95 @@
+version: '1.0'
+name: codex-exit-v2-lead-relay
+description: >
+  EXIT EXPERIMENT #2: Claude lead sends relay DM to trigger /exit.
+  Tests whether codex reliably outputs `/exit` when a lead agent sends a
+  direct relay message instructing it to terminate after signaling completion.
+  Both agents start simultaneously. Codex posts TASK_DONE to channel.
+  Lead sees TASK_DONE, DMs codex: "output /exit now". Codex checks inbox
+  and follows the DM instruction.
+
+swarm:
+  pattern: dag
+  maxConcurrency: 2
+  timeoutMs: 300000 # 5 min
+  channel: codex-exit-v2
+  idleNudge:
+    nudgeAfterMs: 90000 # 1.5 min — give time for relay round-trip
+    escalateAfterMs: 60000
+    maxNudges: 2
+
+agents:
+  - name: exit-lead
+    cli: claude
+    channels: [codex-exit-v2]
+    role: >
+      Monitors #codex-exit-v2. When codex-worker posts TASK_DONE, sends a relay DM
+      telling codex-worker to output /exit. Then waits for step to complete.
+    constraints:
+      model: sonnet
+
+  - name: codex-worker
+    cli: codex
+    channels: [codex-exit-v2]
+    role: >
+      Completes a trivial task, signals done on channel, then checks relay inbox
+      and follows the exit instruction from exit-lead.
+
+workflows:
+  - name: test-v2-lead-relay
+    description: >
+      Parallel: exit-lead monitors channel, codex-worker does task.
+      Codex posts completion signal → lead DMs exit instruction → codex /exits.
+    steps:
+      # Both steps start simultaneously (no dependsOn)
+
+      - name: lead-monitor
+        type: agent
+        agent: exit-lead
+        task: |
+          Your role: monitor #codex-exit-v2 and trigger codex-worker to exit
+          when it signals completion.
+
+          STEP 1 — Wait for codex-worker to post "TASK_DONE" to #codex-exit-v2.
+          Poll the channel every 5 seconds using relay_inbox or get channel messages.
+
+          STEP 2 — When you see "TASK_DONE" from codex-worker, immediately send
+          a direct message to codex-worker with this exact text:
+            "RELAY_EXIT_COMMAND: Your task is complete. Output /exit now to terminate."
+
+          STEP 3 — Wait for codex-worker's step to show as complete (it will /exit).
+
+          STEP 4 — Output: LEAD_DONE
+
+          Note: Do NOT message codex-worker until you see TASK_DONE on the channel.
+        verification:
+          type: output_contains
+          value: LEAD_DONE
+
+      - name: codex-task
+        type: agent
+        agent: codex-worker
+        task: |
+          Your task has THREE parts. Complete them in order.
+
+          PART 1 — THE TASK:
+          Output the following to your terminal:
+            TASK_RUNNING
+
+          PART 2 — SIGNAL COMPLETION:
+          Post "TASK_DONE" to #codex-exit-v2 channel using relay_send.
+          Command: relay_send(to: "#codex-exit-v2", message: "TASK_DONE")
+
+          PART 3 — WAIT FOR EXIT INSTRUCTION:
+          After posting TASK_DONE, check your relay inbox repeatedly (every 3-5 seconds).
+          Wait for a direct message containing "RELAY_EXIT_COMMAND".
+          When you receive it, immediately output the following on its own line:
+
+          /exit
+
+          The /exit must be the LAST thing you output. No text after it.
+
+          Begin now: output TASK_RUNNING, post TASK_DONE to channel, then wait for DM.
+        verification:
+          type: output_contains
+          value: TASK_RUNNING

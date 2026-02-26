@@ -9,7 +9,7 @@
  */
 
 import type { WorkflowEvent } from './runner.js';
-import { runWorkflow } from './run.js';
+import { WorkflowRunner } from './runner.js';
 
 function printUsage(): void {
   console.log(
@@ -79,23 +79,30 @@ async function main(): Promise<void> {
 
   const isDryRun = !!process.env.DRY_RUN;
 
-  const result = await runWorkflow(yamlPath, {
-    workflow: workflowName,
-    onEvent(event) {
-      console.log(formatEvent(event));
-    },
-  });
+  // Wire up signal handlers so Ctrl+C / SIGTERM always shuts the broker down
+  // cleanly rather than leaving an orphaned process behind.
+  const runner = new WorkflowRunner();
+  let shuttingDown = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n[workflow] ${signal} received — shutting down broker...`);
+    await runner.relay?.shutdown().catch(() => undefined);
+    process.exit(130);
+  };
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
-  // DryRunReport has `valid` not `status`
+  const config = await runner.parseYamlFile(yamlPath);
   if (isDryRun) {
-    const report = result as unknown as { valid: boolean; errors: string[] };
-    if (report.valid) {
-      process.exit(0);
-    } else {
-      console.error(`\nDry run failed: ${report.errors.join(', ')}`);
-      process.exit(1);
-    }
+    const { formatDryRunReport } = await import('./dry-run-format.js');
+    const report = runner.dryRun(config, workflowName);
+    console.log(formatDryRunReport(report));
+    process.exit(report.valid ? 0 : 1);
   }
+
+  runner.on((event) => console.log(formatEvent(event)));
+  const result = await runner.execute(config, workflowName);
 
   if (result.status === 'completed') {
     console.log(`\nWorkflow completed successfully.`);

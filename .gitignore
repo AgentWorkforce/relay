@@ -32,6 +32,7 @@ pnpm-debug.log*
 .vscode/
 .idea/
 .claude/settings.local.json
+.gemini/settings.json
 
 # Relay runtime artifacts
 *.sock

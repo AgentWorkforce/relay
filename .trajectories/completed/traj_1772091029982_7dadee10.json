@@ -1,0 +1,124 @@
+{
+  "id": "traj_1772091029982_7dadee10",
+  "version": 1,
+  "task": {
+    "title": "test-v2-lead-relay run #c337ffe9",
+    "source": {
+      "system": "workflow-runner",
+      "id": "c337ffe9ffd30950a0283feb"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-02-26T07:30:29.982Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T07:30:29.982Z"
+    },
+    {
+      "name": "exit-lead",
+      "role": "exit-lead",
+      "joinedAt": "2026-02-26T07:30:33.525Z"
+    },
+    {
+      "name": "codex-worker",
+      "role": "codex-worker",
+      "joinedAt": "2026-02-26T07:30:33.525Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_22a08392",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T07:30:29.982Z",
+      "events": [
+        {
+          "ts": 1772091029982,
+          "type": "note",
+          "content": "Workflow \"test-v2-lead-relay\" started with 2 steps"
+        },
+        {
+          "ts": 1772091029982,
+          "type": "note",
+          "content": "Parsed 2 steps, 2 parallel tracks, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-02-26T07:30:33.524Z"
+    },
+    {
+      "id": "ch_030e932f",
+      "title": "Execution: lead-monitor, codex-task",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T07:30:33.524Z",
+      "events": [
+        {
+          "ts": 1772091033525,
+          "type": "note",
+          "content": "Step \"lead-monitor\" assigned to agent \"exit-lead\""
+        },
+        {
+          "ts": 1772091033525,
+          "type": "note",
+          "content": "Step \"codex-task\" assigned to agent \"codex-worker\""
+        },
+        {
+          "ts": 1772091050281,
+          "type": "finding",
+          "content": "Step \"codex-task\" completed: >7u  ✨ Update available!0.104.0 -> 0.105.0Release notes: https://github.com/openai/codex/releases/latest› 1. Update now (runs `brew upgrade --cask codex`)2.Skip3.SkipuntilnextversionPress enter to con...",
+          "significance": "medium"
+        },
+        {
+          "ts": 1772091099211,
+          "type": "finding",
+          "content": "Step \"lead-monitor\" completed: \r\r\n▗ ▗   ▖ ▖  Claude Code v2.1.52\r\r\n           Sonnet 4.6 · Claude Max\r\r\n  ▘▘ ▝▝    ~/Projects/agent-workforce/relay-cli-uses-broker\r\r\n\r\r\n──────────────────────────────────────────────────────────────...",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-02-26T07:31:39.227Z"
+    },
+    {
+      "id": "ch_a3d3be72",
+      "title": "Convergence: lead-monitor + codex-task",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T07:31:39.227Z",
+      "events": [
+        {
+          "ts": 1772091099227,
+          "type": "reflection",
+          "content": "lead-monitor + codex-task resolved. 2/2 steps completed. All steps completed on first attempt.",
+          "significance": "high",
+          "raw": {
+            "confidence": 1,
+            "focalPoints": ["lead-monitor: completed", "codex-task: completed"]
+          }
+        }
+      ],
+      "endedAt": "2026-02-26T07:31:39.229Z"
+    },
+    {
+      "id": "ch_84f0a1c7",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T07:31:39.229Z",
+      "events": [
+        {
+          "ts": 1772091099229,
+          "type": "reflection",
+          "content": "Workflow completed in 1 minutes. 2/2 steps passed. (completed in 1 minutes)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-26T07:31:39.229Z"
+    }
+  ],
+  "completedAt": "2026-02-26T07:31:39.229Z",
+  "retrospective": {
+    "summary": "Workflow completed in 1 minutes. 2/2 steps passed.",
+    "approach": "workflow-runner DAG execution",
+    "confidence": 1,
+    "learnings": [],
+    "challenges": []
+  }
+}

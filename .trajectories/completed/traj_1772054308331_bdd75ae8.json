@@ -1,0 +1,48 @@
+{
+  "id": "traj_1772054308331_bdd75ae8",
+  "version": 1,
+  "task": {
+    "title": "build-integration-tests run #82225c0c",
+    "source": {
+      "system": "workflow-runner",
+      "id": "82225c0ca49507ed28606889"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-02-25T21:18:28.331Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-25T21:18:28.331Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_0d7b3eb1",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-25T21:18:28.331Z",
+      "events": [
+        {
+          "ts": 1772054308331,
+          "type": "note",
+          "content": "Workflow \"build-integration-tests\" started with 24 steps"
+        },
+        {
+          "ts": 1772054308331,
+          "type": "note",
+          "content": "Parsed 24 steps, 23 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1772054312037,
+          "type": "error",
+          "content": "Workflow abandoned: Preflight check failed: Preflight failed: output is non-empty\nM packages/sdk/bin/agent-relay-broker\n M packages/sdk/src/workflows/cli.ts\n M packages/sdk/src/workflows/runner.ts\n M tests/integration/broker/utils/broker-harness.ts\n?? WORKFLOW-RUN-LOG.md\n?? relay.w",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-25T21:18:32.037Z"
+    }
+  ],
+  "completedAt": "2026-02-25T21:18:32.037Z"
+}

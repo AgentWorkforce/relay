@@ -1,0 +1,48 @@
+{
+  "id": "traj_1772096954586_c9dcc22f",
+  "version": 1,
+  "task": {
+    "title": "build-integration-tests run #d7c3cb20",
+    "source": {
+      "system": "workflow-runner",
+      "id": "d7c3cb20f9abff7c9dc26eab"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-02-26T09:09:14.586Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T09:09:14.586Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_7450a50b",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T09:09:14.586Z",
+      "events": [
+        {
+          "ts": 1772096954586,
+          "type": "note",
+          "content": "Workflow \"build-integration-tests\" started with 24 steps"
+        },
+        {
+          "ts": 1772096954586,
+          "type": "note",
+          "content": "Parsed 24 steps, 23 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1772096957465,
+          "type": "error",
+          "content": "Workflow abandoned: Preflight check failed: Preflight failed: output is non-empty\nM WORKFLOW-RUN-LOG.md\n D packages/sdk-ts/package-lock.json\n M packages/sdk/src/workflows/cli.ts\n M packages/sdk/src/workflows/runner.ts\n M src/helpers.rs\n M src/main.rs\n M src/wrap.rs\n M tests/integra",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-26T09:09:17.465Z"
+    }
+  ],
+  "completedAt": "2026-02-26T09:09:17.465Z"
+}

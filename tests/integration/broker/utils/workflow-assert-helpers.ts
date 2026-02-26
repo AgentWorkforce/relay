@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 
-import type { WorkflowEvent } from '@agent-relay/sdk/workflows';
-import type { WorkflowRunResult } from './workflow-harness.js';
+import type { BrokerEvent } from '@agent-relay/sdk';
+import type { DryRunReport, WorkflowEvent } from '@agent-relay/sdk/workflows';
+import type { TrajectoryFile, WorkflowRunResult, WorkflowRunnerHarness } from './workflow-harness.js';
 
 function getStepEvent(result: WorkflowRunResult, type: string, stepName: string): WorkflowEvent | undefined {
   return result.events.find(
@@ -124,4 +125,92 @@ export function assertStepCount(
   const eventType = `step:${status}` as const;
   const count = result.events.filter((event) => event.type === eventType).length;
   assert.equal(count, expectedCount, `Expected ${expectedCount} ${status} steps, got ${count}`);
+}
+
+export function assertTrajectoryExists(harness: WorkflowRunnerHarness, cwd: string): TrajectoryFile {
+  const trajectory = harness.getTrajectory(cwd);
+  assert.ok(trajectory, `Expected a trajectory file under "${cwd}/.trajectories"`);
+
+  assert.ok(typeof trajectory.id === 'string' && trajectory.id.length > 0, 'Expected trajectory.id');
+  assert.equal(typeof trajectory.version, 'number', 'Expected trajectory.version to be a number');
+  assert.ok(
+    trajectory.status === 'active' || trajectory.status === 'completed' || trajectory.status === 'abandoned',
+    `Unexpected trajectory status "${trajectory.status}"`
+  );
+  assert.equal(typeof trajectory.startedAt, 'string', 'Expected trajectory.startedAt');
+  assert.ok(
+    typeof trajectory.task?.title === 'string' && trajectory.task.title.length > 0,
+    'Expected trajectory.task.title'
+  );
+  assert.ok(Array.isArray(trajectory.chapters), 'Expected trajectory.chapters to be an array');
+
+  return trajectory;
+}
+
+export function assertTrajectoryCompleted(trajectory: TrajectoryFile): void {
+  assert.equal(
+    trajectory.status,
+    'completed',
+    `Expected trajectory to be completed, got "${trajectory.status}"`
+  );
+}
+
+export function assertTrajectoryHasChapters(trajectory: TrajectoryFile, minCount: number): void {
+  assert.ok(Number.isInteger(minCount) && minCount >= 0, `Invalid minCount "${minCount}"`);
+  assert.ok(
+    trajectory.chapters.length >= minCount,
+    `Expected at least ${minCount} trajectory chapters, got ${trajectory.chapters.length}`
+  );
+}
+
+export function assertBrokerEventEmitted<K extends BrokerEvent['kind']>(
+  brokerEvents: BrokerEvent[],
+  kind: K,
+  predicate?: (event: Extract<BrokerEvent, { kind: K }>) => boolean
+): Extract<BrokerEvent, { kind: K }> {
+  const matches = brokerEvents.filter(
+    (event): event is Extract<BrokerEvent, { kind: K }> => event.kind === kind
+  );
+  assert.ok(matches.length > 0, `Expected broker event kind "${kind}" to be emitted`);
+
+  if (!predicate) {
+    return matches[0];
+  }
+
+  const matched = matches.find((event) => predicate(event));
+  assert.ok(matched, `Expected broker event kind "${kind}" to match predicate`);
+  return matched;
+}
+
+export function assertStepRetried(
+  result: WorkflowRunResult,
+  stepName: string,
+  minAttempts: number
+): Extract<WorkflowEvent, { type: 'step:retrying' }> {
+  assert.ok(Number.isInteger(minAttempts) && minAttempts >= 1, `Invalid minAttempts "${minAttempts}"`);
+
+  const retryEvents = result.events.filter(
+    (event): event is Extract<WorkflowEvent, { type: 'step:retrying' }> =>
+      event.type === 'step:retrying' && event.stepName === stepName
+  );
+  assert.ok(retryEvents.length > 0, `Expected "${stepName}" to emit step:retrying`);
+
+  const maxAttempt = retryEvents.reduce((max, event) => Math.max(max, event.attempt), 0);
+  assert.ok(
+    maxAttempt >= minAttempts,
+    `Expected "${stepName}" to retry at least ${minAttempts} times, got ${maxAttempt}`
+  );
+
+  const matchingEvent = retryEvents.find((event) => event.attempt >= minAttempts);
+  assert.ok(matchingEvent, `Expected "${stepName}" retry event with attempt >= ${minAttempts}`);
+  return matchingEvent;
+}
+
+export function assertDryRunValid(report: DryRunReport): void {
+  assert.equal(report.valid, true, 'Expected dry-run report to be valid');
+  assert.equal(
+    report.errors.length,
+    0,
+    `Expected dry-run report to have no errors, got: ${JSON.stringify(report.errors)}`
+  );
 }

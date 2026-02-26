@@ -1,0 +1,53 @@
+version: '1.0'
+name: codex-exit-v4-noninteractive
+description: >
+  EXIT EXPERIMENT #4: Non-interactive control case (interactive: false).
+  Tests codex in one-shot subprocess mode via `codex exec`.
+  No PTY, no relay messaging, no /exit dependency.
+  The process exits naturally when the command completes.
+  This should ALWAYS work and serves as the reference implementation
+  for any codex worker that does not need real-time relay communication.
+
+swarm:
+  pattern: pipeline
+  maxConcurrency: 1
+  timeoutMs: 300000 # 5 min
+  channel: codex-exit-v4
+  # No idleNudge — non-interactive agents don't need nudging
+
+agents:
+  - name: codex-worker
+    cli: codex
+    interactive: false # KEY: one-shot subprocess mode
+    channels: [codex-exit-v4]
+    role: >
+      Non-interactive codex worker. Receives task via CLI argument, runs to
+      completion, exits naturally. No /exit required. Stdout is captured output.
+
+workflows:
+  - name: test-v4-noninteractive
+    description: >
+      Control case: codex with interactive: false.
+      Uses `codex exec <task>` under the hood — one-shot, no PTY.
+      If this fails, something is wrong with the non-interactive execution path.
+      If this succeeds when V1/V2/V3 fail, it proves non-interactive is the fix.
+    steps:
+      - name: do-task
+        type: agent
+        agent: codex-worker
+        task: |
+          Output these three lines in order and nothing else:
+
+          NONINTERACTIVE_START
+          Hello from non-interactive codex
+          NONINTERACTIVE_COMPLETE
+        verification:
+          type: output_contains
+          value: NONINTERACTIVE_COMPLETE
+
+      - name: verify-output
+        type: deterministic
+        dependsOn: [do-task]
+        command: echo "Step completed successfully — codex exited naturally"
+        captureOutput: true
+        failOnError: false

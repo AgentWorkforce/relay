@@ -1,0 +1,124 @@
+{
+  "id": "traj_1772092872115_5439fe9e",
+  "version": 1,
+  "task": {
+    "title": "test-v1-basic-coord run #270e0a2e",
+    "source": {
+      "system": "workflow-runner",
+      "id": "270e0a2ebcd51996c5b2a42b"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-02-26T08:01:12.115Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T08:01:12.115Z"
+    },
+    {
+      "name": "codex-lead",
+      "role": "codex-lead",
+      "joinedAt": "2026-02-26T08:01:15.524Z"
+    },
+    {
+      "name": "claude-worker",
+      "role": "claude-worker",
+      "joinedAt": "2026-02-26T08:01:15.524Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_ae124c3d",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T08:01:12.115Z",
+      "events": [
+        {
+          "ts": 1772092872115,
+          "type": "note",
+          "content": "Workflow \"test-v1-basic-coord\" started with 2 steps"
+        },
+        {
+          "ts": 1772092872115,
+          "type": "note",
+          "content": "Parsed 2 steps, 2 parallel tracks, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-02-26T08:01:15.522Z"
+    },
+    {
+      "id": "ch_b9a7d238",
+      "title": "Execution: lead, worker",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T08:01:15.523Z",
+      "events": [
+        {
+          "ts": 1772092875524,
+          "type": "note",
+          "content": "Step \"lead\" assigned to agent \"codex-lead\""
+        },
+        {
+          "ts": 1772092875524,
+          "type": "note",
+          "content": "Step \"worker\" assigned to agent \"claude-worker\""
+        },
+        {
+          "ts": 1772092943409,
+          "type": "finding",
+          "content": "Step \"lead\" completed: <system-reminder>\r\nRelaycast MCP tools are available for replies.\r\nYou are pre-registered by the broker under your assigned worker name.\r\nDo not call mcp__relaycast__register unless a send/reply fails...",
+          "significance": "medium"
+        },
+        {
+          "ts": 1772092948197,
+          "type": "finding",
+          "content": "Step \"worker\" completed: \r\r\n▗ ▗   ▖ ▖  Claude Code v2.1.52\r\r\n           Sonnet 4.6 · Claude Max\r\r\n  ▘▘ ▝▝    ~/Projects/agent-workforce/relay-cli-uses-broker\r\r\n\r\r\n──────────────────────────────────────────────────────────────...",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-02-26T08:02:28.206Z"
+    },
+    {
+      "id": "ch_ca82b76f",
+      "title": "Convergence: lead + worker",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T08:02:28.206Z",
+      "events": [
+        {
+          "ts": 1772092948207,
+          "type": "reflection",
+          "content": "lead + worker resolved. 2/2 steps completed. All steps completed on first attempt.",
+          "significance": "high",
+          "raw": {
+            "confidence": 1,
+            "focalPoints": ["lead: completed", "worker: completed"]
+          }
+        }
+      ],
+      "endedAt": "2026-02-26T08:02:28.208Z"
+    },
+    {
+      "id": "ch_f23c1cb7",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T08:02:28.208Z",
+      "events": [
+        {
+          "ts": 1772092948208,
+          "type": "reflection",
+          "content": "Workflow completed in 1 minutes. 2/2 steps passed. (completed in 1 minutes)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-26T08:02:28.208Z"
+    }
+  ],
+  "completedAt": "2026-02-26T08:02:28.208Z",
+  "retrospective": {
+    "summary": "Workflow completed in 1 minutes. 2/2 steps passed.",
+    "approach": "workflow-runner DAG execution",
+    "confidence": 1,
+    "learnings": [],
+    "challenges": []
+  }
+}
