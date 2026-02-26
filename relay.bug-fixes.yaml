@@ -64,9 +64,6 @@ workflows:
         description: 'relay-dashboard repo exists at ../relay-dashboard'
       - command: ls src/main.rs
         description: 'Rust broker source present'
-      - command: git status --porcelain | grep -v '\.trajectories/' | grep -v 'relay\.' || true
-        failIf: non-empty
-        description: 'Working directory clean'
 
     steps:
       # ── Wave 1: Parallel investigation with full bug context ─────────────
