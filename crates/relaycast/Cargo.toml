@@ -1,0 +1,37 @@
+[package]
+name = "relaycast"
+version = "0.2.6"
+edition = "2021"
+authors = ["Agent Workforce <team@agentrelay.dev>"]
+description = "Rust SDK for RelayCast - multi-agent coordination platform"
+license = "Apache-2.0"
+repository = "https://github.com/AgentWorkforce/relaycast"
+documentation = "https://docs.rs/relaycast"
+readme = "README.md"
+keywords = ["agents", "ai", "relay", "sdk", "multi-agent"]
+categories = ["api-bindings", "asynchronous"]
+
+[dependencies]
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"], default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+futures-util = "0.3"
+thiserror = "2.0"
+url = "2.5"
+tracing = "0.1"
+urlencoding = "2.1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockito = "1.5"
+wiremock = "0.6"
+tempfile = "3.19"
+
+[features]
+default = []
+
+[[example]]
+name = "basic"
+path = "examples/basic.rs"
