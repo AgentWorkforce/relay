@@ -1,0 +1,67 @@
+version: '1.0'
+name: test-trajectory-quality
+description: >
+  Verifies that trajectory files capture reasoning (purpose, step intent,
+  failure diagnosis) not just mechanical event logs. Designed to partially
+  fail so verification_mismatch classification is exercised.
+
+swarm:
+  pattern: dag
+  channel: test-traj-quality
+  timeoutMs: 300000
+
+agents:
+  - name: worker
+    cli: claude
+    preset: worker
+    constraints:
+      model: haiku
+
+workflows:
+  - name: trajectory-quality
+    onError: continue
+
+    steps:
+      - name: work
+        type: agent
+        agent: worker
+        task: 'Output exactly: WORK_DONE'
+        verification:
+          type: output_contains
+          value: WORK_DONE
+
+      - name: fail-known
+        type: agent
+        agent: worker
+        dependsOn: [work]
+        task: 'Output exactly: TASK_COMPLETE'
+        verification:
+          type: output_contains
+          value: SENTINEL_NEVER_EMITTED
+
+      - name: check-trajectory
+        type: deterministic
+        dependsOn: [work]
+        command: >-
+          node -e "
+          const fs=require('fs');
+          const d=['.trajectories/active','.trajectories/completed'];
+          const files=d.flatMap(dir=>fs.existsSync(dir)?fs.readdirSync(dir).filter(f=>f.endsWith('.json')).map(f=>dir+'/'+f):[]);
+          if(!files.length){console.error('No trajectory file found');process.exit(1);}
+          files.sort((a,b)=>fs.statSync(b).mtimeMs-fs.statSync(a).mtimeMs);
+          const t=JSON.parse(fs.readFileSync(files[0],'utf8'));
+          const events=t.chapters.flatMap(c=>c.events);
+          const has=s=>events.some(e=>e.content.includes(s));
+          if(!has('Verifies that trajectory'))throw new Error('Missing purpose/description');
+          console.log('PASS purpose');
+          if(!has('Output exactly'))throw new Error('Missing step intent');
+          console.log('PASS step intent');
+          if(!has('WORK_DONE'))throw new Error('Missing completion sentinel');
+          console.log('PASS sentinel');
+          const r=t.retrospective||{};
+          if(!r.approach||r.approach==='workflow-runner DAG execution')throw new Error('approach not updated: '+r.approach);
+          console.log('PASS approach:',r.approach);
+          console.log('TRAJECTORY_QUALITY_PASS');
+          "
+        captureOutput: true
+        failOnError: true
