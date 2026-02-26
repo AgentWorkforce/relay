@@ -15,6 +15,7 @@ import { RelaycastApi } from '../relaycast.js';
 
 // Auto-provision a fresh isolated workspace — no signup or config needed.
 const { apiKey } = await RelaycastApi.createWorkspace(`marketing-plan-${randomBytes(4).toString('hex')}`);
+console.log(`\nWorkspace API key: ${apiKey}\nObserver: https://observer.relaycast.dev (paste key above)\n`);
 
 const relay = new AgentRelay({ env: { ...process.env, RELAY_API_KEY: apiKey } });
 
