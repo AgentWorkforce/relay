@@ -1,0 +1,302 @@
+{
+  "version": 1,
+  "id": "trace_5blayui681xq",
+  "timestamp": "2026-02-23T17:17:28.835Z",
+  "trajectory": "traj_pp2av7jgvnti",
+  "files": [
+    {
+      "path": "src/listen_api.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 342,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/main.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 6,
+              "end_line": 22,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 37,
+              "end_line": 48,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 165,
+              "end_line": 171,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 282,
+              "end_line": 288,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 457,
+              "end_line": 480,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 561,
+              "end_line": 567,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 606,
+              "end_line": 619,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 638,
+              "end_line": 651,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 668,
+              "end_line": 681,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1150,
+              "end_line": 1156,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1160,
+              "end_line": 1171,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1267,
+              "end_line": 1273,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1282,
+              "end_line": 1321,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1337,
+              "end_line": 1367,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1402,
+              "end_line": 1419,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1423,
+              "end_line": 1429,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1432,
+              "end_line": 1440,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1443,
+              "end_line": 1449,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1531,
+              "end_line": 1537,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1583,
+              "end_line": 1718,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1726,
+              "end_line": 1756,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1765,
+              "end_line": 1795,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1804,
+              "end_line": 1816,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1820,
+              "end_line": 1850,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1864,
+              "end_line": 1876,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 1901,
+              "end_line": 1913,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 2236,
+              "end_line": 2287,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 2354,
+              "end_line": 2359,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 2590,
+              "end_line": 2645,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 2689,
+              "end_line": 2696,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 2703,
+              "end_line": 2710,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 3256,
+              "end_line": 3296,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 3300,
+              "end_line": 3349,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 3582,
+              "end_line": 3587,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 3878,
+              "end_line": 3903,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 3937,
+              "end_line": 3963,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 4000,
+              "end_line": 4033,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 4086,
+              "end_line": 4146,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 4528,
+              "end_line": 4533,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/relaycast_ws.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 9,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 11,
+              "end_line": 17,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 237,
+              "end_line": 278,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 280,
+              "end_line": 424,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 426,
+              "end_line": 481,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 548,
+              "end_line": 580,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 621,
+              "end_line": 661,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 672,
+              "end_line": 688,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 704,
+              "end_line": 750,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 752,
+              "end_line": 962,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            },
+            {
+              "start_line": 971,
+              "end_line": 1355,
+              "revision": "b8604a035ee370b83afd09a77f5538b45cfd9687"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

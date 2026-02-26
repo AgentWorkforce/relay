@@ -345,6 +345,11 @@ pub(crate) async fn run_wrap(
     progress: bool,
     telemetry: TelemetryClient,
 ) -> Result<()> {
+    let (resolved_cli, inline_cli_args) = parse_cli_command(&cli_name)
+        .with_context(|| format!("invalid CLI command '{cli_name}'"))?;
+    let mut effective_cli_args = inline_cli_args;
+    effective_cli_args.extend(cli_args);
+
     let broker_start = Instant::now();
     let mut agent_spawn_count: u32 = 0;
     telemetry.track(TelemetryEvent::BrokerStart);
@@ -353,19 +358,19 @@ pub(crate) async fn run_wrap(
     #[allow(deprecated)]
     std::env::set_var("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false");
 
-    let requested_name = std::env::var("RELAY_AGENT_NAME").unwrap_or_else(|_| cli_name.clone());
+    let requested_name = std::env::var("RELAY_AGENT_NAME").unwrap_or_else(|_| resolved_cli.clone());
     let channels = std::env::var("RELAY_CHANNELS").unwrap_or_else(|_| "general".to_string());
     let channel_list = channels_from_csv(&channels);
 
     eprintln!(
         "[agent-relay] wrapping {} (agent: {}, channels: {:?})",
-        cli_name, requested_name, channel_list
+        resolved_cli, requested_name, channel_list
     );
     eprintln!("[agent-relay] use RUST_LOG=debug for verbose logging");
 
     // --- Auth & Relaycast connection ---
     let runtime_cwd = std::env::current_dir()?;
-    let paths = ensure_runtime_paths(&runtime_cwd)?;
+    let paths = ensure_runtime_paths(&runtime_cwd, &requested_name)?;
 
     let strict_name = env_flag_enabled("RELAY_STRICT_AGENT_NAME");
     let relay = connect_relay(RelaySessionOptions {
@@ -373,6 +378,7 @@ pub(crate) async fn run_wrap(
         requested_name: &requested_name,
         channels: channel_list,
         strict_name,
+        agent_type: None,
         read_mcp_identity: true,
         ensure_mcp_config: true,
         runtime_cwd: &runtime_cwd,
@@ -384,7 +390,9 @@ pub(crate) async fn run_wrap(
     let RelaySession {
         http_base,
         relay_workspace_key,
+        self_name: _,
         self_agent_id,
+        self_token: _,
         self_names,
         self_agent_ids,
         mut ws_inbound_rx,
@@ -395,13 +403,19 @@ pub(crate) async fn run_wrap(
     let child_api_key = relay_workspace_key.clone();
     let child_base_url = http_base.clone();
 
+    // HTTP client for pre-registering child agents before spawn.
+    // This ensures the child MCP server starts with a valid agent token
+    // (same as the main broker does for directly-spawned PTY agents).
+    let child_http =
+        RelaycastHttpClient::new(&http_base, &relay_workspace_key, &requested_name, "wrap");
+
     // Spawner for child agents
     let mut spawner = Spawner::new();
 
     // --- Spawn CLI in PTY ---
     let (pty, mut pty_rx) = PtySession::spawn(
-        &cli_name,
-        &cli_args,
+        &resolved_cli,
+        &effective_cli_args,
         terminal_rows().unwrap_or(24),
         terminal_cols().unwrap_or(80),
     )?;
@@ -646,13 +660,41 @@ pub(crate) async fn run_wrap(
                                     &child_base_url,
                                     &channels,
                                 );
+                                // Pre-register the child agent so its MCP server
+                                // starts with a valid token (avoiding "Not registered"
+                                // errors when non-claude CLIs like codex try to use
+                                // relay tools before calling register() themselves).
+                                let child_token = match retry_agent_registration(
+                                    &child_http,
+                                    &params.name,
+                                    Some(&params.cli),
+                                ).await {
+                                    Ok(token) => Some(token),
+                                    Err(RegRetryOutcome::RetryableExhausted(e)) => {
+                                        tracing::warn!(
+                                            child = %params.name,
+                                            error = %e,
+                                            "pre-registration failed after retries, spawning without token"
+                                        );
+                                        None
+                                    }
+                                    Err(RegRetryOutcome::Fatal(e)) => {
+                                        tracing::warn!(
+                                            child = %params.name,
+                                            error = %e,
+                                            "pre-registration fatal error, spawning without token"
+                                        );
+                                        None
+                                    }
+                                };
                                 match spawner
-                                    .spawn_wrap(
+                                    .spawn_wrap_with_token(
                                         &params.name,
                                         &params.cli,
                                         &params.args,
                                         &env_vars,
                                         Some(&cmd_event.invoked_by),
+                                        child_token.as_deref(),
                                     )
                                     .await
                                 {

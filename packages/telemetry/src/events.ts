@@ -34,18 +34,18 @@ export interface CommonProperties {
 // =============================================================================
 
 /**
- * daemon_start - Emitted when the daemon starts.
+ * broker_start - Emitted when the broker starts.
  * No additional properties beyond common props.
  */
-export interface DaemonStartEvent {
+export interface BrokerStartEvent {
   // Common props only
 }
 
 /**
- * daemon_stop - Emitted when the daemon stops.
+ * broker_stop - Emitted when the broker stops.
  */
-export interface DaemonStopEvent {
-  /** How long the daemon was running, in seconds */
+export interface BrokerStopEvent {
+  /** How long the broker was running, in seconds */
   uptime_seconds: number;
   /** Total agents spawned during this session */
   agent_spawn_count: number;
@@ -118,8 +118,8 @@ export interface CliCommandRunEvent {
 // =============================================================================
 
 export type TelemetryEventName =
-  | 'daemon_start'
-  | 'daemon_stop'
+  | 'broker_start'
+  | 'broker_stop'
   | 'agent_spawn'
   | 'agent_release'
   | 'agent_crash'
@@ -127,8 +127,8 @@ export type TelemetryEventName =
   | 'cli_command_run';
 
 export interface TelemetryEventMap {
-  daemon_start: DaemonStartEvent;
-  daemon_stop: DaemonStopEvent;
+  broker_start: BrokerStartEvent;
+  broker_stop: BrokerStopEvent;
   agent_spawn: AgentSpawnEvent;
   agent_release: AgentReleaseEvent;
   agent_crash: AgentCrashEvent;

@@ -1,10 +1,13 @@
 use std::{collections::HashMap, process::Stdio, time::Duration};
 
 use anyhow::{Context, Result};
+use relay_broker::snippets::configure_relaycast_mcp_with_token;
 use tokio::{
     process::{Child, Command},
     time::timeout,
 };
+
+use crate::helpers::parse_cli_command;
 
 #[cfg(unix)]
 use nix::{
@@ -30,7 +33,7 @@ impl Spawner {
         }
     }
 
-    /// Spawn a wrap-mode child: `agent-relay wrap <cli> <args>`.
+    /// Spawn a wrap-mode child: `agent-relay-broker wrap <cli> <args>`.
     /// Identity and connection info are passed via env vars rather than CLI flags.
     pub async fn spawn_wrap(
         &mut self,
@@ -40,16 +43,58 @@ impl Spawner {
         env_vars: &[(&str, &str)],
         parent: Option<&str>,
     ) -> Result<u32> {
+        self.spawn_wrap_with_token(child_name, cli, extra_args, env_vars, parent, None)
+            .await
+    }
+
+    pub async fn spawn_wrap_with_token(
+        &mut self,
+        child_name: &str,
+        cli: &str,
+        extra_args: &[String],
+        env_vars: &[(&str, &str)],
+        parent: Option<&str>,
+        agent_token: Option<&str>,
+    ) -> Result<u32> {
         if self.children.contains_key(child_name) {
             anyhow::bail!("child {child_name} already exists");
         }
 
-        let exe = std::env::current_exe().unwrap_or_else(|_| "agent-relay".into());
+        let exe = std::env::current_exe().unwrap_or_else(|_| "agent-relay-broker".into());
         let mut cmd = Command::new(exe);
+        let (resolved_cli, inline_cli_args) =
+            parse_cli_command(cli).with_context(|| format!("invalid CLI command '{cli}'"))?;
+        let mut combined_args = inline_cli_args;
+        combined_args.extend(extra_args.to_vec());
 
-        // Wrap mode: `agent-relay wrap <cli> <args...>`
-        cmd.arg("wrap").arg(cli);
-        for arg in extra_args {
+        // Wrap mode: `agent-relay-broker wrap <cli> <args...>`
+        cmd.arg("wrap").arg(&resolved_cli);
+
+        // Inject MCP config for CLIs that support dynamic MCP configuration.
+        let api_key = env_vars
+            .iter()
+            .find(|(k, _)| *k == "RELAY_API_KEY")
+            .map(|(_, v)| *v);
+        let base_url = env_vars
+            .iter()
+            .find(|(k, _)| *k == "RELAY_BASE_URL")
+            .map(|(_, v)| *v);
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let mcp_args = configure_relaycast_mcp_with_token(
+            &resolved_cli,
+            child_name,
+            api_key,
+            base_url,
+            &combined_args,
+            &cwd,
+            agent_token,
+        )
+        .await?;
+        for arg in &mcp_args {
+            cmd.arg(arg);
+        }
+
+        for arg in &combined_args {
             cmd.arg(arg);
         }
 
@@ -59,6 +104,11 @@ impl Spawner {
 
         for (key, value) in env_vars {
             cmd.env(key, value);
+        }
+        // Inject pre-registered agent token when available so the MCP server
+        // starts already authenticated (same as main.rs WorkerRegistry::spawn).
+        if let Some(token) = agent_token {
+            cmd.env("RELAY_AGENT_TOKEN", token);
         }
         // Disable Claude Code auto-suggestions to prevent accidental acceptance
         // when relay messages are injected into the PTY.
@@ -92,20 +142,6 @@ impl Spawner {
         self.children
             .get(child_name)
             .and_then(|managed| managed.parent.as_deref())
-    }
-
-    /// Return a snapshot of all managed children for the HTTP API.
-    pub fn list_children(&self) -> Vec<serde_json::Value> {
-        self.children
-            .iter()
-            .map(|(name, managed)| {
-                serde_json::json!({
-                    "name": name,
-                    "pid": managed.child.id(),
-                    "source": "spawner",
-                })
-            })
-            .collect()
     }
 
     pub async fn release(&mut self, name: &str, timeout_duration: Duration) -> Result<()> {
@@ -176,6 +212,21 @@ pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> R
     }
 
     Ok(())
+}
+
+pub fn spawn_env_vars<'a>(
+    name: &'a str,
+    api_key: &'a str,
+    base_url: &'a str,
+    channels: &'a str,
+) -> [(&'a str, &'a str); 5] {
+    [
+        ("RELAY_AGENT_NAME", name),
+        ("RELAY_API_KEY", api_key),
+        ("RELAY_BASE_URL", base_url),
+        ("RELAY_CHANNELS", channels),
+        ("RELAY_STRICT_AGENT_NAME", "1"),
+    ]
 }
 
 #[cfg(test)]

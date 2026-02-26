@@ -1,0 +1,84 @@
+version: '1.0'
+name: codex-lead-v2-step-chaining
+description: >
+  CODEX LEAD EXPERIMENT #2: Step output chaining.
+  Tests whether a codex lead can consume {{steps.worker.output}} from a
+  non-interactive claude worker and act on it. The lead runs after the worker,
+  reads the chained output, validates it, and produces its own output.
+  This is the pattern for: codex lead reviews claude worker deliverables.
+
+swarm:
+  pattern: pipeline
+  maxConcurrency: 1
+  timeoutMs: 300000 # 5 min
+  channel: codex-lead-v2
+  idleNudge:
+    nudgeAfterMs: 90000
+    escalateAfterMs: 60000
+    maxNudges: 2
+
+agents:
+  - name: claude-worker
+    cli: claude
+    # interactive PTY — runner captures PTY output as step output for chaining
+    channels: [codex-lead-v2]
+    role: >
+      Non-interactive worker. Produces a structured deliverable to stdout
+      that the codex lead will review via step output chaining.
+    constraints:
+      model: sonnet
+
+  - name: codex-lead
+    cli: codex
+    interactive: false # Non-interactive: receives {{steps.worker.output}} at spawn time, no relay needed
+    channels: [codex-lead-v2]
+    role: >
+      Lead that reviews the claude worker's output via {{steps.worker.output}}
+      and produces a verdict.
+    constraints:
+      model: gpt-5.3-codex
+
+workflows:
+  - name: test-v2-step-chaining
+    description: >
+      Sequential: claude worker runs first (non-interactive), produces output.
+      Codex lead runs second, receives worker output via step chaining,
+      validates it, and outputs a verdict.
+    steps:
+      - name: worker
+        type: agent
+        agent: claude-worker
+        task: |
+          Output the following structured report, then /exit:
+
+          WORKER_REPORT_START
+          item_1: alpha
+          item_2: beta
+          item_3: gamma
+          checksum: 42
+          WORKER_REPORT_END
+          /exit
+
+      - name: lead-review
+        type: agent
+        agent: codex-lead
+        dependsOn: [worker]
+        task: |
+          The claude worker produced this output:
+
+          {{steps.worker.output}}
+
+          Review the output above and verify:
+          1. It contains WORKER_REPORT_START and WORKER_REPORT_END
+          2. It has exactly 3 items (item_1, item_2, item_3)
+          3. The checksum value is 42
+
+          Output your verdict:
+            REVIEW_RESULT: PASS  (if all checks pass)
+            REVIEW_RESULT: FAIL  (if any check fails, with reason)
+
+          Then output:
+            LEAD_REVIEW_DONE
+        verification:
+          type: output_contains
+          value: LEAD_REVIEW_DONE

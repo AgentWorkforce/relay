@@ -1,0 +1,193 @@
+# CLI Registry
+# Single source of truth for CLI tools, versions, and models.
+# Used by: TS SDK, Python SDK, relay-cloud, relay-dashboard
+#
+# To update: Edit this file, then run `npm run codegen:models`
+
+version: "1.0"
+
+# CLI tools with their versions and model configurations
+clis:
+  claude:
+    name: "Claude Code"
+    package: "@anthropic-ai/claude-code"
+    npm_link: "https://www.npmjs.com/package/@anthropic-ai"
+    version: "2.1.50"
+    install: "npm install -g @anthropic-ai/claude-code"
+    models:
+      sonnet:
+        id: "sonnet"
+        label: "Sonnet"
+        default: true
+      opus:
+        id: "opus"
+        label: "Opus"
+      haiku:
+        id: "haiku"
+        label: "Haiku"
+
+  codex:
+    name: "Codex CLI"
+    package: "@openai/codex"
+    npm_link: "https://www.npmjs.com/package/@openai/codex"
+    version: "0.104.0"
+    install: "npm install -g @openai/codex"
+    models:
+      gpt_5_2_codex:
+        id: "gpt-5.2-codex"
+        label: "GPT-5.2 Codex — Frontier agentic coding model"
+        default: true
+      gpt_5_3_codex:
+        id: "gpt-5.3-codex"
+        label: "GPT-5.3 Codex — Latest frontier agentic coding model"
+      gpt_5_3_codex_spark:
+        id: "gpt-5.3-codex-spark"
+        label: "GPT-5.3 Codex Spark — Ultra-fast coding model"
+      gpt_5_1_codex_max:
+        id: "gpt-5.1-codex-max"
+        label: "GPT-5.1 Codex Max — Deep and fast reasoning"
+      gpt_5_2:
+        id: "gpt-5.2"
+        label: "GPT-5.2 — Frontier model, knowledge & reasoning"
+      gpt_5_1_codex_mini:
+        id: "gpt-5.1-codex-mini"
+        label: "GPT-5.1 Codex Mini — Cheaper, faster"
+
+  gemini:
+    name: "Gemini CLI"
+    package: "@google/gemini-cli"
+    npm_link: "https://www.npmjs.com/package/@google/gemini-cli"
+    version: "0.29.5"
+    install: "npm install -g @google/gemini-cli"
+    models:
+      gemini_3_pro_preview:
+        id: "gemini-3-pro-preview"
+        label: "Gemini 3 Pro Preview"
+      gemini_2_5_pro:
+        id: "gemini-2.5-pro"
+        label: "Gemini 2.5 Pro"
+        default: true
+      gemini_2_5_flash:
+        id: "gemini-2.5-flash"
+        label: "Gemini 2.5 Flash"
+      gemini_2_5_flash_lite:
+        id: "gemini-2.5-flash-lite"
+        label: "Gemini 2.5 Flash Lite"
+
+  cursor:
+    name: "Cursor"
+    package: "cursor"
+    version: "0.48.6"
+    install: "Download from cursor.com"
+    models:
+      opus_4_5_thinking:
+        id: "opus-4.5-thinking"
+        label: "Claude 4.5 Opus (Thinking)"
+        default: true
+      opus_4_5:
+        id: "opus-4.5"
+        label: "Claude 4.5 Opus"
+      sonnet_4_5:
+        id: "sonnet-4.5"
+        label: "Claude 4.5 Sonnet"
+      sonnet_4_5_thinking:
+        id: "sonnet-4.5-thinking"
+        label: "Claude 4.5 Sonnet (Thinking)"
+      gpt_5_2_codex:
+        id: "gpt-5.2-codex"
+        label: "GPT-5.2 Codex"
+      gpt_5_2_codex_high:
+        id: "gpt-5.2-codex-high"
+        label: "GPT-5.2 Codex High"
+      gpt_5_2_codex_low:
+        id: "gpt-5.2-codex-low"
+        label: "GPT-5.2 Codex Low"
+      gpt_5_2_codex_xhigh:
+        id: "gpt-5.2-codex-xhigh"
+        label: "GPT-5.2 Codex Extra High"
+      gpt_5_2_codex_fast:
+        id: "gpt-5.2-codex-fast"
+        label: "GPT-5.2 Codex Fast"
+      gpt_5_2_codex_high_fast:
+        id: "gpt-5.2-codex-high-fast"
+        label: "GPT-5.2 Codex High Fast"
+      gpt_5_2_codex_low_fast:
+        id: "gpt-5.2-codex-low-fast"
+        label: "GPT-5.2 Codex Low Fast"
+      gpt_5_2_codex_xhigh_fast:
+        id: "gpt-5.2-codex-xhigh-fast"
+        label: "GPT-5.2 Codex Extra High Fast"
+      gpt_5_1_codex_max:
+        id: "gpt-5.1-codex-max"
+        label: "GPT-5.1 Codex Max"
+      gpt_5_1_codex_max_high:
+        id: "gpt-5.1-codex-max-high"
+        label: "GPT-5.1 Codex Max High"
+      gpt_5_2:
+        id: "gpt-5.2"
+        label: "GPT-5.2"
+      gpt_5_2_high:
+        id: "gpt-5.2-high"
+        label: "GPT-5.2 High"
+      gpt_5_1_high:
+        id: "gpt-5.1-high"
+        label: "GPT-5.1 High"
+      gemini_3_pro:
+        id: "gemini-3-pro"
+        label: "Gemini 3 Pro"
+      gemini_3_flash:
+        id: "gemini-3-flash"
+        label: "Gemini 3 Flash"
+      composer_1:
+        id: "composer-1"
+        label: "Composer 1"
+      grok:
+        id: "grok"
+        label: "Grok"
+
+  aider:
+    name: "Aider"
+    package: "aider-chat"
+    version: "0.72.1"
+    install: "pip install aider-chat"
+    models: {}
+
+  goose:
+    name: "Goose"
+    package: "goose-ai"
+    version: "1.0.16"
+    install: "pip install goose-ai"
+    models: {}
+
+# Swarm patterns for multi-agent workflows
+swarm_patterns:
+  hub_spoke:
+    id: "hub-spoke"
+    description: "Central coordinator distributes tasks to workers"
+  dag:
+    id: "dag"
+    description: "Directed acyclic graph with dependencies"
+  fan_out:
+    id: "fan-out"
+    description: "Parallel execution across multiple agents"
+  pipeline:
+    id: "pipeline"
+    description: "Sequential processing through stages"
+  consensus:
+    id: "consensus"
+    description: "Agents reach agreement before proceeding"
+  mesh:
+    id: "mesh"
+    description: "Fully connected peer-to-peer communication"
+  handoff:
+    id: "handoff"
+    description: "Sequential handoff between agents"
+  cascade:
+    id: "cascade"
+    description: "Cascading delegation"
+  debate:
+    id: "debate"
+    description: "Agents debate to reach conclusion"
+  hierarchical:
+    id: "hierarchical"
+    description: "Tree-structured coordination"

@@ -1,7 +1,7 @@
 use clap::Parser;
 
 #[derive(Debug, Parser, Clone)]
-#[command(name = "agent-relay")]
+#[command(name = "agent-relay-broker")]
 #[command(about = "Wraps an agent CLI in a PTY and bridges Relaycast messages")]
 pub struct Config {
     #[arg(long)]
@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn defaults_match_spec() {
-        let cfg = Config::parse_from(["agent-relay", "claude"]);
+        let cfg = Config::parse_from(["agent-relay-broker", "claude"]);
         assert_eq!(cfg.channels, "general");
         assert_eq!(cfg.human_cooldown, 3000);
         assert_eq!(cfg.coalesce_window, 500);

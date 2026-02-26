@@ -1,0 +1,66 @@
+{
+  "id": "traj_w8emy8tcwatn",
+  "version": 1,
+  "task": {
+    "title": "Improve local dashboard static-dir workflow"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-23T07:30:24.589Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-23T07:31:24.243Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_k7226en2ncwq",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-23T07:31:24.243Z",
+      "events": [
+        {
+          "ts": 1771831884244,
+          "type": "decision",
+          "content": "Auto-derive dashboard --static-dir from local dist/start.js path: Auto-derive dashboard --static-dir from local dist/start.js path",
+          "raw": {
+            "question": "Auto-derive dashboard --static-dir from local dist/start.js path",
+            "chosen": "Auto-derive dashboard --static-dir from local dist/start.js path",
+            "alternatives": [],
+            "reasoning": "prevents fallback page when running local CLI from another project cwd while preserving explicit env overrides"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-23T07:31:24.296Z"
+    }
+  ],
+  "commits": ["a69599a3"],
+  "filesChanged": [
+    ".github/workflows/e2e-tests.yml",
+    ".github/workflows/publish.yml",
+    ".github/workflows/rust-ci.yml",
+    ".github/workflows/stress-tests.yml",
+    ".github/workflows/test.yml",
+    ".github/workflows/verify-publish.yml",
+    ".trajectories/completed/2026-02/traj_ab5g6rextaj5.json",
+    ".trajectories/completed/2026-02/traj_ab5g6rextaj5.md",
+    ".trajectories/index.json",
+    "src/helpers.rs",
+    "src/main.rs"
+  ],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": [],
+  "_trace": {
+    "startRef": "a557eba5251d6032998ec26e9330de73167a507e",
+    "endRef": "a69599a3faa57685945fbc20cee1e3cee7d1e287",
+    "traceId": "trace_91vtztzb46cz"
+  },
+  "completedAt": "2026-02-23T07:31:24.296Z",
+  "retrospective": {
+    "summary": "Added static-dir inference for local dashboard entrypoints, updated core CLI tests, rebuilt dist, and verified dashboard loads without STATIC_DIR env",
+    "approach": "Standard approach",
+    "confidence": 0.94
+  }
+}

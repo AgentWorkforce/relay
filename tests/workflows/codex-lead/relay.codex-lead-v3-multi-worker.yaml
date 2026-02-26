@@ -1,0 +1,116 @@
+version: '1.0'
+name: codex-lead-v3-multi-worker
+description: >
+  CODEX LEAD EXPERIMENT #3: Codex lead coordinates multiple claude workers.
+  Tests the full team pattern: codex lead posts separate assignments to two
+  claude workers via channel, both complete independently, lead collects both
+  DONE signals and outputs a summary. Verifies codex can manage parallelism.
+
+swarm:
+  pattern: dag
+  maxConcurrency: 3
+  timeoutMs: 300000 # 5 min
+  channel: codex-lead-v3
+  idleNudge:
+    nudgeAfterMs: 90000
+    escalateAfterMs: 60000
+    maxNudges: 2
+
+agents:
+  - name: codex-lead
+    cli: codex
+    channels: [codex-lead-v3]
+    role: >
+      Lead that coordinates two claude workers via #codex-lead-v3.
+      Posts individual assignments, collects both completion signals,
+      then outputs a summary and self-terminates.
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: claude-worker-a
+    cli: claude
+    channels: [codex-lead-v3]
+    role: 'Worker A. Completes its assigned task and signals WORKER_A_DONE.'
+    constraints:
+      model: sonnet
+
+  - name: claude-worker-b
+    cli: claude
+    channels: [codex-lead-v3]
+    role: 'Worker B. Completes its assigned task and signals WORKER_B_DONE.'
+    constraints:
+      model: sonnet
+
+workflows:
+  - name: test-v3-multi-worker
+    description: >
+      All three start simultaneously. Codex lead posts assignments for A and B.
+      Each worker reads its assignment, completes it, posts its DONE signal.
+      Lead waits for both WORKER_A_DONE and WORKER_B_DONE, then outputs summary.
+    steps:
+      - name: lead
+        type: agent
+        agent: codex-lead
+        task: |
+          You are the lead coordinating two workers on #codex-lead-v3.
+
+          STEP 1 — Post both assignments to #codex-lead-v3:
+
+          First message:
+            "ASSIGNMENT_A: claude-worker-a, output 'RESULT_A: squares' then post WORKER_A_DONE to #codex-lead-v3."
+
+          Second message:
+            "ASSIGNMENT_B: claude-worker-b, output 'RESULT_B: circles' then post WORKER_B_DONE to #codex-lead-v3."
+
+          STEP 2 — Poll #codex-lead-v3 until you see BOTH:
+            - A message containing "WORKER_A_DONE"
+            - A message containing "WORKER_B_DONE"
+
+          STEP 3 — Once both are done, output:
+            ALL_WORKERS_DONE
+            SUMMARY: worker-a completed, worker-b completed
+
+          Then terminate using remove_agent with $RELAY_AGENT_NAME.
+        verification:
+          type: output_contains
+          value: ALL_WORKERS_DONE
+
+      - name: worker-a
+        type: agent
+        agent: claude-worker-a
+        task: |
+          You are worker-a. Watch #codex-lead-v3 for your assignment.
+
+          STEP 1 — Poll #codex-lead-v3 until you see a message containing "ASSIGNMENT_A:".
+
+          STEP 2 — Complete the assignment: output to your terminal:
+            RESULT_A: squares
+
+          STEP 3 — Post "WORKER_A_DONE" to #codex-lead-v3.
+
+          STEP 4 — Output: WORKER_A_COMPLETE
+
+          Then /exit.
+        verification:
+          type: output_contains
+          value: WORKER_A_COMPLETE
+
+      - name: worker-b
+        type: agent
+        agent: claude-worker-b
+        task: |
+          You are worker-b. Watch #codex-lead-v3 for your assignment.
+
+          STEP 1 — Poll #codex-lead-v3 until you see a message containing "ASSIGNMENT_B:".
+
+          STEP 2 — Complete the assignment: output to your terminal:
+            RESULT_B: circles
+
+          STEP 3 — Post "WORKER_B_DONE" to #codex-lead-v3.
+
+          STEP 4 — Output: WORKER_B_COMPLETE
+
+          Then /exit.
+        verification:
+          type: output_contains
+          value: WORKER_B_COMPLETE

@@ -5,8 +5,16 @@
  * and modify behavior at various points in the agent lifecycle.
  */
 
-import type { SendPayload } from '@agent-relay/protocol/types';
-import { PROTOCOL_VERSION } from '@agent-relay/protocol';
+import { PROTOCOL_VERSION } from '@agent-relay/sdk/protocol';
+
+export type PayloadKind = 'message' | 'action' | 'state' | 'thinking';
+
+export interface SendPayload {
+  kind: PayloadKind;
+  body: string;
+  data?: Record<string, unknown>;
+  thread?: string;
+}
 
 /**
  * A message in the conversation history
@@ -56,7 +64,7 @@ export interface HookMemory {
 export interface HookRelay {
   /** Send a message to a specific agent or broadcast */
   send(to: string | '*', body: string, options?: Partial<SendPayload>): Promise<void>;
-  /** Check if connected to the relay daemon */
+  /** Check if connected to the relay broker */
   isConnected(): boolean;
   /** Get the current agent's name in the relay */
   getAgentName(): string | undefined;

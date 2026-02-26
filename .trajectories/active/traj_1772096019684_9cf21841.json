@@ -1,0 +1,91 @@
+{
+  "id": "traj_1772096019684_9cf21841",
+  "version": 1,
+  "task": {
+    "title": "test-v3-multi-worker run #f0310054",
+    "source": {
+      "system": "workflow-runner",
+      "id": "f0310054172c1c28174a71e9"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-02-26T08:53:39.684Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T08:53:39.684Z"
+    },
+    {
+      "name": "codex-lead",
+      "role": "codex-lead",
+      "joinedAt": "2026-02-26T08:53:43.249Z"
+    },
+    {
+      "name": "claude-worker-a",
+      "role": "claude-worker-a",
+      "joinedAt": "2026-02-26T08:53:43.249Z"
+    },
+    {
+      "name": "claude-worker-b",
+      "role": "claude-worker-b",
+      "joinedAt": "2026-02-26T08:53:43.249Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_bda7fc56",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T08:53:39.684Z",
+      "events": [
+        {
+          "ts": 1772096019684,
+          "type": "note",
+          "content": "Workflow \"test-v3-multi-worker\" started with 3 steps"
+        },
+        {
+          "ts": 1772096019684,
+          "type": "note",
+          "content": "Parsed 3 steps, 3 parallel tracks, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-02-26T08:53:43.247Z"
+    },
+    {
+      "id": "ch_81d91b35",
+      "title": "Execution: lead, worker-a, worker-b",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T08:53:43.248Z",
+      "events": [
+        {
+          "ts": 1772096023249,
+          "type": "note",
+          "content": "Step \"lead\" assigned to agent \"codex-lead\""
+        },
+        {
+          "ts": 1772096023249,
+          "type": "note",
+          "content": "Step \"worker-a\" assigned to agent \"claude-worker-a\""
+        },
+        {
+          "ts": 1772096023250,
+          "type": "note",
+          "content": "Step \"worker-b\" assigned to agent \"claude-worker-b\""
+        },
+        {
+          "ts": 1772096114118,
+          "type": "finding",
+          "content": "Step \"lead\" completed: <system-reminder>\r\nRelaycast MCP tools are available for replies.\r\nYou are pre-registered by the broker under your assigned worker name.\r\nDo not call mcp__relaycast__register unless a send/reply fails...",
+          "significance": "medium"
+        },
+        {
+          "ts": 1772096141679,
+          "type": "finding",
+          "content": "Step \"worker-b\" completed: \r\r\n▗ ▗   ▖ ▖  Claude Code v2.1.52\r\r\n           Sonnet 4.6 · Claude Max\r\r\n  ▘▘ ▝▝    ~/Projects/agent-workforce/relay-cli-uses-broker\r\r\n\r\r\n──────────────────────────────────────────────────────────────...",
+          "significance": "medium"
+        }
+      ]
+    }
+  ]
+}

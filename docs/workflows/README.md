@@ -32,7 +32,13 @@ Swarm patterns define how agents coordinate and execute tasks. Choose the patter
 
 ## Built-in Templates
 
-Pre-configured workflows for common development tasks. Each template defines agents, steps, and coordination settings.
+Pre-configured workflows for common development tasks. Templates use **blueprint-style** hybrid workflows that combine **deterministic steps** (shell commands) with **agent steps** (LLM-powered).
+
+Benefits:
+- **Faster:** Git/lint/test steps run instantly (no agent spawn overhead)
+- **Cheaper:** Deterministic steps cost $0 in LLM calls
+- **More reliable:** Git commands can't hallucinate
+- **Shift left:** Preflight checks catch issues before agents spawn
 
 | Template | Pattern | Description |
 |----------|---------|-------------|
@@ -47,7 +53,7 @@ Pre-configured workflows for common development tasks. Each template defines age
 ## Using Templates
 
 ```typescript
-import { TemplateRegistry } from "@agent-relay/broker-sdk/workflows";
+import { TemplateRegistry } from "@agent-relay/sdk/workflows";
 
 const registry = new TemplateRegistry();
 
@@ -64,4 +70,4 @@ await runner.execute(config, undefined, {
 
 ## Creating Custom Workflows
 
-See the [Workflow YAML Reference](../../packages/broker-sdk/src/workflows/README.md) for full configuration options.
+See the [Workflow YAML Reference](../../packages/sdk/src/workflows/README.md) for full configuration options.

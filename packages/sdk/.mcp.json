@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "relaycast": {
+      "args": [
+        "-y",
+        "@relaycast/mcp"
+      ],
+      "command": "npx",
+      "env": {
+        "RELAY_BASE_URL": "https://api.relaycast.dev"
+      }
+    }
+  }
+}

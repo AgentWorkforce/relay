@@ -62,9 +62,9 @@ describe('Consolidation: Single Source of Truth', () => {
       expect(new errors.RelayError('test')).toBeInstanceOf(Error);
     });
 
-    it('exports DaemonNotRunningError class', () => {
-      expect(errors.DaemonNotRunningError).toBeDefined();
-      expect(new errors.DaemonNotRunningError()).toBeInstanceOf(errors.RelayError);
+    it('exports BrokerNotRunningError class', () => {
+      expect(errors.BrokerNotRunningError).toBeDefined();
+      expect(new errors.BrokerNotRunningError()).toBeInstanceOf(errors.RelayError);
     });
 
     it('exports AgentNotFoundError class', () => {

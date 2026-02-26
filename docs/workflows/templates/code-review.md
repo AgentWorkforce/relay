@@ -41,7 +41,7 @@ agent-relay run --template code-review --task "Review PR #123: Add payment proce
 ```
 
 ```typescript
-import { TemplateRegistry, WorkflowRunner } from "@agent-relay/broker-sdk/workflows";
+import { TemplateRegistry, WorkflowRunner } from "@agent-relay/sdk/workflows";
 
 const registry = new TemplateRegistry();
 const config = await registry.loadTemplate("code-review");

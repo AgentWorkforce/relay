@@ -82,12 +82,11 @@ jobs:
           echo "=== Testing key imports ==="
           node --eval "
             const packages = [
-              '@agent-relay/protocol',
-              '@agent-relay/config',
-              '@agent-relay/daemon',
-              '@agent-relay/wrapper',
-              '@agent-relay/bridge',
               '@agent-relay/sdk',
+              '@agent-relay/config',
+              '@agent-relay/hooks',
+              '@agent-relay/utils',
+              '@agent-relay/user-directory',
             ];
 
             (async () => {
@@ -109,7 +108,7 @@ jobs:
           echo "=== Testing main package ==="
           node --eval "
             import('./dist/src/index.js').then(m => {
-              const required = ['Daemon', 'Connection', 'BaseWrapper', 'PROTOCOL_VERSION'];
+              const required = ['AgentRelay', 'AgentRelayClient', 'createLogger'];
               const missing = required.filter(r => !(r in m));
               if (missing.length) {
                 console.error('Missing exports:', missing);

@@ -1,0 +1,272 @@
+version: '1.0'
+name: bug-fixes-resume
+description: >
+  Fast-track resume of the bug fix workflow. Investigation and dashboard
+  reproduction tests are already done from the previous run. This picks
+  up at Wave 3 (fixes), skipping investigation and dashboard test writing.
+
+  Previous run: a9bb0c8110c849cef685dbdb
+  Investigation outputs: .agent-relay/step-outputs/a9bb0c8110c849cef685dbdb/
+  Dashboard tests: ../relay-dashboard/test/bugs/ (7 files, failing as expected)
+  Still needed: tests/integration/broker/bug-repro.sh
+
+swarm:
+  pattern: dag
+  maxConcurrency: 3
+  timeoutMs: 10800000
+  channel: bug-fixes
+  idleNudge:
+    nudgeAfterMs: 600000
+    escalateAfterMs: 600000
+    maxNudges: 2
+
+agents:
+  - name: dashboard-fixer
+    cli: claude
+    channels: [dashboard-track, bug-fixes]
+    role: 'Fixes relay-dashboard bugs. Success = reproduction tests green.'
+    constraints:
+      model: sonnet
+
+  - name: broker-fixer
+    cli: claude
+    channels: [broker-track, bug-fixes]
+    role: 'Fixes Rust broker bugs. Success = reproduction tests green + cargo build clean.'
+    constraints:
+      model: sonnet
+
+  - name: red-team
+    cli: claude
+    channels: [bug-fixes]
+    role: 'Adversarially tests every fix. Finds edge cases and regressions.'
+    constraints:
+      model: opus
+
+workflows:
+  - name: fix-all-bugs
+    onError: continue
+    steps:
+      # ── Wave 1: Write broker reproduction tests (dashboard tests already done) ──
+
+      - name: write-broker-reproductions
+        type: agent
+        agent: broker-fixer
+        task: |
+          Read the broker investigation findings from disk:
+          .agent-relay/step-outputs/a9bb0c8110c849cef685dbdb/investigate-broker.md
+
+          Based on those findings, write tests/integration/broker/bug-repro.sh
+          with 4 checks (one per bug):
+          - Test 8: spawn an agent via SDK, assert it has 'engineering' in channels
+          - Test 9: spawn gemini, send DM, grep broker logs for injection attempt
+          - Test 10: spawn opencode, check MCP config env for RELAY_AGENT_TOKEN
+          - Test 11: spawn cursor, verify relaycast MCP appears in cursor's config
+
+          After writing the file, run it:
+          bash tests/integration/broker/bug-repro.sh 2>&1 | tail -40
+
+          The checks should FAIL (confirming the bugs exist).
+
+          Do NOT re-investigate. Do NOT relay_spawn or add_agent.
+          Do NOT relay_send the result — print it directly to your terminal.
+          Print exactly: BROKER_REPRODUCTIONS_FAILING
+        verification:
+          type: output_contains
+          value: BROKER_REPRODUCTIONS_FAILING
+        retries: 1
+
+      # ── Wave 2: Fix everything in parallel ───────────────────────────────────
+
+      - name: fix-dashboard
+        type: agent
+        agent: dashboard-fixer
+        dependsOn: [write-broker-reproductions]
+        task: |
+          Fix all 7 relay-dashboard bugs. Read the full investigation from:
+          .agent-relay/step-outputs/a9bb0c8110c849cef685dbdb/investigate-dashboard.md
+
+          The reproduction tests are already written at ../relay-dashboard/test/bugs/.
+          Run them to confirm they fail, then fix each bug until all pass:
+          cd ../relay-dashboard && npx vitest run test/bugs/ 2>&1 | tail -20
+
+          Bugs to fix:
+          1. Metrics API — implement the missing endpoint
+          2. Trajectories API — implement the missing endpoint
+          3. Invite to channel — fix the action/API call
+          4. DM display — fix the fetch or render path for DMs
+          5. Input area — unify DM and channel input component
+          6. Thread injection — wire thread replies to broker injection
+          7. Session resume — pass conversation history to --resume
+
+          When ALL 7 tests pass:
+          cd ../relay-dashboard && npx vitest run test/bugs/ 2>&1 | tail -10
+
+          Do NOT relay_spawn or add_agent.
+          Do NOT relay_send the result — print it directly to your terminal.
+          Print exactly: DASHBOARD_FIXES_DONE
+        verification:
+          type: output_contains
+          value: DASHBOARD_FIXES_DONE
+        retries: 2
+
+      - name: fix-broker
+        type: agent
+        agent: broker-fixer
+        dependsOn: [write-broker-reproductions]
+        task: |
+          Fix all 4 Rust broker bugs. Read the full investigation from:
+          .agent-relay/step-outputs/a9bb0c8110c849cef685dbdb/investigate-broker.md
+
+          The reproduction tests are at tests/integration/broker/bug-repro.sh.
+          Run them to confirm they fail, then fix each bug:
+
+          8. Engineering channel — add 'engineering' to default agent channels
+          9. Gemini injection — fix PTY injection so gemini receives messages
+          10. Opencode MCP — use agent token + correct agent name in MCP env
+          11. Cursor MCP — fix config format/location for cursor
+
+          After ALL fixes:
+          ~/.cargo/bin/cargo build --release 2>&1 | tail -10
+          bash tests/integration/broker/bug-repro.sh 2>&1 | tail -20
+
+          Do NOT relay_spawn or add_agent.
+          Do NOT relay_send the result — print it directly to your terminal.
+          Print exactly: BROKER_FIXES_DONE
+        verification:
+          type: output_contains
+          value: BROKER_FIXES_DONE
+        retries: 2
+
+      # ── Wave 3: Build gates ──────────────────────────────────────────────────
+
+      - name: build-dashboard
+        type: deterministic
+        dependsOn: [fix-dashboard]
+        command: >
+          cd ../relay-dashboard &&
+          npm run lint 2>&1 | tail -5 &&
+          npm run build 2>&1 | tail -10 &&
+          npx vitest run test/bugs/ 2>&1 | tail -15 &&
+          echo "DASHBOARD_OK" || echo "DASHBOARD_FAILED"
+        captureOutput: true
+        failOnError: false
+
+      - name: build-broker
+        type: deterministic
+        dependsOn: [fix-broker]
+        command: >
+          ~/.cargo/bin/cargo build --release --bin agent-relay-broker 2>&1 | tail -10 &&
+          cp target/release/agent-relay-broker packages/sdk/bin/agent-relay-broker &&
+          bash tests/integration/broker/bug-repro.sh 2>&1 | tail -20 &&
+          echo "BROKER_OK" || echo "BROKER_FAILED"
+        captureOutput: true
+        failOnError: false
+
+      # ── Wave 4: E2E + Red team (parallel) ────────────────────────────────────
+
+      - name: e2e-verify
+        type: deterministic
+        dependsOn: [build-dashboard, build-broker]
+        command: >
+          cd ../relay-dashboard && npm run dev &
+          DEV_PID=$! && sleep 8 &&
+          curl -sf http://localhost:3000/api/metrics | jq '.data' &&
+          curl -sf http://localhost:3000/api/trajectories | jq '.[0]' &&
+          kill $DEV_PID 2>/dev/null &&
+          echo "E2E_PASSED" || (kill $DEV_PID 2>/dev/null; echo "E2E_FAILED")
+        captureOutput: true
+        failOnError: false
+
+      - name: red-team-review
+        type: agent
+        agent: red-team
+        dependsOn: [build-dashboard, build-broker]
+        task: |
+          Review all fixes adversarially. Check for edge cases and regressions.
+
+          Read the fix outputs:
+          Dashboard fix output is in the workflow context.
+          Broker fix output is in the workflow context.
+
+          Run: git -C ../relay-dashboard diff HEAD | head -400
+          Run: git diff HEAD src/ | head -400
+
+          For each fix, verify:
+          - DM display: handles empty state (no DMs yet)?
+          - Thread injection: handles replies to non-active agents?
+          - Engineering channel: breaks existing single-channel spawns?
+          - Gemini injection: affects claude or codex paths?
+          - Opencode MCP: works when RELAY_AGENT_TOKEN not yet set?
+          - Cursor MCP: conflicts with existing cursor settings?
+
+          Do NOT relay_spawn or add_agent.
+          Do NOT relay_send the result — print it directly to your terminal.
+          Print exactly: RED_TEAM_CLEAN if no issues, or RED_TEAM_ISSUES:<findings> if problems.
+        verification:
+          type: output_contains
+          value: RED_TEAM_
+
+      # ── Wave 5: Address issues + PRs ─────────────────────────────────────────
+
+      - name: address-and-ship
+        type: agent
+        agent: dashboard-fixer
+        dependsOn: [e2e-verify, red-team-review]
+        task: |
+          E2E results: {{steps.e2e-verify.output}}
+          Red team: {{steps.red-team-review.output}}
+          Dashboard build: {{steps.build-dashboard.output}}
+          Broker build: {{steps.build-broker.output}}
+
+          If E2E_FAILED or RED_TEAM_ISSUES: fix them.
+          When everything is clean, create the PRs:
+
+          cd ../relay-dashboard &&
+          git add -A &&
+          git commit -m "fix: metrics, trajectories, DMs, threads, session resume, invite, input" &&
+          git push -u origin HEAD &&
+          gh pr create --title "fix: 7 dashboard bugs" --body "Fixes bugs 1-7. All reproduction tests green." --draft
+
+          git add src/ packages/sdk/bin/ tests/integration/broker/bug-repro.sh &&
+          git commit -m "fix: engineering channel, gemini injection, opencode/cursor MCP" &&
+          git push -u origin HEAD &&
+          gh pr create --title "fix: 4 broker bugs" --body "Fixes bugs 8-11. bug-repro.sh green." --draft
+
+          Do NOT relay_spawn or add_agent.
+          Do NOT relay_send the result — print it directly to your terminal.
+          Print exactly: ALL_SHIPPED
+        verification:
+          type: output_contains
+          value: ALL_SHIPPED
+        retries: 2
+
+      # ── Wave 6: Summary ───────────────────────────────────────────────────────
+
+      - name: summary
+        type: agent
+        agent: red-team
+        dependsOn: [address-and-ship]
+        task: |
+          Write a clean summary of what was fixed in this bug fix run.
+
+          Build results: {{steps.build-dashboard.output}} | {{steps.build-broker.output}}
+          E2E: {{steps.e2e-verify.output}}
+          Red team: {{steps.red-team-review.output}}
+
+          Cover:
+          1. Which bugs were fixed and how (one line each, bugs 1-11)
+          2. Test status — reproduction tests and builds
+          3. PR links if created
+          4. Anything unresolved
+
+          Do NOT relay_spawn or add_agent.
+          Do NOT relay_send the result — print it directly to your terminal.
+          Print exactly: WORKFLOW_SUMMARY_DONE on the last line.
+        verification:
+          type: output_contains
+          value: WORKFLOW_SUMMARY_DONE
+
+trajectories:
+  enabled: true
+  reflectOnBarriers: true
+  autoDecisions: true

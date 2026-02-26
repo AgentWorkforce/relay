@@ -1,0 +1,411 @@
+version: '1.0'
+name: ralph-swarm
+description: >
+  Parallel Implementation Squad. A tech lead decomposes the PRD into atomic
+  tasks, five codex workers implement them simultaneously, three specialized
+  reviewers run in parallel, a consensus gate synthesizes their verdicts, and
+  the cycle repeats until the backlog is empty.
+
+  What this showcases vs vanilla ralph:
+    - Fan-out to N parallel workers (not one at a time)
+    - Multi-model squad: codex workers + claude reviewers + gemini security
+    - Real consensus: all 3 reviewers must pass before merge
+    - Tech lead stays active throughout — course-corrects workers in real-time
+    - Barriers coordinate the fan-in before the next wave starts
+    - The whole backlog processed in one autonomous overnight session
+
+swarm:
+  pattern: dag
+  maxConcurrency: 5
+  timeoutMs: 14400000 # 4 hours — big PRDs take time
+  channel: ralph-swarm
+  idleNudge:
+    nudgeAfterMs: 300000
+    escalateAfterMs: 300000
+    maxNudges: 2
+
+agents:
+  # ── Leadership ─────────────────────────────────────────────────────────────
+
+  - name: tech-lead
+    cli: claude
+    channels: [ralph-swarm, planning]
+    role: 'Decomposes PRD into atomic tasks, assigns to workers, reviews integration.'
+    constraints:
+      model: opus
+
+  - name: integration-lead
+    cli: claude
+    channels: [ralph-swarm]
+    role: 'Integrates parallel worker output, resolves conflicts, gates the PR.'
+    constraints:
+      model: sonnet
+
+  # ── Implementation workers ─────────────────────────────────────────────────
+  # Each gets one atomic task. interactive: false means one-shot, exits cleanly.
+
+  - name: worker-1
+    cli: codex
+    role: 'Implements assigned atomic task.'
+    interactive: false
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: worker-2
+    cli: codex
+    role: 'Implements assigned atomic task.'
+    interactive: false
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: worker-3
+    cli: codex
+    role: 'Implements assigned atomic task.'
+    interactive: false
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: worker-4
+    cli: codex
+    role: 'Implements assigned atomic task.'
+    interactive: false
+    constraints:
+      model: gpt-5.3-codex-spark
+
+  - name: worker-5
+    cli: codex
+    role: 'Implements assigned atomic task.'
+    interactive: false
+    constraints:
+      model: gpt-5.3-codex-spark
+
+  # ── Review squad ───────────────────────────────────────────────────────────
+
+  - name: reviewer-correctness
+    cli: claude
+    role: 'Reviews logic, tests, edge cases.'
+    interactive: false
+    constraints:
+      model: sonnet
+
+  - name: reviewer-architecture
+    cli: claude
+    role: 'Reviews coupling, abstractions, patterns.'
+    interactive: false
+    constraints:
+      model: opus
+
+  - name: reviewer-security
+    cli: gemini
+    role: 'Reviews attack surface, injection, secrets.'
+    interactive: false
+    constraints:
+      model: gemini-2.5-flash
+
+workflows:
+  - name: swarm-loop
+    description: >
+      Decompose → fan-out workers → deterministic test gate → parallel review
+      → consensus → integration → commit. Repeat until backlog empty.
+    onError: retry
+    preflight:
+      - command: test -f "${PRD_PATH:-prd.json}"
+        description: 'PRD file exists'
+      - command: git status --porcelain
+        failIf: non-empty
+        description: 'Clean working directory'
+
+    steps:
+      # ── Wave 1: Decompose PRD into atomic tasks ───────────────────────────
+
+      - name: decompose
+        type: agent
+        agent: tech-lead
+        task: |
+          Read ${PRD_PATH:-prd.json} (incomplete stories) and
+          ${PROGRESS_PATH:-progress.txt} (learnings from previous batches).
+
+          Decompose the next 5 stories into atomic, independent tasks.
+          Each task: one coding session, no shared files with other tasks,
+          a shell verify command to confirm it works.
+
+          Output a JSON block: {"batch":[{"id":"task-N","title":"...",
+          "files":["src/..."],"prompt":"full impl instruction","verify":"cmd"}]}
+
+          Post the decomposition to #ralph-swarm so all workers can read it.
+          Output: DECOMPOSED
+        verification:
+          type: output_contains
+          value: DECOMPOSED
+        retries: 1
+
+      # ── Wave 2: Five workers implement in parallel ────────────────────────
+      # Each worker gets the full decomposition and self-assigns task N.
+
+      - name: work-1
+        type: agent
+        agent: worker-1
+        dependsOn: [decompose]
+        task: |
+          Tech lead decomposition: {{steps.decompose.output}}
+
+          Implement task-1 from the decomposition above.
+          Follow all existing code conventions in this repo.
+          Run the verification command from the task spec to confirm it works.
+          Output: TASK_1_DONE:<brief summary of what you implemented>
+        verification:
+          type: output_contains
+          value: TASK_1_DONE
+
+      - name: work-2
+        type: agent
+        agent: worker-2
+        dependsOn: [decompose]
+        task: |
+          Tech lead decomposition: {{steps.decompose.output}}
+
+          Implement task-2 from the decomposition above.
+          Follow all existing code conventions in this repo.
+          Run the verification command from the task spec to confirm it works.
+          Output: TASK_2_DONE:<brief summary of what you implemented>
+        verification:
+          type: output_contains
+          value: TASK_2_DONE
+
+      - name: work-3
+        type: agent
+        agent: worker-3
+        dependsOn: [decompose]
+        task: |
+          Tech lead decomposition: {{steps.decompose.output}}
+
+          Implement task-3 from the decomposition above. If fewer than 3 tasks
+          exist in the batch, output: TASK_3_DONE:skipped
+          Follow all existing code conventions in this repo.
+          Output: TASK_3_DONE:<brief summary>
+        verification:
+          type: output_contains
+          value: TASK_3_DONE
+
+      - name: work-4
+        type: agent
+        agent: worker-4
+        dependsOn: [decompose]
+        task: |
+          Tech lead decomposition: {{steps.decompose.output}}
+
+          Implement task-4 from the decomposition above. If fewer than 4 tasks
+          exist in the batch, output: TASK_4_DONE:skipped
+          Output: TASK_4_DONE:<brief summary>
+        verification:
+          type: output_contains
+          value: TASK_4_DONE
+
+      - name: work-5
+        type: agent
+        agent: worker-5
+        dependsOn: [decompose]
+        task: |
+          Tech lead decomposition: {{steps.decompose.output}}
+
+          Implement task-5 from the decomposition above. If fewer than 5 tasks
+          exist in the batch, output: TASK_5_DONE:skipped
+          Output: TASK_5_DONE:<brief summary>
+        verification:
+          type: output_contains
+          value: TASK_5_DONE
+
+      # ── Wave 3: Quality gate — run the full test suite ───────────────────
+
+      - name: test-gate
+        type: deterministic
+        dependsOn: [work-1, work-2, work-3, work-4, work-5]
+        command: >
+          npm run lint 2>&1 | tail -10 &&
+          npx tsc --noEmit 2>&1 | tail -10 &&
+          npm test 2>&1 | tail -30 &&
+          echo "GATE_PASSED" || echo "GATE_FAILED"
+        captureOutput: true
+        failOnError: false
+
+      # ── Wave 4: Fix failures if gate failed ─────────────────────────────
+
+      - name: fix-failures
+        type: agent
+        agent: tech-lead
+        dependsOn: [test-gate]
+        task: |
+          Test gate results: {{steps.test-gate.output}}
+
+          Worker summaries:
+          - Task 1: {{steps.work-1.output}}
+          - Task 2: {{steps.work-2.output}}
+          - Task 3: {{steps.work-3.output}}
+          - Task 4: {{steps.work-4.output}}
+          - Task 5: {{steps.work-5.output}}
+
+          If GATE_PASSED: output FIX_DONE:none
+          If GATE_FAILED: identify which worker's change broke the gate,
+          apply the minimal fix, re-run the failing tests, output FIX_DONE:<what you fixed>
+        verification:
+          type: output_contains
+          value: FIX_DONE
+        maxIterations: 3
+        retries: 1
+
+      # ── Wave 5: Capture diff for all three reviewers ─────────────────────
+
+      - name: capture-diff
+        type: deterministic
+        dependsOn: [fix-failures]
+        command: git diff HEAD 2>/dev/null | head -500
+        captureOutput: true
+
+      # ── Wave 6: Three parallel reviewers ─────────────────────────────────
+
+      - name: review-correctness
+        type: agent
+        agent: reviewer-correctness
+        dependsOn: [capture-diff]
+        task: |
+          Review this diff for logic correctness, test coverage, and edge cases.
+
+          Worker summaries: {{steps.fix-failures.output}}
+          Diff: {{steps.capture-diff.output}}
+
+          Be specific. Reference file:line for any issues.
+          Output: CORRECTNESS:PASS or CORRECTNESS:FAIL:<numbered issues>
+        verification:
+          type: output_contains
+          value: 'CORRECTNESS:'
+
+      - name: review-architecture
+        type: agent
+        agent: reviewer-architecture
+        dependsOn: [capture-diff]
+        task: |
+          Review this diff for architecture quality, coupling, and long-term maintainability.
+
+          Worker summaries: {{steps.fix-failures.output}}
+          Diff: {{steps.capture-diff.output}}
+
+          Output: ARCHITECTURE:PASS or ARCHITECTURE:FAIL:<numbered issues>
+        verification:
+          type: output_contains
+          value: 'ARCHITECTURE:'
+
+      - name: review-security
+        type: agent
+        agent: reviewer-security
+        dependsOn: [capture-diff]
+        task: |
+          Security review: check for injection, secrets, auth bypass, input validation.
+
+          Diff: {{steps.capture-diff.output}}
+
+          Output: SECURITY:PASS or SECURITY:FAIL:<numbered issues>
+        verification:
+          type: output_contains
+          value: 'SECURITY:'
+
+      # ── Wave 7: Consensus — all three must pass ──────────────────────────
+
+      - name: consensus
+        type: agent
+        agent: integration-lead
+        dependsOn: [review-correctness, review-architecture, review-security]
+        task: |
+          Synthesize the three reviews and decide: merge or rework?
+
+          Correctness: {{steps.review-correctness.output}}
+          Architecture: {{steps.review-architecture.output}}
+          Security: {{steps.review-security.output}}
+
+          If ALL THREE are PASS: output CONSENSUS:MERGE
+          If ANY failed: output CONSENSUS:REWORK:<prioritized list of issues to fix>
+        verification:
+          type: output_contains
+          value: 'CONSENSUS:'
+
+      # ── Wave 8: Address rework if needed, then commit ────────────────────
+
+      - name: address-rework
+        type: agent
+        agent: tech-lead
+        dependsOn: [consensus]
+        task: |
+          Consensus verdict: {{steps.consensus.output}}
+
+          If CONSENSUS:MERGE — output REWORK_DONE:none
+          If CONSENSUS:REWORK — fix all issues listed in the verdict.
+          Run tests again to confirm green, then output REWORK_DONE:<what changed>
+        verification:
+          type: output_contains
+          value: REWORK_DONE
+        maxIterations: 2
+
+      - name: final-test
+        type: deterministic
+        dependsOn: [address-rework]
+        command: npm test 2>&1 | tail -20 && echo "FINAL_GREEN" || echo "FINAL_RED"
+        captureOutput: true
+        failOnError: false
+
+      - name: commit-batch
+        type: deterministic
+        dependsOn: [final-test]
+        command: >
+          git add -A &&
+          git commit -m "feat: parallel swarm batch — $(date +%Y%m%d-%H%M)" 2>/dev/null ||
+          echo "nothing to commit"
+
+      - name: record-and-advance
+        type: agent
+        agent: tech-lead
+        dependsOn: [commit-batch]
+        task: |
+          Final results:
+          - Test gate: {{steps.test-gate.output}}
+          - Consensus: {{steps.consensus.output}}
+          - Final: {{steps.final-test.output}}
+
+          1. Append to ${PROGRESS_PATH:-progress.txt}:
+             - Which tasks succeeded / failed this batch
+             - Patterns in the codebase worth remembering
+             - What caused rework (if any)
+
+          2. Mark completed stories as passed in ${PRD_PATH:-prd.json}
+
+          3. Check if any incomplete stories remain. If yes, output BATCH_DONE:more
+             If all done, output BATCH_DONE:complete
+
+          Output: BATCH_DONE:...
+        verification:
+          type: output_contains
+          value: 'BATCH_DONE:'
+
+coordination:
+  barriers:
+    - name: workers-complete
+      waitFor: [work-1, work-2, work-3, work-4, work-5]
+      timeoutMs: 3600000
+    - name: reviews-complete
+      waitFor: [review-correctness, review-architecture, review-security]
+      timeoutMs: 1800000
+  consensusStrategy: unanimous
+
+state:
+  backend: memory
+  ttlMs: 86400000
+
+errorHandling:
+  strategy: retry
+  maxRetries: 1
+  retryDelayMs: 10000
+  notifyChannel: ralph-swarm
+
+trajectories:
+  enabled: true
+  reflectOnBarriers: true
+  reflectOnConverge: true
+  autoDecisions: true

@@ -1,6 +1,6 @@
 ---
-title: "Shadow Agents"
-description: "Monitor and audit primary agents with shadow agents that receive message copies"
+title: 'Shadow Agents'
+description: 'Monitor and audit primary agents with shadow agents that receive message copies'
 ---
 
 # Shadow Agents
@@ -28,7 +28,7 @@ A shadow agent is paired with a primary agent and receives copies of the primary
          |                               |
          v                               v
 +--------+---------+            +--------+---------+
-|   Relay Daemon   |   copy --> |   Shadow Agent   |
+|   Relay Broker   |   copy --> |   Shadow Agent   |
 |    (routes)      |            |    (Auditor)     |
 +------------------+            +------------------+
 ```
@@ -37,21 +37,21 @@ A shadow agent is paired with a primary agent and receives copies of the primary
 
 Shadows use predefined roles that determine when they speak:
 
-| Role | Triggers | Use Case |
-|------|----------|----------|
-| `reviewer` | `CODE_WRITTEN`, `REVIEW_REQUEST`, `EXPLICIT_ASK` | Code review |
-| `auditor` | `SESSION_END`, `EXPLICIT_ASK` | Session audits |
-| `active` | `ALL_MESSAGES` | Full participation |
+| Role       | Triggers                                         | Use Case           |
+| ---------- | ------------------------------------------------ | ------------------ |
+| `reviewer` | `CODE_WRITTEN`, `REVIEW_REQUEST`, `EXPLICIT_ASK` | Code review        |
+| `auditor`  | `SESSION_END`, `EXPLICIT_ASK`                    | Session audits     |
+| `active`   | `ALL_MESSAGES`                                   | Full participation |
 
 ### Trigger Types
 
-| Trigger | Description |
-|---------|-------------|
-| `SESSION_END` | When the primary's session ends |
-| `CODE_WRITTEN` | When the primary writes or modifies code |
-| `REVIEW_REQUEST` | When a review is explicitly requested |
-| `EXPLICIT_ASK` | When directly addressed by name |
-| `ALL_MESSAGES` | Every message the primary receives |
+| Trigger          | Description                              |
+| ---------------- | ---------------------------------------- |
+| `SESSION_END`    | When the primary's session ends          |
+| `CODE_WRITTEN`   | When the primary writes or modifies code |
+| `REVIEW_REQUEST` | When a review is explicitly requested    |
+| `EXPLICIT_ASK`   | When directly addressed by name          |
+| `ALL_MESSAGES`   | Every message the primary receives       |
 
 ## CLI Configuration
 
@@ -66,9 +66,9 @@ agent-relay create-agent claude \
 
 ### Options
 
-| Flag | Description |
-|------|-------------|
-| `--shadow <name>` | Name for the shadow agent |
+| Flag                   | Description                             |
+| ---------------------- | --------------------------------------- |
+| `--shadow <name>`      | Name for the shadow agent               |
 | `--shadow-role <role>` | Role preset or comma-separated triggers |
 
 ### Custom Triggers
@@ -87,6 +87,7 @@ agent-relay create-agent claude \
 For permanent shadow configurations, use `.agent-relay.json`:
 
 **`.agent-relay.json`**
+
 ```json
 {
   "shadows": {
@@ -194,6 +195,7 @@ Primary (claude)
 ```
 
 Benefits:
+
 - Shared context with primary
 - Lower resource overhead
 - Automatic lifecycle management
@@ -222,21 +224,17 @@ curl -X POST http://localhost:3888/api/spawn-with-shadow \
   }'
 ```
 
-### Via Relay Protocol
+### Via MCP Tool
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-KIND: spawn
-NAME: Lead
-CLI: claude
-SHADOW: Auditor
-SHADOW_ROLE: reviewer
-
-Implement the user authentication system.
-EOF
+```typescript
+relay_spawn(
+  name: "Lead",
+  cli: "claude",
+  task: "Implement the user authentication system."
+)
+// Shadow configuration is set via .agent-relay.json (see Configuration File above)
+// or via CLI: agent-relay create-agent claude --name Lead --shadow Auditor --shadow-role reviewer
 ```
-
-Then: `->relay-file:spawn`
 
 ## Shadow Communication
 
@@ -296,18 +294,15 @@ When a shadow speaks, messages are prefixed with their role:
 
 <AccordionGroup>
   <Accordion title="Shadow not receiving messages">
-    1. Verify the shadow is registered: `agent-relay agents`
-    2. Check the pairing in `.agent-relay.json`
-    3. Ensure the primary's name matches exactly
+    1. Verify the shadow is registered: `agent-relay agents` 2. Check the pairing in `.agent-relay.json` 3.
+    Ensure the primary's name matches exactly
   </Accordion>
   <Accordion title="Shadow speaking too often">
-    1. Review the `speakOn` triggers in config
-    2. Use more restrictive triggers like `EXPLICIT_ASK`
-    3. Add context to the shadow prompt about when to stay quiet
+    1. Review the `speakOn` triggers in config 2. Use more restrictive triggers like `EXPLICIT_ASK` 3. Add
+    context to the shadow prompt about when to stay quiet
   </Accordion>
   <Accordion title="Shadow not starting">
-    1. Check if the CLI is authenticated
-    2. Verify config syntax in `.agent-relay.json`
-    3. Look for errors in daemon logs
+    1. Check if the CLI is authenticated 2. Verify config syntax in `.agent-relay.json` 3. Look for errors in
+    broker logs
   </Accordion>
 </AccordionGroup>

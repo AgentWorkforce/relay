@@ -1,0 +1,19 @@
+name: Large File Check
+on: [pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for large files
+        run: |
+          find . -type f -size +1M \
+            -not -path './.git/*' \
+            -not -path './node_modules/*' \
+            -not -path './target/*' \
+            -not -path './dist/*' \
+            -not -path './bin/*' \
+            -not -name '*.lock' | \
+          while read file; do
+            echo "::warning file=$file::Large file detected (>1MB)"
+          done

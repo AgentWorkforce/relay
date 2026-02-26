@@ -12,7 +12,7 @@ import {
   randomName,
   performance,
 } from "./harness.js";
-import type { BrokerEvent } from "@agent-relay/broker-sdk";
+import type { BrokerEvent } from "@agent-relay/sdk";
 
 const MESSAGE_COUNT = QUICK ? 50 : 500;
 

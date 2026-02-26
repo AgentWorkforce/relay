@@ -31,15 +31,15 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "npm run clean && tsc",
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/protocol": "2.3.14",
     "@agent-relay/config": "2.3.14",
-    "@agent-relay/trajectory": "2.3.14"
+    "@agent-relay/trajectory": "2.3.14",
+    "@agent-relay/sdk": "2.3.14"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

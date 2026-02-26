@@ -27,6 +27,20 @@ module.exports = {
         caughtErrorsIgnorePattern: '^_',
       },
     ],
+    '@typescript-eslint/naming-convention': [
+      'warn',
+      {
+        selector: 'variable',
+        format: ['camelCase', 'UPPER_CASE', 'PascalCase'],
+        leadingUnderscore: 'allow',
+      },
+      {
+        selector: 'typeLike',
+        format: ['PascalCase'],
+      },
+    ],
+    complexity: ['warn', 15],
+    'max-depth': ['warn', 4],
   },
   ignorePatterns: ['dist/**', 'node_modules/**', 'coverage/**', '**/out/**'],
 };

@@ -1,0 +1,117 @@
+version: '1.0'
+name: test-lead-worker-pattern
+description: >
+  Tests the canonical lead + worker(s) pattern.
+  Lead is interactive (PTY, relay-aware). Workers are non-interactive.
+
+  DAG structure: context → [work-a, work-b, coordinate] → merge
+  Workers and lead all start after context. Lead watches the channel for
+  worker DONE signals. Workers post signals when complete. Lead posts
+  LEAD_COMPLETE once both are seen. Merge step validates all outputs.
+
+  This is the correct pattern — workers are NOT downstream of the lead step.
+  The lead runs in parallel with workers and monitors their progress.
+
+swarm:
+  pattern: dag
+  channel: test-lw-pattern
+  timeoutMs: 600000 # 10 min
+  idleNudge:
+    nudgeAfterMs: 180000 # 3 min — give lead time to observe worker signals
+    escalateAfterMs: 60000
+    maxNudges: 2
+
+agents:
+  - name: lead
+    cli: claude
+    preset: lead
+    channels: [test-lw-pattern]
+    constraints:
+      model: sonnet
+
+  - name: worker-a
+    cli: claude
+    preset: worker
+    constraints:
+      model: sonnet
+
+  - name: worker-b
+    cli: claude
+    preset: worker
+    constraints:
+      model: sonnet
+
+workflows:
+  - name: lead-worker
+    steps:
+      # Step 1: inject context
+      - name: context
+        type: deterministic
+        command: >
+          echo "TASK_A: List 3 benefits of TypeScript type safety." &&
+          echo "TASK_B: List 3 benefits of pure functions."
+        captureOutput: true
+        failOnError: true
+
+      # Steps 2, 3, 4 all start in parallel after context
+
+      # Workers are non-interactive — they do their task and post a signal to the channel
+      - name: work-a
+        type: agent
+        agent: worker-a
+        dependsOn: [context]
+        task: |
+          List exactly 3 benefits of TypeScript type safety.
+          Format each as a single sentence starting with "- ".
+          Then output exactly: WORKER_A_DONE
+        verification:
+          type: output_contains
+          value: WORKER_A_DONE
+
+      - name: work-b
+        type: agent
+        agent: worker-b
+        dependsOn: [context]
+        task: |
+          List exactly 3 benefits of pure functions.
+          Format each as a single sentence starting with "- ".
+          Then output exactly: WORKER_B_DONE
+        verification:
+          type: output_contains
+          value: WORKER_B_DONE
+
+      # Lead runs in parallel with workers — watches channel for their signals
+      # then posts LEAD_COMPLETE. Does NOT need to wait for workers in the DAG
+      # because the merge step gates on all three.
+      - name: coordinate
+        type: agent
+        agent: lead
+        dependsOn: [context]
+        task: |
+          You are monitoring two parallel workers on channel #test-lw-pattern.
+          The workers are already running and will post their results there.
+
+          Context for reference:
+          {{steps.context.output}}
+
+          Instructions:
+          1. Check your inbox and the channel for WORKER_A_DONE and WORKER_B_DONE signals.
+          2. If you don't see them yet, wait 30 seconds and check again (up to 5 times).
+          3. Once you see both signals, post to #test-lw-pattern: LEAD_COMPLETE
+          4. Then output /exit
+
+          Output LEAD_COMPLETE before /exit.
+        verification:
+          type: output_contains
+          value: LEAD_COMPLETE
+
+      # Step 5: merge — depends on all three, validates everything completed
+      - name: merge
+        type: deterministic
+        dependsOn: [work-a, work-b, coordinate]
+        command: |
+          echo "work-a: {{steps.work-a.output}}" | grep -q "WORKER_A_DONE" && \
+          echo "work-b: {{steps.work-b.output}}" | grep -q "WORKER_B_DONE" && \
+          echo "ALL_COMPLETE" || (echo "MERGE_FAIL" >&2; exit 1)
+        captureOutput: true
+        failOnError: true

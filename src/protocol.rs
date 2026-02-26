@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::supervisor::RestartPolicy;
+
 pub const PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,10 +18,22 @@ pub struct AgentSpec {
     pub runtime: AgentRuntime,
     #[serde(default)]
     pub cli: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_of: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_mode: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub channels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_policy: Option<RestartPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,9 +116,17 @@ pub enum BrokerEvent {
         name: String,
         runtime: AgentRuntime,
         parent: Option<String>,
+        cli: Option<String>,
+        model: Option<String>,
+        pid: Option<u32>,
+        source: Option<String>,
     },
     AgentReleased {
         name: String,
+    },
+    AgentExit {
+        name: String,
+        reason: String,
     },
     AgentExited {
         name: String,
@@ -145,6 +167,22 @@ pub enum BrokerEvent {
         event_id: String,
         reason: String,
     },
+    DeliveryQueued {
+        delivery_id: String,
+        agent: String,
+    },
+    DeliveryInjected {
+        delivery_id: String,
+        agent: String,
+    },
+    DeliveryActive {
+        delivery_id: String,
+        agent: String,
+    },
+    DeliveryAck {
+        delivery_id: String,
+        agent: String,
+    },
     AclDenied {
         name: String,
         sender: String,
@@ -163,6 +201,22 @@ pub enum BrokerEvent {
     AgentIdle {
         name: String,
         idle_secs: u64,
+    },
+    AgentRestarting {
+        name: String,
+        #[serde(rename = "code")]
+        exit_code: Option<i32>,
+        signal: Option<String>,
+        restart_count: u32,
+        delay_ms: u64,
+    },
+    AgentRestarted {
+        name: String,
+        restart_count: u32,
+    },
+    AgentPermanentlyDead {
+        name: String,
+        reason: String,
     },
 }
 
@@ -284,6 +338,10 @@ mod tests {
             name: "Worker2".into(),
             runtime: AgentRuntime::HeadlessClaude,
             parent: Some("Lead".into()),
+            cli: None,
+            model: None,
+            pid: None,
+            source: None,
         });
         let encoded = serde_json::to_string(&event).unwrap();
         let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
@@ -345,6 +403,11 @@ mod tests {
         assert_eq!(spec.name, "Worker3");
         assert_eq!(spec.runtime, AgentRuntime::Pty);
         assert_eq!(spec.cli, None);
+        assert_eq!(spec.model, None);
+        assert_eq!(spec.cwd, None);
+        assert_eq!(spec.team, None);
+        assert_eq!(spec.shadow_of, None);
+        assert_eq!(spec.shadow_mode, None);
         assert!(spec.args.is_empty());
         assert!(spec.channels.is_empty());
     }

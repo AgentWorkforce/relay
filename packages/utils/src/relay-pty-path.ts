@@ -108,7 +108,7 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
   const packageRoots: string[] = [];
 
   // Find node_modules root from caller path
-  // Matches: /path/to/node_modules/@agent-relay/bridge/dist/
+  // Matches: /path/to/node_modules/@agent-relay/sdk/dist/
   // Or: /path/to/node_modules/agent-relay/dist/src/cli/
   const scopedMatch = normalizedCaller.match(/^(.+?\/node_modules)\/@agent-relay\//);
   const directMatch = normalizedCaller.match(/^(.+?\/node_modules\/agent-relay)/);
@@ -228,16 +228,6 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
     // Generic binary (requires postinstall to have run)
     candidates.push(path.join(root, 'bin', 'relay-pty'));
   }
-
-  // Development: local Rust builds
-  const devRoot = normalizedCaller.includes('node_modules')
-    ? null
-    : path.join(callerDirname, '..', '..', '..');
-  if (devRoot) {
-    candidates.push(path.join(devRoot, 'relay-pty', 'target', 'release', 'relay-pty'));
-    candidates.push(path.join(devRoot, 'relay-pty', 'target', 'debug', 'relay-pty'));
-  }
-  candidates.push(path.join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'));
 
   // Bash installer paths (curl | bash install method)
   // install.sh downloads relay-pty to ~/.agent-relay/bin/relay-pty

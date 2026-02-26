@@ -1,0 +1,110 @@
+version: '1.0'
+name: codex-lead-v4-noninteractive-workers
+description: >
+  CODEX LEAD EXPERIMENT #4: Codex lead reviews two parallel claude workers via step chaining.
+  Claude workers run as interactive PTY (runner captures their PTY output as step output).
+  Codex lead runs non-interactive after both workers complete, receives their outputs
+  via {{steps.worker-1.output}} and {{steps.worker-2.output}}, and consolidates them.
+  Note: claude -p (non-interactive) hangs in piped stdio — use interactive PTY for claude workers.
+
+swarm:
+  pattern: dag
+  maxConcurrency: 3
+  timeoutMs: 300000 # 5 min
+  channel: codex-lead-v4
+  idleNudge:
+    nudgeAfterMs: 90000 # only applies to the interactive codex lead
+    escalateAfterMs: 60000
+    maxNudges: 2
+
+agents:
+  - name: claude-worker-1
+    cli: claude
+    # interactive PTY — runner captures PTY output as step output for chaining
+    channels: [codex-lead-v4]
+    role: 'Worker. Produces a structured analysis then /exits.'
+    constraints:
+      model: sonnet
+
+  - name: claude-worker-2
+    cli: claude
+    # interactive PTY — runner captures PTY output as step output for chaining
+    channels: [codex-lead-v4]
+    role: 'Worker. Produces a structured analysis then /exits.'
+    constraints:
+      model: sonnet
+
+  - name: codex-lead
+    cli: codex
+    interactive: false # Non-interactive: receives chained outputs at spawn time
+    channels: [codex-lead-v4]
+    role: >
+      Non-interactive codex lead. Receives both worker outputs via step chaining,
+      compares them, and outputs a consolidated review verdict.
+    constraints:
+      model: gpt-5.3-codex
+
+workflows:
+  - name: test-v4-noninteractive-workers
+    description: >
+      Wave 1: both claude workers run in parallel (non-interactive).
+      Wave 2: codex lead reviews both outputs via step chaining.
+      Tests that codex can reason over multiple chained inputs.
+    steps:
+      - name: worker-1
+        type: agent
+        agent: claude-worker-1
+        task: |
+          Produce this exact output, then /exit:
+
+          ANALYSIS_1_START
+          metric: latency
+          value: 42ms
+          status: ok
+          ANALYSIS_1_END
+          /exit
+
+      - name: worker-2
+        type: agent
+        agent: claude-worker-2
+        task: |
+          Produce this exact output, then /exit:
+
+          ANALYSIS_2_START
+          metric: throughput
+          value: 1200rps
+          status: ok
+          ANALYSIS_2_END
+          /exit
+
+      - name: lead-consolidate
+        type: agent
+        agent: codex-lead
+        dependsOn: [worker-1, worker-2]
+        task: |
+          You received output from two workers. Review both and consolidate.
+
+          Worker 1 output:
+          {{steps.worker-1.output}}
+
+          Worker 2 output:
+          {{steps.worker-2.output}}
+
+          Verify:
+          1. Both outputs have matching START/END tags
+          2. Both report status: ok
+          3. Extract the metric names and values
+
+          Output your consolidated report:
+            CONSOLIDATED_REPORT_START
+            worker_1_metric: <metric from worker 1>
+            worker_1_value: <value from worker 1>
+            worker_2_metric: <metric from worker 2>
+            worker_2_value: <value from worker 2>
+            overall_status: PASS
+            CONSOLIDATED_REPORT_END
+
+          Then output: CONSOLIDATION_DONE
+        verification:
+          type: output_contains
+          value: CONSOLIDATION_DONE

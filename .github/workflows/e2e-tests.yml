@@ -6,7 +6,6 @@ on:
     paths:
       - 'src/**'
       - 'packages/**'
-      - 'relay-pty/**'
       - 'scripts/e2e-test.sh'
       - 'package.json'
       - '.github/workflows/e2e-tests.yml'
@@ -15,7 +14,6 @@ on:
     paths:
       - 'src/**'
       - 'packages/**'
-      - 'relay-pty/**'
       - 'scripts/e2e-test.sh'
       - 'package.json'
       - '.github/workflows/e2e-tests.yml'
@@ -48,14 +46,6 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: relay-pty
 
       - name: Install dependencies
         run: npm ci

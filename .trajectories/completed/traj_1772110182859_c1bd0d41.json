@@ -1,0 +1,116 @@
+{
+  "id": "traj_1772110182859_c1bd0d41",
+  "version": 1,
+  "task": {
+    "title": "test run #b2537993",
+    "source": {
+      "system": "workflow-runner",
+      "id": "b2537993377b9fe9892973b7"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-02-26T12:49:42.859Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T12:49:42.859Z"
+    },
+    {
+      "name": "a",
+      "role": "a",
+      "joinedAt": "2026-02-26T12:49:48.112Z"
+    },
+    {
+      "name": "b",
+      "role": "b",
+      "joinedAt": "2026-02-26T12:49:49.083Z"
+    },
+    {
+      "name": "c",
+      "role": "c",
+      "joinedAt": "2026-02-26T12:49:50.296Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_46051c11",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T12:49:42.859Z",
+      "events": [
+        {
+          "ts": 1772110182859,
+          "type": "note",
+          "content": "Approach: 3-step handoff workflow — Parsed 3 steps, 2 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1772110188112,
+          "type": "note",
+          "content": "\"s1\": handoff stage 1",
+          "raw": {
+            "agent": "a"
+          }
+        },
+        {
+          "ts": 1772110189076,
+          "type": "finding",
+          "content": "\"s1\" completed → DONE",
+          "significance": "medium"
+        },
+        {
+          "ts": 1772110189083,
+          "type": "note",
+          "content": "\"s2\": handoff stage 2",
+          "raw": {
+            "agent": "b"
+          }
+        },
+        {
+          "ts": 1772110190294,
+          "type": "finding",
+          "content": "\"s2\" completed → DONE",
+          "significance": "medium"
+        },
+        {
+          "ts": 1772110190296,
+          "type": "note",
+          "content": "\"s3\": handoff stage 3",
+          "raw": {
+            "agent": "c"
+          }
+        },
+        {
+          "ts": 1772110191830,
+          "type": "finding",
+          "content": "\"s3\" completed → DONE",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-02-26T12:49:51.832Z"
+    },
+    {
+      "id": "ch_de815a83",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T12:49:51.832Z",
+      "events": [
+        {
+          "ts": 1772110191832,
+          "type": "reflection",
+          "content": "All 3 steps completed in 9s. (completed in 9 seconds)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-26T12:49:51.832Z"
+    }
+  ],
+  "completedAt": "2026-02-26T12:49:51.832Z",
+  "retrospective": {
+    "summary": "All 3 steps completed in 9s.",
+    "approach": "handoff workflow (3 agents)",
+    "confidence": 0.75,
+    "learnings": [],
+    "challenges": []
+  }
+}

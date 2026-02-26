@@ -1,0 +1,144 @@
+{
+  "id": "traj_1772110172619_109b9b4b",
+  "version": 1,
+  "task": {
+    "title": "test run #fe14e967",
+    "source": {
+      "system": "workflow-runner",
+      "id": "fe14e967dddbc1ecaefa161e"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-02-26T12:49:32.619Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T12:49:32.619Z"
+    },
+    {
+      "name": "a",
+      "role": "a",
+      "joinedAt": "2026-02-26T12:49:37.701Z"
+    },
+    {
+      "name": "b",
+      "role": "b",
+      "joinedAt": "2026-02-26T12:49:37.701Z"
+    },
+    {
+      "name": "c",
+      "role": "c",
+      "joinedAt": "2026-02-26T12:49:40.641Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_6b5ef132",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T12:49:32.619Z",
+      "events": [
+        {
+          "ts": 1772110172619,
+          "type": "note",
+          "content": "Approach: 3-step mesh workflow — Parsed 3 steps, 2 parallel tracks, 1 dependent steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-02-26T12:49:37.696Z"
+    },
+    {
+      "id": "ch_30871e13",
+      "title": "Execution: s1, s2",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T12:49:37.697Z",
+      "events": [
+        {
+          "ts": 1772110177701,
+          "type": "note",
+          "content": "\"s1\": mesh step 1",
+          "raw": {
+            "agent": "a"
+          }
+        },
+        {
+          "ts": 1772110177701,
+          "type": "note",
+          "content": "\"s2\": mesh step 2",
+          "raw": {
+            "agent": "b"
+          }
+        },
+        {
+          "ts": 1772110180471,
+          "type": "finding",
+          "content": "\"s1\" completed → DONE",
+          "significance": "medium"
+        },
+        {
+          "ts": 1772110180638,
+          "type": "finding",
+          "content": "\"s2\" completed → DONE",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-02-26T12:49:40.639Z"
+    },
+    {
+      "id": "ch_6214b1e6",
+      "title": "Convergence: s1 + s2",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T12:49:40.639Z",
+      "events": [
+        {
+          "ts": 1772110180640,
+          "type": "reflection",
+          "content": "s1 + s2 resolved. 2/2 steps completed. All steps completed on first attempt. Unblocking: s3.",
+          "significance": "high",
+          "raw": {
+            "confidence": 0.75,
+            "focalPoints": ["s1: completed", "s2: completed"]
+          }
+        },
+        {
+          "ts": 1772110180641,
+          "type": "note",
+          "content": "\"s3\": mesh step 3",
+          "raw": {
+            "agent": "c"
+          }
+        },
+        {
+          "ts": 1772110181784,
+          "type": "finding",
+          "content": "\"s3\" completed → DONE",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-02-26T12:49:41.787Z"
+    },
+    {
+      "id": "ch_e2e4c115",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T12:49:41.787Z",
+      "events": [
+        {
+          "ts": 1772110181787,
+          "type": "reflection",
+          "content": "All 3 steps completed in 9s. (completed in 9 seconds)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-26T12:49:41.787Z"
+    }
+  ],
+  "completedAt": "2026-02-26T12:49:41.787Z",
+  "retrospective": {
+    "summary": "All 3 steps completed in 9s.",
+    "approach": "mesh workflow (3 agents)",
+    "confidence": 0.75,
+    "learnings": [],
+    "challenges": []
+  }
+}

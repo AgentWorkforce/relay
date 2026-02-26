@@ -1,0 +1,869 @@
+version: '1.0'
+name: workflow-hardening
+description: >
+  Systematically exercises every swarm pattern across all CLIs and model
+  permutations from cli-registry.yaml. Seven parallel pattern-testing teams
+  and three CLI-model teams run concurrently, aggregate failures, fix any
+  issues found in the codebase, and write hardened integration tests.
+swarm:
+  pattern: dag
+  maxConcurrency: 3
+  timeoutMs: 21600000 # 6 hours — model matrix is wide
+  channel: workflow-hardening
+  idleNudge:
+    nudgeAfterMs: 300000
+    escalateAfterMs: 300000
+    maxNudges: 2
+
+agents:
+  # ── Director ──────────────────────────────────────────────────────────────
+  - name: director
+    cli: claude
+    channels: [workflow-hardening]
+    role: 'Reads cli-registry.yaml and swarm pattern list. Produces the test matrix and posts it to #workflow-hardening for all teams.'
+    constraints:
+      model: opus
+
+  # ── Pattern testing teams (7 groups, each a lead + tester) ────────────────
+
+  - name: patterns-core-lead
+    cli: claude
+    channels: [patterns-core, workflow-hardening]
+    role: 'Tests dag, fan-out, pipeline patterns. Coordinates tester on #patterns-core.'
+    constraints:
+      model: sonnet
+
+  - name: patterns-core-tester
+    cli: codex
+    channels: [patterns-core]
+    role: 'Runs minimal workflow.yaml for dag/fan-out/pipeline, captures exit code and output.'
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: patterns-tree-lead
+    cli: claude
+    channels: [patterns-tree, workflow-hardening]
+    role: 'Tests hub-spoke, hierarchical, supervisor patterns.'
+    constraints:
+      model: sonnet
+
+  - name: patterns-tree-tester
+    cli: codex
+    channels: [patterns-tree]
+    role: 'Runs minimal workflows for hub-spoke/hierarchical/supervisor.'
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: patterns-quality-lead
+    cli: claude
+    channels: [patterns-quality, workflow-hardening]
+    role: 'Tests review-loop, reflection, debate, consensus patterns.'
+    constraints:
+      model: sonnet
+
+  - name: patterns-quality-tester
+    cli: codex
+    channels: [patterns-quality]
+    role: 'Runs minimal workflows for review-loop/reflection/debate/consensus.'
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: patterns-flow-lead
+    cli: claude
+    channels: [patterns-flow, workflow-hardening]
+    role: 'Tests mesh, handoff, cascade patterns.'
+    constraints:
+      model: sonnet
+
+  - name: patterns-flow-tester
+    cli: codex
+    channels: [patterns-flow]
+    role: 'Runs minimal workflows for mesh/handoff/cascade.'
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: patterns-parallel-lead
+    cli: claude
+    channels: [patterns-parallel, workflow-hardening]
+    role: 'Tests map-reduce, scatter-gather, competitive patterns.'
+    constraints:
+      model: sonnet
+
+  - name: patterns-parallel-tester
+    cli: codex
+    channels: [patterns-parallel]
+    role: 'Runs minimal workflows for map-reduce/scatter-gather/competitive.'
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: patterns-resilience-lead
+    cli: claude
+    channels: [patterns-resilience, workflow-hardening]
+    role: 'Tests red-team, verifier, circuit-breaker patterns.'
+    constraints:
+      model: sonnet
+
+  - name: patterns-resilience-tester
+    cli: codex
+    channels: [patterns-resilience]
+    role: 'Runs minimal workflows for red-team/verifier/circuit-breaker.'
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: patterns-advanced-lead
+    cli: claude
+    channels: [patterns-advanced, workflow-hardening]
+    role: 'Tests auction, escalation, saga, blackboard, swarm patterns.'
+    constraints:
+      model: sonnet
+
+  - name: patterns-advanced-tester
+    cli: codex
+    channels: [patterns-advanced]
+    role: 'Runs minimal workflows for auction/escalation/saga/blackboard/swarm.'
+    constraints:
+      model: gpt-5.3-codex
+
+  # ── CLI × model matrix teams ───────────────────────────────────────────────
+
+  - name: claude-matrix-lead
+    cli: claude
+    channels: [claude-matrix, workflow-hardening]
+    role: 'Tests all claude models (sonnet, opus, haiku) across basic workflow patterns.'
+    constraints:
+      model: sonnet
+
+  - name: claude-matrix-tester
+    cli: codex
+    channels: [claude-matrix]
+    role: 'Runs workflow.yaml files with each claude model, captures results.'
+    constraints:
+      model: gpt-5.3-codex-spark
+
+  - name: codex-matrix-lead
+    cli: claude
+    channels: [codex-matrix, workflow-hardening]
+    role: 'Tests codex models: gpt-5.3-codex, gpt-5.3-codex-spark, gpt-5.1-codex-mini.'
+    constraints:
+      model: sonnet
+
+  - name: codex-matrix-tester
+    cli: codex
+    channels: [codex-matrix]
+    role: 'Runs workflow.yaml files with each codex model, captures results.'
+    constraints:
+      model: gpt-5.3-codex-spark
+
+  - name: gemini-matrix-lead
+    cli: claude
+    channels: [gemini-matrix, workflow-hardening]
+    role: 'Tests gemini models: gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite.'
+    constraints:
+      model: sonnet
+
+  - name: gemini-matrix-tester
+    cli: gemini
+    channels: [gemini-matrix]
+    role: 'Runs workflow.yaml files with each gemini model, captures results.'
+    constraints:
+      model: gemini-2.5-flash
+
+  # ── Issue consolidation ───────────────────────────────────────────────────
+
+  - name: consolidator
+    cli: claude
+    channels: [fix-track, workflow-hardening]
+    role: 'Reads all team reports from #workflow-hardening. Categorises failures: runner bugs, YAML schema gaps, CLI-specific issues, missing pattern support.'
+    constraints:
+      model: opus
+
+  # ── Fix team ─────────────────────────────────────────────────────────────
+
+  - name: fix-lead
+    cli: claude
+    channels: [fix-track, workflow-hardening]
+    role: 'Leads the fix team on #fix-track. Assigns specific issues to fix-worker.'
+    constraints:
+      model: sonnet
+
+  - name: fix-lead-reviewer
+    cli: claude
+    interactive: false
+    preset: reviewer
+    role: 'Reads build/test output from step chaining and decides next action.'
+    constraints:
+      model: sonnet
+
+  - name: fix-worker
+    cli: codex
+    channels: [fix-track]
+    role: 'Applies code fixes directed by fix-lead. One fix at a time.'
+    constraints:
+      model: gpt-5.3-codex
+
+  # ── Integration test writing team ─────────────────────────────────────────
+
+  - name: test-lead
+    cli: claude
+    channels: [test-track, workflow-hardening]
+    role: 'Designs integration test suite covering every hardened pattern + model combination.'
+    constraints:
+      model: opus
+
+  - name: test-writer-patterns
+    cli: codex
+    channels: [test-track]
+    role: 'Writes tests/integration/broker/workflow-patterns.test.ts.'
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: test-writer-models
+    cli: codex
+    channels: [test-track]
+    role: 'Writes tests/integration/broker/workflow-models.test.ts.'
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: test-reviewer
+    cli: claude
+    channels: [test-track]
+    role: 'Reviews both test files for correctness, CI-safety, and coverage.'
+    constraints:
+      model: opus
+
+workflows:
+  - name: harden-workflows
+    description: >
+      Discovery → 7 pattern teams + 3 CLI-model teams (parallel) →
+      consolidate → fix → write integration tests.
+    onError: retry
+    preflight:
+      - command: ls packages/shared/cli-registry.yaml
+        description: 'cli-registry.yaml exists'
+      - command: ls packages/sdk/src/workflows/types.ts
+        description: 'Swarm pattern types exist'
+      - command: ls packages/sdk/dist/workflows/cli.js
+        description: 'SDK is built and runnable'
+      #- command: git status --porcelain | grep -v '\.trajectories/' | grep -v 'relay\.workflow-hardening\.yaml' || true
+      #failIf: non-empty
+      #description: 'Working directory is clean'
+
+    steps:
+      # ── Wave 1: Discovery ────────────────────────────────────────────────
+
+      - name: discover
+        type: agent
+        agent: director
+        task: |
+          Read packages/shared/cli-registry.yaml and packages/sdk/src/workflows/types.ts.
+
+          Produce the test matrix and post it to #workflow-hardening:
+
+          1. CLI × MODEL TABLE — for each CLI (claude, codex, gemini), list every
+             model ID from the registry. Mark which are default.
+
+          2. PATTERN GROUPS — list all 24 SwarmPattern values grouped exactly as:
+             Core: dag, fan-out, pipeline
+             Tree: hub-spoke, hierarchical, supervisor
+             Quality: review-loop, reflection, debate, consensus
+             Flow: mesh, handoff, cascade
+             Parallel: map-reduce, scatter-gather, competitive
+             Resilience: red-team, verifier, circuit-breaker
+             Advanced: auction, escalation, saga, blackboard, swarm
+
+          3. TEST APPROACH — for each pattern, describe the minimal two-agent
+             workflow that exercises it (what the lead does, what the worker does,
+             what completion signal to use).
+
+          4. COMMON FIXTURE — specify a reusable fake-CLI shim approach:
+             bash script named after the CLI (claude/codex/gemini), reads stdin,
+             outputs $FAKE_OUTPUT then exits 0. Goes in a tmp dir prepended to PATH.
+
+          Pattern teams and CLI-matrix teams will read this spec from the channel.
+          Output: DISCOVERY_COMPLETE
+          /exit
+        verification:
+          type: output_contains
+          value: DISCOVERY_COMPLETE
+
+      # ── Wave 2: Pattern teams + CLI matrix teams (all concurrent) ────────
+      # 7 pattern groups × 2 agents + 3 CLI groups × 2 agents = 20 steps
+      # Stagger delay (2s × index) prevents Relaycast overload.
+
+      # ─ Core patterns: dag, fan-out, pipeline ────────────────────────────
+
+      - name: core-lead
+        type: agent
+        agent: patterns-core-lead
+        dependsOn: [discover]
+        task: |
+          Test core patterns on #patterns-core. Tester: patterns-core-tester.
+          Read the matrix from #workflow-hardening (director posted it).
+          For each of: dag, fan-out, pipeline —
+            1. Post the minimal workflow YAML spec to #patterns-core
+            2. Have tester run it via:
+               DRY_RUN=1 node packages/sdk/dist/workflows/cli.js <yaml>
+               and then without DRY_RUN using the fake-CLI shim
+            3. Record: pattern name, exit code, key output, any errors
+          Post a CORE_RESULTS summary to #workflow-hardening.
+          Output: CORE_COMPLETE
+          /exit
+        verification:
+          type: output_contains
+          value: CORE_COMPLETE
+
+      - name: core-tester
+        type: agent
+        agent: patterns-core-tester
+        dependsOn: [discover]
+        task: |
+          Join #patterns-core. patterns-core-lead will post YAML specs.
+          For each spec: write to a tmp file, run it, report results to channel.
+          Post CORE_TESTER_DONE when all three patterns are tested.
+          Output: CORE_TESTER_DONE
+          /exit
+        verification:
+          type: output_contains
+          value: CORE_TESTER_DONE
+
+      # ─ Tree patterns: hub-spoke, hierarchical, supervisor ────────────────
+
+      - name: tree-lead
+        type: agent
+        agent: patterns-tree-lead
+        dependsOn: [discover]
+        task: |
+          Test tree patterns on #patterns-tree. Tester: patterns-tree-tester.
+          Read the matrix from #workflow-hardening.
+          Test: hub-spoke, hierarchical, supervisor.
+          Post TREE_RESULTS to #workflow-hardening when done.
+          Output: TREE_COMPLETE
+          /exit
+        verification:
+          type: output_contains
+          value: TREE_COMPLETE
+
+      - name: tree-tester
+        type: agent
+        agent: patterns-tree-tester
+        dependsOn: [discover]
+        task: |
+          Join #patterns-tree. patterns-tree-lead will post YAML specs.
+          Run each, report results to channel.
+          Output: TREE_TESTER_DONE
+          /exit
+        verification:
+          type: output_contains
+          value: TREE_TESTER_DONE
+
+      # ─ Quality patterns: review-loop, reflection, debate, consensus ──────
+
+      - name: quality-lead
+        type: agent
+        agent: patterns-quality-lead
+        dependsOn: [discover]
+        task: |
+          Test quality patterns on #patterns-quality. Tester: patterns-quality-tester.
+          Read the matrix from #workflow-hardening.
+          Test: review-loop, reflection, debate, consensus.
+          Post QUALITY_RESULTS to #workflow-hardening when done.
+          Output: QUALITY_COMPLETE
+          /exit
+        verification:
+          type: output_contains
+          value: QUALITY_COMPLETE
+
+      - name: quality-tester
+        type: agent
+        agent: patterns-quality-tester
+        dependsOn: [discover]
+        task: |
+          Join #patterns-quality. patterns-quality-lead will post YAML specs.
+          Run each, report results to channel.
+          Output: QUALITY_TESTER_DONE
+          /exit
+        verification:
+          type: output_contains
+          value: QUALITY_TESTER_DONE
+
+      # ─ Flow patterns: mesh, handoff, cascade ────────────────────────────
+
+      - name: flow-lead
+        type: agent
+        agent: patterns-flow-lead
+        dependsOn: [discover]
+        task: |
+          Test flow patterns on #patterns-flow. Tester: patterns-flow-tester.
+          Read the matrix from #workflow-hardening.
+          Test: mesh, handoff, cascade.
+          Post FLOW_RESULTS to #workflow-hardening when done.
+          Output: FLOW_COMPLETE
+          /exit
+        verification:
+          type: output_contains
+          value: FLOW_COMPLETE
+
+      - name: flow-tester
+        type: agent
+        agent: patterns-flow-tester
+        dependsOn: [discover]
+        task: |
+          Join #patterns-flow. patterns-flow-lead will post YAML specs.
+          Run each, report results to channel.
+          Output: FLOW_TESTER_DONE
+          /exit
+        verification:
+          type: output_contains
+          value: FLOW_TESTER_DONE
+
+      # ─ Parallel patterns: map-reduce, scatter-gather, competitive ────────
+
+      - name: parallel-lead
+        type: agent
+        agent: patterns-parallel-lead
+        dependsOn: [discover]
+        task: |
+          Test parallel patterns on #patterns-parallel. Tester: patterns-parallel-tester.
+          Read the matrix from #workflow-hardening.
+          Test: map-reduce, scatter-gather, competitive.
+          Post PARALLEL_RESULTS to #workflow-hardening when done.
+          Output: PARALLEL_COMPLETE
+          /exit
+        verification:
+          type: output_contains
+          value: PARALLEL_COMPLETE
+
+      - name: parallel-tester
+        type: agent
+        agent: patterns-parallel-tester
+        dependsOn: [discover]
+        task: |
+          Join #patterns-parallel. patterns-parallel-lead will post YAML specs.
+          Run each, report results to channel.
+          Output: PARALLEL_TESTER_DONE
+          /exit
+        verification:
+          type: output_contains
+          value: PARALLEL_TESTER_DONE
+
+      # ─ Resilience patterns: red-team, verifier, circuit-breaker ──────────
+
+      - name: resilience-lead
+        type: agent
+        agent: patterns-resilience-lead
+        dependsOn: [discover]
+        task: |
+          Test resilience patterns on #patterns-resilience. Tester: patterns-resilience-tester.
+          Read the matrix from #workflow-hardening.
+          Test: red-team, verifier, circuit-breaker.
+          Post RESILIENCE_RESULTS to #workflow-hardening when done.
+          Output: RESILIENCE_COMPLETE
+          /exit
+        verification:
+          type: output_contains
+          value: RESILIENCE_COMPLETE
+
+      - name: resilience-tester
+        type: agent
+        agent: patterns-resilience-tester
+        dependsOn: [discover]
+        task: |
+          Join #patterns-resilience. patterns-resilience-lead will post YAML specs.
+          Run each, report results to channel.
+          Output: RESILIENCE_TESTER_DONE
+          /exit
+        verification:
+          type: output_contains
+          value: RESILIENCE_TESTER_DONE
+
+      # ─ Advanced patterns: auction, escalation, saga, blackboard, swarm ───
+
+      - name: advanced-lead
+        type: agent
+        agent: patterns-advanced-lead
+        dependsOn: [discover]
+        task: |
+          Test advanced patterns on #patterns-advanced. Tester: patterns-advanced-tester.
+          Read the matrix from #workflow-hardening.
+          Test: auction, escalation, saga, blackboard, swarm.
+          Post ADVANCED_RESULTS to #workflow-hardening when done.
+          Output: ADVANCED_COMPLETE
+          /exit
+        verification:
+          type: output_contains
+          value: ADVANCED_COMPLETE
+
+      - name: advanced-tester
+        type: agent
+        agent: patterns-advanced-tester
+        dependsOn: [discover]
+        task: |
+          Join #patterns-advanced. patterns-advanced-lead will post YAML specs.
+          Run each, report results to channel.
+          Output: ADVANCED_TESTER_DONE
+          /exit
+        verification:
+          type: output_contains
+          value: ADVANCED_TESTER_DONE
+
+      # ─ Claude model matrix ────────────────────────────────────────────────
+
+      - name: claude-matrix
+        type: agent
+        agent: claude-matrix-lead
+        dependsOn: [discover]
+        task: |
+          Test claude models on #claude-matrix. Tester: claude-matrix-tester.
+          Read the matrix from #workflow-hardening.
+          For each claude model (sonnet, opus, haiku):
+            Run a simple dag workflow (plan → implement) with that model set
+            in constraints.model. Use the fake-CLI shim.
+            Record: model, workflow exit code, step completion signals, any errors.
+          Post CLAUDE_MATRIX_RESULTS to #workflow-hardening.
+          Output: CLAUDE_MATRIX_COMPLETE
+          /exit
+        verification:
+          type: output_contains
+          value: CLAUDE_MATRIX_COMPLETE
+
+      - name: claude-matrix-test
+        type: agent
+        agent: claude-matrix-tester
+        dependsOn: [discover]
+        task: |
+          Join #claude-matrix. claude-matrix-lead will post workflow YAML specs.
+          Run each workflow, capture exit code and output.
+          Report results on the channel.
+          Output: CLAUDE_TESTER_DONE
+          /exit
+        verification:
+          type: output_contains
+          value: CLAUDE_TESTER_DONE
+
+      # ─ Codex model matrix ────────────────────────────────────────────────
+
+      - name: codex-matrix
+        type: agent
+        agent: codex-matrix-lead
+        dependsOn: [discover]
+        task: |
+          Test codex models on #codex-matrix. Tester: codex-matrix-tester.
+          Read the matrix from #workflow-hardening.
+          Models to test: gpt-5.3-codex, gpt-5.3-codex-spark, gpt-5.1-codex-mini.
+          For each: run a simple fan-out workflow, record results.
+          Post CODEX_MATRIX_RESULTS to #workflow-hardening.
+          Output: CODEX_MATRIX_COMPLETE
+          /exit
+        verification:
+          type: output_contains
+          value: CODEX_MATRIX_COMPLETE
+
+      - name: codex-matrix-test
+        type: agent
+        agent: codex-matrix-tester
+        dependsOn: [discover]
+        task: |
+          Join #codex-matrix. codex-matrix-lead will post workflow YAML specs.
+          Run each workflow, report results on the channel.
+          Output: CODEX_TESTER_DONE
+          /exit
+        verification:
+          type: output_contains
+          value: CODEX_TESTER_DONE
+
+      # ─ Gemini model matrix ────────────────────────────────────────────────
+
+      - name: gemini-matrix
+        type: agent
+        agent: gemini-matrix-lead
+        dependsOn: [discover]
+        task: |
+          Test gemini models on #gemini-matrix. Tester: gemini-matrix-tester.
+          Read the matrix from #workflow-hardening.
+          Models to test: gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite.
+          For each: run a simple pipeline workflow, record results.
+          If gemini CLI is not installed, record that as a finding and skip.
+          Post GEMINI_MATRIX_RESULTS to #workflow-hardening.
+          Output: GEMINI_MATRIX_COMPLETE
+          /exit
+        verification:
+          type: output_contains
+          value: GEMINI_MATRIX_COMPLETE
+
+      - name: gemini-matrix-test
+        type: agent
+        agent: gemini-matrix-tester
+        dependsOn: [discover]
+        task: |
+          Join #gemini-matrix. gemini-matrix-lead will post workflow YAML specs.
+          Run each workflow, report results on the channel.
+          If gemini is not installed, post that and wait for next instruction.
+          Output: GEMINI_TESTER_DONE
+          /exit
+        verification:
+          type: output_contains
+          value: GEMINI_TESTER_DONE
+
+      # ── Wave 3: Consolidate all results ──────────────────────────────────
+
+      - name: consolidate
+        type: agent
+        agent: consolidator
+        dependsOn:
+          - core-lead
+          - tree-lead
+          - quality-lead
+          - flow-lead
+          - parallel-lead
+          - resilience-lead
+          - advanced-lead
+          - claude-matrix
+          - codex-matrix
+          - gemini-matrix
+        task: |
+          Read all *_RESULTS messages posted to #workflow-hardening.
+          Produce a structured failure report covering:
+
+          1. PATTERN FAILURES — which patterns failed, exact error, reproducible command
+          2. MODEL FAILURES — which CLI × model combinations failed and why
+          3. RUNNER BUGS — errors in packages/sdk/src/workflows/runner.ts
+          4. YAML SCHEMA GAPS — patterns accepted by types.ts but not handled by runner
+          5. CLI-SPECIFIC ISSUES — codex/gemini-specific failures not seen with claude
+          6. FRICTION POINTS — anything that was awkward: timeout, naming, exit codes
+
+          For each issue include:
+            - Severity: critical | high | medium | low
+            - File and line number if a code fix is needed
+            - Suggested fix
+
+          Post the full report to #workflow-hardening.
+          Output: CONSOLIDATION_COMPLETE
+          /exit
+        verification:
+          type: output_contains
+          value: CONSOLIDATION_COMPLETE
+
+      # ── Wave 4: Fix team ─────────────────────────────────────────────────
+
+      - name: fix-coord
+        type: agent
+        agent: fix-lead
+        dependsOn: [consolidate]
+        task: |
+          Lead the fix team on #fix-track. Worker: fix-worker.
+          Read the consolidation report from #workflow-hardening.
+          Prioritise: critical and high severity issues first.
+          For each issue:
+            1. Post the exact file, line, and fix to #fix-track
+            2. Assign to fix-worker
+            3. Verify the fix is correct before moving to the next
+          After all critical/high issues are fixed, run a quick sanity check:
+            node packages/sdk/dist/workflows/cli.js --help
+          Post FIX_SUMMARY to #workflow-hardening listing what was fixed.
+          Output: FIXES_COMPLETE
+          /exit
+        verification:
+          type: output_contains
+          value: FIXES_COMPLETE
+
+      - name: fix-impl
+        type: agent
+        agent: fix-worker
+        dependsOn: [consolidate]
+        task: |
+          Join #fix-track. fix-lead will post issues and fixes.
+          Apply each fix exactly as directed. Post FIX_APPLIED after each.
+          If a fix looks wrong, say so before applying.
+          Output: FIX_WORKER_DONE
+          /exit
+        verification:
+          type: output_contains
+          value: FIX_WORKER_DONE
+
+      # ── Wave 5: Rebuild after fixes ───────────────────────────────────────
+
+      - name: rebuild
+        type: deterministic
+        dependsOn: [fix-coord]
+        command: npm run build:sdk 2>&1
+        captureOutput: true
+        failOnError: false
+
+      - name: check-build
+        type: agent
+        agent: fix-lead-reviewer
+        dependsOn: [rebuild]
+        task: |
+          Check the build output: {{steps.rebuild.output}}
+          If there are TypeScript errors, post them to #fix-track and have
+          fix-worker resolve them. Re-run: npm run build:sdk
+          Once the build is clean, output: BUILD_CLEAN
+        verification:
+          type: output_contains
+          value: BUILD_CLEAN
+
+      # ── Wave 6: Integration test writing team ─────────────────────────────
+
+      - name: test-coord
+        type: agent
+        agent: test-lead
+        dependsOn: [check-build]
+        task: |
+          Lead the test writing team on #test-track.
+          Workers: test-writer-patterns, test-writer-models. Reviewer: test-reviewer.
+
+          Read the consolidation report and fix summary from #workflow-hardening.
+          Design two test files:
+
+          1. tests/integration/broker/workflow-patterns.test.ts
+             - One test per pattern that was confirmed working
+             - Uses fake-CLI shim (cat or bash echo shim) so tests run in CI
+             - Covers: dag, fan-out, pipeline, hub-spoke, review-loop at minimum
+             - Tests: workflow completes, steps fire in correct wave order,
+               verification gates work, error handling strategies work
+
+          2. tests/integration/broker/workflow-models.test.ts
+             - Tests that the constraints.model field is passed to the CLI correctly
+             - One test per CLI (claude, codex) checking --model flag in spawn args
+             - Skips if real CLI not available (checkPrerequisites pattern)
+
+          Post the spec for each file to #test-track.
+          Review both files when workers complete. Output: TESTS_COMPLETE
+        verification:
+          type: output_contains
+          value: TESTS_COMPLETE
+
+      - name: test-patterns-impl
+        type: agent
+        agent: test-writer-patterns
+        dependsOn: [check-build]
+        task: |
+          Join #test-track. test-lead will post the spec for workflow-patterns.test.ts.
+          Write: tests/integration/broker/workflow-patterns.test.ts
+          Use Node.js test runner (node:test). Follow existing patterns in
+          tests/integration/broker/workflow-ci.test.ts.
+          Post PATTERNS_TEST_WRITTEN when done.
+          Output: PATTERNS_TEST_WRITTEN
+          /exit
+        verification:
+          type: output_contains
+          value: PATTERNS_TEST_WRITTEN
+
+      - name: test-models-impl
+        type: agent
+        agent: test-writer-models
+        dependsOn: [check-build]
+        task: |
+          Join #test-track. test-lead will post the spec for workflow-models.test.ts.
+          Write: tests/integration/broker/workflow-models.test.ts
+          Post MODELS_TEST_WRITTEN when done.
+          Output: MODELS_TEST_WRITTEN
+          /exit
+        verification:
+          type: output_contains
+          value: MODELS_TEST_WRITTEN
+
+      - name: test-review
+        type: agent
+        agent: test-reviewer
+        dependsOn: [check-build]
+        task: |
+          Join #test-track. test-lead will post when both files are ready.
+          Review both test files for:
+            - No hardcoded paths or machine-specific values
+            - All tests have finally { harness.stop() }
+            - Real CLI tests gated on checkPrerequisites()
+            - Import paths end in .js
+            - Assertions are precise (assert.equal/deepEqual not just assert.ok)
+          Post findings to #test-track. Output: TEST_REVIEW_DONE
+        verification:
+          type: output_contains
+          value: TEST_REVIEW_DONE
+
+      # ── Wave 7: Compile and run the new tests ─────────────────────────────
+
+      - name: compile-tests
+        type: deterministic
+        dependsOn: [test-coord]
+        command: npx tsc -p tests/integration/broker/tsconfig.json 2>&1
+        captureOutput: true
+        failOnError: false
+        timeoutMs: 120000 # 2 min — tsc should never take longer
+
+      - name: run-new-tests
+        type: deterministic
+        dependsOn: [compile-tests]
+        command: 'cd tests/integration/broker && node --test dist/workflow-patterns.test.js dist/workflow-models.test.js 2>&1'
+        captureOutput: true
+        failOnError: false
+        timeoutMs: 600000 # 10 min hard cap — scoped to integration dir only
+
+      # ── Wave 8: Final fix pass if tests fail ──────────────────────────────
+
+      - name: test-fix-final
+        type: agent
+        agent: fix-lead-reviewer
+        dependsOn: [run-new-tests]
+        task: |
+          Test results: {{steps.run-new-tests.output}}
+          Compile output: {{steps.compile-tests.output}}
+
+          If tests pass, output: ALL_GREEN
+          Otherwise, lead fix-worker on #fix-track to resolve failures.
+          Do not weaken assertions — use t.skip with reason for environment
+          issues that can't run in CI.
+          Output: ALL_GREEN
+          /exit
+        maxIterations: 3
+        verification:
+          type: output_contains
+          value: ALL_GREEN
+
+      - name: test-fix-final-worker
+        type: agent
+        agent: fix-worker
+        dependsOn: [run-new-tests]
+        task: |
+          Join #fix-track. fix-lead will post any test failures to fix.
+          Apply fixes, post FIX_APPLIED after each.
+          Output: FINAL_FIX_DONE
+          /exit
+        verification:
+          type: output_contains
+          value: FINAL_FIX_DONE
+
+coordination:
+  barriers:
+    - name: all-testing-done
+      waitFor:
+        - core-lead
+        - tree-lead
+        - quality-lead
+        - flow-lead
+        - parallel-lead
+        - resilience-lead
+        - advanced-lead
+        - claude-matrix
+        - codex-matrix
+        - gemini-matrix
+      timeoutMs: 14400000 # 4 hours for full matrix
+    - name: tests-written
+      waitFor: [test-coord]
+      timeoutMs: 3600000
+
+state:
+  backend: memory
+  ttlMs: 86400000
+  namespace: workflow-hardening
+
+errorHandling:
+  strategy: retry
+  maxRetries: 1
+  retryDelayMs: 15000
+  notifyChannel: workflow-hardening
+
+trajectories:
+  enabled: true
+  reflectOnBarriers: true
+  reflectOnConverge: true
+  autoDecisions: true

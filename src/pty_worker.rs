@@ -1,9 +1,10 @@
 use super::*;
 use crate::helpers::{
     check_echo_in_output, current_timestamp_ms, delivery_injected_event_payload,
-    delivery_queued_event_payload, floor_char_boundary, ActivityDetector, DeliveryOutcome,
-    PendingActivity, PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES,
-    ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+    delivery_queued_event_payload, floor_char_boundary, format_injection_for_worker,
+    parse_cli_command, parse_continuity_command, ActivityDetector, ContinuityAction,
+    DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
+    ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
 };
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 
@@ -14,16 +15,30 @@ struct PendingWorkerInjection {
     queued_at: Instant,
 }
 
+fn cli_basename(command: &str) -> &str {
+    command
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(command)
+}
+
 pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // Disable Claude Code auto-suggestions to prevent accidental acceptance during injection.
     #[allow(deprecated)]
     std::env::set_var("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false");
 
+    let (resolved_cli, inline_cli_args) = parse_cli_command(&cmd.cli)
+        .with_context(|| format!("invalid CLI command '{}'", cmd.cli))?;
+    let mut effective_args = inline_cli_args;
+    effective_args.extend(cmd.args.clone());
+
     #[cfg(unix)]
     let (init_rows, init_cols) = get_terminal_size().unwrap_or((24, 80));
     #[cfg(not(unix))]
     let (init_rows, init_cols) = (24u16, 80u16);
-    let (pty, mut pty_rx) = PtySession::spawn(&cmd.cli, &cmd.args, init_rows, init_cols)?;
+    let (pty, mut pty_rx) =
+        PtySession::spawn(&resolved_cli, &effective_args, init_rows, init_cols)?;
     let mut terminal_query_parser = TerminalQueryParser::default();
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(1024);
@@ -63,21 +78,56 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
         .agent_name
         .clone()
         .unwrap_or_else(|| "pty-worker".to_string());
+    let worker_pre_registered = std::env::var("RELAY_AGENT_TOKEN")
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let assigned_worker_name = std::env::var("RELAY_AGENT_NAME")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    const MCP_REMINDER_COOLDOWN: Duration = Duration::from_secs(300);
+    let mut last_mcp_reminder_at: Option<Instant> = None;
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<String> = HashSet::new();
+    let suppress_multiline_mcp_reminder = cli_basename(&resolved_cli).eq_ignore_ascii_case("agent")
+        || cli_basename(&resolved_cli).eq_ignore_ascii_case("cursor-agent")
+        || cmd.cli.to_ascii_lowercase().contains("cursor");
+    let verification_window = if cli_basename(&resolved_cli).eq_ignore_ascii_case("droid") {
+        Duration::from_secs(3)
+    } else {
+        VERIFICATION_WINDOW
+    };
 
     // Echo verification state
     let mut pending_verifications: VecDeque<PendingVerification> = VecDeque::new();
     let mut pending_activities: VecDeque<PendingActivity> = VecDeque::new();
     let activity_detector = if cmd.progress {
-        Some(ActivityDetector::for_cli(&cmd.cli))
+        Some(ActivityDetector::for_cli(&resolved_cli))
     } else {
         None
     };
     let mut throttle = ThrottleState::default();
     let mut echo_buffer = String::new();
+    // Buffer for detecting KIND: continuity commands in PTY output.
+    // Bounded to avoid unbounded memory growth; continuity blocks are small.
+    let mut continuity_buffer = String::new();
+    const CONTINUITY_BUFFER_MAX: usize = 4096;
     let mut verification_tick = tokio::time::interval(Duration::from_millis(200));
     verification_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    // Watchdog: periodically check if child process is still alive.
+    // The PTY reader may not detect EOF on macOS when the child exits during
+    // extended thinking (no output). This ensures we don't hang forever.
+    let mut child_watchdog = tokio::time::interval(Duration::from_secs(5));
+    child_watchdog.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    // No-output timeout: if we receive zero PTY output for this duration AND
+    // has_exited() still returns false, force exit. This is the ultimate
+    // safety net for macOS where both EOF detection and has_exited() can fail.
+    const NO_OUTPUT_EXIT_TIMEOUT: Duration = Duration::from_secs(120);
+    let mut last_pty_output_time = Instant::now();
+    let mut reported_idle = false;
 
     while running {
         tokio::select! {
@@ -180,6 +230,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             pty_output = pty_rx.recv() => {
                 match pty_output {
                     Some(chunk) => {
+                        last_pty_output_time = Instant::now();
+                        reported_idle = false;
+                        // Child is provably alive — reset the no-PID exit counter.
+                        pty.reset_no_pid_checks();
                         for response in terminal_query_parser.feed(&chunk) {
                             let _ = pty.write_all(response);
                         }
@@ -222,6 +276,50 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         if echo_buffer.len() > 16_000 {
                             let start = floor_char_boundary(&echo_buffer, echo_buffer.len() - 12_000);
                             echo_buffer = echo_buffer[start..].to_string();
+                        }
+
+                        // Detect KIND: continuity commands in PTY output.
+                        // Only scan when no echo verifications are pending to avoid false-positives
+                        // from injected relay messages that might contain header-like text.
+                        if pending_verifications.is_empty() {
+                            continuity_buffer.push_str(&clean_text);
+                            if continuity_buffer.len() > CONTINUITY_BUFFER_MAX {
+                                let start = floor_char_boundary(
+                                    &continuity_buffer,
+                                    continuity_buffer.len() - CONTINUITY_BUFFER_MAX / 2,
+                                );
+                                continuity_buffer = continuity_buffer[start..].to_string();
+                            }
+                            if let Some((action, content, consumed)) =
+                                parse_continuity_command(&continuity_buffer)
+                            {
+                                tracing::info!(
+                                    target = "agent_relay::worker::pty",
+                                    action = %action.as_str(),
+                                    content_len = content.len(),
+                                    "detected KIND: continuity command in PTY output"
+                                );
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "continuity_command",
+                                    None,
+                                    json!({
+                                        "action": action.as_str(),
+                                        "content": content,
+                                    }),
+                                )
+                                .await;
+                                // Advance buffer past consumed bytes
+                                if consumed >= continuity_buffer.len() {
+                                    continuity_buffer.clear();
+                                } else {
+                                    let safe_consumed = floor_char_boundary(
+                                        &continuity_buffer,
+                                        consumed,
+                                    );
+                                    continuity_buffer = continuity_buffer[safe_consumed..].to_string();
+                                }
+                            }
                         }
 
                         // Check pending verifications against new output
@@ -331,6 +429,29 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         }
                     }
                     None => {
+                        // PTY reader closed — child likely exited. Emit
+                        // agent_exit with any echo_buffer tail so the
+                        // dashboard can surface the CLI's last output.
+                        let clean = strip_ansi(&echo_buffer);
+                        let trimmed = if clean.len() > 2000 {
+                            &clean[clean.len() - 2000..]
+                        } else {
+                            &clean
+                        };
+                        if !trimmed.is_empty() {
+                            tracing::info!(
+                                target = "agent_relay::worker::pty",
+                                output_len = trimmed.len(),
+                                "PTY channel closed; captured output available"
+                            );
+                        }
+                        let mut exit_payload = json!({
+                            "reason": "pty_closed",
+                        });
+                        if !trimmed.is_empty() {
+                            exit_payload["last_output"] = json!(trimmed);
+                        }
+                        let _ = send_frame(&out_tx, "agent_exit", None, exit_payload).await;
                         running = false;
                     }
                 }
@@ -358,12 +479,25 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.auto_suggestion_visible = false;
                     }
 
-                    let injection = format_injection(
+                    let include_mcp_reminder = if suppress_multiline_mcp_reminder {
+                        false
+                    } else {
+                        last_mcp_reminder_at
+                            .map(|timestamp| timestamp.elapsed() >= MCP_REMINDER_COOLDOWN)
+                            .unwrap_or(true)
+                    };
+                    let injection = format_injection_for_worker(
                         &pending.delivery.from,
                         &pending.delivery.event_id,
                         &pending.delivery.body,
                         &pending.delivery.target,
+                        include_mcp_reminder,
+                        worker_pre_registered,
+                        assigned_worker_name.as_deref(),
                     );
+                    if include_mcp_reminder {
+                        last_mcp_reminder_at = Some(Instant::now());
+                    }
                     if let Err(e) = pty.write_all(injection.as_bytes()) {
                         tracing::warn!(
                             delivery_id = %pending.delivery.delivery_id,
@@ -397,7 +531,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         expected_echo: injection,
                         injected_at: Instant::now(),
                         attempts: 1,
-                        max_attempts: MAX_VERIFICATION_ATTEMPTS,
+                        max_attempts: 1,
                         request_id: pending.request_id,
                         from: pending.delivery.from,
                         body: pending.delivery.body,
@@ -408,46 +542,43 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
             // --- Verification tick: check for timed-out verifications ---
             _ = verification_tick.tick() => {
-                let mut retry_queue: Vec<PendingVerification> = Vec::new();
                 let mut i = 0;
                 while i < pending_verifications.len() {
-                    if pending_verifications[i].injected_at.elapsed() >= VERIFICATION_WINDOW {
-                        let mut pv = pending_verifications.remove(i).unwrap();
-                        if pv.attempts < pv.max_attempts {
-                            // Retry injection
-                            pv.attempts += 1;
-                            tracing::warn!(
-                                delivery_id = %pv.delivery_id,
-                                attempt = pv.attempts,
-                                max = pv.max_attempts,
-                                "echo verification timeout, retrying injection"
-                            );
-                            retry_queue.push(pv);
-                        } else {
-                            // Max retries exceeded — send delivery_failed
-                            tracing::error!(
-                                delivery_id = %pv.delivery_id,
-                                attempts = pv.attempts,
-                                "delivery verification failed after max retries"
-                            );
-                            let _ = send_frame(
-                                &out_tx,
-                                "delivery_failed",
-                                pv.request_id.clone(),
-                                json!({
-                                    "delivery_id": pv.delivery_id,
-                                    "event_id": pv.event_id,
-                                    "reason": format!(
-                                        "echo not detected after {} attempts within {}s window",
-                                        pv.max_attempts,
-                                        VERIFICATION_WINDOW.as_secs()
-                                    )
-                                }),
-                            )
-                            .await;
-                            throttle.record(DeliveryOutcome::Failed);
-                            pending_worker_delivery_ids.remove(&pv.delivery_id);
-                        }
+                    if pending_verifications[i].injected_at.elapsed() >= verification_window {
+                        let pv = pending_verifications.remove(i).unwrap();
+                        let delivery_id = pv.delivery_id.clone();
+                        let event_id = pv.event_id.clone();
+                        // Do not re-inject on verification timeout. Re-injection can duplicate
+                        // already-delivered messages when terminal echo parsing is noisy.
+                        tracing::debug!(
+                            delivery_id = %delivery_id,
+                            attempts = pv.attempts,
+                            "delivery echo not detected within verification window; acknowledging via timeout fallback"
+                        );
+                        let _ = send_frame(
+                            &out_tx,
+                            "delivery_ack",
+                            pv.request_id.clone(),
+                            json!({
+                                "delivery_id": delivery_id,
+                                "event_id": event_id
+                            }),
+                        )
+                        .await;
+                        let _ = send_frame(
+                            &out_tx,
+                            "delivery_verified",
+                            pv.request_id.clone(),
+                            json!({
+                                "delivery_id": delivery_id,
+                                "event_id": event_id,
+                                "verification": "timeout_fallback",
+                                "reason": format!("echo not detected within {}s window", verification_window.as_secs())
+                            }),
+                        )
+                        .await;
+                        throttle.record(DeliveryOutcome::Success);
+                        pending_worker_delivery_ids.remove(&delivery_id);
                     } else {
                         i += 1;
                     }
@@ -464,36 +595,6 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     }
                 }
 
-                // Re-inject retries
-                for mut pv in retry_queue {
-                    tokio::time::sleep(throttle.delay()).await;
-                    let injection = format_injection(&pv.from, &pv.event_id, &pv.body, &pv.target);
-                    if let Err(e) = pty.write_all(injection.as_bytes()) {
-                        tracing::warn!(
-                            delivery_id = %pv.delivery_id,
-                            error = %e,
-                            "retry PTY injection write failed"
-                        );
-                    } else {
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                        let _ = pty.write_all(b"\r");
-                        let _ = send_frame(
-                            &out_tx,
-                            "delivery_injected",
-                            None,
-                            delivery_injected_event_payload(
-                                &pv.delivery_id,
-                                &pv.event_id,
-                                &worker_name,
-                                current_timestamp_ms(),
-                            ),
-                        )
-                        .await;
-                    }
-                    pv.expected_echo = injection;
-                    pv.injected_at = Instant::now();
-                    pending_verifications.push_back(pv);
-                }
             }
 
             // --- Auto-enter for stuck agents ---
@@ -515,6 +616,77 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             _ = sigwinch.recv() => {
                 if let Some((rows, cols)) = get_terminal_size() {
                     let _ = pty.resize(rows, cols);
+                }
+            }
+
+            // --- Child process watchdog ---
+            // Detects when the child exits but the PTY reader doesn't notice.
+            // Uses has_exited() which handles ECHILD (already reaped) and
+            // falls back to kill(pid, 0) on Unix.
+            _ = child_watchdog.tick() => {
+                if pty.has_exited() {
+                    // Drain any remaining PTY output so we can capture error
+                    // messages from CLIs that exit immediately (e.g. codex MCP
+                    // failure). Without this, the output is lost in the race
+                    // between the reader thread and the watchdog.
+                    let mut late_output = String::new();
+                    while let Ok(chunk) = pty_rx.try_recv() {
+                        let text = String::from_utf8_lossy(&chunk).to_string();
+                        late_output.push_str(&text);
+                        let _ = send_frame(&out_tx, "worker_stream", None, json!({
+                            "stream": "stdout",
+                            "chunk": text,
+                        })).await;
+                    }
+                    if !late_output.is_empty() {
+                        let clean = strip_ansi(&late_output);
+                        tracing::warn!(
+                            target = "agent_relay::worker::pty",
+                            output = %clean,
+                            "watchdog: captured late output from exiting child"
+                        );
+                    }
+                    tracing::info!(
+                        target = "agent_relay::worker::pty",
+                        "watchdog: child process exited"
+                    );
+                    let mut exit_payload = json!({
+                        "reason": "child_exited",
+                    });
+                    if !late_output.is_empty() {
+                        let clean = strip_ansi(&late_output);
+                        // Truncate to avoid huge payloads; last 2000 chars
+                        // are most likely to contain the error message.
+                        let trimmed = if clean.len() > 2000 {
+                            &clean[clean.len() - 2000..]
+                        } else {
+                            &clean
+                        };
+                        exit_payload["last_output"] = json!(trimmed);
+                    }
+                    let _ = send_frame(&out_tx, "agent_exit", None, exit_payload).await;
+                    running = false;
+                } else {
+                    // If no PTY output for a long time, the agent is likely
+                    // idle (thinking, waiting for input, etc). Emit an idle
+                    // event instead of killing the process — the broker or
+                    // dashboard can decide what to do with idle agents.
+                    let silent_duration = last_pty_output_time.elapsed();
+                    if silent_duration >= NO_OUTPUT_EXIT_TIMEOUT {
+                        if !reported_idle {
+                            tracing::info!(
+                                target = "agent_relay::worker::pty",
+                                silent_secs = silent_duration.as_secs(),
+                                "watchdog: no PTY output for {}s — marking idle",
+                                silent_duration.as_secs()
+                            );
+                            let _ = send_frame(&out_tx, "agent_idle", None, json!({
+                                "reason": "no_output_timeout",
+                                "idle_secs": silent_duration.as_secs(),
+                            })).await;
+                            reported_idle = true;
+                        }
+                    }
                 }
             }
         }

@@ -1,0 +1,80 @@
+{
+  "id": "traj_1772091230763_0844a5fc",
+  "version": 1,
+  "task": {
+    "title": "test-v4-noninteractive run #a4469ce2",
+    "source": {
+      "system": "workflow-runner",
+      "id": "a4469ce2cc2db067dfa38fc0"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-02-26T07:33:50.764Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T07:33:50.764Z"
+    },
+    {
+      "name": "codex-worker",
+      "role": "codex-worker",
+      "joinedAt": "2026-02-26T07:33:53.992Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_aec80d74",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T07:33:50.764Z",
+      "events": [
+        {
+          "ts": 1772091230764,
+          "type": "note",
+          "content": "Workflow \"test-v4-noninteractive\" started with 2 steps"
+        },
+        {
+          "ts": 1772091230764,
+          "type": "note",
+          "content": "Parsed 2 steps, 1 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1772091233992,
+          "type": "note",
+          "content": "Step \"do-task\" assigned to agent \"codex-worker\""
+        },
+        {
+          "ts": 1772091240376,
+          "type": "finding",
+          "content": "Step \"do-task\" completed: NONINTERACTIVE_START\nHello from non-interactive codex\nNONINTERACTIVE_COMPLETE\n",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-02-26T07:34:00.386Z"
+    },
+    {
+      "id": "ch_d90bf2da",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T07:34:00.386Z",
+      "events": [
+        {
+          "ts": 1772091240386,
+          "type": "reflection",
+          "content": "Workflow completed in 10 seconds. 2/2 steps passed. (completed in 10 seconds)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-26T07:34:00.386Z"
+    }
+  ],
+  "completedAt": "2026-02-26T07:34:00.386Z",
+  "retrospective": {
+    "summary": "Workflow completed in 10 seconds. 2/2 steps passed.",
+    "approach": "workflow-runner DAG execution",
+    "confidence": 0.875,
+    "learnings": [],
+    "challenges": []
+  }
+}

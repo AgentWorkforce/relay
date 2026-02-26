@@ -179,34 +179,6 @@ download_broker_binary() {
     fi
 }
 
-# Download relay-pty binary
-download_relay_pty() {
-    step "Downloading relay-pty binary..."
-
-    local binary_name="relay-pty-${PLATFORM}"
-    local download_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}"
-    local target_path="$INSTALL_DIR/bin/relay-pty"
-
-    mkdir -p "$INSTALL_DIR/bin"
-
-    # Try to download - curl -f will fail on 404
-    if curl -fsSL "$download_url" -o "$target_path" 2>/dev/null; then
-        chmod +x "$target_path"
-        # Verify binary works
-        if "$target_path" --help &>/dev/null; then
-            success "Downloaded relay-pty binary"
-            return 0
-        else
-            warn "relay-pty binary failed verification"
-            rm -f "$target_path"
-            return 1
-        fi
-    else
-        warn "No prebuilt relay-pty binary for $PLATFORM"
-        return 1
-    fi
-}
-
 # Download standalone dashboard-server binary
 download_dashboard_binary() {
     if [ "${AGENT_RELAY_NO_DASHBOARD}" = "true" ]; then
@@ -766,8 +738,6 @@ main() {
     # Try standalone binary first - works without Node.js
     if download_standalone_binary; then
         INSTALL_METHOD="binary"
-        # Also download relay-pty binary if available
-        download_relay_pty || true
         # Download broker binary for workflow/SDK agent spawning
         download_broker_binary || true
         # Download dashboard-server binary if available

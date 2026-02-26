@@ -1,0 +1,48 @@
+{
+  "id": "traj_1772115958431_5e201231",
+  "version": 1,
+  "task": {
+    "title": "workflow-mm3k32yn-vr2r7i run #abfa2a68",
+    "source": {
+      "system": "workflow-runner",
+      "id": "abfa2a689aa6e753abc56a67"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-02-26T14:25:58.431Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T14:25:58.431Z"
+    },
+    {
+      "name": "worker",
+      "role": "worker",
+      "joinedAt": "2026-02-26T14:26:01.203Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_eb8d5b0a",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T14:25:58.431Z",
+      "events": [
+        {
+          "ts": 1772115958431,
+          "type": "note",
+          "content": "Approach: 1-step dag workflow — Parsed 1 steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1772115961203,
+          "type": "note",
+          "content": "\"step-1\": Do a thing",
+          "raw": {
+            "agent": "worker"
+          }
+        }
+      ]
+    }
+  ]
+}

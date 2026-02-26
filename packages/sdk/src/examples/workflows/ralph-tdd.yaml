@@ -1,0 +1,259 @@
+version: '1.0'
+name: ralph-tdd
+description: >
+  Test-Driven Ralph Loop. An architect writes failing tests first, a builder
+  implements until they pass, a quality gate runs the real test suite, and
+  the loop repeats with review feedback until every story is green.
+
+  What this showcases vs vanilla ralph:
+    - Tests are written BEFORE implementation (true TDD)
+    - Deterministic quality gate: actual `npm test` / `tsc` output chains into next step
+    - Parallel arch + security reviewer — fresh eyes, no confirmation bias
+    - maxIterations loop prevents infinite spinning
+    - Learnings from each round feed back into the next as {{steps.X.output}}
+
+swarm:
+  pattern: review-loop
+  maxConcurrency: 4
+  timeoutMs: 7200000
+  channel: ralph-tdd
+  idleNudge:
+    nudgeAfterMs: 300000
+    escalateAfterMs: 300000
+    maxNudges: 2
+
+agents:
+  - name: architect
+    cli: claude
+    channels: [ralph-tdd]
+    role: "Writes failing tests, plans implementation, reviews the builder's output."
+    constraints:
+      model: sonnet
+
+  - name: builder
+    cli: codex
+    role: "Implements code to make the architect's failing tests pass."
+    interactive: false
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: reviewer
+    cli: claude
+    channels: [ralph-tdd]
+    role: 'Independent code quality + security review. No confirmation bias.'
+    interactive: false
+    constraints:
+      model: opus
+
+workflows:
+  - name: tdd-loop
+    description: >
+      For each story in the PRD: write tests → implement → test gate →
+      parallel review → address feedback → loop until green.
+    onError: retry
+    preflight:
+      - command: test -f "${PRD_PATH:-prd.json}"
+        description: 'PRD file exists'
+      - command: git status --porcelain
+        failIf: non-empty
+        description: 'Clean working directory before starting'
+
+    steps:
+      # ── Phase 1: Architect writes failing tests ──────────────────────────
+
+      - name: write-tests
+        type: agent
+        agent: architect
+        task: |
+          Read the next unpassed story from ${PRD_PATH:-prd.json}.
+          Read previous learnings from ${PROGRESS_PATH:-progress.txt} if it exists.
+
+          Write FAILING tests first (TDD). The tests must:
+          - Cover all acceptance criteria exactly
+          - Use the project's existing test framework (detect from package.json / pytest / go test)
+          - Fail when run right now (implementation doesn't exist yet)
+          - Have clear assertion messages so failures are informative
+
+          After writing tests, run them to confirm they fail:
+            npm test 2>&1 || pytest 2>&1 || go test ./... 2>&1
+
+          Post the test file paths and what each test verifies to #ralph-tdd.
+          Output: TESTS_WRITTEN
+        verification:
+          type: output_contains
+          value: TESTS_WRITTEN
+        retries: 1
+
+      # ── Phase 2: Capture failing test output for builder context ─────────
+
+      - name: capture-failures
+        type: deterministic
+        dependsOn: [write-tests]
+        command: npm test 2>&1 || pytest 2>&1 || go test ./... 2>&1 || echo "tests ran"
+        captureOutput: true
+        failOnError: false
+
+      # ── Phase 3: Builder implements to make tests pass ───────────────────
+
+      - name: implement
+        type: agent
+        agent: builder
+        dependsOn: [capture-failures]
+        task: |
+          The architect has written failing tests. Your job: make them pass.
+
+          Failing test output:
+          {{steps.capture-failures.output}}
+
+          Implementation plan from #ralph-tdd:
+          {{steps.write-tests.output}}
+
+          Rules:
+          - Do NOT modify the test files
+          - Implement only what's needed to pass the tests
+          - Follow existing code patterns and conventions in this repo
+          - Run the tests yourself to verify they pass before finishing
+
+          Output: IMPLEMENTATION_COMPLETE
+        verification:
+          type: output_contains
+          value: IMPLEMENTATION_COMPLETE
+        retries: 2
+        maxIterations: 3
+
+      # ── Phase 4: Quality gate — real test suite ──────────────────────────
+
+      - name: test-gate
+        type: deterministic
+        dependsOn: [implement]
+        command: >
+          npm run lint 2>&1 | tail -5;
+          npm run type-check 2>&1 | tail -5;
+          npm test 2>&1
+        captureOutput: true
+        failOnError: false
+
+      # ── Phase 5: Parallel review (arch + independent reviewer) ───────────
+
+      - name: arch-review
+        type: agent
+        agent: architect
+        dependsOn: [test-gate]
+        task: |
+          Review the implementation for correctness, completeness, and test coverage.
+
+          Test results:
+          {{steps.test-gate.output}}
+
+          Check:
+          1. All acceptance criteria met (read the story from prd.json)
+          2. No test was skipped or marked pending
+          3. Edge cases handled
+          4. No obvious performance issues
+
+          Output: ARCH_REVIEW:PASS if all good, ARCH_REVIEW:FAIL:<issues> if not.
+        verification:
+          type: output_contains
+          value: 'ARCH_REVIEW:'
+
+      - name: sec-review
+        type: agent
+        agent: reviewer
+        dependsOn: [test-gate]
+        task: |
+          Security and code quality review of the implementation.
+
+          Test results: {{steps.test-gate.output}}
+
+          Check git diff for:
+          - Input validation and sanitization
+          - No hardcoded secrets or credentials
+          - Error handling doesn't leak internals
+          - No obvious injection vectors
+
+          Output: SEC_REVIEW:PASS or SEC_REVIEW:FAIL:<issues>
+        verification:
+          type: output_contains
+          value: 'SEC_REVIEW:'
+
+      # ── Phase 6: Address feedback and finalize ───────────────────────────
+
+      - name: address-feedback
+        type: agent
+        agent: builder
+        dependsOn: [arch-review, sec-review]
+        task: |
+          Address all review feedback, then run the full test suite.
+
+          Architecture review: {{steps.arch-review.output}}
+          Security review: {{steps.sec-review.output}}
+
+          If both are PASS, output: ALL_REVIEWS_PASSED
+          Otherwise fix the issues, run tests again to confirm still green,
+          then output: FEEDBACK_ADDRESSED
+        verification:
+          type: output_contains
+          value: 'ALL_REVIEWS_PASSED|FEEDBACK_ADDRESSED'
+        maxIterations: 2
+
+      # ── Phase 7: Final test run + commit ─────────────────────────────────
+
+      - name: final-test
+        type: deterministic
+        dependsOn: [address-feedback]
+        command: npm test 2>&1 && echo "ALL_GREEN" || echo "STILL_FAILING"
+        captureOutput: true
+        failOnError: false
+
+      - name: commit
+        type: deterministic
+        dependsOn: [final-test]
+        command: >
+          git add -A &&
+          git commit -m "feat: implement story from prd (TDD)" 2>/dev/null ||
+          echo "nothing to commit"
+
+      - name: record-learnings
+        type: agent
+        agent: architect
+        dependsOn: [commit]
+        task: |
+          Record learnings for the next story iteration.
+
+          Final test result: {{steps.final-test.output}}
+          Reviews: {{steps.arch-review.output}} | {{steps.sec-review.output}}
+
+          Append to ${PROGRESS_PATH:-progress.txt}:
+          - What approach worked for this story
+          - Any patterns discovered in this codebase
+          - Gotchas or non-obvious things to remember
+
+          Then mark this story as passed in ${PRD_PATH:-prd.json}
+          by setting its "passes" field to true.
+
+          Output: DONE
+        verification:
+          type: output_contains
+          value: DONE
+
+coordination:
+  barriers:
+    - name: reviews-complete
+      waitFor: [arch-review, sec-review]
+      timeoutMs: 1800000
+  consensusStrategy: unanimous
+
+state:
+  backend: memory
+  ttlMs: 86400000
+
+errorHandling:
+  strategy: retry
+  maxRetries: 2
+  retryDelayMs: 5000
+  notifyChannel: ralph-tdd
+
+trajectories:
+  enabled: true
+  reflectOnBarriers: true
+  autoDecisions: true

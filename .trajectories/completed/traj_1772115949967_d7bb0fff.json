@@ -1,0 +1,78 @@
+{
+  "id": "traj_1772115949967_d7bb0fff",
+  "version": 1,
+  "task": {
+    "title": "default run #7f340bcf",
+    "source": {
+      "system": "workflow-runner",
+      "id": "7f340bcfad854f7d17e40c4c"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-02-26T14:25:49.967Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T14:25:49.967Z"
+    },
+    {
+      "name": "worker",
+      "role": "worker",
+      "joinedAt": "2026-02-26T14:25:52.635Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_2d58a05d",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T14:25:49.967Z",
+      "events": [
+        {
+          "ts": 1772115949967,
+          "type": "note",
+          "content": "Approach: 1-step dag workflow — Parsed 1 steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1772115952635,
+          "type": "note",
+          "content": "\"step-1\": Do a thing",
+          "raw": {
+            "agent": "worker"
+          }
+        },
+        {
+          "ts": 1772115954855,
+          "type": "finding",
+          "content": "\"step-1\" completed → <system-reminder>\r\nRelaycast MCP tools are available for replies.\r\nYou are pre-registered by the broker under your assig",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-02-26T14:25:54.856Z"
+    },
+    {
+      "id": "ch_9ab93c9f",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T14:25:54.856Z",
+      "events": [
+        {
+          "ts": 1772115954856,
+          "type": "reflection",
+          "content": "All 1 steps completed in 5s. (completed in 5 seconds)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-26T14:25:54.856Z"
+    }
+  ],
+  "completedAt": "2026-02-26T14:25:54.856Z",
+  "retrospective": {
+    "summary": "All 1 steps completed in 5s.",
+    "approach": "dag workflow (1 agents)",
+    "confidence": 0.75,
+    "learnings": [],
+    "challenges": []
+  }
+}

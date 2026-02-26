@@ -29,53 +29,55 @@ agent-relay -n Alice claude
 
 ### Test Spawning
 
-Inside Alice's terminal, output these patterns:
+Inside Alice's terminal, use MCP tools:
 
 ```
-->relay:spawn Dev1 claude "Write unit tests for the auth module"
+relay_spawn(name: "Dev1", cli: "claude", task: "Write unit tests for the auth module")
 ```
 
-Or using the fenced format for messages:
+Or send a message:
 
 ```
-->relay:Dev1 <<<
-Write unit tests for the auth module>>>
+relay_send(to: "Dev1", message: "Write unit tests for the auth module")
 ```
 
 **Expected:**
-- New tmux window created in `relay-workers` session
+
 - Dev1 agent starts with the task injected
-- Message: `[spawner] Spawned Dev1 (claude) for Alice`
+- Agent appears in `agent-relay agents` list
 
 ### Verify Spawn
 
 ```bash
-# Check tmux windows
-tmux list-windows -t relay-workers
+# Check active agents
+agent-relay agents
 ```
 
 ### Test Release
 
 ```
-->relay:release Dev1
+relay_release(name: "Dev1")
 ```
 
 **Expected:**
-- Dev1 window closed
-- Message: `[spawner] Released Dev1`
+
+- Dev1 agent stopped
+- Agent removed from active list
 
 ### Test Release All
 
 First spawn multiple workers:
+
 ```
-->relay:spawn Dev1 claude "Task 1"
-->relay:spawn Dev2 claude "Task 2"
-->relay:spawn QA1 claude "Task 3"
+relay_spawn(name: "Dev1", cli: "claude", task: "Task 1")
+relay_spawn(name: "Dev2", cli: "claude", task: "Task 2")
+relay_spawn(name: "QA1", cli: "claude", task: "Task 3")
 ```
 
 Then release all:
+
 ```
-->relay:release *
+relay_release(name: "*")
 ```
 
 **Expected:** All workers released.
@@ -108,6 +110,7 @@ agent-relay bridge /tmp/project-a /tmp/project-b
 ```
 
 **Expected:**
+
 - Bridge connects to both project sockets
 - Dashboard shows both projects (if enabled)
 
@@ -128,17 +131,17 @@ agent-relay -n Bob claude
 ### Test Cross-Project Messaging
 
 From Alice (Project A):
+
 ```
-->relay:project-b:Bob <<<
-Hey Bob, can you review my changes?>>>
+relay_send(to: "project-b:Bob", message: "Hey Bob, can you review my changes?")
 ```
 
 **Expected:** Bob receives the message in Project B.
 
 From Bob (Project B):
+
 ```
-->relay:project-a:Alice <<<
-Sure, sending review now.>>>
+relay_send(to: "project-a:Alice", message: "Sure, sending review now.")
 ```
 
 **Expected:** Alice receives the message in Project A.
@@ -146,9 +149,9 @@ Sure, sending review now.>>>
 ### Test Broadcast to All Leads
 
 From the bridge/architect:
+
 ```
-->relay:*:lead <<<
-Standup time - report your status>>>
+relay_send(to: "*:lead", message: "Standup time - report your status")
 ```
 
 **Expected:** Both Alice and Bob receive the message.
@@ -162,6 +165,7 @@ Standup time - report your status>>>
 Open: http://localhost:4280
 
 Check:
+
 - [ ] Connected agents appear
 - [ ] Online/Offline status badges show correctly
 - [ ] Messages appear in activity log
@@ -172,6 +176,7 @@ Check:
 Open: http://localhost:4280/bridge
 
 Check:
+
 - [ ] Connected projects appear
 - [ ] Leads shown per project
 - [ ] Workers shown under their lead
@@ -186,6 +191,7 @@ Test that agent names match role definitions.
 ### Setup
 
 Create a role agent:
+
 ```bash
 mkdir -p .claude/agents
 cat > .claude/agents/lead.md << 'EOF'
@@ -269,10 +275,10 @@ echo "=== Smoke Test Complete ==="
 
 ## Troubleshooting
 
-| Issue | Solution |
-|-------|----------|
-| "Socket not found" | Start daemon with `agent-relay up` |
-| Spawn not working | Check tmux is installed, check `relay-workers` session |
-| Cross-project messages not delivered | Verify bridge is running and connected to both daemons |
-| Dashboard not loading | Check daemon started with dashboard enabled (default) |
-| Agent role not applied | Check file exists at `.claude/agents/<name>.md` (case-insensitive) |
+| Issue                                | Solution                                                           |
+| ------------------------------------ | ------------------------------------------------------------------ |
+| "Socket not found"                   | Start daemon with `agent-relay up`                                 |
+| Spawn not working                    | Check tmux is installed, check `relay-workers` session             |
+| Cross-project messages not delivered | Verify bridge is running and connected to both daemons             |
+| Dashboard not loading                | Check daemon started with dashboard enabled (default)              |
+| Agent role not applied               | Check file exists at `.claude/agents/<name>.md` (case-insensitive) |

@@ -1,0 +1,64 @@
+version: '1.0'
+name: codex-exit-v1-prompt
+description: >
+  EXIT EXPERIMENT #1: Pure explicit prompt.
+  Tests whether codex reliably outputs `/exit` on its own line when the task
+  prompt gives extremely explicit, unambiguous termination instructions.
+  No lead agent — codex must self-terminate purely from prompt instructions.
+
+swarm:
+  pattern: pipeline
+  maxConcurrency: 1
+  timeoutMs: 300000 # 5 min — short test
+  channel: codex-exit-v1
+  idleNudge:
+    nudgeAfterMs: 60000 # 1 min — fast feedback on whether nudges help
+    escalateAfterMs: 60000
+    maxNudges: 2
+
+agents:
+  - name: codex-worker
+    cli: codex
+    channels: [codex-exit-v1]
+    role: 'Completes a trivial task then self-terminates by outputting /exit.'
+
+workflows:
+  - name: test-v1-explicit-prompt
+    description: >
+      Single codex agent. Task is trivial (output a string).
+      Exit mechanism: explicit multi-line prompt instruction telling codex
+      to output /exit alone on its own line immediately after finishing.
+    steps:
+      - name: do-task
+        type: agent
+        agent: codex-worker
+        task: |
+          Your task has TWO parts. Complete them in order.
+
+          PART 1 — THE TASK:
+          Output the following line to your terminal:
+            TASK_COMPLETE
+
+          PART 2 — MANDATORY TERMINATION:
+          Immediately after completing Part 1, you MUST terminate this session.
+          To terminate, output the following EXACTLY — four characters, alone on
+          their own line, with NO text before it and NO text after it:
+
+          /exit
+
+          Rules:
+          - The /exit line must be the LAST thing you output
+          - Do NOT output any explanation, summary, or closing remark after /exit
+          - Do NOT wait for further input after /exit
+          - The session MUST end with the /exit line
+
+          Example of correct output:
+          ---
+          TASK_COMPLETE
+          /exit
+          ---
+
+          Begin now. Output TASK_COMPLETE, then /exit on its own line.
+        verification:
+          type: output_contains
+          value: TASK_COMPLETE

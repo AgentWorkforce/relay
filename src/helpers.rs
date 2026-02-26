@@ -1,5 +1,10 @@
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    ffi::OsStr,
+    path::Path,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
+use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 
 pub(crate) const ACTIVITY_WINDOW: Duration = Duration::from_secs(5);
@@ -7,6 +12,45 @@ pub(crate) const ACTIVITY_BUFFER_MAX_BYTES: usize = 16_000;
 pub(crate) const ACTIVITY_BUFFER_KEEP_BYTES: usize = 12_000;
 #[cfg(test)]
 pub(crate) const CLI_READY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Parse a CLI command string into executable and embedded arguments.
+///
+/// Supports shell-style quoting, e.g.:
+/// - `claude --model haiku`
+/// - `codex --profile "my profile"`
+pub(crate) fn parse_cli_command(raw: &str) -> Result<(String, Vec<String>)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("CLI command cannot be empty"));
+    }
+
+    let parts = shlex::split(trimmed)
+        .ok_or_else(|| anyhow!("invalid CLI command syntax (check quoting)"))?;
+    let (command, args) = parts
+        .split_first()
+        .ok_or_else(|| anyhow!("CLI command cannot be empty"))?;
+    let command = command.to_string();
+    let mut args = args.to_vec();
+
+    let cli_lower = normalize_cli_name(&command).to_lowercase();
+    if cli_lower == "cursor" {
+        if !args.iter().any(|arg| arg == "--force") {
+            args.insert(0, "--force".to_string());
+        }
+    }
+
+    Ok((command, args))
+}
+
+/// Best-effort normalized CLI name for feature detection.
+/// If `cli` is a path, returns the executable file name.
+pub(crate) fn normalize_cli_name(cli: &str) -> String {
+    Path::new(cli)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or(cli)
+        .to_string()
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DeliveryOutcome {
@@ -120,10 +164,13 @@ impl ActivityDetector {
     }
 }
 
-/// Maximum number of injection attempts before declaring delivery failed.
-pub(crate) const MAX_VERIFICATION_ATTEMPTS: usize = 3;
+/// Maximum number of injection attempts before accepting delivery via timeout.
+/// Set to 1 to avoid re-injecting the same message when echo detection fails —
+/// duplicate injections cause agents to process messages multiple times,
+/// multiplying Relaycast API calls and triggering rate limits.
+pub(crate) const MAX_VERIFICATION_ATTEMPTS: usize = 1;
 
-/// Time window to wait for echo verification before retrying injection.
+/// Time window to wait for echo verification before accepting delivery.
 pub(crate) const VERIFICATION_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A pending delivery waiting for echo verification in PTY output.
@@ -268,19 +315,169 @@ pub(crate) fn terminal_query_responses(chunk: &[u8]) -> Vec<&'static [u8]> {
     parser.feed(chunk)
 }
 
-pub(crate) fn format_injection(from: &str, event_id: &str, body: &str, target: &str) -> String {
-    // If body is already formatted (from orchestrator), don't double-wrap
-    if body.starts_with("Relay message from ") {
-        return body.to_string();
+fn sender_display_name(from: &str) -> &str {
+    let normalized = from
+        .strip_prefix("human:")
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(from);
+
+    if is_broker_identity(normalized) {
+        "Dashboard"
+    } else {
+        normalized
     }
+}
+
+fn sender_reply_target(from: &str) -> &str {
+    from.strip_prefix("human:")
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(from)
+}
+
+fn is_broker_identity(name: &str) -> bool {
+    let trimmed = name.trim();
+    let Some(rest) = trimmed.strip_prefix("broker-") else {
+        return false;
+    };
+    !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_alphanumeric())
+}
+
+fn detect_channel_context(message: &str, target: &str) -> Option<String> {
     if target.starts_with('#') {
+        return Some(target.trim().to_string());
+    }
+    if let Some(start) = message.find("[#") {
+        let rest = &message[start + 1..];
+        if let Some(end) = rest.find(']') {
+            let channel = rest[..end].trim();
+            if channel.starts_with('#') && channel.len() > 1 {
+                return Some(channel.to_string());
+            }
+        }
+    }
+    if let Some(start) = message.find(" in #") {
+        let rest = &message[start + 4..];
+        let end = rest
+            .find(|c: char| c == ' ' || c == ':' || c == ']' || c == '\n')
+            .unwrap_or(rest.len());
+        let candidate = rest[..end].trim();
+        if candidate.starts_with('#') && candidate.len() > 1 {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+fn build_mcp_reminder(
+    sender: &str,
+    target: &str,
+    relay_line: &str,
+    pre_registered: bool,
+    assigned_name: Option<&str>,
+) -> String {
+    let sender_name = sender_display_name(sender);
+    let reply_target = sender_reply_target(sender);
+    let channel_context = detect_channel_context(relay_line, target);
+    let channel_hint = channel_context
+        .as_deref()
+        .unwrap_or("#general")
+        .trim_start_matches('#');
+
+    let dm_hint = if reply_target.eq_ignore_ascii_case(sender_name) {
         format!(
-            "Relay message from {} in {} [{}]: {}",
-            from, target, event_id, body
+            "- For direct replies to \"{sender_name}\", use mcp__relaycast__send_dm (to: \"{sender_name}\")."
         )
     } else {
-        format!("Relay message from {} [{}]: {}", from, event_id, body)
+        format!(
+            "- For direct replies to \"{sender_name}\", use mcp__relaycast__send_dm (to: \"{reply_target}\")."
+        )
+    };
+    let channel_hint_line = format!(
+        "- For channel replies, use mcp__relaycast__post_message (channel: \"{channel_hint}\")."
+    );
+
+    let registration_lines: [String; 2] = if pre_registered {
+        [
+            "You are pre-registered by the broker under your assigned worker name.".to_string(),
+            "Do not call mcp__relaycast__register unless a send/reply fails with \"Not registered\"."
+                .to_string(),
+        ]
+    } else if let Some(name) = assigned_name {
+        [
+            "This worker was not pre-registered by the broker.".to_string(),
+            format!(
+                "Before replying, call mcp__relaycast__register (name: \"{name}\", type: \"agent\")."
+            ),
+        ]
+    } else {
+        [
+            "This worker was not pre-registered by the broker.".to_string(),
+            "Before replying, call mcp__relaycast__register (name: \"<worker-name>\", type: \"agent\")."
+                .to_string(),
+        ]
+    };
+
+    [
+        "<system-reminder>".to_string(),
+        "Relaycast MCP tools are available for replies.".to_string(),
+        registration_lines[0].clone(),
+        registration_lines[1].clone(),
+        dm_hint,
+        channel_hint_line,
+        "- For thread replies, use mcp__relaycast__reply_to_thread.".to_string(),
+        "- To check unread messages/reactions, use mcp__relaycast__check_inbox.".to_string(),
+        "- To self-terminate when your task is complete, call remove_agent(name: \"<your-agent-name>\") or output /exit on its own line.".to_string(),
+        "</system-reminder>".to_string(),
+    ]
+    .join("\n")
+}
+
+pub(crate) fn format_injection(from: &str, event_id: &str, body: &str, target: &str) -> String {
+    format_injection_with_reminder(from, event_id, body, target, true)
+}
+
+pub(crate) fn format_injection_with_reminder(
+    from: &str,
+    event_id: &str,
+    body: &str,
+    target: &str,
+    include_reminder: bool,
+) -> String {
+    format_injection_for_worker(from, event_id, body, target, include_reminder, true, None)
+}
+
+pub(crate) fn format_injection_for_worker(
+    from: &str,
+    event_id: &str,
+    body: &str,
+    target: &str,
+    include_reminder: bool,
+    pre_registered: bool,
+    assigned_name: Option<&str>,
+) -> String {
+    let sender_name = sender_display_name(from);
+    let relay_line = if body.starts_with("Relay message from ") {
+        body.trim().to_string()
+    } else if target.starts_with('#') {
+        format!(
+            "Relay message from {} in {} [{}]: {}",
+            sender_name, target, event_id, body
+        )
+    } else {
+        format!(
+            "Relay message from {} [{}]: {}",
+            sender_name, event_id, body
+        )
+    };
+
+    if !include_reminder {
+        return relay_line;
     }
+
+    let reminder = build_mcp_reminder(from, target, &relay_line, pre_registered, assigned_name);
+    format!("{reminder}\n{relay_line}")
 }
 
 /// Find the nearest character boundary at or before the given byte index.
@@ -296,6 +493,10 @@ pub(crate) fn floor_char_boundary(s: &str, index: usize) -> usize {
 }
 
 /// Strip ANSI escape sequences from text for robust pattern matching.
+///
+/// Cursor-forward (`ESC[<n>C`) sequences are replaced with spaces so that
+/// CLIs which render injected text using cursor movement (e.g. Claude Code
+/// v2.1.49+) still produce readable output for echo detection.
 pub(crate) fn strip_ansi(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -304,11 +505,21 @@ pub(crate) fn strip_ansi(text: &str) -> String {
             match chars.peek() {
                 Some('[') => {
                     chars.next();
+                    // Collect parameter bytes (digits, ';', '?')
+                    let mut param_buf = String::new();
                     while let Some(&nc) = chars.peek() {
                         chars.next();
                         if nc.is_ascii_alphabetic() || nc == '@' || nc == '`' {
+                            // Cursor-forward: replace with spaces
+                            if nc == 'C' {
+                                let count = param_buf.parse::<usize>().unwrap_or(1);
+                                for _ in 0..count {
+                                    result.push(' ');
+                                }
+                            }
                             break;
                         }
+                        param_buf.push(nc);
                     }
                 }
                 Some(']') => {
@@ -466,6 +677,135 @@ pub(crate) fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) 
     let has_allow_option =
         clean_output.contains("Allow once") || clean_output.contains("Allow for this session");
     (has_header, has_allow_option)
+}
+
+/// Continuity actions that an agent can request via PTY output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ContinuityAction {
+    Save,
+    Load,
+    Uncertain,
+}
+
+impl ContinuityAction {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            ContinuityAction::Save => "save",
+            ContinuityAction::Load => "load",
+            ContinuityAction::Uncertain => "uncertain",
+        }
+    }
+}
+
+/// Parse a `KIND: continuity` command block from accumulated PTY output.
+///
+/// The format is:
+/// ```text
+/// KIND: continuity
+/// ACTION: save|load|uncertain
+///
+/// Optional body content here
+/// ```
+///
+/// Returns `Some((action, content, bytes_consumed))` when a complete block is found,
+/// where `bytes_consumed` is the number of bytes to trim from the start of `buf`.
+///
+/// The block must have:
+/// - A line containing `KIND:` with value `continuity` (case-insensitive)
+/// - A line containing `ACTION:` with a valid action (case-insensitive)
+/// - Optionally followed by a blank line and body content
+///
+/// The function looks for the pattern anywhere in the buffer and returns the
+/// offset past the detected block so the caller can advance their buffer.
+pub(crate) fn parse_continuity_command(buf: &str) -> Option<(ContinuityAction, String, usize)> {
+    // Find a line with KIND: continuity
+    let kind_prefix = "kind:";
+    let action_prefix = "action:";
+
+    let lines: Vec<&str> = buf.lines().collect();
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim().to_lowercase();
+        if !trimmed.starts_with(kind_prefix) {
+            continue;
+        }
+        let kind_value = trimmed[kind_prefix.len()..].trim();
+        if kind_value != "continuity" {
+            continue;
+        }
+
+        // Found KIND: continuity — look for ACTION: on the next non-empty line
+        let mut action: Option<ContinuityAction> = None;
+        let mut body_start_line: Option<usize> = None;
+
+        for j in (i + 1)..lines.len() {
+            let next = lines[j].trim();
+            if next.is_empty() {
+                // Blank line may precede body; record where body starts
+                if action.is_some() && body_start_line.is_none() {
+                    body_start_line = Some(j + 1);
+                }
+                continue;
+            }
+            let lower = next.to_lowercase();
+            if lower.starts_with(action_prefix) {
+                let action_value = lower[action_prefix.len()..].trim();
+                action = match action_value {
+                    "save" => Some(ContinuityAction::Save),
+                    "load" => Some(ContinuityAction::Load),
+                    "uncertain" => Some(ContinuityAction::Uncertain),
+                    _ => None,
+                };
+                continue;
+            }
+            // Non-empty, non-header line — this is body content
+            if action.is_some() {
+                if body_start_line.is_none() {
+                    body_start_line = Some(j);
+                }
+                break;
+            }
+        }
+
+        let action = action?;
+
+        // Collect body lines
+        let content = if let Some(start) = body_start_line {
+            lines[start..]
+                .iter()
+                .take_while(|l| !l.trim().to_lowercase().starts_with(kind_prefix))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string()
+        } else {
+            String::new()
+        };
+
+        // Compute bytes consumed: everything up to and including the last body line
+        // (or the ACTION: line if there's no body). We advance past the block
+        // by consuming byte offset of the line after the last consumed line.
+        let end_line = body_start_line
+            .map(|s| {
+                s + lines[s..]
+                    .iter()
+                    .take_while(|l| !l.trim().to_lowercase().starts_with(kind_prefix))
+                    .count()
+            })
+            .unwrap_or(i + 2); // at minimum, consume KIND + ACTION lines
+
+        // Re-derive byte offset of end_line in original buf
+        let bytes_consumed = lines[..end_line.min(lines.len())]
+            .iter()
+            .map(|l| l.len() + 1) // +1 for '\n'
+            .sum::<usize>()
+            .min(buf.len());
+
+        return Some((action, content, bytes_consumed));
+    }
+
+    None
 }
 
 /// Detect Claude Code auto-suggestion ghost text.
@@ -994,26 +1334,75 @@ mod tests {
     #[test]
     fn format_injection_dm() {
         let result = format_injection("Alice", "evt_1", "hello world", "Bob");
-        assert_eq!(result, "Relay message from Alice [evt_1]: hello world");
+        assert!(result.contains("<system-reminder>"));
+        assert!(result.contains("Relaycast MCP tools"));
+        assert!(result.contains("pre-registered by the broker"));
+        assert!(result.contains("mcp__relaycast__send_dm"));
+        assert!(result.contains("Relay message from Alice [evt_1]: hello world"));
     }
 
     #[test]
     fn format_injection_channel() {
         let result = format_injection("Alice", "evt_1", "hello world", "#general");
-        assert_eq!(
-            result,
-            "Relay message from Alice in #general [evt_1]: hello world"
+        assert!(result.contains("<system-reminder>"));
+        assert!(result.contains("mcp__relaycast__post_message"));
+        assert!(result.contains("channel: \"general\""));
+        assert!(result.contains("Relay message from Alice in #general [evt_1]: hello world"));
+    }
+
+    #[test]
+    fn format_injection_worker_without_preregistration_includes_register_guidance() {
+        let result = format_injection_for_worker(
+            "Alice",
+            "evt_1",
+            "hello world",
+            "Bob",
+            true,
+            false,
+            Some("Lead"),
         );
+        assert!(result.contains("<system-reminder>"));
+        assert!(result.contains("not pre-registered by the broker"));
+        assert!(result.contains("mcp__relaycast__register"));
+        assert!(result.contains("name: \"Lead\""));
     }
 
     #[test]
     fn format_injection_pre_formatted() {
         let body = "Relay message from Bob [evt_0]: previous message";
         let result = format_injection("Alice", "evt_1", body, "Charlie");
-        assert_eq!(
-            result, body,
-            "pre-formatted messages should pass through unchanged"
-        );
+        assert!(result.contains("<system-reminder>"));
+        assert!(result.contains(body));
+    }
+
+    #[test]
+    fn format_injection_strips_human_prefix_from_sender() {
+        let result = format_injection("human:alice", "evt_1", "status?", "Bob");
+        assert!(result.contains("Relay message from alice [evt_1]: status?"));
+        assert!(result.contains("to \"alice\""));
+    }
+
+    #[test]
+    fn format_injection_maps_broker_sender_to_dashboard_with_reply_target() {
+        let result = format_injection("broker-951762d5", "evt_1", "status?", "Lead");
+        assert!(result.contains("Relay message from Dashboard [evt_1]: status?"));
+        assert!(result.contains("to: \"broker-951762d5\""));
+    }
+
+    #[test]
+    fn format_injection_detects_channel_from_preformatted_body() {
+        let body = "Relay message from bob [abc123] [#dev-team]: Channel update";
+        let result = format_injection("system", "evt_1", body, "Worker");
+        assert!(result.contains("mcp__relaycast__post_message"));
+        assert!(result.contains("channel: \"dev-team\""));
+        assert!(result.contains(body));
+    }
+
+    #[test]
+    fn format_injection_without_reminder_returns_relay_line_only() {
+        let result = format_injection_with_reminder("alice", "evt_9", "retry body", "bob", false);
+        assert!(!result.contains("<system-reminder>"));
+        assert_eq!(result, "Relay message from alice [evt_9]: retry body");
     }
 
     // ==================== is_auto_suggestion edge cases ====================
@@ -1022,5 +1411,72 @@ mod tests {
     fn auto_suggestion_no_false_positive_on_partial_ansi() {
         // Has reverse video but not the dim pattern
         assert!(!is_auto_suggestion("\x1b[7msome text\x1b[27m normal text"));
+    }
+
+    // ==================== CLI command parsing ====================
+
+    #[test]
+    fn parse_cli_command_supports_inline_args() {
+        let (cli, args) = parse_cli_command("claude --model haiku").unwrap();
+        assert_eq!(cli, "claude");
+        assert_eq!(args, vec!["--model".to_string(), "haiku".to_string()]);
+    }
+
+    #[test]
+    fn parse_cli_command_supports_quotes() {
+        let (cli, args) = parse_cli_command("codex --profile \"my profile\"").unwrap();
+        assert_eq!(cli, "codex");
+        assert_eq!(
+            args,
+            vec!["--profile".to_string(), "my profile".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_cli_command_rejects_empty() {
+        let err = parse_cli_command("   ").unwrap_err().to_string();
+        assert!(err.contains("cannot be empty"));
+    }
+
+    #[test]
+    fn parse_cli_command_maps_cursor_to_force() {
+        let (cli, args) = parse_cli_command("cursor").unwrap();
+        assert_eq!(cli, "cursor");
+        assert_eq!(args, vec!["--force".to_string()]);
+    }
+
+    #[test]
+    fn parse_cli_command_maps_cursor_agent_to_cursor_with_force() {
+        let (cli, args) = parse_cli_command("cursor agent --model opus").unwrap();
+        assert_eq!(cli, "cursor");
+        assert_eq!(
+            args,
+            vec![
+                "--force".to_string(),
+                "agent".to_string(),
+                "--model".to_string(),
+                "opus".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_cli_command_dedups_force_for_cursor() {
+        let (cli, args) = parse_cli_command("cursor --force --model opus").unwrap();
+        assert_eq!(cli, "cursor");
+        assert_eq!(
+            args,
+            vec![
+                "--force".to_string(),
+                "--model".to_string(),
+                "opus".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn normalize_cli_name_uses_executable_for_paths() {
+        assert_eq!(normalize_cli_name("/usr/local/bin/claude"), "claude");
+        assert_eq!(normalize_cli_name("codex"), "codex");
     }
 }

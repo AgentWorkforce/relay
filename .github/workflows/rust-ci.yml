@@ -48,12 +48,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.packages }}
-      - name: Cross-compile agent-relay
-        run: cargo check --target ${{ matrix.target }}
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
-      - name: Cross-compile relay-pty
-        run: cargo check --target ${{ matrix.target }} --manifest-path relay-pty/Cargo.toml
+      - name: Cross-compile agent-relay-broker
+        run: cargo check --target ${{ matrix.target }} --bin agent-relay-broker
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
 
@@ -83,11 +79,11 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: packages/broker-sdk
+        working-directory: packages/sdk
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: '22'
       - run: npm install
       - run: npx tsc --noEmit

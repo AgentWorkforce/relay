@@ -1,0 +1,50 @@
+{
+  "id": "traj_1772093695883_79c3806b",
+  "version": 1,
+  "task": {
+    "title": "test-v2-step-chaining run #cc9b630a",
+    "source": {
+      "system": "workflow-runner",
+      "id": "cc9b630ab3701936f7d1c97d"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-02-26T08:14:55.883Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T08:14:55.883Z"
+    },
+    {
+      "name": "claude-worker",
+      "role": "claude-worker",
+      "joinedAt": "2026-02-26T08:14:58.962Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_2a18d6f8",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T08:14:55.883Z",
+      "events": [
+        {
+          "ts": 1772093695883,
+          "type": "note",
+          "content": "Workflow \"test-v2-step-chaining\" started with 2 steps"
+        },
+        {
+          "ts": 1772093695883,
+          "type": "note",
+          "content": "Parsed 2 steps, 1 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1772093698962,
+          "type": "note",
+          "content": "Step \"worker\" assigned to agent \"claude-worker\""
+        }
+      ]
+    }
+  ]
+}

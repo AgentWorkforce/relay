@@ -16,7 +16,6 @@ bin/agent-relay-test
 
 # Rust build artifacts
 target/
-relay-pty/target/
 
 # TypeScript build info (if enabled later)
 *.tsbuildinfo
@@ -33,6 +32,7 @@ pnpm-debug.log*
 .vscode/
 .idea/
 .claude/settings.local.json
+.gemini/settings.json
 
 # Relay runtime artifacts
 *.sock
@@ -42,6 +42,9 @@ pnpm-debug.log*
 .agent-relay-test-*/
 .tmp/
 .tmp-*/
+
+# Git worktrees (development only)
+.worktrees/
 
 # Coverage output
 coverage/

@@ -1,0 +1,42 @@
+{
+  "relay_errors": [
+    {
+      "code": "name_conflict",
+      "message": "Agent name is already registered",
+      "retryable": false,
+      "statusCode": 409
+    },
+    {
+      "code": "not_found",
+      "message": "Agent was not found",
+      "retryable": false,
+      "statusCode": 404
+    },
+    {
+      "code": "unauthorized",
+      "message": "Missing or invalid credentials",
+      "retryable": false,
+      "statusCode": 401
+    },
+    {
+      "code": "workspace_mismatch",
+      "message": "Agent belongs to a different workspace",
+      "retryable": false,
+      "statusCode": 403
+    },
+    {
+      "code": "transport_error",
+      "message": "Network transport failure",
+      "retryable": true,
+      "statusCode": 503
+    }
+  ],
+  "wave0_startup_429_degraded": {
+    "ok": false,
+    "error": {
+      "code": "rate_limit_exceeded",
+      "message": "Rate limit exceeded. 60 requests per minute allowed for free plan."
+    },
+    "expected_mode": "degraded"
+  }
+}

@@ -32,5 +32,5 @@ export const LOW_LATENCY_CONFIG = {
   outputStabilityPollMs: 100,
 } as const;
 
-/** Default Unix socket path for daemon communication */
+/** Default Unix socket path for broker communication */
 export const DEFAULT_SOCKET_PATH = '/tmp/agent-relay.sock';

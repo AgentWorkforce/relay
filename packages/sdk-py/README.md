@@ -1,6 +1,13 @@
 # Agent Relay Python SDK
 
-Python SDK for defining and running Agent Relay workflows.
+Python SDK for defining and running Agent Relay workflows with the same schema and
+builder capabilities as the TypeScript workflow SDK.
+
+The SDK builds workflow config and executes it through:
+
+```bash
+agent-relay run <workflow.yaml>
+```
 
 ## Install
 
@@ -8,41 +15,119 @@ Python SDK for defining and running Agent Relay workflows.
 pip install agent-relay
 ```
 
-## Usage
-
-### Builder API
+## Builder API
 
 ```python
-from agent_relay import workflow
+from agent_relay import workflow, VerificationCheck
 
 result = (
-    workflow("my-migration")
+    workflow("ship-feature")
+    .description("Plan, build, and verify a feature")
     .pattern("dag")
-    .agent("backend", cli="claude", role="Backend engineer")
-    .agent("tester", cli="claude", role="Test engineer")
-    .step("build", agent="backend", task="Build the API endpoints")
-    .step("test", agent="tester", task="Write tests", depends_on=["build"])
+    .max_concurrency(3)
+    .timeout(60 * 60 * 1000)
+    .channel("feature-channel")
+    .idle_nudge(nudge_after_ms=120_000, escalate_after_ms=120_000, max_nudges=1)
+    .trajectories(enabled=True, reflect_on_converge=True)
+    .agent("planner", cli="claude", role="Planning lead")
+    .agent(
+        "builder",
+        cli="codex",
+        role="Implementation engineer",
+        interactive=False,
+        idle_threshold_secs=45,
+        retries=1,
+    )
+    .step("plan", agent="planner", task="Create a detailed plan")
+    .step(
+        "build",
+        agent="builder",
+        task="Implement the approved plan",
+        depends_on=["plan"],
+        verification=VerificationCheck(type="output_contains", value="DONE"),
+    )
     .run()
 )
 ```
 
-### Run from YAML
+## Workflow Templates
+
+Built-in template helpers are provided for common patterns:
+
+- `fan_out(...)`
+- `pipeline(...)`
+- `dag(...)`
 
 ```python
-from agent_relay import run_yaml
+from agent_relay import fan_out
 
-result = run_yaml("workflows/daytona-migration.yaml")
+builder = fan_out(
+    "parallel-analysis",
+    tasks=[
+        "Analyze backend modules and summarize risks",
+        "Analyze frontend modules and summarize risks",
+    ],
+    synthesis_task="Synthesize both analyses into one prioritized action plan",
+)
+
+config = builder.to_config()
 ```
 
-### Export to YAML
+```python
+from agent_relay import pipeline, PipelineStage
+
+builder = pipeline(
+    "release-pipeline",
+    stages=[
+        PipelineStage(name="plan", task="Create release plan"),
+        PipelineStage(name="implement", task="Implement planned changes"),
+        PipelineStage(name="verify", task="Validate and produce release notes"),
+    ],
+)
+```
+
+## Event Callbacks
+
+Execution callbacks receive typed workflow events parsed from CLI workflow logs.
 
 ```python
-config_yaml = (
-    workflow("my-workflow")
-    .pattern("fan-out")
-    .agent("worker", cli="claude")
-    .step("task1", agent="worker", task="Do something")
-    .to_yaml()
+from agent_relay import run_yaml, RunOptions
+
+def on_event(event):
+    print(event.type, event)
+
+result = run_yaml(
+    "workflows/release.yaml",
+    RunOptions(workflow="release", on_event=on_event),
+)
+```
+
+Supported event types:
+
+- `run:started`
+- `run:completed`
+- `run:failed`
+- `run:cancelled`
+- `step:started`
+- `step:completed`
+- `step:failed`
+- `step:skipped`
+- `step:retrying`
+- `step:nudged`
+- `step:force-released`
+
+## YAML Workflow Execution
+
+```python
+from agent_relay import run_yaml, RunOptions
+
+result = run_yaml(
+    "workflows/daytona-migration.yaml",
+    RunOptions(
+        workflow="main",
+        trajectories=False,  # override YAML trajectory config at runtime
+        vars={"target": "staging"},
+    ),
 )
 ```
 
@@ -53,4 +138,4 @@ config_yaml = (
 
 ## License
 
-Apache-2.0 — Copyright 2025 Agent Workforce Incorporated
+Apache-2.0 -- Copyright 2025-2026 Agent Workforce Incorporated

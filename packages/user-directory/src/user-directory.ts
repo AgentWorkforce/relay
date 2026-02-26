@@ -22,7 +22,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { createLogger } from '@agent-relay/resiliency';
+import { createLogger } from '@agent-relay/utils';
 
 const logger = createLogger('user-directory');
 

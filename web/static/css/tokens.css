@@ -1,0 +1,24 @@
+:root {
+  --bg-deep: #0a0a0f;
+  --bg-primary: #0d0d14;
+  --bg-secondary: #12121c;
+  --bg-tertiary: #181824;
+  --bg-card: #1a1a28;
+  --bg-elevated: #202030;
+  --text-primary: #f0f0f5;
+  --text-secondary: #a0a0b0;
+  --text-muted: #606070;
+  --text-dim: #404050;
+  --accent-cyan: #00d9ff;
+  --accent-orange: #ff6b35;
+  --accent-purple: #a855f7;
+  --accent-green: #00ffc8;
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-light: rgba(255, 255, 255, 0.1);
+  --border-medium: rgba(255, 255, 255, 0.15);
+  --font-display: 'Syne', sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+  --font-body: 'Inter', sans-serif;
+  --transition-fast: 0.15s ease;
+  --transition-medium: 0.3s ease;
+}
