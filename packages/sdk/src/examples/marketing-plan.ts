@@ -6,7 +6,7 @@
  * a fresh workspace automatically.
  *
  * Run:
- *   npx tsx packages/sdk/src/examples/marketing-plan.ts
+ *   npm run build && npm run marketing-plan --workspace=packages/sdk
  */
 
 import { AgentRelay } from '../relay.js';

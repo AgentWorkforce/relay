@@ -68,6 +68,7 @@
     "demo": "node dist/examples/demo.js",
     "ralph": "node dist/examples/ralph-loop.js",
     "example": "node dist/examples/example.js",
+    "marketing-plan": "node dist/examples/marketing-plan.js",
     "prepack": "npm run build:full"
   },
   "devDependencies": {
