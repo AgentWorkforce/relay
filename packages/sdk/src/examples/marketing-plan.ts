@@ -20,8 +20,8 @@ console.log(`\nWorkspace API key: ${apiKey}\nObserver: https://observer.relaycas
 const relay = new AgentRelay({ env: { ...process.env, RELAY_API_KEY: apiKey } });
 
 // Show when agents are thinking (PTY output chunks).
-relay.onWorkerOutput = ({ name, chunk }) => {
-  process.stdout.write(`\r\x1b[2K[${name} thinking...] ${chunk.slice(0, 60).replace(/\n/g, ' ')}`);
+relay.onWorkerOutput = ({ name }) => {
+  process.stdout.write(`\r\x1b[2K[${name} is thinking...]`);
 };
 
 // Show completed messages.
