@@ -151,38 +151,84 @@ Avoid `timeoutMs` on agents/steps unless you have a specific reason. The global 
 .onError('retry', { maxRetries: 3, retryDelayMs: 5000 })
 ```
 
-## Non-Interactive Agents
+## Non-Interactive Agents (preset: worker / reviewer / analyst)
 
-For swarm patterns like fan-out and map-reduce, workers that just need to execute a task and return output don't need full PTY/relay messaging overhead. Set `interactive: false` to run them as simple subprocesses:
+Use presets instead of manually setting `interactive: false`. Presets configure interactive mode and inject guardrails automatically:
 
 ```typescript
-.agent('worker', {
-  cli: 'codex',
-  interactive: false,  // runs "codex exec <task>", no PTY, no relay messaging
-  role: 'Backend engineer',
-})
+.agent('worker', { cli: 'claude', preset: 'worker', model: 'sonnet' })
+// Equivalent to interactive: false + "Do NOT use relay tools" prefix injected
 ```
 
-**What changes with `interactive: false`:**
+| Preset     | Interactive   | Relay access | Use for                                              |
+| ---------- | ------------- | ------------ | ---------------------------------------------------- |
+| `lead`     | ✅ PTY        | ✅ Full      | Coordination, spawning workers, monitoring channels  |
+| `worker`   | ❌ subprocess | ❌ None      | Executing bounded tasks, producing structured stdout |
+| `reviewer` | ❌ subprocess | ❌ None      | Reading artifacts, producing verdicts                |
+| `analyst`  | ❌ subprocess | ❌ None      | Reading code/files, writing findings                 |
 
-- Agent runs via CLI one-shot mode (e.g., `claude -p`, `codex exec`, `gemini -p`)
-- No PTY wrapping, no stdin passthrough, no `/exit` self-termination
-- No relay messaging — the agent cannot send or receive messages
-- Output is captured from stdout and available via `{{steps.X.output}}`
-- Lead agents are automatically informed which workers are non-interactive
-- Faster startup and lower overhead than interactive mode
+**What changes with non-interactive presets:**
 
-**When to use:**
+- Agent runs via CLI one-shot mode (`claude -p`, `codex exec`, `gemini -p`)
+- stdin is `/dev/null` — the process never blocks waiting for terminal input
+- No PTY, no relay messaging, no `/exit` self-termination
+- Output captured from stdout, available via `{{steps.X.output}}`
 
-- Fan-out workers that just process a task and return results
-- Map-reduce mappers that don't need mid-task communication
-- Any agent that doesn't need turn-by-turn relay messaging
+**Critical rule — pre-inject content, never ask non-interactive agents to discover it:**
 
-**When NOT to use:**
+```yaml
+# WRONG — claude -p will try to read the file via tools, may time out on large files
+- name: analyze
+  agent: analyst
+  task: 'Read src/runner.ts and summarize the scrubForChannel method.'
 
-- Lead/coordinator agents that need to communicate with others
-- Agents that need to receive messages or participate in channels
-- Agents involved in debate, consensus, or reflection patterns
+# RIGHT — deterministic step reads the file, injects content directly
+- name: read-method
+  type: deterministic
+  command: sed -n '/scrubForChannel/,/^  \}/p' src/runner.ts
+  captureOutput: true
+
+- name: analyze
+  agent: analyst
+  dependsOn: [read-method]
+  task: |
+    Summarize this method:
+    {{steps.read-method.output}}
+```
+
+Non-interactive agents can use tools but it's slow and unreliable on large files.
+Deterministic steps are instant. Always pre-read, then inject.
+
+## DAG Deadlock Anti-Pattern
+
+**The lead↔worker deadlock** is the most common DAG mistake. It causes the lead to wait indefinitely for workers that can never start.
+
+```yaml
+# WRONG — deadlock: coordinate waits for WORKER_DONE from work-a,
+# but work-a can't start until coordinate finishes
+steps:
+  - name: coordinate   # lead, waits for WORKER_A_DONE signal
+    dependsOn: [context]
+  - name: work-a       # can't start — blocked by coordinate
+    dependsOn: [coordinate]
+
+# RIGHT — workers and lead start in parallel, merge step gates on all three
+steps:
+  - name: context
+    type: deterministic
+  - name: work-a        # starts with lead
+    dependsOn: [context]
+  - name: work-b        # starts with lead
+    dependsOn: [context]
+  - name: coordinate    # lead monitors channel for worker signals
+    dependsOn: [context]
+  - name: merge         # gates on everything
+    dependsOn: [work-a, work-b, coordinate]
+```
+
+The runner will catch obvious cases of this at parse time and throw an error.
+
+**Rule:** if a lead step's task mentions downstream step names alongside waiting keywords (wait, DONE, monitor, check inbox), that's a deadlock.
 
 ## Step Sizing: Keep Tasks Focused
 
@@ -300,17 +346,20 @@ Even if a wave has 10 ready steps, the runner will only start 5 at a time and pi
 
 ## Common Mistakes
 
-| Mistake                                                     | Fix                                                      |
-| ----------------------------------------------------------- | -------------------------------------------------------- |
-| Adding `withExit()` or exit instructions to tasks           | Runner handles this automatically                        |
-| Setting tight `timeoutMs` on agents                         | Use global `.timeout()` only                             |
-| Using `general` channel                                     | Set `.channel('wf-name')` for isolation                  |
-| Referencing `{{steps.X.output}}` without `dependsOn: ['X']` | Output won't be available yet                            |
-| Making review steps serial when they could be parallel      | Both reviewers can depend on the same upstream step      |
-| Not using verification gates on critical steps              | Add `output_contains` with a completion marker           |
-| Writing 100-line task prompts                               | Split into lead + workers communicating on a channel     |
-| Putting the full spec in every worker's task                | Lead posts the spec to the channel at runtime            |
-| `maxConcurrency: 16` with many parallel steps               | Cap at 5–6; broker times out spawning 10+ agents at once |
+| Mistake                                                     | Fix                                                               |
+| ----------------------------------------------------------- | ----------------------------------------------------------------- |
+| Adding `withExit()` or exit instructions to tasks           | Runner handles this automatically                                 |
+| Setting tight `timeoutMs` on agents                         | Use global `.timeout()` only                                      |
+| Using `general` channel                                     | Set `.channel('wf-name')` for isolation                           |
+| Referencing `{{steps.X.output}}` without `dependsOn: ['X']` | Output won't be available yet                                     |
+| Making review steps serial when they could be parallel      | Both reviewers can depend on the same upstream step               |
+| Not using verification gates on critical steps              | Add `output_contains` with a completion marker                    |
+| Writing 100-line task prompts                               | Split into lead + workers communicating on a channel              |
+| Putting the full spec in every worker's task                | Lead posts the spec to the channel at runtime                     |
+| `maxConcurrency: 16` with many parallel steps               | Cap at 5–6; broker times out spawning 10+ agents at once          |
+| Asking non-interactive agent to read a large file via tools | Pre-read in a deterministic step, inject via `{{steps.X.output}}` |
+| Workers depending on the lead step (deadlock)               | Workers and lead both depend on a shared context step             |
+| Omitting `agents` field for deterministic-only workflows    | Field is now optional — pure shell pipelines work without it      |
 
 ## YAML Alternative
 
