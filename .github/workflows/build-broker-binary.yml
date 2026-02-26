@@ -48,9 +48,23 @@ jobs:
           sudo apt-get install -y musl-tools
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
             sudo apt-get install -y gcc-aarch64-linux-gnu
-            # Install aarch64 musl cross-compiler
-            curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz | sudo tar -xz -C /opt
+            # Install aarch64 musl cross-compiler with retries for transient network failures.
+            MUSL_URL="https://musl.cc/aarch64-linux-musl-cross.tgz"
+            MUSL_ARCHIVE="/tmp/aarch64-linux-musl-cross.tgz"
+            for attempt in 1 2 3; do
+              if curl -fL --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 2 --retry-all-errors \
+                "$MUSL_URL" -o "$MUSL_ARCHIVE"; then
+                break
+              fi
+              if [[ "$attempt" -eq 3 ]]; then
+                echo "Failed to download aarch64 musl cross-compiler from $MUSL_URL"
+                exit 1
+              fi
+              sleep $((attempt * 5))
+            done
+            sudo tar -xzf "$MUSL_ARCHIVE" -C /opt
             echo "/opt/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
+            /opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc --version
           fi
 
       - name: Build static binary

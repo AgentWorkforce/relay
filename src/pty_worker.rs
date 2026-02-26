@@ -2,9 +2,9 @@ use super::*;
 use crate::helpers::{
     check_echo_in_output, current_timestamp_ms, delivery_injected_event_payload,
     delivery_queued_event_payload, floor_char_boundary, format_injection_for_worker,
-    parse_cli_command, parse_continuity_command, ActivityDetector, ContinuityAction,
-    DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
-    ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
+    parse_cli_command, parse_continuity_command, ActivityDetector, DeliveryOutcome,
+    PendingActivity, PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES,
+    ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
 };
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 
@@ -672,20 +672,18 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     // event instead of killing the process — the broker or
                     // dashboard can decide what to do with idle agents.
                     let silent_duration = last_pty_output_time.elapsed();
-                    if silent_duration >= NO_OUTPUT_EXIT_TIMEOUT {
-                        if !reported_idle {
-                            tracing::info!(
-                                target = "agent_relay::worker::pty",
-                                silent_secs = silent_duration.as_secs(),
-                                "watchdog: no PTY output for {}s — marking idle",
-                                silent_duration.as_secs()
-                            );
-                            let _ = send_frame(&out_tx, "agent_idle", None, json!({
-                                "reason": "no_output_timeout",
-                                "idle_secs": silent_duration.as_secs(),
-                            })).await;
-                            reported_idle = true;
-                        }
+                    if silent_duration >= NO_OUTPUT_EXIT_TIMEOUT && !reported_idle {
+                        tracing::info!(
+                            target = "agent_relay::worker::pty",
+                            silent_secs = silent_duration.as_secs(),
+                            "watchdog: no PTY output for {}s — marking idle",
+                            silent_duration.as_secs()
+                        );
+                        let _ = send_frame(&out_tx, "agent_idle", None, json!({
+                            "reason": "no_output_timeout",
+                            "idle_secs": silent_duration.as_secs(),
+                        })).await;
+                        reported_idle = true;
                     }
                 }
             }

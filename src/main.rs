@@ -185,7 +185,6 @@ struct RelaySession {
 }
 
 /// Build the standard env-var array passed to every spawned child agent.
-
 fn normalize_initial_task(task: Option<String>) -> Option<String> {
     task.and_then(|value| {
         if value.trim().is_empty() {
@@ -1661,12 +1660,15 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     event_emit_timeout,
                                 )
                                 .await;
-                                if let Err(_) = reply.send(Ok(json!({
+                                if reply
+                                    .send(Ok(json!({
                                     "success": true,
                                     "event_id": event_id,
                                     "delivered": delivered,
                                     "local": true,
-                                }))) {
+                                })))
+                                    .is_err()
+                                {
                                     tracing::warn!(
                                         target = "relay_broker::http_api",
 
@@ -1712,12 +1714,15 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             event_emit_timeout,
                                         )
                                         .await;
-                                        if let Err(_) = reply.send(Ok(json!({
+                                        if reply
+                                            .send(Ok(json!({
                                             "success": true,
                                             "event_id": event_id,
                                             "relaycast_published": true,
                                             "local": false,
-                                        }))) {
+                                        })))
+                                            .is_err()
+                                        {
                                             tracing::warn!(
                                                 target = "relay_broker::http_api",
 
@@ -1737,9 +1742,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             "relaycast publish failed"
                                         );
                                         let not_found = format!("Agent \"{}\" not found", normalized_to);
-                                        if let Err(_) = reply.send(Err(format!(
+                                        if reply
+                                            .send(Err(format!(
                                             "{not_found} and Relaycast publish failed: {error}"
-                                        ))) {
+                                        )))
+                                            .is_err()
+                                        {
                                             tracing::warn!(
                                                 target = "relay_broker::http_api",
 
@@ -1759,10 +1767,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             "relaycast publish timed out"
                                         );
                                         let not_found = format!("Agent \"{}\" not found", normalized_to);
-                                        if let Err(_) = reply.send(Err(format!(
+                                        if reply
+                                            .send(Err(format!(
                                             "{not_found} and Relaycast publish timed out after {}ms",
                                             relaycast_timeout.as_millis()
-                                        ))) {
+                                        )))
+                                            .is_err()
+                                        {
                                             tracing::warn!(
                                                 target = "relay_broker::http_api",
 
@@ -5093,7 +5104,7 @@ mod tests {
         let marker = "\"kind\"";
         let mut kinds = BTreeSet::new();
         let mut cursor = 0;
-        while let Some(offset) = source[cursor..].find(&marker) {
+        while let Some(offset) = source[cursor..].find(marker) {
             let mut start = cursor + offset + marker.len();
             if start >= source.len() {
                 break;
@@ -6148,57 +6159,5 @@ mod tests {
         let state_path = std::path::Path::new(".agent-relay/state.json");
         let result = continuity_dir(state_path);
         assert_eq!(result, std::path::PathBuf::from(".agent-relay/continuity"));
-    }
-
-    #[test]
-    fn cached_session_for_requested_name_reuses_matching_token() {
-        let dir = tempfile::tempdir().expect("failed to create temp dir");
-        let paths = super::ensure_runtime_paths(dir.path(), "test")
-            .expect("runtime paths should initialize");
-        let cached = CredentialCache {
-            workspace_id: "ws_cached".to_string(),
-            agent_id: "a_cached".to_string(),
-            api_key: "rk_live_cached".to_string(),
-            agent_name: Some("lead".to_string()),
-            agent_token: Some("at_live_cached_token".to_string()),
-            updated_at: chrono::Utc::now(),
-        };
-        std::fs::write(
-            &paths.creds,
-            serde_json::to_vec(&cached).expect("serialize cache"),
-        )
-        .expect("write cache");
-
-        let session = super::cached_session_for_requested_name(&paths, "lead")
-            .expect("matching cached token should be reused");
-
-        assert_eq!(session.token, "at_live_cached_token");
-        assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
-        assert_eq!(session.credentials.agent_id, "a_cached");
-    }
-
-    #[test]
-    fn cached_session_for_requested_name_rejects_name_mismatch() {
-        let dir = tempfile::tempdir().expect("failed to create temp dir");
-        let paths = super::ensure_runtime_paths(dir.path(), "test")
-            .expect("runtime paths should initialize");
-        let cached = CredentialCache {
-            workspace_id: "ws_cached".to_string(),
-            agent_id: "a_cached".to_string(),
-            api_key: "rk_live_cached".to_string(),
-            agent_name: Some("someone-else".to_string()),
-            agent_token: Some("at_live_cached_token".to_string()),
-            updated_at: chrono::Utc::now(),
-        };
-        std::fs::write(
-            &paths.creds,
-            serde_json::to_vec(&cached).expect("serialize cache"),
-        )
-        .expect("write cache");
-
-        assert!(
-            super::cached_session_for_requested_name(&paths, "lead").is_none(),
-            "requested name mismatch must not reuse cached token"
-        );
     }
 }

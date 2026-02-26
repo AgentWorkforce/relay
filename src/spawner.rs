@@ -35,6 +35,7 @@ impl Spawner {
 
     /// Spawn a wrap-mode child: `agent-relay-broker wrap <cli> <args>`.
     /// Identity and connection info are passed via env vars rather than CLI flags.
+    #[allow(dead_code)]
     pub async fn spawn_wrap(
         &mut self,
         child_name: &str,
