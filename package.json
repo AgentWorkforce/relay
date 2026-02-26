@@ -178,7 +178,7 @@
     "@agent-relay/user-directory": "2.3.14",
     "@agent-relay/utils": "2.3.14",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@relaycast/sdk": "^0.3.1",
+    "@relaycast/sdk": "^0.3.4",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",
     "compare-versions": "^6.1.1",
