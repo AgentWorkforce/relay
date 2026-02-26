@@ -1017,6 +1017,7 @@ export class WorkflowRunner {
       if (this.relayApiKeyAutoCreated && this.relayApiKey) {
         this.log(`Workspace created — follow this run in Relaycast:`);
         this.log(`  RELAY_API_KEY=${this.relayApiKey}`);
+        this.log(`  Observer: https://observer.relaycast.dev/?key=${this.relayApiKey}`);
         this.log(`  Channel: ${channel}`);
       }
 
@@ -1978,7 +1979,7 @@ export class WorkflowRunner {
 
         // Run verification if configured
         if (step.verification) {
-          this.runVerification(step.verification, output, step.name);
+          this.runVerification(step.verification, output, step.name, resolvedTask);
         }
 
         // Mark completed
@@ -2673,13 +2674,35 @@ export class WorkflowRunner {
 
   // ── Verification ────────────────────────────────────────────────────────
 
-  private runVerification(check: VerificationCheck, output: string, stepName: string): void {
+  private runVerification(
+    check: VerificationCheck,
+    output: string,
+    stepName: string,
+    injectedTaskText?: string
+  ): void {
     switch (check.type) {
-      case 'output_contains':
-        if (!output.includes(check.value)) {
-          throw new Error(`Verification failed for "${stepName}": output does not contain "${check.value}"`);
+      case 'output_contains': {
+        // Guard against false positives: the PTY captures the injected task text
+        // verbatim, so if the verification token appears in the task itself the
+        // check would pass immediately without the agent doing any real work.
+        // When the task contains the token, require a SECOND occurrence — one
+        // from the task injection and one from the agent's actual response.
+        const token = check.value;
+        const taskHasToken = injectedTaskText ? injectedTaskText.includes(token) : false;
+        if (taskHasToken) {
+          const first = output.indexOf(token);
+          const hasSecond = first !== -1 && output.includes(token, first + token.length);
+          if (!hasSecond) {
+            throw new Error(
+              `Verification failed for "${stepName}": output does not contain "${token}" ` +
+                `(token found only in task injection — agent must output it explicitly)`
+            );
+          }
+        } else if (!output.includes(token)) {
+          throw new Error(`Verification failed for "${stepName}": output does not contain "${token}"`);
         }
         break;
+      }
 
       case 'exit_code':
         // exit_code verification is implicitly satisfied if the agent exited successfully
@@ -3086,19 +3109,32 @@ export class WorkflowRunner {
    * The raw (ANSI-stripped) output is still written to disk for step chaining.
    */
   private static scrubForChannel(text: string): string {
-    const withoutSystemReminders = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/giu, '');
-    const ansiStripped = stripAnsiFn(withoutSystemReminders);
+    // Strip system-reminder blocks (closed or unclosed)
+    const withoutSystemReminders = text
+      .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/giu, '')
+      .replace(/<system-reminder>[\s\S]*/giu, '');
 
-    // Unicode spinner / ornament characters used by Claude TUI animations
+    // Normalize CRLF and bare \r before stripping ANSI — PTY output often
+    // contains \r\r\n which leaves stray \r after stripping that confuse line splitting.
+    const normalized = withoutSystemReminders.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const ansiStripped = stripAnsiFn(normalized);
+
+    // Unicode spinner / ornament characters used by Claude TUI animations.
+    // Includes block-element chars (▗▖▘▝) used in the Claude Code header bar.
     const SPINNER =
-      '\\u2756\\u2738\\u2739\\u273a\\u273b\\u273c\\u273d\\u2731\\u2732\\u2733\\u2734\\u2735\\u2736\\u2737\\u2743\\u2745\\u2746\\u25d6\\u25d7\\u25d8\\u25d9\\u2022\\u25cf\\u25cb\\u25a0\\u25a1\\u25b6\\u25c0\\u23f5\\u23f6\\u23f7\\u23f8\\u23f9\\u25e2\\u25e3\\u25e4\\u25e5\\u2597\\u2596\\u2598\\u259d\\u2bc8\\u2bc7\\u2bc5\\u2bc6\\u00b7';
+      '\\u2756\\u2738\\u2739\\u273a\\u273b\\u273c\\u273d\\u2731\\u2732\\u2733\\u2734\\u2735\\u2736\\u2737\\u2743\\u2745\\u2746\\u25d6\\u25d7\\u25d8\\u25d9\\u2022\\u25cf\\u25cb\\u25a0\\u25a1\\u25b6\\u25c0\\u23f5\\u23f6\\u23f7\\u23f8\\u23f9\\u25e2\\u25e3\\u25e4\\u25e5\\u2597\\u2596\\u2598\\u259d\\u2bc8\\u2bc7\\u2bc5\\u2bc6\\u00b7' +
+      '\\u2590\\u258c\\u2588\\u2584\\u2580\\u259a\\u259e'; // additional block elements
     const spinnerRe = new RegExp(`[${SPINNER}]`, 'gu');
     const spinnerClassRe = new RegExp(`^[\\s${SPINNER}]*$`, 'u');
 
     // Line-level filters
     const boxDrawingOnlyRe = /^[\s\u2500-\u257f\u2580-\u259f\u25a0-\u25ff\-_=~]{3,}$/u;
+    // Broker internal log lines: "2026-02-26T12:45:12.123Z  INFO agent_relay_broker::..."
+    const brokerLogRe = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+(?:INFO|WARN|ERROR|DEBUG)\s/u;
     const claudeHeaderRe =
-      /^(?:[✢*·]\s*)?(?:Claude\s+Code(?:\s+v?[\d.]+)?|(?:Sonnet|Haiku|Opus)\s*[\d.]+|claude-(?:sonnet|haiku|opus)-[\w.-]+|Running\s+on\s+claude)\b/iu;
+      /^(?:[\s\u2580-\u259f✢*·▗▖▘▝]+\s*)?(?:Claude\s+Code(?:\s+v?[\d.]+)?|(?:Sonnet|Haiku|Opus)\s*[\d.]+|claude-(?:sonnet|haiku|opus)-[\w.-]+|Running\s+on\s+claude)/iu;
+    // TUI directory breadcrumb lines (e.g. "  ~/Projects/agent-workforce/relay-...")
+    const dirBreadcrumbRe = /^\s*~[\\/]/u;
     const uiHintRe =
       /\b(?:Press\s+up\s+to\s+edit|tab\s+to\s+queue|bypass\s+permissions|esc\s+to\s+interrupt)\b/iu;
     // Any spinner-prefixed word ending in … — catches all Claude thinking animations
@@ -3142,7 +3178,9 @@ export class WorkflowRunner {
       if (mcpJsonKvRe.test(line)) continue;
       if (spinnerClassRe.test(trimmed)) continue;
       if (boxDrawingOnlyRe.test(trimmed)) continue;
+      if (brokerLogRe.test(trimmed)) continue;
       if (claudeHeaderRe.test(trimmed)) continue;
+      if (dirBreadcrumbRe.test(trimmed)) continue;
       if (uiHintRe.test(trimmed)) continue;
       if (thinkingLineRe.test(trimmed)) continue;
       if (cursorOnlyRe.test(trimmed)) continue;

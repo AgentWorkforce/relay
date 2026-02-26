@@ -10,7 +10,7 @@ description: >
 
 swarm:
   pattern: dag
-  maxConcurrency: 5
+  maxConcurrency: 3
   timeoutMs: 14400000
   channel: bug-fixes
   idleNudge:
@@ -51,7 +51,6 @@ agents:
     cli: claude
     channels: [bug-fixes]
     role: 'Adversarially tests every fix. Tries to find edge cases and regressions.'
-    interactive: false
     constraints:
       model: opus
 
@@ -150,6 +149,8 @@ workflows:
 
           Post findings to #dashboard-track for dashboard-fixer.
           Write your reproduction tests to ../relay-dashboard/test/bugs/.
+
+          Do NOT use relay_spawn or add_agent to spawn sub-agents.
           Output: DASHBOARD_INVESTIGATION_COMPLETE
         verification:
           type: output_contains
@@ -220,6 +221,8 @@ workflows:
           Verification: check cursor's MCP config file on disk after spawn.
 
           Post findings to #broker-track for broker-fixer.
+
+          Do NOT use relay_spawn or add_agent to spawn sub-agents.
           Output: BROKER_INVESTIGATION_COMPLETE
         verification:
           type: output_contains
@@ -245,6 +248,7 @@ workflows:
           Run all four tests and confirm they FAIL right now:
           cd ../relay-dashboard && npx vitest run test/bugs/ 2>&1 | tail -30
 
+          Do NOT use relay_spawn or add_agent to spawn sub-agents.
           Output: DASHBOARD_REPRODUCTIONS_FAILING
         verification:
           type: output_contains
@@ -267,6 +271,7 @@ workflows:
           Save as tests/integration/broker/bug-repro.sh and run it:
           bash tests/integration/broker/bug-repro.sh 2>&1 | tail -40
 
+          Do NOT use relay_spawn or add_agent to spawn sub-agents.
           Output: BROKER_REPRODUCTIONS_FAILING
         verification:
           type: output_contains
@@ -299,12 +304,13 @@ workflows:
 
           When ALL 4 test files pass:
           cd ../relay-dashboard && npx vitest run test/bugs/ 2>&1 | tail -10
+
+          Do NOT use relay_spawn or add_agent to spawn sub-agents.
           Output: DASHBOARD_FIXES_DONE
         verification:
           type: output_contains
           value: DASHBOARD_FIXES_DONE
-        maxIterations: 3
-        retries: 1
+        retries: 2
 
       - name: fix-broker
         type: agent
@@ -326,12 +332,12 @@ workflows:
           After ALL fixes: cargo build --release 2>&1 | tail -10
           Then run: bash tests/integration/broker/bug-repro.sh 2>&1 | tail -20
 
+          Do NOT use relay_spawn or add_agent to spawn sub-agents.
           Output: BROKER_FIXES_DONE
         verification:
           type: output_contains
           value: BROKER_FIXES_DONE
-        maxIterations: 3
-        retries: 1
+        retries: 2
 
       # ── Wave 4: Build gates ──────────────────────────────────────────────
 
@@ -414,10 +420,11 @@ workflows:
           Run: git -C ../relay-dashboard diff HEAD | head -400
           Run: git diff HEAD src/ | head -400
 
-          Output: RED_TEAM_CLEAN or RED_TEAM_ISSUES:<specific findings>
+          Do NOT use relay_spawn or add_agent to spawn sub-agents.
+          Output: RED_TEAM_CLEAN if no issues found, or RED_TEAM_ISSUES:<specific findings> if problems exist.
         verification:
           type: output_contains
-          value: 'RED_TEAM_CLEAN|RED_TEAM_ISSUES'
+          value: RED_TEAM_
 
       # ── Wave 7: Address red team issues if any ───────────────────────────
 
@@ -434,8 +441,9 @@ workflows:
           If both clean: output ALL_FIXED
 
           Be honest — only output ALL_FIXED when you've verified it.
+          Do NOT use relay_spawn or add_agent to spawn sub-agents.
           Output: ALL_FIXED
-        maxIterations: 3
+        retries: 2
         verification:
           type: output_contains
           value: ALL_FIXED
@@ -516,28 +524,6 @@ workflows:
             --draft 2>&1 || echo "PR_DONE"
         captureOutput: true
         failOnError: false
-
-coordination:
-  barriers:
-    - name: investigations-complete
-      waitFor: [investigate-dashboard, investigate-broker]
-      timeoutMs: 3600000
-    - name: reproductions-written
-      waitFor: [write-dashboard-reproductions, write-broker-reproductions]
-      timeoutMs: 1800000
-    - name: builds-green
-      waitFor: [build-dashboard, build-broker]
-      timeoutMs: 1800000
-
-state:
-  backend: memory
-  ttlMs: 86400000
-
-errorHandling:
-  strategy: continue
-  maxRetries: 1
-  retryDelayMs: 10000
-  notifyChannel: bug-fixes
 
 trajectories:
   enabled: true
