@@ -58,17 +58,14 @@ add your perspective on developer experience and multi-model flexibility,
 then post the complete "## Marketing Plan" to #marketing.`,
 });
 
-// Wait for Codex to post the finished plan (or 2 min timeout).
+// Wait for Codex to post the finished plan.
 await new Promise<void>((resolve) => {
-  const timeout = setTimeout(resolve, 120_000);
-
   relay.onMessageReceived = ({ from, text }) => {
     if (text.trim()) {
       process.stdout.write('\r\x1b[2K');
       console.log(`[${from}]: ${text}`);
     }
     if (from === codex.name && text.includes('## Marketing Plan')) {
-      clearTimeout(timeout);
       resolve();
     }
   };
