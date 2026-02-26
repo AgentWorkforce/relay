@@ -403,6 +403,16 @@ pub(crate) async fn run_wrap(
     let child_api_key = relay_workspace_key.clone();
     let child_base_url = http_base.clone();
 
+    // HTTP client for pre-registering child agents before spawn.
+    // This ensures the child MCP server starts with a valid agent token
+    // (same as the main broker does for directly-spawned PTY agents).
+    let child_http = RelaycastHttpClient::new(
+        &http_base,
+        &relay_workspace_key,
+        &requested_name,
+        "wrap",
+    );
+
     // Spawner for child agents
     let mut spawner = Spawner::new();
 
@@ -654,13 +664,41 @@ pub(crate) async fn run_wrap(
                                     &child_base_url,
                                     &channels,
                                 );
+                                // Pre-register the child agent so its MCP server
+                                // starts with a valid token (avoiding "Not registered"
+                                // errors when non-claude CLIs like codex try to use
+                                // relay tools before calling register() themselves).
+                                let child_token = match retry_agent_registration(
+                                    &child_http,
+                                    &params.name,
+                                    Some(&params.cli),
+                                ).await {
+                                    Ok(token) => Some(token),
+                                    Err(RegRetryOutcome::RetryableExhausted(e)) => {
+                                        tracing::warn!(
+                                            child = %params.name,
+                                            error = %e,
+                                            "pre-registration failed after retries, spawning without token"
+                                        );
+                                        None
+                                    }
+                                    Err(RegRetryOutcome::Fatal(e)) => {
+                                        tracing::warn!(
+                                            child = %params.name,
+                                            error = %e,
+                                            "pre-registration fatal error, spawning without token"
+                                        );
+                                        None
+                                    }
+                                };
                                 match spawner
-                                    .spawn_wrap(
+                                    .spawn_wrap_with_token(
                                         &params.name,
                                         &params.cli,
                                         &params.args,
                                         &env_vars,
                                         Some(&cmd_event.invoked_by),
+                                        child_token.as_deref(),
                                     )
                                     .await
                                 {

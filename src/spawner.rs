@@ -1,7 +1,7 @@
 use std::{collections::HashMap, process::Stdio, time::Duration};
 
 use anyhow::{Context, Result};
-use relay_broker::snippets::configure_relaycast_mcp;
+use relay_broker::snippets::configure_relaycast_mcp_with_token;
 use tokio::{
     process::{Child, Command},
     time::timeout,
@@ -43,6 +43,19 @@ impl Spawner {
         env_vars: &[(&str, &str)],
         parent: Option<&str>,
     ) -> Result<u32> {
+        self.spawn_wrap_with_token(child_name, cli, extra_args, env_vars, parent, None)
+            .await
+    }
+
+    pub async fn spawn_wrap_with_token(
+        &mut self,
+        child_name: &str,
+        cli: &str,
+        extra_args: &[String],
+        env_vars: &[(&str, &str)],
+        parent: Option<&str>,
+        agent_token: Option<&str>,
+    ) -> Result<u32> {
         if self.children.contains_key(child_name) {
             anyhow::bail!("child {child_name} already exists");
         }
@@ -67,13 +80,14 @@ impl Spawner {
             .find(|(k, _)| *k == "RELAY_BASE_URL")
             .map(|(_, v)| *v);
         let cwd = std::env::current_dir().unwrap_or_default();
-        let mcp_args = configure_relaycast_mcp(
+        let mcp_args = configure_relaycast_mcp_with_token(
             &resolved_cli,
             child_name,
             api_key,
             base_url,
             &combined_args,
             &cwd,
+            agent_token,
         )
         .await?;
         for arg in &mcp_args {
@@ -90,6 +104,11 @@ impl Spawner {
 
         for (key, value) in env_vars {
             cmd.env(key, value);
+        }
+        // Inject pre-registered agent token when available so the MCP server
+        // starts already authenticated (same as main.rs WorkerRegistry::spawn).
+        if let Some(token) = agent_token {
+            cmd.env("RELAY_AGENT_TOKEN", token);
         }
         // Disable Claude Code auto-suggestions to prevent accidental acceptance
         // when relay messages are injected into the PTY.
