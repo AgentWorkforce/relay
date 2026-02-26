@@ -2885,7 +2885,9 @@ export class WorkflowRunner {
       '- You are the lead — delegate but stay in control, track progress, integrate results\n' +
       '- Give each helper a clear, self-contained task with enough context to work independently\n' +
       "- For simple or quick work, just do it yourself — don't over-delegate\n" +
-      '- Always release spawned relay agents when their work is complete'
+      '- Always release spawned relay agents when their work is complete\n' +
+      '- When spawning non-claude agents (codex, gemini, etc.), prepend to their task:\n' +
+      '  "RELAY SETUP: First call register(name=\'<exact-agent-name>\') before any other relay tool."'
     );
   }
 

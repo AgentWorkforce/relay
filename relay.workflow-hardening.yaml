@@ -7,7 +7,7 @@ description: >
   issues found in the codebase, and write hardened integration tests.
 swarm:
   pattern: dag
-  maxConcurrency: 5
+  maxConcurrency: 3
   timeoutMs: 21600000 # 6 hours — model matrix is wide
   channel: workflow-hardening
   idleNudge:
@@ -186,6 +186,14 @@ agents:
     constraints:
       model: sonnet
 
+  - name: fix-lead-reviewer
+    cli: claude
+    interactive: false
+    preset: reviewer
+    role: 'Reads build/test output from step chaining and decides next action.'
+    constraints:
+      model: sonnet
+
   - name: fix-worker
     cli: codex
     channels: [fix-track]
@@ -273,6 +281,7 @@ workflows:
 
           Pattern teams and CLI-matrix teams will read this spec from the channel.
           Output: DISCOVERY_COMPLETE
+          /exit
         verification:
           type: output_contains
           value: DISCOVERY_COMPLETE
@@ -298,6 +307,7 @@ workflows:
             3. Record: pattern name, exit code, key output, any errors
           Post a CORE_RESULTS summary to #workflow-hardening.
           Output: CORE_COMPLETE
+          /exit
         verification:
           type: output_contains
           value: CORE_COMPLETE
@@ -311,6 +321,7 @@ workflows:
           For each spec: write to a tmp file, run it, report results to channel.
           Post CORE_TESTER_DONE when all three patterns are tested.
           Output: CORE_TESTER_DONE
+          /exit
         verification:
           type: output_contains
           value: CORE_TESTER_DONE
@@ -327,6 +338,7 @@ workflows:
           Test: hub-spoke, hierarchical, supervisor.
           Post TREE_RESULTS to #workflow-hardening when done.
           Output: TREE_COMPLETE
+          /exit
         verification:
           type: output_contains
           value: TREE_COMPLETE
@@ -339,6 +351,7 @@ workflows:
           Join #patterns-tree. patterns-tree-lead will post YAML specs.
           Run each, report results to channel.
           Output: TREE_TESTER_DONE
+          /exit
         verification:
           type: output_contains
           value: TREE_TESTER_DONE
@@ -355,6 +368,7 @@ workflows:
           Test: review-loop, reflection, debate, consensus.
           Post QUALITY_RESULTS to #workflow-hardening when done.
           Output: QUALITY_COMPLETE
+          /exit
         verification:
           type: output_contains
           value: QUALITY_COMPLETE
@@ -367,6 +381,7 @@ workflows:
           Join #patterns-quality. patterns-quality-lead will post YAML specs.
           Run each, report results to channel.
           Output: QUALITY_TESTER_DONE
+          /exit
         verification:
           type: output_contains
           value: QUALITY_TESTER_DONE
@@ -383,6 +398,7 @@ workflows:
           Test: mesh, handoff, cascade.
           Post FLOW_RESULTS to #workflow-hardening when done.
           Output: FLOW_COMPLETE
+          /exit
         verification:
           type: output_contains
           value: FLOW_COMPLETE
@@ -395,6 +411,7 @@ workflows:
           Join #patterns-flow. patterns-flow-lead will post YAML specs.
           Run each, report results to channel.
           Output: FLOW_TESTER_DONE
+          /exit
         verification:
           type: output_contains
           value: FLOW_TESTER_DONE
@@ -411,6 +428,7 @@ workflows:
           Test: map-reduce, scatter-gather, competitive.
           Post PARALLEL_RESULTS to #workflow-hardening when done.
           Output: PARALLEL_COMPLETE
+          /exit
         verification:
           type: output_contains
           value: PARALLEL_COMPLETE
@@ -423,6 +441,7 @@ workflows:
           Join #patterns-parallel. patterns-parallel-lead will post YAML specs.
           Run each, report results to channel.
           Output: PARALLEL_TESTER_DONE
+          /exit
         verification:
           type: output_contains
           value: PARALLEL_TESTER_DONE
@@ -439,6 +458,7 @@ workflows:
           Test: red-team, verifier, circuit-breaker.
           Post RESILIENCE_RESULTS to #workflow-hardening when done.
           Output: RESILIENCE_COMPLETE
+          /exit
         verification:
           type: output_contains
           value: RESILIENCE_COMPLETE
@@ -451,6 +471,7 @@ workflows:
           Join #patterns-resilience. patterns-resilience-lead will post YAML specs.
           Run each, report results to channel.
           Output: RESILIENCE_TESTER_DONE
+          /exit
         verification:
           type: output_contains
           value: RESILIENCE_TESTER_DONE
@@ -467,6 +488,7 @@ workflows:
           Test: auction, escalation, saga, blackboard, swarm.
           Post ADVANCED_RESULTS to #workflow-hardening when done.
           Output: ADVANCED_COMPLETE
+          /exit
         verification:
           type: output_contains
           value: ADVANCED_COMPLETE
@@ -479,6 +501,7 @@ workflows:
           Join #patterns-advanced. patterns-advanced-lead will post YAML specs.
           Run each, report results to channel.
           Output: ADVANCED_TESTER_DONE
+          /exit
         verification:
           type: output_contains
           value: ADVANCED_TESTER_DONE
@@ -498,6 +521,7 @@ workflows:
             Record: model, workflow exit code, step completion signals, any errors.
           Post CLAUDE_MATRIX_RESULTS to #workflow-hardening.
           Output: CLAUDE_MATRIX_COMPLETE
+          /exit
         verification:
           type: output_contains
           value: CLAUDE_MATRIX_COMPLETE
@@ -511,6 +535,7 @@ workflows:
           Run each workflow, capture exit code and output.
           Report results on the channel.
           Output: CLAUDE_TESTER_DONE
+          /exit
         verification:
           type: output_contains
           value: CLAUDE_TESTER_DONE
@@ -528,6 +553,7 @@ workflows:
           For each: run a simple fan-out workflow, record results.
           Post CODEX_MATRIX_RESULTS to #workflow-hardening.
           Output: CODEX_MATRIX_COMPLETE
+          /exit
         verification:
           type: output_contains
           value: CODEX_MATRIX_COMPLETE
@@ -540,6 +566,7 @@ workflows:
           Join #codex-matrix. codex-matrix-lead will post workflow YAML specs.
           Run each workflow, report results on the channel.
           Output: CODEX_TESTER_DONE
+          /exit
         verification:
           type: output_contains
           value: CODEX_TESTER_DONE
@@ -558,6 +585,7 @@ workflows:
           If gemini CLI is not installed, record that as a finding and skip.
           Post GEMINI_MATRIX_RESULTS to #workflow-hardening.
           Output: GEMINI_MATRIX_COMPLETE
+          /exit
         verification:
           type: output_contains
           value: GEMINI_MATRIX_COMPLETE
@@ -571,6 +599,7 @@ workflows:
           Run each workflow, report results on the channel.
           If gemini is not installed, post that and wait for next instruction.
           Output: GEMINI_TESTER_DONE
+          /exit
         verification:
           type: output_contains
           value: GEMINI_TESTER_DONE
@@ -609,6 +638,7 @@ workflows:
 
           Post the full report to #workflow-hardening.
           Output: CONSOLIDATION_COMPLETE
+          /exit
         verification:
           type: output_contains
           value: CONSOLIDATION_COMPLETE
@@ -631,6 +661,7 @@ workflows:
             node packages/sdk/dist/workflows/cli.js --help
           Post FIX_SUMMARY to #workflow-hardening listing what was fixed.
           Output: FIXES_COMPLETE
+          /exit
         verification:
           type: output_contains
           value: FIXES_COMPLETE
@@ -644,6 +675,7 @@ workflows:
           Apply each fix exactly as directed. Post FIX_APPLIED after each.
           If a fix looks wrong, say so before applying.
           Output: FIX_WORKER_DONE
+          /exit
         verification:
           type: output_contains
           value: FIX_WORKER_DONE
@@ -659,7 +691,7 @@ workflows:
 
       - name: check-build
         type: agent
-        agent: fix-lead
+        agent: fix-lead-reviewer
         dependsOn: [rebuild]
         task: |
           Check the build output: {{steps.rebuild.output}}
@@ -712,6 +744,7 @@ workflows:
           tests/integration/broker/workflow-ci.test.ts.
           Post PATTERNS_TEST_WRITTEN when done.
           Output: PATTERNS_TEST_WRITTEN
+          /exit
         verification:
           type: output_contains
           value: PATTERNS_TEST_WRITTEN
@@ -725,6 +758,7 @@ workflows:
           Write: tests/integration/broker/workflow-models.test.ts
           Post MODELS_TEST_WRITTEN when done.
           Output: MODELS_TEST_WRITTEN
+          /exit
         verification:
           type: output_contains
           value: MODELS_TEST_WRITTEN
@@ -770,7 +804,7 @@ workflows:
 
       - name: test-fix-final
         type: agent
-        agent: fix-lead
+        agent: fix-lead-reviewer
         dependsOn: [run-new-tests]
         task: |
           Test results: {{steps.run-new-tests.output}}
@@ -781,6 +815,7 @@ workflows:
           Do not weaken assertions — use t.skip with reason for environment
           issues that can't run in CI.
           Output: ALL_GREEN
+          /exit
         maxIterations: 3
         verification:
           type: output_contains
@@ -794,6 +829,7 @@ workflows:
           Join #fix-track. fix-lead will post any test failures to fix.
           Apply fixes, post FIX_APPLIED after each.
           Output: FINAL_FIX_DONE
+          /exit
         verification:
           type: output_contains
           value: FINAL_FIX_DONE
