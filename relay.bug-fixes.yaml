@@ -233,20 +233,26 @@ workflows:
         agent: dashboard-investigator
         dependsOn: [investigate-dashboard]
         task: |
-          Using your investigation findings:
+          The investigation is already complete — do NOT re-read files or re-investigate.
+          Use only the findings below. Your sole job is to write 4 test files and run them.
+
+          INVESTIGATION FINDINGS:
           {{steps.investigate-dashboard.output}}
 
-          Write concrete failing tests to ../relay-dashboard/test/bugs/:
-          - bugs/metrics.test.ts  — asserts GET /api/metrics returns 200 + data
+          TASK — write these 4 test files to ../relay-dashboard/test/bugs/:
+          - bugs/metrics.test.ts  — asserts GET /api/metrics returns 200 + JSON data
           - bugs/trajectories.test.ts — asserts GET /api/trajectories returns 200 + array
-          - bugs/dms.test.ts — asserts DMs fetched via the dashboard API appear in list
+          - bugs/dms.test.ts — asserts DMs fetched via dashboard API appear in list
           - bugs/threads.test.ts — asserts thread reply triggers broker injection
 
-          Run all four tests and confirm they FAIL right now:
+          After writing all 4 files, run them:
           cd ../relay-dashboard && npx vitest run test/bugs/ 2>&1 | tail -30
 
-          Do NOT use relay_spawn or add_agent to spawn sub-agents.
-          Output: DASHBOARD_REPRODUCTIONS_FAILING
+          They should FAIL (that confirms the bugs exist). If they pass unexpectedly, note it.
+
+          Do NOT re-investigate. Do NOT relay_send results — print them directly.
+          Do NOT use relay_spawn or add_agent.
+          When done, print exactly this line to your terminal: DASHBOARD_REPRODUCTIONS_FAILING
         verification:
           type: output_contains
           value: DASHBOARD_REPRODUCTIONS_FAILING
@@ -256,20 +262,26 @@ workflows:
         agent: broker-investigator
         dependsOn: [investigate-broker]
         task: |
-          Using your investigation findings:
+          The investigation is already complete — do NOT re-read files or re-investigate.
+          Use only the findings below. Your sole job is to write bug-repro.sh and run it.
+
+          INVESTIGATION FINDINGS:
           {{steps.investigate-broker.output}}
 
-          Write shell verification commands that fail right now:
+          TASK — write tests/integration/broker/bug-repro.sh with these 4 checks:
           - Test 8: spawn an agent via SDK, assert it has 'engineering' in channels
           - Test 9: spawn gemini, send DM, grep broker logs for injection attempt
           - Test 10: spawn opencode, check MCP config env for RELAY_AGENT_TOKEN
           - Test 11: spawn cursor, verify relaycast MCP appears in cursor's config
 
-          Save as tests/integration/broker/bug-repro.sh and run it:
+          After writing the file, run it:
           bash tests/integration/broker/bug-repro.sh 2>&1 | tail -40
 
-          Do NOT use relay_spawn or add_agent to spawn sub-agents.
-          Output: BROKER_REPRODUCTIONS_FAILING
+          The checks should FAIL (that confirms the bugs exist).
+
+          Do NOT re-investigate. Do NOT relay_send results — print them directly.
+          Do NOT use relay_spawn or add_agent.
+          When done, print exactly this line to your terminal: BROKER_REPRODUCTIONS_FAILING
         verification:
           type: output_contains
           value: BROKER_REPRODUCTIONS_FAILING
@@ -303,7 +315,8 @@ workflows:
           cd ../relay-dashboard && npx vitest run test/bugs/ 2>&1 | tail -10
 
           Do NOT use relay_spawn or add_agent to spawn sub-agents.
-          Output: DASHBOARD_FIXES_DONE
+          Do NOT relay_send the result — print it directly to your terminal.
+          Print exactly: DASHBOARD_FIXES_DONE
         verification:
           type: output_contains
           value: DASHBOARD_FIXES_DONE
@@ -330,7 +343,8 @@ workflows:
           Then run: bash tests/integration/broker/bug-repro.sh 2>&1 | tail -20
 
           Do NOT use relay_spawn or add_agent to spawn sub-agents.
-          Output: BROKER_FIXES_DONE
+          Do NOT relay_send the result — print it directly to your terminal.
+          Print exactly: BROKER_FIXES_DONE
         verification:
           type: output_contains
           value: BROKER_FIXES_DONE
@@ -372,13 +386,15 @@ workflows:
           Broker build: {{steps.build-broker.output}}
 
           Fix any remaining build or test failures. Don't weaken tests.
-          If DASHBOARD_OK and BROKER_OK: output BUILD_ALL_GREEN:none
+          If DASHBOARD_OK and BROKER_OK, nothing to do.
           Otherwise fix and confirm green.
-          Output: BUILD_ALL_GREEN
+          Do NOT relay_send the result — print it directly to your terminal.
+          Do NOT use relay_spawn or add_agent.
+          Print exactly: BUILD_ALL_GREEN
         verification:
           type: output_contains
           value: BUILD_ALL_GREEN
-        maxIterations: 2
+        retries: 1
 
       # ── Wave 6: E2E verify + Red team (parallel) ─────────────────────────
 
@@ -418,7 +434,8 @@ workflows:
           Run: git diff HEAD src/ | head -400
 
           Do NOT use relay_spawn or add_agent to spawn sub-agents.
-          Output: RED_TEAM_CLEAN if no issues found, or RED_TEAM_ISSUES:<specific findings> if problems exist.
+          Do NOT relay_send the result — print it directly to your terminal.
+          Print exactly: RED_TEAM_CLEAN if no issues, or RED_TEAM_ISSUES:<findings> if problems found.
         verification:
           type: output_contains
           value: RED_TEAM_
@@ -439,7 +456,8 @@ workflows:
 
           Be honest — only output ALL_FIXED when you've verified it.
           Do NOT use relay_spawn or add_agent to spawn sub-agents.
-          Output: ALL_FIXED
+          Do NOT relay_send the result — print it directly to your terminal.
+          Print exactly: ALL_FIXED
         retries: 2
         verification:
           type: output_contains
@@ -521,6 +539,45 @@ workflows:
             --draft 2>&1 || echo "PR_DONE"
         captureOutput: true
         failOnError: false
+
+      # ── Wave 10: Summary ─────────────────────────────────────────────────
+
+      - name: summary
+        type: agent
+        agent: red-team
+        dependsOn: [pr-dashboard, pr-broker]
+        task: |
+          The bug fix workflow has completed. Write a clean, human-readable
+          summary of what happened. Use the step outputs below.
+
+          Investigation results:
+          Dashboard: {{steps.investigate-dashboard.output}}
+          Broker: {{steps.investigate-broker.output}}
+
+          Fix results:
+          Dashboard: {{steps.fix-dashboard.output}}
+          Broker: {{steps.fix-broker.output}}
+
+          Build gates: {{steps.build-dashboard.output}} | {{steps.build-broker.output}}
+          E2E: {{steps.e2e-verify.output}}
+          Red team: {{steps.red-team-review.output}}
+          Regression: {{steps.regression-dashboard.output}} | {{steps.regression-broker.output}}
+          PRs: {{steps.pr-dashboard.output}} | {{steps.pr-broker.output}}
+
+          Your summary should cover:
+          1. Which bugs were fixed and how (one line each)
+          2. Which bugs had issues or were not fully resolved
+          3. Test status — reproduction tests, regression suite
+          4. PR links if created
+          5. Anything that went wrong during the workflow run
+
+          Write it clearly for a human reading this at the end of a long automated run.
+          Do NOT use relay_spawn or add_agent.
+          Do NOT relay_send the result — print it directly to your terminal.
+          Print exactly WORKFLOW_SUMMARY_DONE on the last line.
+        verification:
+          type: output_contains
+          value: WORKFLOW_SUMMARY_DONE
 
 trajectories:
   enabled: true
