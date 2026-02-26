@@ -19,9 +19,17 @@ console.log(`\nWorkspace API key: ${apiKey}\nObserver: https://observer.relaycas
 
 const relay = new AgentRelay({ env: { ...process.env, RELAY_API_KEY: apiKey } });
 
-// Stream the conversation to the terminal as it happens.
+// Show when agents are thinking (PTY output chunks).
+relay.onWorkerOutput = ({ name, chunk }) => {
+  process.stdout.write(`\r\x1b[2K[${name} thinking...] ${chunk.slice(0, 60).replace(/\n/g, ' ')}`);
+};
+
+// Show completed messages.
 relay.onMessageReceived = ({ from, text }) => {
-  if (text.trim()) console.log(`\n[${from}]: ${text}`);
+  if (text.trim()) {
+    process.stdout.write('\r\x1b[2K'); // clear the thinking line
+    console.log(`[${from}]: ${text}`);
+  }
 };
 
 // Spawn both agents into the same channel.
@@ -55,7 +63,10 @@ await new Promise<void>((resolve) => {
   const timeout = setTimeout(resolve, 120_000);
 
   relay.onMessageReceived = ({ from, text }) => {
-    if (text.trim()) console.log(`\n[${from}]: ${text}`);
+    if (text.trim()) {
+      process.stdout.write('\r\x1b[2K');
+      console.log(`[${from}]: ${text}`);
+    }
     if (from === codex.name && text.includes('## Marketing Plan')) {
       clearTimeout(timeout);
       resolve();
