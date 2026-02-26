@@ -252,12 +252,16 @@ export class AgentRelay {
     }
     // Queue it: once ensureStarted completes, wire it up
     let unsub: (() => void) | undefined;
-    const queuedUnsub = () => { unsub?.(); };
+    const queuedUnsub = () => {
+      unsub?.();
+    };
     // Use the start promise if one is pending
     const promise = this.startPromise ?? this.ensureStarted();
-    promise.then((c) => {
-      unsub = c.onBrokerStderr(listener);
-    }).catch(() => {});
+    promise
+      .then((c) => {
+        unsub = c.onBrokerStderr(listener);
+      })
+      .catch(() => {});
     return queuedUnsub;
   }
 
@@ -446,6 +450,12 @@ export class AgentRelay {
     });
   }
 
+  /** Pre-register a batch of agents with Relaycast before steps execute. */
+  async preflightAgents(agents: Array<{ name: string; cli: string }>): Promise<void> {
+    const client = await this.ensureStarted();
+    await client.preflightAgents(agents);
+  }
+
   /** List agents with PIDs from the broker (for worker registration). */
   async listAgentsRaw(): Promise<Array<{ name: string; pid?: number }>> {
     const client = await this.ensureStarted();
@@ -503,10 +513,7 @@ export class AgentRelay {
    * handle.unsubscribe();
    * ```
    */
-  followLogs(
-    agentName: string,
-    options: Omit<FollowLogsOptions, 'logsDir'>
-  ): LogFollowHandle {
+  followLogs(agentName: string, options: Omit<FollowLogsOptions, 'logsDir'>): LogFollowHandle {
     const cwd = this.clientOptions.cwd ?? process.cwd();
     const logsDir = path.join(cwd, '.agent-relay', 'team', 'worker-logs');
     return followLogsFromFile(agentName, { ...options, logsDir });

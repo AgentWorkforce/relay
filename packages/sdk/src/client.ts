@@ -210,6 +210,19 @@ export class AgentRelayClient {
     }
   }
 
+  /**
+   * Pre-register a batch of agents with Relaycast before their steps execute.
+   * The broker warms its token cache in parallel; subsequent spawn_agent calls
+   * hit the cache rather than waiting on individual HTTP registrations.
+   * Fire-and-forget from the caller's perspective — broker responds immediately
+   * and registers in the background.
+   */
+  async preflightAgents(agents: Array<{ name: string; cli: string | AgentRuntime }>): Promise<void> {
+    if (agents.length === 0) return;
+    await this.start();
+    await this.requestOk<void>('preflight_agents', { agents });
+  }
+
   async spawnPty(input: SpawnPtyInput): Promise<{ name: string; runtime: AgentRuntime }> {
     await this.start();
     const args = buildPtyArgsWithModel(input.cli, input.args ?? [], input.model);

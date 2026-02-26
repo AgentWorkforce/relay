@@ -3115,21 +3115,29 @@ async fn handle_sdk_frame(
                 }
             }
 
+            // Pre-registration with a 15s timeout so a slow Relaycast API never
+            // blocks the SDK's spawn_agent call (SDK timeout = 60s). If the cache
+            // was warmed by preflight_agents, this is an instant cache hit (<1ms).
+            // If registration times out or fails retryably, we proceed without a
+            // token — the agent self-registers via MCP on first connect.
             let mut preregistration_warning: Option<String> = None;
             let worker_relay_key = if let Some(http) = relaycast_http {
-                match http
-                    .register_agent_token(&name, payload.agent.cli.as_deref())
-                    .await
+                const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(15);
+                match tokio::time::timeout(
+                    REGISTRATION_TIMEOUT,
+                    http.register_agent_token(&name, payload.agent.cli.as_deref()),
+                )
+                .await
                 {
-                    Ok(token) => Some(token),
-                    Err(error) => {
+                    Ok(Ok(token)) => Some(token),
+                    Ok(Err(error)) => {
                         if registration_is_retryable(&error) {
                             preregistration_warning =
                                 Some(format_worker_preregistration_error(&name, &error));
                             tracing::warn!(
                                 worker = %name,
                                 error = %error,
-                                "continuing spawn without pre-registration due retryable relaycast error"
+                                "continuing spawn without pre-registration due to retryable relaycast error"
                             );
                             None
                         } else {
@@ -3152,6 +3160,20 @@ async fn handle_sdk_frame(
                             .await?;
                             return Ok(false);
                         }
+                    }
+                    Err(_timeout) => {
+                        // Registration timed out — spawn without token.
+                        // Agent will self-register with Relaycast on MCP connect.
+                        tracing::warn!(
+                            worker = %name,
+                            timeout_secs = REGISTRATION_TIMEOUT.as_secs(),
+                            "Relaycast pre-registration timed out; spawning without token"
+                        );
+                        preregistration_warning = Some(format!(
+                            "pre-registration for '{name}' timed out after {}s; agent will self-register",
+                            REGISTRATION_TIMEOUT.as_secs()
+                        ));
+                        None
                     }
                 }
             } else {
@@ -3667,6 +3689,56 @@ async fn handle_sdk_frame(
                 }),
             )
             .await?;
+            Ok(false)
+        }
+        "preflight_agents" => {
+            // Pre-register a batch of agents with Relaycast in parallel background tasks.
+            // Warms the token cache so subsequent spawn_agent calls are instant cache hits.
+            // Responds immediately — registration happens concurrently in the background.
+            #[derive(serde::Deserialize)]
+            struct PreflightAgentsPayload {
+                agents: Vec<PreflightAgentEntry>,
+            }
+            #[derive(serde::Deserialize)]
+            struct PreflightAgentEntry {
+                name: String,
+                cli: String,
+            }
+
+            let payload: PreflightAgentsPayload = serde_json::from_value(frame.payload)
+                .context("preflight_agents payload must contain `agents` array")?;
+
+            let count = payload.agents.len();
+            send_ok(out_tx, frame.request_id, json!({ "queued": count })).await?;
+
+            if let Some(http) = relaycast_http {
+                for entry in payload.agents {
+                    let http_clone = http.clone();
+                    tokio::spawn(async move {
+                        match tokio::time::timeout(
+                            Duration::from_secs(30),
+                            http_clone.register_agent_token(&entry.name, Some(entry.cli.as_str())),
+                        )
+                        .await
+                        {
+                            Ok(Ok(_)) => tracing::debug!(
+                                name = %entry.name,
+                                "preflight: agent pre-registered"
+                            ),
+                            Ok(Err(e)) => tracing::warn!(
+                                name = %entry.name,
+                                error = %e,
+                                "preflight: agent pre-registration failed"
+                            ),
+                            Err(_) => tracing::warn!(
+                                name = %entry.name,
+                                "preflight: agent pre-registration timed out (30s)"
+                            ),
+                        }
+                    });
+                }
+            }
+
             Ok(false)
         }
         "shutdown" => {

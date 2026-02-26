@@ -1,6 +1,6 @@
 export const PROTOCOL_VERSION = 1 as const;
 
-export type AgentRuntime = "pty" | "headless_claude";
+export type AgentRuntime = 'pty' | 'headless_claude';
 
 export interface RestartPolicy {
   enabled?: boolean;
@@ -42,15 +42,15 @@ export interface ProtocolEnvelope<TPayload> {
 
 export type SdkToBroker =
   | {
-      type: "hello";
+      type: 'hello';
       payload: { client_name: string; client_version: string };
     }
   | {
-      type: "spawn_agent";
+      type: 'spawn_agent';
       payload: { agent: AgentSpec; initial_task?: string };
     }
   | {
-      type: "send_message";
+      type: 'send_message';
       payload: {
         to: string;
         text: string;
@@ -61,36 +61,43 @@ export type SdkToBroker =
       };
     }
   | {
-      type: "release_agent";
+      type: 'release_agent';
       payload: { name: string; reason?: string };
     }
   | {
-      type: "send_input";
+      type: 'send_input';
       payload: { name: string; data: string };
     }
   | {
-      type: "set_model";
+      type: 'set_model';
       payload: { name: string; model: string; timeout_ms?: number };
     }
   | {
-      type: "get_metrics";
+      type: 'get_metrics';
       payload: { agent?: string };
     }
   | {
-      type: "list_agents";
+      type: 'list_agents';
       payload: Record<string, never>;
     }
   | {
-      type: "get_status";
+      type: 'get_status';
       payload: Record<string, never>;
     }
   | {
-      type: "get_crash_insights";
+      type: 'get_crash_insights';
       payload: Record<string, never>;
     }
   | {
-      type: "shutdown";
+      type: 'shutdown';
       payload: Record<string, never>;
+    }
+  | {
+      /** Pre-register a batch of agents with Relaycast before their steps execute.
+       *  Broker warms its token cache in parallel; subsequent spawn_agent calls hit
+       *  the cache instead of waiting on individual HTTP registrations. */
+      type: 'preflight_agents';
+      payload: { agents: Array<{ name: string; cli: string }> };
     };
 
 export interface PendingDeliveryInfo {
@@ -116,7 +123,7 @@ export interface BrokerStatus {
   pending_deliveries: PendingDeliveryInfo[];
 }
 
-export type BrokerAgentStatus = "healthy" | "restarting" | "dead" | "released";
+export type BrokerAgentStatus = 'healthy' | 'restarting' | 'dead' | 'released';
 
 export interface AgentStats {
   spawns: number;
@@ -136,7 +143,7 @@ export interface BrokerStats {
   active_agents: number;
 }
 
-export type CrashCategory = "oom" | "segfault" | "error" | "signal" | "unknown";
+export type CrashCategory = 'oom' | 'segfault' | 'error' | 'signal' | 'unknown';
 
 export interface CrashRecord {
   agent_name: string;
@@ -170,7 +177,7 @@ export interface ProtocolError {
 
 export type BrokerEvent =
   | {
-      kind: "agent_spawned";
+      kind: 'agent_spawned';
       name: string;
       runtime: AgentRuntime;
       cli?: string;
@@ -180,22 +187,22 @@ export type BrokerEvent =
       source?: string;
     }
   | {
-      kind: "agent_released";
+      kind: 'agent_released';
       name: string;
     }
   | {
-      kind: "agent_exit";
+      kind: 'agent_exit';
       name: string;
       reason: string;
     }
   | {
-      kind: "agent_exited";
+      kind: 'agent_exited';
       name: string;
       code?: number;
       signal?: string;
     }
   | {
-      kind: "relay_inbound";
+      kind: 'relay_inbound';
       event_id: string;
       from: string;
       target: string;
@@ -203,101 +210,101 @@ export type BrokerEvent =
       thread_id?: string;
     }
   | {
-      kind: "worker_stream";
+      kind: 'worker_stream';
       name: string;
       stream: string;
       chunk: string;
     }
   | {
-      kind: "delivery_retry";
+      kind: 'delivery_retry';
       name: string;
       delivery_id: string;
       event_id: string;
       attempts: number;
     }
   | {
-      kind: "delivery_dropped";
+      kind: 'delivery_dropped';
       name: string;
       count: number;
       reason: string;
     }
   | {
-      kind: "delivery_queued";
+      kind: 'delivery_queued';
       name: string;
       delivery_id: string;
       event_id: string;
       timestamp?: unknown;
     }
   | {
-      kind: "delivery_injected";
+      kind: 'delivery_injected';
       name: string;
       delivery_id: string;
       event_id: string;
       timestamp?: unknown;
     }
   | {
-      kind: "delivery_verified";
+      kind: 'delivery_verified';
       name: string;
       delivery_id: string;
       event_id: string;
     }
   | {
-      kind: "delivery_failed";
+      kind: 'delivery_failed';
       name: string;
       delivery_id: string;
       event_id: string;
       reason: string;
     }
   | {
-      kind: "delivery_active";
+      kind: 'delivery_active';
       name: string;
       delivery_id: string;
       event_id: string;
     }
   | {
-      kind: "delivery_ack";
+      kind: 'delivery_ack';
       name: string;
       delivery_id: string;
       event_id: string;
     }
   | {
-      kind: "worker_ready";
+      kind: 'worker_ready';
       name: string;
       runtime: AgentRuntime;
       cli?: string;
       model?: string;
     }
   | {
-      kind: "worker_error";
+      kind: 'worker_error';
       name: string;
       code: string;
       message: string;
     }
   | {
-      kind: "relaycast_published";
+      kind: 'relaycast_published';
       event_id: string;
       to: string;
       target_type: string;
     }
   | {
-      kind: "relaycast_publish_failed";
+      kind: 'relaycast_publish_failed';
       event_id: string;
       to: string;
       reason: string;
     }
   | {
-      kind: "acl_denied";
+      kind: 'acl_denied';
       name: string;
       sender: string;
       owner_chain: string[];
     }
   | {
-      kind: "agent_idle";
+      kind: 'agent_idle';
       name: string;
       idle_secs: number;
     }
   | {
-      kind: "agent_restarting";
+      kind: 'agent_restarting';
       name: string;
       code?: number;
       signal?: string;
@@ -305,74 +312,74 @@ export type BrokerEvent =
       delay_ms: number;
     }
   | {
-      kind: "agent_restarted";
+      kind: 'agent_restarted';
       name: string;
       restart_count: number;
     }
   | {
-      kind: "agent_permanently_dead";
+      kind: 'agent_permanently_dead';
       name: string;
       reason: string;
     };
 
 export type BrokerToSdk =
   | {
-      type: "hello_ack";
+      type: 'hello_ack';
       payload: { broker_version: string; protocol_version: number };
     }
   | {
-      type: "ok";
+      type: 'ok';
       payload: { result: unknown };
     }
   | {
-      type: "error";
+      type: 'error';
       payload: ProtocolError;
     }
   | {
-      type: "event";
+      type: 'event';
       payload: BrokerEvent;
     };
 
 export type BrokerToWorker =
   | {
-      type: "init_worker";
+      type: 'init_worker';
       payload: { agent: AgentSpec };
     }
   | {
-      type: "deliver_relay";
+      type: 'deliver_relay';
       payload: RelayDelivery;
     }
   | {
-      type: "shutdown_worker";
+      type: 'shutdown_worker';
       payload: { reason: string; grace_ms?: number };
     }
   | {
-      type: "ping";
+      type: 'ping';
       payload: { ts_ms: number };
     };
 
 export type WorkerToBroker =
   | {
-      type: "worker_ready";
+      type: 'worker_ready';
       payload: { name: string; runtime: AgentRuntime };
     }
   | {
-      type: "delivery_ack";
+      type: 'delivery_ack';
       payload: { delivery_id: string; event_id: string };
     }
   | {
-      type: "worker_stream";
+      type: 'worker_stream';
       payload: { stream: string; chunk: string };
     }
   | {
-      type: "worker_error";
+      type: 'worker_error';
       payload: ProtocolError;
     }
   | {
-      type: "worker_exited";
+      type: 'worker_exited';
       payload: { code?: number; signal?: string };
     }
   | {
-      type: "pong";
+      type: 'pong';
       payload: { ts_ms: number };
     };
