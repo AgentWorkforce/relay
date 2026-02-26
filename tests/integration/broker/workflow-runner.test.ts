@@ -315,3 +315,53 @@ test(
     }
   }
 );
+
+// ── Test 6: Workflow selection ────────────────────────────────────────────
+
+test('workflow-runner: runs only the selected workflow by name', { timeout: 120_000 }, async (t) => {
+  if (skipIfMissing(t)) return;
+
+  const cwd = createWorkdir();
+  const harness = new WorkflowRunnerHarness();
+  await harness.start();
+
+  try {
+    const result = await harness.runWorkflow(
+      makeConfig({
+        workflows: [
+          {
+            name: 'workflow-a',
+            steps: [{ name: 'step-a', agent: 'worker', task: 'Workflow A task' }],
+          },
+          {
+            name: 'workflow-b',
+            steps: [{ name: 'step-b', agent: 'worker', task: 'Workflow B task' }],
+          },
+        ],
+      }),
+      undefined,
+      { workflowName: 'workflow-b', cwd }
+    );
+
+    assertRunCompleted(result);
+    assertStepCompleted(result, 'step-b');
+    assertStepCount(result, 'completed', 1);
+    assertStepCount(result, 'failed', 0);
+    assert.equal(
+      result.events.filter(
+        (event) =>
+          (event.type === 'step:started' ||
+            event.type === 'step:completed' ||
+            event.type === 'step:failed' ||
+            event.type === 'step:skipped') &&
+          'stepName' in event &&
+          event.stepName === 'step-a'
+      ).length,
+      0,
+      'Expected workflow A to be skipped when workflow-b is selected'
+    );
+  } finally {
+    await harness.stop();
+    fs.rmSync(cwd, { force: true, recursive: true });
+  }
+});

@@ -157,3 +157,43 @@ test('trajectory: chapters record agent names', { timeout: 120_000 }, async (t) 
     fs.rmSync(cwd, { force: true, recursive: true });
   }
 });
+
+test('trajectory: records task metadata and participating agents', { timeout: 120_000 }, async (t) => {
+  if (skipIfMissing(t)) return;
+
+  const cwd = createWorkdir();
+  const agentName = 'meta-agent';
+  const harness = new WorkflowRunnerHarness();
+  await harness.start();
+
+  try {
+    const trajectory = await runWorkflowAndGetTrajectory(harness, makeConfig(agentName), cwd);
+    assertTrajectoryCompleted(trajectory);
+    assert.equal(
+      trajectory.task.title,
+      'default',
+      `Expected trajectory task title to match workflow name, got "${trajectory.task.title}"`
+    );
+    assert.equal(typeof trajectory.startedAt, 'string', 'Expected trajectory.startedAt to be a string');
+    assert.equal(typeof trajectory.completedAt, 'string', 'Expected trajectory.completedAt to be a string');
+
+    assert.ok(Array.isArray(trajectory.agents), 'Expected trajectory.agents to be an array');
+    assert.ok(trajectory.agents.length >= 1, 'Expected at least one agent in trajectory');
+    assert.ok(
+      trajectory.agents.some((agent) => agent.name === agentName),
+      `Expected trajectory.agents to include agent "${agentName}"`
+    );
+    for (const trajectoryAgent of trajectory.agents) {
+      assert.equal(typeof trajectoryAgent.name, 'string', 'Expected trajectoryAgent.name to be a string');
+      assert.equal(typeof trajectoryAgent.role, 'string', 'Expected trajectoryAgent.role to be a string');
+      assert.equal(
+        typeof trajectoryAgent.joinedAt,
+        'string',
+        'Expected trajectoryAgent.joinedAt to be a string'
+      );
+    }
+  } finally {
+    await harness.stop();
+    fs.rmSync(cwd, { force: true, recursive: true });
+  }
+});

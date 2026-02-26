@@ -4874,7 +4874,13 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
     // Sanitise name for use in filenames — keep only alphanumeric and hyphens
     let safe_name: String = broker_name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
 
     // Lock and PID files are per-broker-name so concurrent workflows can coexist.
@@ -6123,4 +6129,55 @@ mod tests {
         assert_eq!(result, std::path::PathBuf::from(".agent-relay/continuity"));
     }
 
+    #[test]
+    fn cached_session_for_requested_name_reuses_matching_token() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let paths = super::ensure_runtime_paths(dir.path(), "test")
+            .expect("runtime paths should initialize");
+        let cached = CredentialCache {
+            workspace_id: "ws_cached".to_string(),
+            agent_id: "a_cached".to_string(),
+            api_key: "rk_live_cached".to_string(),
+            agent_name: Some("lead".to_string()),
+            agent_token: Some("at_live_cached_token".to_string()),
+            updated_at: chrono::Utc::now(),
+        };
+        std::fs::write(
+            &paths.creds,
+            serde_json::to_vec(&cached).expect("serialize cache"),
+        )
+        .expect("write cache");
+
+        let session = super::cached_session_for_requested_name(&paths, "lead")
+            .expect("matching cached token should be reused");
+
+        assert_eq!(session.token, "at_live_cached_token");
+        assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
+        assert_eq!(session.credentials.agent_id, "a_cached");
+    }
+
+    #[test]
+    fn cached_session_for_requested_name_rejects_name_mismatch() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let paths = super::ensure_runtime_paths(dir.path(), "test")
+            .expect("runtime paths should initialize");
+        let cached = CredentialCache {
+            workspace_id: "ws_cached".to_string(),
+            agent_id: "a_cached".to_string(),
+            api_key: "rk_live_cached".to_string(),
+            agent_name: Some("someone-else".to_string()),
+            agent_token: Some("at_live_cached_token".to_string()),
+            updated_at: chrono::Utc::now(),
+        };
+        std::fs::write(
+            &paths.creds,
+            serde_json::to_vec(&cached).expect("serialize cache"),
+        )
+        .expect("write cache");
+
+        assert!(
+            super::cached_session_for_requested_name(&paths, "lead").is_none(),
+            "requested name mismatch must not reuse cached token"
+        );
+    }
 }

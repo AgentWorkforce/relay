@@ -1,8 +1,8 @@
 /**
  * Workflow event ordering and Relaycast channel integration tests.
  *
- * Tests that WorkflowRunner emits events in the correct order and that
- * Relaycast channels receive workflow messages when configured.
+ * Tests that WorkflowRunner emits workflow events in the expected order and
+ * that Relaycast channels receive workflow lifecycle messages when configured.
  *
  * Run:
  *   npx tsc -p tests/integration/broker/tsconfig.json
@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 
 import { RelaycastApi } from '@agent-relay/sdk';
 import type { RelayYamlConfig } from '@agent-relay/sdk/workflows';
-import { checkPrerequisites } from './utils/broker-harness.js';
+import { checkPrerequisites, ensureApiKey } from './utils/broker-harness.js';
 import { WorkflowRunnerHarness } from './utils/workflow-harness.js';
 import { assertRunCompleted, assertWorkflowEventOrder } from './utils/workflow-assert-helpers.js';
 import { sleep } from './utils/cli-helpers.js';
@@ -73,20 +73,17 @@ test('events: onEvent fires in correct order', { timeout: 120_000 }, async (t) =
 test('events: relaycast channel receives workflow messages', { timeout: 120_000 }, async (t) => {
   if (skipIfMissing(t)) return;
 
-  if (!process.env.RELAY_API_KEY) {
-    t.skip('RELAY_API_KEY not set — skipping Relaycast channel test');
-    return;
-  }
+  const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const channel = `events-relay-${suffix}`;
+  const workflowName = `workflow-${suffix}`;
 
   const harness = new WorkflowRunnerHarness();
   await harness.start();
 
   try {
-    const channel = `events-relay-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    const workflowName = `workflow-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const result = await harness.runWorkflow(
       makeConfig({
-        name: `workflow-events-relay-${workflowName}`,
+        name: workflowName,
         swarm: { pattern: 'dag', channel },
         workflows: [
           {
@@ -98,9 +95,11 @@ test('events: relaycast channel receives workflow messages', { timeout: 120_000 
     );
     assertRunCompleted(result);
 
-    const api = new RelaycastApi({ apiKey: process.env.RELAY_API_KEY, agentName: `reader-${workflowName}` });
+    const apiKey = await ensureApiKey();
+    const api = new RelaycastApi({ apiKey, agentName: `reader-${suffix}` });
+
     let messages: Array<{ id: string; agent_name: string; text: string; created_at: string }> = [];
-    for (let attempt = 0; attempt < 4; attempt += 1) {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
       messages = await api.getMessages(channel, { limit: 50 });
       if (messages.length > 0) break;
       await sleep(1_000);
@@ -108,7 +107,7 @@ test('events: relaycast channel receives workflow messages', { timeout: 120_000 
 
     assert.ok(
       messages.some((message) => message.text.includes(`Workflow **${workflowName}**`)),
-      `expected channel message payload for workflow "${workflowName}" in channel "${channel}"`
+      `expected workflow messages for "${workflowName}" in channel "${channel}"`
     );
   } finally {
     await harness.stop();
