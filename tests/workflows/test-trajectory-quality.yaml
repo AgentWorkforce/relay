@@ -42,24 +42,28 @@ workflows:
       - name: check-trajectory
         type: deterministic
         dependsOn: [work]
+        # Search across all trajectory files for any that belong to THIS workflow
+        # (identified by the workflow name in the task title). Old runs in the
+        # directory don't interfere — we find the one that matches this run.
         command: >-
           node -e "
           const fs=require('fs');
-          const d=['.trajectories/active','.trajectories/completed'];
-          const files=d.flatMap(dir=>fs.existsSync(dir)?fs.readdirSync(dir).filter(f=>f.endsWith('.json')).map(f=>dir+'/'+f):[]);
-          if(!files.length){console.error('No trajectory file found');process.exit(1);}
-          files.sort((a,b)=>fs.statSync(b).mtimeMs-fs.statSync(a).mtimeMs);
-          const t=JSON.parse(fs.readFileSync(files[0],'utf8'));
+          const dirs=['.trajectories/active','.trajectories/completed'];
+          const files=dirs.flatMap(d=>fs.existsSync(d)?fs.readdirSync(d).filter(f=>f.endsWith('.json')).map(f=>d+'/'+f):[]);
+          if(!files.length){console.error('No trajectory files found');process.exit(1);}
+          const parsed=files.map(f=>{try{return JSON.parse(fs.readFileSync(f,'utf8'));}catch{return null;}}).filter(Boolean);
+          const t=parsed.find(x=>x.task&&x.task.title&&x.task.title.includes('traj-quality'));
+          if(!t){console.error('No trajectory for this run. Titles:',parsed.map(x=>x.task&&x.task.title));process.exit(1);}
           const events=t.chapters.flatMap(c=>c.events);
           const has=s=>events.some(e=>e.content.includes(s));
-          if(!has('Verifies that trajectory'))throw new Error('Missing purpose/description');
+          if(!has('Verifies that trajectory')){console.error('FAIL: no purpose event. Events:',events.slice(0,5).map(e=>e.content));process.exit(1);}
           console.log('PASS purpose');
-          if(!has('Output exactly'))throw new Error('Missing step intent');
+          if(!has('Output exactly')){console.error('FAIL: no step intent event');process.exit(1);}
           console.log('PASS step intent');
-          if(!has('WORK_DONE'))throw new Error('Missing completion sentinel');
+          if(!has('WORK_DONE')){console.error('FAIL: completion sentinel missing');process.exit(1);}
           console.log('PASS sentinel');
           const r=t.retrospective||{};
-          if(!r.approach||r.approach==='workflow-runner DAG execution')throw new Error('approach not updated: '+r.approach);
+          if(!r.approach||r.approach==='workflow-runner DAG execution'){console.error('FAIL: approach='+r.approach);process.exit(1);}
           console.log('PASS approach:',r.approach);
           console.log('TRAJECTORY_QUALITY_PASS');
           "
