@@ -65,52 +65,68 @@ export function registerSwarmCommands(program: Command): void {
     .option('--timeout <duration>', 'Overall timeout (e.g. 300s, 5m, 1h)', '300s')
     .option('--cli <tool>', 'CLI tool for workers (e.g. claude, codex)', 'codex')
     .option('--list', 'List available swarm patterns')
+    .option('--dry-run', 'Print execution plan without running')
     .allowUnknownOption(true)
-    .action(async (options: {
-      pattern?: string;
-      task?: string;
-      teams?: string;
-      timeout?: string;
-      cli?: string;
-      list?: boolean;
-    }) => {
-      const brokerBin = resolveBrokerBinary();
-      const args: string[] = ['swarm'];
+    .action(
+      async (options: {
+        pattern?: string;
+        task?: string;
+        teams?: string;
+        timeout?: string;
+        cli?: string;
+        list?: boolean;
+        dryRun?: boolean;
+      }) => {
+        if (options.dryRun) {
+          console.log('Swarm dry-run plan:');
+          console.log(`  Pattern : ${options.pattern ?? 'fan-out'}`);
+          console.log(`  Task    : ${options.task ?? '(none)'}`);
+          console.log(`  Teams   : ${options.teams ?? '2'}`);
+          console.log(`  Timeout : ${options.timeout ?? '300s'}`);
+          console.log(`  CLI     : ${options.cli ?? 'codex'}`);
+          console.log('');
+          console.log('(dry-run: no broker started, no agents spawned)');
+          process.exit(0);
+        }
 
-      if (options.list) {
-        args.push('--list');
-      } else {
-        if (options.pattern) {
-          args.push('--pattern', options.pattern);
-        }
-        if (options.task) {
-          args.push('--task', options.task);
-        }
-        if (options.teams) {
-          args.push('--teams', options.teams);
-        }
-        if (options.timeout) {
-          args.push('--timeout', options.timeout);
-        }
-        if (options.cli) {
-          args.push('--cli', options.cli);
-        }
-      }
+        const brokerBin = resolveBrokerBinary();
+        const args: string[] = ['swarm'];
 
-      const child = spawnProcess(brokerBin, args, {
-        cwd: process.cwd(),
-        stdio: 'inherit',
-        env: process.env,
-      });
+        if (options.list) {
+          args.push('--list');
+        } else {
+          if (options.pattern) {
+            args.push('--pattern', options.pattern);
+          }
+          if (options.task) {
+            args.push('--task', options.task);
+          }
+          if (options.teams) {
+            args.push('--teams', options.teams);
+          }
+          if (options.timeout) {
+            args.push('--timeout', options.timeout);
+          }
+          if (options.cli) {
+            args.push('--cli', options.cli);
+          }
+        }
 
-      const exitCode = await new Promise<number>((resolve) => {
-        child.on('exit', (code) => resolve(code ?? 1));
-        child.on('error', (err) => {
-          console.error(`Failed to start broker: ${err.message}`);
-          resolve(1);
+        const child = spawnProcess(brokerBin, args, {
+          cwd: process.cwd(),
+          stdio: 'inherit',
+          env: process.env,
         });
-      });
 
-      process.exit(exitCode);
-    });
+        const exitCode = await new Promise<number>((resolve) => {
+          child.on('exit', (code) => resolve(code ?? 1));
+          child.on('error', (err) => {
+            console.error(`Failed to start broker: ${err.message}`);
+            resolve(1);
+          });
+        });
+
+        process.exit(exitCode);
+      }
+    );
 }

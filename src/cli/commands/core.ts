@@ -119,6 +119,7 @@ export interface CoreDependencies {
   sleep: (ms: number) => Promise<void>;
   onSignal: (signal: NodeJS.Signals, handler: () => void | Promise<void>) => void;
   holdOpen: () => Promise<void>;
+  resolveTemplatesDir: () => string;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
@@ -171,7 +172,9 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
     try {
       const pkgPath = require.resolve('@agent-relay/dashboard-server/package.json');
       const pkgDir = path.dirname(pkgPath);
-      const pkgJson = JSON.parse(fileSystem.readFileSync(pkgPath, 'utf-8')) as { bin?: Record<string, string> };
+      const pkgJson = JSON.parse(fileSystem.readFileSync(pkgPath, 'utf-8')) as {
+        bin?: Record<string, string>;
+      };
       const binEntry = pkgJson.bin?.['relay-dashboard-server'];
       if (binEntry) {
         const binPath = path.resolve(pkgDir, binEntry);
@@ -291,6 +294,19 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
       });
     },
     holdOpen: () => new Promise(() => undefined),
+    resolveTemplatesDir: () => {
+      // Walk up from __dirname to find the sdk package's builtin-templates dir
+      const dirname = path.dirname(fileURLToPath(import.meta.url));
+      let dir = dirname;
+      for (let i = 0; i < 8; i++) {
+        const candidate = path.join(dir, 'packages', 'sdk', 'src', 'workflows', 'builtin-templates');
+        if (fs.existsSync(candidate)) return candidate;
+        const distCandidate = path.join(dir, 'packages', 'sdk', 'dist', 'workflows', 'builtin-templates');
+        if (fs.existsSync(distCandidate)) return distCandidate;
+        dir = path.dirname(dir);
+      }
+      return path.join(dirname, 'builtin-templates');
+    },
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     warn: (...args: unknown[]) => console.warn(...args),
@@ -424,5 +440,27 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--architect [cli]', 'Spawn an architect agent to coordinate all projects (default: claude)')
     .action(async (projectPaths: string[], options: { cli?: string; architect?: string | boolean }) => {
       await runBridgeCommand(projectPaths, options, deps);
+    });
+
+  const workflowsCmd = program.command('workflows').description('Manage relay.yaml workflow templates');
+
+  workflowsCmd
+    .command('list')
+    .description('List available built-in workflow templates')
+    .action(() => {
+      const templatesDir = deps.resolveTemplatesDir();
+      if (!deps.fs.existsSync(templatesDir)) {
+        deps.log('No built-in templates found.');
+        return;
+      }
+      const files = deps.fs.readdirSync(templatesDir).filter((f) => f.endsWith('.yaml'));
+      if (files.length === 0) {
+        deps.log('No built-in templates found.');
+        return;
+      }
+      deps.log('Built-in workflow templates:');
+      for (const file of files) {
+        deps.log(`  ${file.replace(/\.yaml$/, '')}`);
+      }
     });
 }
