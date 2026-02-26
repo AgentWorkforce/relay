@@ -9,11 +9,13 @@
  *   npm run build && npm run marketing-plan --workspace=packages/sdk
  */
 
+import { randomBytes } from 'node:crypto';
 import { AgentRelay } from '../relay.js';
 import { RelaycastApi } from '../relaycast.js';
 
 // Auto-provision a fresh isolated workspace — no signup or config needed.
-const { apiKey } = await RelaycastApi.createWorkspace('marketing-plan-demo');
+const { apiKey } = await RelaycastApi.createWorkspace(`marketing-plan-${randomBytes(4).toString('hex')}`);
+console.log(`Workspace created. API Key: ${apiKey}`);
 
 const relay = new AgentRelay({ env: { ...process.env, RELAY_API_KEY: apiKey } });
 
