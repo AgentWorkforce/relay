@@ -2,9 +2,9 @@ use super::*;
 use crate::helpers::{
     check_echo_in_output, current_timestamp_ms, delivery_injected_event_payload,
     delivery_queued_event_payload, floor_char_boundary, format_injection_for_worker,
-    parse_cli_command, ActivityDetector, DeliveryOutcome, PendingActivity, PendingVerification,
-    ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
-    VERIFICATION_WINDOW,
+    parse_cli_command, parse_continuity_command, ActivityDetector, ContinuityAction,
+    DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
+    ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
 };
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 
@@ -109,6 +109,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     };
     let mut throttle = ThrottleState::default();
     let mut echo_buffer = String::new();
+    // Buffer for detecting KIND: continuity commands in PTY output.
+    // Bounded to avoid unbounded memory growth; continuity blocks are small.
+    let mut continuity_buffer = String::new();
+    const CONTINUITY_BUFFER_MAX: usize = 4096;
     let mut verification_tick = tokio::time::interval(Duration::from_millis(200));
     verification_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -272,6 +276,50 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         if echo_buffer.len() > 16_000 {
                             let start = floor_char_boundary(&echo_buffer, echo_buffer.len() - 12_000);
                             echo_buffer = echo_buffer[start..].to_string();
+                        }
+
+                        // Detect KIND: continuity commands in PTY output.
+                        // Only scan when no echo verifications are pending to avoid false-positives
+                        // from injected relay messages that might contain header-like text.
+                        if pending_verifications.is_empty() {
+                            continuity_buffer.push_str(&clean_text);
+                            if continuity_buffer.len() > CONTINUITY_BUFFER_MAX {
+                                let start = floor_char_boundary(
+                                    &continuity_buffer,
+                                    continuity_buffer.len() - CONTINUITY_BUFFER_MAX / 2,
+                                );
+                                continuity_buffer = continuity_buffer[start..].to_string();
+                            }
+                            if let Some((action, content, consumed)) =
+                                parse_continuity_command(&continuity_buffer)
+                            {
+                                tracing::info!(
+                                    target = "agent_relay::worker::pty",
+                                    action = %action.as_str(),
+                                    content_len = content.len(),
+                                    "detected KIND: continuity command in PTY output"
+                                );
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "continuity_command",
+                                    None,
+                                    json!({
+                                        "action": action.as_str(),
+                                        "content": content,
+                                    }),
+                                )
+                                .await;
+                                // Advance buffer past consumed bytes
+                                if consumed >= continuity_buffer.len() {
+                                    continuity_buffer.clear();
+                                } else {
+                                    let safe_consumed = floor_char_boundary(
+                                        &continuity_buffer,
+                                        consumed,
+                                    );
+                                    continuity_buffer = continuity_buffer[safe_consumed..].to_string();
+                                }
+                            }
                         }
 
                         // Check pending verifications against new output

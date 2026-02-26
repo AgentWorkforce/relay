@@ -685,6 +685,135 @@ pub(crate) fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) 
     (has_header, has_allow_option)
 }
 
+/// Continuity actions that an agent can request via PTY output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ContinuityAction {
+    Save,
+    Load,
+    Uncertain,
+}
+
+impl ContinuityAction {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            ContinuityAction::Save => "save",
+            ContinuityAction::Load => "load",
+            ContinuityAction::Uncertain => "uncertain",
+        }
+    }
+}
+
+/// Parse a `KIND: continuity` command block from accumulated PTY output.
+///
+/// The format is:
+/// ```text
+/// KIND: continuity
+/// ACTION: save|load|uncertain
+///
+/// Optional body content here
+/// ```
+///
+/// Returns `Some((action, content, bytes_consumed))` when a complete block is found,
+/// where `bytes_consumed` is the number of bytes to trim from the start of `buf`.
+///
+/// The block must have:
+/// - A line containing `KIND:` with value `continuity` (case-insensitive)
+/// - A line containing `ACTION:` with a valid action (case-insensitive)
+/// - Optionally followed by a blank line and body content
+///
+/// The function looks for the pattern anywhere in the buffer and returns the
+/// offset past the detected block so the caller can advance their buffer.
+pub(crate) fn parse_continuity_command(buf: &str) -> Option<(ContinuityAction, String, usize)> {
+    // Find a line with KIND: continuity
+    let kind_prefix = "kind:";
+    let action_prefix = "action:";
+
+    let lines: Vec<&str> = buf.lines().collect();
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim().to_lowercase();
+        if !trimmed.starts_with(kind_prefix) {
+            continue;
+        }
+        let kind_value = trimmed[kind_prefix.len()..].trim();
+        if kind_value != "continuity" {
+            continue;
+        }
+
+        // Found KIND: continuity — look for ACTION: on the next non-empty line
+        let mut action: Option<ContinuityAction> = None;
+        let mut body_start_line: Option<usize> = None;
+
+        for j in (i + 1)..lines.len() {
+            let next = lines[j].trim();
+            if next.is_empty() {
+                // Blank line may precede body; record where body starts
+                if action.is_some() && body_start_line.is_none() {
+                    body_start_line = Some(j + 1);
+                }
+                continue;
+            }
+            let lower = next.to_lowercase();
+            if lower.starts_with(action_prefix) {
+                let action_value = lower[action_prefix.len()..].trim();
+                action = match action_value {
+                    "save" => Some(ContinuityAction::Save),
+                    "load" => Some(ContinuityAction::Load),
+                    "uncertain" => Some(ContinuityAction::Uncertain),
+                    _ => None,
+                };
+                continue;
+            }
+            // Non-empty, non-header line — this is body content
+            if action.is_some() {
+                if body_start_line.is_none() {
+                    body_start_line = Some(j);
+                }
+                break;
+            }
+        }
+
+        let action = action?;
+
+        // Collect body lines
+        let content = if let Some(start) = body_start_line {
+            lines[start..]
+                .iter()
+                .take_while(|l| !l.trim().to_lowercase().starts_with(kind_prefix))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string()
+        } else {
+            String::new()
+        };
+
+        // Compute bytes consumed: everything up to and including the last body line
+        // (or the ACTION: line if there's no body). We advance past the block
+        // by consuming byte offset of the line after the last consumed line.
+        let end_line = body_start_line
+            .map(|s| {
+                s + lines[s..]
+                    .iter()
+                    .take_while(|l| !l.trim().to_lowercase().starts_with(kind_prefix))
+                    .count()
+            })
+            .unwrap_or(i + 2); // at minimum, consume KIND + ACTION lines
+
+        // Re-derive byte offset of end_line in original buf
+        let bytes_consumed = lines[..end_line.min(lines.len())]
+            .iter()
+            .map(|l| l.len() + 1) // +1 for '\n'
+            .sum::<usize>()
+            .min(buf.len());
+
+        return Some((action, content, bytes_consumed));
+    }
+
+    None
+}
+
 /// Detect Claude Code auto-suggestion ghost text.
 pub(crate) fn is_auto_suggestion(output: &str) -> bool {
     let has_cursor_ghost = output.contains("\x1b[7m") && output.contains("\x1b[27m\x1b[2m");
