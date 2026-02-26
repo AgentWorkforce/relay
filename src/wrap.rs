@@ -370,7 +370,7 @@ pub(crate) async fn run_wrap(
 
     // --- Auth & Relaycast connection ---
     let runtime_cwd = std::env::current_dir()?;
-    let paths = ensure_runtime_paths(&runtime_cwd)?;
+    let paths = ensure_runtime_paths(&runtime_cwd, &requested_name)?;
 
     let strict_name = env_flag_enabled("RELAY_STRICT_AGENT_NAME");
     let relay = connect_relay(RelaySessionOptions {

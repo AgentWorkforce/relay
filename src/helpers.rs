@@ -434,6 +434,7 @@ fn build_mcp_reminder(
         channel_hint_line,
         "- For thread replies, use mcp__relaycast__reply_to_thread.".to_string(),
         "- To check unread messages/reactions, use mcp__relaycast__check_inbox.".to_string(),
+        "- To self-terminate when your task is complete, call remove_agent(name: \"<your-agent-name>\") or output /exit on its own line.".to_string(),
         "</system-reminder>".to_string(),
     ]
     .join("\n")

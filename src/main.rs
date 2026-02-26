@@ -1232,8 +1232,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     telemetry.track(TelemetryEvent::BrokerStart);
 
     let runtime_cwd = std::env::current_dir()?;
-    let paths = ensure_runtime_paths(&runtime_cwd)?;
-    let mut state = BrokerState::load(&paths.state).unwrap_or_default();
     let resolved_name = if cmd.name.trim().is_empty() {
         runtime_cwd
             .file_name()
@@ -1244,6 +1242,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     } else {
         cmd.name.trim().to_string()
     };
+    let paths = ensure_runtime_paths(&runtime_cwd, &resolved_name)?;
+    let mut state = BrokerState::load(&paths.state).unwrap_or_default();
 
     // Clean up agents from previous sessions whose processes have died
     let reaped = state.reap_dead_agents();
@@ -4795,13 +4795,20 @@ fn continuity_dir(state_path: &Path) -> PathBuf {
         .join("continuity")
 }
 
-fn ensure_runtime_paths(cwd: &Path) -> Result<RuntimePaths> {
+fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
     let root = cwd.join(".agent-relay");
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create runtime dir {}", root.display()))?;
 
-    let lock_path = root.join("broker.lock");
-    let pid_path = root.join("broker.pid");
+    // Sanitise name for use in filenames — keep only alphanumeric and hyphens
+    let safe_name: String = broker_name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .collect();
+
+    // Lock and PID files are per-broker-name so concurrent workflows can coexist.
+    let lock_path = root.join(format!("broker-{safe_name}.lock"));
+    let pid_path = root.join(format!("broker-{safe_name}.pid"));
     let lock_file = std::fs::File::create(&lock_path)
         .with_context(|| format!("failed to create lock file {}", lock_path.display()))?;
 
@@ -4843,8 +4850,8 @@ fn ensure_runtime_paths(cwd: &Path) -> Result<RuntimePaths> {
                         write_pid_file(&pid_path)?;
                         return Ok(RuntimePaths {
                             creds: root.join("relaycast.json"),
-                            state: root.join("state.json"),
-                            pending: root.join("pending.json"),
+                            state: root.join(format!("state-{safe_name}.json")),
+                            pending: root.join(format!("pending-{safe_name}.json")),
                             pid: pid_path,
                             _lock: lock_file,
                         });
@@ -4863,8 +4870,8 @@ fn ensure_runtime_paths(cwd: &Path) -> Result<RuntimePaths> {
 
     Ok(RuntimePaths {
         creds: root.join("relaycast.json"),
-        state: root.join("state.json"),
-        pending: root.join("pending.json"),
+        state: root.join(format!("state-{safe_name}.json")),
+        pending: root.join(format!("pending-{safe_name}.json")),
         pid: pid_path,
         _lock: lock_file,
     })
@@ -6052,7 +6059,7 @@ mod tests {
     fn cached_session_for_requested_name_reuses_matching_token() {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let paths =
-            super::ensure_runtime_paths(dir.path()).expect("runtime paths should initialize");
+            super::ensure_runtime_paths(dir.path(), "test").expect("runtime paths should initialize");
         let cached = CredentialCache {
             workspace_id: "ws_cached".to_string(),
             agent_id: "a_cached".to_string(),
@@ -6079,7 +6086,7 @@ mod tests {
     fn cached_session_for_requested_name_rejects_name_mismatch() {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let paths =
-            super::ensure_runtime_paths(dir.path()).expect("runtime paths should initialize");
+            super::ensure_runtime_paths(dir.path(), "test").expect("runtime paths should initialize");
         let cached = CredentialCache {
             workspace_id: "ws_cached".to_string(),
             agent_id: "a_cached".to_string(),
