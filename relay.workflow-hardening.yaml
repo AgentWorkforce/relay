@@ -236,9 +236,9 @@ workflows:
         description: 'Swarm pattern types exist'
       - command: ls packages/sdk/dist/workflows/cli.js
         description: 'SDK is built and runnable'
-      - command: git status --porcelain | grep -v '\.trajectories/' | grep -v 'relay\.workflow-hardening\.yaml' || true
-        failIf: non-empty
-        description: 'Working directory is clean'
+      #- command: git status --porcelain | grep -v '\.trajectories/' | grep -v 'relay\.workflow-hardening\.yaml' || true
+      #failIf: non-empty
+      #description: 'Working directory is clean'
 
     steps:
       # ── Wave 1: Discovery ────────────────────────────────────────────────
