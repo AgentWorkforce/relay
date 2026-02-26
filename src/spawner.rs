@@ -33,21 +33,6 @@ impl Spawner {
         }
     }
 
-    /// Spawn a wrap-mode child: `agent-relay-broker wrap <cli> <args>`.
-    /// Identity and connection info are passed via env vars rather than CLI flags.
-    #[allow(dead_code)]
-    pub async fn spawn_wrap(
-        &mut self,
-        child_name: &str,
-        cli: &str,
-        extra_args: &[String],
-        env_vars: &[(&str, &str)],
-        parent: Option<&str>,
-    ) -> Result<u32> {
-        self.spawn_wrap_with_token(child_name, cli, extra_args, env_vars, parent, None)
-            .await
-    }
-
     pub async fn spawn_wrap_with_token(
         &mut self,
         child_name: &str,
@@ -272,12 +257,13 @@ mod tests {
         let mut spawner = Spawner::new();
         let env_vars = [("RELAY_AGENT_NAME", "TestChild")];
         let pid = spawner
-            .spawn_wrap(
+            .spawn_wrap_with_token(
                 "TestChild",
                 "sleep",
                 &["30".to_string()],
                 &env_vars,
                 Some("Parent"),
+                None,
             )
             .await
             .unwrap();
@@ -295,11 +281,11 @@ mod tests {
         let mut spawner = Spawner::new();
         let env_vars = [("RELAY_AGENT_NAME", "Dup")];
         spawner
-            .spawn_wrap("Dup", "sleep", &["30".to_string()], &env_vars, None)
+            .spawn_wrap_with_token("Dup", "sleep", &["30".to_string()], &env_vars, None, None)
             .await
             .unwrap();
         let result = spawner
-            .spawn_wrap("Dup", "sleep", &["30".to_string()], &env_vars, None)
+            .spawn_wrap_with_token("Dup", "sleep", &["30".to_string()], &env_vars, None, None)
             .await;
         assert!(result.is_err());
         spawner.shutdown_all(Duration::from_millis(200)).await;
@@ -311,11 +297,12 @@ mod tests {
         let mut spawner = Spawner::new();
         let env_vars = [("RELAY_AGENT_NAME", "ReattachWorker")];
         let pid = spawner
-            .spawn_wrap(
+            .spawn_wrap_with_token(
                 "ReattachWorker",
                 "sleep",
                 &["30".to_string()],
                 &env_vars,
+                None,
                 None,
             )
             .await
