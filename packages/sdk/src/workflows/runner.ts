@@ -1017,7 +1017,7 @@ export class WorkflowRunner {
       if (this.relayApiKeyAutoCreated && this.relayApiKey) {
         this.log(`Workspace created — follow this run in Relaycast:`);
         this.log(`  RELAY_API_KEY=${this.relayApiKey}`);
-        this.log(`  Observer: https://observer.relaycast.dev/?key=${this.relayApiKey}`);
+        this.log(`  Observer: https://observer.relaycast.dev (paste key above)`);
         this.log(`  Channel: ${channel}`);
       }
 
