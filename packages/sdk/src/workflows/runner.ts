@@ -308,7 +308,7 @@ export class WorkflowRunner {
         throw new Error(`${source}: "workflows" must be an array`);
       }
       for (const wf of c.workflows) {
-        this.validateWorkflow(wf, source);
+        this.validateWorkflow(wf, (c.agents ?? []) as AgentDefinition[], source);
       }
     }
   }
@@ -589,7 +589,7 @@ export class WorkflowRunner {
     };
   }
 
-  private validateWorkflow(wf: unknown, source: string): void {
+  private validateWorkflow(wf: unknown, agents: AgentDefinition[], source: string): void {
     if (typeof wf !== 'object' || wf === null) {
       throw new Error(`${source}: each workflow must be an object`);
     }
@@ -634,6 +634,21 @@ export class WorkflowRunner {
       }
     }
     this.detectCycles(w.steps as WorkflowStep[], source, w.name as string);
+    this.detectLeadWorkerDeadlock(w.steps as WorkflowStep[], agents, source, w.name as string);
+
+    // Warn if non-interactive agent task is excessively large before interpolation
+    for (const step of w.steps as WorkflowStep[]) {
+      if (step.type === 'deterministic' || step.type === 'worktree') continue;
+      const agentDef = agents.find((a) => a.name === step.agent);
+      const isNonInteractive =
+        agentDef?.interactive === false || ['worker', 'reviewer', 'analyst'].includes(agentDef?.preset ?? '');
+      if (isNonInteractive && (step.task ?? '').length > 10_000) {
+        console.warn(
+          `[WorkflowRunner] Warning: non-interactive step "${step.name}" has a very large task (${step.task!.length} chars). ` +
+            `Consider pre-reading files in a deterministic step and injecting only the relevant excerpt.`
+        );
+      }
+    }
   }
 
   private detectCycles(steps: WorkflowStep[], source: string, workflowName: string): void {
@@ -662,6 +677,56 @@ export class WorkflowRunner {
 
     for (const step of steps) {
       dfs(step.name);
+    }
+  }
+
+  private detectLeadWorkerDeadlock(
+    steps: WorkflowStep[],
+    agents: AgentDefinition[],
+    source: string,
+    workflowName: string
+  ): void {
+    // Build a map of step name → steps that depend on it
+    const downstreamOf = new Map<string, string[]>();
+    for (const step of steps) {
+      for (const dep of step.dependsOn ?? []) {
+        if (!downstreamOf.has(dep)) downstreamOf.set(dep, []);
+        downstreamOf.get(dep)!.push(step.name);
+      }
+    }
+
+    for (const step of steps) {
+      // Only check interactive agent steps (leads)
+      if (step.type === 'deterministic' || step.type === 'worktree') continue;
+      const agentDef = agents.find((a) => a.name === step.agent);
+      // Skip non-interactive agents — they can't wait for channel signals
+      if (
+        agentDef?.interactive === false ||
+        agentDef?.preset === 'worker' ||
+        agentDef?.preset === 'reviewer' ||
+        agentDef?.preset === 'analyst'
+      )
+        continue;
+
+      const downstream = downstreamOf.get(step.name) ?? [];
+      if (downstream.length === 0) continue;
+
+      // Check if the task mentions downstream step names in a "waiting" context
+      const task = step.task ?? '';
+      const waitingKeywords = /\b(wait|waiting|monitor|check inbox|check.*channel|DONE|_DONE|signal)\b/i;
+      if (!waitingKeywords.test(task)) continue;
+
+      // Check if any downstream step name appears in the task
+      const mentioned = downstream.filter((name) => task.includes(name));
+      if (mentioned.length > 0) {
+        throw new Error(
+          `${source}: workflow "${workflowName}" likely has a lead\u2194worker deadlock. ` +
+            `Step "${step.name}" (interactive lead) mentions downstream step(s) [${mentioned.join(', ')}] in its task ` +
+            `and appears to wait for their signals, but those steps can't start until "${step.name}" completes. ` +
+            `Fix: make workers depend on a shared upstream step (e.g. "context"), not on the lead step. ` +
+            `See tests/workflows/README.md rule #6.`
+        );
+      }
     }
   }
 
