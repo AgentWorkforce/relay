@@ -2562,57 +2562,34 @@ export class WorkflowRunner {
         return 'timeout';
       }
 
-      // Determine how long to wait for idle: first time use nudgeAfterMs, after nudge use escalateAfterMs
-      const idleWaitMs = nudgeCount === 0 ? nudgeAfterMs : escalateAfterMs;
-      // Cap at remaining overall timeout
-      const waitMs = remaining !== undefined ? Math.min(idleWaitMs, remaining) : idleWaitMs;
+      // nudgeAfterMs = how long to wait before nudging (first interval).
+      // escalateAfterMs = how long to wait between subsequent nudges.
+      //
+      // We wait for exit, not for idle. The broker's idle_threshold_secs is
+      // only 30s by default, so racing waitForExit vs waitForIdle would nudge
+      // after 30s of PTY silence regardless of nudgeAfterMs. Instead, we give
+      // the agent the full nudgeAfterMs window to finish before nudging.
+      const windowMs = nudgeCount === 0 ? nudgeAfterMs : escalateAfterMs;
+      const waitMs = remaining !== undefined ? Math.min(windowMs, remaining) : windowMs;
 
-      // Race: exit vs idle
-      const exitPromise = agent.waitForExit(waitMs);
-      const idlePromise = agent.waitForIdle(waitMs);
+      const exitResult = await agent.waitForExit(waitMs);
 
-      const result = await Promise.race([
-        exitPromise.then((r) => ({ source: 'exit' as const, result: r })),
-        idlePromise.then((r) => ({ source: 'idle' as const, result: r })),
-      ]);
-
-      if (result.source === 'exit') {
-        if (result.result !== 'timeout') {
-          // Agent actually exited or was released — done
-          return result.result;
-        }
-        // The exit-wait window expired but the agent is still running.
-        // This is NOT a step timeout — the nudgeAfterMs window just elapsed
-        // without the agent finishing. Check overall timeout and loop.
-        if (remaining !== undefined && Date.now() - startTime >= remaining) {
-          return 'timeout';
-        }
-        continue;
+      if (exitResult !== 'timeout') {
+        // Agent actually exited or was released — done
+        return exitResult;
       }
 
-      // Idle detected
-      if (result.result === 'exited') {
-        // Agent exited while we were waiting for idle
-        return 'exited';
+      // Agent is still running after the window expired.
+      if (remaining !== undefined && Date.now() - startTime >= remaining) {
+        return 'timeout';
       }
 
-      if (result.result === 'timeout') {
-        // Our wait timed out — check overall timeout
-        if (remaining !== undefined && Date.now() - startTime >= timeoutMs!) {
-          return 'timeout';
-        }
-        // The idle event didn't fire within our wait window, loop again
-        continue;
-      }
-
-      // result.result === 'idle' — agent went idle
+      // Nudge if we haven't exhausted the limit
       if (nudgeCount < maxNudges) {
-        // Send nudge
         await this.nudgeIdleAgent(agent, agentDef, step);
         nudgeCount++;
         this.postToChannel(`**[${step.name}]** Agent \`${agent.name}\` idle — nudge #${nudgeCount} sent`);
         this.emit({ type: 'step:nudged', runId: this.currentRunId ?? '', stepName: step.name, nudgeCount });
-        // Continue loop — wait for next idle or exit
         continue;
       }
 

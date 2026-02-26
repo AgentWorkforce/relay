@@ -13,6 +13,7 @@ export {
   SwarmPatterns,
 } from '../models.js';
 export * from './memory-db.js';
+export * from './file-db.js';
 export * from './run.js';
 export * from './builder.js';
 export * from './coordinator.js';

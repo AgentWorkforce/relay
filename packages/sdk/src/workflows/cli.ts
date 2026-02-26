@@ -9,8 +9,10 @@
  *   npx @agent-relay/sdk run <yaml-path> [--workflow <name>]
  */
 
+import path from 'node:path';
 import type { WorkflowEvent } from './runner.js';
 import { WorkflowRunner } from './runner.js';
+import { JsonFileWorkflowDb } from './file-db.js';
 
 function printUsage(): void {
   console.log(
@@ -72,7 +74,15 @@ async function main(): Promise<void> {
     process.exit(args.includes('--help') ? 0 : 1);
   }
 
-  const runner = new WorkflowRunner();
+  // Use a file-backed DB so runs survive process restarts and --resume works.
+  const dbPath = path.join(process.cwd(), '.agent-relay', 'workflow-runs.jsonl');
+  const fileDb = new JsonFileWorkflowDb(dbPath);
+  if (!fileDb.isWritable()) {
+    console.warn(
+      `[workflow] warning: cannot write to ${dbPath} — run state will not be persisted (--resume unavailable)`
+    );
+  }
+  const runner = new WorkflowRunner({ db: fileDb });
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
