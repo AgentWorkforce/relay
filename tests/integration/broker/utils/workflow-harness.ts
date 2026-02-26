@@ -201,7 +201,7 @@ export class WorkflowRunnerHarness {
   }
 }
 
-function ensureFakeCliDir(): string {
+function ensureFakeCliDir(cliName = 'claude'): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-wf-cli-'));
   const script =
     '#!/usr/bin/env bash\n' +
@@ -210,7 +210,7 @@ function ensureFakeCliDir(): string {
     'echo "$OUTPUT"\n' +
     'exit 0\n';
 
-  const scriptPath = path.join(dir, 'claude');
+  const scriptPath = path.join(dir, cliName);
   fs.writeFileSync(scriptPath, script, { mode: 0o755 });
 
   return dir;

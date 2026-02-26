@@ -10,7 +10,7 @@ import test, { type TestContext } from 'node:test';
 
 import type { RelayYamlConfig } from '@agent-relay/sdk/workflows';
 import { checkPrerequisites } from './utils/broker-harness.js';
-import { WorkflowRunnerHarness } from './utils/workflow-harness.js';
+import { WorkflowRunnerHarness } from './utils/workflow-runner-harness.js';
 import {
   assertRunCompleted,
   assertStepCompleted,

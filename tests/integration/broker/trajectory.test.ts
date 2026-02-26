@@ -8,6 +8,7 @@
  *   npx tsc -p tests/integration/broker/tsconfig.json
  *   node --test tests/integration/broker/dist/trajectory.test.js
  */
+import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -52,6 +53,17 @@ function createWorkdir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'relay-wf-traj-'));
 }
 
+async function runWorkflowAndGetTrajectory(
+  harness: WorkflowRunnerHarness,
+  config: ReturnType<typeof makeConfig>,
+  cwd: string
+) {
+  const result = await harness.runWorkflow(config, undefined, { cwd });
+  assertRunCompleted(result);
+
+  return assertTrajectoryExists(harness, cwd);
+}
+
 test('trajectory: file written during run', { timeout: 120_000 }, async (t) => {
   if (skipIfMissing(t)) return;
 
@@ -60,15 +72,8 @@ test('trajectory: file written during run', { timeout: 120_000 }, async (t) => {
   await harness.start();
 
   try {
-    const result = await harness.runWorkflow(makeConfig(), undefined, { cwd });
-    assertRunCompleted(result);
-
-    const trajectory = harness.getTrajectory(cwd);
-    assertTrajectoryExists(harness, cwd);
-    // Verify the trajectory is non-null with required fields
-    if (!trajectory) {
-      throw new Error('Expected trajectory file to be written');
-    }
+    const trajectory = await runWorkflowAndGetTrajectory(harness, makeConfig(), cwd);
+    assert.ok(trajectory.id.length > 0, 'Expected trajectory file to include an id');
   } finally {
     await harness.stop();
     fs.rmSync(cwd, { force: true, recursive: true });
@@ -83,18 +88,22 @@ test('trajectory: file transitions to completed status after run', { timeout: 12
   await harness.start();
 
   try {
-    const result = await harness.runWorkflow(makeConfig(), undefined, { cwd });
-    assertRunCompleted(result);
-
-    const trajectory = assertTrajectoryExists(harness, cwd);
+    const trajectory = await runWorkflowAndGetTrajectory(harness, makeConfig(), cwd);
     assertTrajectoryCompleted(trajectory);
 
-    // Verify the trajectory file exists in completed/ directory
-    const completedDir = path.join(cwd, '.trajectories', 'completed');
-    const files = fs.existsSync(completedDir) ? fs.readdirSync(completedDir) : [];
-    if (files.length === 0) {
-      throw new Error(`Expected trajectory file in ${completedDir}`);
-    }
+    const activePath = path.join(cwd, '.trajectories', 'active', `${trajectory.id}.json`);
+    const completedPath = path.join(cwd, '.trajectories', 'completed', `${trajectory.id}.json`);
+
+    assert.equal(
+      fs.existsSync(activePath),
+      false,
+      'Expected active trajectory file to be removed after completion'
+    );
+    assert.equal(
+      fs.existsSync(completedPath),
+      true,
+      `Expected completed trajectory file at "${completedPath}"`
+    );
   } finally {
     await harness.stop();
     fs.rmSync(cwd, { force: true, recursive: true });
@@ -109,11 +118,16 @@ test('trajectory: chapters are recorded during workflow execution', { timeout: 1
   await harness.start();
 
   try {
-    const result = await harness.runWorkflow(makeConfig(), undefined, { cwd });
-    assertRunCompleted(result);
-
-    const trajectory = assertTrajectoryExists(harness, cwd);
+    const trajectory = await runWorkflowAndGetTrajectory(harness, makeConfig(), cwd);
     assertTrajectoryHasChapters(trajectory, 1);
+
+    for (const chapter of trajectory.chapters) {
+      assert.equal(typeof chapter.id, 'string', 'Expected chapter.id to be a string');
+      assert.equal(typeof chapter.title, 'string', 'Expected chapter.title to be a string');
+      assert.equal(typeof chapter.startedAt, 'string', 'Expected chapter.startedAt to be a string');
+      assert.equal(typeof chapter.agentName, 'string', 'Expected chapter.agentName to be a string');
+      assert.ok(Array.isArray(chapter.events), 'Expected chapter.events to be an array');
+    }
   } finally {
     await harness.stop();
     fs.rmSync(cwd, { force: true, recursive: true });
@@ -129,10 +143,7 @@ test('trajectory: chapters record agent names', { timeout: 120_000 }, async (t) 
   await harness.start();
 
   try {
-    const result = await harness.runWorkflow(makeConfig(agentName), undefined, { cwd });
-    assertRunCompleted(result);
-
-    const trajectory = assertTrajectoryExists(harness, cwd);
+    const trajectory = await runWorkflowAndGetTrajectory(harness, makeConfig(agentName), cwd);
     assertTrajectoryHasChapters(trajectory, 1);
 
     const agentNamesInChapters = trajectory.chapters.map((ch) => ch.agentName);

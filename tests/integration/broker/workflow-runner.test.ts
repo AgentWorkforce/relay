@@ -19,6 +19,7 @@ import { checkPrerequisites } from './utils/broker-harness.js';
 import { WorkflowRunnerHarness } from './utils/workflow-harness.js';
 import {
   assertRunCompleted,
+  assertRunFailed,
   assertStepCompleted,
   assertStepCount,
   assertStepOrder,
@@ -85,6 +86,46 @@ test('workflow-runner: single step completes', { timeout: 120_000 }, async (t) =
       'step:completed',
       'run:completed',
     ]);
+  } finally {
+    await harness.stop();
+    fs.rmSync(cwd, { force: true, recursive: true });
+  }
+});
+
+test('workflow-runner: failed run transitions to failed status', { timeout: 120_000 }, async (t) => {
+  if (skipIfMissing(t)) return;
+
+  const cwd = createWorkdir();
+  const harness = new WorkflowRunnerHarness();
+  await harness.start();
+
+  try {
+    const result = await harness.runWorkflow(
+      makeConfig({
+        workflows: [
+          {
+            name: 'default',
+            steps: [
+              {
+                name: 'step-a',
+                agent: 'worker',
+                task: 'Intentional failure',
+                verification: {
+                  type: 'output_contains',
+                  value: 'MUST_NOT_EXIST',
+                },
+              },
+            ],
+          },
+        ],
+      }),
+      undefined,
+      { cwd }
+    );
+
+    assertRunFailed(result, 'MUST_NOT_EXIST');
+    assert.equal(result.run.status, 'failed');
+    assertWorkflowEventOrder(result.events, ['run:started', 'step:started', 'step:failed', 'run:failed']);
   } finally {
     await harness.stop();
     fs.rmSync(cwd, { force: true, recursive: true });

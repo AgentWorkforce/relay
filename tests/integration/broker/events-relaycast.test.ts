@@ -9,11 +9,14 @@
  *   node --test tests/integration/broker/dist/events-relaycast.test.js
  */
 import test, { type TestContext } from 'node:test';
+import assert from 'node:assert/strict';
 
+import { RelaycastApi } from '@agent-relay/sdk';
 import type { RelayYamlConfig } from '@agent-relay/sdk/workflows';
 import { checkPrerequisites } from './utils/broker-harness.js';
 import { WorkflowRunnerHarness } from './utils/workflow-harness.js';
 import { assertRunCompleted, assertWorkflowEventOrder } from './utils/workflow-assert-helpers.js';
+import { sleep } from './utils/cli-helpers.js';
 
 function skipIfMissing(t: TestContext): boolean {
   const reason = checkPrerequisites();
@@ -79,12 +82,34 @@ test('events: relaycast channel receives workflow messages', { timeout: 120_000 
   await harness.start();
 
   try {
+    const channel = `events-relay-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const workflowName = `workflow-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const result = await harness.runWorkflow(
       makeConfig({
-        swarm: { pattern: 'dag', channel: 'test-obs' },
+        name: `workflow-events-relay-${workflowName}`,
+        swarm: { pattern: 'dag', channel },
+        workflows: [
+          {
+            name: workflowName,
+            steps: [{ name: 'step-1', agent: 'worker', task: 'Do a thing' }],
+          },
+        ],
       })
     );
     assertRunCompleted(result);
+
+    const api = new RelaycastApi({ apiKey: process.env.RELAY_API_KEY, agentName: `reader-${workflowName}` });
+    let messages: Array<{ id: string; agent_name: string; text: string; created_at: string }> = [];
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      messages = await api.getMessages(channel, { limit: 50 });
+      if (messages.length > 0) break;
+      await sleep(1_000);
+    }
+
+    assert.ok(
+      messages.some((message) => message.text.includes(`Workflow **${workflowName}**`)),
+      `expected channel message payload for workflow "${workflowName}" in channel "${channel}"`
+    );
   } finally {
     await harness.stop();
   }

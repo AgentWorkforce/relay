@@ -322,7 +322,8 @@ export function resolveBinaryPath(): string {
     return process.env.AGENT_RELAY_BIN;
   }
   // Resolve relative to this file → repo root/target/debug/agent-relay-broker
-  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../..');
+  // Source: tests/integration/broker/utils/ → compiles to dist/utils/, so 5 levels up to repo root
+  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../../..');
   return path.resolve(repoRoot, 'target/debug/agent-relay-broker');
 }
 
