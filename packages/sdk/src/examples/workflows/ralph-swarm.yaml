@@ -122,31 +122,17 @@ workflows:
         type: agent
         agent: tech-lead
         task: |
-          Read ${PRD_PATH:-prd.json} and identify all incomplete stories.
-          Read ${PROGRESS_PATH:-progress.txt} for previous learnings.
+          Read ${PRD_PATH:-prd.json} (incomplete stories) and
+          ${PROGRESS_PATH:-progress.txt} (learnings from previous batches).
 
-          Decompose the next 5 stories (or fewer if remaining < 5) into
-          atomic, independent implementation tasks. Each task must be:
-          - Completable in one coding session (~30 min of work)
-          - Independent (no shared files with other tasks in this batch)
-          - Testable (has clear done criteria you can verify with a command)
+          Decompose the next 5 stories into atomic, independent tasks.
+          Each task: one coding session, no shared files with other tasks,
+          a shell verify command to confirm it works.
 
-          Output a JSON block with this exact format (for parsing):
-          ```json
-          {
-            "batch": [
-              {
-                "id": "task-1",
-                "title": "...",
-                "files": ["src/foo.ts"],
-                "prompt": "Full implementation instruction for a codex worker",
-                "verify": "npm test -- --grep 'task-1' 2>&1 | tail -20"
-              }
-            ]
-          }
-          ```
+          Output a JSON block: {"batch":[{"id":"task-N","title":"...",
+          "files":["src/..."],"prompt":"full impl instruction","verify":"cmd"}]}
 
-          Post the decomposition to #ralph-swarm so workers can see it.
+          Post the decomposition to #ralph-swarm so all workers can read it.
           Output: DECOMPOSED
         verification:
           type: output_contains

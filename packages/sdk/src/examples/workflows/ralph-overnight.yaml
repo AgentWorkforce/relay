@@ -57,16 +57,14 @@ agents:
 
   - name: squad-alpha-builder-1
     cli: codex
-    channels: [squad-alpha]
-    role: 'Builds features assigned by squad-alpha-lead.'
+    role: 'Implements BUILDER_1_SPEC from squad-alpha output via {{steps.squad-alpha.output}}.'
     interactive: false
     constraints:
       model: gpt-5.3-codex
 
   - name: squad-alpha-builder-2
     cli: codex
-    channels: [squad-alpha]
-    role: 'Builds features assigned by squad-alpha-lead.'
+    role: 'Implements BUILDER_2_SPEC from squad-alpha output via {{steps.squad-alpha.output}}.'
     interactive: false
     constraints:
       model: gpt-5.3-codex-spark
@@ -80,16 +78,14 @@ agents:
 
   - name: squad-beta-builder-1
     cli: codex
-    channels: [squad-beta]
-    role: 'Builds features assigned by squad-beta-lead.'
+    role: 'Implements BUILDER_1_SPEC from squad-beta output via {{steps.squad-beta.output}}.'
     interactive: false
     constraints:
       model: gpt-5.3-codex
 
   - name: squad-beta-builder-2
     cli: codex
-    channels: [squad-beta]
-    role: 'Builds features assigned by squad-beta-lead.'
+    role: 'Implements BUILDER_2_SPEC from squad-beta output via {{steps.squad-beta.output}}.'
     interactive: false
     constraints:
       model: gpt-5.3-codex-spark
@@ -135,27 +131,15 @@ workflows:
         type: agent
         agent: product-manager
         task: |
-          It's the start of an autonomous dev session.
+          Read ${BACKLOG_PATH:-backlog.json} and ${SESSION_LOG:-session-log.txt}.
 
-          Read ${BACKLOG_PATH:-backlog.json} — it contains user stories with
-          priority, effort estimate, and acceptance criteria.
-          Read ${SESSION_LOG:-session-log.txt} for notes from previous sessions.
+          Select the highest-priority stories for a ~4-hour parallel session.
+          Assign to two squads working on DIFFERENT files (no conflicts):
+            Alpha squad: stories + file paths
+            Beta squad: stories + file paths
+          Include risk flags for any cross-squad dependencies.
 
-          Your output:
-          1. Select the highest-priority stories that fit in ~4 hours of parallel work
-          2. For each story: confirm scope, identify risks, flag dependencies
-          3. Assign stories to two squads (alpha and beta) based on related files
-             - Alpha and Beta must work on DIFFERENT files to avoid conflicts
-
-          Post the session plan to #ralph-overnight in this format:
-          ```
-          SESSION_PLAN
-          Alpha squad: [story-1, story-3] — files: src/auth/*, src/user/*
-          Beta squad: [story-2, story-4] — files: src/api/*, src/db/*
-          Risk flags: [any blockers or architectural concerns]
-          ```
-
-          Output: PLANNING_COMPLETE
+          Post SESSION_PLAN to #ralph-overnight, then output: PLANNING_COMPLETE
         verification:
           type: output_contains
           value: PLANNING_COMPLETE
@@ -191,41 +175,66 @@ workflows:
           git checkout "overnight/$(date +%Y%m%d)"
         captureOutput: true
 
-      # ── Wave 3: Two squads work in parallel ──────────────────────────────
-      # Squad leads coordinate their builders on dedicated channels.
-      # Builders are non-interactive — they get full spec from the lead's
-      # task output and implement, then return stdout for the lead to review.
+      # ── Wave 3: Squad leads plan and produce builder specs ───────────────
+      # Leads run first, produce self-contained task specs for each builder.
+      # Builders run in wave 4 after the lead completes, reading specs via
+      # {{steps.squad-alpha.output}} — no channel needed for non-interactive agents.
 
       - name: squad-alpha
         type: agent
         agent: squad-alpha-lead
         dependsOn: [create-branch]
         task: |
-          Lead squad alpha. Workers: squad-alpha-builder-1, squad-alpha-builder-2.
-          Channel: #squad-alpha.
+          Lead squad alpha on #squad-alpha.
+          Architecture: {{steps.tech-architecture.output}}
+          PM plan (alpha): {{steps.pm-planning.output}}
 
-          Architecture notes: {{steps.tech-architecture.output}}
-          PM plan (alpha stories): {{steps.pm-planning.output}}
+          Split alpha stories into two self-contained tasks. For each, write
+          a complete implementation spec including: files to change, exact
+          changes needed, and the shell command to verify it works.
 
-          1. Split the alpha stories between your two builders
-          2. Post each builder's full task spec to #squad-alpha
-          3. Review their output when they complete
-          4. Ensure no conflicts between their changes
-          5. Run the tests for alpha's files: npm test -- --testPathPattern=<alpha-files>
-
-          Output: ALPHA_DONE:<summary of what was built>
+          Format your output as:
+          BUILDER_1_SPEC: <complete spec for builder 1>
+          BUILDER_2_SPEC: <complete spec for builder 2>
+          Output: ALPHA_SPECS_READY
         verification:
           type: output_contains
-          value: ALPHA_DONE
+          value: ALPHA_SPECS_READY
+
+      - name: squad-beta
+        type: agent
+        agent: squad-beta-lead
+        dependsOn: [create-branch]
+        task: |
+          Lead squad beta on #squad-beta.
+          Architecture: {{steps.tech-architecture.output}}
+          PM plan (beta): {{steps.pm-planning.output}}
+
+          Split beta stories into two self-contained tasks. Write complete
+          specs for each builder: files, changes, verification command.
+
+          Format:
+          BUILDER_1_SPEC: <complete spec for builder 1>
+          BUILDER_2_SPEC: <complete spec for builder 2>
+          Output: BETA_SPECS_READY
+        verification:
+          type: output_contains
+          value: BETA_SPECS_READY
+
+      # ── Wave 4: Builders implement from lead specs (non-interactive) ──────
+      # Each builder reads its spec from {{steps.squad-X.output}} — no channel
+      # needed. They run in parallel across both squads (same wave).
 
       - name: squad-alpha-b1
         type: agent
         agent: squad-alpha-builder-1
-        dependsOn: [create-branch]
+        dependsOn: [squad-alpha]
         task: |
-          Join #squad-alpha. squad-alpha-lead will post your task spec.
-          Implement it. Post ALPHA_B1_DONE when complete.
-          Output: ALPHA_B1_DONE
+          Implement BUILDER_1_SPEC from the squad alpha lead output:
+          {{steps.squad-alpha.output}}
+
+          Follow the spec exactly. Run the verification command to confirm.
+          Output: ALPHA_B1_DONE:<one-line summary>
         verification:
           type: output_contains
           value: ALPHA_B1_DONE
@@ -233,44 +242,27 @@ workflows:
       - name: squad-alpha-b2
         type: agent
         agent: squad-alpha-builder-2
-        dependsOn: [create-branch]
+        dependsOn: [squad-alpha]
         task: |
-          Join #squad-alpha. squad-alpha-lead will post your task spec.
-          Implement it. Post ALPHA_B2_DONE when complete.
-          Output: ALPHA_B2_DONE
+          Implement BUILDER_2_SPEC from the squad alpha lead output:
+          {{steps.squad-alpha.output}}
+
+          Follow the spec exactly. Run the verification command to confirm.
+          Output: ALPHA_B2_DONE:<one-line summary>
         verification:
           type: output_contains
           value: ALPHA_B2_DONE
 
-      - name: squad-beta
-        type: agent
-        agent: squad-beta-lead
-        dependsOn: [create-branch]
-        task: |
-          Lead squad beta. Workers: squad-beta-builder-1, squad-beta-builder-2.
-          Channel: #squad-beta.
-
-          Architecture notes: {{steps.tech-architecture.output}}
-          PM plan (beta stories): {{steps.pm-planning.output}}
-
-          1. Split the beta stories between your two builders
-          2. Post each builder's full task spec to #squad-beta
-          3. Review their output. Ensure no conflicts with alpha's files.
-          4. Run tests for beta's files.
-
-          Output: BETA_DONE:<summary of what was built>
-        verification:
-          type: output_contains
-          value: BETA_DONE
-
       - name: squad-beta-b1
         type: agent
         agent: squad-beta-builder-1
-        dependsOn: [create-branch]
+        dependsOn: [squad-beta]
         task: |
-          Join #squad-beta. squad-beta-lead will post your task spec.
-          Implement it. Post BETA_B1_DONE when complete.
-          Output: BETA_B1_DONE
+          Implement BUILDER_1_SPEC from the squad beta lead output:
+          {{steps.squad-beta.output}}
+
+          Follow the spec exactly. Run the verification command to confirm.
+          Output: BETA_B1_DONE:<one-line summary>
         verification:
           type: output_contains
           value: BETA_B1_DONE
@@ -278,11 +270,13 @@ workflows:
       - name: squad-beta-b2
         type: agent
         agent: squad-beta-builder-2
-        dependsOn: [create-branch]
+        dependsOn: [squad-beta]
         task: |
-          Join #squad-beta. squad-beta-lead will post your task spec.
-          Implement it. Post BETA_B2_DONE when complete.
-          Output: BETA_B2_DONE
+          Implement BUILDER_2_SPEC from the squad beta lead output:
+          {{steps.squad-beta.output}}
+
+          Follow the spec exactly. Run the verification command to confirm.
+          Output: BETA_B2_DONE:<one-line summary>
         verification:
           type: output_contains
           value: BETA_B2_DONE
@@ -291,7 +285,7 @@ workflows:
 
       - name: ci-gate
         type: deterministic
-        dependsOn: [squad-alpha, squad-beta]
+        dependsOn: [squad-alpha-b1, squad-alpha-b2, squad-beta-b1, squad-beta-b2]
         command: >
           npm run lint 2>&1 | tail -5 &&
           npx tsc --noEmit 2>&1 | tail -5 &&
@@ -387,34 +381,14 @@ workflows:
         agent: product-manager
         dependsOn: [push-and-pr]
         task: |
-          Write the morning summary for the engineering team.
+          Write the morning summary to ${SESSION_LOG:-session-log.txt}.
 
-          Session results:
-          - Alpha squad: {{steps.squad-alpha.output}}
-          - Beta squad: {{steps.squad-beta.output}}
-          - CI gate: {{steps.ci-gate.output}}
-          - QA added: {{steps.qa-tests.output}}
-          - Security: {{steps.security-audit.output}}
-          - PR: {{steps.push-and-pr.output}}
+          Results: alpha={{steps.squad-alpha.output}} | beta={{steps.squad-beta.output}}
+          CI={{steps.ci-gate.output}} | QA={{steps.qa-tests.output}}
+          Security={{steps.security-audit.output}} | PR={{steps.push-and-pr.output}}
 
-          Write to ${SESSION_LOG:-session-log.txt}:
-          ```
-          ## Overnight Session $(date +%Y-%m-%d)
-
-          ### Completed
-          [list stories with brief summary]
-
-          ### Quality
-          [CI status, test count, security status]
-
-          ### Learnings
-          [patterns discovered, gotchas, non-obvious things]
-
-          ### Next Session
-          [what to prioritize next, unresolved items]
-          ```
-
-          Also mark completed stories as done in ${BACKLOG_PATH:-backlog.json}.
+          Include: completed stories, CI/quality status, learnings, next priorities.
+          Mark completed stories done in ${BACKLOG_PATH:-backlog.json}.
 
           Output: SESSION_COMPLETE
         verification:
@@ -424,7 +398,7 @@ workflows:
 coordination:
   barriers:
     - name: squads-complete
-      waitFor: [squad-alpha, squad-beta]
+      waitFor: [squad-alpha-b1, squad-alpha-b2, squad-beta-b1, squad-beta-b2]
       timeoutMs: 7200000
     - name: quality-gates-complete
       waitFor: [qa-tests, security-audit]
