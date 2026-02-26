@@ -4,7 +4,7 @@
   "title": "Relay YAML Configuration",
   "description": "Schema for relay.yaml workflow configuration files",
   "type": "object",
-  "required": ["version", "name", "swarm", "agents"],
+  "required": ["version", "name", "swarm"],
   "additionalProperties": false,
   "properties": {
     "version": {
@@ -26,8 +26,7 @@
       "type": "array",
       "items": {
         "$ref": "#/definitions/AgentDefinition"
-      },
-      "minItems": 1
+      }
     },
     "workflows": {
       "type": "array",
@@ -167,6 +166,11 @@
           "type": "boolean",
           "default": true,
           "description": "When false, the agent runs as a non-interactive subprocess (no PTY, no relay messaging). It receives its task as a CLI prompt argument and returns stdout as output. Default: true."
+        },
+        "preset": {
+          "type": "string",
+          "enum": ["lead", "worker", "reviewer", "analyst"],
+          "description": "Role preset that automatically configures interactive mode and injects appropriate task guardrails. lead: interactive PTY, relay-aware. worker/reviewer/analyst: interactive: false, no sub-agents."
         }
       }
     },

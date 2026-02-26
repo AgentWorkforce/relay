@@ -275,9 +275,10 @@ fn relaycast_server_config(
     }
 
     let mut env = Map::new();
-    // NOTE: RELAY_API_KEY is intentionally omitted from .mcp.json — the Relaycast
-    // MCP server reads credentials from .agent-relay/relaycast.json at startup.
-    // Some CLI tools (e.g. codex) filter API keys from .mcp.json env vars.
+    // NOTE: RELAY_API_KEY is intentionally omitted from .mcp.json — the broker
+    // injects it directly into the child process environment. Some CLI tools
+    // (e.g. codex) strip API keys from .mcp.json env vars, so env injection
+    // is the only reliable path.
     let _ = relay_api_key; // suppress unused warning
     if let Some(base_url) = relay_base_url.map(str::trim).filter(|s| !s.is_empty()) {
         env.insert("RELAY_BASE_URL".into(), Value::String(base_url.to_string()));
@@ -994,7 +995,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
             json["mcpServers"]["relaycast"]["command"].as_str(),
             Some("node")
         );
-        // RELAY_API_KEY is intentionally omitted — MCP server reads from relaycast.json
+        // RELAY_API_KEY is intentionally omitted from .mcp.json — injected via process env by the broker
         assert_eq!(
             json["mcpServers"]["relaycast"]["env"]["RELAY_API_KEY"].as_str(),
             None
@@ -1058,8 +1059,9 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         .await
         .expect("configure claude mcp");
 
-        assert_eq!(args.len(), 2);
+        assert_eq!(args.len(), 3);
         assert_eq!(args[0], "--mcp-config");
+        assert_eq!(args[2], "--strict-mcp-config");
 
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
         assert_eq!(

@@ -1,52 +1,58 @@
-# Workflow Experiment Tests
+# Workflow Durability Patterns
 
-Targeted single-concern workflow YAMLs that test specific agent behaviors.
-Run individually to verify a mechanism works before using it in production workflows.
+Test workflows that encode the key rules for writing workflows that don't time out or fail silently.
 
-## Structure
+## Workflows
+
+| File                                | Tests                                                               |
+| ----------------------------------- | ------------------------------------------------------------------- |
+| `test-deterministic-pipeline.yaml`  | Pure shell steps, `captureOutput`, `{{steps.X.output}}` chaining    |
+| `test-non-interactive-bounded.yaml` | Non-interactive agents with content injected by deterministic steps |
+| `test-lead-worker-pattern.yaml`     | Interactive lead + non-interactive workers, relay coordination      |
+| `test-step-sizing.yaml`             | One step = one deliverable; chaining vs discovery                   |
+
+## Core Rules
+
+### 1. Non-interactive agents must never discover information via tools
+
+**Wrong:** Ask a `worker` agent to "read `src/foo.ts` and summarize it"  
+**Right:** Deterministic step runs `cat src/foo.ts`, captures output, injects via `{{steps.read.output}}`
+
+Non-interactive (`claude -p`) agents can use tools but it's slow, unreliable, and often times out on large files. Deterministic steps are instant.
+
+### 2. One step = one deliverable
+
+**Wrong:** "Read the codebase, design a spec, write it to disk, and validate the build"  
+**Right:** Four separate steps, each with a single clear output and `output_contains` verification
+
+### 3. Interactive (lead) for complexity, non-interactive (worker) for execution
+
+- **Lead** (`preset: lead`): reasoning, coordination, relay messaging, spawning workers
+- **Worker** (`preset: worker`): takes a small well-defined task, produces structured stdout
+
+### 4. Always set `verification.output_contains`
+
+Without verification, a step that produces empty output looks like success. Every agent step needs a sentinel value.
+
+### 5. Timeout budgets
+
+- Deterministic steps: seconds
+- Non-interactive agents with injected content: 2–5 min
+- Interactive lead agents: 10–20 min (they read channels, wait for workers)
+- Full workflow: sum of critical path + 20% buffer
+
+### 6. Never create a lead↔worker DAG deadlock
+
+**Wrong:** `work-a` and `work-b` depend on `coordinate` (lead), but `coordinate` waits for DONE signals from `work-a` and `work-b`. Neither can proceed.
+
+**Right:** Workers and lead all depend on `context` (start in parallel). A `merge` step depends on all three. Lead watches the channel for worker signals — it doesn't block the workers from starting.
 
 ```
-tests/workflows/
-├── codex-exit/       # How to get interactive codex to self-terminate
-└── codex-lead/       # Codex as lead coordinating claude workers
+context → work-a ─┐
+context → work-b ─┼→ merge
+context → lead  ──┘
 ```
 
-## How to run
+### 7. Never ask an agent to read large files via tools
 
-```bash
-node packages/sdk/dist/workflows/cli.js tests/workflows/<dir>/<file>.yaml
-```
-
-> **Important:** Run from a regular terminal, not from inside a Claude Code session.
-> Claude Code blocks nested `claude` processes — any workflow with a claude agent
-> will hang indefinitely when launched from the Claude Code bash tool.
-
----
-
-## codex-exit — Exit mechanism experiments
-
-Tests which termination strategy reliably gets interactive codex to exit.
-
-| File                                      | Strategy                           | Result                      | Time    |
-| ----------------------------------------- | ---------------------------------- | --------------------------- | ------- |
-| `relay.codex-exit-v1-prompt.yaml`         | Explicit prompt with example block | ✅ works                    | 23s     |
-| `relay.codex-exit-v2-lead-relay.yaml`     | Claude lead DMs codex to /exit     | ✅ works                    | 20s/69s |
-| `relay.codex-exit-v3-file-sentinel.yaml`  | File write + /exit                 | ⚠️ exit works, file skipped | 20s     |
-| `relay.codex-exit-v4-noninteractive.yaml` | `interactive: false` (control)     | ✅ fastest                  | 10s     |
-| `relay.codex-exit-v5-self-release.yaml`   | `remove_agent` MCP tool            | ✅ works                    | 31s     |
-
-**Recommendation:** Use `interactive: false` for any codex worker that doesn't need real-time relay messaging. Use explicit prompt (V1 pattern) when interactive mode is required.
-
----
-
-## codex-lead — Codex lead + claude worker experiments
-
-Tests whether codex can reliably act as a lead agent coordinating claude workers.
-
-| File                                              | Strategy                                          | Result     | Time |
-| ------------------------------------------------- | ------------------------------------------------- | ---------- | ---- |
-| `relay.codex-lead-v1-basic-coord.yaml`            | Channel-based assignment + completion signal      | ⬜ not run |      |
-| `relay.codex-lead-v2-step-chaining.yaml`          | Codex reviews claude output via step chaining     | ⬜ not run |      |
-| `relay.codex-lead-v3-multi-worker.yaml`           | Codex coordinates 2 parallel claude workers       | ⬜ not run |      |
-| `relay.codex-lead-v4-noninteractive-workers.yaml` | Codex reviews 2 non-interactive claude workers    | ⬜ not run |      |
-| `relay.codex-lead-v5-dm-worker.yaml`              | Codex DMs worker directly (not channel broadcast) | ⬜ not run |      |
+`packages/sdk/src/workflows/runner.ts` is ~3200 lines. Asking `claude -p` to read it via the Read tool + reason about it = 20+ min timeout. Extract only the relevant lines in a deterministic step first.

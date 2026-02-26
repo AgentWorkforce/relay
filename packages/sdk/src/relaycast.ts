@@ -1,8 +1,4 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { RelayCast, RelayError, type AgentClient } from '@relaycast/sdk';
 
 export type { AgentClient } from '@relaycast/sdk';
@@ -12,7 +8,6 @@ export type { AgentClient } from '@relaycast/sdk';
 export interface CreateRelaycastClientOptions {
   apiKey?: string;
   baseUrl?: string;
-  cachePath?: string;
   agentName?: string;
   /** Relaycast registration type. Defaults to "agent". */
   agentType?: 'agent' | 'human';
@@ -20,27 +15,19 @@ export interface CreateRelaycastClientOptions {
 
 /**
  * Create an authenticated @relaycast/sdk AgentClient.
- * Handles API key resolution (options > env > cache file) and agent registration
+ * Handles API key resolution (options > RELAY_API_KEY env) and agent registration
  * with 409 conflict retry.
  */
 export async function createRelaycastClient(
   options: CreateRelaycastClientOptions = {}
 ): Promise<AgentClient> {
   const baseUrl = options.baseUrl ?? process.env.RELAYCAST_BASE_URL ?? 'https://api.relaycast.dev';
-  const cachePath = options.cachePath ?? join(homedir(), '.agent-relay', 'relaycast.json');
   const agentName = options.agentName ?? `sdk-${randomBytes(4).toString('hex')}`;
   const agentType = options.agentType ?? 'agent';
 
-  // Resolve API key
-  let apiKey = options.apiKey ?? process.env.RELAY_API_KEY;
+  const apiKey = options.apiKey ?? process.env.RELAY_API_KEY;
   if (!apiKey) {
-    const raw = await readFile(cachePath, 'utf-8');
-    const creds = JSON.parse(raw);
-    apiKey = creds.api_key;
-  }
-
-  if (!apiKey) {
-    throw new Error('Relaycast API key not found in options, RELAY_API_KEY, or cache file');
+    throw new Error('Relaycast API key not found in options or RELAY_API_KEY env var');
   }
 
   const relay = new RelayCast({ apiKey, baseUrl });
@@ -64,23 +51,15 @@ export async function createRelaycastClient(
 
 // ── Class-based API (used by workflows/runner) ──────────────────────────────
 
-export interface RelaycastCredentials {
-  workspace_id: string;
-  agent_id: string;
-  api_key: string;
-  agent_name?: string;
-}
-
 export interface RelaycastWorkspace {
   workspaceId: string;
   apiKey: string;
 }
 
 export interface RelaycastApiOptions {
-  /** Workspace API key. If provided, skips reading from the cache file. */
+  /** Workspace API key. If omitted, falls back to RELAY_API_KEY env var. */
   apiKey?: string;
   baseUrl?: string;
-  cachePath?: string;
   /** Agent name to register with. Defaults to a unique "sdk-<hex>" name. */
   agentName?: string;
 }
@@ -93,17 +72,12 @@ const DEFAULT_BASE_URL = 'https://api.relaycast.dev';
  */
 export class RelaycastApi {
   private readonly baseUrl: string;
-  private readonly cachePath: string;
   private readonly agentName: string;
   private readonly apiKeyOverride?: string;
   private agentClient?: AgentClient;
 
   constructor(options: RelaycastApiOptions = {}) {
     this.baseUrl = options.baseUrl ?? process.env.RELAYCAST_BASE_URL ?? DEFAULT_BASE_URL;
-    // Default to per-project cache (matches the relay broker's storage) so
-    // concurrent workflows from different repos never share credentials.
-    // Falls back to the legacy global path when no project-local cache exists.
-    this.cachePath = options.cachePath ?? join(process.cwd(), '.agent-relay', 'relaycast.json');
     this.agentName = options.agentName ?? `sdk-${randomBytes(4).toString('hex')}`;
     this.apiKeyOverride = options.apiKey;
   }
@@ -131,35 +105,20 @@ export class RelaycastApi {
     return { workspaceId, apiKey };
   }
 
-  /** Resolve the workspace API key from explicit option, env, or cache file.
-   *  Tries the configured (per-project) cache first, then falls back to the
-   *  legacy global cache at ~/.agent-relay/relaycast.json. */
-  private async resolveApiKey(): Promise<string> {
-    if (this.apiKeyOverride) return this.apiKeyOverride;
-    if (process.env.RELAY_API_KEY) return process.env.RELAY_API_KEY;
-
-    // Try per-project cache first, then fall back to global (deduplicated)
-    const globalPath = join(homedir(), '.agent-relay', 'relaycast.json');
-    const candidates = this.cachePath === globalPath ? [this.cachePath] : [this.cachePath, globalPath];
-    for (const cachePath of candidates) {
-      if (!existsSync(cachePath)) continue;
-      try {
-        const raw = await readFile(cachePath, 'utf-8');
-        const creds: RelaycastCredentials = JSON.parse(raw);
-        if (creds.api_key) return creds.api_key;
-      } catch {
-        // Cache corrupt — try next path
-      }
+  /** Resolve the workspace API key from explicit option or RELAY_API_KEY env. */
+  private resolveApiKey(): string {
+    const key = this.apiKeyOverride ?? process.env.RELAY_API_KEY;
+    if (!key) {
+      throw new Error('No Relaycast API key found. Pass apiKey option or set RELAY_API_KEY env var.');
     }
-
-    throw new Error(`No Relaycast API key found (checked ${this.cachePath} and ${globalPath})`);
+    return key;
   }
 
   /** Lazily register and return an authenticated AgentClient. */
   private async ensure(): Promise<AgentClient> {
     if (this.agentClient) return this.agentClient;
 
-    const apiKey = await this.resolveApiKey();
+    const apiKey = this.resolveApiKey();
     const relay = new RelayCast({ apiKey, baseUrl: this.baseUrl });
 
     // Register — retry with a suffixed name on 409 conflict.
@@ -232,7 +191,7 @@ export class RelaycastApi {
    *  No-op if the agent already exists (returns null).
    *  Returns an AgentClient that can send heartbeats. */
   async registerExternalAgent(name: string, persona?: string): Promise<AgentClient | null> {
-    const apiKey = await this.resolveApiKey();
+    const apiKey = this.resolveApiKey();
     const relay = new RelayCast({ apiKey, baseUrl: this.baseUrl });
     try {
       const reg = await relay.agents.register({ name, type: 'agent', ...(persona ? { persona } : {}) });

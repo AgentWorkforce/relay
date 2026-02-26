@@ -86,6 +86,8 @@ export type SwarmPattern =
 
 // ── Agent definitions ───────────────────────────────────────────────────────
 
+export type AgentPreset = 'lead' | 'worker' | 'reviewer' | 'analyst';
+
 /** Definition of an agent participating in a workflow. */
 export interface AgentDefinition {
   name: string;
@@ -102,6 +104,15 @@ export interface AgentDefinition {
   cwd?: string;
   /** Additional paths the agent needs read/write access to. */
   additionalPaths?: string[];
+  /**
+   * Role preset that automatically configures interactive mode and injects
+   * appropriate task guardrails. Overrides are still accepted.
+   *   lead     → interactive PTY, relay-aware, coordinates workers via channels
+   *   worker   → interactive: false, produces structured output, no sub-agents
+   *   reviewer → interactive: false, reads artifacts, produces verdict, no sub-agents
+   *   analyst  → interactive: false, reads code/files, writes findings, no sub-agents
+   */
+  preset?: AgentPreset;
 }
 
 export type AgentCli = 'claude' | 'codex' | 'gemini' | 'aider' | 'goose' | 'opencode' | 'droid';
@@ -123,7 +134,7 @@ export interface PreflightCheck {
   /** Shell command to execute. */
   command: string;
   /** Fail if output matches this condition: "non-empty", "empty", or a regex pattern. */
-  failIf?: "non-empty" | "empty" | string;
+  failIf?: 'non-empty' | 'empty' | string;
   /** Succeed only if output matches this condition. */
   successIf?: string;
   /** Human-readable description of what this check validates. */
@@ -141,7 +152,7 @@ export interface WorkflowDefinition {
 }
 
 /** Step type: agent (LLM-powered), deterministic (shell command), or worktree (git worktree setup). */
-export type WorkflowStepType = "agent" | "deterministic" | "worktree";
+export type WorkflowStepType = 'agent' | 'deterministic' | 'worktree';
 
 // ── Custom step definitions ─────────────────────────────────────────────────
 
@@ -162,7 +173,7 @@ export interface CustomStepDefinition {
   /** Parameters that can be passed when using this step. */
   params?: CustomStepParam[];
   /** Step type: "deterministic" or "worktree". */
-  type?: "deterministic" | "worktree";
+  type?: 'deterministic' | 'worktree';
   /** Shell command to execute (for deterministic steps). Supports {{param}} interpolation. */
   command?: string;
   /** Branch name (for worktree steps). Supports {{param}} interpolation. */
@@ -241,12 +252,12 @@ export interface WorkflowStep {
 
 /** Type guard: Check if a step is a deterministic (shell command) step. */
 export function isDeterministicStep(step: WorkflowStep): boolean {
-  return step.type === "deterministic";
+  return step.type === 'deterministic';
 }
 
 /** Type guard: Check if a step is a worktree (git worktree setup) step. */
 export function isWorktreeStep(step: WorkflowStep): boolean {
-  return step.type === "worktree";
+  return step.type === 'worktree';
 }
 
 /** Type guard: Check if a step uses a custom step definition. */
@@ -256,7 +267,7 @@ export function isCustomStep(step: WorkflowStep): boolean {
 
 /** Type guard: Check if a step is an agent (LLM-powered) step. */
 export function isAgentStep(step: WorkflowStep): boolean {
-  return step.type !== "deterministic" && step.type !== "worktree";
+  return step.type !== 'deterministic' && step.type !== 'worktree';
 }
 
 // Legacy type aliases for backward compatibility

@@ -9,7 +9,6 @@ import { randomBytes } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { WriteStream } from 'node:fs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import path from 'node:path';
 
 import { parse as parseYaml } from 'yaml';
@@ -26,6 +25,7 @@ import { InMemoryWorkflowDb } from './memory-db.js';
 import type {
   AgentCli,
   AgentDefinition,
+  AgentPreset,
   DryRunReport,
   DryRunWave,
   ErrorHandlingConfig,
@@ -116,6 +116,7 @@ export class WorkflowRunner {
   relay?: AgentRelay;
   private relaycastApi?: RelaycastApi;
   private relayApiKey?: string;
+  private relayApiKeyAutoCreated = false;
   private channel?: string;
   private trajectory?: WorkflowTrajectory;
   private abortController?: AbortController;
@@ -180,74 +181,22 @@ export class WorkflowRunner {
   /**
    * Ensure a Relaycast workspace API key is available for the broker.
    * Resolution order:
-   *   1. RELAY_API_KEY environment variable
-   *   2. Cached credentials at ~/.agent-relay/relaycast.json
-   *   3. Auto-create a new workspace via the Relaycast API
+   *   1. RELAY_API_KEY environment variable (explicit override)
+   *   2. Auto-create a fresh workspace via the Relaycast API
+   *
+   * Each workflow run gets its own isolated workspace — no caching, no sharing.
    */
-  /**
-   * Validate a Relaycast API key by making a lightweight API call.
-   * Returns true if the key is valid, false otherwise.
-   */
-  private async validateRelaycastApiKey(apiKey: string): Promise<boolean> {
-    const baseUrl = process.env.RELAYCAST_BASE_URL ?? 'https://api.relaycast.dev';
-    try {
-      const res = await fetch(`${baseUrl}/v1/channels`, {
-        method: 'GET',
-        headers: {
-          authorization: `Bearer ${apiKey}`,
-          'content-type': 'application/json',
-        },
-      });
-      return res.ok;
-    } catch {
-      return false;
-    }
-  }
-
   private async ensureRelaycastApiKey(channel: string): Promise<void> {
     if (this.relayApiKey) return;
 
-    const configuredKey = this.relayOptions.env?.RELAY_API_KEY;
-    if (configuredKey) {
-      if (await this.validateRelaycastApiKey(configuredKey)) {
-        this.relayApiKey = configuredKey;
-        return;
-      }
-    }
-
-    const envKey = process.env.RELAY_API_KEY;
+    // Explicit override from relayOptions or environment takes priority.
+    const envKey = this.relayOptions.env?.RELAY_API_KEY ?? process.env.RELAY_API_KEY;
     if (envKey) {
-      if (await this.validateRelaycastApiKey(envKey)) {
-        this.relayApiKey = envKey;
-        return;
-      }
+      this.relayApiKey = envKey;
+      return;
     }
 
-    // Check cached credentials — prefer per-project cache (written by the local
-    // relay broker) over the legacy global cache so concurrent workflows from
-    // different repos never stomp each other's credentials.
-    const projectCachePath = path.join(this.cwd, '.agent-relay', 'relaycast.json');
-    const globalCachePath = path.join(homedir(), '.agent-relay', 'relaycast.json');
-
-    for (const cachePath of [projectCachePath, globalCachePath]) {
-      if (existsSync(cachePath)) {
-        try {
-          const raw = await readFile(cachePath, 'utf-8');
-          const creds = JSON.parse(raw);
-          if (creds.api_key) {
-            if (await this.validateRelaycastApiKey(creds.api_key)) {
-              this.relayApiKey = creds.api_key;
-              return;
-            }
-            // Cached key is stale — continue to next path or auto-provision
-          }
-        } catch {
-          // Cache corrupt — try next path
-        }
-      }
-    }
-
-    // Auto-create a Relaycast workspace with a unique name
+    // Always create a fresh workspace — each run gets full isolation.
     const workspaceName = `relay-${channel}-${randomBytes(4).toString('hex')}`;
     const baseUrl = process.env.RELAYCAST_BASE_URL ?? 'https://api.relaycast.dev';
     const res = await fetch(`${baseUrl}/v1/workspaces`, {
@@ -263,29 +212,13 @@ export class WorkflowRunner {
     const body = (await res.json()) as Record<string, any>;
     const data = (body.data ?? body) as Record<string, any>;
     const apiKey = data.api_key as string;
-    const workspaceId = (data.workspace_id ?? data.id) as string;
 
     if (!apiKey) {
       throw new Error('Relaycast workspace response missing api_key');
     }
 
-    // Cache credentials in the per-project directory so concurrent workflows
-    // from different repos each get their own workspace credentials.
-    const cacheDir = path.dirname(projectCachePath);
-    await mkdir(cacheDir, { recursive: true, mode: 0o700 });
-    await writeFile(
-      projectCachePath,
-      JSON.stringify({
-        workspace_id: workspaceId,
-        api_key: apiKey,
-        agent_id: '',
-        agent_name: null,
-        updated_at: new Date().toISOString(),
-      }),
-      { mode: 0o600 }
-    );
-
     this.relayApiKey = apiKey;
+    this.relayApiKeyAutoCreated = true;
   }
 
   private getRelayEnv(): NodeJS.ProcessEnv | undefined {
@@ -327,7 +260,9 @@ export class WorkflowRunner {
   parseYamlString(raw: string, source = '<string>'): RelayYamlConfig {
     const parsed = parseYaml(raw);
     this.validateConfig(parsed, source);
-    return parsed as RelayYamlConfig;
+    const config = parsed as RelayYamlConfig;
+    config.agents ??= [];
+    return config;
   }
 
   /** Validate a config object against the RelayYamlConfig shape. */
@@ -351,11 +286,11 @@ export class WorkflowRunner {
     if (typeof swarm.pattern !== 'string') {
       throw new Error(`${source}: missing required field "swarm.pattern"`);
     }
-    if (!Array.isArray(c.agents) || c.agents.length === 0) {
-      throw new Error(`${source}: "agents" must be a non-empty array`);
+    if (c.agents !== undefined && !Array.isArray(c.agents)) {
+      throw new Error(`${source}: "agents" must be an array when provided`);
     }
 
-    for (const agent of c.agents) {
+    for (const agent of c.agents ?? []) {
       if (typeof agent !== 'object' || agent === null) {
         throw new Error(`${source}: each agent must be an object`);
       }
@@ -1006,6 +941,11 @@ export class WorkflowRunner {
       this.log('Resolving Relaycast API key...');
       await this.ensureRelaycastApiKey(channel);
       this.log('API key resolved');
+      if (this.relayApiKeyAutoCreated && this.relayApiKey) {
+        this.log(`Workspace created — follow this run in Relaycast:`);
+        this.log(`  RELAY_API_KEY=${this.relayApiKey}`);
+        this.log(`  Channel: ${channel}`);
+      }
 
       this.log('Starting broker...');
       // Include a short run ID suffix in the broker name so each workflow execution
@@ -1106,7 +1046,6 @@ export class WorkflowRunner {
       this.relaycastApi = new RelaycastApi({
         agentName: 'WorkflowRunner',
         apiKey: this.relayApiKey,
-        cachePath: path.join(this.cwd, '.agent-relay', 'relaycast.json'),
       });
 
       // Wire broker stderr to console for observability
@@ -1904,14 +1843,16 @@ export class WorkflowRunner {
     if (!agentName) {
       throw new Error(`Step "${step.name}" is missing required "agent" field`);
     }
-    const agentDef = agentMap.get(agentName);
-    if (!agentDef) {
+    const rawAgentDef = agentMap.get(agentName);
+    if (!rawAgentDef) {
       throw new Error(`Agent "${agentName}" not found in config`);
     }
+    const agentDef = WorkflowRunner.resolveAgentDef(rawAgentDef);
 
     const maxRetries = step.retries ?? agentDef.constraints?.retries ?? errorHandling?.maxRetries ?? 0;
     const retryDelay = errorHandling?.retryDelayMs ?? 1000;
-    const timeoutMs = step.timeoutMs ?? agentDef.constraints?.timeoutMs;
+    const timeoutMs =
+      step.timeoutMs ?? agentDef.constraints?.timeoutMs ?? this.currentConfig?.swarm?.timeoutMs;
 
     let lastError: string | undefined;
 
@@ -2036,6 +1977,52 @@ export class WorkflowRunner {
   }
 
   /**
+   * Apply preset defaults to an agent definition.
+   * Explicit fields on the definition always win over preset-inferred defaults.
+   */
+  private static resolveAgentDef(def: AgentDefinition): AgentDefinition {
+    if (!def.preset) return def;
+    const nonInteractivePresets: AgentPreset[] = ['worker', 'reviewer', 'analyst'];
+    const defaults: Partial<AgentDefinition> = nonInteractivePresets.includes(def.preset)
+      ? { interactive: false }
+      : {};
+    // Explicit fields on the def always win
+    return { ...defaults, ...def } as AgentDefinition;
+  }
+
+  /**
+   * Returns a preset-specific prefix that is prepended to the non-interactive
+   * enforcement block in execNonInteractive.
+   */
+  /**
+   * Returns a prefix injected into the task prompt for non-interactive agents.
+   * Lead agents are always interactive (PTY), so they never reach execNonInteractive
+   * and there is no 'lead' case here.
+   */
+  private buildPresetInjection(preset: AgentPreset | undefined): string {
+    switch (preset) {
+      case 'worker':
+        return (
+          'You are a non-interactive worker agent. Produce clean, structured output to stdout.\n' +
+          'Do NOT use relay_spawn, add_agent, or any MCP tool to spawn sub-agents.\n' +
+          'Do NOT use relay_send or any Relaycast messaging tools — you have no relay connection.\n\n'
+        );
+      case 'reviewer':
+        return (
+          'You are a non-interactive reviewer agent. Read the specified files/artifacts and produce a clear verdict.\n' +
+          'Do NOT spawn sub-agents or use any Relaycast messaging tools.\n\n'
+        );
+      case 'analyst':
+        return (
+          'You are a non-interactive analyst agent. Read the specified code/files and write your findings.\n' +
+          'Do NOT spawn sub-agents or use any Relaycast messaging tools.\n\n'
+        );
+      default:
+        return '';
+    }
+  }
+
+  /**
    * Execute an agent as a non-interactive subprocess.
    * No PTY, no relay messaging, no /exit injection. The process receives its task
    * as a CLI argument and stdout is captured as the step output.
@@ -2050,9 +2037,13 @@ export class WorkflowRunner {
 
     // Append strict deliverable enforcement — non-interactive agents MUST produce
     // clear, structured output since there's no opportunity for follow-up or clarification.
+    const presetPrefix = this.buildPresetInjection(agentDef.preset);
     const taskWithDeliverable =
+      presetPrefix +
       step.task +
       '\n\n---\n' +
+      'IMPORTANT: You are running as a non-interactive subprocess. ' +
+      'Do NOT call relay_spawn, add_agent, or any MCP tool to spawn or manage other agents.\n\n' +
       'CRITICAL REQUIREMENT — YOU MUST FOLLOW THIS EXACTLY:\n' +
       'You are running in non-interactive mode. There is NO opportunity for follow-up, ' +
       'clarification, or additional input. Your stdout output is your ONLY deliverable.\n\n' +
@@ -2107,9 +2098,9 @@ export class WorkflowRunner {
     try {
       const output = await new Promise<string>((resolve, reject) => {
         const child = cpSpawn(cmd, args, {
-          stdio: 'pipe',
+          stdio: ['ignore', 'pipe', 'pipe'],
           cwd: agentDef.cwd ? path.resolve(this.cwd, agentDef.cwd) : this.cwd,
-          env: { ...process.env },
+          env: this.getRelayEnv() ?? { ...process.env },
         });
 
         // Update workers.json with PID now that we have it
@@ -2126,10 +2117,30 @@ export class WorkflowRunner {
           abortSignal.addEventListener('abort', abortHandler, { once: true });
         }
 
+        // Heartbeat so a slow non-interactive agent doesn't look frozen.
+        // Each tick shows the last substantive line received — gives insight
+        // without flooding the log with raw model output.
+        const startedAt = Date.now();
+        let lastHeartbeatLine = '';
+        const heartbeat = setInterval(() => {
+          const elapsed = Math.round((Date.now() - startedAt) / 1000);
+          const suffix = lastHeartbeatLine ? ` — ${lastHeartbeatLine.slice(0, 80)}` : '';
+          this.log(`[${step.name}] still running (${elapsed}s)${suffix}`);
+          lastHeartbeatLine = '';
+        }, 30_000);
+
         child.stdout?.on('data', (chunk: Buffer) => {
           const text = chunk.toString();
           stdoutChunks.push(text);
           logStream.write(text);
+          // Track last substantive line for the next heartbeat
+          const line =
+            text
+              .split('\n')
+              .map((l) => l.trim())
+              .filter(Boolean)
+              .at(-1) ?? '';
+          if (line) lastHeartbeatLine = line;
         });
 
         child.stderr?.on('data', (chunk: Buffer) => {
@@ -2151,6 +2162,7 @@ export class WorkflowRunner {
         }
 
         child.on('close', (code) => {
+          clearInterval(heartbeat);
           if (timer) clearTimeout(timer);
           if (abortHandler && abortSignal) {
             abortSignal.removeEventListener('abort', abortHandler);
@@ -2181,6 +2193,7 @@ export class WorkflowRunner {
         });
 
         child.on('error', (err) => {
+          clearInterval(heartbeat);
           if (timer) clearTimeout(timer);
           if (abortHandler && abortSignal) {
             abortSignal.removeEventListener('abort', abortHandler);
@@ -2229,14 +2242,21 @@ export class WorkflowRunner {
     const delegationGuidance =
       isHub || !isHubPattern ? this.buildDelegationGuidance(agentDef.cli, timeoutMs) : '';
 
+    // Non-claude CLIs (codex, gemini, etc.) don't auto-register with Relaycast
+    // via the MCP system prompt the way claude does. Inject an explicit preamble
+    // so they call register() before any other relay tool.
+    const relayRegistrationNote = this.buildRelayRegistrationNote(agentDef.cli, agentName);
+
     const taskWithExit =
       step.task +
+      (relayRegistrationNote ? '\n\n' + relayRegistrationNote : '') +
       (delegationGuidance ? '\n\n' + delegationGuidance + '\n' : '') +
       '\n\n---\n' +
       'IMPORTANT: When you have fully completed this task, you MUST self-terminate by either: ' +
       '(a) calling remove_agent(name: "<your-agent-name>", reason: "task completed") — preferred, or ' +
       '(b) outputting the exact text "/exit" on its own line as a fallback. ' +
-      'Do not wait for further input — terminate immediately after finishing.';
+      'Do not wait for further input — terminate immediately after finishing. ' +
+      'Do NOT spawn sub-agents unless the task explicitly requires it.';
 
     // Register PTY output listener before spawning so we capture everything
     this.ptyOutputBuffers.set(agentName, []);
@@ -2748,6 +2768,27 @@ export class WorkflowRunner {
    * Build guidance that encourages agents to autonomously delegate subtasks
    * to helper agents when work is too complex for a single pass.
    */
+  /**
+   * Returns a relay registration preamble for CLIs that don't auto-call
+   * `register` via the MCP system prompt (everyone except claude).
+   *
+   * Claude reads the Relaycast system prompt and registers on its own.
+   * Codex, gemini, etc. have the MCP server configured with the workspace
+   * key, but they won't call `register` unless explicitly told to.
+   */
+  private buildRelayRegistrationNote(cli: string, agentName: string): string {
+    if (cli === 'claude') return '';
+    return (
+      '---\n' +
+      'RELAY SETUP — do this FIRST before any other relay tool:\n' +
+      `1. Call: register(name="${agentName}")\n` +
+      '   This authenticates you in the Relaycast workspace.\n' +
+      '   ALL relay tools (relay_send, relay_inbox, post_message, etc.) require\n' +
+      '   registration first — they will fail with "Not registered" otherwise.\n' +
+      `2. Your agent name is "${agentName}" — use this exact name when registering.`
+    );
+  }
+
   private buildDelegationGuidance(cli: string, timeoutMs?: number): string {
     const timeoutNote = timeoutMs
       ? `You have approximately ${Math.round(timeoutMs / 60000)} minutes before this step times out. ` +
@@ -2990,15 +3031,24 @@ export class WorkflowRunner {
   private static scrubForChannel(text: string): string {
     const withoutSystemReminders = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/giu, '');
     const ansiStripped = stripAnsiFn(withoutSystemReminders);
-    const spinnerRe =
-      /[\u2756\u2738\u2739\u273a\u273b\u273c\u273d\u2731\u2732\u2733\u2734\u2735\u2736\u2737\u2743\u2745\u2746\u25d6\u25d7\u25d8\u25d9\u2022\u25cf\u25cb\u25a0\u25a1\u25b6\u25c0\u23f5\u23f6\u23f7\u23f8\u23f9\u25e2\u25e3\u25e4\u25e5\u2597\u2596\u2598\u259d\u2bc8\u2bc7\u2bc5\u2bc6]/gu;
+
+    // Unicode spinner / ornament characters used by Claude TUI animations
+    const SPINNER =
+      '\\u2756\\u2738\\u2739\\u273a\\u273b\\u273c\\u273d\\u2731\\u2732\\u2733\\u2734\\u2735\\u2736\\u2737\\u2743\\u2745\\u2746\\u25d6\\u25d7\\u25d8\\u25d9\\u2022\\u25cf\\u25cb\\u25a0\\u25a1\\u25b6\\u25c0\\u23f5\\u23f6\\u23f7\\u23f8\\u23f9\\u25e2\\u25e3\\u25e4\\u25e5\\u2597\\u2596\\u2598\\u259d\\u2bc8\\u2bc7\\u2bc5\\u2bc6\\u00b7';
+    const spinnerRe = new RegExp(`[${SPINNER}]`, 'gu');
+    const spinnerClassRe = new RegExp(`^[\\s${SPINNER}]*$`, 'u');
+
+    // Line-level filters
     const boxDrawingOnlyRe = /^[\s\u2500-\u257f\u2580-\u259f\u25a0-\u25ff\-_=~]{3,}$/u;
     const claudeHeaderRe =
-      /^(?:[✢*]\s*)?(?:Claude\s+Code(?:\s+v?[\d.]+)?|(?:Sonnet|Haiku|Opus)\s*[\d.]+|claude-(?:sonnet|haiku|opus)-[\w.-]+|Running\s+on\s+claude)\b/iu;
-    const uiHintRe = /\b(?:Press\s+up\s+to\s+edit|tab\s+to\s+queue|bypass\s+permissions)\b/iu;
-    const thinkingLineRe =
-      /^[\s\u2756\u2738\u2739\u273a\u273b\u273c\u273d\u2731\u2732\u2733\u2734\u2735\u2736\u2737\u2743\u2745\u2746\u25d6\u25d7\u25d8\u25d9\u2022\u25cf\u25cb\u25a0\u25a1\u25b6\u25c0\u23f5\u23f6\u23f7\u23f8\u23f9\u25e2\u25e3\u25e4\u25e5\u2597\u2596\u2598\u259d\u2bc8\u2bc7\u2bc5\u2bc6]*\s*(?:thinking|musing|working)\W*$/iu;
-    const cursorOnlyRe = /^[\s❯⎿›»◀▶←→↑↓⟨⟩⟪⟫]+$/u;
+      /^(?:[✢*·]\s*)?(?:Claude\s+Code(?:\s+v?[\d.]+)?|(?:Sonnet|Haiku|Opus)\s*[\d.]+|claude-(?:sonnet|haiku|opus)-[\w.-]+|Running\s+on\s+claude)\b/iu;
+    const uiHintRe =
+      /\b(?:Press\s+up\s+to\s+edit|tab\s+to\s+queue|bypass\s+permissions|esc\s+to\s+interrupt)\b/iu;
+    // Any spinner-prefixed word ending in … — catches all Claude thinking animations
+    // regardless of the specific word used (Thinking, Cascading, Flibbertigibbeting, etc.)
+    const thinkingLineRe = new RegExp(`^[\\s${SPINNER}]*\\s*\\w[\\w\\s]*\\u2026\\s*$`, 'u');
+    const cursorOnlyRe = /^[\s❯⎿›»◀▶←→↑↓⟨⟩⟪⟫·]+$/u;
+    const slashCommandRe = /^\/\w+\s*$/u;
     const mcpJsonKvRe =
       /^\s*"(?:type|method|params|result|id|jsonrpc|tool|name|arguments|content|role|metadata)"\s*:/u;
     const meaningfulContentRe = /[a-zA-Z0-9]/u;
@@ -3033,13 +3083,19 @@ export class WorkflowRunner {
       }
 
       if (mcpJsonKvRe.test(line)) continue;
-      if (line.replace(spinnerRe, '').trim().length === 0) continue;
+      if (spinnerClassRe.test(trimmed)) continue;
       if (boxDrawingOnlyRe.test(trimmed)) continue;
       if (claudeHeaderRe.test(trimmed)) continue;
       if (uiHintRe.test(trimmed)) continue;
       if (thinkingLineRe.test(trimmed)) continue;
       if (cursorOnlyRe.test(trimmed)) continue;
+      if (slashCommandRe.test(trimmed)) continue;
       if (!meaningfulContentRe.test(trimmed)) continue;
+
+      // Drop TUI animation frame fragments: lines where stripping spinners and
+      // whitespace leaves ≤ 3 alphanumeric characters (e.g. "F", "l  b", "i  g").
+      const alphanum = trimmed.replace(spinnerRe, '').replace(/\s+/g, '');
+      if (alphanum.replace(/[^a-zA-Z0-9]/g, '').length <= 3) continue;
 
       meaningful.push(line);
     }

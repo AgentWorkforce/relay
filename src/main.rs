@@ -35,7 +35,7 @@ use tokio::{
 use uuid::Uuid;
 
 use relay_broker::{
-    auth::{AuthClient, AuthSession, CredentialStore},
+    auth::AuthClient,
     control::{can_release_child, is_human_sender},
     dedup::DedupCache,
     message_bridge::{map_ws_broker_command, map_ws_event},
@@ -163,7 +163,6 @@ struct PersistedAgent {
 
 #[derive(Debug)]
 struct RuntimePaths {
-    creds: PathBuf,
     state: PathBuf,
     pending: PathBuf,
     pid: PathBuf,
@@ -200,7 +199,6 @@ fn normalize_initial_task(task: Option<String>) -> Option<String> {
 struct RelaySessionOptions<'a> {
     paths: &'a RuntimePaths,
     requested_name: &'a str,
-    cached_session: Option<AuthSession>,
     channels: Vec<String>,
     strict_name: bool,
     agent_type: Option<&'a str>,
@@ -219,62 +217,11 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
     let ws_base = std::env::var("RELAYCAST_WS_URL")
         .unwrap_or_else(|_| derive_ws_base_url_from_http(&http_base));
 
-    let auth = AuthClient::new(
-        http_base.clone(),
-        CredentialStore::new(opts.paths.creds.clone()),
-    );
-    let session = if let Some(cached_session) = opts.cached_session {
-        match auth
-            .workspace_key_is_live(&cached_session.credentials.api_key)
-            .await
-        {
-            Ok(true) => {
-                tracing::info!(
-                    target = "relay_broker::auth",
-                    agent_name = %opts.requested_name,
-                    "reusing cached relaycast agent token; skipping registration"
-                );
-                cached_session
-            }
-            Ok(false) => {
-                tracing::warn!(
-                    target = "relay_broker::auth",
-                    agent_name = %opts.requested_name,
-                    "cached relaycast credentials failed liveness probe; re-running startup auth flow"
-                );
-                auth.startup_session_with_options(
-                    Some(opts.requested_name),
-                    opts.strict_name,
-                    opts.agent_type,
-                )
-                .await
-                .context("failed to initialize relaycast session")?
-            }
-            Err(error) => {
-                tracing::warn!(
-                    target = "relay_broker::auth",
-                    agent_name = %opts.requested_name,
-                    error = %error,
-                    "cached relaycast credential probe failed; re-running startup auth flow"
-                );
-                auth.startup_session_with_options(
-                    Some(opts.requested_name),
-                    opts.strict_name,
-                    opts.agent_type,
-                )
-                .await
-                .context("failed to initialize relaycast session")?
-            }
-        }
-    } else {
-        auth.startup_session_with_options(
-            Some(opts.requested_name),
-            opts.strict_name,
-            opts.agent_type,
-        )
+    let auth = AuthClient::new(http_base.clone());
+    let session = auth
+        .startup_session_with_options(Some(opts.requested_name), opts.strict_name, opts.agent_type)
         .await
-        .context("failed to initialize relaycast session")?
-    };
+        .context("failed to initialize relaycast session")?;
     let relay_workspace_key = session.credentials.api_key.clone();
     let self_agent_id = session.credentials.agent_id.clone();
     let self_token = session.token.clone();
@@ -1253,7 +1200,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             "reaped {} dead agent(s) from previous session",
             reaped.len()
         );
-        state.save(&paths.state)?;
+        if let Err(error) = state.save(&paths.state) {
+            tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state after reaping dead agents");
+        }
     }
 
     if std::env::var("AGENT_RELAY_DISABLE_RELAYCAST").is_ok() {
@@ -1265,7 +1214,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let relay = connect_relay(RelaySessionOptions {
         paths: &paths,
         requested_name: &resolved_name,
-        cached_session: cached_session_for_requested_name(&paths, &resolved_name),
         channels: channels_from_csv(&cmd.channels),
         strict_name: true,
         agent_type: Some("human"),
@@ -2471,6 +2419,156 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "name": name,
                                         "reason": reason,
                                     })).await;
+                                } else if msg_type == "continuity_command" {
+                                    // Agent-initiated continuity: the pty_worker detected a
+                                    // KIND: continuity block in PTY output and emitted this event.
+                                    let action = value.get("payload")
+                                        .and_then(|p| p.get("action"))
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("");
+                                    let content = value.get("payload")
+                                        .and_then(|p| p.get("content"))
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("");
+                                    match action {
+                                        "save" => {
+                                            let cont_dir = continuity_dir(&paths.state);
+                                            if let Err(e) = std::fs::create_dir_all(&cont_dir) {
+                                                tracing::warn!(
+                                                    agent = %name,
+                                                    error = %e,
+                                                    "continuity_command save: failed to create dir"
+                                                );
+                                            } else {
+                                                // Build a minimal continuity record with the provided summary.
+                                                let agent_data = state.agents.get(&name);
+                                                let cli = agent_data
+                                                    .and_then(|d| d.spec.as_ref())
+                                                    .and_then(|s| s.cli.clone());
+                                                let initial_task = agent_data
+                                                    .and_then(|d| d.initial_task.clone());
+                                                let continuity = json!({
+                                                    "agent_name": name,
+                                                    "cli": cli,
+                                                    "initial_task": initial_task,
+                                                    "released_at": null,
+                                                    "lifetime_seconds": null,
+                                                    "message_history": [],
+                                                    "summary": content,
+                                                });
+                                                let cont_file = cont_dir.join(format!("{}.json", name));
+                                                match std::fs::write(
+                                                    &cont_file,
+                                                    serde_json::to_string_pretty(&continuity)
+                                                        .unwrap_or_default(),
+                                                ) {
+                                                    Ok(()) => tracing::info!(
+                                                        agent = %name,
+                                                        path = %cont_file.display(),
+                                                        "continuity_command: saved agent-initiated continuity"
+                                                    ),
+                                                    Err(e) => tracing::warn!(
+                                                        agent = %name,
+                                                        error = %e,
+                                                        "continuity_command save: failed to write file"
+                                                    ),
+                                                }
+                                            }
+                                        }
+                                        "load" => {
+                                            let cont_dir = continuity_dir(&paths.state);
+                                            let cont_file = cont_dir.join(format!("{}.json", name));
+                                            if cont_file.exists() {
+                                                match std::fs::read_to_string(&cont_file) {
+                                                    Ok(raw) => {
+                                                        if let Ok(ctx) = serde_json::from_str::<Value>(&raw) {
+                                                            // Build a context summary and inject it
+                                                            let prev_task = ctx.get("initial_task")
+                                                                .and_then(Value::as_str)
+                                                                .unwrap_or("unknown");
+                                                            let summary = ctx.get("summary")
+                                                                .and_then(Value::as_str)
+                                                                .unwrap_or("no summary");
+                                                            let history_str = ctx.get("message_history")
+                                                                .and_then(Value::as_array)
+                                                                .map(|msgs| {
+                                                                    msgs.iter()
+                                                                        .filter_map(|m| {
+                                                                            let from = m.get("from")?.as_str()?;
+                                                                            let text = m.get("text")
+                                                                                .or_else(|| m.get("body"))?
+                                                                                .as_str()?;
+                                                                            Some(format!("  - {}: {}", from, text))
+                                                                        })
+                                                                        .collect::<Vec<_>>()
+                                                                        .join("\n")
+                                                                })
+                                                                .unwrap_or_default();
+                                                            let history_section = if history_str.is_empty() {
+                                                                String::new()
+                                                            } else {
+                                                                format!("\nRecent messages:\n{}", history_str)
+                                                            };
+                                                            let inject_body = format!(
+                                                                "## Continuity Context (from previous session as '{}')\n\
+                                                                 Previous task: {}\n\
+                                                                 Session summary: {}{}",
+                                                                name, prev_task, summary, history_section
+                                                            );
+                                                            let event_id = format!("cont_load_{}", Uuid::new_v4().simple());
+                                                            if let Err(e) = queue_and_try_delivery_raw(
+                                                                &mut workers,
+                                                                &mut pending_deliveries,
+                                                                &name,
+                                                                &event_id,
+                                                                "broker",
+                                                                &name,
+                                                                &inject_body,
+                                                                None,
+                                                                2,
+                                                                delivery_retry_interval,
+                                                            ).await {
+                                                                tracing::warn!(
+                                                                    agent = %name,
+                                                                    error = %e,
+                                                                    "continuity_command load: failed to inject context"
+                                                                );
+                                                            } else {
+                                                                tracing::info!(
+                                                                    agent = %name,
+                                                                    "continuity_command: injected loaded context"
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => tracing::warn!(
+                                                        agent = %name,
+                                                        error = %e,
+                                                        "continuity_command load: failed to read file"
+                                                    ),
+                                                }
+                                            } else {
+                                                tracing::debug!(
+                                                    agent = %name,
+                                                    "continuity_command load: no continuity file found"
+                                                );
+                                            }
+                                        }
+                                        "uncertain" => {
+                                            tracing::info!(
+                                                agent = %name,
+                                                content = %content,
+                                                "continuity_command: agent reported uncertainty"
+                                            );
+                                        }
+                                        other => {
+                                            tracing::warn!(
+                                                agent = %name,
+                                                action = %other,
+                                                "continuity_command: unknown action ignored"
+                                            );
+                                        }
+                                    }
                                 } else if msg_type == "worker_exited" {
                                     // PTY worker process is exiting — clean up and
                                     // emit agent_exited so the SDK doesn't have to
@@ -2872,8 +2970,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let _ = std::fs::remove_file(&paths.pending);
     workers.shutdown_all().await?;
 
-    // Clean up PID file on graceful shutdown
+    // Clean up PID file and state file on graceful shutdown
     let _ = std::fs::remove_file(&paths.pid);
+    let _ = std::fs::remove_file(&paths.state);
 
     Ok(())
 }
@@ -4180,34 +4279,6 @@ fn channels_from_csv(raw: &str) -> Vec<String> {
         .collect()
 }
 
-fn cached_session_for_requested_name(
-    paths: &RuntimePaths,
-    requested_name: &str,
-) -> Option<AuthSession> {
-    let mut cached = CredentialStore::new(paths.creds.clone()).load().ok()?;
-    if cached.agent_name.as_deref() != Some(requested_name) {
-        return None;
-    }
-    if !cached.api_key.trim().starts_with("rk_") {
-        return None;
-    }
-    if cached.agent_id.trim().is_empty() {
-        return None;
-    }
-
-    let token = cached.agent_token.as_deref()?.trim();
-    if token.is_empty() {
-        return None;
-    }
-
-    let token = token.to_string();
-    cached.agent_token = Some(token.clone());
-    Some(AuthSession {
-        credentials: cached,
-        token,
-    })
-}
-
 fn command_targets_self(cmd_event: &BrokerCommandEvent, self_agent_id: &str) -> bool {
     match cmd_event.handler_agent_id.as_deref() {
         Some(handler_id) => handler_id == self_agent_id,
@@ -4849,7 +4920,6 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
                         // Successfully recovered — write our PID and return
                         write_pid_file(&pid_path)?;
                         return Ok(RuntimePaths {
-                            creds: root.join("relaycast.json"),
                             state: root.join(format!("state-{safe_name}.json")),
                             pending: root.join(format!("pending-{safe_name}.json")),
                             pid: pid_path,
@@ -4869,7 +4939,6 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
     write_pid_file(&pid_path)?;
 
     Ok(RuntimePaths {
-        creds: root.join("relaycast.json"),
         state: root.join(format!("state-{safe_name}.json")),
         pending: root.join(format!("pending-{safe_name}.json")),
         pid: pid_path,
@@ -4975,7 +5044,6 @@ mod tests {
     };
 
     use crate::helpers::terminal_query_responses;
-    use relay_broker::auth::CredentialCache;
     use relay_broker::protocol::RelayDelivery;
     use serde_json::{json, Value};
 
@@ -6055,55 +6123,4 @@ mod tests {
         assert_eq!(result, std::path::PathBuf::from(".agent-relay/continuity"));
     }
 
-    #[test]
-    fn cached_session_for_requested_name_reuses_matching_token() {
-        let dir = tempfile::tempdir().expect("failed to create temp dir");
-        let paths =
-            super::ensure_runtime_paths(dir.path(), "test").expect("runtime paths should initialize");
-        let cached = CredentialCache {
-            workspace_id: "ws_cached".to_string(),
-            agent_id: "a_cached".to_string(),
-            api_key: "rk_live_cached".to_string(),
-            agent_name: Some("lead".to_string()),
-            agent_token: Some("at_live_cached_token".to_string()),
-            updated_at: chrono::Utc::now(),
-        };
-        std::fs::write(
-            &paths.creds,
-            serde_json::to_vec(&cached).expect("serialize cache"),
-        )
-        .expect("write cache");
-
-        let session = super::cached_session_for_requested_name(&paths, "lead")
-            .expect("matching cached token should be reused");
-
-        assert_eq!(session.token, "at_live_cached_token");
-        assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
-        assert_eq!(session.credentials.agent_id, "a_cached");
-    }
-
-    #[test]
-    fn cached_session_for_requested_name_rejects_name_mismatch() {
-        let dir = tempfile::tempdir().expect("failed to create temp dir");
-        let paths =
-            super::ensure_runtime_paths(dir.path(), "test").expect("runtime paths should initialize");
-        let cached = CredentialCache {
-            workspace_id: "ws_cached".to_string(),
-            agent_id: "a_cached".to_string(),
-            api_key: "rk_live_cached".to_string(),
-            agent_name: Some("someone-else".to_string()),
-            agent_token: Some("at_live_cached_token".to_string()),
-            updated_at: chrono::Utc::now(),
-        };
-        std::fs::write(
-            &paths.creds,
-            serde_json::to_vec(&cached).expect("serialize cache"),
-        )
-        .expect("write cache");
-
-        assert!(
-            super::cached_session_for_requested_name(&paths, "lead").is_none(),
-            "requested name mismatch must not reuse cached token"
-        );
-    }
 }

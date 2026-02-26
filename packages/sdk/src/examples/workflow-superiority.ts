@@ -26,7 +26,7 @@
  *
  * Environment:
  *   RELAY_API_KEY — optional. If absent the runner auto-provisions a
- *   Relaycast workspace and caches the key at ~/.agent-relay/relaycast.json.
+ *   fresh Relaycast workspace for each run (fully isolated, no caching).
  */
 
 import { workflow } from '../workflows/builder.js';
@@ -35,15 +35,15 @@ import type { WorkflowEvent } from '../workflows/runner.js';
 // ── Spec constants ────────────────────────────────────────────────────────────
 
 const WORKFLOW_ROOT = 'packages/sdk/src/workflows';
-const TYPES_FILE    = `${WORKFLOW_ROOT}/types.ts`;
-const RUNNER_FILE   = `${WORKFLOW_ROOT}/runner.ts`;
-const BUILDER_FILE  = `${WORKFLOW_ROOT}/builder.ts`;
-const SCHEMA_FILE   = `${WORKFLOW_ROOT}/schema.json`;
-const INDEX_FILE    = `${WORKFLOW_ROOT}/index.ts`;
-const MEMORY_DB     = `${WORKFLOW_ROOT}/memory-db.ts`;
-const COORDINATOR   = `${WORKFLOW_ROOT}/coordinator.ts`;
-const BARRIER_FILE  = `${WORKFLOW_ROOT}/barrier.ts`;
-const TEMPLATES     = `${WORKFLOW_ROOT}/templates.ts`;
+const TYPES_FILE = `${WORKFLOW_ROOT}/types.ts`;
+const RUNNER_FILE = `${WORKFLOW_ROOT}/runner.ts`;
+const BUILDER_FILE = `${WORKFLOW_ROOT}/builder.ts`;
+const SCHEMA_FILE = `${WORKFLOW_ROOT}/schema.json`;
+const INDEX_FILE = `${WORKFLOW_ROOT}/index.ts`;
+const MEMORY_DB = `${WORKFLOW_ROOT}/memory-db.ts`;
+const COORDINATOR = `${WORKFLOW_ROOT}/coordinator.ts`;
+const BARRIER_FILE = `${WORKFLOW_ROOT}/barrier.ts`;
+const TEMPLATES = `${WORKFLOW_ROOT}/templates.ts`;
 
 // NOTE: No withExit() wrapper needed — the WorkflowRunner automatically
 // appends self-termination instructions in spawnAndWait() with the agent's
@@ -86,8 +86,8 @@ const onEvent = (event: WorkflowEvent): void => {
 const result = await workflow('broker-sdk-superiority')
   .description(
     'Five-phase multi-agent campaign to make relay broker-sdk workflow system ' +
-    'decisively superior to Agno and Swarms AI. Claude leads; Codex implements; ' +
-    'Claude reviews after every phase.'
+      'decisively superior to Agno and Swarms AI. Claude leads; Codex implements; ' +
+      'Claude reviews after every phase.'
   )
   .pattern('dag')
   .channel('wf-broker-sdk-superiority')
@@ -98,76 +98,75 @@ const result = await workflow('broker-sdk-superiority')
 
   .agent('lead', {
     cli: 'claude',
-    role: 'Lead architect. Sets direction, reviews each phase output, approves ' +
-          'trajectories, and resolves architectural conflicts. Has final say on ' +
-          'all design decisions.',
+    role:
+      'Lead architect. Sets direction, reviews each phase output, approves ' +
+      'trajectories, and resolves architectural conflicts. Has final say on ' +
+      'all design decisions.',
     retries: 2,
-
   })
 
   .agent('code-reviewer', {
     cli: 'claude',
-    role: 'Independent code reviewer. Reviews implementation quality, correctness, ' +
-          'TypeScript type safety, test coverage, and integration coherence after ' +
-          'every phase. Catches issues the lead may have missed.',
+    role:
+      'Independent code reviewer. Reviews implementation quality, correctness, ' +
+      'TypeScript type safety, test coverage, and integration coherence after ' +
+      'every phase. Catches issues the lead may have missed.',
     retries: 2,
-
   })
 
   .agent('spec-analyst', {
     cli: 'codex',
-    role: 'Codebase analyst. Reads the existing workflow source files and produces ' +
-          'a precise, file-by-file implementation plan for all five improvement tiers.',
+    role:
+      'Codebase analyst. Reads the existing workflow source files and produces ' +
+      'a precise, file-by-file implementation plan for all five improvement tiers.',
     retries: 2,
-
   })
 
   .agent('schema-implementer', {
     cli: 'codex',
-    role: 'Type system specialist. Extends TypeScript interfaces and JSON Schema ' +
-          'definitions to support new workflow primitives.',
+    role:
+      'Type system specialist. Extends TypeScript interfaces and JSON Schema ' +
+      'definitions to support new workflow primitives.',
     retries: 2,
-
   })
 
   .agent('engine-implementer', {
     cli: 'codex',
-    role: 'Execution engine specialist. Implements new step-type execution logic ' +
-          'inside WorkflowRunner, adds session concept, and expands the event system.',
+    role:
+      'Execution engine specialist. Implements new step-type execution logic ' +
+      'inside WorkflowRunner, adds session concept, and expands the event system.',
     retries: 3,
-
   })
 
   .agent('meta-implementer', {
     cli: 'codex',
-    role: 'Meta-orchestration specialist. Implements sub-workflow composition, ' +
-          'AutoWorkflowBuilder, and semantic pattern selection.',
+    role:
+      'Meta-orchestration specialist. Implements sub-workflow composition, ' +
+      'AutoWorkflowBuilder, and semantic pattern selection.',
     retries: 2,
-
   })
 
   .agent('storage-implementer', {
     cli: 'codex',
-    role: 'Storage backend specialist. Implements PostgresWorkflowDb, ' +
-          'SqliteWorkflowDb, and RedisWorkflowDb adapters.',
+    role:
+      'Storage backend specialist. Implements PostgresWorkflowDb, ' +
+      'SqliteWorkflowDb, and RedisWorkflowDb adapters.',
     retries: 2,
-
   })
 
   .agent('deploy-implementer', {
     cli: 'codex',
-    role: 'Deployment and observability specialist. Implements relay workflow serve ' +
-          'HTTP server, OTel tracing integration, and CLI improvements.',
+    role:
+      'Deployment and observability specialist. Implements relay workflow serve ' +
+      'HTTP server, OTel tracing integration, and CLI improvements.',
     retries: 2,
-
   })
 
   .agent('test-validator', {
     cli: 'codex',
-    role: 'Integration test specialist. Validates all phases compile, tests pass, ' +
-          'and exports are correct.',
+    role:
+      'Integration test specialist. Validates all phases compile, tests pass, ' + 'and exports are correct.',
     retries: 2,
-
   })
 
   // ── Phase 0: Codebase Analysis ────────────────────────────────────────────
