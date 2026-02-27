@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AgentRelayClient, RelaycastApi } from '@agent-relay/sdk';
+import { AgentRelayClient, RelayCast } from '@agent-relay/sdk';
 
 const ALLOWED_CLIS = ['claude', 'codex', 'gemini', 'aider', 'goose'];
 const DELIVERY_PROGRESS_KINDS = new Set([
@@ -67,7 +67,7 @@ async function ensureApiKey() {
     cachedApiKey = process.env.RELAY_API_KEY.trim();
     return cachedApiKey;
   }
-  const workspace = await RelaycastApi.createWorkspace(`sdk-it-${Date.now().toString(36)}`);
+  const workspace = await RelayCast.createWorkspace(`sdk-it-${Date.now().toString(36)}`);
   cachedApiKey = workspace.apiKey;
   return cachedApiKey;
 }
