@@ -597,9 +597,7 @@ pub async fn retry_agent_registration(
             detail: "SDK relay client not initialized".to_string(),
         })
     })?;
-    sdk_retry_agent_registration(registration, name, cli)
-        .await
-        .map_err(Into::into)
+    sdk_retry_agent_registration(registration, name, cli).await
 }
 
 #[cfg(test)]
