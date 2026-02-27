@@ -388,6 +388,356 @@ class CodexEventProcessor {
 
 This makes agent-relay the best way to run Codex for teams.
 
+---
+
+## Hosted Architecture (Relaycast Cloud)
+
+### Vision
+
+**User runs one command. Everything else is cloud.**
+
+```bash
+npx @agent-relay/connect
+```
+
+With WebSocket support from both Claude (`--sdk-url`) and Codex (app-server), agent-relay can become a thin coordination layer with all orchestration happening in the cloud.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         CLOUD (Relaycast)                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐  │
+│  │   Message    │  │    Spawn     │  │    Hook      │  │  Workflow   │  │
+│  │   Router     │  │   Manager    │  │   Engine     │  │   Engine    │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬──────┘  │
+│         │                 │                 │                 │         │
+│         └────────────┬────┴────────┬────────┴─────────────────┘         │
+│                      │             │                                     │
+│               ┌──────┴──────┐ ┌────┴─────┐                              │
+│               │  Log Store  │ │ Auth/ACL │                              │
+│               └─────────────┘ └──────────┘                              │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │                         Web Dashboard                               │ │
+│  │  • Real-time agent activity    • Workflow designer                 │ │
+│  │  • Log viewer & search         • Team management                   │ │
+│  │  • Permission controls         • Hook configuration                │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────┘
+                    ▲                           ▲
+                    │ WebSocket                 │ WebSocket
+                    │                           │
+┌───────────────────┴───────────┐ ┌─────────────┴───────────────┐
+│      User A's Machine         │ │      User B's Machine        │
+├───────────────────────────────┤ ├──────────────────────────────┤
+│  ┌─────────────────────────┐  │ │  ┌────────────────────────┐  │
+│  │  relay-connect (proxy)  │  │ │  │  relay-connect (proxy) │  │
+│  └───────────┬─────────────┘  │ │  └───────────┬────────────┘  │
+│              │                │ │              │               │
+│    ┌─────────┼─────────┐      │ │    ┌─────────┼────────┐      │
+│    ▼         ▼         ▼      │ │    ▼         ▼        ▼      │
+│ ┌──────┐ ┌──────┐ ┌──────┐    │ │ ┌──────┐ ┌──────┐ ┌──────┐   │
+│ │Claude│ │Codex │ │Gemini│    │ │ │Claude│ │Codex │ │Codex │   │
+│ └──────┘ └──────┘ └──────┘    │ │ └──────┘ └──────┘ └──────┘   │
+│  📁 Local filesystem access   │ │  📁 Local filesystem access  │
+└───────────────────────────────┘ └──────────────────────────────┘
+```
+
+### Claude WebSocket Protocol
+
+Claude Code CLI supports connecting TO your server via `--sdk-url` ([reversed by The-Vibe-Company/companion](https://github.com/The-Vibe-Company/companion)):
+
+```bash
+claude --sdk-url wss://relaycast.dev/session/xxx \
+       --output-format stream-json \
+       --input-format stream-json
+```
+
+**Protocol**: NDJSON (newline-delimited JSON) over WebSocket
+
+**Key message types**:
+
+| Direction | Type | Purpose |
+|-----------|------|---------|
+| CLI → Server | `system/init` | Session info, capabilities |
+| Server → CLI | `user` | Send prompts |
+| CLI → Server | `assistant` | LLM responses |
+| CLI → Server | `control_request` | Tool approval requests |
+| Server → CLI | `control_response` | Approve/deny tools |
+| CLI → Server | `result` | Turn completion |
+
+This means Claude connects **outbound** to Relaycast. No tunneling needed.
+
+### Codex Connection Gap
+
+Codex app-server only supports **listen mode**:
+
+```bash
+codex app-server --listen ws://127.0.0.1:4500
+```
+
+There is no `--connect` outbound mode ([verified in source](https://github.com/openai/codex/tree/main/codex-rs/app-server)).
+
+**Solution**: Thin local proxy that:
+1. Connects outbound to Relaycast
+2. Bridges to local Codex app-server
+
+### The Thin Proxy (relay-connect)
+
+```typescript
+// ~200 lines of code
+class RelayConnect {
+  private ws: WebSocket;
+  private agents: Map<string, AgentProcess> = new Map();
+
+  async connect(cloudUrl: string) {
+    this.ws = new WebSocket(cloudUrl);
+
+    this.ws.on('message', (msg) => {
+      const cmd = JSON.parse(msg);
+      this.handleCommand(cmd);
+    });
+  }
+
+  private async handleCommand(cmd: ProxyCommand) {
+    switch (cmd.type) {
+      case 'spawn':
+        await this.spawnAgent(cmd.name, cmd.cli, cmd.task);
+        break;
+
+      case 'release':
+        await this.releaseAgent(cmd.name);
+        break;
+
+      case 'message':
+        await this.routeToAgent(cmd.to, cmd.body);
+        break;
+    }
+  }
+
+  private async spawnAgent(name: string, cli: string, task: string) {
+    if (cli === 'claude') {
+      // Claude connects directly to cloud via --sdk-url
+      const proc = spawn('claude', [
+        '--sdk-url', `${this.cloudUrl}/agent/${name}`,
+        '-p', task
+      ]);
+      this.agents.set(name, { proc, type: 'claude' });
+
+    } else if (cli === 'codex') {
+      // Codex needs local bridge
+      const port = await getAvailablePort();
+      const proc = spawn('codex', ['app-server', '--listen', `ws://localhost:${port}`]);
+
+      // Bridge local Codex to cloud
+      await this.bridgeCodex(name, port);
+      this.agents.set(name, { proc, type: 'codex', port });
+    }
+  }
+
+  private async bridgeCodex(name: string, port: number) {
+    const localWs = new WebSocket(`ws://localhost:${port}`);
+
+    // Initialize Codex connection
+    localWs.on('open', () => {
+      localWs.send(JSON.stringify({
+        method: 'initialize',
+        id: 0,
+        params: { clientInfo: { name: 'relay-connect' } }
+      }));
+    });
+
+    // Bridge messages: cloud <-> local codex
+    localWs.on('message', (msg) => {
+      this.ws.send(JSON.stringify({ agent: name, data: JSON.parse(msg) }));
+    });
+
+    // Route cloud messages to local codex
+    this.codexBridges.set(name, localWs);
+  }
+
+  private async releaseAgent(name: string) {
+    const agent = this.agents.get(name);
+    if (agent) {
+      agent.proc.kill();
+      this.agents.delete(name);
+    }
+  }
+}
+```
+
+**What relay-connect is**:
+- ~200 lines of code
+- Connects outbound to Relaycast
+- Spawns agents when told
+- Bridges Codex to cloud
+- Kills agents when told
+- Executes local hook commands
+
+**What it's NOT**:
+- Not a message router (cloud does that)
+- Not a storage layer (cloud does that)
+- Not a workflow engine (cloud does that)
+
+### Capability Matrix
+
+| Capability | How It Works | Where |
+|------------|--------------|-------|
+| **Agents communicate** | All messages route through Relaycast | Cloud |
+| **Spawn agents** | Cloud → proxy → spawn locally → connect back | Both |
+| **Release agents** | Cloud → proxy → kill process | Both |
+| **Read agent logs** | All output stored in cloud DB | Cloud |
+| **Execute hooks** | Cloud triggers, proxy runs local commands | Both |
+| **Run workflows** | Orchestrated entirely in cloud | Cloud |
+| **Approve tools** | Permission request routed through cloud | Cloud |
+| **Share session** | Multiple users connect to same session | Cloud |
+| **Cross-machine** | Agents on different machines, cloud routes | Cloud |
+
+### Spawn Flow
+
+```
+Lead (Claude)                 Relaycast (Cloud)              Thin Proxy (Local)
+     │                              │                              │
+     │  relay_spawn("Worker",       │                              │
+     │              "codex",        │                              │
+     │              "Fix the bug")  │                              │
+     │─────────────────────────────►│                              │
+     │                              │                              │
+     │                              │  SPAWN command               │
+     │                              │─────────────────────────────►│
+     │                              │                              │
+     │                              │                 ┌────────────┤
+     │                              │                 │ Spawn:     │
+     │                              │                 │ codex      │
+     │                              │                 │ app-server │
+     │                              │                 └────────────┤
+     │                              │                              │
+     │                              │◄─────────────────────────────│
+     │                              │  Worker connected            │
+     │                              │                              │
+     │                              │  (Deliver initial task)      │
+     │                              │─────────────────────────────►│
+     │                              │                      ───────►│ Worker
+     │◄─────────────────────────────│                              │
+     │  spawn confirmed             │                              │
+```
+
+### Release Flow
+
+```
+Lead (Claude)                 Relaycast (Cloud)              Thin Proxy (Local)
+     │                              │                              │
+     │  relay_release("Worker")     │                              │
+     │─────────────────────────────►│                              │
+     │                              │                              │
+     │                              │  RELEASE Worker              │
+     │                              │─────────────────────────────►│
+     │                              │                              │
+     │                              │                 ┌────────────┤
+     │                              │                 │ Kill       │
+     │                              │                 │ Worker     │
+     │                              │                 │ process    │
+     │                              │                 └────────────┤
+     │                              │                              │
+     │                              │◄─────────────────────────────│
+     │                              │  Worker terminated           │
+     │◄─────────────────────────────│                              │
+     │  release confirmed           │                              │
+```
+
+### What Lives Where
+
+| Component | Location | Why |
+|-----------|----------|-----|
+| Agent processes | Local | Need filesystem access, run commands |
+| Message routing | Cloud | Central coordination |
+| Log storage | Cloud | Queryable, persistent, shareable |
+| Hooks config | Cloud | Centralized management |
+| Hook execution | Both | Cloud triggers, proxy runs local commands |
+| Workflows | Cloud | Orchestration logic |
+| Permissions | Cloud | Centralized ACL |
+| Dashboard/UI | Cloud | Web accessible |
+| File changes | Local | Agents edit local files |
+
+### User Experience
+
+```bash
+# One-time install
+npm install -g @agent-relay/connect
+
+# Connect to cloud
+relay-connect --token <your-token>
+
+# Output:
+# ✓ Connected to relaycast.dev
+# ✓ Ready to receive agent commands
+# Dashboard: https://relaycast.dev/session/abc123
+```
+
+Then use the web dashboard or CLI to start tasks. Watch agents spawn, communicate, and complete work in real-time.
+
+### Multi-Machine Scenario
+
+User A's machine has Lead (Claude).
+User B's machine has Workers (Codex).
+
+```
+User A (proxy)                Relaycast                 User B (proxy)
+     │                           │                           │
+     │  Lead: spawn Worker       │                           │
+     │──────────────────────────►│                           │
+     │                           │  spawn Worker             │
+     │                           │──────────────────────────►│
+     │                           │                           │ spawns Codex
+     │                           │◄──────────────────────────│
+     │                           │  Worker connected         │
+     │◄──────────────────────────│                           │
+     │                           │                           │
+     │  Lead → Worker: "task"    │                           │
+     │──────────────────────────►│──────────────────────────►│
+     │                           │                    Worker │
+```
+
+Agents on different machines, coordinated through cloud.
+
+### Benefits Over Current Architecture
+
+| Current | Hosted |
+|---------|--------|
+| Rust broker required | Just Node.js proxy |
+| PTY management | WebSocket connections |
+| Local process spawning | Cloud-orchestrated |
+| Local log storage | Cloud DB with search |
+| Single machine | Multi-machine native |
+| No web UI | Full dashboard |
+| Self-hosted only | Managed service option |
+
+### Implementation Phases
+
+| Phase | Scope | Deliverable |
+|-------|-------|-------------|
+| 1 | Claude `--sdk-url` handler | Accept Claude connections in cloud |
+| 2 | Codex proxy bridge | relay-connect with Codex support |
+| 3 | Message routing | Cloud-based agent coordination |
+| 4 | Log storage | Append-only DB with search API |
+| 5 | Dashboard MVP | Real-time agent activity UI |
+| 6 | Hooks | Event → action in cloud/proxy |
+| 7 | Workflows | Cloud-orchestrated multi-agent flows |
+| 8 | Teams | Shared workspaces, permissions, billing |
+
+### Revenue Model
+
+| Tier | Features | Price |
+|------|----------|-------|
+| Free | 1 agent, 100 msgs/day, 7-day logs | $0 |
+| Pro | 10 agents, unlimited msgs, 90-day logs, hooks | $29/mo |
+| Team | Unlimited agents, shared workspaces, audit logs, SSO | $99/mo/seat |
+
+---
+
 ## Open Questions
 
 1. Should we expose Codex events (file changes, commands) as relay broadcasts?
