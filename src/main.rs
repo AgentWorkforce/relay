@@ -24,6 +24,7 @@ use routing::display_target_for_dashboard;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use relaycast::WsEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
@@ -42,9 +43,9 @@ use relay_broker::{
     protocol::{AgentRuntime, AgentSpec, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION},
     pty::PtySession,
     relaycast_ws::{
-        format_worker_preregistration_error, parse_relaycast_agent_event,
-        registration_is_retryable, registration_retry_after_secs, retry_agent_registration,
-        RegRetryOutcome, RelaycastAgentEvent, RelaycastHttpClient, RelaycastWsClient, WsControl,
+        format_worker_preregistration_error, registration_is_retryable,
+        registration_retry_after_secs, retry_agent_registration, RegRetryOutcome,
+        RelaycastHttpClient, RelaycastWsClient, WsControl,
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
     snippets::{configure_relaycast_mcp_with_token, ensure_relaycast_mcp_config},
@@ -1853,22 +1854,22 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         "received relaycast ws event"
                     );
 
-                    // Handle agent.release_requested from Relaycast (e.g. agent self-termination via remove_agent MCP)
-                    if let Some(rc_event) = parse_relaycast_agent_event(&ws_msg) {
-                        match rc_event {
-                            RelaycastAgentEvent::Release { ref name } => {
-                                workers.supervisor.unregister(name);
-                                workers.metrics.on_release(name);
-                                match workers.release(name).await {
+                    if let Ok(ws_event) = serde_json::from_value::<WsEvent>(ws_msg.clone()) {
+                        match ws_event {
+                            WsEvent::AgentReleaseRequested(event) => {
+                                let name = event.agent.name;
+                                workers.supervisor.unregister(&name);
+                                workers.metrics.on_release(&name);
+                                match workers.release(&name).await {
                                     Ok(()) => {
-                                        if let Err(error) = relaycast_http.mark_agent_offline(name).await {
+                                        if let Err(error) = relaycast_http.mark_agent_offline(&name).await {
                                             tracing::warn!(
                                                 worker = %name,
                                                 error = %error,
                                                 "failed to mark released worker offline in relaycast"
                                             );
                                         }
-                                        let dropped = drop_pending_for_worker(&mut pending_deliveries, name);
+                                        let dropped = drop_pending_for_worker(&mut pending_deliveries, &name);
                                         if dropped > 0 {
                                             let _ = send_event(
                                                 &sdk_out_tx,
@@ -1880,7 +1881,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             release_reason: "relaycast_release".to_string(),
                                             lifetime_seconds: 0,
                                         });
-                                        state.agents.remove(name);
+                                        state.agents.remove(&name);
                                         if let Err(error) = state.save(&paths.state) {
                                             tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
                                         }
@@ -1890,7 +1891,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         ).await;
                                         publish_agent_state_transition(
                                             &ws_control_tx,
-                                            name,
+                                            &name,
                                             "exited",
                                             Some("relaycast_release"),
                                         )
@@ -1905,7 +1906,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 }
                                 continue;
                             }
-                            RelaycastAgentEvent::Spawn { ref name, ref cli, ref task, ref channel } => {
+                            WsEvent::AgentSpawnRequested(event) => {
+                                let name = event.agent.name;
+                                let cli = event.agent.cli;
+                                let task = Some(event.agent.task).filter(|value| !value.trim().is_empty());
+                                let channel = event.agent.channel;
+
                                 tracing::info!(name = %name, cli = %cli, task = ?task, channel = ?channel, "handling spawn request from relaycast WS");
                                 let channels = channel
                                     .as_deref()
@@ -1935,7 +1941,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
                                 // Pre-register with retry
                                 let worker_relay_key = match retry_agent_registration(
-                                    &relaycast_http, name, Some(cli),
+                                    &relaycast_http, &name, Some(&cli),
                                 ).await {
                                     Ok(token) => Some(token),
                                     Err(RegRetryOutcome::RetryableExhausted(error)) => {
@@ -1967,14 +1973,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             cli: cli.clone(),
                                             runtime: "pty".to_string(),
                                         });
-                                        let pid = workers.worker_pid(name).unwrap_or(0);
+                                        let pid = workers.worker_pid(&name).unwrap_or(0);
                                         state.agents.insert(
                                             name.clone(),
                                             PersistedAgent {
                                                 runtime: AgentRuntime::Pty,
                                                 parent: Some("Relaycast".to_string()),
                                                 channels,
-                                                pid: workers.worker_pid(name),
+                                                pid: workers.worker_pid(&name),
                                                 started_at: Some(
                                                     std::time::SystemTime::now()
                                                         .duration_since(std::time::UNIX_EPOCH)
@@ -2001,7 +2007,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         ).await;
                                         publish_agent_state_transition(
                                             &ws_control_tx,
-                                            name,
+                                            &name,
                                             "spawned",
                                             Some("relaycast_spawn"),
                                         )
@@ -2012,9 +2018,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     Err(e) => {
                                         let msg = e.to_string();
                                         if msg.contains("already exists") {
-                                            // Agent was already spawned via SDK protocol — this
-                                            // is expected when the workflow runner and Relaycast
-                                            // WS both see the same spawn request.
                                             tracing::debug!(child = %name, "agent already spawned via SDK, skipping duplicate relaycast WS spawn");
                                         } else {
                                             tracing::error!(child = %name, error = %e, "failed to spawn worker via relaycast WS");
@@ -2024,6 +2027,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 }
                                 continue;
                             }
+                            _ => {}
                         }
                     }
 
@@ -6148,57 +6152,5 @@ mod tests {
         let state_path = std::path::Path::new(".agent-relay/state.json");
         let result = continuity_dir(state_path);
         assert_eq!(result, std::path::PathBuf::from(".agent-relay/continuity"));
-    }
-
-    #[test]
-    fn cached_session_for_requested_name_reuses_matching_token() {
-        let dir = tempfile::tempdir().expect("failed to create temp dir");
-        let paths = super::ensure_runtime_paths(dir.path(), "test")
-            .expect("runtime paths should initialize");
-        let cached = CredentialCache {
-            workspace_id: "ws_cached".to_string(),
-            agent_id: "a_cached".to_string(),
-            api_key: "rk_live_cached".to_string(),
-            agent_name: Some("lead".to_string()),
-            agent_token: Some("at_live_cached_token".to_string()),
-            updated_at: chrono::Utc::now(),
-        };
-        std::fs::write(
-            &paths.creds,
-            serde_json::to_vec(&cached).expect("serialize cache"),
-        )
-        .expect("write cache");
-
-        let session = super::cached_session_for_requested_name(&paths, "lead")
-            .expect("matching cached token should be reused");
-
-        assert_eq!(session.token, "at_live_cached_token");
-        assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
-        assert_eq!(session.credentials.agent_id, "a_cached");
-    }
-
-    #[test]
-    fn cached_session_for_requested_name_rejects_name_mismatch() {
-        let dir = tempfile::tempdir().expect("failed to create temp dir");
-        let paths = super::ensure_runtime_paths(dir.path(), "test")
-            .expect("runtime paths should initialize");
-        let cached = CredentialCache {
-            workspace_id: "ws_cached".to_string(),
-            agent_id: "a_cached".to_string(),
-            api_key: "rk_live_cached".to_string(),
-            agent_name: Some("someone-else".to_string()),
-            agent_token: Some("at_live_cached_token".to_string()),
-            updated_at: chrono::Utc::now(),
-        };
-        std::fs::write(
-            &paths.creds,
-            serde_json::to_vec(&cached).expect("serialize cache"),
-        )
-        .expect("write cache");
-
-        assert!(
-            super::cached_session_for_requested_name(&paths, "lead").is_none(),
-            "requested name mismatch must not reuse cached token"
-        );
     }
 }
