@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # E2E Test for Agent Relay
-# Tests the full agent lifecycle: up -> spawn -> release -> down
+# Tests broker lifecycle and agent lifecycle without relying on legacy socket daemon behavior.
 #
 # Usage:
 #   ./scripts/e2e-test.sh                    # Run with ANTHROPIC_API_KEY from env
@@ -54,6 +54,12 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_phase() { echo -e "\n${CYAN}========================================${NC}"; echo -e "${CYAN}  $1${NC}"; echo -e "${CYAN}========================================${NC}\n"; }
+
+broker_is_running() {
+  local status_output
+  status_output=$(run_with_timeout 5 "$CLI_CMD" status 2>/dev/null || true)
+  echo "$status_output" | grep -q "Status: RUNNING"
+}
 
 # Cross-platform timeout function (macOS doesn't have timeout by default)
 # Returns 124 on timeout (like GNU timeout)
@@ -121,11 +127,6 @@ cleanup() {
   echo ""
   log_phase "Cleanup (safety net)"
 
-  # Try to release agent if it exists
-  if [ "$DAEMON_ONLY" = false ]; then
-    run_with_timeout 5 "$CLI_CMD" release "$AGENT_NAME" --port "$DASHBOARD_PORT" 2>/dev/null || true
-  fi
-
   # Stop daemon (with timeout to prevent hanging)
   log_info "Ensuring daemon is stopped..."
   run_with_timeout 10 "$CLI_CMD" down --force --timeout 5000 2>/dev/null || true
@@ -147,8 +148,8 @@ else
   log_info "Build exists, skipping (run 'npm run build' to rebuild)"
 fi
 
-# Phase 1: Start daemon with dashboard
-log_phase "Phase 1: Starting Daemon"
+# Phase 1: Broker startup smoke test
+log_phase "Phase 1: Broker Startup"
 
 # Kill any existing daemon (with timeout to prevent hanging)
 run_with_timeout 10 "$CLI_CMD" down --force --timeout 5000 2>/dev/null || true
@@ -159,10 +160,10 @@ if command -v lsof &> /dev/null; then
 fi
 sleep 1
 
-# Start daemon in background, redirect output to log file
+# Start broker+dashboard in background, redirect output to log file
 DAEMON_LOG="$PROJECT_DIR/.agent-relay/e2e-daemon.log"
 mkdir -p "$(dirname "$DAEMON_LOG")"
-"$CLI_CMD" up --dashboard --port "$DASHBOARD_PORT" > "$DAEMON_LOG" 2>&1 &
+"$CLI_CMD" up --port "$DASHBOARD_PORT" > "$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 log_info "Daemon started (PID: $DAEMON_PID)"
 log_info "Daemon log: $DAEMON_LOG"
@@ -170,7 +171,7 @@ log_info "Daemon log: $DAEMON_LOG"
 # Wait for daemon to be ready (check health endpoint)
 log_info "Waiting for daemon to be ready..."
 for i in $(seq 1 30); do
-  if curl -s "http://127.0.0.1:${DASHBOARD_PORT}/health" > /dev/null 2>&1; then
+  if broker_is_running; then
     log_info "Daemon is ready!"
     break
   fi
@@ -190,12 +191,12 @@ done
 # If daemon-only mode, stop here
 if [ "$DAEMON_ONLY" = true ]; then
   log_phase "Daemon-Only Test Complete"
-  log_info "Daemon is running at http://127.0.0.1:$DASHBOARD_PORT"
-  log_info "Health: $(curl -s http://127.0.0.1:${DASHBOARD_PORT}/health)"
+  run_with_timeout 5 "$CLI_CMD" status || true
   echo ""
   log_info "=== DAEMON TEST PASSED ==="
   exit 0
 fi
+log_info "Broker startup smoke complete"
 
 # Phase 2: Test CLI Commands
 log_phase "Phase 2: Testing CLI Commands"
@@ -229,11 +230,11 @@ if ! run_with_timeout 10 "$CLI_CMD" status; then
 fi
 log_info "  status command completed without hanging"
 
-# Test agents command (should show only Dashboard initially)
+# Test agents command (should not error even with no user agents)
 log_info "Testing: agent-relay agents"
 "$CLI_CMD" agents || true
 
-# Test agents --json and verify no user agents (only Dashboard)
+# Test agents --json and verify no user agents
 log_info "Testing: agent-relay agents --json"
 # Filter to only get JSON line (skip any log output like dotenv messages)
 AGENTS_JSON=$("$CLI_CMD" agents --json 2>/dev/null | grep '^\[')
@@ -242,8 +243,8 @@ if [ -z "$AGENTS_JSON" ]; then
   exit 1
 fi
 
-# Count agents (excluding Dashboard which is internal)
-AGENT_COUNT=$(echo "$AGENTS_JSON" | jq '[.[] | select(.name != "Dashboard")] | length' 2>/dev/null || echo "0")
+# Count user agents (filter known internal agent names if present)
+AGENT_COUNT=$(echo "$AGENTS_JSON" | jq '[.[] | select(.name != "Dashboard" and .name != "__cli_read__" and .name != "__cli_history__" and .name != "__cli_inbox__")] | length' 2>/dev/null || echo "0")
 log_info "  User agents before spawn: $AGENT_COUNT"
 if [ "$AGENT_COUNT" != "0" ]; then
   log_error "Expected 0 user agents before spawn, got $AGENT_COUNT"
@@ -290,122 +291,32 @@ log_info "Testing: agent-relay bridge --help"
 
 log_info "All CLI command tests passed!"
 
-# Phase 3: Spawn agent
-log_phase "Phase 3: Spawning Claude Agent"
-
-log_info "Spawning agent '$AGENT_NAME'..."
-"$CLI_CMD" spawn "$AGENT_NAME" claude "You are a test agent. Say 'Ready for testing' and then wait. Do not exit until you receive a message telling you to exit." --port "$DASHBOARD_PORT"
-
-SPAWN_EXIT_CODE=$?
-if [ $SPAWN_EXIT_CODE -ne 0 ]; then
-  log_error "Spawn command failed with exit code $SPAWN_EXIT_CODE"
-  exit 1
-fi
-log_info "Spawn command succeeded!"
-
-# Phase 4: Wait for agent registration
-log_phase "Phase 4: Verifying Agent Registration"
-
-log_info "Polling for agent registration (timeout: ${SPAWN_TIMEOUT}s)..."
-START_TIME=$(date +%s)
-
-while true; do
-  CURRENT_TIME=$(date +%s)
-  ELAPSED=$((CURRENT_TIME - START_TIME))
-
-  # Use CLI agents command to check registration (--json for parseable output)
-  # Capture full JSON (skip any preamble lines before the array)
-  RAW_AGENTS=$("$CLI_CMD" agents --json 2>/dev/null || true)
-  AGENTS=$(echo "$RAW_AGENTS" | sed -n '/^\[/,$p')
-  if [ -z "$AGENTS" ] || ! echo "$AGENTS" | jq empty >/dev/null 2>&1; then
-    AGENTS="[]"
-  fi
-
-  # Check if our agent is registered
-  if echo "$AGENTS" | jq -e --arg name "$AGENT_NAME" '.[] | select(.name == $name)' >/dev/null 2>&1; then
-    echo ""
-    log_info "SUCCESS: Agent '$AGENT_NAME' registered after ${ELAPSED}s"
-
-    # Verify exactly 1 user agent
-    AGENT_COUNT=$(echo "$AGENTS" | jq '[.[] | select(.name != "Dashboard")] | length' 2>/dev/null || echo "0")
-    log_info "  User agents after spawn: $AGENT_COUNT"
-    if [ "$AGENT_COUNT" != "1" ]; then
-      log_error "Expected 1 user agent after spawn, got $AGENT_COUNT"
-      echo "$AGENTS" | jq . 2>/dev/null || echo "$AGENTS"
-      exit 1
-    fi
-    log_info "  VERIFIED: Exactly 1 user agent connected"
-    echo ""
-    log_info "Connected agents:"
-    echo "$AGENTS" | jq . 2>/dev/null || echo "$AGENTS"
-    break
-  fi
-
-  echo "[$(date +%T)] +${ELAPSED}s: Waiting for agent registration..."
-
-  # Check timeout
-  if [ $ELAPSED -ge $SPAWN_TIMEOUT ]; then
-    echo ""
-    log_error "Agent '$AGENT_NAME' did not register within ${SPAWN_TIMEOUT}s"
-    echo ""
-    log_info "Connected agents:"
-    "$CLI_CMD" agents 2>/dev/null || true
+# Phase 3: Stop broker before SDK-managed lifecycle
+log_phase "Phase 3: Transition to SDK Lifecycle"
+log_info "Stopping CLI broker before SDK lifecycle test..."
+if ! run_with_timeout 15 "$CLI_CMD" down --timeout 10000; then
+  EXIT_CODE=$?
+  if [ $EXIT_CODE -eq 124 ]; then
+    log_error "down command timed out while preparing SDK lifecycle test"
     exit 1
   fi
-
-  sleep 2
-done
-
-# Phase 5: Release agent
-log_phase "Phase 5: Releasing Agent"
-
-log_info "Releasing agent '$AGENT_NAME'..."
-"$CLI_CMD" release "$AGENT_NAME" --port "$DASHBOARD_PORT"
-
-RELEASE_EXIT_CODE=$?
-if [ $RELEASE_EXIT_CODE -ne 0 ]; then
-  log_error "Release command failed with exit code $RELEASE_EXIT_CODE"
-  exit 1
-fi
-log_info "Release command succeeded!"
-
-# Phase 6: Verify agent was released
-log_phase "Phase 6: Verifying Agent Release"
-
-# Wait for agent to fully disconnect
-sleep 3
-
-# Poll for agent to be removed (may take a moment)
-log_info "Verifying agent was released..."
-RELEASE_VERIFIED=false
-for i in $(seq 1 10); do
-  # Filter to only get JSON line (skip any log output like dotenv messages)
-  AGENTS_AFTER=$("$CLI_CMD" agents --json 2>/dev/null | grep '^\[' || echo "[]")
-  AGENT_COUNT=$(echo "$AGENTS_AFTER" | jq '[.[] | select(.name != "Dashboard")] | length' 2>/dev/null || echo "0")
-
-  if [ "$AGENT_COUNT" = "0" ]; then
-    RELEASE_VERIFIED=true
-    break
-  fi
-
-  if [ $i -lt 10 ]; then
-    echo "  Still waiting for agent to disconnect... (${i}s)"
-    sleep 1
-  fi
-done
-
-if [ "$RELEASE_VERIFIED" = true ]; then
-  log_info "  User agents after release: 0"
-  log_info "  VERIFIED: No user agents connected (as expected)"
-  log_info "SUCCESS: Agent '$AGENT_NAME' released and disconnected"
-else
-  log_error "Expected 0 user agents after release, got $AGENT_COUNT"
-  echo "$AGENTS_AFTER" | jq . 2>/dev/null || echo "$AGENTS_AFTER"
-  exit 1
 fi
 
-# Phase 7: Stop daemon gracefully (verify down doesn't hang)
-log_phase "Phase 7: Stopping Daemon"
+# Phase 4: SDK lifecycle test (spawn/list/release)
+log_phase "Phase 4: SDK Agent Lifecycle"
+if ! node "$PROJECT_DIR/scripts/e2e-sdk-lifecycle.mjs" \
+  --name "$AGENT_NAME" \
+  --cli "claude" \
+  --timeout "$SPAWN_TIMEOUT" \
+  --cwd "$PROJECT_DIR" \
+  --task "You are a test agent. Say 'Ready for testing' and then wait. Do not exit until you receive a message telling you to exit."; then
+  log_error "SDK lifecycle test failed"
+  exit 1
+fi
+log_info "SDK lifecycle test passed"
+
+# Phase 7: Final cleanup down (verify no hang)
+log_phase "Phase 7: Final Down Check"
 
 log_info "Testing: agent-relay down (with 15s timeout)"
 if ! run_with_timeout 15 "$CLI_CMD" down --timeout 10000; then
@@ -421,13 +332,14 @@ else
   log_info "  down command completed without hanging"
 fi
 
-# Verify daemon is actually stopped
-sleep 1
-if curl -s "http://127.0.0.1:${DASHBOARD_PORT}/health" > /dev/null 2>&1; then
-  log_error "Daemon still responding after down command"
+# Verify broker is actually stopped
+STATUS_OUTPUT=$(run_with_timeout 5 "$CLI_CMD" status 2>/dev/null || true)
+if echo "$STATUS_OUTPUT" | grep -q "Status: RUNNING"; then
+  log_error "Broker still reported as running after down command"
+  echo "$STATUS_OUTPUT"
   exit 1
 fi
-log_info "  VERIFIED: Daemon is stopped"
+log_info "  VERIFIED: Broker is stopped"
 
 echo ""
 log_info "=== E2E TEST PASSED ==="

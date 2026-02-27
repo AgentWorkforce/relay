@@ -5,8 +5,6 @@ on:
     branches: [main]
     paths:
       - 'src/**'
-      - 'packages/daemon/src/orchestrator.ts'
-      - 'packages/daemon/src/relay-*.ts'
       - 'scripts/stress-test-*.sh'
       - 'scripts/stress-test-*.mjs'
       - 'scripts/stress-test-*.mts'
@@ -15,8 +13,6 @@ on:
     branches: [main]
     paths:
       - 'src/**'
-      - 'packages/daemon/src/orchestrator.ts'
-      - 'packages/daemon/src/relay-*.ts'
       - 'scripts/stress-test-*.sh'
       - 'scripts/stress-test-*.mjs'
       - 'scripts/stress-test-*.mts'
@@ -109,7 +105,26 @@ jobs:
       - name: Run orchestrator integration stress tests
         id: integration-stress
         run: |
-          npx tsx scripts/stress-test-orchestrator-integration.mts --json --output=integration-results.json || echo "exit_code=$?" >> $GITHUB_OUTPUT
+          if [ ! -f packages/daemon/src/orchestrator.ts ]; then
+            echo "packages/daemon/src/orchestrator.ts not present; skipping integration stress test for this repo layout"
+            cat > integration-results.json << 'EOF'
+          {
+            "passed": true,
+            "failures": 0,
+            "tests": {},
+            "summary": {
+              "total_tests": 0,
+              "passed_tests": 0,
+              "failed_tests": 0,
+              "total_time_ms": 0
+            },
+            "skipped": true,
+            "reason": "packages/daemon/src/orchestrator.ts not present"
+          }
+          EOF
+          else
+            npx tsx scripts/stress-test-orchestrator-integration.mts --json --output=integration-results.json || echo "exit_code=$?" >> $GITHUB_OUTPUT
+          fi
           cat integration-results.json
         continue-on-error: true
 

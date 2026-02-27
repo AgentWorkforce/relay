@@ -186,7 +186,6 @@ struct RelaySession {
 }
 
 /// Build the standard env-var array passed to every spawned child agent.
-
 fn normalize_initial_task(task: Option<String>) -> Option<String> {
     task.and_then(|value| {
         if value.trim().is_empty() {
@@ -1662,12 +1661,15 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     event_emit_timeout,
                                 )
                                 .await;
-                                if let Err(_) = reply.send(Ok(json!({
+                                if reply
+                                    .send(Ok(json!({
                                     "success": true,
                                     "event_id": event_id,
                                     "delivered": delivered,
                                     "local": true,
-                                }))) {
+                                })))
+                                    .is_err()
+                                {
                                     tracing::warn!(
                                         target = "relay_broker::http_api",
 
@@ -1713,12 +1715,15 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             event_emit_timeout,
                                         )
                                         .await;
-                                        if let Err(_) = reply.send(Ok(json!({
+                                        if reply
+                                            .send(Ok(json!({
                                             "success": true,
                                             "event_id": event_id,
                                             "relaycast_published": true,
                                             "local": false,
-                                        }))) {
+                                        })))
+                                            .is_err()
+                                        {
                                             tracing::warn!(
                                                 target = "relay_broker::http_api",
 
@@ -1738,9 +1743,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             "relaycast publish failed"
                                         );
                                         let not_found = format!("Agent \"{}\" not found", normalized_to);
-                                        if let Err(_) = reply.send(Err(format!(
+                                        if reply
+                                            .send(Err(format!(
                                             "{not_found} and Relaycast publish failed: {error}"
-                                        ))) {
+                                        )))
+                                            .is_err()
+                                        {
                                             tracing::warn!(
                                                 target = "relay_broker::http_api",
 
@@ -1760,10 +1768,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             "relaycast publish timed out"
                                         );
                                         let not_found = format!("Agent \"{}\" not found", normalized_to);
-                                        if let Err(_) = reply.send(Err(format!(
+                                        if reply
+                                            .send(Err(format!(
                                             "{not_found} and Relaycast publish timed out after {}ms",
                                             relaycast_timeout.as_millis()
-                                        ))) {
+                                        )))
+                                            .is_err()
+                                        {
                                             tracing::warn!(
                                                 target = "relay_broker::http_api",
 
@@ -5097,7 +5108,7 @@ mod tests {
         let marker = "\"kind\"";
         let mut kinds = BTreeSet::new();
         let mut cursor = 0;
-        while let Some(offset) = source[cursor..].find(&marker) {
+        while let Some(offset) = source[cursor..].find(marker) {
             let mut start = cursor + offset + marker.len();
             if start >= source.len() {
                 break;

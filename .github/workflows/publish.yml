@@ -432,23 +432,15 @@ jobs:
       max-parallel: 10
       matrix:
         package:
-          # All packages - published in parallel
-          - protocol
-          - state
+          # All publishable npm packages - published in parallel
           - policy
           - memory
           - utils
-          - continuity
           - trajectory
           - hooks
-          - resiliency
           - user-directory
-          - spawner
           - config
-          - bridge
-          - wrapper
           - sdk
-          - daemon
           - telemetry
           - acp-bridge
 

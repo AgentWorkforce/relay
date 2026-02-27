@@ -48,9 +48,33 @@ jobs:
           sudo apt-get install -y musl-tools
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
             sudo apt-get install -y gcc-aarch64-linux-gnu
-            # Install aarch64 musl cross-compiler
-            curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz | sudo tar -xz -C /opt
-            echo "/opt/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
+            # Install aarch64 musl cross-compiler with retries for transient network failures.
+            MUSL_URL="https://musl.cc/aarch64-linux-musl-cross.tgz"
+            MUSL_ARCHIVE="/tmp/aarch64-linux-musl-cross.tgz"
+            for attempt in 1 2 3; do
+              if curl -fL --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 2 --retry-all-errors \
+                "$MUSL_URL" -o "$MUSL_ARCHIVE"; then
+                break
+              fi
+              if [[ "$attempt" -eq 3 ]]; then
+                echo "Failed to download aarch64 musl cross-compiler from $MUSL_URL"
+                exit 1
+              fi
+              sleep $((attempt * 5))
+            done
+            # Optional hardening: verify archive SHA256 if EXPECTED_MUSL_SHA256_AARCH64 is set.
+            EXPECTED_MUSL_SHA256_AARCH64="${EXPECTED_MUSL_SHA256_AARCH64:-}"
+            if [[ -n "$EXPECTED_MUSL_SHA256_AARCH64" ]]; then
+              echo "$EXPECTED_MUSL_SHA256_AARCH64  $MUSL_ARCHIVE" | sha256sum -c - || {
+                echo "SHA256 checksum verification failed for $MUSL_ARCHIVE"
+                exit 1
+              }
+            else
+              echo "WARNING: EXPECTED_MUSL_SHA256_AARCH64 not set; skipping SHA256 verification for $MUSL_ARCHIVE"
+            fi
+            sudo tar -xzf "$MUSL_ARCHIVE" -C /opt
+            echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+            /opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc --version
           fi
 
       - name: Build static binary

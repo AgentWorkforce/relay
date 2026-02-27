@@ -6,6 +6,7 @@ export interface CreateAgentRelayClientOptions {
   binaryPath?: string;
   binaryArgs?: string[];
   env?: NodeJS.ProcessEnv;
+  requestTimeoutMs?: number;
 }
 
 export interface ClientSpawnOptions {
@@ -31,6 +32,7 @@ export function createAgentRelayClient(options: CreateAgentRelayClientOptions): 
     binaryPath = process.env.AGENT_RELAY_BIN,
     binaryArgs,
     env = process.env,
+    requestTimeoutMs,
   } = options;
 
   return new AgentRelayClient({
@@ -39,6 +41,7 @@ export function createAgentRelayClient(options: CreateAgentRelayClientOptions): 
     channels,
     cwd,
     env,
+    requestTimeoutMs,
   });
 }
 
