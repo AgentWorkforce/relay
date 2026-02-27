@@ -859,7 +859,7 @@ mod tests {
 
     use super::{
         ensure_protocol_snippets_inner, ensure_relaycast_mcp_config, find_project_root,
-        should_install_in, snippet_block, MARKER_START,
+        should_install_in, snippet_block, MARKER_START, RELAYCAST_MCP_PACKAGE,
     };
 
     #[test]
@@ -937,10 +937,15 @@ mod tests {
 
         fs::write(
             root.join(".mcp.json"),
-            format!(
-                r#"{{"mcpServers":{{"relaycast":{{"command":"npx","args":["-y","{}")]}}}}}"#,
-                RELAYCAST_MCP_PACKAGE
-            ),
+            serde_json::json!({
+                "mcpServers": {
+                    "relaycast": {
+                        "command": "npx",
+                        "args": ["-y", RELAYCAST_MCP_PACKAGE]
+                    }
+                }
+            })
+            .to_string(),
         )
         .expect("write .mcp.json");
 
@@ -972,10 +977,15 @@ mod tests {
         // Now add MCP config
         fs::write(
             root.join(".mcp.json"),
-            format!(
-                r#"{{"mcpServers":{{"relaycast":{{"command":"npx","args":["-y","{}"]}}}}}}}"#,
-                RELAYCAST_MCP_PACKAGE
-            ),
+            serde_json::json!({
+                "mcpServers": {
+                    "relaycast": {
+                        "command": "npx",
+                        "args": ["-y", RELAYCAST_MCP_PACKAGE]
+                    }
+                }
+            })
+            .to_string(),
         )
         .expect("write .mcp.json");
 
@@ -1019,10 +1029,15 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         fs::write(root.join("GEMINI.md"), legacy).expect("write legacy snippet");
         fs::write(
             root.join(".mcp.json"),
-            format!(
-                r#"{{"mcpServers":{{"relaycast":{{"command":"npx","args":["{}"]}}}}}}}"#,
-                RELAYCAST_MCP_PACKAGE
-            ),
+            serde_json::json!({
+                "mcpServers": {
+                    "relaycast": {
+                        "command": "npx",
+                        "args": [RELAYCAST_MCP_PACKAGE]
+                    }
+                }
+            })
+            .to_string(),
         )
         .expect("write .mcp.json");
 
