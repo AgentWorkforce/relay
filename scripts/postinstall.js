@@ -3,7 +3,7 @@
  * Postinstall Script for agent-relay
  *
  * This script runs after npm install to:
- * 1. Install relay-pty binary for current platform
+ * 1. Install agent-relay-broker binary for current platform
  * 2. Install dashboard dependencies
  * 3. Patch agent-trajectories CLI
  * 4. Check for tmux availability (fallback)
@@ -148,36 +148,6 @@ function ensureSqliteDriver() {
   return { ok: false, driver: 'none', statusPath, error: detail };
 }
 
-/**
- * Get the platform-specific binary name for relay-pty
- * Returns null if platform is not supported
- */
-function getRelayPtyBinaryName() {
-  const platform = os.platform();
-  const arch = os.arch();
-
-  // Map Node.js arch to Rust target arch
-  const archMap = {
-    'arm64': 'arm64',
-    'x64': 'x64',
-  };
-
-  // Map Node.js platform to Rust target platform
-  const platformMap = {
-    'darwin': 'darwin',
-    'linux': 'linux',
-  };
-
-  const targetPlatform = platformMap[platform];
-  const targetArch = archMap[arch];
-
-  if (!targetPlatform || !targetArch) {
-    return null;
-  }
-
-  return `relay-pty-${targetPlatform}-${targetArch}`;
-}
-
 /** Read the package version from package.json */
 function getPackageVersion(pkgRoot) {
   const packageJsonPath = path.join(pkgRoot, 'package.json');
@@ -198,7 +168,7 @@ function getPackageVersion(pkgRoot) {
  * Download a file via HTTPS, following redirects
  * Uses only built-in https module (no deps)
  */
-function downloadRelayPtyBinary(url, destPath, maxRedirects = 5) {
+function downloadBinary(url, destPath, maxRedirects = 5) {
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
   const attemptDownload = (currentUrl, redirectsRemaining, resolve, reject) => {
@@ -210,7 +180,7 @@ function downloadRelayPtyBinary(url, destPath, maxRedirects = 5) {
       if (isRedirect) {
         if (redirectsRemaining <= 0) {
           res.resume();
-          reject(new Error('Too many redirects while downloading relay-pty binary'));
+          reject(new Error('Too many redirects while downloading binary'));
           return;
         }
 
@@ -281,83 +251,6 @@ function resignBinaryForMacOS(binaryPath) {
 }
 
 /**
- * Install the relay-pty binary for the current platform
- */
-async function installRelayPtyBinary() {
-  const pkgRoot = getPackageRoot();
-  const binaryName = getRelayPtyBinaryName();
-
-  if (!binaryName) {
-    warn(`Unsupported platform: ${os.platform()}-${os.arch()}`);
-    warn('relay-pty binary not available, will fall back to tmux mode');
-    return false;
-  }
-
-  const sourcePath = path.join(pkgRoot, 'bin', binaryName);
-  const targetPath = path.join(pkgRoot, 'bin', 'relay-pty');
-
-  // Check if platform-specific binary exists (bundled install)
-  if (!fs.existsSync(sourcePath)) {
-    const version = getPackageVersion(pkgRoot);
-    if (!version) {
-      warn('relay-pty binary not available and package version unknown');
-      warn('Will fall back to tmux mode');
-      return false;
-    }
-
-    const downloadUrl = `https://github.com/AgentWorkforce/relay/releases/download/v${version}/${binaryName}`;
-    info(`relay-pty binary not bundled, downloading from ${downloadUrl} ...`);
-
-    try {
-      await downloadRelayPtyBinary(downloadUrl, sourcePath);
-      fs.chmodSync(sourcePath, 0o755);
-      success(`Downloaded relay-pty binary for ${os.platform()}-${os.arch()}`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      warn(`Failed to download relay-pty binary: ${message}`);
-      warn('Will fall back to tmux mode');
-      return false;
-    }
-  }
-
-  // Check if already installed (and is a symlink or copy of correct binary)
-  if (fs.existsSync(targetPath)) {
-    try {
-      // Check if it's already the right binary by comparing size
-      const sourceStats = fs.statSync(sourcePath);
-      const targetStats = fs.statSync(targetPath);
-      if (sourceStats.size === targetStats.size) {
-        // Re-sign even if already installed to ensure signature is valid
-        // This fixes issues where previous installs have invalid signatures
-        resignBinaryForMacOS(targetPath);
-        info('relay-pty binary already installed');
-        return true;
-      }
-    } catch {
-      // Continue to reinstall
-    }
-  }
-
-  // Copy the binary (symlinks don't work well across npm install)
-  try {
-    fs.copyFileSync(sourcePath, targetPath);
-    fs.chmodSync(targetPath, 0o755);
-
-    // Re-sign the binary on macOS to prevent code signature validation failures
-    // Without this, macOS may SIGKILL the process immediately on execution
-    if (resignBinaryForMacOS(targetPath)) {
-      success(`Installed relay-pty binary for ${os.platform()}-${os.arch()}`);
-    } else {
-      warn(`Installed relay-pty binary but signing failed - may not work on macOS`);
-    }
-    return true;
-  } catch (err) {
-    warn(`Failed to install relay-pty binary: ${err.message}`);
-    return false;
-  }
-}
-
-/**
  * Get the platform-specific binary name for the broker binary.
  * The broker binary is the Rust-compiled broker (not the Bun-compiled CLI).
  * It is needed by the SDK (packages/sdk) for programmatic
@@ -423,7 +316,7 @@ async function installBrokerBinary() {
 
   const binaryName = getBrokerBinaryName();
 
-  // 2. Check for bundled platform-specific binary in root bin/ (same approach as relay-pty)
+  // 2. Check for bundled platform-specific binary in root bin/
   if (binaryName) {
     const bundledBinary = path.join(pkgRoot, 'bin', binaryName);
     if (fs.existsSync(bundledBinary)) {
@@ -447,7 +340,7 @@ async function installBrokerBinary() {
       info(`Downloading broker binary from ${downloadUrl} ...`);
 
       try {
-        await downloadRelayPtyBinary(downloadUrl, targetPath);
+        await downloadBinary(downloadUrl, targetPath);
         fs.chmodSync(targetPath, 0o755);
         resignBinaryForMacOS(targetPath);
         success(`Downloaded broker binary for ${os.platform()}-${os.arch()}`);
@@ -478,18 +371,6 @@ async function installBrokerBinary() {
   warn('Broker binary not available — SDK programmatic usage (AgentRelay) will not work');
   info('To fix: cargo build --release --bin agent-relay-broker (requires Rust toolchain)');
   return false;
-}
-
-/**
- * Check if tmux is available on the system
- */
-function hasSystemTmux() {
-  try {
-    execSync('which tmux', { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -701,7 +582,7 @@ function patchAgentTrajectories() {
   success('Patched agent-trajectories to record agent on trail start');
 }
 
-function logPostinstallDiagnostics(hasRelayPty, hasBrokerBinary, sqliteStatus, linkResult) {
+function logPostinstallDiagnostics(hasBrokerBinary, sqliteStatus, linkResult) {
   // Workspace packages status (for global installs)
   if (linkResult && linkResult.needed) {
     if (linkResult.success) {
@@ -711,16 +592,10 @@ function logPostinstallDiagnostics(hasRelayPty, hasBrokerBinary, sqliteStatus, l
     }
   }
 
-  if (hasRelayPty) {
-    console.log('✓ relay-pty binary installed');
-  } else {
-    console.log('⚠ relay-pty binary not installed - falling back to tmux mode if available');
-  }
-
   if (hasBrokerBinary) {
-    console.log('✓ broker binary installed (SDK programmatic usage ready)');
+    console.log('✓ agent-relay-broker binary installed');
   } else {
-    console.log('⚠ broker binary not installed - AgentRelay programmatic API will not work');
+    console.log('⚠ agent-relay-broker binary not installed - AgentRelay will not work');
   }
 
   if (sqliteStatus.ok && sqliteStatus.driver === 'better-sqlite3') {
@@ -752,10 +627,7 @@ async function main() {
     }
   }
 
-  // Install relay-pty binary for current platform (primary mode)
-  const hasRelayPty = await installRelayPtyBinary();
-
-  // Install broker binary for SDK programmatic usage (AgentRelay)
+  // Install broker binary for agent spawning and SDK programmatic usage
   const hasBrokerBinary = await installBrokerBinary();
 
   // Ensure SQLite driver is available (better-sqlite3 or node:sqlite)
@@ -768,30 +640,13 @@ async function main() {
   installDashboardDeps();
 
   // Always print diagnostics (even in CI)
-  logPostinstallDiagnostics(hasRelayPty, hasBrokerBinary, sqliteStatus, linkResult);
+  logPostinstallDiagnostics(hasBrokerBinary, sqliteStatus, linkResult);
 
-  // Skip tmux check in CI environments
-  if (process.env.CI === 'true') {
-    return;
+  if (!hasBrokerBinary) {
+    warn('agent-relay-broker binary not available');
+    info('Agent spawning will not work without the broker binary.');
+    info('To fix: cargo build --release --bin agent-relay-broker (requires Rust toolchain)');
   }
-
-  // If relay-pty is installed, we're good
-  if (hasRelayPty) {
-    info('Using relay-pty for agent communication (fast mode)');
-    return;
-  }
-
-  // Fall back to tmux check
-  if (hasSystemTmux()) {
-    info('System tmux found (fallback mode)');
-    return;
-  }
-
-  // Neither relay-pty nor tmux available
-  warn('Neither relay-pty nor tmux available');
-  info('Agent spawning will not work without one of:');
-  info('  1. relay-pty binary (included for darwin-arm64, darwin-x64, linux-x64)');
-  info('  2. tmux: brew install tmux (macOS) or apt install tmux (Linux)');
 }
 
 main().catch((err) => {
