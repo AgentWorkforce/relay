@@ -506,19 +506,12 @@ impl RelaycastHttpClient {
                 }
             }
             // Join so the broker receives message.created WS events for this channel.
-            let join_url = format!("{}/v1/channels/{}/join", self.base_url, name);
-            match self
-                .http
-                .post(&join_url)
-                .header("Authorization", format!("Bearer {}", token))
-                .send()
-                .await
-            {
-                Ok(res) if res.status().is_success() || res.status().as_u16() == 409 => {
+            match agent_client.join_channel(name).await {
+                Ok(_) => {
                     tracing::info!(channel = %name, "broker joined default channel");
                 }
-                Ok(res) => {
-                    tracing::warn!(channel = %name, status = %res.status(), "failed to join default channel");
+                Err(RelayError::Api { status: 409, .. }) => {
+                    tracing::debug!(channel = %name, "broker already joined default channel");
                 }
                 Err(error) => {
                     tracing::warn!(channel = %name, error = %error, "failed to join default channel");
@@ -574,19 +567,10 @@ impl RelaycastHttpClient {
                 }
             }
             // Join the channel so the broker receives message.created WS events.
-            let join_url = format!("{}/v1/channels/{}/join", self.base_url, name);
-            match self
-                .http
-                .post(&join_url)
-                .header("Authorization", format!("Bearer {}", token))
-                .send()
-                .await
-            {
-                Ok(res) if res.status().is_success() || res.status().as_u16() == 409 => {
-                    tracing::info!(channel = %name, "broker joined extra channel");
-                }
-                Ok(res) => {
-                    tracing::warn!(channel = %name, status = %res.status(), "failed to join extra channel");
+            match agent_client.join_channel(name).await {
+                Ok(_) => tracing::info!(channel = %name, "broker joined extra channel"),
+                Err(RelayError::Api { status: 409, .. }) => {
+                    tracing::debug!(channel = %name, "broker already joined extra channel");
                 }
                 Err(error) => {
                     tracing::warn!(channel = %name, error = %error, "failed to join extra channel");
