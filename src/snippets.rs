@@ -937,7 +937,10 @@ mod tests {
 
         fs::write(
             root.join(".mcp.json"),
-            format!(r#"{{"mcpServers":{{"relaycast":{{"command":"npx","args":["-y","{}")]}}}}}"#, RELAYCAST_MCP_PACKAGE),
+            format!(
+                r#"{{"mcpServers":{{"relaycast":{{"command":"npx","args":["-y","{}")]}}}}}"#,
+                RELAYCAST_MCP_PACKAGE
+            ),
         )
         .expect("write .mcp.json");
 
@@ -969,7 +972,10 @@ mod tests {
         // Now add MCP config
         fs::write(
             root.join(".mcp.json"),
-            format!(r#"{{"mcpServers":{{"relaycast":{{"command":"npx","args":["-y","{}"]}}}}}}}"#, RELAYCAST_MCP_PACKAGE),
+            format!(
+                r#"{{"mcpServers":{{"relaycast":{{"command":"npx","args":["-y","{}"]}}}}}}}"#,
+                RELAYCAST_MCP_PACKAGE
+            ),
         )
         .expect("write .mcp.json");
 
@@ -1013,7 +1019,10 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         fs::write(root.join("GEMINI.md"), legacy).expect("write legacy snippet");
         fs::write(
             root.join(".mcp.json"),
-            format!(r#"{{"mcpServers":{{"relaycast":{{"command":"npx","args":["{}"]}}}}}}}"#, RELAYCAST_MCP_PACKAGE),
+            format!(
+                r#"{{"mcpServers":{{"relaycast":{{"command":"npx","args":["{}"]}}}}}}}"#,
+                RELAYCAST_MCP_PACKAGE
+            ),
         )
         .expect("write .mcp.json");
 
