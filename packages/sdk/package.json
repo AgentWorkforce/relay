@@ -58,11 +58,12 @@
     "package.json"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "prebuild": "npm --prefix ../config run build",
+    "build": "tsc -p tsconfig.build.json",
     "build:full": "tsc -p tsconfig.json && npm run bundle:binary",
     "bundle:binary": "node ./scripts/bundle-agent-relay.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.json && node --test dist/__tests__/integration.test.js",
+    "test": "npm run build && node --test dist/__tests__/integration.test.js",
     "test:quickstart": "node --test dist/__tests__/quickstart.test.js",
     "quickstart": "node dist/examples/quickstart.js",
     "demo": "node dist/examples/demo.js",
@@ -76,7 +77,7 @@
   },
   "dependencies": {
     "@agent-relay/config": "2.3.14",
-    "@relaycast/sdk": "^0.3.1",
+    "@relaycast/sdk": "^0.4.0",
     "yaml": "^2.7.0"
   }
 }
