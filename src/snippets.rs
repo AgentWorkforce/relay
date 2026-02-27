@@ -1364,11 +1364,15 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         assert!(args
             .iter()
             .any(|a| a.contains("mcp_servers.relaycast.args=")));
-        assert!(args.contains(&"mcp_servers.relaycast.env.RELAY_API_KEY=\"rk_live_xyz\"".to_string()));
+        assert!(
+            args.contains(&"mcp_servers.relaycast.env.RELAY_API_KEY=\"rk_live_xyz\"".to_string())
+        );
         assert!(args.contains(
             &"mcp_servers.relaycast.env.RELAY_BASE_URL=\"https://api.relaycast.dev\"".to_string()
         ));
-        assert!(args.contains(&"mcp_servers.relaycast.env.RELAY_AGENT_NAME=\"CodexAgent\"".to_string()));
+        assert!(
+            args.contains(&"mcp_servers.relaycast.env.RELAY_AGENT_NAME=\"CodexAgent\"".to_string())
+        );
         assert!(args.contains(&"mcp_servers.relaycast.env.RELAY_AGENT_TYPE=\"agent\"".to_string()));
         assert!(
             args.contains(&"mcp_servers.relaycast.env.RELAY_STRICT_AGENT_NAME=\"1\"".to_string())
