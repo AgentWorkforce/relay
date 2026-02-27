@@ -57,6 +57,11 @@
     "README.md",
     "package.json"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/sdk"
+  },
   "scripts": {
     "prebuild": "npm --prefix ../config run build",
     "build": "tsc -p tsconfig.build.json",
