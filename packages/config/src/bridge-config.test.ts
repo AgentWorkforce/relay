@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {
+  loadBridgeConfig,
   resolvePath,
   getDefaultLeadName,
   resolveProjects,
@@ -62,6 +63,18 @@ describe('Bridge Config', () => {
   });
 
   describe('resolveProjects', () => {
+    it('ignores non-string config file content', () => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue(undefined as unknown as string);
+
+      const config = loadBridgeConfig();
+
+      expect(config).toBeNull();
+      expect(consoleSpy).not.toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
+
     it('creates project configs from CLI paths', () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
 
