@@ -51,7 +51,11 @@ jobs:
 
       - name: Pack local tarball (PR only)
         if: github.event_name == 'pull_request'
-        run: npm pack
+        id: pack
+        run: |
+          TARBALL="$(npm pack | tail -1)"
+          echo "tarball=$TARBALL" >> $GITHUB_OUTPUT
+          echo "Packed tarball: $TARBALL"
 
       - name: Setup Node.js ${{ matrix.node }}
         uses: actions/setup-node@v4
@@ -62,12 +66,19 @@ jobs:
         id: pkg
         run: |
           VERSION_INPUT="${{ inputs.version }}"
-          if [ -z "$VERSION_INPUT" ] || [ "$VERSION_INPUT" = "latest" ]; then
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # Use the exact tarball packed in this workflow run.
+            SPEC="$(pwd)/${{ steps.pack.outputs.tarball }}"
+          elif [ -z "$VERSION_INPUT" ] || [ "$VERSION_INPUT" = "latest" ]; then
             VERSION="latest"
             SPEC="agent-relay"
           else
             VERSION="$VERSION_INPUT"
             SPEC="agent-relay@${VERSION}"
+          fi
+          if [ -z "$SPEC" ]; then
+            echo "ERROR: package spec resolved to empty value"
+            exit 1
           fi
           echo "spec=$SPEC" >> $GITHUB_OUTPUT
           echo "Testing: $SPEC"
@@ -148,8 +159,12 @@ jobs:
             echo "Package spec is empty - failing fast"
             exit 1
           fi
-          # npx with @ syntax - downloads and runs in one command
-          VERSION=$(npx ${{ steps.pkg.outputs.spec }} --version 2>&1)
+          # Run from a temp dir and force package resolution from spec.
+          # This avoids resolving the local repo package when workflow runs in this repository.
+          TMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          cd "$TMP_DIR"
+          VERSION=$(npx --yes -p "${{ steps.pkg.outputs.spec }}" agent-relay --version 2>&1)
           echo "npx version output: $VERSION"
           if echo "$VERSION" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
             echo "npx version check passed"
@@ -158,11 +173,18 @@ jobs:
           fi
 
       - name: 'Test: npx --help'
-        run: npx ${{ steps.pkg.outputs.spec }} --help | head -20
+        run: |
+          TMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          cd "$TMP_DIR"
+          npx --yes -p "${{ steps.pkg.outputs.spec }}" agent-relay --help | head -20
 
       - name: 'Test: npx version command'
         run: |
-          OUTPUT=$(npx ${{ steps.pkg.outputs.spec }} version 2>&1)
+          TMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          cd "$TMP_DIR"
+          OUTPUT=$(npx --yes -p "${{ steps.pkg.outputs.spec }}" agent-relay version 2>&1)
           echo "$OUTPUT"
           if echo "$OUTPUT" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
             echo "npx version command check passed"
@@ -178,7 +200,10 @@ jobs:
 
           # Run npx and test binary resolution
           # This simulates what happens when a user runs `npx agent-relay up`
-          npx ${{ steps.pkg.outputs.spec }} --version >/dev/null 2>&1
+          TMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          cd "$TMP_DIR"
+          npx --yes -p "${{ steps.pkg.outputs.spec }}" agent-relay --version >/dev/null 2>&1
 
           # Now verify the platform-specific binary exists in npx cache
           NPX_CACHE=~/.npm/_npx
@@ -406,14 +431,18 @@ jobs:
 
       - name: Pack local tarball (PR only)
         if: github.event_name == 'pull_request'
-        run: npm pack
+        id: pack
+        run: |
+          TARBALL="$(npm pack | tail -1)"
+          echo "tarball=$TARBALL" >> $GITHUB_OUTPUT
+          echo "Packed tarball: $TARBALL"
 
       - name: Get package spec
         id: pkg
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             # Use absolute path so it works when cd'ing to /tmp/test-project
-            SPEC="$(pwd)/$(ls agent-relay-*.tgz | head -1)"
+            SPEC="$(pwd)/${{ steps.pack.outputs.tarball }}"
           else
             VERSION="${{ inputs.version || 'latest' }}"
             if [ "$VERSION" = "latest" ]; then
@@ -421,6 +450,10 @@ jobs:
             else
               SPEC="agent-relay@${VERSION}"
             fi
+          fi
+          if [ -z "$SPEC" ]; then
+            echo "ERROR: package spec resolved to empty value"
+            exit 1
           fi
           echo "spec=$SPEC" >> $GITHUB_OUTPUT
           echo "Testing: $SPEC"
