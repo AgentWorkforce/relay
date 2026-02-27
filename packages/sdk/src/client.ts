@@ -656,7 +656,21 @@ function resolveDefaultBinaryPath(): string {
   }
 
   // 2. Check for bundled broker binary in SDK package (npm install)
-  const bundled = path.resolve(moduleDir, '..', 'bin', brokerExe);
+  //    Try platform-specific name first (CI publishes per-platform binaries),
+  //    then fall back to the generic name (local dev / postinstall copy).
+  const binDir = path.resolve(moduleDir, '..', 'bin');
+  const platformMap: Record<string, Record<string, string>> = {
+    darwin: { arm64: 'darwin-arm64', x64: 'darwin-x64' },
+    linux:  { arm64: 'linux-arm64',  x64: 'linux-x64' },
+  };
+  const suffix = platformMap[process.platform]?.[process.arch];
+  if (suffix) {
+    const platformBinary = path.join(binDir, `agent-relay-broker-${suffix}`);
+    if (fs.existsSync(platformBinary)) {
+      return platformBinary;
+    }
+  }
+  const bundled = path.join(binDir, brokerExe);
   if (fs.existsSync(bundled)) {
     return bundled;
   }
