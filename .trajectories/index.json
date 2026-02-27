@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-02-27T00:33:35.705Z",
+  "lastUpdated": "2026-02-27T19:26:26.929Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -449,6 +449,13 @@
       "startedAt": "2026-02-27T00:28:00.853Z",
       "completedAt": "2026-02-27T00:33:35.636Z",
       "path": "/Users/will/Projects/relay/.worktrees/sdk-level-audit/.trajectories/completed/2026-02/traj_diiequp86rzo.json"
+    },
+    "traj_j8qiccwfq78w": {
+      "title": "Fix SDK publish to include freshly built broker binary",
+      "status": "completed",
+      "startedAt": "2026-02-27T19:26:08.951Z",
+      "completedAt": "2026-02-27T19:26:26.792Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_j8qiccwfq78w.json"
     }
   }
 }

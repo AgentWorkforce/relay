@@ -484,7 +484,7 @@ jobs:
   # Publish SDK only (when selected)
   publish-sdk-only:
     name: Publish SDK to NPM
-    needs: build
+    needs: [build, build-broker]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'sdk'
 
@@ -503,6 +503,16 @@ jobs:
         with:
           name: build-output
           path: .
+
+      - name: Download broker binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: agent-relay-broker-*
+          path: packages/sdk/bin/
+          merge-multiple: true
+
+      - name: Make broker binaries executable
+        run: chmod +x packages/sdk/bin/agent-relay-broker-*
 
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
@@ -1078,7 +1088,11 @@ jobs:
           NEW_VERSION="${{ needs.build.outputs.new_version }}"
           IS_PRERELEASE="${{ needs.build.outputs.is_prerelease }}"
 
-          git add package.json package-lock.json packages/*/package.json CHANGELOG.md .trajectories/compacted/ 2>/dev/null || true
+          # Stage version-bumped files (must be separate from optional paths
+          # because git add fails entirely if any path doesn't exist)
+          git add package.json package-lock.json packages/*/package.json packages/sdk-py/pyproject.toml CHANGELOG.md
+          # Stage optional paths that may not exist
+          git add .trajectories/compacted/ 2>/dev/null || true
           if ! git diff --staged --quiet; then
             if [ "$IS_PRERELEASE" = "true" ]; then
               git commit -m "chore(prerelease): v${NEW_VERSION}"
