@@ -67,7 +67,8 @@ bin/agent-relay-bundle
 bin/agent-relay-standalone
 
 # SDK bundled broker binary (built/downloaded at install time)
-packages/broker-sdk/bin/
+packages/sdk/bin/agent-relay-broker*
+packages/broker-sdk/
 
 # Python
 __pycache__/

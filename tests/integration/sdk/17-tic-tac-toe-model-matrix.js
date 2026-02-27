@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { AgentRelay, Models } from '@agent-relay/sdk';
+import { AgentRelay, Models, RelayCast } from '@agent-relay/sdk';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../..');
@@ -127,12 +127,11 @@ async function main() {
     return;
   }
 
-  const relayApiKey = process.env.RELAY_API_KEY?.trim();
+  let relayApiKey = process.env.RELAY_API_KEY?.trim();
   if (!relayApiKey) {
-    console.log(
-      'SKIP: set RELAY_API_KEY. This test does not auto-provision workspaces or call setup APIs.'
-    );
-    return;
+    console.log('[INFO] No RELAY_API_KEY set — auto-provisioning ephemeral workspace...');
+    const workspace = await RelayCast.createWorkspace(`ttt-${Date.now().toString(36)}`);
+    relayApiKey = workspace.apiKey;
   }
 
   if (!isCliAvailable('claude') || !isCliAvailable('codex')) {
