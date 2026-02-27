@@ -250,9 +250,148 @@ class CodexAgent {
 - [ ] Streaming event support
 - [ ] Interrupt/steer commands via relay
 
+## Hooks via App Server Events
+
+### Background
+
+Codex users have requested hooks support ([GitHub Discussion #2150](https://github.com/openai/codex/discussions/2150)). Currently, Codex only has a limited `notify` config that supports `agent-turn-complete`. Users want:
+
+- Sound/notification when agent finishes
+- Hook when agent needs user feedback
+- Command execution events
+- File change events
+
+### Opportunity
+
+The app-server **already exposes all these events** via JSON-RPC notifications. Agent-relay can provide hook functionality that Codex doesn't have natively.
+
+### Available Events from App Server
+
+| Event | Description | Hook Use Case |
+|-------|-------------|---------------|
+| `turn/started` | Agent began processing | Start timer, show spinner |
+| `turn/completed` | Agent finished turn | Play sound, send notification |
+| `item/started` | Work item began | Progress tracking |
+| `item/completed` (command) | Shell command ran | Log command, validate output |
+| `item/completed` (fileChange) | File was modified | Run linter, type-check |
+| `item/agentMessage/delta` | Streaming response | Live progress UI |
+| `approval/requested` | Agent waiting for user | Play alert, send urgent notification |
+
+### Hook Integration Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Agent Relay                             │
+├─────────────────────────────────────────────────────────────┤
+│  ┌──────────────┐     ┌──────────────┐     ┌─────────────┐  │
+│  │ Codex        │────▶│ Event        │────▶│ Hook        │  │
+│  │ Adapter      │     │ Processor    │     │ Executor    │  │
+│  └──────────────┘     └──────────────┘     └─────────────┘  │
+│         │                    │                    │          │
+│         │                    │                    ▼          │
+│         │                    │          ┌─────────────────┐  │
+│         │                    │          │ - Shell commands │  │
+│         │                    │          │ - Relay messages │  │
+│         │                    │          │ - Webhooks       │  │
+│         │                    │          │ - Notifications  │  │
+│         │                    │          └─────────────────┘  │
+│         ▼                    ▼                               │
+│    WebSocket RPC      Map to relay hooks                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Hook Configuration
+
+```yaml
+# agent-relay.yaml
+hooks:
+  codex:
+    on_turn_complete:
+      - command: "afplay /System/Library/Sounds/Glass.aiff"
+      - relay: "Lead"  # Notify lead agent
+
+    on_file_change:
+      - command: "npm run lint -- ${file}"
+      - command: "npm run typecheck"
+
+    on_command_executed:
+      - relay: "#audit"  # Log to audit channel
+
+    on_approval_needed:
+      - command: "/usr/bin/say 'Codex needs input'"
+      - command: "terminal-notifier -message 'Codex waiting'"
+```
+
+### Implementation
+
+```typescript
+class CodexEventProcessor {
+  constructor(
+    private hooks: CodexHookConfig,
+    private relay: AgentRelayClient
+  ) {}
+
+  async processEvent(event: CodexEvent): Promise<void> {
+    switch (event.method) {
+      case 'turn/completed':
+        await this.executeHooks('on_turn_complete', event.params);
+        break;
+
+      case 'item/completed':
+        if (event.params.type === 'fileChange') {
+          await this.executeHooks('on_file_change', {
+            file: event.params.path,
+            ...event.params
+          });
+        } else if (event.params.type === 'command') {
+          await this.executeHooks('on_command_executed', event.params);
+        }
+        break;
+
+      case 'approval/requested':
+        await this.executeHooks('on_approval_needed', event.params);
+        break;
+    }
+  }
+
+  private async executeHooks(
+    hookType: string,
+    context: Record<string, unknown>
+  ): Promise<void> {
+    const hooks = this.hooks[hookType] || [];
+
+    for (const hook of hooks) {
+      if (hook.command) {
+        // Substitute variables like ${file}
+        const cmd = this.interpolate(hook.command, context);
+        await exec(cmd);
+      }
+
+      if (hook.relay) {
+        await this.relay.send(hook.relay, {
+          type: hookType,
+          ...context
+        });
+      }
+    }
+  }
+}
+```
+
+### Why This Matters
+
+1. **Feature parity with Claude Code** - Claude Code has hooks, Codex doesn't (natively)
+2. **Linting/type-checking** - Run validation after file changes (highly requested)
+3. **Team coordination** - Notify other agents of significant events
+4. **Audit logging** - Track all commands and file changes
+5. **User notifications** - Sound/popup when agent needs attention
+
+This makes agent-relay the best way to run Codex for teams.
+
 ## Open Questions
 
 1. Should we expose Codex events (file changes, commands) as relay broadcasts?
 2. One app-server per project or global singleton?
 3. How to handle auth token refresh in long-running sessions?
 4. Should steering be exposed as a relay protocol extension?
+5. Should hooks be per-agent or global for all Codex agents?
