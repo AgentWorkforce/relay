@@ -1,10 +1,10 @@
 use super::*;
 use crate::helpers::{
     check_echo_in_output, current_timestamp_ms, delivery_injected_event_payload,
-    delivery_queued_event_payload, floor_char_boundary, format_injection_for_worker,
-    parse_cli_command, parse_continuity_command, ActivityDetector, DeliveryOutcome,
-    PendingActivity, PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES,
-    ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
+    delivery_queued_event_payload, detect_cli_ready, floor_char_boundary,
+    format_injection_for_worker, parse_cli_command, parse_continuity_command, ActivityDetector,
+    DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
+    ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
 };
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 
@@ -21,6 +21,110 @@ fn cli_basename(command: &str) -> &str {
         .next()
         .filter(|part| !part.is_empty())
         .unwrap_or(command)
+}
+
+const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(25);
+const STARTUP_BUFFER_MAX: usize = 12_000;
+const STARTUP_BUFFER_KEEP: usize = 8_000;
+const PROMPT_WINDOW_BYTES: usize = 800;
+const RELAYCAST_BOOT_MARKER: &str = "booting mcp server: relaycast";
+
+fn append_bounded(buf: &mut String, text: &str, max: usize, keep: usize) {
+    buf.push_str(text);
+    if buf.len() > max {
+        let start = floor_char_boundary(buf, buf.len() - keep);
+        *buf = buf[start..].to_string();
+    }
+}
+
+fn codex_relaycast_boot_expected(cli: &str, args: &[String]) -> bool {
+    cli_basename(cli).eq_ignore_ascii_case("codex")
+        && args
+            .iter()
+            .any(|arg| arg.to_ascii_lowercase().contains("mcp_servers.relaycast"))
+}
+
+fn output_has_prompt(cli: &str, output: &str) -> bool {
+    let lower_cli = cli.to_ascii_lowercase();
+    let clean = strip_ansi(output);
+    if clean.is_empty() {
+        return false;
+    }
+
+    let region = if clean.len() > PROMPT_WINDOW_BYTES {
+        let start = floor_char_boundary(&clean, clean.len() - PROMPT_WINDOW_BYTES);
+        &clean[start..]
+    } else {
+        &clean
+    };
+
+    let mut patterns = vec!["> ", "$ ", ">>> ", "›"];
+    if lower_cli.contains("codex") {
+        patterns.push("codex> ");
+    }
+    if patterns.iter().any(|pattern| region.contains(pattern)) {
+        return true;
+    }
+
+    region.lines().rev().take(6).any(|line| {
+        let trimmed = line.trim();
+        matches!(trimmed, "›" | ">" | "$" | ">>>")
+            || (lower_cli.contains("codex") && trimmed.eq_ignore_ascii_case("codex>"))
+    })
+}
+
+fn startup_gate_ready(
+    resolved_cli: &str,
+    startup_output: &str,
+    startup_total_bytes: usize,
+    wait_for_relaycast_boot: bool,
+    saw_relaycast_boot: bool,
+    post_boot_output: &str,
+) -> bool {
+    if wait_for_relaycast_boot {
+        saw_relaycast_boot && output_has_prompt(resolved_cli, post_boot_output)
+    } else {
+        detect_cli_ready(resolved_cli, startup_output, startup_total_bytes)
+    }
+}
+
+async fn try_emit_worker_ready(
+    out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    worker_name: &str,
+    init_request_id: &mut Option<String>,
+    init_received_at: Option<Instant>,
+    worker_ready_sent: &mut bool,
+    startup_ready: bool,
+) {
+    if *worker_ready_sent || init_request_id.is_none() {
+        return;
+    }
+
+    let timed_out = init_received_at
+        .map(|started| started.elapsed() >= STARTUP_READY_TIMEOUT)
+        .unwrap_or(false);
+    if !startup_ready && !timed_out {
+        return;
+    }
+
+    if timed_out && !startup_ready {
+        tracing::warn!(
+            target = "agent_relay::worker::pty",
+            worker = %worker_name,
+            timeout_secs = STARTUP_READY_TIMEOUT.as_secs(),
+            "startup readiness timed out; emitting worker_ready fallback"
+        );
+    }
+
+    let request_id = init_request_id.take();
+    let _ = send_frame(
+        out_tx,
+        "worker_ready",
+        request_id,
+        json!({"name": worker_name, "runtime": "pty"}),
+    )
+    .await;
+    *worker_ready_sent = true;
 }
 
 pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
@@ -90,6 +194,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut last_mcp_reminder_at: Option<Instant> = None;
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<String> = HashSet::new();
+    let wait_for_relaycast_boot = codex_relaycast_boot_expected(&resolved_cli, &effective_args);
+    let mut startup_output = String::new();
+    let mut startup_total_bytes = 0usize;
+    let mut saw_relaycast_boot = false;
+    let mut post_boot_output = String::new();
+    let mut init_request_id: Option<String> = None;
+    let mut init_received_at: Option<Instant> = None;
+    let mut worker_ready_sent = false;
     let suppress_multiline_mcp_reminder = cli_basename(&resolved_cli).eq_ignore_ascii_case("agent")
         || cli_basename(&resolved_cli).eq_ignore_ascii_case("cursor-agent")
         || cmd.cli.to_ascii_lowercase().contains("cursor");
@@ -148,7 +260,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
                         match frame.msg_type.as_str() {
                             "init_worker" => {
-                                let inferred_name = cmd
+                                worker_name = cmd
                                     .agent_name
                                     .clone()
                                     .or_else(|| {
@@ -159,13 +271,23 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                             .map(ToOwned::to_owned)
                                     })
                                     .unwrap_or_else(|| "pty-worker".to_string());
-                                worker_name = inferred_name.clone();
-
-                                let _ = send_frame(
+                                init_request_id = frame.request_id;
+                                init_received_at = Some(Instant::now());
+                                let startup_ready = startup_gate_ready(
+                                    &resolved_cli,
+                                    &startup_output,
+                                    startup_total_bytes,
+                                    wait_for_relaycast_boot,
+                                    saw_relaycast_boot,
+                                    &post_boot_output,
+                                );
+                                try_emit_worker_ready(
                                     &out_tx,
-                                    "worker_ready",
-                                    frame.request_id,
-                                    json!({"name": inferred_name, "runtime": "pty"}),
+                                    &worker_name,
+                                    &mut init_request_id,
+                                    init_received_at,
+                                    &mut worker_ready_sent,
+                                    startup_ready,
                                 )
                                 .await;
                             }
@@ -239,6 +361,53 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         }
                         let text = String::from_utf8_lossy(&chunk).to_string();
                         let clean_text = strip_ansi(&text);
+                        startup_total_bytes = startup_total_bytes.saturating_add(chunk.len());
+                        append_bounded(
+                            &mut startup_output,
+                            &clean_text,
+                            STARTUP_BUFFER_MAX,
+                            STARTUP_BUFFER_KEEP,
+                        );
+                        if wait_for_relaycast_boot {
+                            if saw_relaycast_boot {
+                                append_bounded(
+                                    &mut post_boot_output,
+                                    &clean_text,
+                                    STARTUP_BUFFER_MAX,
+                                    STARTUP_BUFFER_KEEP,
+                                );
+                            } else {
+                                let lower = clean_text.to_ascii_lowercase();
+                                if let Some(marker_idx) = lower.find(RELAYCAST_BOOT_MARKER) {
+                                    saw_relaycast_boot = true;
+                                    let marker_end = marker_idx + RELAYCAST_BOOT_MARKER.len();
+                                    let marker_end = floor_char_boundary(&clean_text, marker_end);
+                                    append_bounded(
+                                        &mut post_boot_output,
+                                        &clean_text[marker_end..],
+                                        STARTUP_BUFFER_MAX,
+                                        STARTUP_BUFFER_KEEP,
+                                    );
+                                }
+                            }
+                        }
+                        let startup_ready = startup_gate_ready(
+                            &resolved_cli,
+                            &startup_output,
+                            startup_total_bytes,
+                            wait_for_relaycast_boot,
+                            saw_relaycast_boot,
+                            &post_boot_output,
+                        );
+                        try_emit_worker_ready(
+                            &out_tx,
+                            &worker_name,
+                            &mut init_request_id,
+                            init_received_at,
+                            &mut worker_ready_sent,
+                            startup_ready,
+                        )
+                        .await;
 
                         // Detect /exit command in agent output and trigger graceful shutdown.
                         // Skip detection while echo verifications are pending to avoid
@@ -542,6 +711,24 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
             // --- Verification tick: check for timed-out verifications ---
             _ = verification_tick.tick() => {
+                let startup_ready = startup_gate_ready(
+                    &resolved_cli,
+                    &startup_output,
+                    startup_total_bytes,
+                    wait_for_relaycast_boot,
+                    saw_relaycast_boot,
+                    &post_boot_output,
+                );
+                try_emit_worker_ready(
+                    &out_tx,
+                    &worker_name,
+                    &mut init_request_id,
+                    init_received_at,
+                    &mut worker_ready_sent,
+                    startup_ready,
+                )
+                .await;
+
                 let mut i = 0;
                 while i < pending_verifications.len() {
                     if pending_verifications[i].injected_at.elapsed() >= verification_window {
@@ -700,4 +887,66 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     .await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_relaycast_boot_expected_when_configured() {
+        let args = vec![
+            "--config".to_string(),
+            "mcp_servers.relaycast.command=npx".to_string(),
+        ];
+        assert!(codex_relaycast_boot_expected("codex", &args));
+        assert!(!codex_relaycast_boot_expected("claude", &args));
+    }
+
+    #[test]
+    fn output_has_prompt_detects_codex_glyph_prompt() {
+        assert!(output_has_prompt("codex", "Boot complete\n› "));
+    }
+
+    #[test]
+    fn startup_gate_blocks_codex_until_post_boot_prompt() {
+        let startup_output = "Welcome\n› ";
+        let post_boot_output = "MCP loading...";
+        assert!(!startup_gate_ready(
+            "codex",
+            startup_output,
+            startup_output.len(),
+            true,
+            false,
+            post_boot_output,
+        ));
+        assert!(!startup_gate_ready(
+            "codex",
+            startup_output,
+            startup_output.len(),
+            true,
+            true,
+            post_boot_output,
+        ));
+        assert!(startup_gate_ready(
+            "codex",
+            startup_output,
+            startup_output.len(),
+            true,
+            true,
+            "done\n› ",
+        ));
+    }
+
+    #[test]
+    fn startup_gate_uses_generic_ready_detection_without_boot_requirement() {
+        assert!(startup_gate_ready(
+            "claude",
+            "Ready\n> ",
+            20,
+            false,
+            false,
+            "",
+        ));
+    }
 }

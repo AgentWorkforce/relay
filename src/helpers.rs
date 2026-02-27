@@ -192,7 +192,6 @@ pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
 
 /// Detect whether a CLI has finished startup and is ready to receive input.
 /// Checks for known prompt patterns (from relay-pty parser) and a byte-count fallback.
-#[cfg(test)]
 pub(crate) fn detect_cli_ready(cli: &str, output: &str, total_bytes: usize) -> bool {
     let clean = strip_ansi(output);
     let lower_cli = cli.to_lowercase();
@@ -204,10 +203,10 @@ pub(crate) fn detect_cli_ready(cli: &str, output: &str, total_bytes: usize) -> b
 
     // Prompt patterns (from relay-pty parser.rs)
     let prompt_patterns: &[&str] = if lower_cli.contains("codex") {
-        &["> ", "$ ", "codex> ", ">>> "]
+        &["> ", "$ ", "codex> ", ">>> ", "›"]
     } else {
         // claude, gemini, aider, and others all share the same patterns
-        &["> ", "$ ", ">>> "]
+        &["> ", "$ ", ">>> ", "›"]
     };
 
     // Check last 500 chars of output for prompt patterns
@@ -430,6 +429,42 @@ fn build_mcp_reminder(
     .join("\n")
 }
 
+fn build_mcp_short_hint(
+    sender: &str,
+    target: &str,
+    relay_line: &str,
+    pre_registered: bool,
+    assigned_name: Option<&str>,
+) -> String {
+    let sender_name = sender_display_name(sender);
+    let reply_target = sender_reply_target(sender);
+    let dm_target = if reply_target.eq_ignore_ascii_case(sender_name) {
+        sender_name.to_string()
+    } else {
+        reply_target.to_string()
+    };
+    let channel_context = detect_channel_context(relay_line, target);
+    let channel_hint = channel_context
+        .as_deref()
+        .unwrap_or("#general")
+        .trim_start_matches('#');
+
+    let register_hint = if pre_registered {
+        String::new()
+    } else if let Some(name) = assigned_name {
+        format!(
+            " If unregistered, call mcp__relaycast__register(name: \"{name}\", type: \"agent\") first."
+        )
+    } else {
+        " If unregistered, call mcp__relaycast__register(name: \"<worker-name>\", type: \"agent\") first."
+            .to_string()
+    };
+
+    format!(
+        "<system-reminder>Reply via Relaycast MCP: mcp__relaycast__send_dm/relaycast.send_dm (to: \"{dm_target}\") or mcp__relaycast__post_message/relaycast.post_message (channel: \"{channel_hint}\").{register_hint}</system-reminder>"
+    )
+}
+
 pub(crate) fn format_injection(from: &str, event_id: &str, body: &str, target: &str) -> String {
     format_injection_with_reminder(from, event_id, body, target, true)
 }
@@ -469,7 +504,9 @@ pub(crate) fn format_injection_for_worker(
     };
 
     if !include_reminder {
-        return relay_line;
+        let short_hint =
+            build_mcp_short_hint(from, target, &relay_line, pre_registered, assigned_name);
+        return format!("{short_hint}\n{relay_line}");
     }
 
     let reminder = build_mcp_reminder(from, target, &relay_line, pre_registered, assigned_name);
@@ -1394,10 +1431,12 @@ mod tests {
     }
 
     #[test]
-    fn format_injection_without_reminder_returns_relay_line_only() {
+    fn format_injection_without_reminder_includes_short_mcp_hint() {
         let result = format_injection_with_reminder("alice", "evt_9", "retry body", "bob", false);
-        assert!(!result.contains("<system-reminder>"));
-        assert_eq!(result, "Relay message from alice [evt_9]: retry body");
+        assert!(result.contains("<system-reminder>Reply via Relaycast MCP"));
+        assert!(result.contains("mcp__relaycast__send_dm"));
+        assert!(result.contains("mcp__relaycast__post_message"));
+        assert!(result.contains("Relay message from alice [evt_9]: retry body"));
     }
 
     // ==================== is_auto_suggestion edge cases ====================
