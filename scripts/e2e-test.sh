@@ -162,7 +162,7 @@ sleep 1
 # Start daemon in background, redirect output to log file
 DAEMON_LOG="$PROJECT_DIR/.agent-relay/e2e-daemon.log"
 mkdir -p "$(dirname "$DAEMON_LOG")"
-"$CLI_CMD" up --dashboard --port "$DASHBOARD_PORT" > "$DAEMON_LOG" 2>&1 &
+"$CLI_CMD" up --port "$DASHBOARD_PORT" > "$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 log_info "Daemon started (PID: $DAEMON_PID)"
 log_info "Daemon log: $DAEMON_LOG"
