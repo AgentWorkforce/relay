@@ -15,7 +15,7 @@ import {
   type SendMessageInput,
   type BrokerEvent,
   AgentRelay,
-  RelaycastApi,
+  RelayCast,
 } from '@agent-relay/sdk';
 
 // ── Dynamic API key provisioning ─────────────────────────────────────────────
@@ -32,7 +32,7 @@ export async function ensureApiKey(): Promise<string> {
     _cachedApiKey = process.env.RELAY_API_KEY.trim();
     return _cachedApiKey;
   }
-  const ws = await RelaycastApi.createWorkspace(`test-${Date.now().toString(36)}`);
+  const ws = await RelayCast.createWorkspace(`test-${Date.now().toString(36)}`);
   _cachedApiKey = ws.apiKey;
   process.env.RELAY_API_KEY = ws.apiKey;
   return _cachedApiKey;

@@ -9,6 +9,8 @@ use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 use tokio::process::Command;
 
+const RELAYCAST_MCP_PACKAGE: &str = "@relaycast/mcp";
+
 const TARGET_FILES: [&str; 3] = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"];
 const MARKER_START: &str = "<!-- prpm:snippet:start @agent-relay/agent-relay-snippet@1.2.0 -->";
 const MARKER_END: &str = "<!-- prpm:snippet:end @agent-relay/agent-relay-snippet@1.2.0 -->";
@@ -269,7 +271,7 @@ fn relaycast_server_config(
             "args".into(),
             Value::Array(vec![
                 Value::String("-y".into()),
-                Value::String("@relaycast/mcp".into()),
+                Value::String(RELAYCAST_MCP_PACKAGE.into()),
             ]),
         );
     }
@@ -327,7 +329,7 @@ pub fn ensure_opencode_config(
         Value::Array(vec![
             Value::String("npx".into()),
             Value::String("-y".into()),
-            Value::String("@relaycast/mcp".into()),
+            Value::String(RELAYCAST_MCP_PACKAGE.into()),
         ]),
     );
     let mut env = Map::new();
@@ -549,35 +551,36 @@ pub async fn configure_relaycast_mcp_with_token(
             .iter()
             .any(|a| a.contains("mcp_servers.relaycast"))
     {
+        // NOTE: All values passed via codex `--config` are parsed as TOML.
+        // String values MUST be quoted (e.g. `"npx"` not `npx`) to avoid parse
+        // errors or type mismatches.  Bare `1` is an integer; bare `at_live_xxx`
+        // is a TOML parse error; only quoted values are reliably treated as strings.
         args.extend([
             "--config".to_string(),
-            "mcp_servers.relaycast.command=npx".to_string(),
+            "mcp_servers.relaycast.command=\"npx\"".to_string(),
             "--config".to_string(),
             "mcp_servers.relaycast.args=[\"-y\", \"@relaycast/mcp\"]".to_string(),
         ]);
         if let Some(key) = api_key {
             args.extend([
                 "--config".to_string(),
-                format!("mcp_servers.relaycast.env.RELAY_API_KEY={key}"),
+                format!("mcp_servers.relaycast.env.RELAY_API_KEY=\"{key}\""),
             ]);
         }
         if let Some(url) = base_url {
             args.extend([
                 "--config".to_string(),
-                format!("mcp_servers.relaycast.env.RELAY_BASE_URL={url}"),
+                format!("mcp_servers.relaycast.env.RELAY_BASE_URL=\"{url}\""),
             ]);
         }
         args.extend([
             "--config".to_string(),
-            format!("mcp_servers.relaycast.env.RELAY_AGENT_NAME={agent_name}"),
+            format!("mcp_servers.relaycast.env.RELAY_AGENT_NAME=\"{agent_name}\""),
         ]);
         args.extend([
             "--config".to_string(),
-            "mcp_servers.relaycast.env.RELAY_AGENT_TYPE=agent".to_string(),
+            "mcp_servers.relaycast.env.RELAY_AGENT_TYPE=\"agent\"".to_string(),
         ]);
-        // NOTE: Value must be quoted as a string (`"1"`) because codex `--config`
-        // parses TOML, and bare `1` would be interpreted as an integer, causing:
-        //   "invalid type: integer `1`, expected a string"
         args.extend([
             "--config".to_string(),
             "mcp_servers.relaycast.env.RELAY_STRICT_AGENT_NAME=\"1\"".to_string(),
@@ -585,7 +588,7 @@ pub async fn configure_relaycast_mcp_with_token(
         if let Some(token) = agent_token.map(str::trim).filter(|s| !s.is_empty()) {
             args.extend([
                 "--config".to_string(),
-                format!("mcp_servers.relaycast.env.RELAY_AGENT_TOKEN={token}"),
+                format!("mcp_servers.relaycast.env.RELAY_AGENT_TOKEN=\"{token}\""),
             ]);
         }
     } else if is_gemini || is_droid {
@@ -671,7 +674,7 @@ fn gemini_droid_mcp_add_args(
     }
     args.push("npx".to_string());
     args.push("-y".to_string());
-    args.push("@relaycast/mcp".to_string());
+    args.push(RELAYCAST_MCP_PACKAGE.to_string());
     args
 }
 
@@ -856,7 +859,7 @@ mod tests {
 
     use super::{
         ensure_protocol_snippets_inner, ensure_relaycast_mcp_config, find_project_root,
-        should_install_in, snippet_block, MARKER_START,
+        should_install_in, snippet_block, MARKER_START, RELAYCAST_MCP_PACKAGE,
     };
 
     #[test]
@@ -893,6 +896,14 @@ mod tests {
         ensure_protocol_snippets_inner(root, Some(root.to_path_buf()))
     }
 
+    fn assert_is_reaycast_mcp_package(value: Option<&str>) {
+        let package = value.expect("expected relaycast mcp package string");
+        assert!(
+            package.starts_with("@relaycast/mcp"),
+            "expected package to start with @relaycast/mcp, got: {package}"
+        );
+    }
+
     #[test]
     fn installs_to_all_targets_and_is_idempotent() {
         let temp = tempdir().expect("tempdir");
@@ -926,7 +937,15 @@ mod tests {
 
         fs::write(
             root.join(".mcp.json"),
-            r#"{"mcpServers":{"relaycast":{"command":"npx","args":["-y","@relaycast/mcp"]}}}"#,
+            serde_json::json!({
+                "mcpServers": {
+                    "relaycast": {
+                        "command": "npx",
+                        "args": ["-y", RELAYCAST_MCP_PACKAGE]
+                    }
+                }
+            })
+            .to_string(),
         )
         .expect("write .mcp.json");
 
@@ -958,7 +977,15 @@ mod tests {
         // Now add MCP config
         fs::write(
             root.join(".mcp.json"),
-            r#"{"mcpServers":{"relaycast":{"command":"npx","args":["-y","@relaycast/mcp"]}}}"#,
+            serde_json::json!({
+                "mcpServers": {
+                    "relaycast": {
+                        "command": "npx",
+                        "args": ["-y", RELAYCAST_MCP_PACKAGE]
+                    }
+                }
+            })
+            .to_string(),
         )
         .expect("write .mcp.json");
 
@@ -1002,7 +1029,15 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         fs::write(root.join("GEMINI.md"), legacy).expect("write legacy snippet");
         fs::write(
             root.join(".mcp.json"),
-            r#"{"mcpServers":{"relaycast":{"command":"npx","args":["@relaycast/mcp"]}}}"#,
+            serde_json::json!({
+                "mcpServers": {
+                    "relaycast": {
+                        "command": "npx",
+                        "args": [RELAYCAST_MCP_PACKAGE]
+                    }
+                }
+            })
+            .to_string(),
         )
         .expect("write .mcp.json");
 
@@ -1039,12 +1074,11 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
                 .and_then(Value::as_str),
             Some("-y")
         );
-        assert_eq!(
+        assert_is_reaycast_mcp_package(
             json["mcpServers"]["relaycast"]["args"]
                 .as_array()
                 .and_then(|a| a.get(1))
                 .and_then(Value::as_str),
-            Some("@relaycast/mcp")
         );
     }
 
@@ -1132,7 +1166,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
 
         assert!(
             args.iter()
-                .any(|arg| arg == "mcp_servers.relaycast.env.RELAY_AGENT_TYPE=agent"),
+                .any(|arg| arg == "mcp_servers.relaycast.env.RELAY_AGENT_TYPE=\"agent\""),
             "expected fixed agent type codex config arg"
         );
 
@@ -1174,7 +1208,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
             .as_array()
             .expect("args array");
         assert_eq!(mcp_args[0].as_str(), Some("-y"));
-        assert_eq!(mcp_args[1].as_str(), Some("@relaycast/mcp"));
+        assert_is_reaycast_mcp_package(mcp_args[1].as_str());
     }
 
     #[tokio::test]
@@ -1302,7 +1336,11 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         assert_eq!(args[relaycast_idx + 1], "--");
         assert_eq!(args[relaycast_idx + 2], "npx");
         assert_eq!(args[relaycast_idx + 3], "-y");
-        assert_eq!(args[relaycast_idx + 4], "@relaycast/mcp");
+        assert!(
+            args[relaycast_idx + 4].starts_with("@relaycast/mcp"),
+            "expected relaycast package name, got: {}",
+            args[relaycast_idx + 4]
+        );
     }
 
     #[test]
@@ -1359,16 +1397,20 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         assert!(args.iter().step_by(2).all(|a| a == "--config"));
 
         // Verify key config values
-        assert!(args.contains(&"mcp_servers.relaycast.command=npx".to_string()));
+        assert!(args.contains(&"mcp_servers.relaycast.command=\"npx\"".to_string()));
         assert!(args
             .iter()
             .any(|a| a.contains("mcp_servers.relaycast.args=")));
-        assert!(args.contains(&"mcp_servers.relaycast.env.RELAY_API_KEY=rk_live_xyz".to_string()));
+        assert!(
+            args.contains(&"mcp_servers.relaycast.env.RELAY_API_KEY=\"rk_live_xyz\"".to_string())
+        );
         assert!(args.contains(
-            &"mcp_servers.relaycast.env.RELAY_BASE_URL=https://api.relaycast.dev".to_string()
+            &"mcp_servers.relaycast.env.RELAY_BASE_URL=\"https://api.relaycast.dev\"".to_string()
         ));
-        assert!(args.contains(&"mcp_servers.relaycast.env.RELAY_AGENT_NAME=CodexAgent".to_string()));
-        assert!(args.contains(&"mcp_servers.relaycast.env.RELAY_AGENT_TYPE=agent".to_string()));
+        assert!(
+            args.contains(&"mcp_servers.relaycast.env.RELAY_AGENT_NAME=\"CodexAgent\"".to_string())
+        );
+        assert!(args.contains(&"mcp_servers.relaycast.env.RELAY_AGENT_TYPE=\"agent\"".to_string()));
         assert!(
             args.contains(&"mcp_servers.relaycast.env.RELAY_STRICT_AGENT_NAME=\"1\"".to_string())
         );
@@ -1390,7 +1432,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
 
         assert!(
             args.iter()
-                .any(|a| a == "mcp_servers.relaycast.env.RELAY_API_KEY=rk_live_secret"),
+                .any(|a| a == "mcp_servers.relaycast.env.RELAY_API_KEY=\"rk_live_secret\""),
             "Codex must include RELAY_API_KEY in --config args"
         );
     }
@@ -1412,7 +1454,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
 
         assert!(
             args.iter()
-                .any(|a| a == "mcp_servers.relaycast.env.RELAY_AGENT_TOKEN=tok_codex_123"),
+                .any(|a| a == "mcp_servers.relaycast.env.RELAY_AGENT_TOKEN=\"tok_codex_123\""),
             "Codex must include RELAY_AGENT_TOKEN when provided"
         );
     }
@@ -1435,7 +1477,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         // Agent name and type are always present
         assert!(args
             .iter()
-            .any(|a| a == "mcp_servers.relaycast.env.RELAY_AGENT_NAME=Agent"));
+            .any(|a| a == "mcp_servers.relaycast.env.RELAY_AGENT_NAME=\"Agent\""));
     }
 
     #[tokio::test]
@@ -1495,7 +1537,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         let cmd = mcp["command"].as_array().expect("command array");
         assert_eq!(cmd[0].as_str(), Some("npx"));
         assert_eq!(cmd[1].as_str(), Some("-y"));
-        assert_eq!(cmd[2].as_str(), Some("@relaycast/mcp"));
+        assert_is_reaycast_mcp_package(cmd[2].as_str());
 
         // Environment (note: opencode uses "environment" not "env")
         let oc_env = &mcp["environment"];

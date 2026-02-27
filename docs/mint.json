@@ -21,11 +21,6 @@
       "name": "GitHub",
       "icon": "github",
       "url": "https://github.com/agentworkforce/relay"
-    },
-    {
-      "name": "Hosted Cloud",
-      "icon": "cloud",
-      "url": "https://agent-relay.com"
     }
   ],
   "navigation": [
@@ -33,63 +28,13 @@
       "group": "Get Started",
       "pages": [
         "introduction",
-        "quickstart",
-        "concepts"
+        "quickstart"
       ]
     },
     {
-      "group": "Workflows",
+      "group": "SDK",
       "pages": [
-        "workflows/overview",
-        "workflows/yaml-reference",
-        "workflows/typescript-sdk",
-        "workflows/python-sdk",
-        "workflows/cloud-execution"
-      ]
-    },
-    {
-      "group": "Swarm Patterns",
-      "pages": [
-        "workflows/patterns/dag",
-        "workflows/patterns/fan-out",
-        "workflows/patterns/pipeline",
-        "workflows/patterns/hub-spoke",
-        "workflows/patterns/consensus",
-        "workflows/patterns/mesh"
-      ]
-    },
-    {
-      "group": "Core Features",
-      "pages": [
-        "features/messaging",
-        "features/hooks",
-        "features/dashboard",
-        "features/bridging",
-        "features/spawning",
-        "features/shadows",
-        "features/cloud"
-      ]
-    },
-    {
-      "group": "How-to Guides",
-      "pages": [
-        "guides/swarm-primitives",
-        "guides/multi-project",
-        "guides/worker-orchestration",
-        "guides/session-continuity",
-        "guides/custom-agents",
-        "guides/editor-integration",
-        "guides/electron-integration"
-      ]
-    },
-    {
-      "group": "Reference",
-      "pages": [
-        "reference/sdk",
-        "reference/cli",
-        "reference/protocol",
-        "reference/configuration",
-        "reference/api"
+        "reference/sdk"
       ]
     }
   ],

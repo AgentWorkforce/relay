@@ -1,0 +1,16 @@
+{
+  "name": "agent-relay-electron-demo",
+  "version": "1.0.0",
+  "description": "Minimal Electron app demonstrating @agent-relay/sdk",
+  "main": "main.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@agent-relay/sdk": "file:../../packages/sdk"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}

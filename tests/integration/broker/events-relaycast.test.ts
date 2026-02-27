@@ -11,7 +11,7 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { RelaycastApi } from '@agent-relay/sdk';
+import { RelayCast } from '@agent-relay/sdk';
 import type { RelayYamlConfig } from '@agent-relay/sdk/workflows';
 import { checkPrerequisites, ensureApiKey } from './utils/broker-harness.js';
 import { WorkflowRunnerHarness } from './utils/workflow-harness.js';
@@ -96,11 +96,11 @@ test('events: relaycast channel receives workflow messages', { timeout: 120_000 
     assertRunCompleted(result);
 
     const apiKey = await ensureApiKey();
-    const api = new RelaycastApi({ apiKey, agentName: `reader-${suffix}` });
+    const api = new RelayCast({ apiKey });
 
     let messages: Array<{ id: string; agent_name: string; text: string; created_at: string }> = [];
     for (let attempt = 0; attempt < 6; attempt += 1) {
-      messages = await api.getMessages(channel, { limit: 50 });
+      messages = (await api.messages.list(channel, { limit: 50 })) as any;
       if (messages.length > 0) break;
       await sleep(1_000);
     }

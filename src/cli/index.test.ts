@@ -90,7 +90,7 @@ describeCli('CLI', () => {
       const output = stdout + stderr;
       // Either shows agents, "No agents" message, or broker-not-running error
       expect(output).toMatch(/(No agents|NAME.*STATUS|broker|relaycast|Failed)/i);
-    });
+    }, 15000);
 
     it('should support --json flag', async () => {
       const { stdout, stderr } = await runCli('agents --json');

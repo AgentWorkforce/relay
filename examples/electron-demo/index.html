@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'">
+  <title>Agent Relay — Electron Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: #0f0f0f; color: #e0e0e0; height: 100vh;
+           display: flex; flex-direction: column; }
+
+    header { padding: 12px 16px; background: #1a1a1a; border-bottom: 1px solid #2a2a2a;
+             display: flex; align-items: center; gap: 10px; }
+    header h1 { font-size: 14px; font-weight: 600; letter-spacing: 0.5px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #444; flex-shrink: 0; }
+    .dot.connected { background: #22c55e; }
+    .dot.error     { background: #ef4444; }
+
+    .layout { display: flex; flex: 1; overflow: hidden; }
+
+    /* Sidebar */
+    .sidebar { width: 220px; background: #141414; border-right: 1px solid #2a2a2a;
+               display: flex; flex-direction: column; flex-shrink: 0; }
+    .sidebar-title { padding: 10px 12px; font-size: 11px; font-weight: 600;
+                     color: #666; text-transform: uppercase; letter-spacing: 0.8px; }
+    #agents { flex: 1; overflow-y: auto; }
+    .agent-row { padding: 8px 12px; font-size: 13px; display: flex;
+                 align-items: center; gap: 8px; border-bottom: 1px solid #1e1e1e; }
+    .agent-status { font-size: 10px; color: #666; margin-left: auto; }
+    .agent-status.ready    { color: #22c55e; }
+    .agent-status.spawning { color: #f59e0b; }
+    .agent-status.exited   { color: #ef4444; }
+
+    .spawn-form { padding: 10px 12px; border-top: 1px solid #2a2a2a;
+                  display: flex; flex-direction: column; gap: 6px; }
+    .spawn-form input, .spawn-form select {
+      background: #1a1a1a; border: 1px solid #2a2a2a; color: #e0e0e0;
+      padding: 5px 8px; border-radius: 4px; font-size: 12px; width: 100%; }
+    .spawn-form button { background: #1d4ed8; color: white; border: none;
+      padding: 6px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500; }
+    .spawn-form button:hover { background: #2563eb; }
+    .spawn-form button:disabled { background: #333; color: #666; cursor: default; }
+
+    /* Main */
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    #log-panel { flex: 1; overflow-y: auto; padding: 10px 12px;
+      font-family: 'SF Mono', Monaco, monospace; font-size: 12px; line-height: 1.6; }
+
+    .log-line { margin-bottom: 2px; }
+    .log-line .ts    { color: #444; margin-right: 6px; }
+    .log-line.msg .from  { color: #60a5fa; }
+    .log-line.msg .arrow { color: #444; margin: 0 4px; }
+    .log-line.msg .text  { color: #e0e0e0; }
+    .log-line.sys  { color: #666; }
+
+    /* Send bar */
+    .send-bar { padding: 10px 12px; border-top: 1px solid #2a2a2a;
+                display: flex; gap: 8px; align-items: center; }
+    .send-bar select { background: #1a1a1a; border: 1px solid #2a2a2a; color: #e0e0e0;
+      padding: 7px 8px; border-radius: 4px; font-size: 13px; min-width: 110px; }
+    .send-bar input  { flex: 1; background: #1a1a1a; border: 1px solid #2a2a2a; color: #e0e0e0;
+      padding: 7px 10px; border-radius: 4px; font-size: 13px; }
+    .send-bar input:focus  { outline: none; border-color: #1d4ed8; }
+    .send-bar button { background: #1d4ed8; color: white; border: none;
+      padding: 7px 14px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+    .send-bar button:hover    { background: #2563eb; }
+    .send-bar button:disabled { background: #333; color: #666; cursor: default; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="dot" id="broker-dot"></div>
+  <h1>Agent Relay — Electron Demo</h1>
+  <span id="broker-label" style="font-size:12px;color:#666;margin-left:4px">connecting…</span>
+</header>
+
+<div class="layout">
+  <div class="sidebar">
+    <div class="sidebar-title">Agents</div>
+    <div id="agents"><div style="padding:12px;font-size:12px;color:#555">No agents yet</div></div>
+    <div class="spawn-form">
+      <input id="spawn-name" placeholder="Agent name" value="Lead" />
+      <select id="spawn-cli">
+        <option value="claude">claude</option>
+        <option value="codex">codex</option>
+        <option value="gemini">gemini</option>
+      </select>
+      <button id="spawn-btn">Spawn Agent</button>
+    </div>
+  </div>
+
+  <div class="main">
+    <div id="log-panel"></div>
+    <div class="send-bar">
+      <select id="target-select">
+        <option value="">— to —</option>
+      </select>
+      <input id="msg-input" placeholder="Type a message…" />
+      <button id="send-btn" disabled>Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const brokerDot    = document.getElementById('broker-dot');
+  const brokerLabel  = document.getElementById('broker-label');
+  const agentsEl     = document.getElementById('agents');
+  const logPanel     = document.getElementById('log-panel');
+  const spawnBtn     = document.getElementById('spawn-btn');
+  const spawnName    = document.getElementById('spawn-name');
+  const spawnCli     = document.getElementById('spawn-cli');
+  const msgInput     = document.getElementById('msg-input');
+  const sendBtn      = document.getElementById('send-btn');
+  const targetSelect = document.getElementById('target-select');
+
+  const agentMap = {};  // name → { status }
+
+  // ── Utilities ────────────────────────────────────────────────────────────────
+
+  function ts() {
+    return new Date().toLocaleTimeString('en', { hour12: false, timeStyle: 'medium' });
+  }
+
+  function appendLog(html, cls = '') {
+    const div = document.createElement('div');
+    div.className = `log-line ${cls}`;
+    div.innerHTML = `<span class="ts">${ts()}</span>${html}`;
+    logPanel.appendChild(div);
+    logPanel.scrollTop = logPanel.scrollHeight;
+  }
+
+  // ── Agent list + target dropdown ─────────────────────────────────────────────
+
+  function updateAgents(name, status) {
+    agentMap[name] = { status };
+
+    // Sidebar list
+    agentsEl.innerHTML = '';
+    Object.entries(agentMap).forEach(([n, { status: s }]) => {
+      const row = document.createElement('div');
+      row.className = 'agent-row';
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = n;
+      const statusSpan = document.createElement('span');
+      statusSpan.className = `agent-status ${s}`;
+      statusSpan.textContent = s;
+      row.appendChild(nameSpan);
+      row.appendChild(statusSpan);
+      agentsEl.appendChild(row);
+    });
+
+    // Target dropdown — keep current selection if still valid
+    const current = targetSelect.value;
+    targetSelect.innerHTML = '<option value="">— to —</option>';
+    Object.entries(agentMap)
+      .filter(([, { status: s }]) => s !== 'exited')
+      .forEach(([n]) => {
+        const opt = document.createElement('option');
+        opt.value = n;
+        opt.textContent = n;
+        if (n === current) opt.selected = true;
+        targetSelect.appendChild(opt);
+      });
+
+    updateSendBtn();
+  }
+
+  function updateSendBtn() {
+    sendBtn.disabled = !targetSelect.value;
+  }
+
+  targetSelect.addEventListener('change', updateSendBtn);
+
+  // ── Broker status ─────────────────────────────────────────────────────────────
+
+  window.relay.onBrokerStatus((status) => {
+    if (status === 'connected') {
+      brokerDot.className = 'dot connected';
+      brokerLabel.textContent = 'broker connected';
+      brokerLabel.style.color = '#22c55e';
+    } else {
+      brokerDot.className = 'dot error';
+      brokerLabel.textContent = 'broker error';
+      brokerLabel.style.color = '#ef4444';
+    }
+  });
+
+  // ── Relay events ──────────────────────────────────────────────────────────────
+
+  window.relay.onMessage(({ from, to, text }) => {
+    appendLog(
+      `<span class="from">${from}</span><span class="arrow">→</span>` +
+      `<span class="from">${to}</span>: <span class="text">${text}</span>`,
+      'msg'
+    );
+  });
+
+  window.relay.onAgentUpdate(({ name, status }) => {
+    updateAgents(name, status);
+  });
+
+  window.relay.onBrokerLog((line) => {
+    appendLog(line, 'sys');
+  });
+
+  // ── Spawn ─────────────────────────────────────────────────────────────────────
+
+  spawnBtn.addEventListener('click', async () => {
+    const name = spawnName.value.trim() || 'Lead';
+    const cli  = spawnCli.value;
+    spawnBtn.disabled = true;
+    spawnBtn.textContent = 'Spawning…';
+
+    const result = await window.relay.spawn(name, cli);
+    if (!result.ok) {
+      appendLog(`Failed to spawn ${name}: ${result.error}`, 'sys');
+    }
+
+    spawnBtn.disabled = false;
+    spawnBtn.textContent = 'Spawn Agent';
+  });
+
+  // ── Send ──────────────────────────────────────────────────────────────────────
+
+  async function doSend() {
+    const to   = targetSelect.value;
+    const text = msgInput.value.trim();
+    if (!to || !text) return;
+    msgInput.value = '';
+
+    const result = await window.relay.sendMessage(to, text);
+    if (result.ok) {
+      appendLog(
+        `<span class="from">you</span><span class="arrow">→</span>` +
+        `<span class="from">${to}</span>: <span class="text">${text}</span>`,
+        'msg'
+      );
+    } else {
+      appendLog(`Send failed: ${result.error}`, 'sys');
+    }
+  }
+
+  sendBtn.addEventListener('click', doSend);
+  msgInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSend(); });
+</script>
+</body>
+</html>

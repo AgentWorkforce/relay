@@ -379,17 +379,19 @@ fn build_mcp_reminder(
         .unwrap_or("#general")
         .trim_start_matches('#');
 
+    // Tool names differ by MCP client: Claude uses mcp__relaycast__<tool>,
+    // Codex/others use relaycast.<tool>.  Include both so any agent can act.
     let dm_hint = if reply_target.eq_ignore_ascii_case(sender_name) {
         format!(
-            "- For direct replies to \"{sender_name}\", use mcp__relaycast__send_dm (to: \"{sender_name}\")."
+            "- For direct replies to \"{sender_name}\", use mcp__relaycast__send_dm or relaycast.send_dm (to: \"{sender_name}\")."
         )
     } else {
         format!(
-            "- For direct replies to \"{sender_name}\", use mcp__relaycast__send_dm (to: \"{reply_target}\")."
+            "- For direct replies to \"{sender_name}\", use mcp__relaycast__send_dm or relaycast.send_dm (to: \"{reply_target}\")."
         )
     };
     let channel_hint_line = format!(
-        "- For channel replies, use mcp__relaycast__post_message (channel: \"{channel_hint}\")."
+        "- For channel replies, use mcp__relaycast__post_message or relaycast.post_message (channel: \"{channel_hint}\")."
     );
 
     let registration_lines: [String; 2] = if pre_registered {
@@ -420,8 +422,8 @@ fn build_mcp_reminder(
         registration_lines[1].clone(),
         dm_hint,
         channel_hint_line,
-        "- For thread replies, use mcp__relaycast__reply_to_thread.".to_string(),
-        "- To check unread messages/reactions, use mcp__relaycast__check_inbox.".to_string(),
+        "- For thread replies, use mcp__relaycast__reply_to_thread or relaycast.reply_to_thread.".to_string(),
+        "- To check unread messages/reactions, use mcp__relaycast__check_inbox or relaycast.check_inbox.".to_string(),
         "- To self-terminate when your task is complete, call remove_agent(name: \"<your-agent-name>\") or output /exit on its own line.".to_string(),
         "</system-reminder>".to_string(),
     ]

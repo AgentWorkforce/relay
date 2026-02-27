@@ -705,4 +705,103 @@ mod tests {
         );
         assert_eq!(super::normalize_workspace_key("at_live_1"), None);
     }
+
+    /// 403 Forbidden behaves identically to 401 Unauthorized — the env key
+    /// should be soft-rejected and a fresh workspace created.
+    #[tokio::test]
+    async fn forbidden_env_key_falls_back_to_fresh_workspace() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        let _forbidden_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_forbidden");
+            then.status(403)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"forbidden","message":"forbidden"}}"#);
+        });
+        let workspace = server.mock(|when, then| {
+            when.method(POST).path("/v1/workspaces");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"workspace_id":"ws_fresh","api_key":"rk_live_fresh","created_at":"2025-01-01T00:00:00Z"}}"#);
+        });
+        let fresh_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_fresh");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a10","name":"broker","token":"at_live_10","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
+        });
+
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_forbidden");
+        }
+
+        let client = AuthClient::new(server.base_url());
+        let session = client.startup_session(Some("broker")).await.unwrap();
+
+        // Must return the FRESH workspace key, not the forbidden env key.
+        assert_eq!(session.credentials.api_key, "rk_live_fresh");
+        assert_eq!(session.credentials.workspace_id, "ws_fresh");
+        assert_eq!(session.token, "at_live_10");
+        workspace.assert_hits(1);
+        fresh_register.assert_hits(1);
+
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
+        }
+    }
+
+    /// When the env key is rejected and the broker falls back to a fresh
+    /// workspace, the session's api_key MUST be the fresh key — not the stale
+    /// env key. This is the exact scenario that caused workers to receive an
+    /// incorrect RELAY_API_KEY and fail MCP authentication.
+    #[tokio::test]
+    async fn session_api_key_is_never_the_rejected_env_key() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        let stale_key = "rk_live_stale_must_not_appear_in_session";
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", format!("Bearer {stale_key}"));
+            then.status(401)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"unauthorized","message":"unauthorized"}}"#);
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/workspaces");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"workspace_id":"ws_ok","api_key":"rk_live_correct","created_at":"2025-01-01T00:00:00Z"}}"#);
+        });
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_correct");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a11","name":"broker","token":"at_live_11","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
+        });
+
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", stale_key);
+        }
+
+        let client = AuthClient::new(server.base_url());
+        let session = client.startup_session(Some("broker")).await.unwrap();
+
+        // The stale env key must NEVER appear in the returned session.
+        assert_ne!(
+            session.credentials.api_key, stale_key,
+            "session must not use the rejected env key — workers would get wrong RELAY_API_KEY"
+        );
+        assert_eq!(session.credentials.api_key, "rk_live_correct");
+
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
+        }
+    }
 }

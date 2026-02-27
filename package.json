@@ -103,6 +103,7 @@
     "postbuild": "chmod +x dist/src/cli/bootstrap.js dist/src/cli/index.js && npm run build:cjs",
     "prepack": "if [ -d node_modules ]; then npm run build; else echo '⚠ node_modules not found, skipping prepack build'; fi",
     "dev:watch": "tsc -w",
+    "docs": "cd ./docs && npx mintlify dev",
     "watch:start": "npm run build && concurrently -k \"npm run dev:watch\" \"node --watch dist/src/cli/bootstrap.js start dashboard.js claude\"",
     "watch:start:cli-tools": "npm run build && bash ./scripts/watch-cli-tools.sh",
     "watch:start:claude": "npm run watch:start:cli-tools -- --tool=claude",
