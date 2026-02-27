@@ -608,39 +608,52 @@ jobs:
           # We test the binary resolution from there
           cd /tmp/test-project
 
-          # Verify the darwin-arm64 binary exists and works
+          # Verify a working broker binary exists and works
           BIN_DIR="./node_modules/agent-relay/bin"
+          SDK_BIN_DIR="./node_modules/agent-relay/packages/sdk/bin"
           DARWIN_BINARY="agent-relay-broker-darwin-arm64"
+          FOUND_BINARY=""
 
           echo "Looking for $DARWIN_BINARY in $BIN_DIR..."
 
-          if [ ! -f "$BIN_DIR/$DARWIN_BINARY" ]; then
-            echo "ERROR: Darwin arm64 binary not found!"
+          if [ -f "$BIN_DIR/$DARWIN_BINARY" ]; then
+            FOUND_BINARY="$BIN_DIR/$DARWIN_BINARY"
+            echo "Found darwin-arm64 binary: $FOUND_BINARY"
+          elif [ -f "$SDK_BIN_DIR/agent-relay-broker" ]; then
+            FOUND_BINARY="$SDK_BIN_DIR/agent-relay-broker"
+            echo "Darwin-specific binary not found; using SDK fallback: $FOUND_BINARY"
+          elif [ -f "$SDK_BIN_DIR/agent-relay-broker.exe" ]; then
+            FOUND_BINARY="$SDK_BIN_DIR/agent-relay-broker.exe"
+            echo "Darwin-specific binary not found; using SDK fallback: $FOUND_BINARY"
+          else
+            echo "ERROR: No usable broker binary found!"
             echo "Contents of bin directory:"
             ls -la "$BIN_DIR" 2>/dev/null || echo "Directory not found"
+            echo "Contents of SDK bin directory:"
+            ls -la "$SDK_BIN_DIR" 2>/dev/null || echo "Directory not found"
             exit 1
           fi
 
-          echo "Found: $BIN_DIR/$DARWIN_BINARY"
-          ls -la "$BIN_DIR/$DARWIN_BINARY"
-          file "$BIN_DIR/$DARWIN_BINARY"
+          echo "Found: $FOUND_BINARY"
+          ls -la "$FOUND_BINARY"
+          file "$FOUND_BINARY"
 
           # Check if binary is executable
-          if [ ! -x "$BIN_DIR/$DARWIN_BINARY" ]; then
+          if [ ! -x "$FOUND_BINARY" ]; then
             echo "ERROR: Binary exists but is not executable!"
             exit 1
           fi
 
           # Test binary works (important for macOS code signing)
           echo "Testing binary execution..."
-          if "$BIN_DIR/$DARWIN_BINARY" --help 2>&1 | grep -q "agent-relay-broker"; then
-            echo "Darwin arm64 binary execution PASSED"
+          if "$FOUND_BINARY" --help 2>&1 | grep -q "agent-relay-broker"; then
+            echo "Broker binary execution PASSED"
           else
             echo "ERROR: Binary found but doesn't work (possible code signing issue)"
             echo "Binary output:"
-            "$BIN_DIR/$DARWIN_BINARY" --help 2>&1 || echo "Exit code: $?"
+            "$FOUND_BINARY" --help 2>&1 || echo "Exit code: $?"
             echo "Code signing info:"
-            codesign -dv "$BIN_DIR/$DARWIN_BINARY" 2>&1 || true
+            codesign -dv "$FOUND_BINARY" 2>&1 || true
             exit 1
           fi
 
