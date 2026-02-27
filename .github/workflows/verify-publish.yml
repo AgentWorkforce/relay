@@ -234,9 +234,30 @@ jobs:
             fi
           done
 
+          # Fallback: packaged generic broker binary used by SDK
           if [ -z "$FOUND_BINARY" ]; then
-            echo "ERROR: Platform-specific binary not found in npx cache!"
-            echo "This will cause 'npx agent-relay up' to fail with 'agent-relay-broker binary not found'"
+            echo "Platform-specific binary not found, checking SDK binary fallback..."
+            for dir in "$NPX_CACHE"/*/node_modules/agent-relay/packages/sdk/bin; do
+              if [ -d "$dir" ]; then
+                echo "Checking SDK bin: $dir"
+                ls -la "$dir" 2>/dev/null || true
+                if [ -f "$dir/agent-relay-broker" ]; then
+                  FOUND_BINARY="$dir/agent-relay-broker"
+                  echo "Found SDK broker binary: $FOUND_BINARY"
+                  break
+                fi
+                if [ -f "$dir/agent-relay-broker.exe" ]; then
+                  FOUND_BINARY="$dir/agent-relay-broker.exe"
+                  echo "Found SDK broker binary: $FOUND_BINARY"
+                  break
+                fi
+              fi
+            done
+          fi
+
+          if [ -z "$FOUND_BINARY" ]; then
+            echo "ERROR: agent-relay-broker binary not found in npx cache!"
+            echo "Checked both platform-specific bin/ and SDK fallback locations."
             exit 1
           fi
 
