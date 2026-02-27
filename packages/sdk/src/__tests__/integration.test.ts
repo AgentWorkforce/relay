@@ -24,7 +24,7 @@ function resolveBundledBinaryPath(): string {
 before(async () => {
   if (process.env.RELAY_API_KEY?.trim()) return;
   const ws = await RelayCast.createWorkspace(`sdk-test-${Date.now().toString(36)}`);
-  process.env.RELAY_API_KEY = ws.apiKey;
+  process.env.RELAY_API_KEY = ws.api_key;
 });
 
 test('sdk can use bundled binary by default', async (t) => {
