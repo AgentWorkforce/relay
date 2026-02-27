@@ -42,7 +42,16 @@ export function loadBridgeConfig(): BridgeConfigFile | null {
     if (fs.existsSync(configPath)) {
       try {
         const content = fs.readFileSync(configPath, 'utf-8');
-        return JSON.parse(content);
+        if (typeof content !== 'string') {
+          continue;
+        }
+
+        const trimmed = content.trim();
+        if (!trimmed) {
+          continue;
+        }
+
+        return JSON.parse(trimmed);
       } catch (err) {
         console.error(`[bridge] Failed to parse ${configPath}:`, err);
       }
