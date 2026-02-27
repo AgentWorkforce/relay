@@ -73,7 +73,7 @@ jobs:
   build-broker:
     name: Build broker (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'sdk'
     strategy:
       matrix:
         include:
@@ -430,7 +430,7 @@ jobs:
   # Publish all packages in parallel (npm publish doesn't need deps published first)
   publish-packages:
     name: Publish ${{ matrix.package }}
-    needs: build
+    needs: [build, build-broker]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all'
     strategy:
@@ -465,6 +465,18 @@ jobs:
         with:
           name: build-output
           path: .
+
+      - name: Download broker binaries (SDK only)
+        if: matrix.package == 'sdk'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: agent-relay-broker-*
+          path: packages/sdk/bin/
+          merge-multiple: true
+
+      - name: Make broker binaries executable (SDK only)
+        if: matrix.package == 'sdk'
+        run: chmod +x packages/sdk/bin/agent-relay-broker-*
 
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
