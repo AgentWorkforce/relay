@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { createRelaycastClient as createRelaycastClientSdk } from '@agent-relay/sdk';
+import { RelayCast } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 
 import { createAgentRelayClient } from '../lib/client-factory.js';
@@ -74,7 +74,18 @@ function createDefaultClient(cwd: string): MessagingBrokerClient {
 async function createDefaultRelaycastClient(options: {
   agentName: string;
 }): Promise<MessagingRelaycastClient> {
-  return createRelaycastClientSdk(options) as Promise<MessagingRelaycastClient>;
+  const apiKey = process.env.RELAY_API_KEY;
+  if (!apiKey) {
+    throw new Error('Relaycast API key not found in RELAY_API_KEY');
+  }
+
+  const baseUrl = process.env.RELAYCAST_BASE_URL ?? 'https://api.relaycast.dev';
+  const relaycast = new RelayCast({ apiKey, baseUrl });
+  const registration = await relaycast.agents.registerOrGet({
+    name: options.agentName,
+    type: 'agent',
+  });
+  return relaycast.as(registration.token) as unknown as MessagingRelaycastClient;
 }
 
 function withDefaults(overrides: Partial<MessagingDependencies> = {}): MessagingDependencies {
