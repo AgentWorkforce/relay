@@ -800,6 +800,8 @@ export class AgentRelay {
       // hello-handshake timeout.
       if (!this.clientOptions.env) {
         this.clientOptions.env = { ...process.env, RELAY_API_KEY: envKey };
+      } else if (!this.clientOptions.env.RELAY_API_KEY) {
+        this.clientOptions.env.RELAY_API_KEY = envKey;
       }
       return;
     }
