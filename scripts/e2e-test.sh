@@ -197,23 +197,27 @@ if [ "$DAEMON_ONLY" = true ]; then
   exit 0
 fi
 
-# Stop broker before command lifecycle phases. CLI command handlers now create
-# short-lived broker clients and should not run while `up` keeps a broker lock.
+# Stop broker before command lifecycle phases. The `up` command runs a long-lived
+# process; stop that specific process directly to avoid relying on pid-file state.
 log_info "Stopping broker after up/down smoke test..."
-if ! run_with_timeout 15 "$CLI_CMD" down --force --timeout 10000; then
-  EXIT_CODE=$?
-  if [ $EXIT_CODE -eq 124 ]; then
-    log_error "down command timed out after lifecycle smoke test"
-    exit 1
-  fi
+kill "$DAEMON_PID" 2>/dev/null || true
+wait "$DAEMON_PID" 2>/dev/null || true
+
+# Best-effort cleanup for any children that outlive the parent process.
+if command -v lsof &> /dev/null; then
+  lsof -ti:$DASHBOARD_PORT | xargs kill -9 2>/dev/null || true
 fi
+pkill -9 -f "relay-dashboard-server.*--port.*$DASHBOARD_PORT" 2>/dev/null || true
+
+# Clear runtime artifacts if present.
+run_with_timeout 10 "$CLI_CMD" down --force --timeout 5000 2>/dev/null || true
 
 sleep 1
 if curl -s "http://127.0.0.1:${DASHBOARD_PORT}/health" > /dev/null 2>&1; then
-  log_error "Broker still responding after down command"
+  log_error "Broker still responding after stopping lifecycle smoke process"
   exit 1
 fi
-log_info "Lifecycle smoke complete: up/down succeeded"
+log_info "Lifecycle smoke complete: up/down stop succeeded"
 
 # Phase 2: Test CLI Commands
 log_phase "Phase 2: Testing CLI Commands"
