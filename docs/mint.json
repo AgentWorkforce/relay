@@ -36,12 +36,6 @@
       "pages": [
         "reference/sdk"
       ]
-    },
-    {
-      "group": "Guides",
-      "pages": [
-        "guides/electron-integration"
-      ]
     }
   ],
   "footerSocials": {
