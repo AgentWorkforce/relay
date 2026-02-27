@@ -3717,7 +3717,8 @@ async fn handle_sdk_frame(
                     state.agents.remove(&payload.name);
                     state.save(state_path)?;
                     send_ok(out_tx, frame.request_id, json!({"name": payload.name})).await?;
-                    send_event(out_tx, json!({"kind":"agent_released","name":payload.name})).await?;
+                    send_event(out_tx, json!({"kind":"agent_released","name":payload.name}))
+                        .await?;
                     return Ok(false);
                 }
                 send_error(
