@@ -476,7 +476,10 @@ jobs:
 
       - name: Make broker binaries executable (SDK only)
         if: matrix.package == 'sdk'
-        run: chmod +x packages/sdk/bin/agent-relay-broker-*
+        run: |
+          chmod +x packages/sdk/bin/agent-relay-broker-*
+          # Remove stale generic binary — SDK resolves platform-specific names at runtime
+          rm -f packages/sdk/bin/agent-relay-broker
 
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
@@ -524,7 +527,10 @@ jobs:
           merge-multiple: true
 
       - name: Make broker binaries executable
-        run: chmod +x packages/sdk/bin/agent-relay-broker-*
+        run: |
+          chmod +x packages/sdk/bin/agent-relay-broker-*
+          # Remove stale generic binary — SDK resolves platform-specific names at runtime
+          rm -f packages/sdk/bin/agent-relay-broker
 
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
