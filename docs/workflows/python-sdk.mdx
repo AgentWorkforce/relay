@@ -22,7 +22,7 @@ result = (
     workflow("my-feature")
     .pattern("dag")
     .agent("planner", cli="claude", model=Models.Claude.OPUS)
-    .agent("developer", cli="codex", model=Models.Codex.CODEX_5_3)
+    .agent("developer", cli="codex", model=Models.Codex.GPT_5_3_CODEX)
     .step("plan", agent="planner", task="Create implementation plan")
     .step("implement", agent="developer", task="Build it", depends_on=["plan"])
     .run()
@@ -44,13 +44,17 @@ Models.Claude.SONNET    # 'sonnet'
 Models.Claude.HAIKU     # 'haiku'
 
 # Codex models
-Models.Codex.CODEX_5_3  # 'gpt-5.3-codex'
-Models.Codex.O3         # 'o3'
-Models.Codex.O4_MINI    # 'o4-mini'
+Models.Codex.GPT_5_3_CODEX       # 'gpt-5.3-codex'
+Models.Codex.GPT_5_2_CODEX       # 'gpt-5.2-codex' (default)
+Models.Codex.GPT_5_3_CODEX_SPARK # 'gpt-5.3-codex-spark'
+Models.Codex.GPT_5_1_CODEX_MAX   # 'gpt-5.1-codex-max'
+Models.Codex.GPT_5_1_CODEX_MINI  # 'gpt-5.1-codex-mini'
 
 # Gemini models
-Models.Gemini.PRO_2_5   # 'gemini-2.5-pro'
-Models.Gemini.FLASH_2_5 # 'gemini-2.5-flash'
+Models.Gemini.GEMINI_2_5_PRO      # 'gemini-2.5-pro' (default)
+Models.Gemini.GEMINI_2_5_FLASH    # 'gemini-2.5-flash'
+Models.Gemini.GEMINI_2_5_FLASH_LITE # 'gemini-2.5-flash-lite'
+Models.Gemini.GEMINI_3_PRO_PREVIEW  # 'gemini-3-pro-preview'
 ```
 
 ## Full Example: Feature Development
@@ -72,7 +76,7 @@ def build_feature(task: str):
         )
         .agent("backend",
             cli="codex",
-            model=Models.Codex.CODEX_5_3,
+            model=Models.Codex.GPT_5_3_CODEX,
             role="Backend developer"
         )
         .agent("frontend",
@@ -286,7 +290,7 @@ from agent_relay import WorkflowRunner
 
 runner = WorkflowRunner(
     cwd="/path/to/project",
-    relay_port=3000,
+    # relay: dict — configures the broker binary (optional)
 )
 
 # Event callback
@@ -351,7 +355,7 @@ def review_code(pr_number: int):
         )
         .agent("style",
             cli="codex",
-            model=Models.Codex.O3,
+            model=Models.Codex.GPT_5_3_CODEX,
             role="Style and best practices reviewer"
         )
         .agent("lead",
@@ -420,7 +424,7 @@ asyncio.run(main())
   <Card title="TypeScript SDK" icon="js" href="/workflows/typescript-sdk">
     Same fluent API in TypeScript.
   </Card>
-  <Card title="Cloud Execution" icon="cloud" href="/workflows/cloud-execution">
-    Run workflows 24/7 in the cloud.
+  <Card title="SDK Reference" icon="book" href="/reference/sdk">
+    AgentRelay class, Models, and error types.
   </Card>
 </CardGroup>

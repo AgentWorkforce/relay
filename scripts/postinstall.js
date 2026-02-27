@@ -391,8 +391,9 @@ function getBrokerBinaryName() {
  *
  * Resolution order:
  *   1. Already bundled at packages/sdk/bin/agent-relay-broker (e.g. from prepack)
- *   2. Download platform-specific standalone binary from GitHub releases
- *   3. Fall back to the local Rust debug binary at target/debug/agent-relay-broker (dev only)
+ *   2. Platform-specific binary bundled in root bin/ (e.g. bin/agent-relay-broker-linux-x64)
+ *   3. Download platform-specific standalone binary from GitHub releases
+ *   4. Fall back to the local Rust debug binary at target/debug/agent-relay-broker (dev only)
  */
 async function installBrokerBinary() {
   const pkgRoot = getPackageRoot();
@@ -420,8 +421,25 @@ async function installBrokerBinary() {
 
   fs.mkdirSync(sdkBinDir, { recursive: true });
 
-  // 2. Try downloading from GitHub releases
   const binaryName = getBrokerBinaryName();
+
+  // 2. Check for bundled platform-specific binary in root bin/ (same approach as relay-pty)
+  if (binaryName) {
+    const bundledBinary = path.join(pkgRoot, 'bin', binaryName);
+    if (fs.existsSync(bundledBinary)) {
+      try {
+        fs.copyFileSync(bundledBinary, targetPath);
+        fs.chmodSync(targetPath, 0o755);
+        resignBinaryForMacOS(targetPath);
+        success(`Installed broker binary from bundled package (${binaryName})`);
+        return true;
+      } catch (err) {
+        warn(`Failed to copy bundled broker binary: ${err.message}`);
+      }
+    }
+  }
+
+  // 3. Try downloading from GitHub releases
   if (binaryName) {
     const version = getPackageVersion(pkgRoot);
     if (version) {
@@ -441,7 +459,7 @@ async function installBrokerBinary() {
     }
   }
 
-  // 3. Dev fallback — check for local Rust build (release first, then debug)
+  // 4. Dev fallback — check for local Rust build (release first, then debug)
   for (const profile of ['release', 'debug']) {
     const localBinary = path.join(pkgRoot, 'target', profile, binaryFilename);
     if (fs.existsSync(localBinary)) {

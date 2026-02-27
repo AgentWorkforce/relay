@@ -1,151 +1,38 @@
 ---
 title: 'Introduction'
-description: 'Real-time messaging between AI agents. Enable Claude, Codex, Gemini, and any other CLI-based AI agents to communicate seamlessly.'
+description: 'Programmatically spawn and coordinate AI agents from TypeScript or Python.'
 ---
 
-Agent Relay enables AI coding assistants running in separate terminal sessions to discover each other and exchange messages in real-time, without human intervention.
+The `@agent-relay/sdk` lets you spawn AI agents (Claude, Codex, Gemini) and coordinate them from code — send messages between agents, listen for responses, and shut them down when done.
 
-<CardGroup cols={3}>
-  <Card title="No Agent Reconfiguration" icon="plug">
-    Keep your existing Claude Code, Codex, or Gemini setup. No prompts, flags, or harness changes required.
-  </Card>
-  <Card title="Sub-5ms Local Routing" icon="bolt">
-    Messages move over local Unix domain sockets for near-instant agent-to-agent communication.
-  </Card>
-  <Card title="Provider-Agnostic" icon="terminal">
-    Relay sits outside the model. Mix and match agents across providers and CLIs without coupling.
-  </Card>
-</CardGroup>
-
-## The Problem
-
-Modern AI coding assistants operate in isolation. When you run multiple agents on different parts of a codebase, they cannot:
-
-- Share discoveries or context with each other
-- Coordinate on interdependent tasks
-- Request help from specialized agents
-- Avoid duplicate work
-
-Agent Relay solves this by providing a communication layer that requires **zero modification** to the underlying AI systems.
-
-## How It Works
-
-Agent Relay monitors agent output for special patterns like `->relay:Bob Hello!` and routes messages through a central broker. Incoming messages are injected directly into the recipient agent's terminal as user input.
-
-```
-+------------------+     +------------------+     +------------------+
-|  Agent Alice     |     |   Relay Broker   |     |  Agent Bob       |
-|  (Claude)        |     |   (Message       |     |  (Codex)         |
-|                  |     |    Broker)       |     |                  |
-|  Outputs:        |     |                  |     |  Receives:       |
-|  ->relay:Bob Hi! | --> |  Routes message  | --> |  "Relay message  |
-|                  |     |                  |     |   from Alice..." |
-+------------------+     +------------------+     +------------------+
+```bash
+npm install @agent-relay/sdk
 ```
 
-This approach:
-
-- Works with any CLI-based agent
-- Requires no agent-side code changes
-- Preserves the user's normal terminal experience
-- Allows agents to communicate using natural language
-
-## Use Cases
-
-### Multi-Agent Development Teams
-
-Coordinate specialized agents working on different aspects of your codebase:
-
-- **Lead Agent** - Breaks down tasks and coordinates work
-- **Frontend Agent** - Handles UI components and styling
-- **Backend Agent** - Implements APIs and business logic
-- **Reviewer Agent** - Reviews code and suggests improvements
-
-### Cross-Project Orchestration
-
-Bridge multiple projects together with a single orchestrator. Agents in one project can communicate with agents in another, enabling coordinated work across microservices, monorepos, or related codebases.
-
-### Human-in-the-Loop Workflows
-
-Monitor agent communication through the real-time dashboard. Intervene when needed, or let agents work autonomously while you observe.
-
-## Architecture Overview
-
-Agent Relay consists of three main components:
-
-```
-+---------------------------------------------------------------------+
-|                         Your Terminal                                |
-|                                                                      |
-|  +---------------+  +---------------+  +---------------+            |
-|  | agent-relay   |  | agent-relay   |  | agent-relay   |            |
-|  | -n Alice      |  | -n Bob        |  | -n Carol      |            |
-|  | claude        |  | codex         |  | gemini        |            |
-|  +-------+-------+  +-------+-------+  +-------+-------+            |
-|          |                  |                  |                     |
-|          +------------------+------------------+                     |
-|                             |                                        |
-|                    Unix Domain Socket                                |
-|                             |                                        |
-|                   +---------+---------+                              |
-|                   |   Relay Broker    |                              |
-|                   |  (Message Router) |                              |
-|                   +---------+---------+                              |
-|                             |                                        |
-|            +----------------+----------------+                       |
-|            |                                 |                       |
-|   +--------+--------+               +--------+--------+              |
-|   |    Relaycast    |               |    Dashboard    |              |
-|   |  (REST/WS API)  |               |   localhost:    |              |
-|   |                 |               |      3888       |              |
-|   +-----------------+               +-----------------+              |
-+---------------------------------------------------------------------+
-```
-
-**Broker** - Central message router that routes messages between agents via Unix domain sockets.
-
-**Wrapper** - Wraps each agent CLI in a tmux session, parses output for relay commands, and injects incoming messages.
-
-**Dashboard** - Web UI for monitoring agent activity, message flow, and system health in real-time.
-
-## Key Features
+## What You Can Do
 
 <CardGroup cols={2}>
-  <Card title="Direct & Broadcast Messaging" icon="messages">
-    Send messages to specific agents or broadcast to all connected agents at once.
+  <Card title="Spawn Agents" icon="users">
+    Programmatically create Claude, Codex, or Gemini agents with a specific model and task.
   </Card>
-  <Card title="Agent Spawning" icon="users">
-    Dynamically spawn worker agents from within a coordinator agent and release them when done.
+  <Card title="Send Messages" icon="messages">
+    Route messages between agents — direct, broadcast, or channel-based.
   </Card>
-  <Card title="Multi-Project Bridging" icon="bridge">
-    Connect multiple project daemons together for cross-repository coordination.
+  <Card title="Listen for Responses" icon="bell">
+    Subscribe to incoming messages and react in real-time.
   </Card>
-  <Card title="Session Continuity" icon="rotate">
-    Save and restore agent context across sessions for long-running tasks.
-  </Card>
-  <Card title="Real-Time Dashboard" icon="chart-line">
-    Monitor all agent activity, message flow, and system health from a web interface.
-  </Card>
-  <Card title="Channel Support" icon="hashtag">
-    Create topic-based channels for organized group communication.
+  <Card title="Multi-Provider" icon="shuffle">
+    Mix Claude and Codex agents in a single workflow, each using their strengths.
   </Card>
 </CardGroup>
-
-## Supported Platforms
-
-| Platform | Status       | Notes                        |
-| -------- | ------------ | ---------------------------- |
-| Linux    | Full support | Primary development platform |
-| macOS    | Full support | Well tested                  |
-| Windows  | Partial      | Requires WSL for tmux        |
 
 ## Next Steps
 
 <CardGroup cols={2}>
   <Card title="Quickstart" icon="rocket" href="/quickstart">
-    Get up and running in 5 minutes with your first agent network.
+    Get your first agents talking to each other in minutes.
   </Card>
-  <Card title="Core Concepts" icon="book" href="/concepts">
-    Learn about agents, messages, and the relay protocol.
+  <Card title="SDK Reference" icon="book" href="/reference/sdk">
+    Full API reference for AgentRelay, spawn, messaging, and more.
   </Card>
 </CardGroup>

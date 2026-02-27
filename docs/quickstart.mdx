@@ -1,256 +1,63 @@
 ---
 title: 'Quickstart'
-description: 'Get up and running with Agent Relay in 5 minutes'
+description: 'Spawn your first agents and send messages between them.'
 ---
 
-This guide will have you running your first multi-agent network in under 5 minutes.
-
-<Tip>Prefer to watch? See the demo below.</Tip>
-
-<Frame>
-  <video controls className="w-full aspect-video rounded-xl" src="/videos/agent-relay-cli.mp4">
-    Your browser does not support the video tag.
-  </video>
-</Frame>
-
-## Prerequisites
-
-Before you begin, ensure you have:
-
-- **Node.js** 18 or higher
-- **tmux** installed on your system
-- At least one AI CLI installed (Claude, Codex, Cursor, or Gemini)
-
-## Installation
-
-Install Agent Relay globally via our shell script:
+## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+npm install @agent-relay/sdk
 ```
 
-Verify the installation:
+## Spawn Agents and Send a Message
 
-```bash
-agent-relay --version
+```typescript
+import { AgentRelay, Models } from '@agent-relay/sdk';
+
+const relay = new AgentRelay();
+
+// Spawn a planner (Claude) and a coder (Codex)
+const planner = await relay.claude.spawn({
+  name: 'Planner',
+  model: Models.Claude.OPUS
+});
+
+const coder = await relay.codex.spawn({
+  name: 'Coder',
+  model: Models.Codex.GPT_5_3_CODEX
+});
+
+// Listen for messages
+relay.onMessageReceived = (msg) => {
+  console.log(`${msg.from} → ${msg.to}: ${msg.text}`);
+};
+
+// Send a message from Planner to Coder
+await planner.sendMessage({ to: 'Coder', text: 'Implement the auth module' });
+
+await relay.shutdown();
 ```
 
-## Step-by-Step Setup
+## Supported CLIs
 
-<Steps>
-  <Step title="Start the Broker">
-    The broker is the central message router. Start it first:
-
-    ```bash
-    agent-relay up --dashboard
-    ```
-
-    You should see:
-    ```
-    Broker started on /tmp/agent-relay.sock
-    Dashboard available at http://localhost:3888
-    ```
-
-  </Step>
-
-  <Step title="Create Your First Agent">
-    You can create agents two ways—via the dashboard or terminal.
-
-    **Option 1: Dashboard (recommended)**
-    1. Open the dashboard at [http://localhost:3888](http://localhost:3888)
-    2. Click **Spawn Agent**
-    3. Enter the name "Alice" and select CLI "claude"
-    4. Click **Spawn**
-
-    The dashboard will spawn the agent for you and you'll see it appear in the agents list.
-
-    **Option 2: Terminal (for scripting/automation)**
-    ```bash
-    agent-relay spawn Alice claude "Wait for instructions"
-    ```
-
-    <Note>
-      Replace `claude` with `codex` or `gemini` if you prefer a different AI provider.
-    </Note>
-
-  </Step>
-
-  <Step title="Create a Second Agent">
-    Create a second agent named "Bob" using either method:
-
-    **Dashboard:** Click **Spawn Agent**, enter "Bob", select "claude", and spawn.
-
-    **Terminal:**
-    ```bash
-    agent-relay spawn Bob claude "Wait for instructions"
-    ```
-
-    You now have two agents connected to the same relay network.
-
-  </Step>
-
-  <Step title="Send Your First Message">
-    In Alice's terminal, ask the agent to send a message to Bob:
-
-    ```
-    Send a message to Bob saying hello
-    ```
-
-    Alice will use the relay MCP tool to send the message:
-    ```typescript
-    relay_send(to: "Bob", message: "Hello! Nice to meet you.")
-    ```
-
-    The relay broker routes the message to Bob in real-time.
-
-  </Step>
-
-  <Step title="View the Dashboard">
-    Open your browser to [http://localhost:3888](http://localhost:3888) to see the real-time dashboard.
-
-    The dashboard shows:
-    - Connected agents (Alice and Bob)
-    - Message flow between agents
-    - System health and metrics
-
-  </Step>
-</Steps>
-
-## Message Formats
-
-Agents communicate using MCP tools provided by the relay:
-
-<CodeGroup>
-  ```typescript Direct Message
-  relay_send(to: "Bob", message: "Can you review my code changes?")
-  ```
-
-```typescript Broadcast to All
-relay_send(to: "*", message: "I've finished the auth module")
-```
-
-```typescript With Thread Context
-relay_send(to: "Alice", message: "[THREAD: code-review] LGTM, merging now")
-```
-
-</CodeGroup>
-
-## Receiving Messages
-
-When Bob receives a message from Alice, it appears in their terminal as:
-
-```
-Relay message from Alice [abc12345]: Hello! Nice to meet you.
-```
-
-The message ID (`abc12345`) can be used to read the full content if the message was truncated:
-
-```bash
-agent-relay read abc12345
-```
-
-## Common Commands
-
-| Command                                 | Description                    |
-| --------------------------------------- | ------------------------------ |
-| `agent-relay up --dashboard`            | Start the broker and dashboard |
-| `agent-relay down`                      | Stop the broker                |
-| `agent-relay status`                    | Check broker and agent status  |
-| `agent-relay spawn <name> <cli> "task"` | Spawn a new agent              |
-| `agent-relay agents`                    | List connected agents          |
-| `agent-relay read <id>`                 | Read full message content      |
-
-## Quick Test Script
-
-Want to see it all work together? Run this quick test:
-
-**Option A: Dashboard (recommended)**
-
-```bash
-# Start the broker with dashboard
-agent-relay up --dashboard
-
-# Open http://localhost:3888 in your browser
-# Click "Spawn Agent" and create "Alice" with CLI "claude"
-# Click "Spawn Agent" again and create "Bob" with CLI "claude"
-# Use the chat interface to send messages between agents!
-```
-
-**Option B: Terminal**
-
-```bash
-# Terminal 1: Start the broker
-agent-relay up --dashboard
-
-# Terminal 2: Spawn Alice
-agent-relay spawn Alice claude "Wait for instructions from Bob"
-
-# Terminal 3: Spawn Bob
-agent-relay spawn Bob claude "Send a greeting to Alice"
-
-# Watch the message appear in the dashboard and Alice's logs!
-```
-
-## Troubleshooting
-
-<AccordionGroup>
-  <Accordion title="Broker not running">
-    If you see "Broker not running" errors:
-
-    ```bash
-    # Check status
-    agent-relay status
-
-    # Start the broker
-    agent-relay up
-    ```
-
-  </Accordion>
-
-  <Accordion title="tmux not found">
-    Install tmux for your platform:
-
-    ```bash
-    # macOS
-    brew install tmux
-
-    # Linux
-    sudo apt-get install tmux
-    ```
-
-  </Accordion>
-
-  <Accordion title="Messages not delivering">
-    1. Verify both agents are connected: `agent-relay agents`
-    2. Check agent names match exactly (case-insensitive)
-    3. Ensure the message format is correct: `->relay:Name message`
-  </Accordion>
-
-  <Accordion title="Permission denied on socket">
-    Remove stale socket file and restart:
-
-    ```bash
-    rm /tmp/agent-relay.sock
-    agent-relay down
-    agent-relay up
-    ```
-
-  </Accordion>
-</AccordionGroup>
+| CLI    | Constant prefix        |
+| ------ | ---------------------- |
+| Claude | `Models.Claude.*`      |
+| Codex  | `Models.Codex.*`       |
 
 ## Next Steps
 
 <CardGroup cols={2}>
-  <Card title="Core Concepts" icon="book" href="/concepts">
-    Learn about agents, messages, channels, and the relay protocol in depth.
+  <Card title="TypeScript SDK" icon="js" href="/workflows/typescript-sdk">
+    Full TypeScript workflow examples with multi-agent patterns.
   </Card>
-  <Card title="Messaging" icon="messages" href="/features/messaging">
-    Explore advanced messaging patterns including broadcasts, threads, and channels.
+  <Card title="Python SDK" icon="python" href="/workflows/python-sdk">
+    Python workflow examples.
   </Card>
-  <Card title="Agent Spawning" icon="users" href="/features/spawning">
-    Learn how to dynamically create and release worker agents.
+  <Card title="SDK Reference" icon="book" href="/reference/sdk">
+    Complete API reference.
   </Card>
-  <Card title="Multi-Project Setup" icon="bridge" href="/guides/multi-project">
-    Connect agents across multiple codebases with bridging.
+  <Card title="Electron Integration" icon="window" href="/guides/electron-integration">
+    Use the SDK inside an Electron app.
   </Card>
 </CardGroup>

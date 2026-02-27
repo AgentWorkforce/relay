@@ -268,23 +268,28 @@ jobs:
       - name: 'Test: agent-relay-broker binary exists'
         run: |
           cd /tmp/test-project
-          BIN_DIR="./node_modules/agent-relay/bin"
+          # The postinstall copies the platform-specific binary from bin/ to packages/sdk/bin/agent-relay-broker
+          SDK_BIN_DIR="./node_modules/agent-relay/packages/sdk/bin"
+          ROOT_BIN_DIR="./node_modules/agent-relay/bin"
           echo "Checking for agent-relay-broker binaries..."
-          ls -la "$BIN_DIR" || { echo "Binary directory not found"; exit 1; }
+          echo "--- Root bin/ (platform-specific bundled binaries) ---"
+          ls -la "$ROOT_BIN_DIR" || echo "(root bin not found)"
+          echo "--- SDK bin/ (postinstall-installed generic binary) ---"
+          ls -la "$SDK_BIN_DIR" 2>/dev/null || echo "(sdk bin not found yet)"
 
-          if [ -f "$BIN_DIR/agent-relay-broker" ]; then
-            echo "agent-relay-broker binary found"
+          if [ -f "$SDK_BIN_DIR/agent-relay-broker" ]; then
+            echo "agent-relay-broker binary found in packages/sdk/bin/"
           else
-            echo "agent-relay-broker binary NOT found - spawn will fail!"
+            echo "agent-relay-broker binary NOT found in packages/sdk/bin/ - spawn will fail!"
             exit 1
           fi
 
       - name: 'Test: agent-relay-broker binary executable'
         run: |
           cd /tmp/test-project
-          BIN_DIR="./node_modules/agent-relay/bin"
+          SDK_BIN_DIR="./node_modules/agent-relay/packages/sdk/bin"
 
-          if [ -x "$BIN_DIR/agent-relay-broker" ]; then
+          if [ -x "$SDK_BIN_DIR/agent-relay-broker" ]; then
             echo "agent-relay-broker is executable"
           else
             echo "agent-relay-broker is NOT executable"
@@ -294,9 +299,9 @@ jobs:
       - name: 'Test: agent-relay-broker --help works'
         run: |
           cd /tmp/test-project
-          BIN_DIR="./node_modules/agent-relay/bin"
+          SDK_BIN_DIR="./node_modules/agent-relay/packages/sdk/bin"
 
-          OUTPUT=$("$BIN_DIR/agent-relay-broker" --help 2>&1) || true
+          OUTPUT=$("$SDK_BIN_DIR/agent-relay-broker" --help 2>&1) || true
           echo "$OUTPUT"
 
           if echo "$OUTPUT" | grep -q "agent-relay-broker"; then
@@ -309,7 +314,7 @@ jobs:
       - name: 'Test: Platform-specific binary'
         run: |
           cd /tmp/test-project
-          BIN_DIR="./node_modules/agent-relay/bin"
+          ROOT_BIN_DIR="./node_modules/agent-relay/bin"
 
           # Determine platform
           PLATFORM=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -324,16 +329,16 @@ jobs:
           echo "Platform: $PLATFORM, Architecture: $ARCH_NAME"
           PLATFORM_BINARY="agent-relay-broker-${PLATFORM}-${ARCH_NAME}"
 
-          if [ -f "$BIN_DIR/$PLATFORM_BINARY" ]; then
+          if [ -f "$ROOT_BIN_DIR/$PLATFORM_BINARY" ]; then
             echo "Platform-specific binary found: $PLATFORM_BINARY"
-            if [ -x "$BIN_DIR/$PLATFORM_BINARY" ]; then
+            if [ -x "$ROOT_BIN_DIR/$PLATFORM_BINARY" ]; then
               echo "Platform-specific binary is executable"
             else
               echo "WARNING: Platform-specific binary is not executable"
             fi
           else
             echo "Platform-specific binary not found: $PLATFORM_BINARY"
-            echo "Will rely on generic agent-relay-broker binary"
+            echo "Will rely on generic agent-relay-broker binary in packages/sdk/bin/"
           fi
 
       - name: 'Test: Binary resolution simulation'
@@ -345,6 +350,7 @@ jobs:
 
           const packageDir = path.dirname(require.resolve('agent-relay/package.json'));
           const binDir = path.join(packageDir, 'bin');
+          const sdkBinDir = path.join(packageDir, 'packages', 'sdk', 'bin');
 
           const platform = process.platform;
           const arch = process.arch;
@@ -355,14 +361,16 @@ jobs:
           const platformName = platformMap[platform] || platform;
           const archName = archMap[arch] || arch;
 
-          const specificBinary = path.join(binDir, 'agent-relay-broker-' + platformName + '-' + archName);
-          const genericBinary = path.join(binDir, 'agent-relay-broker');
+          // Platform-specific binary bundled in root bin/ (always present in published package)
+          const bundledSpecific = path.join(binDir, 'agent-relay-broker-' + platformName + '-' + archName);
+          // Generic binary installed by postinstall into packages/sdk/bin/ (what client.ts uses)
+          const sdkBroker = path.join(sdkBinDir, 'agent-relay-broker');
 
           console.log('Package dir:', packageDir);
-          console.log('Platform binary:', specificBinary, fs.existsSync(specificBinary) ? '✓' : '✗');
-          console.log('Generic binary:', genericBinary, fs.existsSync(genericBinary) ? '✓' : '✗');
+          console.log('Bundled platform binary (root bin/):', bundledSpecific, fs.existsSync(bundledSpecific) ? '✓' : '✗');
+          console.log('SDK broker binary (packages/sdk/bin/):', sdkBroker, fs.existsSync(sdkBroker) ? '✓' : '✗');
 
-          if (!fs.existsSync(specificBinary) && !fs.existsSync(genericBinary)) {
+          if (!fs.existsSync(bundledSpecific) && !fs.existsSync(sdkBroker)) {
             console.error('ERROR: No agent-relay-broker binary found!');
             process.exit(1);
           }
@@ -458,23 +466,28 @@ jobs:
       - name: 'Test: agent-relay-broker binary exists'
         run: |
           cd /tmp/test-project
-          BIN_DIR="./node_modules/agent-relay/bin"
+          # The postinstall copies the platform-specific binary from bin/ to packages/sdk/bin/agent-relay-broker
+          SDK_BIN_DIR="./node_modules/agent-relay/packages/sdk/bin"
+          ROOT_BIN_DIR="./node_modules/agent-relay/bin"
           echo "Checking for agent-relay-broker binaries..."
-          ls -la "$BIN_DIR"
+          echo "--- Root bin/ (platform-specific bundled binaries) ---"
+          ls -la "$ROOT_BIN_DIR" || echo "(root bin not found)"
+          echo "--- SDK bin/ (postinstall-installed generic binary) ---"
+          ls -la "$SDK_BIN_DIR" 2>/dev/null || echo "(sdk bin not found yet)"
 
-          if [ -f "$BIN_DIR/agent-relay-broker" ]; then
-            echo "agent-relay-broker binary found"
+          if [ -f "$SDK_BIN_DIR/agent-relay-broker" ]; then
+            echo "agent-relay-broker binary found in packages/sdk/bin/"
           else
-            echo "agent-relay-broker binary NOT found!"
+            echo "agent-relay-broker binary NOT found in packages/sdk/bin/!"
             exit 1
           fi
 
       - name: 'Test: agent-relay-broker is executable'
         run: |
           cd /tmp/test-project
-          BIN_DIR="./node_modules/agent-relay/bin"
+          SDK_BIN_DIR="./node_modules/agent-relay/packages/sdk/bin"
 
-          if [ -x "$BIN_DIR/agent-relay-broker" ]; then
+          if [ -x "$SDK_BIN_DIR/agent-relay-broker" ]; then
             echo "agent-relay-broker is executable"
           else
             echo "agent-relay-broker is NOT executable"
@@ -484,9 +497,9 @@ jobs:
       - name: 'Test: agent-relay-broker --help'
         run: |
           cd /tmp/test-project
-          BIN_DIR="./node_modules/agent-relay/bin"
+          SDK_BIN_DIR="./node_modules/agent-relay/packages/sdk/bin"
 
-          OUTPUT=$("$BIN_DIR/agent-relay-broker" --help 2>&1) || true
+          OUTPUT=$("$SDK_BIN_DIR/agent-relay-broker" --help 2>&1) || true
           echo "$OUTPUT"
 
           if echo "$OUTPUT" | grep -q "agent-relay-broker"; then
@@ -522,9 +535,10 @@ jobs:
               exit 1
             fi
           else
-            echo "Darwin binary not found, checking if generic works..."
-            if "$BIN_DIR/agent-relay-broker" --help 2>&1 | grep -q "agent-relay-broker"; then
-              echo "Generic binary works on macOS"
+            echo "Darwin binary not found in root bin/, checking sdk bin..."
+            SDK_BIN_DIR="./node_modules/agent-relay/packages/sdk/bin"
+            if "$SDK_BIN_DIR/agent-relay-broker" --help 2>&1 | grep -q "agent-relay-broker"; then
+              echo "SDK bin generic binary works on macOS"
             else
               echo "Neither darwin-specific nor generic binary works!"
               exit 1

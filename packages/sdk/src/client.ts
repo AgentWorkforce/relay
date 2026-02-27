@@ -589,12 +589,17 @@ export class AgentRelayClient {
 
 const CLI_MODEL_FLAG_CLIS = new Set(['claude', 'codex', 'gemini', 'goose', 'aider']);
 
+const CLI_DEFAULT_ARGS: Record<string, string[]> = {
+  codex: ['-c', 'check_for_update_on_startup=false'],
+};
+
 function buildPtyArgsWithModel(cli: string, args: string[], model?: string): string[] {
-  const baseArgs = [...args];
+  const cliName = cli.split(':')[0].trim().toLowerCase();
+  const defaultArgs = CLI_DEFAULT_ARGS[cliName] ?? [];
+  const baseArgs = [...defaultArgs, ...args];
   if (!model) {
     return baseArgs;
   }
-  const cliName = cli.split(':')[0].trim().toLowerCase();
   if (!CLI_MODEL_FLAG_CLIS.has(cliName)) {
     return baseArgs;
   }

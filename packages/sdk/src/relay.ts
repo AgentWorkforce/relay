@@ -173,6 +173,17 @@ export interface AgentRelayOptions {
   env?: NodeJS.ProcessEnv;
   requestTimeoutMs?: number;
   shutdownTimeoutMs?: number;
+  /**
+   * Name for the auto-created Relaycast workspace.
+   * If omitted, a random name is generated.
+   * Ignored when RELAY_API_KEY is already set in env or process.env.
+   */
+  workspaceName?: string;
+  /**
+   * Base URL for the Relaycast API.
+   * Defaults to RELAYCAST_BASE_URL env var or https://api.relaycast.dev.
+   */
+  relaycastBaseUrl?: string;
 }
 
 type OutputListener = {
@@ -195,6 +206,19 @@ export class AgentRelay {
   onAgentExitRequested: EventHook<{ name: string; reason: string }> = null;
   onAgentIdle: EventHook<{ name: string; idleSecs: number }> = null;
 
+  // ── Public accessors ────────────────────────────────────────────────────
+
+  /** The resolved Relaycast workspace API key (available after first spawn). */
+  get workspaceKey(): string | undefined {
+    return this.relayApiKey;
+  }
+
+  /** Observer URL for the auto-created workspace (available after first spawn). */
+  get observerUrl(): string | undefined {
+    if (!this.relayApiKey) return undefined;
+    return `https://observer.relaycast.dev/?key=${this.relayApiKey}`;
+  }
+
   // Shorthand spawners
   readonly codex: AgentSpawner;
   readonly claude: AgentSpawner;
@@ -202,6 +226,9 @@ export class AgentRelay {
 
   private readonly clientOptions: AgentRelayClientOptions;
   private readonly defaultChannels: string[];
+  private readonly workspaceName?: string;
+  private readonly relaycastBaseUrl?: string;
+  private relayApiKey?: string;
   private client?: AgentRelayClient;
   private startPromise?: Promise<AgentRelayClient>;
   private unsubEvent?: () => void;
@@ -225,6 +252,8 @@ export class AgentRelay {
 
   constructor(options: AgentRelayOptions = {}) {
     this.defaultChannels = options.channels ?? ['general'];
+    this.workspaceName = options.workspaceName;
+    this.relaycastBaseUrl = options.relaycastBaseUrl;
     this.clientOptions = {
       binaryPath: options.binaryPath,
       binaryArgs: options.binaryArgs,
@@ -750,11 +779,63 @@ export class AgentRelay {
     }
   }
 
+  /**
+   * Ensure a Relaycast workspace API key is available.
+   * Resolution order:
+   *   1. Already resolved (cached from a previous call)
+   *   2. RELAY_API_KEY in options.env
+   *   3. RELAY_API_KEY in process.env
+   *   4. Auto-create a fresh workspace via the Relaycast REST API
+   */
+  private async ensureRelaycastApiKey(): Promise<void> {
+    if (this.relayApiKey) return;
+
+    const envKey = this.clientOptions.env?.RELAY_API_KEY ?? process.env.RELAY_API_KEY;
+    if (envKey) {
+      this.relayApiKey = envKey;
+      return;
+    }
+
+    const baseUrl =
+      this.relaycastBaseUrl ??
+      this.clientOptions.env?.RELAYCAST_BASE_URL ??
+      process.env.RELAYCAST_BASE_URL ??
+      'https://api.relaycast.dev';
+
+    const name = this.workspaceName ?? `agent-relay-${randomBytes(4).toString('hex')}`;
+
+    const res = await fetch(`${baseUrl}/v1/workspaces`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Failed to auto-create Relaycast workspace: ${res.status} ${await res.text()}`);
+    }
+
+    const body = (await res.json()) as Record<string, unknown>;
+    const data = (body.data ?? body) as Record<string, unknown>;
+    const apiKey = data.api_key as string | undefined;
+
+    if (!apiKey) {
+      throw new Error('Relaycast workspace response missing api_key');
+    }
+
+    this.relayApiKey = apiKey;
+    // Merge the key into clientOptions.env so the broker process picks it up
+    this.clientOptions.env = {
+      ...(this.clientOptions.env ?? process.env),
+      RELAY_API_KEY: apiKey,
+    };
+  }
+
   private async ensureStarted(): Promise<AgentRelayClient> {
     if (this.client) return this.client;
     if (this.startPromise) return this.startPromise;
 
-    this.startPromise = AgentRelayClient.start(this.clientOptions)
+    this.startPromise = this.ensureRelaycastApiKey()
+      .then(() => AgentRelayClient.start(this.clientOptions))
       .then((c) => {
         this.client = c;
         this.startPromise = undefined;
