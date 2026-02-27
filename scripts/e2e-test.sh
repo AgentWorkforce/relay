@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # E2E Test for Agent Relay
-# Tests the full agent lifecycle: up -> spawn -> release -> down
+# Tests broker lifecycle and agent lifecycle without relying on legacy socket daemon behavior.
 #
 # Usage:
 #   ./scripts/e2e-test.sh                    # Run with ANTHROPIC_API_KEY from env
@@ -147,8 +147,8 @@ else
   log_info "Build exists, skipping (run 'npm run build' to rebuild)"
 fi
 
-# Phase 1: Start daemon with dashboard
-log_phase "Phase 1: Starting Daemon"
+# Phase 1: Broker lifecycle smoke test
+log_phase "Phase 1: Broker Lifecycle (up/down)"
 
 # Kill any existing daemon (with timeout to prevent hanging)
 run_with_timeout 10 "$CLI_CMD" down --force --timeout 5000 2>/dev/null || true
@@ -159,7 +159,7 @@ if command -v lsof &> /dev/null; then
 fi
 sleep 1
 
-# Start daemon in background, redirect output to log file
+# Start broker+dashboard in background, redirect output to log file
 DAEMON_LOG="$PROJECT_DIR/.agent-relay/e2e-daemon.log"
 mkdir -p "$(dirname "$DAEMON_LOG")"
 "$CLI_CMD" up --port "$DASHBOARD_PORT" > "$DAEMON_LOG" 2>&1 &
@@ -197,6 +197,24 @@ if [ "$DAEMON_ONLY" = true ]; then
   exit 0
 fi
 
+# Stop broker before command lifecycle phases. CLI command handlers now create
+# short-lived broker clients and should not run while `up` keeps a broker lock.
+log_info "Stopping broker after up/down smoke test..."
+if ! run_with_timeout 15 "$CLI_CMD" down --force --timeout 10000; then
+  EXIT_CODE=$?
+  if [ $EXIT_CODE -eq 124 ]; then
+    log_error "down command timed out after lifecycle smoke test"
+    exit 1
+  fi
+fi
+
+sleep 1
+if curl -s "http://127.0.0.1:${DASHBOARD_PORT}/health" > /dev/null 2>&1; then
+  log_error "Broker still responding after down command"
+  exit 1
+fi
+log_info "Lifecycle smoke complete: up/down succeeded"
+
 # Phase 2: Test CLI Commands
 log_phase "Phase 2: Testing CLI Commands"
 
@@ -229,11 +247,11 @@ if ! run_with_timeout 10 "$CLI_CMD" status; then
 fi
 log_info "  status command completed without hanging"
 
-# Test agents command (should show only Dashboard initially)
+# Test agents command (should not error even with no user agents)
 log_info "Testing: agent-relay agents"
 "$CLI_CMD" agents || true
 
-# Test agents --json and verify no user agents (only Dashboard)
+# Test agents --json and verify no user agents
 log_info "Testing: agent-relay agents --json"
 # Filter to only get JSON line (skip any log output like dotenv messages)
 AGENTS_JSON=$("$CLI_CMD" agents --json 2>/dev/null | grep '^\[')
@@ -242,8 +260,8 @@ if [ -z "$AGENTS_JSON" ]; then
   exit 1
 fi
 
-# Count agents (excluding Dashboard which is internal)
-AGENT_COUNT=$(echo "$AGENTS_JSON" | jq '[.[] | select(.name != "Dashboard")] | length' 2>/dev/null || echo "0")
+# Count user agents (filter known internal agent names if present)
+AGENT_COUNT=$(echo "$AGENTS_JSON" | jq '[.[] | select(.name != "Dashboard" and .name != "__cli_read__" and .name != "__cli_history__" and .name != "__cli_inbox__")] | length' 2>/dev/null || echo "0")
 log_info "  User agents before spawn: $AGENT_COUNT"
 if [ "$AGENT_COUNT" != "0" ]; then
   log_error "Expected 0 user agents before spawn, got $AGENT_COUNT"
@@ -404,8 +422,8 @@ else
   exit 1
 fi
 
-# Phase 7: Stop daemon gracefully (verify down doesn't hang)
-log_phase "Phase 7: Stopping Daemon"
+# Phase 7: Final cleanup down (verify no hang)
+log_phase "Phase 7: Final Down Check"
 
 log_info "Testing: agent-relay down (with 15s timeout)"
 if ! run_with_timeout 15 "$CLI_CMD" down --timeout 10000; then
@@ -427,7 +445,7 @@ if curl -s "http://127.0.0.1:${DASHBOARD_PORT}/health" > /dev/null 2>&1; then
   log_error "Daemon still responding after down command"
   exit 1
 fi
-log_info "  VERIFIED: Daemon is stopped"
+log_info "  VERIFIED: Broker is stopped"
 
 echo ""
 log_info "=== E2E TEST PASSED ==="
