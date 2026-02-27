@@ -25,7 +25,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: '22'
 
       # Cache node_modules - skip npm ci entirely if unchanged
       - name: Cache node_modules
@@ -60,10 +60,14 @@ jobs:
           echo "=== Validating packages ==="
           ERRORS=0
 
-          # Check dist files exist (skip non-Node packages)
-          SKIP_PACKAGES="sdk-py build-plans"
+          # Check dist files exist (skip non-Node package directories)
+          SKIP_PACKAGES="build-plans"
           for pkg_dir in packages/*/; do
             pkg_name=$(basename "$pkg_dir")
+            if [ ! -f "$pkg_dir/package.json" ]; then
+              echo "⊘ $pkg_name - skipped (non-Node package)"
+              continue
+            fi
             if echo "$SKIP_PACKAGES" | grep -qw "$pkg_name"; then
               echo "⊘ $pkg_name - skipped (non-Node package)"
               continue
