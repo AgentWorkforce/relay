@@ -671,11 +671,7 @@ impl RelaycastHttpClient {
                 }
             }
             // Join the channel so the broker receives message.created WS events.
-            let join_url = format!(
-                "{}/v1/channels/{}/join",
-                self.base_url,
-                name
-            );
+            let join_url = format!("{}/v1/channels/{}/join", self.base_url, name);
             match self
                 .http
                 .post(&join_url)

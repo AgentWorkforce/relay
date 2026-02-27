@@ -1305,7 +1305,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     // The WS may have subscribed before the channels existed; this ensures
     // Relaycast delivers message.created events for the now-live channels.
     if !extra_channels.is_empty() {
-        let _ = ws_control_tx.send(WsControl::Subscribe(extra_channels)).await;
+        let _ = ws_control_tx
+            .send(WsControl::Subscribe(extra_channels))
+            .await;
     }
 
     let worker_env = vec![
@@ -4981,14 +4983,17 @@ fn continuity_dir(state_path: &Path) -> PathBuf {
 fn ensure_ephemeral_paths(broker_name: &str) -> Result<RuntimePaths> {
     let safe_name: String = broker_name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
 
     // Use a unique temp subdir so parallel runs don't share state.
-    let root = std::env::temp_dir().join(format!(
-        "agent-relay-{safe_name}-{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("agent-relay-{safe_name}-{}", std::process::id()));
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create ephemeral temp dir {}", root.display()))?;
 
