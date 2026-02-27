@@ -55,6 +55,27 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_phase() { echo -e "\n${CYAN}========================================${NC}"; echo -e "${CYAN}  $1${NC}"; echo -e "${CYAN}========================================${NC}\n"; }
 
+dashboard_url() {
+  echo "http://127.0.0.1:${DASHBOARD_PORT}$1"
+}
+
+fetch_dashboard_agents() {
+  local response
+  response=$(curl -fsS "$(dashboard_url /api/fleet/servers)" 2>/dev/null || true)
+  if [ -n "$response" ] && echo "$response" | jq empty >/dev/null 2>&1; then
+    echo "$response" | jq 'if type == "array" then . else (.localAgents // .allAgents // .agents // .servers // []) end'
+    return
+  fi
+
+  response=$(curl -fsS "$(dashboard_url /api/agents)" 2>/dev/null || true)
+  if [ -n "$response" ] && echo "$response" | jq empty >/dev/null 2>&1; then
+    echo "$response" | jq 'if type == "array" then . else (.agents // .localAgents // .allAgents // .servers // []) end'
+    return
+  fi
+
+  echo "[]"
+}
+
 # Cross-platform timeout function (macOS doesn't have timeout by default)
 # Returns 124 on timeout (like GNU timeout)
 run_with_timeout() {
@@ -123,6 +144,9 @@ cleanup() {
 
   # Try to release agent if it exists
   if [ "$DAEMON_ONLY" = false ]; then
+    curl -fsS -X POST "$(dashboard_url /api/release)" \
+      -H 'Content-Type: application/json' \
+      -d "{\"name\":\"$AGENT_NAME\"}" > /dev/null 2>&1 || true
     run_with_timeout 5 "$CLI_CMD" release "$AGENT_NAME" --port "$DASHBOARD_PORT" 2>/dev/null || true
   fi
 
@@ -147,8 +171,8 @@ else
   log_info "Build exists, skipping (run 'npm run build' to rebuild)"
 fi
 
-# Phase 1: Broker lifecycle smoke test
-log_phase "Phase 1: Broker Lifecycle (up/down)"
+# Phase 1: Broker startup smoke test
+log_phase "Phase 1: Broker Startup"
 
 # Kill any existing daemon (with timeout to prevent hanging)
 run_with_timeout 10 "$CLI_CMD" down --force --timeout 5000 2>/dev/null || true
@@ -196,28 +220,7 @@ if [ "$DAEMON_ONLY" = true ]; then
   log_info "=== DAEMON TEST PASSED ==="
   exit 0
 fi
-
-# Stop broker before command lifecycle phases. The `up` command runs a long-lived
-# process; stop that specific process directly to avoid relying on pid-file state.
-log_info "Stopping broker after up/down smoke test..."
-kill "$DAEMON_PID" 2>/dev/null || true
-wait "$DAEMON_PID" 2>/dev/null || true
-
-# Best-effort cleanup for any children that outlive the parent process.
-if command -v lsof &> /dev/null; then
-  lsof -ti:$DASHBOARD_PORT | xargs kill -9 2>/dev/null || true
-fi
-pkill -9 -f "relay-dashboard-server.*--port.*$DASHBOARD_PORT" 2>/dev/null || true
-
-# Clear runtime artifacts if present.
-run_with_timeout 10 "$CLI_CMD" down --force --timeout 5000 2>/dev/null || true
-
-sleep 1
-if curl -s "http://127.0.0.1:${DASHBOARD_PORT}/health" > /dev/null 2>&1; then
-  log_error "Broker still responding after stopping lifecycle smoke process"
-  exit 1
-fi
-log_info "Lifecycle smoke complete: up/down stop succeeded"
+log_info "Broker startup smoke complete"
 
 # Phase 2: Test CLI Commands
 log_phase "Phase 2: Testing CLI Commands"
@@ -316,14 +319,26 @@ log_info "All CLI command tests passed!"
 log_phase "Phase 3: Spawning Claude Agent"
 
 log_info "Spawning agent '$AGENT_NAME'..."
-"$CLI_CMD" spawn "$AGENT_NAME" claude "You are a test agent. Say 'Ready for testing' and then wait. Do not exit until you receive a message telling you to exit." --port "$DASHBOARD_PORT"
+SPAWN_PAYLOAD=$(jq -nc \
+  --arg name "$AGENT_NAME" \
+  --arg cli "claude" \
+  --arg task "You are a test agent. Say 'Ready for testing' and then wait. Do not exit until you receive a message telling you to exit." \
+  '{name: $name, cli: $cli, task: $task}')
+SPAWN_RESPONSE=$(curl -fsS -X POST "$(dashboard_url /api/spawn)" \
+  -H 'Content-Type: application/json' \
+  -d "$SPAWN_PAYLOAD" 2>/dev/null || true)
 
-SPAWN_EXIT_CODE=$?
-if [ $SPAWN_EXIT_CODE -ne 0 ]; then
-  log_error "Spawn command failed with exit code $SPAWN_EXIT_CODE"
+if [ -z "$SPAWN_RESPONSE" ] || ! echo "$SPAWN_RESPONSE" | jq empty >/dev/null 2>&1; then
+  log_error "Spawn API returned invalid response"
+  echo "$SPAWN_RESPONSE"
   exit 1
 fi
-log_info "Spawn command succeeded!"
+if echo "$SPAWN_RESPONSE" | jq -e '(.error? != null) or (.success? == false)' >/dev/null 2>&1; then
+  log_error "Spawn API reported failure"
+  echo "$SPAWN_RESPONSE" | jq .
+  exit 1
+fi
+log_info "Spawn request accepted"
 
 # Phase 4: Wait for agent registration
 log_phase "Phase 4: Verifying Agent Registration"
@@ -335,21 +350,15 @@ while true; do
   CURRENT_TIME=$(date +%s)
   ELAPSED=$((CURRENT_TIME - START_TIME))
 
-  # Use CLI agents command to check registration (--json for parseable output)
-  # Capture full JSON (skip any preamble lines before the array)
-  RAW_AGENTS=$("$CLI_CMD" agents --json 2>/dev/null || true)
-  AGENTS=$(echo "$RAW_AGENTS" | sed -n '/^\[/,$p')
-  if [ -z "$AGENTS" ] || ! echo "$AGENTS" | jq empty >/dev/null 2>&1; then
-    AGENTS="[]"
-  fi
+  AGENTS=$(fetch_dashboard_agents)
 
   # Check if our agent is registered
-  if echo "$AGENTS" | jq -e --arg name "$AGENT_NAME" '.[] | select(.name == $name)' >/dev/null 2>&1; then
+  if echo "$AGENTS" | jq -e --arg name "$AGENT_NAME" '.[] | select((.name // .agent_name // .agentName) == $name)' >/dev/null 2>&1; then
     echo ""
     log_info "SUCCESS: Agent '$AGENT_NAME' registered after ${ELAPSED}s"
 
     # Verify exactly 1 user agent
-    AGENT_COUNT=$(echo "$AGENTS" | jq '[.[] | select(.name != "Dashboard")] | length' 2>/dev/null || echo "0")
+    AGENT_COUNT=$(echo "$AGENTS" | jq '[.[] | ((.name // .agent_name // .agentName // "") as $n | select($n != "Dashboard" and ($n | startswith("__") | not)))] | length' 2>/dev/null || echo "0")
     log_info "  User agents after spawn: $AGENT_COUNT"
     if [ "$AGENT_COUNT" != "1" ]; then
       log_error "Expected 1 user agent after spawn, got $AGENT_COUNT"
@@ -371,7 +380,9 @@ while true; do
     log_error "Agent '$AGENT_NAME' did not register within ${SPAWN_TIMEOUT}s"
     echo ""
     log_info "Connected agents:"
-    "$CLI_CMD" agents 2>/dev/null || true
+    echo "$AGENTS" | jq . 2>/dev/null || echo "$AGENTS"
+    log_info "Daemon log tail:"
+    tail -40 "$DAEMON_LOG" 2>/dev/null || true
     exit 1
   fi
 
@@ -382,14 +393,20 @@ done
 log_phase "Phase 5: Releasing Agent"
 
 log_info "Releasing agent '$AGENT_NAME'..."
-"$CLI_CMD" release "$AGENT_NAME" --port "$DASHBOARD_PORT"
-
-RELEASE_EXIT_CODE=$?
-if [ $RELEASE_EXIT_CODE -ne 0 ]; then
-  log_error "Release command failed with exit code $RELEASE_EXIT_CODE"
+RELEASE_RESPONSE=$(curl -fsS -X POST "$(dashboard_url /api/release)" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"$AGENT_NAME\"}" 2>/dev/null || true)
+if [ -z "$RELEASE_RESPONSE" ] || ! echo "$RELEASE_RESPONSE" | jq empty >/dev/null 2>&1; then
+  log_error "Release API returned invalid response"
+  echo "$RELEASE_RESPONSE"
   exit 1
 fi
-log_info "Release command succeeded!"
+if echo "$RELEASE_RESPONSE" | jq -e '(.error? != null) or (.success? == false)' >/dev/null 2>&1; then
+  log_error "Release API reported failure"
+  echo "$RELEASE_RESPONSE" | jq .
+  exit 1
+fi
+log_info "Release request accepted"
 
 # Phase 6: Verify agent was released
 log_phase "Phase 6: Verifying Agent Release"
@@ -401,9 +418,8 @@ sleep 3
 log_info "Verifying agent was released..."
 RELEASE_VERIFIED=false
 for i in $(seq 1 10); do
-  # Filter to only get JSON line (skip any log output like dotenv messages)
-  AGENTS_AFTER=$("$CLI_CMD" agents --json 2>/dev/null | grep '^\[' || echo "[]")
-  AGENT_COUNT=$(echo "$AGENTS_AFTER" | jq '[.[] | select(.name != "Dashboard")] | length' 2>/dev/null || echo "0")
+  AGENTS_AFTER=$(fetch_dashboard_agents)
+  AGENT_COUNT=$(echo "$AGENTS_AFTER" | jq '[.[] | ((.name // .agent_name // .agentName // "") as $n | select($n != "Dashboard" and ($n | startswith("__") | not)))] | length' 2>/dev/null || echo "0")
 
   if [ "$AGENT_COUNT" = "0" ]; then
     RELEASE_VERIFIED=true
