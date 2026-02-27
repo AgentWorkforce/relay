@@ -244,26 +244,6 @@ await relay.shutdown();
 
 ---
 
-## Workflow Builder
-
-For multi-step orchestration, use the `workflow()` builder:
-
-```typescript
-import { workflow, Models } from '@agent-relay/sdk/workflows';
-
-const result = await workflow('my-feature')
-  .pattern('dag')
-  .agent('planner', { cli: 'claude', model: Models.Claude.OPUS })
-  .agent('coder', { cli: 'codex', model: Models.Codex.GPT_5_3_CODEX })
-  .step('plan', { agent: 'planner', task: 'Create a plan' })
-  .step('implement', { agent: 'coder', task: 'Build it', dependsOn: ['plan'] })
-  .run();
-```
-
-See [TypeScript SDK](/workflows/typescript-sdk) and [Python SDK](/workflows/python-sdk) for full workflow docs.
-
----
-
 ## Models
 
 ```typescript
@@ -326,6 +306,4 @@ try {
 
 ## See Also
 
-- [TypeScript SDK](/workflows/typescript-sdk) — Workflow builder API
-- [Python SDK](/workflows/python-sdk) — Python workflow examples
 - [Electron Integration](/guides/electron-integration) — Using the SDK in Electron apps

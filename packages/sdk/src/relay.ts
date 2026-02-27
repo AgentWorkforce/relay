@@ -793,41 +793,24 @@ export class AgentRelay {
     const envKey = this.clientOptions.env?.RELAY_API_KEY ?? process.env.RELAY_API_KEY;
     if (envKey) {
       this.relayApiKey = envKey;
+      // Ensure the broker subprocess inherits the full process env + the key.
+      // Without this, spawning with an explicit binaryPath but no env option
+      // would cause the broker to start with an empty environment (no PATH,
+      // no RELAY_API_KEY), making connect_relay() hang and triggering the
+      // hello-handshake timeout.
+      if (!this.clientOptions.env) {
+        this.clientOptions.env = { ...process.env, RELAY_API_KEY: envKey };
+      }
       return;
     }
 
-    const baseUrl =
-      this.relaycastBaseUrl ??
-      this.clientOptions.env?.RELAYCAST_BASE_URL ??
-      process.env.RELAYCAST_BASE_URL ??
-      'https://api.relaycast.dev';
-
-    const name = this.workspaceName ?? `agent-relay-${randomBytes(4).toString('hex')}`;
-
-    const res = await fetch(`${baseUrl}/v1/workspaces`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name }),
-    });
-
-    if (!res.ok) {
-      throw new Error(`Failed to auto-create Relaycast workspace: ${res.status} ${await res.text()}`);
+    // No API key in env — broker will create/select its own workspace.
+    // Ensure the broker process inherits the full environment (PATH, etc.)
+    // so it can connect to Relaycast. The actual workspace key will be
+    // read from the broker's hello_ack response in ensureStarted().
+    if (!this.clientOptions.env) {
+      this.clientOptions.env = { ...process.env };
     }
-
-    const body = (await res.json()) as Record<string, unknown>;
-    const data = (body.data ?? body) as Record<string, unknown>;
-    const apiKey = data.api_key as string | undefined;
-
-    if (!apiKey) {
-      throw new Error('Relaycast workspace response missing api_key');
-    }
-
-    this.relayApiKey = apiKey;
-    // Merge the key into clientOptions.env so the broker process picks it up
-    this.clientOptions.env = {
-      ...(this.clientOptions.env ?? process.env),
-      RELAY_API_KEY: apiKey,
-    };
   }
 
   private async ensureStarted(): Promise<AgentRelayClient> {
@@ -839,6 +822,11 @@ export class AgentRelay {
       .then((c) => {
         this.client = c;
         this.startPromise = undefined;
+        // Use the workspace key the broker actually connected with.
+        // This ensures SDK and workers are always on the same workspace.
+        if (!this.relayApiKey && c.workspaceKey) {
+          this.relayApiKey = c.workspaceKey;
+        }
         this.wireEvents(c);
         return c;
       })

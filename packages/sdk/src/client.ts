@@ -127,6 +127,8 @@ export class AgentRelayClient {
   private eventBuffer: BrokerEvent[] = [];
   private maxBufferSize = 1000;
   private exitPromise?: Promise<void>;
+  /** The workspace key returned by the broker in its hello_ack response. */
+  workspaceKey?: string;
 
   constructor(options: AgentRelayClientOptions = {}) {
     this.options = {
@@ -439,8 +441,11 @@ export class AgentRelayClient {
       });
     });
 
-    await this.requestHello();
+    const helloAck = await this.requestHello();
     console.log('[broker] Broker ready (hello handshake complete)');
+    if (helloAck.workspace_key) {
+      this.workspaceKey = helloAck.workspace_key;
+    }
   }
 
   private disposeProcessHandles(): void {
@@ -528,13 +533,13 @@ export class AgentRelayClient {
     pending.resolve(envelope);
   }
 
-  private async requestHello(): Promise<{ broker_version: string; protocol_version: number }> {
+  private async requestHello(): Promise<{ broker_version: string; protocol_version: number; workspace_key?: string }> {
     const payload = {
       client_name: this.options.clientName,
       client_version: this.options.clientVersion,
     };
     const frame = await this.sendRequest('hello', payload, 'hello_ack');
-    return frame.payload as { broker_version: string; protocol_version: number };
+    return frame.payload as { broker_version: string; protocol_version: number; workspace_key?: string };
   }
 
   private async requestOk<T = unknown>(type: string, payload: unknown): Promise<T> {

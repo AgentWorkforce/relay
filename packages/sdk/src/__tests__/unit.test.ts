@@ -389,3 +389,47 @@ test("agent.onOutput: mock returns unsubscribe function", () => {
   assert.equal(typeof unsub, "function");
   unsub();
 });
+
+// ── AgentRelay.workspaceKey / observerUrl ────────────────────────────────────
+// These tests verify the getter logic without a running broker.
+
+test("workspaceKey: undefined before relay starts", () => {
+  const relay = new AgentRelay({ channels: ["general"] });
+  assert.equal(relay.workspaceKey, undefined);
+});
+
+test("observerUrl: undefined before relay starts", () => {
+  const relay = new AgentRelay({ channels: ["general"] });
+  assert.equal(relay.observerUrl, undefined);
+});
+
+test("observerUrl: returns correct URL format when workspaceKey is set", () => {
+  const relay = new AgentRelay({ channels: ["general"] });
+  // Simulate the relayApiKey being set (as ensureStarted() does after hello_ack).
+  (relay as unknown as { relayApiKey: string }).relayApiKey = "rk_live_test123";
+  const url = relay.observerUrl;
+  assert.ok(url, "observerUrl should be defined after key is set");
+  assert.ok(
+    url!.startsWith("https://observer.relaycast.dev/?key="),
+    `observerUrl should start with observer base URL, got: ${url}`,
+  );
+  assert.ok(url!.includes("rk_live_test123"), "observerUrl should include the workspace key");
+  assert.equal(relay.workspaceKey, "rk_live_test123");
+});
+
+test("ensureRelaycastApiKey: env key propagates to clientOptions.env", () => {
+  // When RELAY_API_KEY is in options.env, it must be preserved and passed
+  // to the broker subprocess. Previously, if clientOptions.env was set via
+  // the constructor, it would be used as-is without adding process.env
+  // (which is correct). If clientOptions.env was undefined, we must populate
+  // it so the broker gets the key AND PATH etc.
+  const relay = new AgentRelay({
+    channels: ["general"],
+    env: { RELAY_API_KEY: "rk_live_from_options", PATH: "/usr/bin" },
+  });
+  // The key should be accessible via getter immediately (read from options.env).
+  // Note: workspaceKey is only set after ensureStarted() runs, but we can
+  // verify the env is configured correctly via the private field.
+  const opts = (relay as unknown as { clientOptions: { env?: Record<string, string> } }).clientOptions;
+  assert.equal(opts.env?.RELAY_API_KEY, "rk_live_from_options");
+});

@@ -12,6 +12,7 @@ on:
           - main
           - cli-prerelease
           - sdk
+          - sdk-py
         default: 'all'
       version:
         description: 'Version bump type'
@@ -350,6 +351,10 @@ jobs:
             echo "This is a STABLE version"
           fi
 
+          # Sync Python SDK version in pyproject.toml
+          sed -i "s/^version = .*/version = \"$NEW_VERSION\"/" packages/sdk-py/pyproject.toml
+          echo "Python SDK version set to $NEW_VERSION"
+
           # Sync all package versions and internal dependencies using node script
           # (avoids npm version which validates dependencies against registry)
           node -e "
@@ -417,6 +422,7 @@ jobs:
             package.json
             package-lock.json
             packages/*/package.json
+            packages/sdk-py/pyproject.toml
             packages/*/dist/
             dist/
           retention-days: 1
@@ -510,6 +516,54 @@ jobs:
         if: github.event.inputs.dry_run != 'true'
         working-directory: packages/sdk
         run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+  # Publish Python SDK to PyPI
+  publish-sdk-py:
+    name: Publish Python SDK to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk-py'
+    environment:
+      name: pypi
+      url: https://pypi.org/project/agent-relay-sdk/
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build tools
+        run: pip install hatchling build
+
+      - name: Dry run check
+        if: github.event.inputs.dry_run == 'true'
+        working-directory: packages/sdk-py
+        run: |
+          echo "Dry run - would publish agent-relay==${{ needs.build.outputs.new_version }} to PyPI"
+          python -m build
+          echo "Built distributions:"
+          ls -lh dist/
+
+      - name: Build distribution
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/sdk-py
+        run: python -m build
+
+      - name: Publish to PyPI
+        if: github.event.inputs.dry_run != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/sdk-py/dist/
 
   # Verify standalone binaries on Linux
   verify-standalone-linux:

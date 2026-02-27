@@ -24,6 +24,9 @@ use crate::{
 pub enum WsControl {
     Shutdown,
     Publish(Value),
+    /// Re-subscribe to a list of channels (e.g. after creating/joining a new
+    /// channel that didn't exist when the WS connection was first established).
+    Subscribe(Vec<String>),
 }
 
 #[derive(Clone)]
@@ -177,6 +180,25 @@ impl RelaycastWsClient {
                                     Some(WsControl::Publish(payload)) => {
                                         // SDK doesn't support raw WS publish; loop back locally
                                         let _ = inbound_tx.send(payload).await;
+                                    }
+                                    Some(WsControl::Subscribe(channels)) => {
+                                        // Re-subscribe after channels are created/joined.
+                                        {
+                                            let mut subs = self.subscriptions.lock();
+                                            for ch in &channels {
+                                                subs.insert(ch.clone());
+                                            }
+                                        }
+                                        match agent.subscribe_channels(channels.clone()).await {
+                                            Ok(()) => tracing::info!(
+                                                channels = ?channels,
+                                                "re-subscribed to channels after creation"
+                                            ),
+                                            Err(error) => tracing::warn!(
+                                                error = %error,
+                                                "failed to re-subscribe to channels"
+                                            ),
+                                        }
                                     }
                                 }
                             }
@@ -577,6 +599,97 @@ impl RelaycastHttpClient {
                 }
                 Err(error) => {
                     tracing::warn!(channel = %name, error = %error, "failed to create default channel");
+                    continue;
+                }
+            }
+            // Join so the broker receives message.created WS events for this channel.
+            let join_url = format!("{}/v1/channels/{}/join", self.base_url, name);
+            match self
+                .http
+                .post(&join_url)
+                .header("Authorization", format!("Bearer {}", token))
+                .send()
+                .await
+            {
+                Ok(res) if res.status().is_success() || res.status().as_u16() == 409 => {
+                    tracing::info!(channel = %name, "broker joined default channel");
+                }
+                Ok(res) => {
+                    tracing::warn!(channel = %name, status = %res.status(), "failed to join default channel");
+                }
+                Err(error) => {
+                    tracing::warn!(channel = %name, error = %error, "failed to join default channel");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Ensure a list of additional channels exist and that the broker is a
+    /// member of each (e.g. user-specified broker channels that aren't in the
+    /// hardcoded defaults).  Channels that already exist are silently skipped
+    /// (409 → no-op).  The broker must be a channel member to receive
+    /// `message.created` WebSocket events for that channel.
+    pub async fn ensure_extra_channels(&self, channels: &[String]) -> Result<()> {
+        let defaults = ["general", "engineering"];
+        let extras: Vec<&String> = channels
+            .iter()
+            .filter(|c| !defaults.contains(&c.as_str()))
+            .collect();
+        if extras.is_empty() {
+            return Ok(());
+        }
+        let token = match self.ensure_token().await {
+            Ok(token) => token,
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to get agent token for extra channel creation");
+                return Ok(());
+            }
+        };
+        let agent_client = match AgentClient::new(&token, Some(self.base_url.clone())) {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to create agent client for extra channel creation");
+                return Ok(());
+            }
+        };
+        for name in extras {
+            // Create the channel (idempotent — 409 means already exists).
+            let request = relaycast::CreateChannelRequest {
+                name: name.clone(),
+                topic: None,
+                metadata: None,
+            };
+            match agent_client.create_channel(request).await {
+                Ok(_) => tracing::info!(channel = %name, "created extra channel"),
+                Err(RelayError::Api { status: 409, .. }) => {
+                    tracing::debug!(channel = %name, "extra channel already exists");
+                }
+                Err(error) => {
+                    tracing::warn!(channel = %name, error = %error, "failed to create extra channel");
+                }
+            }
+            // Join the channel so the broker receives message.created WS events.
+            let join_url = format!(
+                "{}/v1/channels/{}/join",
+                self.base_url,
+                name
+            );
+            match self
+                .http
+                .post(&join_url)
+                .header("Authorization", format!("Bearer {}", token))
+                .send()
+                .await
+            {
+                Ok(res) if res.status().is_success() || res.status().as_u16() == 409 => {
+                    tracing::info!(channel = %name, "broker joined extra channel");
+                }
+                Ok(res) => {
+                    tracing::warn!(channel = %name, status = %res.status(), "failed to join extra channel");
+                }
+                Err(error) => {
+                    tracing::warn!(channel = %name, error = %error, "failed to join extra channel");
                 }
             }
         }

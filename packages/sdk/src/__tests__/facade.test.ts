@@ -294,3 +294,71 @@ test("facade: listLoggedAgents returns array", async (t) => {
     await relay.shutdown();
   }
 });
+
+// ── workspaceKey / observerUrl from hello_ack ────────────────────────────────
+
+test("facade: workspaceKey is populated from broker hello_ack after startup", async (t) => {
+  const bin = requireBinary(t);
+  if (!bin) return;
+
+  // Create relay WITHOUT passing RELAY_API_KEY in env — broker creates its own
+  // workspace and returns the key via hello_ack. This tests the fix for the
+  // "dual workspace" bug where SDK and broker used different workspace keys.
+  const envWithoutKey = { ...process.env };
+  delete envWithoutKey.RELAY_API_KEY;
+
+  const relay = new AgentRelay({
+    binaryPath: bin,
+    requestTimeoutMs: 15_000,
+    env: envWithoutKey,
+  });
+
+  try {
+    await relay.getStatus();
+
+    // After startup, workspaceKey MUST be set from the broker's hello_ack.
+    assert.ok(
+      relay.workspaceKey,
+      "workspaceKey must be set after broker startup (read from hello_ack workspace_key field)",
+    );
+    assert.match(
+      relay.workspaceKey!,
+      /^rk_live_/,
+      "workspaceKey must be a valid workspace key (rk_live_ prefix)",
+    );
+
+    // observerUrl must be correctly formatted.
+    assert.ok(relay.observerUrl, "observerUrl must be defined when workspaceKey is set");
+    assert.ok(
+      relay.observerUrl!.includes(relay.workspaceKey!),
+      "observerUrl must contain the workspace key",
+    );
+  } finally {
+    await relay.shutdown();
+  }
+});
+
+test("facade: workspaceKey from env matches broker hello_ack when valid", async (t) => {
+  if (!requireRelaycast(t)) return;
+  const bin = requireBinary(t);
+  if (!bin) return;
+
+  // When RELAY_API_KEY is valid, the broker uses it and returns the same key
+  // in hello_ack. SDK and broker must be on the same workspace.
+  const relay = makeRelay(bin);
+
+  try {
+    await relay.getStatus();
+
+    assert.ok(relay.workspaceKey, "workspaceKey must be set after startup");
+    // The workspace key returned by broker must match what we passed in.
+    assert.equal(
+      relay.workspaceKey,
+      process.env.RELAY_API_KEY,
+      "broker hello_ack workspace_key must match the RELAY_API_KEY we passed — " +
+      "a mismatch means broker and SDK are on different workspaces, breaking MCP auth",
+    );
+  } finally {
+    await relay.shutdown();
+  }
+});

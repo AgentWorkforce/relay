@@ -34,9 +34,7 @@
     {
       "group": "SDK",
       "pages": [
-        "reference/sdk",
-        "workflows/typescript-sdk",
-        "workflows/python-sdk"
+        "reference/sdk"
       ]
     },
     {

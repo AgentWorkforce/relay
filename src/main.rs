@@ -102,6 +102,14 @@ struct InitCommand {
     /// Optional HTTP API port for dashboard proxy (0 = disabled)
     #[arg(long, default_value = "0")]
     api_port: u16,
+
+    /// Enable persistence: write state, pending-deliveries, lock, PID, and MCP
+    /// config to `.agent-relay/` in the working directory.  When omitted (the
+    /// default), the broker runs entirely in memory — Relaycast strict-name
+    /// registration is the only duplicate-broker guard.  Pass `--persist` for
+    /// long-lived CLI sessions that need crash recovery.
+    #[arg(long, default_value_t = false)]
+    persist: bool,
 }
 
 #[derive(Debug, clap::Args, Clone)]
@@ -163,6 +171,7 @@ struct PersistedAgent {
 
 #[derive(Debug)]
 struct RuntimePaths {
+    persist: bool,
     state: PathBuf,
     pending: PathBuf,
     pid: PathBuf,
@@ -245,11 +254,13 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
         .parent()
         .unwrap()
         .join("identity-debug.txt");
-    let _ = std::fs::write(&debug_path, &identity_debug);
-    eprintln!(
-        "[agent-relay] identity debug written to {}",
-        debug_path.display()
-    );
+    if std::env::var("AGENT_RELAY_NO_DEBUG_FILES").is_err() {
+        let _ = std::fs::write(&debug_path, &identity_debug);
+        eprintln!(
+            "[agent-relay] identity debug written to {}",
+            debug_path.display()
+        );
+    }
     if agent_name != opts.requested_name {
         eprintln!(
             "[agent-relay] WARNING: registered as '{}' (requested '{}')",
@@ -292,13 +303,15 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
 
     let (ws_inbound_tx, ws_inbound_rx) = mpsc::channel(512);
     let (ws_control_tx, ws_control_rx) = mpsc::channel(8);
-    // Use the workspace API key for the WS connection so the broker sees ALL
-    // workspace events (DMs to any agent, channel messages, etc.) rather than
-    // only events visible to its own agent identity.
+    // Use the broker's agent token (not the workspace key) for the WS
+    // connection.  Relaycast delivers message.created events only to
+    // connections whose authenticated identity is a member of the channel.
+    // Using the workspace key means the connection has no channel membership
+    // and receives no message events.
     let ws = RelaycastWsClient::new(
         ws_base,
         auth,
-        relay_workspace_key.clone(),
+        self_token.clone(),
         session.credentials,
         opts.channels,
     );
@@ -1188,8 +1201,29 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     } else {
         cmd.name.trim().to_string()
     };
-    let paths = ensure_runtime_paths(&runtime_cwd, &resolved_name)?;
-    let mut state = BrokerState::load(&paths.state).unwrap_or_default();
+    let paths = if cmd.persist {
+        ensure_runtime_paths(&runtime_cwd, &resolved_name)?
+    } else {
+        // Warn if a stale .agent-relay/ dir exists from a previous persist run.
+        // Agents can read files from it directly (logs, state) and get confused.
+        let stale_dir = runtime_cwd.join(".agent-relay");
+        if stale_dir.exists() {
+            eprintln!(
+                "[agent-relay] WARNING: stale .agent-relay/ directory found in {}",
+                runtime_cwd.display()
+            );
+            eprintln!(
+                "[agent-relay] WARNING: remove it to avoid confusing spawned agents: rm -rf {}",
+                stale_dir.display()
+            );
+        }
+        ensure_ephemeral_paths(&resolved_name)?
+    };
+    let mut state = if cmd.persist {
+        BrokerState::load(&paths.state).unwrap_or_default()
+    } else {
+        BrokerState::default()
+    };
 
     // Clean up agents from previous sessions whose processes have died
     let reaped = state.reap_dead_agents();
@@ -1199,8 +1233,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             "reaped {} dead agent(s) from previous session",
             reaped.len()
         );
-        if let Err(error) = state.save(&paths.state) {
-            tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state after reaping dead agents");
+        if paths.persist {
+            if let Err(error) = state.save(&paths.state) {
+                tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state after reaping dead agents");
+            }
         }
     }
 
@@ -1217,7 +1253,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
         strict_name: true,
         agent_type: Some("human"),
         read_mcp_identity: true,
-        ensure_mcp_config: true,
+        ensure_mcp_config: cmd.persist,
         runtime_cwd: &runtime_cwd,
     })
     .await?;
@@ -1259,9 +1295,22 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
         tracing::warn!(error = %error, "failed to ensure default channels");
     }
 
+    // Ensure any user-specified channels (e.g. --channels tic-tac-toe) exist.
+    let extra_channels = channels_from_csv(&cmd.channels);
+    if let Err(error) = relaycast_http.ensure_extra_channels(&extra_channels).await {
+        tracing::warn!(error = %error, "failed to ensure extra channels");
+    }
+
+    // Re-subscribe the WS connection after channels are created and joined.
+    // The WS may have subscribed before the channels existed; this ensures
+    // Relaycast delivers message.created events for the now-live channels.
+    if !extra_channels.is_empty() {
+        let _ = ws_control_tx.send(WsControl::Subscribe(extra_channels)).await;
+    }
+
     let worker_env = vec![
         ("RELAY_BASE_URL".to_string(), http_base.clone()),
-        ("RELAY_API_KEY".to_string(), relay_workspace_key),
+        ("RELAY_API_KEY".to_string(), relay_workspace_key.clone()),
     ];
 
     // Broadcast channel for streaming dashboard-relevant events to WS clients.
@@ -1440,7 +1489,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             initial_task: effective_task,
                                         },
                                     );
-                                    let _ = state.save(&paths.state);
+                                    if paths.persist { let _ = state.save(&paths.state); }
                                     let _ = send_event(
                                         &sdk_out_tx,
                                         json!({
@@ -1498,7 +1547,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         ).await;
                                     }
                                     state.agents.remove(&name);
-                                    let _ = state.save(&paths.state);
+                                    if paths.persist { let _ = state.save(&paths.state); }
                                     let _ = send_event(
                                         &sdk_out_tx,
                                         json!({"kind":"agent_released","name":&name}),
@@ -1829,6 +1878,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 &mut agent_spawn_count,
                                 Some(&relaycast_http),
                                 Some(&ws_control_tx),
+                                &relay_workspace_key,
                                 &crash_insights,
                             ).await {
                             Ok(should_shutdown) => {
@@ -1892,8 +1942,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             lifetime_seconds: 0,
                                         });
                                         state.agents.remove(name);
-                                        if let Err(error) = state.save(&paths.state) {
-                                            tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
+                                        if paths.persist {
+                                            if let Err(error) = state.save(&paths.state) {
+                                                tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
+                                            }
                                         }
                                         let _ = send_event(
                                             &sdk_out_tx,
@@ -1997,7 +2049,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 initial_task: effective_task,
                                             },
                                         );
-                                        let _ = state.save(&paths.state);
+                                        if paths.persist { let _ = state.save(&paths.state); }
                                         let _ = send_event(
                                             &sdk_out_tx,
                                             json!({
@@ -2645,12 +2697,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         );
                                     }
                                     state.agents.remove(&name);
-                                    if let Err(error) = state.save(&paths.state) {
-                                        tracing::warn!(
-                                            path = %paths.state.display(),
-                                            error = %error,
-                                            "failed to persist broker state"
-                                        );
+                                    if paths.persist {
+                                        if let Err(error) = state.save(&paths.state) {
+                                            tracing::warn!(
+                                                path = %paths.state.display(),
+                                                error = %error,
+                                                "failed to persist broker state"
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -2820,8 +2874,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 );
                             }
                             state.agents.remove(name);
-                            if let Err(error) = state.save(&paths.state) {
-                                tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
+                            if paths.persist {
+                                if let Err(error) = state.save(&paths.state) {
+                                    tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
+                                }
                             }
                         }
                         None => {
@@ -2857,8 +2913,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 );
                             }
                             state.agents.remove(name);
-                            if let Err(error) = state.save(&paths.state) {
-                                tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
+                            if paths.persist {
+                                if let Err(error) = state.save(&paths.state) {
+                                    tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
+                                }
                             }
                         }
                     }
@@ -2945,16 +3003,20 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                 }
 
                 // Persist pending deliveries for crash recovery
-                if let Err(error) = save_pending_deliveries(&paths.pending, &pending_deliveries) {
-                    tracing::warn!(path = %paths.pending.display(), error = %error, "failed to persist pending deliveries");
+                if paths.persist {
+                    if let Err(error) = save_pending_deliveries(&paths.pending, &pending_deliveries) {
+                        tracing::warn!(path = %paths.pending.display(), error = %error, "failed to persist pending deliveries");
+                    }
                 }
             }
         }
     }
 
-    // Save crash insights before shutdown
-    if let Err(error) = crash_insights.save(&crash_insights_path) {
-        tracing::warn!(error = %error, "failed to save crash insights");
+    // Save crash insights before shutdown (only in persist mode)
+    if paths.persist {
+        if let Err(error) = crash_insights.save(&crash_insights_path) {
+            tracing::warn!(error = %error, "failed to save crash insights");
+        }
     }
 
     telemetry.track(TelemetryEvent::BrokerStop {
@@ -2984,12 +3046,16 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     }
     pending_deliveries.clear();
     // Clean shutdown — remove pending file since nothing is pending
-    let _ = std::fs::remove_file(&paths.pending);
+    if paths.persist {
+        let _ = std::fs::remove_file(&paths.pending);
+    }
     workers.shutdown_all().await?;
 
     // Clean up PID file and state file on graceful shutdown
-    let _ = std::fs::remove_file(&paths.pid);
-    let _ = std::fs::remove_file(&paths.state);
+    if paths.persist {
+        let _ = std::fs::remove_file(&paths.pid);
+        let _ = std::fs::remove_file(&paths.state);
+    }
 
     Ok(())
 }
@@ -3099,6 +3165,7 @@ async fn handle_sdk_frame(
     agent_spawn_count: &mut u32,
     relaycast_http: Option<&RelaycastHttpClient>,
     ws_control_tx: Option<&mpsc::Sender<WsControl>>,
+    workspace_key: &str,
     crash_insights: &relay_broker::crash_insights::CrashInsights,
 ) -> Result<bool> {
     let frame: ProtocolEnvelope<Value> =
@@ -3129,6 +3196,7 @@ async fn handle_sdk_frame(
                 json!({
                     "broker_version": env!("CARGO_PKG_VERSION"),
                     "protocol_version": PROTOCOL_VERSION,
+                    "workspace_key": workspace_key,
                 }),
             )
             .await?;
@@ -4898,6 +4966,46 @@ fn continuity_dir(state_path: &Path) -> PathBuf {
         .join("continuity")
 }
 
+/// Create ephemeral runtime paths in the system temp directory.
+///
+/// Unlike `ensure_runtime_paths`, this function:
+/// - Writes nothing to the project directory
+/// - Skips the flock-based duplicate-broker check (Relaycast strict-name
+///   registration provides the duplicate guard instead)
+/// - Uses a randomly-suffixed temp directory so concurrent test runs don't
+///   collide
+///
+/// The temp directory is NOT removed on exit — the OS cleans it up on reboot.
+/// State and pending-delivery files are still written there so they don't
+/// interfere with the project tree; they're just ephemeral.
+fn ensure_ephemeral_paths(broker_name: &str) -> Result<RuntimePaths> {
+    let safe_name: String = broker_name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .collect();
+
+    // Use a unique temp subdir so parallel runs don't share state.
+    let root = std::env::temp_dir().join(format!(
+        "agent-relay-{safe_name}-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root)
+        .with_context(|| format!("failed to create ephemeral temp dir {}", root.display()))?;
+
+    // No lock file — Relaycast strict-name registration (409 on duplicate)
+    // is the duplicate-broker guard in ephemeral mode.
+    let dummy_lock = std::fs::File::create(root.join("broker.lock"))
+        .context("failed to create ephemeral lock placeholder")?;
+
+    Ok(RuntimePaths {
+        persist: false,
+        state: root.join(format!("state-{safe_name}.json")),
+        pending: root.join(format!("pending-{safe_name}.json")),
+        pid: root.join(format!("broker-{safe_name}.pid")),
+        _lock: dummy_lock,
+    })
+}
+
 fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
     let root = cwd.join(".agent-relay");
     std::fs::create_dir_all(&root)
@@ -4958,6 +5066,7 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
                         // Successfully recovered — write our PID and return
                         write_pid_file(&pid_path)?;
                         return Ok(RuntimePaths {
+                            persist: true,
                             state: root.join(format!("state-{safe_name}.json")),
                             pending: root.join(format!("pending-{safe_name}.json")),
                             pid: pid_path,
@@ -4977,6 +5086,7 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
     write_pid_file(&pid_path)?;
 
     Ok(RuntimePaths {
+        persist: true,
         state: root.join(format!("state-{safe_name}.json")),
         pending: root.join(format!("pending-{safe_name}.json")),
         pid: pid_path,
