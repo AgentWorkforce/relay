@@ -58,7 +58,7 @@ fn output_has_prompt(cli: &str, output: &str) -> bool {
         &clean
     };
 
-    let mut patterns = vec!["> ", "$ ", ">>> ", "›"];
+    let mut patterns = vec!["> ", "$ ", ">>> ", "›", "❯"];
     if lower_cli.contains("codex") {
         patterns.push("codex> ");
     }
@@ -68,7 +68,7 @@ fn output_has_prompt(cli: &str, output: &str) -> bool {
 
     region.lines().rev().take(6).any(|line| {
         let trimmed = line.trim();
-        matches!(trimmed, "›" | ">" | "$" | ">>>")
+        matches!(trimmed, "›" | ">" | "$" | ">>>" | "❯")
             || (lower_cli.contains("codex") && trimmed.eq_ignore_ascii_case("codex>"))
     })
 }
@@ -96,7 +96,10 @@ async fn try_emit_worker_ready(
     worker_ready_sent: &mut bool,
     startup_ready: bool,
 ) {
-    if *worker_ready_sent || init_request_id.is_none() {
+    // init_received_at is Some only after init_worker has been received.
+    // We use it (not init_request_id) as the gate because the broker sends
+    // init_worker without a request_id.
+    if *worker_ready_sent || init_received_at.is_none() {
         return;
     }
 
@@ -369,26 +372,33 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             STARTUP_BUFFER_KEEP,
                         );
                         if wait_for_relaycast_boot {
-                            if saw_relaycast_boot {
+                            let mut just_saw_relaycast_boot = false;
+                            if !saw_relaycast_boot {
+                                let lower_startup = startup_output.to_ascii_lowercase();
+                                if let Some(marker_idx) = lower_startup.find(RELAYCAST_BOOT_MARKER)
+                                {
+                                    saw_relaycast_boot = true;
+                                    just_saw_relaycast_boot = true;
+                                    let marker_end = floor_char_boundary(
+                                        &startup_output,
+                                        marker_idx + RELAYCAST_BOOT_MARKER.len(),
+                                    );
+                                    post_boot_output.clear();
+                                    append_bounded(
+                                        &mut post_boot_output,
+                                        &startup_output[marker_end..],
+                                        STARTUP_BUFFER_MAX,
+                                        STARTUP_BUFFER_KEEP,
+                                    );
+                                }
+                            }
+                            if saw_relaycast_boot && !just_saw_relaycast_boot {
                                 append_bounded(
                                     &mut post_boot_output,
                                     &clean_text,
                                     STARTUP_BUFFER_MAX,
                                     STARTUP_BUFFER_KEEP,
                                 );
-                            } else {
-                                let lower = clean_text.to_ascii_lowercase();
-                                if let Some(marker_idx) = lower.find(RELAYCAST_BOOT_MARKER) {
-                                    saw_relaycast_boot = true;
-                                    let marker_end = marker_idx + RELAYCAST_BOOT_MARKER.len();
-                                    let marker_end = floor_char_boundary(&clean_text, marker_end);
-                                    append_bounded(
-                                        &mut post_boot_output,
-                                        &clean_text[marker_end..],
-                                        STARTUP_BUFFER_MAX,
-                                        STARTUP_BUFFER_KEEP,
-                                    );
-                                }
                             }
                         }
                         let startup_ready = startup_gate_ready(

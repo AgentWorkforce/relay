@@ -351,7 +351,7 @@ export class AgentRelay {
     if (waitForMessage) {
       return this.waitForAgentMessage(name, timeoutMs ?? 60_000);
     }
-    return this.waitForAgentReady(name, timeoutMs ?? 30_000);
+    return this.waitForAgentReady(name, timeoutMs ?? 60_000);
   }
 
   // ── Human source ────────────────────────────────────────────────────────
@@ -580,7 +580,7 @@ export class AgentRelay {
    * The agent's CLI may not yet be ready to receive messages.
    * Use `waitForAgentMessage()` for full readiness.
    */
-  async waitForAgentReady(name: string, timeoutMs = 30_000): Promise<Agent> {
+  async waitForAgentReady(name: string, timeoutMs = 60_000): Promise<Agent> {
     const client = await this.ensureStarted();
     const existing = this.knownAgents.get(name);
     if (existing && this.readyAgents.has(name)) {
@@ -994,7 +994,7 @@ export class AgentRelay {
         const client = await relay.ensureStarted();
         await client.release(name, reason);
       },
-      async waitForReady(timeoutMs = 30_000) {
+      async waitForReady(timeoutMs = 60_000) {
         await relay.waitForAgentReady(name, timeoutMs);
       },
       waitForExit(timeoutMs?: number) {

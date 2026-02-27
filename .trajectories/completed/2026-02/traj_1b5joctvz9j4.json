@@ -1,0 +1,65 @@
+{
+  "id": "traj_1b5joctvz9j4",
+  "version": 1,
+  "task": {
+    "title": "Adjust readiness behavior to allow slower agent spawn and avoid 30s worker_ready timeout"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-27T21:03:30.264Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-27T21:04:41.903Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_a2z815b8rfr8",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-27T21:04:41.903Z",
+      "events": [
+        {
+          "ts": 1772226281904,
+          "type": "decision",
+          "content": "Prefer longer waitForReady defaults instead of fail-fast: Prefer longer waitForReady defaults instead of fail-fast",
+          "raw": {
+            "question": "Prefer longer waitForReady defaults instead of fail-fast",
+            "chosen": "Prefer longer waitForReady defaults instead of fail-fast",
+            "alternatives": [],
+            "reasoning": "User wants slower agent startups tolerated. Increased SDK worker_ready wait defaults from 30s to 60s and kept readiness flow timeout-driven."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1772226286823,
+          "type": "decision",
+          "content": "Detect Codex relaycast boot marker across chunk boundaries: Detect Codex relaycast boot marker across chunk boundaries",
+          "raw": {
+            "question": "Detect Codex relaycast boot marker across chunk boundaries",
+            "chosen": "Detect Codex relaycast boot marker across chunk boundaries",
+            "alternatives": [],
+            "reasoning": "Previous gating searched only current PTY chunk and could miss split markers, delaying worker_ready until timeout. Now scans accumulated startup output and tracks post-boot prompt window robustly."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-27T21:04:50.010Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "ad64a9bc98ed27febddd8592e680fbda26316661",
+    "endRef": "ad64a9bc98ed27febddd8592e680fbda26316661"
+  },
+  "completedAt": "2026-02-27T21:04:50.010Z",
+  "retrospective": {
+    "summary": "Adjusted readiness behavior to tolerate slower startup: SDK waitForReady defaults now 60s and Codex relaycast boot-marker detection now works across PTY chunk boundaries. Kept non-fail-fast semantics.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}
