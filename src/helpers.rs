@@ -202,11 +202,12 @@ pub(crate) fn detect_cli_ready(cli: &str, output: &str, total_bytes: usize) -> b
     }
 
     // Prompt patterns (from relay-pty parser.rs)
+    // ›  = U+203A (single right-pointing angle quotation mark)
+    // ❯  = U+276F (heavy right-pointing angle quotation mark, Claude Code v2.1.52+)
     let prompt_patterns: &[&str] = if lower_cli.contains("codex") {
-        &["> ", "$ ", "codex> ", ">>> ", "›"]
+        &["> ", "$ ", "codex> ", ">>> ", "›", "❯"]
     } else {
-        // claude, gemini, aider, and others all share the same patterns
-        &["> ", "$ ", ">>> ", "›"]
+        &["> ", "$ ", ">>> ", "›", "❯"]
     };
 
     // Check last 500 chars of output for prompt patterns
