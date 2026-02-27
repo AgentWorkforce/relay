@@ -126,6 +126,7 @@ interface AllResults {
   passed: boolean;
   failures: number;
   tests: Record<string, TestResult>;
+  error?: string;
   summary: {
     total_tests: number;
     passed_tests: number;
@@ -985,6 +986,7 @@ async function main(): Promise<void> {
       passed: false,
       failures: 1,
       tests: {},
+      error: err?.message || String(err),
       summary: {
         total_tests: 0,
         passed_tests: 0,

@@ -138,7 +138,7 @@
     "update:cli-versions": "node scripts/check-cli-versions.mjs --update && npm run codegen:models",
     "codegen:models:ts": "node packages/shared/codegen-ts.mjs",
     "codegen:models:py": "node packages/shared/codegen-py.mjs",
-    "prepare": "husky"
+    "prepare": "node scripts/prepare-husky.cjs"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
@@ -181,7 +181,7 @@
     "@agent-relay/user-directory": "2.3.14",
     "@agent-relay/utils": "2.3.14",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@relaycast/sdk": "^0.3.1",
+    "@relaycast/sdk": "^0.4.0",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",
     "compare-versions": "^6.1.1",
@@ -212,7 +212,7 @@
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.18.2",
     "@typescript-eslint/parser": "^8.18.2",
-    "@vitest/coverage-v8": "^2.1.8",
+    "@vitest/coverage-v8": "^3.2.4",
     "agent-trajectories": "^0.4.1",
     "concurrently": "^9.2.1",
     "esbuild": "^0.27.2",
@@ -220,10 +220,11 @@
     "husky": "^9.1.7",
     "jsdom": "^25.0.1",
     "knip": "^5.84.1",
+    "prettier": "^3.6.2",
     "syncpack": "^14.0.0",
     "turbo": "^2.8.10",
     "typescript": "^5.9.3",
-    "vitest": "^2.1.9"
+    "vitest": "^3.2.4"
   },
   "engines": {
     "node": ">=18.0.0"

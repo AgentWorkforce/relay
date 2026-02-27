@@ -1,19 +1,8 @@
 export * from './protocol.js';
 export * from './client.js';
 export * from './models.js';
-export {
-  createRelaycastClient,
-  RelaycastApi,
-  createWorkspaceReader,
-  type CreateRelaycastClientOptions,
-  type AgentClient,
-  type RelaycastApiOptions,
-  type RelaycastWorkspace,
-  type WorkspaceReader,
-  type RelaycastAgent,
-  type RelaycastChannel,
-  type RelaycastMessage,
-} from './relaycast.js';
+export { RelayCast, RelayError, AgentClient } from '@relaycast/sdk';
+export type { RelayCastOptions, ClientOptions } from '@relaycast/sdk';
 export * from './pty.js';
 export * from './relay.js';
 export * from './logs.js';

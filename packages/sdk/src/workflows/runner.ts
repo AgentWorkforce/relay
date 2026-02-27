@@ -48,7 +48,7 @@ import { WorkflowTrajectory, type StepOutcome } from './trajectory.js';
 // Import from sub-paths to avoid pulling in the full @relaycast/sdk dependency.
 import { AgentRelay } from '../relay.js';
 import type { Agent, AgentRelayOptions } from '../relay.js';
-import { RelaycastApi } from '../relaycast.js';
+import { RelayCast, RelayError, type AgentClient } from '@relaycast/sdk';
 
 // ── DB adapter interface ────────────────────────────────────────────────────
 
@@ -114,7 +114,8 @@ export class WorkflowRunner {
 
   /** @internal exposed for CLI signal-handler shutdown only */
   relay?: AgentRelay;
-  private relaycastApi?: RelaycastApi;
+  private relaycast?: RelayCast;
+  private relaycastAgent?: AgentClient;
   private relayApiKey?: string;
   private relayApiKeyAutoCreated = false;
   private channel?: string;
@@ -198,7 +199,10 @@ export class WorkflowRunner {
 
     // Always create a fresh workspace — each run gets full isolation.
     const workspaceName = `relay-${channel}-${randomBytes(4).toString('hex')}`;
-    const baseUrl = process.env.RELAYCAST_BASE_URL ?? 'https://api.relaycast.dev';
+    const baseUrl =
+      this.relayOptions.env?.RELAYCAST_BASE_URL ??
+      process.env.RELAYCAST_BASE_URL ??
+      'https://api.relaycast.dev';
     const res = await fetch(`${baseUrl}/v1/workspaces`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -230,6 +234,88 @@ export class WorkflowRunner {
       ...(this.relayOptions.env ?? process.env),
       RELAY_API_KEY: this.relayApiKey,
     };
+  }
+
+  private getRelaycastBaseUrl(): string {
+    return (
+      this.relayOptions.env?.RELAYCAST_BASE_URL ??
+      process.env.RELAYCAST_BASE_URL ??
+      'https://api.relaycast.dev'
+    );
+  }
+
+  private getRelaycastClient(): RelayCast {
+    if (!this.relayApiKey) {
+      throw new Error('No Relaycast API key available');
+    }
+    if (!this.relaycast) {
+      this.relaycast = new RelayCast({
+        apiKey: this.relayApiKey,
+        baseUrl: this.getRelaycastBaseUrl(),
+      });
+    }
+    return this.relaycast;
+  }
+
+  private async ensureRelaycastRunnerAgent(): Promise<AgentClient> {
+    if (this.relaycastAgent) return this.relaycastAgent;
+
+    const rc = this.getRelaycastClient();
+    let registration;
+    try {
+      registration = await rc.agents.register({ name: 'WorkflowRunner', type: 'agent' });
+    } catch (err) {
+      if (err instanceof RelayError && err.code === 'name_conflict') {
+        registration = await rc.agents.register({
+          name: `WorkflowRunner-${randomBytes(4).toString('hex')}`,
+          type: 'agent',
+        });
+      } else {
+        throw err;
+      }
+    }
+
+    this.relaycastAgent = rc.as(registration.token);
+    return this.relaycastAgent;
+  }
+
+  private async createAndJoinRelaycastChannel(channel: string, topic?: string): Promise<void> {
+    const agent = await this.ensureRelaycastRunnerAgent();
+    try {
+      await agent.channels.create({ name: channel, ...(topic ? { topic } : {}) });
+    } catch (err) {
+      if (!(err instanceof RelayError && err.code === 'name_conflict')) {
+        throw err;
+      }
+    }
+    await agent.channels.join(channel);
+  }
+
+  private async registerRelaycastExternalAgent(name: string, persona?: string): Promise<AgentClient | null> {
+    const rc = this.getRelaycastClient();
+    try {
+      const registration = await rc.agents.register({
+        name,
+        type: 'agent',
+        ...(persona ? { persona } : {}),
+      });
+      return rc.as(registration.token);
+    } catch (err) {
+      if (err instanceof RelayError && err.code === 'name_conflict') {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  private startRelaycastHeartbeat(agent: AgentClient, intervalMs = 30_000): () => void {
+    const beat = () => {
+      agent.heartbeat().catch(() => {});
+    };
+    const timer = setInterval(beat, intervalMs);
+    timer.unref();
+    beat();
+    return () => clearInterval(timer);
   }
 
   // ── Event subscription ──────────────────────────────────────────────────
@@ -1117,10 +1203,8 @@ export class WorkflowRunner {
         }
       };
 
-      this.relaycastApi = new RelaycastApi({
-        agentName: 'WorkflowRunner',
-        apiKey: this.relayApiKey,
-      });
+      this.relaycast = undefined;
+      this.relaycastAgent = undefined;
 
       // Wire broker stderr to console for observability
       this.unsubBrokerStderr = this.relay.onBrokerStderr((line: string) => {
@@ -1129,11 +1213,10 @@ export class WorkflowRunner {
 
       this.log(`Creating channel: ${channel}...`);
       if (isResume) {
-        await this.relaycastApi.createChannel(channel);
+        await this.createAndJoinRelaycastChannel(channel);
       } else {
-        await this.relaycastApi.createChannel(channel, workflow.description);
+        await this.createAndJoinRelaycastChannel(channel, workflow.description);
       }
-      await this.relaycastApi.joinChannel(channel);
       this.log('Channel ready');
 
       if (isResume) {
@@ -1250,7 +1333,8 @@ export class WorkflowRunner {
       await this.relay?.shutdown();
       this.relay = undefined;
       this.runStartTime = undefined;
-      this.relaycastApi = undefined;
+      this.relaycast = undefined;
+      this.relaycastAgent = undefined;
       this.channel = undefined;
       this.trajectory = undefined;
       this.abortController = undefined;
@@ -2153,18 +2237,16 @@ export class WorkflowRunner {
 
     // Register agent in Relaycast for observability
     let stopHeartbeat: (() => void) | undefined;
-    if (this.relaycastApi) {
-      const agentClient = await this.relaycastApi
-        .registerExternalAgent(
-          agentName,
-          `Non-interactive workflow agent for step "${step.name}" (${agentDef.cli})`
-        )
-        .catch((err) => {
-          console.warn(`[WorkflowRunner] Failed to register ${agentName} in Relaycast:`, err?.message ?? err);
-          return null;
-        });
+    if (this.relayApiKey) {
+      const agentClient = await this.registerRelaycastExternalAgent(
+        agentName,
+        `Non-interactive workflow agent for step "${step.name}" (${agentDef.cli})`
+      ).catch((err) => {
+        console.warn(`[WorkflowRunner] Failed to register ${agentName} in Relaycast:`, err?.message ?? err);
+        return null;
+      });
       if (agentClient) {
-        stopHeartbeat = this.relaycastApi.startHeartbeat(agentClient);
+        stopHeartbeat = this.startRelaycastHeartbeat(agentClient);
       }
     }
 
@@ -2421,26 +2503,28 @@ export class WorkflowRunner {
       this.registerWorker(agentName, agentDef.cli, step.task ?? '', workerPid);
 
       // Register the spawned agent in Relaycast for observability + start heartbeat
-      if (this.relaycastApi) {
-        const agentClient = await this.relaycastApi
-          .registerExternalAgent(agent.name, `Workflow agent for step "${step.name}" (${agentDef.cli})`)
-          .catch((err) => {
-            console.warn(
-              `[WorkflowRunner] Failed to register ${agent.name} in Relaycast:`,
-              err?.message ?? err
-            );
-            return null;
-          });
+      if (this.relayApiKey) {
+        const agentClient = await this.registerRelaycastExternalAgent(
+          agent.name,
+          `Workflow agent for step "${step.name}" (${agentDef.cli})`
+        ).catch((err) => {
+          console.warn(
+            `[WorkflowRunner] Failed to register ${agent.name} in Relaycast:`,
+            err?.message ?? err
+          );
+          return null;
+        });
 
         // Keep the agent online in the dashboard while it's working
         if (agentClient) {
-          stopHeartbeat = this.relaycastApi.startHeartbeat(agentClient);
+          stopHeartbeat = this.startRelaycastHeartbeat(agentClient);
         }
       }
 
       // Invite the spawned agent to the workflow channel
-      if (this.channel && this.relaycastApi) {
-        await this.relaycastApi.inviteToChannel(this.channel, agent.name).catch(() => {});
+      if (this.channel && this.relayApiKey) {
+        const channelAgent = await this.ensureRelaycastRunnerAgent().catch(() => null);
+        await channelAgent?.channels.invite(this.channel, agent.name).catch(() => {});
       }
 
       // Post assignment notification (no task content — task arrives via direct broker injection)
@@ -2906,10 +2990,12 @@ export class WorkflowRunner {
 
   /** Post a message to the workflow channel. Fire-and-forget — never throws or blocks. */
   private postToChannel(text: string): void {
-    if (!this.relaycastApi || !this.channel) return;
-    this.relaycastApi.sendToChannel(this.channel, text).catch(() => {
-      // Non-critical — don't break workflow execution
-    });
+    if (!this.relayApiKey || !this.channel) return;
+    this.ensureRelaycastRunnerAgent()
+      .then((agent) => agent.send(this.channel!, text))
+      .catch(() => {
+        // Non-critical — don't break workflow execution
+      });
   }
 
   /** Post a rich completion report to the channel. */

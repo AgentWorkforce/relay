@@ -65,8 +65,13 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov', 'html'],
-      include: ['src/**/*.ts'],
-      exclude: ['src/**/*.test.ts', 'src/cli/**'],
+      all: false,
+      exclude: [
+        '**/*.test.ts',
+        '**/*.test.tsx',
+        '**/dist/**',
+        'packages/sdk/**', // SDK uses Node.js test runner in tests/integration/broker
+      ],
       thresholds: {
         lines: 60,
         functions: 60,

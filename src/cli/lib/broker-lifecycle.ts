@@ -216,6 +216,14 @@ function cleanupBrokerPidIfStopped(brokerPidPath: string, deps: CoreDependencies
   }
 }
 
+function writeBrokerPid(brokerPidPath: string, pid: number, deps: CoreDependencies): void {
+  try {
+    deps.fs.writeFileSync(brokerPidPath, `${pid}\n`, 'utf-8');
+  } catch {
+    // Best-effort write. Down/status fall back to runtime probes when missing.
+  }
+}
+
 async function waitForProcessExit(pid: number, timeoutMs: number, deps: CoreDependencies): Promise<boolean> {
   const startedAt = deps.now();
   while (deps.now() - startedAt < timeoutMs) {
@@ -607,7 +615,7 @@ async function shutdownUpResources(
 
   await relay.shutdown().catch(() => undefined);
   if (ownsBroker) {
-    cleanupBrokerPidIfStopped(brokerPidPath, deps);
+    safeUnlink(brokerPidPath, deps);
   }
 }
 
@@ -774,6 +782,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     );
     relay = started.relay;
     apiPort = started.apiPort;
+    writeBrokerPid(brokerPidPath, deps.pid, deps);
     const dashboardRelayUrl = resolveDashboardRelayUrl(apiPort, deps);
     const expectedRelayUrl = getDefaultDashboardRelayUrl(apiPort);
     if (

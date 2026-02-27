@@ -172,7 +172,7 @@ describe('registerCoreCommands', () => {
     const relay = createRelayMock({
       getStatus: vi.fn(async () => ({ agent_count: 1, pending_delivery_count: 0 })),
     });
-    const { program, deps } = createHarness({ relay });
+    const { program, deps, fs, brokerPidPath } = createHarness({ relay });
 
     const exitCode = await runCommand(program, ['up', '--port', '4999']);
 
@@ -187,6 +187,7 @@ describe('registerCoreCommands', () => {
       .calls[0][1] as string[];
     expect(dashboardArgs).not.toContain('--no-spawn');
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
+    expect(fs.writeFileSync).toHaveBeenCalledWith(brokerPidPath, '4242\n', 'utf-8');
   });
 
   it('start dashboard.js logs a focused cli-tools dashboard URL', async () => {

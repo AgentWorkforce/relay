@@ -904,7 +904,7 @@ async fn wait_for_worker_results(
                 let last_output = event
                     .get("last_output")
                     .and_then(Value::as_str)
-                    .map(|s| helpers::strip_ansi(s))
+                    .map(helpers::strip_ansi)
                     .unwrap_or_default();
 
                 let accumulated = stream_buffers.remove(&name).unwrap_or_default();
@@ -999,10 +999,7 @@ impl WorkerActivityTracker {
         for name in pending {
             let short = short_worker_name(name);
             if let Some(activity) = self.last_activity.get(name) {
-                let already_printed = self
-                    .last_printed
-                    .get(name)
-                    .map_or(false, |prev| prev == activity);
+                let already_printed = self.last_printed.get(name) == Some(activity);
                 if already_printed {
                     parts.push(format!("{}: (working...)", short));
                 } else {

@@ -5,7 +5,7 @@ import path from 'node:path';
 import test, { before } from 'node:test';
 
 import { AgentRelayClient, AgentRelayProcessError } from '../client.js';
-import { RelaycastApi } from '../relaycast.js';
+import { RelayCast } from '@relaycast/sdk';
 
 function resolveBinaryPath(): string {
   if (process.env.AGENT_RELAY_BIN) {
@@ -23,7 +23,7 @@ function resolveBundledBinaryPath(): string {
 // Creates an ephemeral workspace if no key is set.
 before(async () => {
   if (process.env.RELAY_API_KEY?.trim()) return;
-  const ws = await RelaycastApi.createWorkspace(`sdk-test-${Date.now().toString(36)}`);
+  const ws = await RelayCast.createWorkspace(`sdk-test-${Date.now().toString(36)}`);
   process.env.RELAY_API_KEY = ws.apiKey;
 });
 

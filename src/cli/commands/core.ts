@@ -226,9 +226,13 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
 }
 
 function createDefaultRelay(cwd: string, apiPort = 0): CoreRelay {
+  const configuredTimeout = Number.parseInt(process.env.AGENT_RELAY_REQUEST_TIMEOUT_MS ?? '', 10);
+  const requestTimeoutMs =
+    Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 30_000;
   const client = createAgentRelayClient({
     cwd,
     binaryArgs: apiPort > 0 ? ['--api-port', String(apiPort)] : [],
+    requestTimeoutMs,
   });
 
   return {

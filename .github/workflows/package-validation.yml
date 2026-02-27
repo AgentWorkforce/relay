@@ -25,7 +25,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: '22'
 
       # Cache node_modules - skip npm ci entirely if unchanged
       - name: Cache node_modules
@@ -60,10 +60,14 @@ jobs:
           echo "=== Validating packages ==="
           ERRORS=0
 
-          # Check dist files exist (skip non-Node packages)
-          SKIP_PACKAGES="sdk-py build-plans"
+          # Check dist files exist (skip non-Node package directories)
+          SKIP_PACKAGES="build-plans"
           for pkg_dir in packages/*/; do
             pkg_name=$(basename "$pkg_dir")
+            if [ ! -f "$pkg_dir/package.json" ]; then
+              echo "⊘ $pkg_name - skipped (non-Node package)"
+              continue
+            fi
             if echo "$SKIP_PACKAGES" | grep -qw "$pkg_name"; then
               echo "⊘ $pkg_name - skipped (non-Node package)"
               continue
@@ -123,27 +127,29 @@ jobs:
 
       - name: Test CLI startup
         run: |
-          echo "=== Testing CLI daemon ==="
-          # Start daemon in background (no dashboard, just socket server)
-          timeout 30 node dist/src/cli/index.js up &
+          echo "=== Testing CLI broker lifecycle ==="
+          TEST_PORT=3899
+          # Start broker+dashboard in background
+          node dist/src/cli/index.js up --port "$TEST_PORT" &
           DAEMON_PID=$!
 
-          # Wait for socket to be created
-          SOCKET_PATH=".agent-relay/relay.sock"
-          for i in {1..15}; do
-            [ -S "$SOCKET_PATH" ] && break
+          # Wait for health endpoint
+          for i in {1..20}; do
+            if curl -sf "http://127.0.0.1:${TEST_PORT}/health" > /dev/null; then
+              break
+            fi
             sleep 1
           done
 
-          # Verify socket exists and daemon is running
-          if [ -S "$SOCKET_PATH" ]; then
-            echo "✓ Daemon socket created"
-            # Use CLI status to verify daemon is responsive
-            AGENT_RELAY_SKIP_TMUX=1 node dist/src/cli/index.js status | grep -q "RUNNING" && echo "✓ Daemon responding" || echo "⚠ Daemon not responding (may be expected)"
+          # Verify broker is reachable
+          if curl -sf "http://127.0.0.1:${TEST_PORT}/health" > /dev/null; then
+            echo "✓ Broker health endpoint responding"
+            AGENT_RELAY_SKIP_TMUX=1 node dist/src/cli/index.js status || true
           else
-            echo "✗ Daemon socket not found"
+            echo "✗ Broker health endpoint did not become ready"
             exit 1
           fi
 
-          # Cleanup
+          # Cleanup through CLI down first, then hard-kill fallback
+          node dist/src/cli/index.js down --force --timeout 5000 || true
           kill $DAEMON_PID 2>/dev/null || true

@@ -10,8 +10,6 @@ use serde_json::{json, Value};
 pub(crate) const ACTIVITY_WINDOW: Duration = Duration::from_secs(5);
 pub(crate) const ACTIVITY_BUFFER_MAX_BYTES: usize = 16_000;
 pub(crate) const ACTIVITY_BUFFER_KEEP_BYTES: usize = 12_000;
-#[cfg(test)]
-pub(crate) const CLI_READY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Parse a CLI command string into executable and embedded arguments.
 ///
@@ -33,10 +31,8 @@ pub(crate) fn parse_cli_command(raw: &str) -> Result<(String, Vec<String>)> {
     let mut args = args.to_vec();
 
     let cli_lower = normalize_cli_name(&command).to_lowercase();
-    if cli_lower == "cursor" {
-        if !args.iter().any(|arg| arg == "--force") {
-            args.insert(0, "--force".to_string());
-        }
+    if cli_lower == "cursor" && !args.iter().any(|arg| arg == "--force") {
+        args.insert(0, "--force".to_string());
     }
 
     Ok((command, args))
@@ -359,9 +355,7 @@ fn detect_channel_context(message: &str, target: &str) -> Option<String> {
     }
     if let Some(start) = message.find(" in #") {
         let rest = &message[start + 4..];
-        let end = rest
-            .find(|c: char| c == ' ' || c == ':' || c == ']' || c == '\n')
-            .unwrap_or(rest.len());
+        let end = rest.find([' ', ':', ']', '\n']).unwrap_or(rest.len());
         let candidate = rest[..end].trim();
         if candidate.starts_with('#') && candidate.len() > 1 {
             return Some(candidate.to_string());
@@ -738,8 +732,8 @@ pub(crate) fn parse_continuity_command(buf: &str) -> Option<(ContinuityAction, S
         let mut action: Option<ContinuityAction> = None;
         let mut body_start_line: Option<usize> = None;
 
-        for j in (i + 1)..lines.len() {
-            let next = lines[j].trim();
+        for (j, line_at_j) in lines.iter().enumerate().skip(i + 1) {
+            let next = line_at_j.trim();
             if next.is_empty() {
                 // Blank line may precede body; record where body starts
                 if action.is_some() && body_start_line.is_none() {
@@ -748,8 +742,7 @@ pub(crate) fn parse_continuity_command(buf: &str) -> Option<(ContinuityAction, S
                 continue;
             }
             let lower = next.to_lowercase();
-            if lower.starts_with(action_prefix) {
-                let action_value = lower[action_prefix.len()..].trim();
+            if let Some(action_value) = lower.strip_prefix(action_prefix).map(str::trim) {
                 action = match action_value {
                     "save" => Some(ContinuityAction::Save),
                     "load" => Some(ContinuityAction::Load),
@@ -1003,7 +996,7 @@ mod tests {
     fn detect_activity_does_not_match_pattern_in_echo() {
         let detector = ActivityDetector::for_cli("claude");
         let expected_echo = "Relay message from Alice [evt_1]: Tool: Write(file)";
-        let output = format!("{}", expected_echo);
+        let output = expected_echo.to_string();
         assert_eq!(detector.detect_activity(&output, expected_echo), None);
     }
 

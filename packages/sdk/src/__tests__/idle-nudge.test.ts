@@ -18,17 +18,38 @@ const mockFetch = vi.fn().mockResolvedValue({
 });
 vi.stubGlobal('fetch', mockFetch);
 
-// ── Mock RelaycastApi ───────────────────────────────────────────────────────
+// ── Mock RelayCast SDK ──────────────────────────────────────────────────────
 
-vi.mock('../relaycast.js', () => ({
-  RelaycastApi: vi.fn().mockImplementation(() => ({
-    createChannel: vi.fn().mockResolvedValue(undefined),
-    joinChannel: vi.fn().mockResolvedValue(undefined),
-    sendToChannel: vi.fn().mockResolvedValue(undefined),
-    inviteToChannel: vi.fn().mockResolvedValue(undefined),
-    registerExternalAgent: vi.fn().mockResolvedValue(null),
-    startHeartbeat: vi.fn().mockReturnValue(() => {}),
-  })),
+const mockRelaycastAgent = {
+  send: vi.fn().mockResolvedValue(undefined),
+  heartbeat: vi.fn().mockResolvedValue(undefined),
+  channels: {
+    create: vi.fn().mockResolvedValue(undefined),
+    join: vi.fn().mockResolvedValue(undefined),
+    invite: vi.fn().mockResolvedValue(undefined),
+  },
+};
+
+const mockRelaycast = {
+  agents: {
+    register: vi.fn().mockResolvedValue({ token: 'token-1' }),
+  },
+  as: vi.fn().mockReturnValue(mockRelaycastAgent),
+};
+
+class MockRelayError extends Error {
+  code: string;
+  constructor(code: string, message: string, status = 400) {
+    super(message);
+    this.code = code;
+    this.name = 'RelayError';
+    (this as any).status = status;
+  }
+}
+
+vi.mock('@relaycast/sdk', () => ({
+  RelayCast: vi.fn().mockImplementation(() => mockRelaycast),
+  RelayError: MockRelayError,
 }));
 
 // ── Mock AgentRelay ──────────────────────────────────────────────────────────
@@ -107,15 +128,11 @@ function makeConfig(overrides: Partial<RelayYamlConfig> = {}): RelayYamlConfig {
     version: '1',
     name: 'test-workflow',
     swarm: { pattern: 'dag' },
-    agents: [
-      { name: 'agent-a', cli: 'claude' },
-    ],
+    agents: [{ name: 'agent-a', cli: 'claude' }],
     workflows: [
       {
         name: 'default',
-        steps: [
-          { name: 'step-1', agent: 'agent-a', task: 'Do step 1' },
-        ],
+        steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1' }],
       },
     ],
     ...overrides,
@@ -183,7 +200,7 @@ describe('Idle Nudge Detection', () => {
       expect.objectContaining({
         to: 'test-agent-abc',
         text: expect.stringContaining('/exit'),
-      }),
+      })
     );
   });
 
@@ -213,9 +230,7 @@ describe('Idle Nudge Detection', () => {
       workflows: [
         {
           name: 'default',
-          steps: [
-            { name: 'step-1', agent: 'worker', task: 'Do work' },
-          ],
+          steps: [{ name: 'step-1', agent: 'worker', task: 'Do work' }],
         },
       ],
     });
@@ -246,15 +261,11 @@ describe('Idle Nudge Detection', () => {
         pattern: 'hub-spoke',
         idleNudge: { nudgeAfterMs: 100, escalateAfterMs: 100, maxNudges: 1 },
       },
-      agents: [
-        { name: 'lead', cli: 'claude', role: 'Lead coordinator' },
-      ],
+      agents: [{ name: 'lead', cli: 'claude', role: 'Lead coordinator' }],
       workflows: [
         {
           name: 'default',
-          steps: [
-            { name: 'step-1', agent: 'lead', task: 'Coordinate work' },
-          ],
+          steps: [{ name: 'step-1', agent: 'lead', task: 'Coordinate work' }],
         },
       ],
     });
@@ -307,18 +318,16 @@ describe('Idle Nudge Detection', () => {
   it('should respect overall timeout despite nudge loop', async () => {
     // Idle fires quickly, but overall timeout is very short
     waitForIdleFn = vi.fn().mockResolvedValue('idle');
-    waitForExitFn = vi.fn().mockImplementation(
-      () => new Promise((resolve) => setTimeout(() => resolve('timeout'), 50)),
-    );
+    waitForExitFn = vi
+      .fn()
+      .mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve('timeout'), 50)));
 
     const config = makeConfig({
       swarm: {
         pattern: 'dag',
         idleNudge: { nudgeAfterMs: 10, escalateAfterMs: 10, maxNudges: 10 },
       },
-      agents: [
-        { name: 'agent-a', cli: 'claude', constraints: { timeoutMs: 100 } },
-      ],
+      agents: [{ name: 'agent-a', cli: 'claude', constraints: { timeoutMs: 100 } }],
     });
 
     // The step has a short timeout — should not loop forever
