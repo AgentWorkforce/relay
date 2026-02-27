@@ -9,6 +9,8 @@ use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 use tokio::process::Command;
 
+const RELAYCAST_MCP_PACKAGE: &str = "@relaycast/mcp";
+
 const TARGET_FILES: [&str; 3] = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"];
 const MARKER_START: &str = "<!-- prpm:snippet:start @agent-relay/agent-relay-snippet@1.2.0 -->";
 const MARKER_END: &str = "<!-- prpm:snippet:end @agent-relay/agent-relay-snippet@1.2.0 -->";
@@ -269,7 +271,7 @@ fn relaycast_server_config(
             "args".into(),
             Value::Array(vec![
                 Value::String("-y".into()),
-                Value::String("@relaycast/mcp".into()),
+                Value::String(RELAYCAST_MCP_PACKAGE.into()),
             ]),
         );
     }
@@ -327,7 +329,7 @@ pub fn ensure_opencode_config(
         Value::Array(vec![
             Value::String("npx".into()),
             Value::String("-y".into()),
-            Value::String("@relaycast/mcp".into()),
+            Value::String(RELAYCAST_MCP_PACKAGE.into()),
         ]),
     );
     let mut env = Map::new();
@@ -672,7 +674,7 @@ fn gemini_droid_mcp_add_args(
     }
     args.push("npx".to_string());
     args.push("-y".to_string());
-    args.push("@relaycast/mcp".to_string());
+    args.push(RELAYCAST_MCP_PACKAGE.to_string());
     args
 }
 
@@ -894,6 +896,14 @@ mod tests {
         ensure_protocol_snippets_inner(root, Some(root.to_path_buf()))
     }
 
+    fn assert_is_reaycast_mcp_package(value: Option<&str>) {
+        let package = value.expect("expected relaycast mcp package string");
+        assert!(
+            package.starts_with("@relaycast/mcp"),
+            "expected package to start with @relaycast/mcp, got: {package}"
+        );
+    }
+
     #[test]
     fn installs_to_all_targets_and_is_idempotent() {
         let temp = tempdir().expect("tempdir");
@@ -927,7 +937,7 @@ mod tests {
 
         fs::write(
             root.join(".mcp.json"),
-            r#"{"mcpServers":{"relaycast":{"command":"npx","args":["-y","@relaycast/mcp"]}}}"#,
+            format!(r#"{{"mcpServers":{{"relaycast":{{"command":"npx","args":["-y","{}")]}}}}}"#, RELAYCAST_MCP_PACKAGE),
         )
         .expect("write .mcp.json");
 
@@ -959,7 +969,7 @@ mod tests {
         // Now add MCP config
         fs::write(
             root.join(".mcp.json"),
-            r#"{"mcpServers":{"relaycast":{"command":"npx","args":["-y","@relaycast/mcp"]}}}"#,
+            format!(r#"{{"mcpServers":{{"relaycast":{{"command":"npx","args":["-y","{}"]}}}}}}}"#, RELAYCAST_MCP_PACKAGE),
         )
         .expect("write .mcp.json");
 
@@ -1003,7 +1013,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         fs::write(root.join("GEMINI.md"), legacy).expect("write legacy snippet");
         fs::write(
             root.join(".mcp.json"),
-            r#"{"mcpServers":{"relaycast":{"command":"npx","args":["@relaycast/mcp"]}}}"#,
+            format!(r#"{{"mcpServers":{{"relaycast":{{"command":"npx","args":["{}"]}}}}}}}"#, RELAYCAST_MCP_PACKAGE),
         )
         .expect("write .mcp.json");
 
@@ -1040,12 +1050,11 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
                 .and_then(Value::as_str),
             Some("-y")
         );
-        assert_eq!(
+        assert_is_reaycast_mcp_package(
             json["mcpServers"]["relaycast"]["args"]
                 .as_array()
                 .and_then(|a| a.get(1))
                 .and_then(Value::as_str),
-            Some("@relaycast/mcp")
         );
     }
 
@@ -1175,7 +1184,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
             .as_array()
             .expect("args array");
         assert_eq!(mcp_args[0].as_str(), Some("-y"));
-        assert_eq!(mcp_args[1].as_str(), Some("@relaycast/mcp"));
+        assert_is_reaycast_mcp_package(mcp_args[1].as_str());
     }
 
     #[tokio::test]
@@ -1303,7 +1312,11 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         assert_eq!(args[relaycast_idx + 1], "--");
         assert_eq!(args[relaycast_idx + 2], "npx");
         assert_eq!(args[relaycast_idx + 3], "-y");
-        assert_eq!(args[relaycast_idx + 4], "@relaycast/mcp");
+        assert!(
+            args[relaycast_idx + 4].starts_with("@relaycast/mcp"),
+            "expected relaycast package name, got: {}",
+            args[relaycast_idx + 4]
+        );
     }
 
     #[test]
@@ -1496,7 +1509,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         let cmd = mcp["command"].as_array().expect("command array");
         assert_eq!(cmd[0].as_str(), Some("npx"));
         assert_eq!(cmd[1].as_str(), Some("-y"));
-        assert_eq!(cmd[2].as_str(), Some("@relaycast/mcp"));
+        assert_is_reaycast_mcp_package(cmd[2].as_str());
 
         // Environment (note: opencode uses "environment" not "env")
         let oc_env = &mcp["environment"];

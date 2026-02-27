@@ -824,7 +824,7 @@ export class AgentRelay {
         this.startPromise = undefined;
         // Use the workspace key the broker actually connected with.
         // This ensures SDK and workers are always on the same workspace.
-        if (!this.relayApiKey && c.workspaceKey) {
+        if (c.workspaceKey) {
           this.relayApiKey = c.workspaceKey;
         }
         this.wireEvents(c);

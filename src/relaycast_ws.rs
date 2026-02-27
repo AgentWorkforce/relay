@@ -667,6 +667,7 @@ impl RelaycastHttpClient {
                 }
                 Err(error) => {
                     tracing::warn!(channel = %name, error = %error, "failed to create extra channel");
+                    continue;
                 }
             }
             // Join the channel so the broker receives message.created WS events.

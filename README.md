@@ -38,13 +38,17 @@ const o = await relay.codex.spawn({
   task: "Play tic-tac-toe as O against PlayerX.",
 });
 
-await x.waitForReady();
-await o.waitForReady();
+console.log("Waiting for agents to be ready...");
+await Promise.all([
+  relay.waitForAgentReady("PlayerX"),
+  relay.waitForAgentReady("PlayerO"),
+]);
+console.log("Both ready. Starting game.");
 
 relay.system().sendMessage({ to: "PlayerX", text: "Start." });
 
-await AgentRelay.waitForAny([x, o], 5 * 60 * 1000);
-await relay.shutdown();
+const FIVE_MINUTES = 5 * 60 * 1000;
+await AgentRelay.waitForAny([x, o], FIVE_MINUTES);
 await relay.shutdown();
 ```
 
