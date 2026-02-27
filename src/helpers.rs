@@ -10,8 +10,6 @@ use serde_json::{json, Value};
 pub(crate) const ACTIVITY_WINDOW: Duration = Duration::from_secs(5);
 pub(crate) const ACTIVITY_BUFFER_MAX_BYTES: usize = 16_000;
 pub(crate) const ACTIVITY_BUFFER_KEEP_BYTES: usize = 12_000;
-#[cfg(test)]
-pub(crate) const CLI_READY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Parse a CLI command string into executable and embedded arguments.
 ///
