@@ -17,6 +17,7 @@ import { registerMonitoringCommands } from './commands/monitoring.js';
 import { registerAuthCommands } from './commands/auth.js';
 import { registerSetupCommands } from './commands/setup.js';
 import { registerCoreCommands } from './commands/core.js';
+import { registerConnectCommands } from './commands/connect.js';
 import { registerSwarmCommands } from './commands/swarm.js';
 
 dotenvConfig({ quiet: true });
@@ -96,6 +97,7 @@ export function createProgram(): Command {
     .version(VERSION, '-V, --version', 'Output the version number');
 
   registerCoreCommands(program);
+  registerConnectCommands(program);
   registerAgentManagementCommands(program);
   registerMessagingCommands(program);
   registerCloudCommands(program);

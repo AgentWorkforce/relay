@@ -1,0 +1,25 @@
+{
+  "id": "traj_lgdnftajmp9r",
+  "version": 1,
+  "task": {
+    "title": "Implement hosted relay connect SDK path"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-27T10:53:32.619Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/private/tmp/relay-connect-wt",
+  "tags": [],
+  "_trace": {
+    "startRef": "842b4b46fa57af2c8145a559184040eff68806d6",
+    "endRef": "842b4b46fa57af2c8145a559184040eff68806d6"
+  },
+  "completedAt": "2026-02-27T10:58:33.270Z",
+  "retrospective": {
+    "summary": "Added hosted SDK connect loop and wired connect --hosted with CLI/integration tests",
+    "approach": "Standard approach",
+    "confidence": 0.81
+  }
+}

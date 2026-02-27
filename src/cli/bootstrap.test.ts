@@ -11,6 +11,7 @@ const expectedLeafCommands = [
   'uninstall',
   'version',
   'update',
+  'connect',
   'bridge',
   'spawn',
   'agents',
@@ -80,6 +81,7 @@ describe('bootstrap CLI', () => {
         'uninstall',
         'version',
         'update',
+        'connect',
         'bridge',
         'spawn',
         'agents',
@@ -113,7 +115,7 @@ describe('bootstrap CLI', () => {
     const program = createProgram();
     const leafCommandPaths = collectLeafCommandPaths(program);
 
-    expect(leafCommandPaths).toHaveLength(37);
+    expect(leafCommandPaths).toHaveLength(38);
     expect(leafCommandPaths).toEqual(expect.arrayContaining(expectedLeafCommands));
     expect(leafCommandPaths).not.toContain('create-agent');
   });
