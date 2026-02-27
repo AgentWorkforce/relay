@@ -46,7 +46,6 @@ const relay = new AgentRelay(options?: AgentRelayOptions);
 // Spawn by CLI type
 const agent = await relay.claude.spawn(options?)
 const agent = await relay.codex.spawn(options?)
-const agent = await relay.gemini.spawn(options?)
 ```
 
 **Spawn options:**
@@ -260,12 +259,6 @@ Models.Codex.GPT_5_2_CODEX       // 'gpt-5.2-codex' (default)
 Models.Codex.GPT_5_3_CODEX_SPARK // 'gpt-5.3-codex-spark'
 Models.Codex.GPT_5_1_CODEX_MAX   // 'gpt-5.1-codex-max'
 Models.Codex.GPT_5_1_CODEX_MINI  // 'gpt-5.1-codex-mini'
-
-// Gemini
-Models.Gemini.GEMINI_2_5_PRO      // 'gemini-2.5-pro' (default)
-Models.Gemini.GEMINI_2_5_FLASH    // 'gemini-2.5-flash'
-Models.Gemini.GEMINI_2_5_FLASH_LITE // 'gemini-2.5-flash-lite'
-Models.Gemini.GEMINI_3_PRO_PREVIEW  // 'gemini-3-pro-preview'
 ```
 
 ---
@@ -286,21 +279,6 @@ try {
   }
 }
 ```
-
----
-
-## Subpath Exports
-
-| Import path                   | Contents                               |
-| ----------------------------- | -------------------------------------- |
-| `@agent-relay/sdk`            | Everything (AgentRelay, Models, types) |
-| `@agent-relay/sdk/client`     | AgentRelayClient (low-level)           |
-| `@agent-relay/sdk/protocol`   | Protocol types and constants           |
-| `@agent-relay/sdk/workflows`  | workflow(), WorkflowRunner, SwarmPatterns |
-| `@agent-relay/sdk/browser`    | Protocol types for browser environments (no Node.js deps) |
-| `@agent-relay/sdk/logs`       | Log file utilities                     |
-| `@agent-relay/sdk/consensus`  | Consensus types and helpers            |
-| `@agent-relay/sdk/shadow`     | Shadow agent types                     |
 
 ---
 
