@@ -1,0 +1,52 @@
+{
+  "name": "@agent-relay/openclaw-adapter",
+  "version": "2.3.14",
+  "description": "OpenClaw gateway bridge for Relaycast — makes OpenClaw agents appear as first-class citizens in Relaycast workspaces",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "relay-openclaw": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "dev": "tsc --watch",
+    "start": "node dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@relaycast/sdk": "^0.4.0",
+    "ws": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.3",
+    "@types/ws": "^8.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/openclaw-adapter"
+  },
+  "license": "MIT"
+}
