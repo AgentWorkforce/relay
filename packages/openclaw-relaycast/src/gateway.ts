@@ -58,10 +58,15 @@ export class InboundGateway {
     if (this.running) return;
     this.running = true;
 
+    // Register with a viewer- prefixed name so we don't collide with the
+    // container broker's agent registration (which uses the bare clawName).
+    // Using the same name would cause registerOrRotate to steal the name
+    // and release the container's agent.
+    const viewerName = `viewer-${this.config.clawName}`;
     const registered = await this.relaycast.registerOrRotate({
-      name: this.config.clawName,
-      type: 'agent',
-      persona: 'OpenClaw instance with Relaycast realtime bridge',
+      name: viewerName,
+      type: 'system',
+      persona: 'Relaycast inbound gateway for OpenClaw',
     });
 
     this.relayAgentClient = this.relaycast.as(registered.token, {
