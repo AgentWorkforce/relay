@@ -690,6 +690,25 @@
       "files": [
         ".claude/agents/fixer.md"
       ]
+    },
+    {
+      "name": "openclaw-relaycast",
+      "version": "1.0.0",
+      "description": "Relaycast bridge for OpenClaw — channels, threads, DMs, reactions, search, and persistent messaging across OpenClaw instances. Includes setup CLI, inbound gateway, and self-install SKILL.md.",
+      "format": "generic",
+      "subtype": "skill",
+      "tags": [
+        "openclaw",
+        "relaycast",
+        "messaging",
+        "bridge",
+        "multi-agent",
+        "channels",
+        "real-time"
+      ],
+      "files": [
+        "packages/openclaw-relaycast/skill/SKILL.md"
+      ]
     }
   ]
 }
