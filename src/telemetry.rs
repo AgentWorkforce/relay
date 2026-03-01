@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
-const POSTHOG_API_KEY: &str = "phc_2uDu01GtnLABJpVkWw4ri1OgScLU90aEmXmDjufGdqr";
+const POSTHOG_API_KEY_BUILD: Option<&str> = option_env!("POSTHOG_API_KEY");
 const POSTHOG_HOST: &str = "https://us.i.posthog.com";
 const FIRST_RUN_NOTICE: &str = "\
 Agent Relay collects anonymous usage data to improve the product.
@@ -231,6 +231,7 @@ mod hex {
 /// All public methods are synchronous and never block or fail.
 pub struct TelemetryClient {
     enabled: bool,
+    api_key: String,
     distinct_id: String,
     tx: Option<mpsc::UnboundedSender<PostHogCapture>>,
 }
@@ -259,10 +260,20 @@ impl TelemetryClient {
         if !enabled {
             return Self {
                 enabled: false,
+                api_key: String::new(),
                 distinct_id: String::new(),
                 tx: None,
             };
         }
+
+        let Some(api_key) = Self::resolve_api_key() else {
+            return Self {
+                enabled: false,
+                api_key: String::new(),
+                distinct_id: String::new(),
+                tx: None,
+            };
+        };
 
         let distinct_id = load_or_create_machine_id()
             .map(|id| anonymous_id(&id))
@@ -282,6 +293,7 @@ impl TelemetryClient {
 
         Self {
             enabled: true,
+            api_key,
             distinct_id,
             tx: Some(tx),
         }
@@ -313,7 +325,7 @@ impl TelemetryClient {
         }
 
         let capture = PostHogCapture {
-            api_key: POSTHOG_API_KEY.to_string(),
+            api_key: self.api_key.clone(),
             event: event.name().to_string(),
             distinct_id: self.distinct_id.clone(),
             properties: props,
@@ -348,6 +360,14 @@ impl TelemetryClient {
             return false;
         }
         true
+    }
+
+    fn resolve_api_key() -> Option<String> {
+        std::env::var("POSTHOG_API_KEY")
+            .ok()
+            .or_else(|| POSTHOG_API_KEY_BUILD.map(ToOwned::to_owned))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
     }
 }
 
@@ -439,6 +459,7 @@ mod tests {
         std::env::set_var("AGENT_RELAY_TELEMETRY_DISABLED", "1");
         let client = TelemetryClient {
             enabled: false,
+            api_key: String::new(),
             distinct_id: String::new(),
             tx: None,
         };

@@ -347,12 +347,46 @@ struct WorkerHandle {
     spawned_at: Instant,
 }
 
+fn telemetry_cli(spec: &AgentSpec) -> String {
+    spec.cli
+        .as_deref()
+        .map(normalize_cli_name)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn classify_release_reason(reason: Option<&str>, fallback: &'static str) -> String {
+    let Some(reason) = reason.map(str::trim).filter(|value| !value.is_empty()) else {
+        return fallback.to_string();
+    };
+
+    match reason.to_ascii_lowercase().as_str() {
+        // Keep known reasons low-cardinality for analytics consistency.
+        "sdk_request" | "sdk_release" | "manual" | "user" | "explicit" => "sdk_request".to_string(),
+        "relaycast_release" | "relaycast_ws" | "dashboard" | "ws_command" => {
+            "relaycast_release".to_string()
+        }
+        "shutdown" | "broker_shutdown" | "graceful_shutdown" => "shutdown".to_string(),
+        "timeout" | "idle_timeout" => "timeout".to_string(),
+        _ => fallback.to_string(),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PendingDelivery {
     worker_name: String,
     delivery: RelayDelivery,
     attempts: u32,
     next_retry_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct ExitedWorker {
+    name: String,
+    exit_code: Option<i32>,
+    signal: Option<String>,
+    cli: String,
+    lifetime_seconds: u64,
 }
 
 /// Serializable snapshot of pending deliveries for crash recovery.
@@ -895,7 +929,7 @@ impl WorkerRegistry {
         Ok(())
     }
 
-    async fn reap_exited(&mut self) -> Result<Vec<(String, Option<i32>, Option<String>)>> {
+    async fn reap_exited(&mut self) -> Result<Vec<ExitedWorker>> {
         let names: Vec<String> = self.workers.keys().cloned().collect();
         let mut exited = Vec::new();
         for name in names {
@@ -953,7 +987,7 @@ impl WorkerRegistry {
                 (None, false)
             };
             if let Some(status) = status {
-                let code = status.code();
+                let exit_code = status.code();
                 #[cfg(unix)]
                 let signal = {
                     use std::os::unix::process::ExitStatusExt;
@@ -961,15 +995,29 @@ impl WorkerRegistry {
                 };
                 #[cfg(not(unix))]
                 let signal: Option<String> = None;
-                self.workers.remove(&name);
-                self.initial_tasks.remove(&name);
-                exited.push((name, code, signal));
+                if let Some(handle) = self.workers.remove(&name) {
+                    self.initial_tasks.remove(&name);
+                    exited.push(ExitedWorker {
+                        name,
+                        exit_code,
+                        signal,
+                        cli: telemetry_cli(&handle.spec),
+                        lifetime_seconds: handle.spawned_at.elapsed().as_secs(),
+                    });
+                }
             } else if gone_via_kill0 {
                 // Process is gone but try_wait didn't report it.
                 // Treat as exited with unknown exit code.
-                self.workers.remove(&name);
-                self.initial_tasks.remove(&name);
-                exited.push((name, None, None));
+                if let Some(handle) = self.workers.remove(&name) {
+                    self.initial_tasks.remove(&name);
+                    exited.push(ExitedWorker {
+                        name,
+                        exit_code: None,
+                        signal: None,
+                        cli: telemetry_cli(&handle.spec),
+                        lifetime_seconds: handle.spawned_at.elapsed().as_secs(),
+                    });
+                }
             }
         }
         Ok(exited)
@@ -1921,6 +1969,16 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         match ws_event {
                             WsEvent::AgentReleaseRequested(event) => {
                                 let name = event.agent.name;
+                                let (cli, lifetime_seconds) = workers
+                                    .workers
+                                    .get(&name)
+                                    .map(|handle| {
+                                        (
+                                            telemetry_cli(&handle.spec),
+                                            handle.spawned_at.elapsed().as_secs(),
+                                        )
+                                    })
+                                    .unwrap_or_else(|| ("unknown".to_string(), 0));
                                 workers.supervisor.unregister(&name);
                                 workers.metrics.on_release(&name);
                                 match workers.release(&name).await {
@@ -1940,9 +1998,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             ).await;
                                         }
                                         telemetry.track(TelemetryEvent::AgentRelease {
-                                            cli: String::new(),
+                                            cli,
                                             release_reason: "relaycast_release".to_string(),
-                                            lifetime_seconds: 0,
+                                            lifetime_seconds,
                                         });
                                         state.agents.remove(&name);
                                         if paths.persist {
@@ -2662,6 +2720,23 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         signal = ?signal,
                                         "worker_exited received — cleaning up"
                                     );
+                                    let (cli, lifetime_seconds) = workers
+                                        .workers
+                                        .get(&name)
+                                        .map(|handle| {
+                                            (
+                                                telemetry_cli(&handle.spec),
+                                                handle.spawned_at.elapsed().as_secs(),
+                                            )
+                                        })
+                                        .unwrap_or_else(|| ("unknown".to_string(), 0));
+                                    if code.unwrap_or(0) != 0 || signal.is_some() {
+                                        telemetry.track(TelemetryEvent::AgentCrash {
+                                            cli,
+                                            exit_code: code,
+                                            lifetime_seconds,
+                                        });
+                                    }
                                     // Remove from registry so reap_exited won't
                                     // double-process this worker.
                                     workers.workers.remove(&name);
@@ -2791,31 +2866,34 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         vec![]
                     }
                 };
-                for (name, code, signal) in &exited {
+                for exited_worker in &exited {
+                    let name = &exited_worker.name;
+                    let code = exited_worker.exit_code;
+                    let signal = exited_worker.signal.clone();
                     // Record crash in insights
-                    let (category, description) = relay_broker::crash_insights::CrashInsights::analyze(*code, signal.as_deref());
+                    let (category, description) = relay_broker::crash_insights::CrashInsights::analyze(code, signal.as_deref());
                     crash_insights.record(relay_broker::crash_insights::CrashRecord {
                         agent_name: name.clone(),
-                        exit_code: *code,
+                        exit_code: code,
                         signal: signal.clone(),
                         timestamp: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs(),
-                        uptime_secs: 0,
+                        uptime_secs: exited_worker.lifetime_seconds,
                         category,
                         description,
                     });
 
                     telemetry.track(TelemetryEvent::AgentCrash {
-                        cli: String::new(),
-                        exit_code: *code,
-                        lifetime_seconds: 0,
+                        cli: exited_worker.cli.clone(),
+                        exit_code: code,
+                        lifetime_seconds: exited_worker.lifetime_seconds,
                     });
 
                     // Check supervisor for restart decision
                     use relay_broker::supervisor::RestartDecision;
-                    match workers.supervisor.on_exit(name, *code, signal.as_deref()) {
+                    match workers.supervisor.on_exit(name, code, signal.as_deref()) {
                         Some(RestartDecision::Restart { delay }) => {
                             // Keep pending deliveries — we'll redeliver after restart
                             workers.metrics.on_crash(name);
@@ -3743,11 +3821,16 @@ async fn handle_sdk_frame(
                 "releasing worker from sdk request"
             );
 
-            let lifetime_seconds = workers
+            let (cli, lifetime_seconds) = workers
                 .workers
                 .get(&payload.name)
-                .map(|h| h.spawned_at.elapsed().as_secs())
-                .unwrap_or(0);
+                .map(|handle| {
+                    (
+                        telemetry_cli(&handle.spec),
+                        handle.spawned_at.elapsed().as_secs(),
+                    )
+                })
+                .unwrap_or_else(|| ("unknown".to_string(), 0));
 
             // Capture continuity data before releasing the agent.
             let persisted = state.agents.get(&payload.name).cloned();
@@ -3837,8 +3920,8 @@ async fn handle_sdk_frame(
             state.save(state_path)?;
 
             telemetry.track(TelemetryEvent::AgentRelease {
-                cli: String::new(),
-                release_reason: payload.reason.unwrap_or_else(|| "sdk_request".to_string()),
+                cli,
+                release_reason: classify_release_reason(payload.reason.as_deref(), "sdk_request"),
                 lifetime_seconds,
             });
 

@@ -37,6 +37,16 @@ Agent Relay takes your privacy seriously and does **not** collect:
 
 Data is never shared with third parties.
 
+## How is telemetry configured in builds?
+
+Official release artifacts (npm packages and broker binaries) inject the PostHog project key during CI from a GitHub repository variable.
+
+If you build from source locally and still want telemetry enabled, export:
+
+```sh
+export POSTHOG_API_KEY=phc_xxx
+```
+
 ## How can I view what is being collected?
 
 To see telemetry events being sent, set the `RUST_LOG` environment variable:

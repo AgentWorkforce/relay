@@ -21,16 +21,16 @@ jobs:
       - name: Fetch repository metrics and send snapshot to PostHog
         env:
           GITHUB_REPOSITORY_NAME: ${{ github.repository }}
-          POSTHOG_PROJECT_API_KEY: ${{ secrets.POSTHOG_PROJECT_API_KEY }}
+          POSTHOG_API_KEY: ${{ vars.POSTHOG_API_KEY }}
         run: |
           set -euo pipefail
 
-          if [ -z "${POSTHOG_PROJECT_API_KEY:-}" ]; then
-            echo "POSTHOG_PROJECT_API_KEY is not set. Add it as a repository secret."
+          if [ -z "${POSTHOG_API_KEY:-}" ]; then
+            echo "POSTHOG_API_KEY is not set. Add it as a repository variable."
             exit 1
           fi
 
-          posthog_api_key="${POSTHOG_PROJECT_API_KEY}"
+          posthog_api_key="${POSTHOG_API_KEY}"
           posthog_host="https://us.i.posthog.com"
           github_api_url="https://api.github.com/repos/${GITHUB_REPOSITORY_NAME}"
 

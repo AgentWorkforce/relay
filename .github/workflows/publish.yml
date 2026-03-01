@@ -67,6 +67,8 @@ permissions:
 
 env:
   NPM_CONFIG_FUND: false
+  POSTHOG_API_KEY: ${{ vars.POSTHOG_API_KEY }}
+  POSTHOG_HOST: https://us.i.posthog.com
 
 jobs:
   # Build Rust broker binary for all platforms (needed by SDK's AgentRelayClient)

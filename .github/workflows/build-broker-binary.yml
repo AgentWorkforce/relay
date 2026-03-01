@@ -78,6 +78,8 @@ jobs:
           fi
 
       - name: Build static binary
+        env:
+          POSTHOG_API_KEY: ${{ vars.POSTHOG_API_KEY }}
         run: |
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc

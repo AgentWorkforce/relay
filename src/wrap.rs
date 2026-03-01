@@ -735,12 +735,15 @@ pub(crate) async fn run_wrap(
                                     is_human_sender(&cmd_event.invoked_by, SenderKind::Unknown);
                                 let owner = spawner.owner_of(&params.name);
                                 if can_release_child(owner, &cmd_event.invoked_by, sender_is_human) {
+                                    let (cli, lifetime_seconds) = spawner
+                                        .child_telemetry(&params.name)
+                                        .unwrap_or_else(|| ("unknown".to_string(), 0));
                                     match spawner.release(&params.name, Duration::from_secs(2)).await {
                                         Ok(()) => {
                                             telemetry.track(TelemetryEvent::AgentRelease {
-                                                cli: String::new(),
+                                                cli,
                                                 release_reason: "ws_command".to_string(),
-                                                lifetime_seconds: 0,
+                                                lifetime_seconds,
                                             });
                                             tracing::info!(
                                                 child = %params.name,
@@ -962,14 +965,19 @@ pub(crate) async fn run_wrap(
             // Reap child agents that have exited on their own
             _ = reap_tick.tick() => {
                 if let Ok(exited) = spawner.reap_exited().await {
-                    for name in exited {
+                    for child in exited {
                         telemetry.track(TelemetryEvent::AgentCrash {
-                            cli: String::new(),
-                            exit_code: None,
-                            lifetime_seconds: 0,
+                            cli: child.cli.clone(),
+                            exit_code: child.exit_code,
+                            lifetime_seconds: child.lifetime_seconds,
                         });
-                        tracing::info!(child = %name, "child agent exited");
-                        eprintln!("\r\n[agent-relay] child '{}' exited\r", name);
+                        tracing::info!(
+                            child = %child.name,
+                            exit_code = ?child.exit_code,
+                            signal = ?child.signal,
+                            "child agent exited"
+                        );
+                        eprintln!("\r\n[agent-relay] child '{}' exited\r", child.name);
                     }
                 }
             }

@@ -17,7 +17,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "node ./scripts/write-build-config.mjs && tsc",
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:watch": "vitest"

@@ -43,8 +43,10 @@ error() {
 step() { echo -e "\n${CYAN}${BOLD}$1${NC}"; }
 
 # Telemetry (respects AGENT_RELAY_TELEMETRY_DISABLED)
-POSTHOG_API_KEY="phc_2uDu01GtnLABJpVkWw4ri1OgScLU90aEmXmDjufGdqr"
-POSTHOG_HOST="https://us.i.posthog.com"
+# The key is provided at runtime via POSTHOG_API_KEY, including in release
+# pipelines.
+POSTHOG_API_KEY="${POSTHOG_API_KEY:-}"
+POSTHOG_HOST="${POSTHOG_HOST:-https://us.i.posthog.com}"
 INSTALL_ID=""
 INSTALL_METHOD=""
 
@@ -74,6 +76,9 @@ generate_install_id() {
 
 track_event() {
     if ! telemetry_enabled; then
+        return 0
+    fi
+    if [ -z "${POSTHOG_API_KEY:-}" ]; then
         return 0
     fi
 

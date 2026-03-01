@@ -1,4 +1,8 @@
-use std::{collections::HashMap, process::Stdio, time::Duration};
+use std::{
+    collections::HashMap,
+    process::Stdio,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
 use relay_broker::snippets::configure_relaycast_mcp_with_token;
@@ -7,7 +11,7 @@ use tokio::{
     time::timeout,
 };
 
-use crate::helpers::parse_cli_command;
+use crate::helpers::{normalize_cli_name, parse_cli_command};
 
 #[cfg(unix)]
 use nix::{
@@ -18,7 +22,18 @@ use nix::{
 #[derive(Debug)]
 struct ManagedChild {
     parent: Option<String>,
+    cli: String,
+    spawned_at: Instant,
     child: Child,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitedChild {
+    pub name: String,
+    pub cli: String,
+    pub exit_code: Option<i32>,
+    pub signal: Option<String>,
+    pub lifetime_seconds: u64,
 }
 
 #[derive(Debug, Default)]
@@ -118,6 +133,8 @@ impl Spawner {
             child_name.to_string(),
             ManagedChild {
                 parent: parent.map(ToOwned::to_owned),
+                cli: normalize_cli_name(&resolved_cli),
+                spawned_at: Instant::now(),
                 child,
             },
         );
@@ -130,6 +147,12 @@ impl Spawner {
             .and_then(|managed| managed.parent.as_deref())
     }
 
+    pub fn child_telemetry(&self, child_name: &str) -> Option<(String, u64)> {
+        self.children
+            .get(child_name)
+            .map(|managed| (managed.cli.clone(), managed.spawned_at.elapsed().as_secs()))
+    }
+
     pub async fn release(&mut self, name: &str, timeout_duration: Duration) -> Result<()> {
         let mut managed = self
             .children
@@ -139,19 +162,34 @@ impl Spawner {
         terminate_child(&mut managed.child, timeout_duration).await
     }
 
-    pub async fn reap_exited(&mut self) -> Result<Vec<String>> {
+    pub async fn reap_exited(&mut self) -> Result<Vec<ExitedChild>> {
         let names: Vec<String> = self.children.keys().cloned().collect();
         let mut exited = Vec::new();
 
         for name in names {
-            let remove = if let Some(child) = self.children.get_mut(&name) {
-                child.child.try_wait()?.is_some()
+            let status = if let Some(child) = self.children.get_mut(&name) {
+                child.child.try_wait()?
             } else {
-                false
+                None
             };
-            if remove {
-                self.children.remove(&name);
-                exited.push(name);
+            if let Some(status) = status {
+                if let Some(managed) = self.children.remove(&name) {
+                    #[cfg(unix)]
+                    let signal = {
+                        use std::os::unix::process::ExitStatusExt;
+                        status.signal().map(|value| value.to_string())
+                    };
+                    #[cfg(not(unix))]
+                    let signal: Option<String> = None;
+
+                    exited.push(ExitedChild {
+                        name,
+                        cli: managed.cli,
+                        exit_code: status.code(),
+                        signal,
+                        lifetime_seconds: managed.spawned_at.elapsed().as_secs(),
+                    });
+                }
             }
         }
 
@@ -217,7 +255,7 @@ pub fn spawn_env_vars<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[cfg(unix)]
     use nix::unistd::{getsid, Pid};
@@ -244,12 +282,15 @@ mod tests {
             "test".into(),
             super::ManagedChild {
                 parent: None,
+                cli: "sleep".to_string(),
+                spawned_at: Instant::now(),
                 child,
             },
         );
 
         let exited = spawner.reap_exited().await.unwrap();
-        assert_eq!(exited, vec!["test".to_string()]);
+        assert_eq!(exited.len(), 1);
+        assert_eq!(exited[0].name, "test");
     }
 
     #[tokio::test]

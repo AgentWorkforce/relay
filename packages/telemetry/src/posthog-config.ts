@@ -2,38 +2,37 @@
  * PostHog configuration.
  *
  * Environment variables:
- *   POSTHOG_API_KEY     - Override API key (any environment)
- *   POSTHOG_HOST        - Override host URL
+ *   POSTHOG_API_KEY   - Runtime override
+ *   POSTHOG_HOST      - Runtime host override
  *
  * Key selection:
- *   1. POSTHOG_API_KEY (if set, always used)
- *   3. PROD_API_KEY (fallback)
+ *   1. POSTHOG_API_KEY (runtime override)
+ *   2. BUILD_POSTHOG_API_KEY (injected during official publish builds)
  */
 
-// =============================================================================
-// Configure your PostHog production key here
-// =============================================================================
-
-/** Production PostHog API key (write-only, safe for client-side) */
-const PROD_API_KEY = 'phc_2uDu01GtnLABJpVkWw4ri1OgScLU90aEmXmDjufGdqr';
-const HOST = 'https://us.i.posthog.com';
+import {
+  BUILD_POSTHOG_API_KEY,
+  BUILD_POSTHOG_HOST,
+} from './posthog-build-config.js';
 
 // =============================================================================
 // Exports
 // =============================================================================
 
 export function getPostHogConfig(): { apiKey: string; host: string } | null {
-  const host = process.env.POSTHOG_HOST || HOST;
+  const host = process.env.POSTHOG_HOST ||
+    BUILD_POSTHOG_HOST ||
+    'https://us.i.posthog.com';
 
-  // Explicit override for any environment
-  if (process.env.POSTHOG_API_KEY) {
-    return { apiKey: process.env.POSTHOG_API_KEY, host };
+  const runtimeApiKey = process.env.POSTHOG_API_KEY;
+
+  if (runtimeApiKey) {
+    return { apiKey: runtimeApiKey, host };
   }
 
-  // Fallback to production key
-  if (!PROD_API_KEY) {
+  if (!BUILD_POSTHOG_API_KEY) {
     return null;
   }
 
-  return { apiKey: PROD_API_KEY, host };
+  return { apiKey: BUILD_POSTHOG_API_KEY, host };
 }
