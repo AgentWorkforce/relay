@@ -1,35 +1,6 @@
-# Dependencies - must be rebuilt inside container for correct platform
+target/debug
+target/aarch64*
 node_modules
-
-# Build outputs
-dist
-
-# Development files
+packages/*/node_modules
+packages/*/dist
 .git
-.github
-.vscode
-*.log
-.env*
-.DS_Store
-
-# Test files
-coverage
-*.test.ts
-*.spec.ts
-__tests__
-
-# Docker files (avoid recursive copy)
-Dockerfile*
-docker-compose*
-
-# Documentation
-*.md
-!README.md
-docs
-!relay-snippets
-
-# Misc
-.beads
-.claude
-.openskills
-tmp

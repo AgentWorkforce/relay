@@ -277,7 +277,33 @@ impl AuthClient {
                     if is_conflict_code(&code) || status == 409 =>
                 {
                     if strict_name {
-                        anyhow::bail!("agent name '{}' already exists", name);
+                        // Attempt to reclaim the stale agent by rotating its token.
+                        // This handles the case where a previous container died and
+                        // left an offline agent entry in Relaycast.
+                        tracing::warn!(
+                            target = "relay_broker::auth",
+                            agent_name = %name,
+                            "agent name conflict, attempting token rotation to reclaim"
+                        );
+                        match relay.rotate_agent_token(&name).await {
+                            Ok(result) => {
+                                return Ok((
+                                    String::new(), // id not returned by rotate
+                                    name,
+                                    result.token,
+                                    None,
+                                ));
+                            }
+                            Err(rotate_err) => {
+                                tracing::error!(
+                                    target = "relay_broker::auth",
+                                    agent_name = %name,
+                                    error = %rotate_err,
+                                    "token rotation failed, cannot reclaim stale agent"
+                                );
+                                anyhow::bail!("agent name '{}' already exists", name);
+                            }
+                        }
                     }
                     if !attempted_retry {
                         attempted_retry = true;
