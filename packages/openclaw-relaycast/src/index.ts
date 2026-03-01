@@ -1,5 +1,5 @@
 export type { GatewayConfig, InboundMessage, DeliveryResult } from './types.js';
-export { InboundGateway, type GatewayOptions } from './gateway.js';
+export { InboundGateway, type GatewayOptions, type RelaySender } from './gateway.js';
 export {
   detectOpenClaw,
   loadGatewayConfig,

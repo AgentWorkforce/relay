@@ -1,13 +1,26 @@
-import { AgentRelayClient, type SendMessageInput } from '@agent-relay/sdk';
+import type { SendMessageInput } from '@agent-relay/sdk';
 import { RelayCast, type AgentClient, type MessageCreatedEvent, type MessageWithMeta } from '@relaycast/sdk';
 
 import type { GatewayConfig, InboundMessage, DeliveryResult } from './types.js';
 
+/**
+ * A minimal interface for sending messages via Agent Relay.
+ * Accepts either AgentRelayClient or AgentRelay — any object with a
+ * compatible sendMessage() method.
+ */
+export interface RelaySender {
+  sendMessage(input: SendMessageInput): Promise<{ event_id: string; targets?: string[] }>;
+}
+
 export interface GatewayOptions {
   /** Gateway configuration. */
   config: GatewayConfig;
-  /** Optional pre-existing AgentRelayClient instance. */
-  relayClient?: AgentRelayClient;
+  /**
+   * Pre-existing relay sender for message delivery.
+   * Pass the API server's AgentRelay instance so all gateways share a single
+   * broker process instead of each spawning their own.
+   */
+  relaySender?: RelaySender;
 }
 
 function normalizeChannelName(channel: string): string {
@@ -15,8 +28,7 @@ function normalizeChannelName(channel: string): string {
 }
 
 export class InboundGateway {
-  private relayClient: AgentRelayClient | null = null;
-  private readonly providedRelayClient: AgentRelayClient | null = null;
+  private readonly relaySender: RelaySender | null;
   private relayAgentClient: AgentClient | null = null;
   private readonly relaycast: RelayCast;
   private readonly config: GatewayConfig;
@@ -35,8 +47,7 @@ export class InboundGateway {
       ...options.config,
       channels: options.config.channels.map(normalizeChannelName),
     };
-    this.providedRelayClient = options.relayClient ?? null;
-    this.relayClient = options.relayClient ?? null;
+    this.relaySender = options.relaySender ?? null;
     this.relaycast = new RelayCast({
       apiKey: this.config.apiKey,
       baseUrl: this.config.baseUrl,
@@ -111,7 +122,6 @@ export class InboundGateway {
       }),
     );
 
-    await this.ensureDeliveryRelayClient();
     await this.ensureChannelMembership();
 
     // Initial catch-up in case messages arrived before realtime subscription was active.
@@ -154,14 +164,8 @@ export class InboundGateway {
       this.relayAgentClient = null;
     }
 
-    if (this.relayClient && this.relayClient !== this.providedRelayClient) {
-      try {
-        await this.relayClient.shutdown();
-      } catch {
-        // Best effort
-      }
-      this.relayClient = null;
-    }
+    // Note: we do NOT shut down the relaySender — it's owned by the caller
+    // (the API server's shared relay instance).
 
     this.processingMessageIds.clear();
     this.channelCursor.clear();
@@ -186,20 +190,6 @@ export class InboundGateway {
     const nowMs = Date.now();
     this.cleanupSeenMap(nowMs);
     this.seenMessageIds.set(messageId, nowMs);
-  }
-
-  private async ensureDeliveryRelayClient(): Promise<void> {
-    if (this.relayClient) return;
-
-    try {
-      this.relayClient = await AgentRelayClient.start({
-        clientName: 'openclaw-relaycast',
-        clientVersion: '1.0.0',
-      });
-    } catch {
-      // Non-fatal: sessions RPC fallback can still deliver.
-      this.relayClient = null;
-    }
   }
 
   private async ensureChannelMembership(): Promise<void> {
@@ -277,8 +267,9 @@ export class InboundGateway {
     if (!this.running) return;
     if (this.processingMessageIds.has(message.id) || this.isSeen(message.id)) return;
 
-    // Avoid echo loops.
-    if (message.from === this.config.clawName) {
+    // Avoid echo loops — skip messages from this claw or its viewer identity.
+    const viewerName = `viewer-${this.config.clawName}`;
+    if (message.from === this.config.clawName || message.from === viewerName) {
       this.channelCursor.set(normalizeChannelName(message.channel), message.id);
       this.markSeen(message.id);
       return;
@@ -298,13 +289,17 @@ export class InboundGateway {
 
   /** Handle an inbound Relaycast message. */
   private async onMessage(message: InboundMessage): Promise<DeliveryResult> {
-    // Try primary delivery via Agent Relay SDK.
-    const primaryOk = await this.deliverViaRelaySdk(message);
-    if (primaryOk) {
-      return { ok: true, method: 'relay_sdk' };
+    // Try primary delivery via the shared relay sender (no extra broker spawned).
+    if (this.relaySender) {
+      const ok = await this.deliverViaRelaySender(message);
+      if (ok) {
+        return { ok: true, method: 'relay_sdk' };
+      }
     }
 
-    // Fallback to OpenClaw sessions_send RPC.
+    // Fallback to OpenClaw sessions_send RPC (only works when the gateway
+    // runs in the same container as the OpenClaw gateway — primarily for
+    // future in-container use).
     const fallbackOk = await this.deliverViaSessionsRpc(message);
     if (fallbackOk) {
       return { ok: true, method: 'sessions_rpc' };
@@ -316,10 +311,9 @@ export class InboundGateway {
     return { ok: false, method: 'failed', error: 'All delivery methods failed' };
   }
 
-  /** PRIMARY: Deliver via Agent Relay SDK sendMessage(). */
-  private async deliverViaRelaySdk(message: InboundMessage): Promise<boolean> {
-    await this.ensureDeliveryRelayClient();
-    if (!this.relayClient) return false;
+  /** Deliver via the caller-provided relay sender (shared broker). */
+  private async deliverViaRelaySender(message: InboundMessage): Promise<boolean> {
+    if (!this.relaySender) return false;
 
     const input: SendMessageInput = {
       to: this.config.clawName,
@@ -333,28 +327,10 @@ export class InboundGateway {
     };
 
     try {
-      const result = await this.relayClient.sendMessage(input);
+      const result = await this.relaySender.sendMessage(input);
       return Boolean(result.event_id) && result.event_id !== 'unsupported_operation';
     } catch {
-      // Refresh dynamically-created client and retry once.
-      if (this.relayClient !== this.providedRelayClient) {
-        try {
-          await this.relayClient.shutdown();
-        } catch {
-          // Best effort
-        }
-        this.relayClient = null;
-        await this.ensureDeliveryRelayClient();
-      }
-
-      if (!this.relayClient) return false;
-
-      try {
-        const result = await this.relayClient.sendMessage(input);
-        return Boolean(result.event_id) && result.event_id !== 'unsupported_operation';
-      } catch {
-        return false;
-      }
+      return false;
     }
   }
 
