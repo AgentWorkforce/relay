@@ -1972,6 +1972,16 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 continue;
                             }
                             WsEvent::AgentSpawnRequested(event) => {
+                                // In single-agent mode (BROKER_NO_REMOTE_SPAWN=1),
+                                // skip remote spawn requests. Container brokers
+                                // spawned via spawnFromEnv only manage their own agent.
+                                if std::env::var("BROKER_NO_REMOTE_SPAWN").unwrap_or_default() == "1" {
+                                    tracing::info!(
+                                        agent = %event.agent.name,
+                                        "ignoring remote spawn request (BROKER_NO_REMOTE_SPAWN=1)"
+                                    );
+                                    continue;
+                                }
                                 let name = event.agent.name;
                                 let cli = event.agent.cli;
                                 let task = Some(event.agent.task).filter(|value| !value.trim().is_empty());

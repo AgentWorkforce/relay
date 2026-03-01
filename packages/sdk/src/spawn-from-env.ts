@@ -202,12 +202,18 @@ export async function spawnFromEnv(
     );
   }
 
+  // Single-agent containers must not handle remote spawn requests from
+  // Relaycast, otherwise all brokers in the workspace will try to spawn
+  // every agent. Set BROKER_NO_REMOTE_SPAWN=1 so the Rust broker skips
+  // AgentSpawnRequested events.
+  const brokerEnv = { ...env, BROKER_NO_REMOTE_SPAWN: "1" };
+
   const relay = new AgentRelay({
     binaryPath: options.binaryPath ?? parsed.BROKER_BINARY_PATH,
     brokerName: options.brokerName ?? `broker-${policy.name}`,
     channels: policy.channels,
     cwd: policy.cwd ?? process.cwd(),
-    env: env as NodeJS.ProcessEnv,
+    env: brokerEnv as NodeJS.ProcessEnv,
   });
 
   relay.onAgentSpawned = (agent) => {
