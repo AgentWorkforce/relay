@@ -1,6 +1,9 @@
 import { setup } from './setup.js';
 import { loadGatewayConfig } from './config.js';
 import { InboundGateway } from './gateway.js';
+import { listOpenClaws, releaseOpenClaw, spawnOpenClaw } from './control.js';
+import { startMcpServer } from './mcp/server.js';
+import { runtimeSetup } from './runtime/setup.js';
 
 function printUsage(): void {
   console.log(`
@@ -10,6 +13,11 @@ Usage:
   openclaw-relaycast setup [key]     Install & configure Relaycast bridge
   openclaw-relaycast gateway         Start inbound message gateway
   openclaw-relaycast status          Check connection status
+  openclaw-relaycast spawn           Spawn an OpenClaw via ClawRunner control API
+  openclaw-relaycast list            List OpenClaws in a workspace
+  openclaw-relaycast release         Release an OpenClaw by agent name
+  openclaw-relaycast mcp-server      Start MCP server (spawn/list/release tools)
+  openclaw-relaycast runtime-setup   Run container runtime setup (auth, config, identity, patching)
   openclaw-relaycast help            Show this help
 
 Setup options:
@@ -17,10 +25,23 @@ Setup options:
   --channels <ch1,ch2>   Channels to join (default: general)
   --base-url <url>       Relaycast API URL (default: https://api.relaycast.dev)
 
+Control API options:
+  --workspace-id <id>    Workspace UUID (required for spawn/list/release)
+  --name <name>          Claw name (required for spawn)
+  --agent <agentName>    Agent name (required for release)
+  --role <role>          Optional role for spawned claw
+  --model <modelRef>     Optional model reference
+  --channels <a,b,c>     Optional channels
+  --system-prompt <txt>  Optional system prompt
+  --reason <text>        Optional release reason
+
 Examples:
   openclaw-relaycast setup rk_live_abc123
   openclaw-relaycast setup --name my-claw --channels general,alerts
   openclaw-relaycast gateway
+  openclaw-relaycast spawn --workspace-id ws_uuid --name researcher-1
+  openclaw-relaycast list --workspace-id ws_uuid
+  openclaw-relaycast release --workspace-id ws_uuid --agent claw-ws_uuid-researcher-1
 `.trim());
 }
 
@@ -134,6 +155,74 @@ async function runStatus(): Promise<void> {
   }
 }
 
+async function runSpawn(flags: Record<string, string>): Promise<void> {
+  const workspaceId = flags['workspace-id'];
+  const name = flags['name'];
+  if (!workspaceId || !name) {
+    console.error('spawn requires --workspace-id and --name');
+    process.exit(1);
+  }
+
+  const channels = flags['channels']
+    ?.split(',')
+    .map((ch) => ch.trim())
+    .filter(Boolean);
+
+  const result = await spawnOpenClaw({
+    workspaceId,
+    name,
+    role: flags['role'],
+    model: flags['model'],
+    channels,
+    systemPrompt: flags['system-prompt'],
+    idempotencyKey: flags['idempotency-key'],
+  });
+
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function runList(flags: Record<string, string>): Promise<void> {
+  const workspaceId = flags['workspace-id'];
+  if (!workspaceId) {
+    console.error('list requires --workspace-id');
+    process.exit(1);
+  }
+
+  const result = await listOpenClaws(workspaceId);
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function runRelease(flags: Record<string, string>): Promise<void> {
+  const workspaceId = flags['workspace-id'];
+  const agentName = flags['agent'];
+  if (!workspaceId || !agentName) {
+    console.error('release requires --workspace-id and --agent');
+    process.exit(1);
+  }
+
+  const result = await releaseOpenClaw({
+    workspaceId,
+    agentName,
+    reason: flags['reason'],
+  });
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function runRuntimeSetup(flags: Record<string, string>): Promise<void> {
+  console.log('Running container runtime setup...');
+  const result = await runtimeSetup({
+    model: flags['model'],
+    name: flags['name'],
+    workspaceId: flags['workspace-id'],
+    role: flags['role'],
+    openclawDistDir: flags['dist-dir'],
+  });
+  console.log(`Runtime setup complete:`);
+  console.log(`  Model: ${result.modelRef}`);
+  console.log(`  Agent: ${result.agentName}`);
+  console.log(`  Workspace: ${result.workspaceId}`);
+}
+
 async function main(): Promise<void> {
   const { command, positional, flags } = parseArgs(process.argv);
 
@@ -146,6 +235,21 @@ async function main(): Promise<void> {
       break;
     case 'status':
       await runStatus();
+      break;
+    case 'spawn':
+      await runSpawn(flags);
+      break;
+    case 'list':
+      await runList(flags);
+      break;
+    case 'release':
+      await runRelease(flags);
+      break;
+    case 'mcp-server':
+      await startMcpServer();
+      break;
+    case 'runtime-setup':
+      await runRuntimeSetup(flags);
       break;
     case 'help':
     case '--help':

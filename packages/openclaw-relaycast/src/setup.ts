@@ -158,27 +158,44 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
         config.mcpServers = {};
       }
 
+      let changed = false;
+
       if (!config.mcpServers.relaycast) {
         config.mcpServers.relaycast = {
           command: 'npx',
           args: ['@relaycast/mcp'],
           env: {
-            RELAY_API_KEY: '${RELAY_API_KEY}',
+            RELAY_API_KEY: apiKey,
             ...(baseUrl !== 'https://api.relaycast.dev'
               ? { RELAY_BASE_URL: baseUrl }
               : {}),
           },
         };
+        changed = true;
+      }
 
+      if (!config.mcpServers['openclaw-spawner']) {
+        config.mcpServers['openclaw-spawner'] = {
+          command: 'npx',
+          args: ['openclaw-relaycast', 'mcp-server'],
+          env: {
+            RELAY_API_KEY: apiKey,
+            ...(baseUrl !== 'https://api.relaycast.dev'
+              ? { RELAY_BASE_URL: baseUrl }
+              : {}),
+          },
+        };
+        changed = true;
+      }
+
+      if (changed) {
         await writeFile(
           detection.configFile,
           JSON.stringify(config, null, 2) + '\n',
           'utf-8',
         );
-        mcpConfigured = true;
-      } else {
-        mcpConfigured = true; // Already configured
       }
+      mcpConfigured = true;
     } catch {
       // Non-fatal
     }

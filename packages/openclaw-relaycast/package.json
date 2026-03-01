@@ -1,7 +1,7 @@
 {
   "name": "openclaw-relaycast",
   "version": "1.0.0",
-  "description": "Relaycast bridge for OpenClaw — channels, threads, DMs, and real-time messaging",
+  "description": "Relaycast bridge for OpenClaw — messaging, identity, runtime setup, and local spawning",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,13 +13,22 @@
     "dev": "tsc --watch"
   },
   "dependencies": {
-    "@agent-relay/sdk": "workspace:*",
-    "@relaycast/sdk": "^0.4.0"
+    "@agent-relay/sdk": "^2.3.14",
+    "@relaycast/sdk": "^0.4.0",
+    "ws": "^8.0.0"
+  },
+  "optionalDependencies": {
+    "dockerode": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.0.0"
   },
   "files": [
     "dist/",
     "bin/",
-    "skill/"
+    "bridge/",
+    "skill/",
+    "templates/"
   ],
-  "keywords": ["openclaw", "relaycast", "agent-relay", "multi-agent", "messaging"]
+  "keywords": ["openclaw", "relaycast", "agent-relay", "multi-agent", "messaging", "spawn"]
 }
