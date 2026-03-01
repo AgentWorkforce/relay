@@ -1,0 +1,216 @@
+{
+  "version": 1,
+  "id": "trace_4b2jw4feqmea",
+  "timestamp": "2026-02-28T22:25:31.560Z",
+  "trajectory": "traj_kt9obghtist0",
+  "files": [
+    {
+      "path": "package-lock.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 105,
+              "end_line": 114,
+              "revision": "f08ab3c4bcc46aed5621eea12930c395002286fd"
+            },
+            {
+              "start_line": 284,
+              "end_line": 290,
+              "revision": "f08ab3c4bcc46aed5621eea12930c395002286fd"
+            },
+            {
+              "start_line": 8499,
+              "end_line": 8525,
+              "revision": "f08ab3c4bcc46aed5621eea12930c395002286fd"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/openclaw-adapter/README.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 97,
+              "revision": "f08ab3c4bcc46aed5621eea12930c395002286fd"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/openclaw-adapter/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 52,
+              "revision": "f08ab3c4bcc46aed5621eea12930c395002286fd"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/openclaw-adapter/src/adapter.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 324,
+              "revision": "f08ab3c4bcc46aed5621eea12930c395002286fd"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/openclaw-adapter/src/agent-map.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 127,
+              "revision": "f08ab3c4bcc46aed5621eea12930c395002286fd"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/openclaw-adapter/src/cli.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 109,
+              "revision": "f08ab3c4bcc46aed5621eea12930c395002286fd"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/openclaw-adapter/src/index.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 42,
+              "revision": "f08ab3c4bcc46aed5621eea12930c395002286fd"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/openclaw-adapter/src/openclaw-client.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 235,
+              "revision": "f08ab3c4bcc46aed5621eea12930c395002286fd"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/openclaw-adapter/src/types.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 114,
+              "revision": "f08ab3c4bcc46aed5621eea12930c395002286fd"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/openclaw-adapter/tsconfig.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 11,
+              "revision": "f08ab3c4bcc46aed5621eea12930c395002286fd"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/workflows/A2A_INTEGRATION_SPEC.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 573,
+              "revision": "f08ab3c4bcc46aed5621eea12930c395002286fd"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
