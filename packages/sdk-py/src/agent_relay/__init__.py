@@ -1,4 +1,20 @@
-"""Agent Relay Python SDK — workflow builder and runner."""
+"""Agent Relay Python SDK — direct spawn/message API and workflow builder."""
+
+# ── Primary API: Direct spawn/message (matches TypeScript SDK) ────────────────
+
+from .relay import AgentRelay, Agent, AgentSpawner, HumanHandle, Message, SpawnOptions
+from .models import Models
+from .client import AgentRelayClient, AgentRelayProtocolError, AgentRelayProcessError
+from .protocol import (
+    PROTOCOL_VERSION,
+    AgentRuntime,
+    AgentSpec,
+    BrokerEvent,
+    ProtocolEnvelope,
+    RestartPolicy as ProtocolRestartPolicy,
+)
+
+# ── Secondary API: Workflow builder (backward compatibility) ──────────────────
 
 from .builder import workflow, WorkflowBuilder, run_yaml
 from .templates import (
@@ -52,6 +68,24 @@ from .types import (
 )
 
 __all__ = [
+    # Primary API
+    "AgentRelay",
+    "Agent",
+    "AgentSpawner",
+    "HumanHandle",
+    "Message",
+    "SpawnOptions",
+    "Models",
+    "AgentRelayClient",
+    "AgentRelayProtocolError",
+    "AgentRelayProcessError",
+    "PROTOCOL_VERSION",
+    "AgentRuntime",
+    "AgentSpec",
+    "BrokerEvent",
+    "ProtocolEnvelope",
+    "ProtocolRestartPolicy",
+    # Workflow builder (backward compat)
     "workflow",
     "WorkflowBuilder",
     "run_yaml",

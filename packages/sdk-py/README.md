@@ -1,172 +1,130 @@
 # Agent Relay Python SDK
 
-Python SDK for defining and running Agent Relay workflows. Provides the same workflow builder API as the TypeScript SDK.
+Python SDK for real-time agent-to-agent communication. Spawn AI agents, send messages, and coordinate multi-agent workflows with a simple async API.
 
-## Installation
+## Install
 
 ```bash
 pip install agent-relay
 ```
 
-## Requirements
+The SDK automatically downloads the broker binary on first use — no additional setup required.
 
-- Python 3.10+
-- `agent-relay` CLI installed (`npm install -g agent-relay`)
-
-The SDK builds workflow configurations and executes them via the `agent-relay run` CLI.
-
-## Builder API
+## Quick Start
 
 ```python
-from agent_relay import workflow, VerificationCheck
+import asyncio
+from agent_relay import AgentRelay, Models
+
+async def main():
+    relay = AgentRelay(channels=["dev"])
+
+    # Event hooks
+    relay.on_message_received = lambda msg: print(f"[{msg.from_name}]: {msg.text}")
+    relay.on_agent_ready = lambda agent: print(f"  ✓ {agent.name} ready")
+    relay.on_agent_exited = lambda agent: print(f"  ✗ {agent.name} exited")
+
+    # Spawn agents
+    await relay.claude.spawn(
+        name="Reviewer",
+        model=Models.Claude.OPUS,
+        channels=["dev"],
+        task="Review the PR and suggest improvements",
+    )
+
+    await relay.codex.spawn(
+        name="Builder",
+        model=Models.Codex.GPT_5_3_CODEX,
+        channels=["dev"],
+        task="Implement the suggested improvements",
+    )
+
+    # Wait for both agents to be ready
+    await asyncio.gather(
+        relay.wait_for_agent_ready("Reviewer"),
+        relay.wait_for_agent_ready("Builder"),
+    )
+
+    # Let agents collaborate, then shut down
+    await asyncio.sleep(600)
+    await relay.shutdown()
+
+asyncio.run(main())
+```
+
+## API
+
+### AgentRelay
+
+The main entry point. Pass `channels` to subscribe to message channels.
+
+```python
+relay = AgentRelay(channels=["dev", "planning"])
+```
+
+### Spawning Agents
+
+Use runtime-specific spawners:
+
+```python
+await relay.claude.spawn(name="Agent1", model=Models.Claude.SONNET, channels=["dev"], task="...")
+await relay.codex.spawn(name="Agent2", model=Models.Codex.GPT_5_3_CODEX, channels=["dev"], task="...")
+await relay.gemini.spawn(name="Agent3", model=Models.Gemini.GEMINI_2_5_PRO, channels=["dev"], task="...")
+```
+
+### Sending Messages
+
+```python
+human = relay.system()
+await human.send_message(to="Agent1", text="Please start the analysis")
+```
+
+### Event Hooks
+
+```python
+relay.on_message_received = lambda msg: ...   # New message
+relay.on_agent_ready = lambda agent: ...       # Agent connected
+relay.on_agent_exited = lambda agent: ...      # Agent exited
+relay.on_agent_spawned = lambda agent: ...     # Agent spawned
+relay.on_worker_output = lambda data: ...      # Agent output
+relay.on_agent_idle = lambda agent: ...        # Agent idle
+```
+
+### Models
+
+```python
+Models.Claude.OPUS
+Models.Claude.SONNET
+Models.Claude.HAIKU
+
+Models.Codex.GPT_5_2_CODEX
+Models.Codex.GPT_5_3_CODEX
+
+Models.Gemini.GEMINI_2_5_PRO
+Models.Gemini.GEMINI_2_5_FLASH
+```
+
+## Workflow Builder (Advanced)
+
+For structured DAG-based workflows, the builder API is also available:
+
+```python
+from agent_relay import workflow
 
 result = (
     workflow("ship-feature")
-    .description("Plan, build, and verify a feature")
-    .pattern("dag")
-    .max_concurrency(3)
-    .timeout(60 * 60 * 1000)
-    .channel("feature-channel")
-    .idle_nudge(nudge_after_ms=120_000, escalate_after_ms=120_000, max_nudges=1)
-    .trajectories(enabled=True, reflect_on_converge=True)
     .agent("planner", cli="claude", role="Planning lead")
-    .agent(
-        "builder",
-        cli="codex",
-        role="Implementation engineer",
-        interactive=False,
-        idle_threshold_secs=45,
-        retries=1,
-    )
+    .agent("builder", cli="codex", role="Implementation engineer")
     .step("plan", agent="planner", task="Create a detailed plan")
-    .step(
-        "build",
-        agent="builder",
-        task="Implement the approved plan",
-        depends_on=["plan"],
-        verification=VerificationCheck(type="output_contains", value="DONE"),
-    )
+    .step("build", agent="builder", task="Implement the plan", depends_on=["plan"])
     .run()
 )
 ```
 
-## Workflow Templates
+## Requirements
 
-Built-in templates for common multi-agent patterns:
-
-### Fan-Out
-
-Parallel execution across multiple agents with synthesis:
-
-```python
-from agent_relay import fan_out
-
-builder = fan_out(
-    "parallel-analysis",
-    tasks=[
-        "Analyze backend modules and summarize risks",
-        "Analyze frontend modules and summarize risks",
-    ],
-    synthesis_task="Synthesize both analyses into one prioritized action plan",
-)
-
-result = builder.run()
-```
-
-### Pipeline
-
-Sequential stage-based execution:
-
-```python
-from agent_relay import pipeline, PipelineStage
-
-builder = pipeline(
-    "release-pipeline",
-    stages=[
-        PipelineStage(name="plan", task="Create release plan"),
-        PipelineStage(name="implement", task="Implement planned changes"),
-        PipelineStage(name="verify", task="Validate and produce release notes"),
-    ],
-)
-```
-
-### DAG
-
-Direct workflow definition with explicit dependencies:
-
-```python
-from agent_relay import dag
-
-builder = dag(
-    "complex-workflow",
-    agents=[...],
-    steps=[...],
-)
-```
-
-## Event Callbacks
-
-Monitor workflow execution with typed event callbacks:
-
-```python
-from agent_relay import run_yaml, RunOptions
-
-def on_event(event):
-    print(event.type, event)
-
-result = run_yaml(
-    "workflows/release.yaml",
-    RunOptions(workflow="release", on_event=on_event),
-)
-```
-
-Supported event types:
-
-| Event | Description |
-|-------|-------------|
-| `run:started` | Workflow execution began |
-| `run:completed` | Workflow finished successfully |
-| `run:failed` | Workflow failed |
-| `run:cancelled` | Workflow was cancelled |
-| `step:started` | Step execution began |
-| `step:completed` | Step finished successfully |
-| `step:failed` | Step failed |
-| `step:skipped` | Step was skipped |
-| `step:retrying` | Step is being retried |
-| `step:nudged` | Idle agent was nudged |
-| `step:force-released` | Agent was force-released |
-
-## YAML Workflow Execution
-
-Execute workflows defined in YAML files:
-
-```python
-from agent_relay import run_yaml, RunOptions
-
-result = run_yaml(
-    "workflows/migration.yaml",
-    RunOptions(
-        workflow="main",
-        trajectories=False,
-        vars={"target": "staging"},
-    ),
-)
-```
-
-## Configuration Export
-
-Export workflow configuration without executing:
-
-```python
-builder = workflow("my-workflow").agent(...).step(...)
-
-# Get as Python dict
-config = builder.to_config()
-
-# Get as YAML string
-yaml_str = builder.to_yaml()
-```
+- Python 3.10+
 
 ## License
 
-Apache-2.0
+Apache-2.0 -- Copyright 2025-2026 Agent Workforce Incorporated

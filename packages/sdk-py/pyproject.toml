@@ -21,3 +21,7 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_relay"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
