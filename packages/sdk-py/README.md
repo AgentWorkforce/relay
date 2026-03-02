@@ -1,19 +1,19 @@
 # Agent Relay Python SDK
 
-Python SDK for defining and running Agent Relay workflows with the same schema and
-builder capabilities as the TypeScript workflow SDK.
+Python SDK for defining and running Agent Relay workflows. Provides the same workflow builder API as the TypeScript SDK.
 
-The SDK builds workflow config and executes it through:
-
-```bash
-agent-relay run <workflow.yaml>
-```
-
-## Install
+## Installation
 
 ```bash
 pip install agent-relay
 ```
+
+## Requirements
+
+- Python 3.10+
+- `agent-relay` CLI installed (`npm install -g agent-relay`)
+
+The SDK builds workflow configurations and executes them via the `agent-relay run` CLI.
 
 ## Builder API
 
@@ -52,11 +52,11 @@ result = (
 
 ## Workflow Templates
 
-Built-in template helpers are provided for common patterns:
+Built-in templates for common multi-agent patterns:
 
-- `fan_out(...)`
-- `pipeline(...)`
-- `dag(...)`
+### Fan-Out
+
+Parallel execution across multiple agents with synthesis:
 
 ```python
 from agent_relay import fan_out
@@ -70,8 +70,12 @@ builder = fan_out(
     synthesis_task="Synthesize both analyses into one prioritized action plan",
 )
 
-config = builder.to_config()
+result = builder.run()
 ```
+
+### Pipeline
+
+Sequential stage-based execution:
 
 ```python
 from agent_relay import pipeline, PipelineStage
@@ -86,9 +90,23 @@ builder = pipeline(
 )
 ```
 
+### DAG
+
+Direct workflow definition with explicit dependencies:
+
+```python
+from agent_relay import dag
+
+builder = dag(
+    "complex-workflow",
+    agents=[...],
+    steps=[...],
+)
+```
+
 ## Event Callbacks
 
-Execution callbacks receive typed workflow events parsed from CLI workflow logs.
+Monitor workflow execution with typed event callbacks:
 
 ```python
 from agent_relay import run_yaml, RunOptions
@@ -104,38 +122,51 @@ result = run_yaml(
 
 Supported event types:
 
-- `run:started`
-- `run:completed`
-- `run:failed`
-- `run:cancelled`
-- `step:started`
-- `step:completed`
-- `step:failed`
-- `step:skipped`
-- `step:retrying`
-- `step:nudged`
-- `step:force-released`
+| Event | Description |
+|-------|-------------|
+| `run:started` | Workflow execution began |
+| `run:completed` | Workflow finished successfully |
+| `run:failed` | Workflow failed |
+| `run:cancelled` | Workflow was cancelled |
+| `step:started` | Step execution began |
+| `step:completed` | Step finished successfully |
+| `step:failed` | Step failed |
+| `step:skipped` | Step was skipped |
+| `step:retrying` | Step is being retried |
+| `step:nudged` | Idle agent was nudged |
+| `step:force-released` | Agent was force-released |
 
 ## YAML Workflow Execution
+
+Execute workflows defined in YAML files:
 
 ```python
 from agent_relay import run_yaml, RunOptions
 
 result = run_yaml(
-    "workflows/daytona-migration.yaml",
+    "workflows/migration.yaml",
     RunOptions(
         workflow="main",
-        trajectories=False,  # override YAML trajectory config at runtime
+        trajectories=False,
         vars={"target": "staging"},
     ),
 )
 ```
 
-## Requirements
+## Configuration Export
 
-- Python 3.10+
-- `agent-relay` CLI installed (`npm install -g agent-relay`)
+Export workflow configuration without executing:
+
+```python
+builder = workflow("my-workflow").agent(...).step(...)
+
+# Get as Python dict
+config = builder.to_config()
+
+# Get as YAML string
+yaml_str = builder.to_yaml()
+```
 
 ## License
 
-Apache-2.0 -- Copyright 2025-2026 Agent Workforce Incorporated
+Apache-2.0

@@ -1,97 +1,151 @@
-# `@agent-relay/sdk`
+# @agent-relay/sdk
 
-TypeScript SDK for driving `agent-relay-broker init` over stdio.
+TypeScript SDK for building multi-agent workflows with Agent Relay. Provides both low-level broker control and high-level workflow orchestration.
 
-## Status
-- Broker lifecycle + request/response protocol client implemented.
-- Spawn/list/release/shutdown APIs implemented.
-- Event subscription for broker `event` frames implemented.
-- Agent idle detection — configurable silence threshold with `onAgentIdle` hook and `waitForIdle()`.
+## Installation
 
-## Bundled binary
-- The SDK package bundles `agent-relay-broker` inside `bin/` during `npm run build` and `npm pack`.
-- By default, `AgentRelayClient` uses the bundled binary path when present.
-- You can still override with `binaryPath` in `AgentRelayClient.start(...)`.
-
-## Quick example
-```ts
-import { AgentRelayClient } from "@agent-relay/sdk";
-
-const client = await AgentRelayClient.start({
-  binaryPath: "/absolute/path/to/agent-relay-broker",
-  env: process.env,
-});
-
-await client.spawnPty({
-  name: "Worker1",
-  cli: "codex",
-  args: ["--model", "gpt-5"],
-  channels: ["general"],
-});
-
-const agents = await client.listAgents();
-console.log(agents);
-
-await client.release("Worker1");
-await client.shutdown();
+```bash
+npm install @agent-relay/sdk
 ```
 
-### High-level API with idle detection
+## Quick Start
+
+### Workflow Builder (Recommended)
+
+The workflow builder is the primary way to define and run multi-agent workflows:
+
+```ts
+import { workflow } from "@agent-relay/sdk/workflows";
+
+const result = await workflow("my-feature")
+  .pattern("dag")
+  .agent("planner", { cli: "claude", role: "Planning lead" })
+  .agent("builder", { cli: "codex", role: "Implementation engineer" })
+  .step("plan", { agent: "planner", task: "Create a detailed plan" })
+  .step("build", { agent: "builder", task: "Implement the plan", dependsOn: ["plan"] })
+  .run();
+```
+
+### High-Level Facade
+
+The `AgentRelay` class provides a clean API for spawning and managing agents:
+
 ```ts
 import { AgentRelay } from "@agent-relay/sdk";
 
 const relay = new AgentRelay();
 
-// Listen for idle events
-relay.onAgentIdle = ({ name, idleSecs }) => {
-  console.log(`${name} has been idle for ${idleSecs}s`);
-};
+// Event hooks
+relay.onMessageReceived = (msg) => console.log(`${msg.from}: ${msg.text}`);
+relay.onAgentIdle = ({ name, idleSecs }) => console.log(`${name} idle for ${idleSecs}s`);
 
-const agent = await relay.spawnPty({
-  name: "Worker1",
-  cli: "claude",
-  channels: ["general"],
-  idleThresholdSecs: 30,  // emit agent_idle after 30s of silence (default), 0 to disable
+// Spawn agents using shorthand spawners
+const worker = await relay.claude.spawn({ name: "Worker1", channels: ["general"] });
+
+// Or use the generic spawn method
+const agent = await relay.spawn("Worker2", "codex", "Build the API", {
+  channels: ["dev"],
+  model: "gpt-4o",
 });
 
-// Wait for the agent to go idle (e.g. after finishing its task)
-const result = await agent.waitForIdle(120_000); // 2 min timeout
-if (result === "idle") {
-  console.log("Agent finished work");
-} else if (result === "exited") {
-  console.log("Agent exited");
-} else {
-  console.log("Timed out waiting for idle");
-}
+// Wait for agent to finish (go idle or exit)
+const result = await agent.waitForIdle(120_000);
 
+// Send messages
+const human = relay.human({ name: "Orchestrator" });
+await human.sendMessage({ to: "Worker1", text: "Start the task" });
+
+// Clean up
 await relay.shutdown();
 ```
 
-## Tic-tac-toe demo script
-After build, run:
-```bash
-npm --prefix packages/sdk run example
+### Low-Level Client
+
+For direct broker control:
+
+```ts
+import { AgentRelayClient } from "@agent-relay/sdk";
+
+const client = await AgentRelayClient.start({
+  binaryPath: "/path/to/agent-relay-broker", // optional, auto-detected
+  channels: ["general"],
+});
+
+await client.spawnPty({
+  name: "Worker1",
+  cli: "claude",
+  channels: ["general"],
+  task: "Implement user authentication",
+});
+
+const agents = await client.listAgents();
+await client.release("Worker1");
+await client.shutdown();
 ```
 
-Optional env:
-- `CODEX_CMD` (default: `codex`)
-- `CODEX_ARGS` (space-separated CLI args)
-- `AGENT_X_NAME` / `AGENT_O_NAME`
-- `RELAY_CHANNEL` (default: `general`)
-- `AGENT_RELAY_BIN` (override bundled binary path)
+## Features
 
-## Integration test
+- **Workflow Builder** — Fluent API for defining DAG-based multi-agent workflows
+- **Agent Spawning** — Spawn Claude, Codex, Gemini, Aider, or Goose agents
+- **Idle Detection** — Configurable silence threshold with `onAgentIdle` hook and `waitForIdle()`
+- **Message Delivery** — Track message delivery states (queued, injected, active, verified)
+- **Event Streaming** — Real-time events for agent lifecycle, output, and messaging
+- **Shadow Agents** — Spawn observer agents that monitor other agents
+- **Consensus** — Multi-agent voting and consensus helpers
+
+## Subpath Exports
+
+```ts
+import { AgentRelayClient } from "@agent-relay/sdk/client";
+import { workflow, WorkflowBuilder } from "@agent-relay/sdk/workflows";
+import { ConsensusCoordinator } from "@agent-relay/sdk/consensus";
+import { ShadowCoordinator } from "@agent-relay/sdk/shadow";
+```
+
+## Workflow Templates
+
+Built-in templates for common patterns:
+
+```ts
+import { fanOut, pipeline, dag } from "@agent-relay/sdk/workflows";
+
+// Fan-out: parallel execution with synthesis
+const builder = fanOut("analysis", {
+  tasks: ["Analyze backend", "Analyze frontend"],
+  synthesisTask: "Combine analyses into action plan",
+});
+
+// Pipeline: sequential stages
+const builder = pipeline("release", {
+  stages: [
+    { name: "plan", task: "Create release plan" },
+    { name: "implement", task: "Implement changes" },
+    { name: "verify", task: "Run verification" },
+  ],
+});
+```
+
+## Relaycast Integration
+
+The SDK re-exports Relaycast client types for cloud-based relay coordination:
+
+```ts
+import { RelayCast, AgentClient } from "@agent-relay/sdk";
+```
+
+## Development
+
 ```bash
-cargo build
-npm --prefix packages/sdk install
+# Build
 npm --prefix packages/sdk run build
-AGENT_RELAY_BIN="$(pwd)/target/debug/agent-relay-broker" npm --prefix packages/sdk run test:integration
+
+# Run tests
+npm --prefix packages/sdk test
+
+# Run demo
+npm --prefix packages/sdk run demo
 ```
 
-Integration tests require Relaycast credentials in environment (`RELAY_API_KEY`).
+## License
 
-## Package tarball
-```bash
-npm --prefix packages/sdk pack
-```
-The generated tarball includes `dist/` and `bin/agent-relay-broker` (or `bin/agent-relay-broker.exe` on Windows).
+Apache-2.0
