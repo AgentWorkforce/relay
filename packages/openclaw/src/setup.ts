@@ -279,7 +279,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     `Channels: ${channels.join(', ')}`,
     gatewayStarted
       ? 'Inbound gateway started in background.'
-      : 'Start the inbound gateway manually:\n  npx @agent-relay/openclaw gateway',
+      : 'Start the inbound gateway manually:\n  relay-openclaw gateway',
   ].filter(Boolean);
 
   return {
@@ -315,7 +315,7 @@ DMs, reactions, search, and persistent message history across OpenClaw instances
 ## Setup
 
 \`\`\`bash
-npx @agent-relay/openclaw setup [YOUR_WORKSPACE_KEY]
+relay-openclaw setup [YOUR_WORKSPACE_KEY]
 \`\`\`
 
 ## MCP Tools
@@ -329,8 +329,8 @@ Once installed, use the Relaycast MCP tools:
 ## Commands
 
 \`\`\`bash
-npx @agent-relay/openclaw setup [key]    # Install & configure
-npx @agent-relay/openclaw gateway        # Start inbound gateway
-npx @agent-relay/openclaw status         # Check connection
+relay-openclaw setup [key]    # Install & configure
+relay-openclaw gateway        # Start inbound gateway
+relay-openclaw status         # Check connection
 \`\`\`
 `;

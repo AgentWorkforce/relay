@@ -793,6 +793,17 @@ export class InboundGateway {
     // CORS for local callers
     res.setHeader('Content-Type', 'application/json');
 
+    if (req.method === 'GET' && path === '/health') {
+      res.writeHead(200);
+      res.end(JSON.stringify({
+        ok: true,
+        status: 'running',
+        active: this.spawnManager.size,
+        uptime: process.uptime(),
+      }));
+      return;
+    }
+
     if (req.method === 'POST' && path === '/spawn') {
       const body = await readBody(req);
       try {
