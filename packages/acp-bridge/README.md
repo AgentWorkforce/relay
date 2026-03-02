@@ -6,9 +6,7 @@ ACP (Agent Client Protocol) bridge for Agent Relay. Exposes relay agents to ACP-
 
 The [Agent Client Protocol (ACP)](https://agentclientprotocol.com) is an open standard that enables AI agents to integrate with code editors. It's like LSP (Language Server Protocol) but for AI coding agents.
 
-## What does this bridge do?
-
-This bridge allows ACP-compatible editors to communicate with Agent Relay agents:
+## Architecture
 
 ```
 ┌─────────────────┐     ACP (stdio)    ┌─────────────────┐
@@ -36,68 +34,80 @@ This bridge allows ACP-compatible editors to communicate with Agent Relay agents
 npm install @agent-relay/acp-bridge
 ```
 
-## Usage
-
-### CLI
+## CLI Usage
 
 ```bash
 # Start the bridge
 relay-acp --name my-agent --debug
 
 # With custom socket path
-relay-acp --socket /tmp/relay/my-workspace/sockets/relay.sock
+relay-acp --socket /path/to/.agent-relay/relay.sock
+
+# Show help
+relay-acp --help
 ```
 
-### With Zed Editor
+### CLI Options
+
+| Option | Description |
+|--------|-------------|
+| `--name <name>` | Agent name for relay identification (default: `relay-acp`) |
+| `--socket <path>` | Path to relay broker socket |
+| `--debug` | Enable debug logging to stderr |
+| `--help, -h` | Show help message |
+| `--version, -v` | Show version |
+
+## Zed Integration
+
+### Quick Setup
+
+Let the CLI configure Zed automatically:
+
+```bash
+agent-relay up --zed
+```
+
+This adds an `agent_servers` entry to your Zed settings with the correct socket path.
+
+### Manual Setup
 
 1. Start the relay broker:
    ```bash
    agent-relay up
    ```
 
-2. Start some relay agents:
+2. Spawn relay agents:
    ```bash
-   relay spawn Worker1 claude "Help with coding tasks"
+   agent-relay spawn Worker1 claude "Help with coding tasks"
    ```
 
-3. Configure Zed to use the bridge. Add to your Zed settings:
+3. Add to Zed settings (`~/.config/zed/settings.json`):
    ```json
    {
-     "agent": {
-       "custom_agents": [
-         {
-            "name": "Agent Relay",
-            "command": "relay-acp",
-            "args": ["--name", "zed-bridge"]
-         }
-       ]
+     "agent_servers": {
+       "Agent Relay": {
+         "type": "custom",
+         "command": "relay-acp",
+         "args": ["--name", "zed-bridge"]
+       }
      }
    }
    ```
 
 4. Open the Agent Panel in Zed (`Cmd+?` on macOS) and select "Agent Relay"
 
-Or let the CLI configure Zed for you (writes `agent_servers` with the correct socket path):
+### In-Panel Commands
 
-```bash
-agent-relay up --zed
+Manage agents directly from the Zed Agent Panel:
+
+```
+agent-relay spawn Worker claude "Review the current changes"
+agent-relay release Worker
+agent-relay agents
+agent-relay help
 ```
 
-This adds an entry similar to:
-
-```json
-{
-  "agent_servers": {
-    "Agent Relay": {
-      "type": "custom",
-      "command": "relay-acp",
-      "args": ["--name", "zed-bridge", "--socket", "/path/to/project/.agent-relay/relay.sock"]
-    }
-  }
-}
-```
-
-### Programmatic Usage
+## Programmatic Usage
 
 ```typescript
 import { RelayACPAgent } from '@agent-relay/acp-bridge';
@@ -106,35 +116,10 @@ const agent = new RelayACPAgent({
   agentName: 'my-agent',
   socketPath: '/tmp/relay.sock',
   debug: true,
-  capabilities: {
-    supportsSessionLoading: false,
-    modes: [
-      { slug: 'default', name: 'Default', description: 'Standard mode' },
-      { slug: 'review', name: 'Code Review', description: 'Focus on code review' },
-    ],
-  },
 });
 
 await agent.start();
 ```
-
-### Relay CLI commands from the Agent Panel
-
-The bridge intercepts basic `agent-relay` commands typed in the Zed Agent Panel, so you can manage agents without a shell:
-
-- `agent-relay spawn Worker claude "Review the current changes"`
-- `agent-relay release Worker`
-- `agent-relay agents` (list connected agents)
-
-Supported commands today: spawn/create-agent, release, agents/who. Others fall back to normal broadcast handling.
-The panel shows a help block on first message; type `agent-relay help` anytime to see it again.
-
-## How it Works
-
-1. **Initialization**: When an editor connects, the bridge advertises its capabilities
-2. **Session Creation**: Each conversation creates a new session
-3. **Prompt Handling**: User prompts are broadcast to all relay agents
-4. **Response Streaming**: Agent responses are streamed back to the editor
 
 ## Configuration
 
@@ -143,9 +128,6 @@ The panel shows a help block on first message; type `agent-relay help` anytime t
 | `agentName` | string | `'relay-acp'` | Name used when connecting to relay broker |
 | `socketPath` | string | auto | Path to relay broker socket |
 | `debug` | boolean | `false` | Enable debug logging |
-| `capabilities` | object | - | ACP capabilities to advertise |
-
-Connections to the broker go through `@agent-relay/sdk`, so socket discovery and reconnection match the rest of the Relay tooling. Provide `socketPath` to override detection when needed.
 
 ## Environment Variables
 
@@ -155,16 +137,17 @@ Connections to the broker go through `@agent-relay/sdk`, so socket discovery and
 
 ## ACP Compatibility
 
-This bridge implements ACP version `2025-03-26` and supports:
+Implements ACP version `2025-03-26`:
 
+**Supported:**
 - Session management (new sessions)
 - Prompt handling with streaming responses
 - Cancellation
 
-Not yet supported:
+**Not yet supported:**
 - Session loading/resumption
 - Tool calls
-- File operations via ACP (use relay agents directly)
+- File operations via ACP
 
 ## License
 
