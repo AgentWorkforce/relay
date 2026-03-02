@@ -14,7 +14,7 @@ import secrets
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from .client import AgentRelayClient, AgentRelayProtocolError
+from .client import AgentRelayClient
 from .protocol import AgentRuntime, BrokerEvent
 
 # ── Public types ──────────────────────────────────────────────────────────────
@@ -109,13 +109,19 @@ class Agent:
             return "timeout"
 
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-        self._relay._exit_resolvers[self._name] = future
+        self._relay._exit_resolvers.setdefault(self._name, []).append(future)
 
         if timeout_ms is not None:
             try:
                 return await asyncio.wait_for(future, timeout=timeout_ms / 1000)
             except asyncio.TimeoutError:
-                self._relay._exit_resolvers.pop(self._name, None)
+                futures = self._relay._exit_resolvers.get(self._name, [])
+                try:
+                    futures.remove(future)
+                except ValueError:
+                    pass
+                if not futures:
+                    self._relay._exit_resolvers.pop(self._name, None)
                 return "timeout"
         else:
             return await future
@@ -128,13 +134,19 @@ class Agent:
             return "timeout"
 
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-        self._relay._idle_resolvers[self._name] = future
+        self._relay._idle_resolvers.setdefault(self._name, []).append(future)
 
         if timeout_ms is not None:
             try:
                 return await asyncio.wait_for(future, timeout=timeout_ms / 1000)
             except asyncio.TimeoutError:
-                self._relay._idle_resolvers.pop(self._name, None)
+                futures = self._relay._idle_resolvers.get(self._name, [])
+                try:
+                    futures.remove(future)
+                except ValueError:
+                    pass
+                if not futures:
+                    self._relay._idle_resolvers.pop(self._name, None)
                 return "timeout"
         else:
             return await future
@@ -149,26 +161,14 @@ class Agent:
         data: Optional[dict[str, Any]] = None,
     ) -> Message:
         client = await self._relay._ensure_started()
-        try:
-            result = await client.send_message(
-                to=to,
-                text=text,
-                from_=self._name,
-                thread_id=thread_id,
-                priority=priority,
-                data=data,
-            )
-        except AgentRelayProtocolError as e:
-            if e.code == "unsupported_operation":
-                return Message(
-                    event_id="unsupported_operation",
-                    from_name=self._name,
-                    to=to,
-                    text=text,
-                    thread_id=thread_id,
-                    data=data,
-                )
-            raise
+        result = await client.send_message(
+            to=to,
+            text=text,
+            from_=self._name,
+            thread_id=thread_id,
+            priority=priority,
+            data=data,
+        )
 
         event_id = result.get("event_id", secrets.token_hex(8))
         msg = Message(
@@ -179,7 +179,8 @@ class Agent:
             thread_id=thread_id,
             data=data,
         )
-        if self._relay.on_message_sent:
+        # Don't fire hook for unsupported operations
+        if event_id != "unsupported_operation" and self._relay.on_message_sent:
             self._relay.on_message_sent(msg)
         return msg
 
@@ -222,26 +223,14 @@ class HumanHandle:
         data: Optional[dict[str, Any]] = None,
     ) -> Message:
         client = await self._relay._ensure_started()
-        try:
-            result = await client.send_message(
-                to=to,
-                text=text,
-                from_=self._name,
-                thread_id=thread_id,
-                priority=priority,
-                data=data,
-            )
-        except AgentRelayProtocolError as e:
-            if e.code == "unsupported_operation":
-                return Message(
-                    event_id="unsupported_operation",
-                    from_name=self._name,
-                    to=to,
-                    text=text,
-                    thread_id=thread_id,
-                    data=data,
-                )
-            raise
+        result = await client.send_message(
+            to=to,
+            text=text,
+            from_=self._name,
+            thread_id=thread_id,
+            priority=priority,
+            data=data,
+        )
 
         event_id = result.get("event_id", secrets.token_hex(8))
         msg = Message(
@@ -252,7 +241,8 @@ class HumanHandle:
             thread_id=thread_id,
             data=data,
         )
-        if self._relay.on_message_sent:
+        # Don't fire hook for unsupported operations
+        if event_id != "unsupported_operation" and self._relay.on_message_sent:
             self._relay.on_message_sent(msg)
         return msg
 
@@ -369,8 +359,8 @@ class AgentRelay:
         self._exited_agents: set[str] = set()
         self._idle_agents: set[str] = set()
         self._output_listeners: dict[str, list[Callable[[str], None]]] = {}
-        self._exit_resolvers: dict[str, asyncio.Future[str]] = {}
-        self._idle_resolvers: dict[str, asyncio.Future[str]] = {}
+        self._exit_resolvers: dict[str, list[asyncio.Future[str]]] = {}
+        self._idle_resolvers: dict[str, list[asyncio.Future[str]]] = {}
 
         # Shorthand spawners
         self.codex = AgentSpawner("codex", "Codex", self)
@@ -610,13 +600,15 @@ class AgentRelay:
         self._idle_agents.clear()
         self._output_listeners.clear()
 
-        for future in self._exit_resolvers.values():
-            if not future.done():
-                future.set_result("released")
+        for futures in self._exit_resolvers.values():
+            for future in futures:
+                if not future.done():
+                    future.set_result("released")
         self._exit_resolvers.clear()
-        for future in self._idle_resolvers.values():
-            if not future.done():
-                future.set_result("exited")
+        for futures in self._idle_resolvers.values():
+            for future in futures:
+                if not future.done():
+                    future.set_result("exited")
         self._idle_resolvers.clear()
 
     # ── Private helpers ───────────────────────────────────────────────────
@@ -670,12 +662,12 @@ class AgentRelay:
                     self.on_agent_released(agent)
                 self._known_agents.pop(name, None)
                 self._output_listeners.pop(name, None)
-                future = self._exit_resolvers.pop(name, None)
-                if future and not future.done():
-                    future.set_result("released")
-                idle_future = self._idle_resolvers.pop(name, None)
-                if idle_future and not idle_future.done():
-                    idle_future.set_result("exited")
+                for future in self._exit_resolvers.pop(name, []):
+                    if not future.done():
+                        future.set_result("released")
+                for future in self._idle_resolvers.pop(name, []):
+                    if not future.done():
+                        future.set_result("exited")
 
             elif kind == "agent_exited":
                 agent = self._known_agents.get(name) or self._ensure_agent_handle(name)
@@ -689,12 +681,12 @@ class AgentRelay:
                     self.on_agent_exited(agent)
                 self._known_agents.pop(name, None)
                 self._output_listeners.pop(name, None)
-                future = self._exit_resolvers.pop(name, None)
-                if future and not future.done():
-                    future.set_result("exited")
-                idle_future = self._idle_resolvers.pop(name, None)
-                if idle_future and not idle_future.done():
-                    idle_future.set_result("exited")
+                for future in self._exit_resolvers.pop(name, []):
+                    if not future.done():
+                        future.set_result("exited")
+                for future in self._idle_resolvers.pop(name, []):
+                    if not future.done():
+                        future.set_result("exited")
 
             elif kind == "agent_exit":
                 agent = self._known_agents.get(name) or self._ensure_agent_handle(name)
@@ -730,9 +722,9 @@ class AgentRelay:
                         "name": name,
                         "idle_secs": event.get("idle_secs", 0),
                     })
-                idle_future = self._idle_resolvers.pop(name, None)
-                if idle_future and not idle_future.done():
-                    idle_future.set_result("idle")
+                for future in self._idle_resolvers.pop(name, []):
+                    if not future.done():
+                        future.set_result("idle")
 
             # Delivery events
             if kind and kind.startswith("delivery_"):
