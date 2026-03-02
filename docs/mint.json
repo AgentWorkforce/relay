@@ -36,6 +36,12 @@
       "pages": [
         "reference/sdk"
       ]
+    },
+    {
+      "group": "Integrations",
+      "pages": [
+        "reference/openclaw"
+      ]
     }
   ],
   "footerSocials": {
