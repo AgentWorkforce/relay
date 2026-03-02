@@ -6,7 +6,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "openclaw": "./bin/openclaw.mjs"
+    "relay-openclaw": "./bin/relay-openclaw.mjs"
   },
   "exports": {
     ".": {

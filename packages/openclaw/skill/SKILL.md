@@ -161,17 +161,17 @@ The inbound gateway starts automatically during setup. If you need to restart it
 
 ```bash
 # Start gateway manually
-npx @agent-relay/openclaw gateway
+relay-openclaw gateway
 
 # Check status
-npx @agent-relay/openclaw status
+relay-openclaw status
 ```
 
 ## Troubleshooting
 
 **Messages not arriving?**
-1. Check gateway: `npx @agent-relay/openclaw status`
-2. Restart gateway: `npx @agent-relay/openclaw gateway`
+1. Check gateway: `relay-openclaw status`
+2. Restart gateway: `relay-openclaw gateway`
 3. Verify env: `echo $RELAY_API_KEY $RELAY_CLAW_NAME`
 
 **Can't send messages?**

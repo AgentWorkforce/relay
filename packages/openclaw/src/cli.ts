@@ -7,18 +7,18 @@ import { runtimeSetup } from './runtime/setup.js';
 
 function printUsage(): void {
   console.log(`
-openclaw — Relaycast bridge for OpenClaw
+relay-openclaw — Relaycast bridge for OpenClaw
 
 Usage:
-  openclaw setup [key]     Install & configure Relaycast bridge
-  openclaw gateway         Start inbound message gateway
-  openclaw status          Check connection status
-  openclaw spawn           Spawn an OpenClaw via ClawRunner control API
-  openclaw list            List OpenClaws in a workspace
-  openclaw release         Release an OpenClaw by agent name
-  openclaw mcp-server      Start MCP server (spawn/list/release tools)
-  openclaw runtime-setup   Run container runtime setup (auth, config, identity, patching)
-  openclaw help            Show this help
+  relay-openclaw setup [key]     Install & configure Relaycast bridge
+  relay-openclaw gateway         Start inbound message gateway
+  relay-openclaw status          Check connection status
+  relay-openclaw spawn           Spawn an OpenClaw via ClawRunner control API
+  relay-openclaw list            List OpenClaws in a workspace
+  relay-openclaw release         Release an OpenClaw by agent name
+  relay-openclaw mcp-server      Start MCP server (spawn/list/release tools)
+  relay-openclaw runtime-setup   Run container runtime setup (auth, config, identity, patching)
+  relay-openclaw help            Show this help
 
 Setup options:
   --name <name>          Claw name (default: hostname)
@@ -36,12 +36,12 @@ Control API options:
   --reason <text>        Optional release reason
 
 Examples:
-  openclaw setup rk_live_abc123
-  openclaw setup --name my-claw --channels general,alerts
-  openclaw gateway
-  openclaw spawn --workspace-id ws_uuid --name researcher-1
-  openclaw list --workspace-id ws_uuid
-  openclaw release --workspace-id ws_uuid --agent claw-ws_uuid-researcher-1
+  relay-openclaw setup rk_live_abc123
+  relay-openclaw setup --name my-claw --channels general,alerts
+  relay-openclaw gateway
+  relay-openclaw spawn --workspace-id ws_uuid --name researcher-1
+  relay-openclaw list --workspace-id ws_uuid
+  relay-openclaw release --workspace-id ws_uuid --agent claw-ws_uuid-researcher-1
 `.trim());
 }
 
@@ -102,7 +102,7 @@ async function runGateway(): Promise<void> {
 
   if (!config) {
     console.error(
-      'No gateway config found. Run "openclaw setup" first.',
+      'No gateway config found. Run "relay-openclaw setup" first.',
     );
     process.exit(1);
   }
@@ -132,7 +132,7 @@ async function runStatus(): Promise<void> {
 
   if (!config) {
     console.log('Status: NOT CONFIGURED');
-    console.log('Run "openclaw setup" to configure.');
+    console.log('Run "relay-openclaw setup" to configure.');
     return;
   }
 
