@@ -833,11 +833,18 @@ jobs:
       needs.publish-main.result == 'success'
 
     steps:
+      - name: Setup Github App
+        uses: actions/create-github-app-token@v2
+        id: create_github_app_token
+        with:
+          app-id: ${{ secrets.GH_APP_PUSHER_ID }}
+          private-key: ${{ secrets.GH_APP_PUSHER_PRIVATE_KEY }}
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.create_github_app_token.outputs.token }}
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -1099,6 +1106,8 @@ jobs:
           fi
 
       - name: Commit and tag
+        env:
+          GITHUB_TOKEN: ${{ steps.create_github_app_token.outputs.token }}
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
@@ -1173,7 +1182,7 @@ jobs:
             release-binaries/*
           generate_release_notes: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.create_github_app_token.outputs.token }}
 
       - name: Create GitHub Release (prerelease)
         if: needs.build.outputs.is_prerelease == 'true'
@@ -1219,7 +1228,7 @@ jobs:
             release-binaries/*
           generate_release_notes: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.create_github_app_token.outputs.token }}
 
   # Trigger post-publish verification
   verify-publish:
