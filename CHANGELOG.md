@@ -29,6 +29,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.0.2] - 2026-03-02
+
+### Product Perspective
+#### User-Impacting Fixes
+- Resolve platform-specific broker binary in SDK (#464) (#464)
+- Use SDK join_channel API for broker channel joins
+- Remove relay-pty references from postinstall.js
+- Update verify-install to check for agent-relay-broker instead of relay-pty
+- Remove redundant registration map_err conversion
+
+### Technical Perspective
+#### Performance & Reliability
+- Stabilize macOS CLI agents timeout
+- Allow SDK broker fallback in macOS npx verify
+- Accept SDK broker fallback in npx resolution check
+- Fix verify-publish PR package resolution
+- Accept both relaycast workspace key field shapes
+- Restore coverage threshold and fix sdk integration type
+- Retrigger checks
+
+#### Dependencies & Tooling
+- Use published relaycast 0.3.0 crate
+
+#### Releases
+- v3.0.2
+
+---
+
 ## [2.3.16] - 2026-03-02
 
 ### Product Perspective
