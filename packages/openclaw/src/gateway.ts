@@ -2,7 +2,8 @@ import { createHash, generateKeyPairSync, sign, type KeyObject } from 'node:cryp
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 
 import type { SendMessageInput } from '@agent-relay/sdk';
-import { RelayCast, type AgentClient, type MessageCreatedEvent, type MessageWithMeta } from '@relaycast/sdk';
+import { RelayCast, type AgentClient } from '@relaycast/sdk';
+import type { MessageCreatedEvent, MessageWithMeta } from '@relaycast/types';
 import WebSocket from 'ws';
 
 import type { GatewayConfig, InboundMessage, DeliveryResult } from './types.js';
@@ -484,21 +485,13 @@ export class InboundGateway {
     // Register with a viewer- prefixed name so we don't collide with the
     // container broker's agent registration (which uses the bare clawName).
     const viewerName = `viewer-${this.config.clawName}`;
-    const registered = await this.relaycast.registerOrRotate({
+    const registered = await this.relaycast.agents.registerOrGet({
       name: viewerName,
-      type: 'system',
+      type: 'agent',
       persona: 'Relaycast inbound gateway for OpenClaw',
     });
 
-    this.relayAgentClient = this.relaycast.as(registered.token, {
-      autoHeartbeatMs: 30_000,
-      ws: {
-        maxReconnectAttempts: Number.POSITIVE_INFINITY,
-        reconnectJitter: true,
-        reconnectBaseDelayMs: 1_000,
-        reconnectMaxDelayMs: 30_000,
-      },
-    });
+    this.relayAgentClient = this.relaycast.as(registered.token);
 
     // Connect first, then register handlers. The SDK requires connect()
     // before subscribe() can be called.
@@ -511,19 +504,19 @@ export class InboundGateway {
       }),
     );
     this.unsubscribeHandlers.push(
-      this.relayAgentClient.on.messageCreated((event) => {
-        console.log(`[gateway] Realtime message from @${event.message?.agentName} in #${event.channel}`);
+      this.relayAgentClient.on.messageCreated((event: MessageCreatedEvent) => {
+        console.log(`[gateway] Realtime message from @${event.message?.agent_name} in #${event.channel}`);
         void this.handleRealtimeMessage(event);
       }),
     );
     this.unsubscribeHandlers.push(
-      this.relayAgentClient.on.reconnecting((attempt) => {
+      this.relayAgentClient.on.reconnecting((attempt: number) => {
         console.warn(`[gateway] Relaycast reconnecting (attempt ${attempt})`);
       }),
     );
     this.unsubscribeHandlers.push(
-      this.relayAgentClient.on.permanentlyDisconnected((attempt) => {
-        console.warn(`[gateway] Relaycast permanently disconnected at attempt ${attempt}`);
+      this.relayAgentClient.on.disconnected(() => {
+        console.warn(`[gateway] Relaycast disconnected`);
       }),
     );
     this.unsubscribeHandlers.push(
@@ -649,7 +642,7 @@ export class InboundGateway {
     const inbound: InboundMessage = {
       id: messageId,
       channel,
-      from: event.message.agentName,
+      from: event.message.agent_name,
       text: event.message.text,
       timestamp: new Date().toISOString(),
     };
@@ -661,9 +654,9 @@ export class InboundGateway {
     return {
       id: message.id,
       channel,
-      from: message.agentName,
+      from: message.agent_name,
       text: message.text,
-      timestamp: message.createdAt,
+      timestamp: message.created_at,
     };
   }
 
@@ -681,7 +674,7 @@ export class InboundGateway {
 
         const messages = await this.relaycast.messages.list(channel, query);
         const ordered = [...messages].sort((a, b) =>
-          a.createdAt.localeCompare(b.createdAt),
+          a.created_at.localeCompare(b.created_at),
         );
 
         for (const message of ordered) {
