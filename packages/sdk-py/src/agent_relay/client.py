@@ -13,6 +13,10 @@ import json
 import os
 import platform
 import shutil
+import stat
+import subprocess
+import sys
+import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -74,6 +78,102 @@ def _is_explicit_path(binary_path: str) -> bool:
     return "/" in binary_path or "\\" in binary_path or binary_path.startswith(".") or binary_path.startswith("~")
 
 
+def _detect_platform() -> str:
+    """Detect platform string matching GitHub release binary names."""
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+
+    if system == "darwin":
+        os_name = "darwin"
+    elif system == "linux":
+        os_name = "linux"
+    else:
+        raise AgentRelayProcessError(f"Unsupported OS: {system}")
+
+    if machine in ("x86_64", "amd64"):
+        arch = "x64"
+    elif machine in ("arm64", "aarch64"):
+        arch = "arm64"
+    else:
+        raise AgentRelayProcessError(f"Unsupported architecture: {machine}")
+
+    return f"{os_name}-{arch}"
+
+
+def _get_latest_version() -> str:
+    """Fetch the latest release version tag from GitHub."""
+    url = "https://api.github.com/repos/AgentWorkforce/relay/releases/latest"
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"token {token}"
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read().decode())
+        tag = data.get("tag_name", "")
+        return tag.lstrip("v")
+
+
+def _install_broker_binary() -> str:
+    """Download the broker binary from GitHub releases. Returns the installed path."""
+    install_dir = Path.home() / ".agent-relay"
+    bin_dir = install_dir / "bin"
+    target_path = bin_dir / "agent-relay-broker"
+
+    plat = _detect_platform()
+    print(f"[agent-relay] Broker binary not found, installing for {plat}...")
+
+    version = _get_latest_version()
+    if not version:
+        raise AgentRelayProcessError("Failed to fetch latest agent-relay version from GitHub")
+
+    binary_name = f"agent-relay-broker-{plat}"
+    download_url = f"https://github.com/AgentWorkforce/relay/releases/download/v{version}/{binary_name}"
+
+    bin_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[agent-relay] Downloading v{version} from {download_url}")
+    try:
+        urllib.request.urlretrieve(download_url, str(target_path))
+    except Exception as e:
+        target_path.unlink(missing_ok=True)
+        raise AgentRelayProcessError(
+            f"Failed to download broker binary: {e}\n"
+            f"You can install manually: curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash"
+        ) from e
+
+    # Make executable
+    target_path.chmod(target_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    # macOS: re-sign to avoid Gatekeeper issues
+    if platform.system() == "Darwin":
+        try:
+            subprocess.run(
+                ["codesign", "--force", "--sign", "-", str(target_path)],
+                capture_output=True,
+                timeout=10,
+            )
+        except Exception:
+            pass  # Non-fatal — binary may still work
+
+    # Verify
+    try:
+        result = subprocess.run(
+            [str(target_path), "--help"],
+            capture_output=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            target_path.unlink(missing_ok=True)
+            raise AgentRelayProcessError("Downloaded broker binary failed verification")
+    except subprocess.TimeoutExpired:
+        target_path.unlink(missing_ok=True)
+        raise AgentRelayProcessError("Downloaded broker binary timed out during verification")
+
+    print(f"[agent-relay] Broker installed to {target_path}")
+    return str(target_path)
+
+
 def _resolve_default_binary_path() -> str:
     broker_exe = "agent-relay-broker"
 
@@ -88,8 +188,8 @@ def _resolve_default_binary_path() -> str:
     if found:
         return found
 
-    # 3. Last resort: bare name (will fail at spawn time if not on PATH)
-    return "agent-relay"
+    # 3. Auto-install from GitHub releases
+    return _install_broker_binary()
 
 
 # ── Pending request tracking ─────────────────────────────────────────────────
