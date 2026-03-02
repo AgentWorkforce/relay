@@ -388,6 +388,11 @@ class AgentRelay:
                     self._client_kwargs["env"] = {**os.environ, "RELAY_API_KEY": env_key}
                 else:
                     self._client_kwargs["env"] = dict(os.environ)
+            else:
+                # Inject RELAY_API_KEY into custom env if not already present
+                env_key = os.environ.get("RELAY_API_KEY")
+                if env_key and "RELAY_API_KEY" not in env:
+                    env["RELAY_API_KEY"] = env_key
 
             # Remove None values to use defaults
             kwargs = {k: v for k, v in self._client_kwargs.items() if v is not None}
