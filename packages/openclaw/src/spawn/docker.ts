@@ -46,7 +46,7 @@ export interface DockerSpawnProviderOptions {
   /**
    * Custom container command. If set, overrides the default entrypoint.
    * Use this for ClawRunner-managed images that have /opt/clawrunner/start-claw.sh.
-   * Default: uses openclaw-relaycast runtime-setup + openclaw gateway + agent-relay broker-spawn.
+   * Default: uses @agent-relay/openclaw runtime-setup + openclaw gateway + agent-relay broker-spawn.
    */
   containerCmd?: string[];
 }
@@ -56,7 +56,7 @@ export interface DockerSpawnProviderOptions {
  * Requires `dockerode` as an optional peer dependency — dynamically imported at runtime.
  *
  * By default, the container runs:
- *   1. `npx openclaw-relaycast runtime-setup` — auth conversion, config, identity files, dist patching
+ *   1. `npx @agent-relay/openclaw runtime-setup` — auth conversion, config, identity files, dist patching
  *   2. `openclaw gateway` in background
  *   3. `agent-relay broker-spawn --from-env` as PID 1
  *
@@ -117,14 +117,14 @@ export class DockerSpawnProvider implements SpawnProvider {
     const script = [
       'set -e',
       // Runtime setup: auth conversion, openclaw.json, identity files, dist patching
-      'npx openclaw-relaycast runtime-setup',
+      'npx @agent-relay/openclaw runtime-setup',
       // Resolve bridge.mjs from the installed package and symlink to the known AGENT_ARGS path.
       // This handles any npm install location (global, local, npx cache).
       'node -e "' +
         "const p = require('path');" +
         "const m = require('module');" +
-        "const r = m.createRequire(require.resolve('openclaw-relaycast/package.json'));" +
-        "const bp = p.join(p.dirname(require.resolve('openclaw-relaycast/package.json')), 'bridge', 'bridge.mjs');" +
+        "const r = m.createRequire(require.resolve('@agent-relay/openclaw/package.json'));" +
+        "const bp = p.join(p.dirname(require.resolve('@agent-relay/openclaw/package.json')), 'bridge', 'bridge.mjs');" +
         "require('fs').symlinkSync(bp, '/tmp/openclaw-bridge.mjs');" +
         "console.log('[entrypoint] Bridge resolved: ' + bp);" +
       '"',
@@ -217,8 +217,8 @@ export class DockerSpawnProvider implements SpawnProvider {
       Cmd: cmd,
       WorkingDir: '/workspace',
       Labels: {
-        'openclaw-relaycast.spawn': 'true',
-        'openclaw-relaycast.agent': agentName,
+        '@agent-relay/openclaw.spawn': 'true',
+        '@agent-relay/openclaw.agent': agentName,
       },
       HostConfig: {
         NetworkMode: this.networkMode,

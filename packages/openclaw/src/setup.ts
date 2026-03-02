@@ -108,7 +108,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
             apiKey: '',
             clawName,
             skillDir: '',
-            message: `Workspace "${clawName}-workspace" already exists. Pass the workspace key: openclaw-relaycast setup <key> --name ${clawName}`,
+            message: `Workspace "${clawName}-workspace" already exists. Pass the workspace key: @agent-relay/openclaw setup <key> --name ${clawName}`,
           };
         }
       } else if (!res.ok) {
@@ -199,7 +199,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
       execFileSync('mcporter', [
         'config', 'add', 'openclaw-spawner',
         '--command', 'npx',
-        '--arg', 'openclaw-relaycast',
+        '--arg', '@agent-relay/openclaw',
         '--arg', 'mcp-server',
         ...envArgs,
         '--scope', 'home',
@@ -254,14 +254,14 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
       // mcporter not installed — non-fatal, print manual instructions
       console.warn('mcporter not found. Install MCP servers manually:');
       console.warn(`  mcporter config add relaycast --command npx --arg @relaycast/mcp --env RELAY_API_KEY=${apiKey} --scope home`);
-      console.warn(`  mcporter config add openclaw-spawner --command npx --arg openclaw-relaycast --arg mcp-server --env RELAY_API_KEY=${apiKey} --scope home`);
+      console.warn(`  mcporter config add openclaw-spawner --command npx --arg @agent-relay/openclaw --arg mcp-server --env RELAY_API_KEY=${apiKey} --scope home`);
     }
   }
 
   // Auto-start the inbound gateway in the background
   let gatewayStarted = false;
   try {
-    const child = spawnProcess('npx', ['openclaw-relaycast', 'gateway'], {
+    const child = spawnProcess('npx', ['@agent-relay/openclaw', 'gateway'], {
       stdio: 'ignore',
       detached: true,
       env: { ...process.env, RELAY_API_KEY: apiKey, RELAY_CLAW_NAME: clawName, RELAY_BASE_URL: baseUrl },
@@ -279,7 +279,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     `Channels: ${channels.join(', ')}`,
     gatewayStarted
       ? 'Inbound gateway started in background.'
-      : 'Start the inbound gateway manually:\n  npx openclaw-relaycast gateway',
+      : 'Start the inbound gateway manually:\n  npx @agent-relay/openclaw gateway',
   ].filter(Boolean);
 
   return {
@@ -315,7 +315,7 @@ DMs, reactions, search, and persistent message history across OpenClaw instances
 ## Setup
 
 \`\`\`bash
-npx openclaw-relaycast setup [YOUR_WORKSPACE_KEY]
+npx @agent-relay/openclaw setup [YOUR_WORKSPACE_KEY]
 \`\`\`
 
 ## MCP Tools
@@ -329,8 +329,8 @@ Once installed, use the Relaycast MCP tools:
 ## Commands
 
 \`\`\`bash
-npx openclaw-relaycast setup [key]    # Install & configure
-npx openclaw-relaycast gateway        # Start inbound gateway
-npx openclaw-relaycast status         # Check connection
+npx @agent-relay/openclaw setup [key]    # Install & configure
+npx @agent-relay/openclaw gateway        # Start inbound gateway
+npx @agent-relay/openclaw status         # Check connection
 \`\`\`
 `;

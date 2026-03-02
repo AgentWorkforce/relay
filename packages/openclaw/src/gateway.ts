@@ -117,6 +117,11 @@ class OpenClawGatewayClient {
   private stopped = false;
   private connectPromise: Promise<void> | null = null;
   private connectResolve: (() => void) | null = null;
+  private connectReject: ((error: Error) => void) | null = null;
+  private connectTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  /** Default timeout for initial connection (30 seconds). */
+  private static readonly CONNECT_TIMEOUT_MS = 30_000;
 
   constructor(token: string, port: number) {
     this.token = token;
@@ -124,16 +129,35 @@ class OpenClawGatewayClient {
     this.device = generateDeviceIdentity();
   }
 
-  /** Connect and authenticate. Resolves when chat.send is ready. */
+  /** Connect and authenticate. Resolves when chat.send is ready, rejects on timeout or error. */
   async connect(): Promise<void> {
     if (this.authenticated && this.ws?.readyState === WebSocket.OPEN) return;
 
-    this.connectPromise = new Promise<void>((resolve) => {
+    this.connectPromise = new Promise<void>((resolve, reject) => {
       this.connectResolve = resolve;
+      this.connectReject = reject;
+
+      // Set up timeout to prevent indefinite hanging
+      this.connectTimeout = setTimeout(() => {
+        this.connectTimeout = null;
+        if (!this.authenticated) {
+          const err = new Error(`Connection to OpenClaw gateway timed out after ${OpenClawGatewayClient.CONNECT_TIMEOUT_MS}ms`);
+          this.connectReject?.(err);
+          this.connectReject = null;
+          this.connectResolve = null;
+        }
+      }, OpenClawGatewayClient.CONNECT_TIMEOUT_MS);
     });
 
     this.doConnect();
     return this.connectPromise;
+  }
+
+  private clearConnectTimeout(): void {
+    if (this.connectTimeout) {
+      clearTimeout(this.connectTimeout);
+      this.connectTimeout = null;
+    }
   }
 
   private doConnect(): void {
@@ -157,12 +181,21 @@ class OpenClawGatewayClient {
 
     this.ws.on('close', (code, reason) => {
       console.warn(`[openclaw-ws] Disconnected: ${code} ${reason.toString()}`);
+      const wasAuthenticated = this.authenticated;
       this.authenticated = false;
       // Reject all pending RPCs
       for (const [id, pending] of this.pendingRpcs) {
         clearTimeout(pending.timer);
         pending.resolve(false);
         this.pendingRpcs.delete(id);
+      }
+      // If we weren't authenticated yet, reject the connect promise
+      if (!wasAuthenticated && this.connectReject) {
+        this.clearConnectTimeout();
+        const err = new Error(`WebSocket closed before authentication (code=${code})`);
+        this.connectReject(err);
+        this.connectReject = null;
+        this.connectResolve = null;
       }
       if (!this.stopped) {
         this.scheduleReconnect();
@@ -171,6 +204,13 @@ class OpenClawGatewayClient {
 
     this.ws.on('error', (err) => {
       console.warn(`[openclaw-ws] Error: ${err.message}`);
+      // If we weren't authenticated yet, reject the connect promise
+      if (!this.authenticated && this.connectReject) {
+        this.clearConnectTimeout();
+        this.connectReject(err);
+        this.connectReject = null;
+        this.connectResolve = null;
+      }
     });
   }
 
@@ -247,14 +287,19 @@ class OpenClawGatewayClient {
 
     // Handle connect response
     if (msg.type === 'res' && msg.id === 'connect-1') {
+      this.clearConnectTimeout();
       if (msg.ok) {
         console.log('[openclaw-ws] Authenticated successfully');
         this.authenticated = true;
         this.connectResolve?.();
         this.connectResolve = null;
+        this.connectReject = null;
       } else {
         console.warn(`[openclaw-ws] Auth rejected: ${JSON.stringify(msg.error ?? msg)}`);
-        this.connectResolve?.();
+        // Reject the connect promise on auth failure
+        const errMsg = msg.error ? JSON.stringify(msg.error) : 'Authentication rejected';
+        this.connectReject?.(new Error(`OpenClaw gateway auth failed: ${errMsg}`));
+        this.connectReject = null;
         this.connectResolve = null;
       }
       return;
@@ -337,6 +382,7 @@ class OpenClawGatewayClient {
 
   async disconnect(): Promise<void> {
     this.stopped = true;
+    this.clearConnectTimeout();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -351,6 +397,9 @@ class OpenClawGatewayClient {
       this.ws = null;
     }
     this.authenticated = false;
+    // Clear any pending connect promise
+    this.connectReject = null;
+    this.connectResolve = null;
   }
 }
 

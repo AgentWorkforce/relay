@@ -105,7 +105,7 @@ export async function handleToolCall(
       } catch (err) {
         return text(
           `Failed to spawn "${name}": ${err instanceof Error ? err.message : String(err)}\n` +
-          'Is the gateway running? Start it with: npx openclaw-relaycast gateway',
+          'Is the gateway running? Start it with: npx @agent-relay/openclaw gateway',
         );
       }
     }
@@ -125,7 +125,7 @@ export async function handleToolCall(
       } catch (err) {
         return text(
           `Failed to list claws: ${err instanceof Error ? err.message : String(err)}\n` +
-          'Is the gateway running? Start it with: npx openclaw-relaycast gateway',
+          'Is the gateway running? Start it with: npx @agent-relay/openclaw gateway',
         );
       }
     }
@@ -152,7 +152,7 @@ export async function handleToolCall(
       } catch (err) {
         return text(
           `Failed to release: ${err instanceof Error ? err.message : String(err)}\n` +
-          'Is the gateway running? Start it with: npx openclaw-relaycast gateway',
+          'Is the gateway running? Start it with: npx @agent-relay/openclaw gateway',
         );
       }
     }

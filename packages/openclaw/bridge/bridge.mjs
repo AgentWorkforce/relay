@@ -82,7 +82,7 @@ function sendConnect() {
     maxProtocol: 3,
     client: {
       id: 'gateway-client',
-      displayName: 'openclaw-relaycast-bridge',
+      displayName: 'openclaw-bridge',
       version: '1.0.0',
       platform: 'linux',
       mode: 'backend'

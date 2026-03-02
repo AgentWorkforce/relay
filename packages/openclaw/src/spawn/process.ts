@@ -10,6 +10,7 @@ import { AgentRelay } from '@agent-relay/sdk';
 import type { SpawnProvider, SpawnOptions, SpawnHandle } from './types.js';
 import { normalizeModelRef } from '../identity/model.js';
 import { buildIdentityTask } from '../identity/contract.js';
+import { buildAgentName } from '../identity/naming.js';
 
 import { ensureWorkspace } from '../identity/files.js';
 import { convertCodexAuth } from '../auth/converter.js';
@@ -56,7 +57,7 @@ export class ProcessSpawnProvider implements SpawnProvider {
 
   async spawn(options: SpawnOptions): Promise<SpawnHandle> {
     const workspaceId = options.workspaceId ?? `local-${Date.now().toString(36)}`;
-    const agentName = options.name;
+    const agentName = buildAgentName(workspaceId, options.name);
     const channels = options.channels?.length ? options.channels : ['general'];
     const gatewayToken = randomUUID().replace(/-/g, '').slice(0, 32);
 
@@ -266,6 +267,6 @@ function resolvePackageBridgePath(): string {
     const thisFile = fileURLToPath(import.meta.url);
     return join(dirname(thisFile), '..', '..', 'bridge', 'bridge.mjs');
   } catch {
-    return join(process.cwd(), 'node_modules', 'openclaw-relaycast', 'bridge', 'bridge.mjs');
+    return join(process.cwd(), 'node_modules', '@agent-relay', 'openclaw', 'bridge', 'bridge.mjs');
   }
 }
