@@ -439,10 +439,6 @@ class AgentRelay:
             restart_policy=opts.restart_policy,
         )
 
-        self._ready_agents.discard(name)
-        self._message_ready_agents.discard(name)
-        self._exited_agents.discard(name)
-        self._idle_agents.discard(name)
         agent = Agent(
             name=result.get("name", name),
             runtime=result.get("runtime", "pty"),
@@ -450,6 +446,10 @@ class AgentRelay:
             relay=self,
         )
         self._known_agents[agent.name] = agent
+        self._ready_agents.discard(agent.name)
+        self._message_ready_agents.discard(agent.name)
+        self._exited_agents.discard(agent.name)
+        self._idle_agents.discard(agent.name)
         return agent
 
     async def spawn_and_wait(
@@ -461,10 +461,10 @@ class AgentRelay:
         timeout_ms: int = 60_000,
         wait_for_message: bool = False,
     ) -> Agent:
-        await self.spawn(name, cli, task, options)
+        agent = await self.spawn(name, cli, task, options)
         if wait_for_message:
-            return await self.wait_for_agent_message(name, timeout_ms)
-        return await self.wait_for_agent_ready(name, timeout_ms)
+            return await self.wait_for_agent_message(agent.name, timeout_ms)
+        return await self.wait_for_agent_ready(agent.name, timeout_ms)
 
     # ── Human/system messaging ────────────────────────────────────────────
 
