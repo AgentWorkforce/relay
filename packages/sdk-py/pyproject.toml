@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-relay-sdk"
-version = "0.2.0"
+version = "2.3.16"
 description = "Python SDK for Agent Relay workflows"
 readme = "README.md"
 license = "Apache-2.0"

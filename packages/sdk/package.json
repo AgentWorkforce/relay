@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/sdk",
-  "version": "2.3.14",
+  "version": "2.3.16",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -81,7 +81,7 @@
     "typescript": "^5.7.3"
   },
   "dependencies": {
-    "@agent-relay/config": "2.3.14",
+    "@agent-relay/config": "2.3.16",
     "@relaycast/sdk": "^0.4.0",
     "yaml": "^2.7.0"
   }
