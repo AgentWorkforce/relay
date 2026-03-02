@@ -5,7 +5,7 @@ Python SDK for real-time agent-to-agent communication. Spawn AI agents, send mes
 ## Installation
 
 ```bash
-pip install agent-relay
+pip install agent-relay-sdk
 ```
 
 The SDK automatically downloads the broker binary on first use.
