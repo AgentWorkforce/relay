@@ -549,6 +549,10 @@ class AgentRelay:
                 future.set_exception(
                     RuntimeError(f"Agent '{name}' exited before sending its first relay message")
                 )
+            elif event.get("kind") == "agent_released" and event.get("name") == name:
+                future.set_exception(
+                    RuntimeError(f"Agent '{name}' was released before sending its first relay message")
+                )
 
         unsub = client.on_event(on_event)
         try:
