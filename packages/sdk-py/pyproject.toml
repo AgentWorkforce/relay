@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-relay-sdk"
-version = "3.0.2"
+version = "0.3.0"
 description = "Python SDK for Agent Relay workflows"
 readme = "README.md"
 license = "Apache-2.0"
@@ -21,3 +21,7 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_relay"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
