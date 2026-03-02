@@ -7,6 +7,10 @@ export interface GatewayConfig {
   baseUrl: string;
   /** Channels to auto-join on connect. */
   channels: string[];
+  /** OpenClaw gateway token for authenticating with the local gateway API. */
+  openclawGatewayToken?: string;
+  /** OpenClaw gateway port (default: 18789). */
+  openclawGatewayPort?: number;
 }
 
 export interface InboundMessage {
@@ -25,8 +29,8 @@ export interface InboundMessage {
 export interface DeliveryResult {
   /** Whether delivery succeeded. */
   ok: boolean;
-  /** Which method delivered: 'relay_sdk' | 'sessions_rpc' | 'failed'. */
-  method: 'relay_sdk' | 'sessions_rpc' | 'failed';
+  /** Which method delivered: 'relay_sdk' | 'gateway_ws' | 'failed'. */
+  method: 'relay_sdk' | 'gateway_ws' | 'failed';
   /** Error message if failed. */
   error?: string;
 }

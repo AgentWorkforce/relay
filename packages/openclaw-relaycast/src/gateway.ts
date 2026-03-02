@@ -1,5 +1,8 @@
+import { createHash, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+
 import type { SendMessageInput } from '@agent-relay/sdk';
 import { RelayCast, type AgentClient, type MessageCreatedEvent, type MessageWithMeta } from '@relaycast/sdk';
+import WebSocket from 'ws';
 
 import type { GatewayConfig, InboundMessage, DeliveryResult } from './types.js';
 
@@ -27,6 +30,331 @@ function normalizeChannelName(channel: string): string {
   return channel.startsWith('#') ? channel.slice(1) : channel;
 }
 
+// ---------------------------------------------------------------------------
+// Ed25519 device identity for OpenClaw gateway WebSocket auth
+// ---------------------------------------------------------------------------
+
+interface DeviceIdentity {
+  publicKeyB64: string;    // base64url-encoded raw Ed25519 public key
+  privateKeyObj: KeyObject; // Node.js KeyObject for signing
+  deviceId: string;         // SHA-256 hex of the raw public key
+}
+
+function generateDeviceIdentity(): DeviceIdentity {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+
+  // Extract raw 32-byte public key from SPKI DER (12-byte header for Ed25519)
+  const rawPublicBytes = publicKey.export({ type: 'spki', format: 'der' }).subarray(12);
+
+  const deviceId = createHash('sha256').update(rawPublicBytes).digest('hex');
+  const publicKeyB64 = Buffer.from(rawPublicBytes).toString('base64url');
+
+  return {
+    publicKeyB64,
+    privateKeyObj: privateKey,
+    deviceId,
+  };
+}
+
+function signConnectPayload(
+  device: DeviceIdentity,
+  params: {
+    clientId: string;
+    clientMode: string;
+    platform: string;
+    deviceFamily: string;
+    role: string;
+    scopes: string[];
+    signedAt: number;
+    token: string;
+    nonce: string;
+  },
+): string {
+  // v3 payload format: v3|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce|platform|deviceFamily
+  const payload = [
+    'v3',
+    device.deviceId,
+    params.clientId,
+    params.clientMode,
+    params.role,
+    params.scopes.join(','),
+    String(params.signedAt),
+    params.token || '',
+    params.nonce,
+    params.platform,
+    params.deviceFamily,
+  ].join('|');
+
+  const payloadBytes = Buffer.from(payload, 'utf-8');
+
+  // Ed25519 sign — no hash algorithm needed (null), it's built into Ed25519
+  const signature = sign(null, payloadBytes, device.privateKeyObj);
+  return Buffer.from(signature).toString('base64url');
+}
+
+
+// ---------------------------------------------------------------------------
+// Persistent OpenClaw Gateway WebSocket client
+// ---------------------------------------------------------------------------
+
+interface PendingRpc {
+  resolve: (value: boolean) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+class OpenClawGatewayClient {
+  private ws: WebSocket | null = null;
+  private authenticated = false;
+  private device: DeviceIdentity;
+  private token: string;
+  private port: number;
+  private pendingRpcs = new Map<string, PendingRpc>();
+  private rpcIdCounter = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private stopped = false;
+  private connectPromise: Promise<void> | null = null;
+  private connectResolve: (() => void) | null = null;
+
+  constructor(token: string, port: number) {
+    this.token = token;
+    this.port = port;
+    this.device = generateDeviceIdentity();
+  }
+
+  /** Connect and authenticate. Resolves when chat.send is ready. */
+  async connect(): Promise<void> {
+    if (this.authenticated && this.ws?.readyState === WebSocket.OPEN) return;
+
+    this.connectPromise = new Promise<void>((resolve) => {
+      this.connectResolve = resolve;
+    });
+
+    this.doConnect();
+    return this.connectPromise;
+  }
+
+  private doConnect(): void {
+    if (this.stopped) return;
+
+    try {
+      this.ws = new WebSocket(`ws://127.0.0.1:${this.port}`);
+    } catch (err) {
+      console.warn(`[openclaw-ws] Connection failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.scheduleReconnect();
+      return;
+    }
+
+    this.ws.on('open', () => {
+      console.log('[openclaw-ws] Connected to OpenClaw gateway');
+    });
+
+    this.ws.on('message', (data) => {
+      this.handleMessage(data.toString());
+    });
+
+    this.ws.on('close', (code, reason) => {
+      console.warn(`[openclaw-ws] Disconnected: ${code} ${reason.toString()}`);
+      this.authenticated = false;
+      // Reject all pending RPCs
+      for (const [id, pending] of this.pendingRpcs) {
+        clearTimeout(pending.timer);
+        pending.resolve(false);
+        this.pendingRpcs.delete(id);
+      }
+      if (!this.stopped) {
+        this.scheduleReconnect();
+      }
+    });
+
+    this.ws.on('error', (err) => {
+      console.warn(`[openclaw-ws] Error: ${err.message}`);
+    });
+  }
+
+  private handleMessage(raw: string): void {
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(raw);
+    } catch {
+      return;
+    }
+
+    // Handle connect.challenge — sign and respond
+    if (msg.type === 'event' && msg.event === 'connect.challenge') {
+      const payload = msg.payload as { nonce: string; ts: number };
+      console.log('[openclaw-ws] Received connect.challenge, signing...');
+
+      const signedAt = Date.now();
+      const clientId = 'cli';
+      const clientMode = 'cli';
+      const platform = process.platform === 'darwin' ? 'macos' : 'linux';
+      const deviceFamily = 'cli';
+      const role = 'operator';
+      const scopes = ['operator.read', 'operator.write'];
+
+      const signature = signConnectPayload(this.device, {
+        clientId,
+        clientMode,
+        platform,
+        deviceFamily,
+        role,
+        scopes,
+        signedAt,
+        token: this.token,
+        nonce: payload.nonce,
+      });
+
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        console.warn('[openclaw-ws] WebSocket not open when trying to send connect');
+        return;
+      }
+      this.ws.send(JSON.stringify({
+        type: 'req',
+        id: 'connect-1',
+        method: 'connect',
+        params: {
+          minProtocol: 3,
+          maxProtocol: 3,
+          client: {
+            id: clientId,
+            version: '1.0.0',
+            platform,
+            mode: clientMode,
+            deviceFamily,
+          },
+          role,
+          scopes,
+          caps: [],
+          commands: [],
+          permissions: {},
+          auth: { token: this.token },
+          locale: 'en-US',
+          userAgent: 'relaycast-gateway/1.0.0',
+          device: {
+            id: this.device.deviceId,
+            publicKey: this.device.publicKeyB64,
+            signature,
+            signedAt,
+            nonce: payload.nonce,
+          },
+        },
+      }));
+      return;
+    }
+
+    // Handle connect response
+    if (msg.type === 'res' && msg.id === 'connect-1') {
+      if (msg.ok) {
+        console.log('[openclaw-ws] Authenticated successfully');
+        this.authenticated = true;
+        this.connectResolve?.();
+        this.connectResolve = null;
+      } else {
+        console.warn(`[openclaw-ws] Auth rejected: ${JSON.stringify(msg.error ?? msg)}`);
+        this.connectResolve?.();
+        this.connectResolve = null;
+      }
+      return;
+    }
+
+    // Handle RPC responses
+    const id = msg.id as string | undefined;
+    if (id && this.pendingRpcs.has(id)) {
+      const pending = this.pendingRpcs.get(id)!;
+      clearTimeout(pending.timer);
+      this.pendingRpcs.delete(id);
+
+      if (msg.ok === false || msg.error) {
+        console.warn(`[openclaw-ws] RPC ${id} error: ${JSON.stringify(msg.error ?? msg)}`);
+        pending.resolve(false);
+      } else {
+        const result = msg.payload as Record<string, unknown> | undefined;
+        console.log(`[openclaw-ws] RPC ${id} ok: runId=${result?.runId ?? 'n/a'} status=${result?.status ?? 'n/a'}`);
+        pending.resolve(true);
+      }
+      return;
+    }
+
+    // Log other events at debug level
+    if (msg.type === 'event') {
+      // chat events, tick events, etc. — ignore silently
+    }
+  }
+
+  /** Send a chat.send RPC. Returns true if accepted. */
+  async sendChatMessage(text: string, idempotencyKey?: string): Promise<boolean> {
+    if (!this.authenticated || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      // Try to reconnect
+      try {
+        await this.connect();
+      } catch {
+        return false;
+      }
+      if (!this.authenticated) return false;
+    }
+
+    const id = `chat-${++this.rpcIdCounter}-${Date.now()}`;
+
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        console.warn(`[openclaw-ws] chat.send ${id} timed out`);
+        this.pendingRpcs.delete(id);
+        resolve(false);
+      }, 15_000);
+
+      this.pendingRpcs.set(id, { resolve, timer });
+
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        clearTimeout(timer);
+        this.pendingRpcs.delete(id);
+        resolve(false);
+        return;
+      }
+      this.ws.send(JSON.stringify({
+        type: 'req',
+        id,
+        method: 'chat.send',
+        params: {
+          sessionKey: 'agent:main:main',
+          message: text,
+          ...(idempotencyKey ? { idempotencyKey } : {}),
+        },
+      }));
+    });
+  }
+
+  private scheduleReconnect(): void {
+    if (this.stopped || this.reconnectTimer) return;
+    console.log('[openclaw-ws] Reconnecting in 3s...');
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.doConnect();
+    }, 3_000);
+  }
+
+  async disconnect(): Promise<void> {
+    this.stopped = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    for (const [id, pending] of this.pendingRpcs) {
+      clearTimeout(pending.timer);
+      pending.resolve(false);
+      this.pendingRpcs.delete(id);
+    }
+    if (this.ws) {
+      try { this.ws.close(); } catch {}
+      this.ws = null;
+    }
+    this.authenticated = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// InboundGateway
+// ---------------------------------------------------------------------------
+
 export class InboundGateway {
   private readonly relaySender: RelaySender | null;
   private relayAgentClient: AgentClient | null = null;
@@ -41,6 +369,9 @@ export class InboundGateway {
   private seenMessageIds = new Map<string, number>();
   private processingMessageIds = new Set<string>();
   private channelCursor = new Map<string, string>();
+
+  /** Persistent WebSocket client for the local OpenClaw gateway. */
+  private openclawClient: OpenClawGatewayClient | null = null;
 
   constructor(options: GatewayOptions) {
     this.config = {
@@ -69,10 +400,24 @@ export class InboundGateway {
     if (this.running) return;
     this.running = true;
 
+    // Connect to the local OpenClaw gateway WebSocket (persistent connection)
+    const token = this.config.openclawGatewayToken ?? process.env.OPENCLAW_GATEWAY_TOKEN;
+    const port = this.config.openclawGatewayPort ?? 18789;
+
+    if (token) {
+      this.openclawClient = new OpenClawGatewayClient(token, port);
+      try {
+        await this.openclawClient.connect();
+        console.log('[gateway] OpenClaw gateway WebSocket client ready');
+      } catch (err) {
+        console.warn(`[gateway] OpenClaw gateway WS failed (will retry per message): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else {
+      console.warn('[gateway] No OPENCLAW_GATEWAY_TOKEN — local delivery disabled');
+    }
+
     // Register with a viewer- prefixed name so we don't collide with the
     // container broker's agent registration (which uses the bare clawName).
-    // Using the same name would cause registerOrRotate to steal the name
-    // and release the container's agent.
     const viewerName = `viewer-${this.config.clawName}`;
     const registered = await this.relaycast.registerOrRotate({
       name: viewerName,
@@ -90,39 +435,47 @@ export class InboundGateway {
       },
     });
 
+    // Connect first, then register handlers. The SDK requires connect()
+    // before subscribe() can be called.
     this.relayAgentClient.connect();
 
     this.unsubscribeHandlers.push(
       this.relayAgentClient.on.connected(() => {
+        console.log(`[gateway] Relaycast WebSocket connected, subscribing to channels: ${this.config.channels.join(', ')}`);
         this.relayAgentClient?.subscribe(this.config.channels);
       }),
     );
     this.unsubscribeHandlers.push(
       this.relayAgentClient.on.messageCreated((event) => {
+        console.log(`[gateway] Realtime message from @${event.message?.agentName} in #${event.channel}`);
         void this.handleRealtimeMessage(event);
       }),
     );
     this.unsubscribeHandlers.push(
       this.relayAgentClient.on.reconnecting((attempt) => {
-        console.warn(
-          `[gateway] ${this.config.clawName} realtime reconnecting (attempt ${attempt})`,
-        );
+        console.warn(`[gateway] Relaycast reconnecting (attempt ${attempt})`);
       }),
     );
     this.unsubscribeHandlers.push(
       this.relayAgentClient.on.permanentlyDisconnected((attempt) => {
-        console.warn(
-          `[gateway] ${this.config.clawName} realtime permanently disconnected at attempt ${attempt}`,
-        );
+        console.warn(`[gateway] Relaycast permanently disconnected at attempt ${attempt}`);
       }),
     );
     this.unsubscribeHandlers.push(
       this.relayAgentClient.on.error(() => {
-        console.warn(`[gateway] ${this.config.clawName} realtime socket error`);
+        console.warn(`[gateway] Relaycast socket error`);
       }),
     );
 
     await this.ensureChannelMembership();
+
+    // Also subscribe explicitly in case the `connected` event already fired
+    // before we registered the handler above.
+    try {
+      this.relayAgentClient.subscribe(this.config.channels);
+    } catch {
+      // Will subscribe on next connected event
+    }
 
     // Initial catch-up in case messages arrived before realtime subscription was active.
     await this.pollMessages();
@@ -164,8 +517,10 @@ export class InboundGateway {
       this.relayAgentClient = null;
     }
 
-    // Note: we do NOT shut down the relaySender — it's owned by the caller
-    // (the API server's shared relay instance).
+    if (this.openclawClient) {
+      await this.openclawClient.disconnect();
+      this.openclawClient = null;
+    }
 
     this.processingMessageIds.clear();
     this.channelCursor.clear();
@@ -257,8 +612,8 @@ export class InboundGateway {
         for (const message of ordered) {
           await this.handleInbound(this.normalizePolledMessage(channel, message));
         }
-      } catch {
-        // Non-fatal — realtime path remains active.
+      } catch (err) {
+        console.warn(`[gateway] Poll error for #${channel}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
@@ -275,13 +630,16 @@ export class InboundGateway {
       return;
     }
 
+    // Mark as seen immediately to prevent duplicate delivery from concurrent
+    // realtime + poll paths processing the same message.
+    this.markSeen(message.id);
     this.processingMessageIds.add(message.id);
+
+    console.log(`[gateway] Delivering message ${message.id} from @${message.from}: "${message.text}"`);
     try {
       const result = await this.onMessage(message);
-      if (result.ok) {
-        this.channelCursor.set(normalizeChannelName(message.channel), message.id);
-        this.markSeen(message.id);
-      }
+      console.log(`[gateway] Delivery result: ${result.method} ok=${result.ok}${result.error ? ' error=' + result.error : ''}`);
+      this.channelCursor.set(normalizeChannelName(message.channel), message.id);
     } finally {
       this.processingMessageIds.delete(message.id);
     }
@@ -297,12 +655,13 @@ export class InboundGateway {
       }
     }
 
-    // Fallback to OpenClaw sessions_send RPC (only works when the gateway
-    // runs in the same container as the OpenClaw gateway — primarily for
-    // future in-container use).
-    const fallbackOk = await this.deliverViaSessionsRpc(message);
-    if (fallbackOk) {
-      return { ok: true, method: 'sessions_rpc' };
+    // Deliver via persistent OpenClaw gateway WebSocket connection
+    if (this.openclawClient) {
+      const text = `[relaycast:${message.channel}] @${message.from}: ${message.text}`;
+      const ok = await this.openclawClient.sendChatMessage(text, message.id);
+      if (ok) {
+        return { ok: true, method: 'gateway_ws' };
+      }
     }
 
     console.warn(
@@ -329,27 +688,6 @@ export class InboundGateway {
     try {
       const result = await this.relaySender.sendMessage(input);
       return Boolean(result.event_id) && result.event_id !== 'unsupported_operation';
-    } catch {
-      return false;
-    }
-  }
-
-  /** FALLBACK: Deliver via OpenClaw sessions_send RPC. */
-  private async deliverViaSessionsRpc(message: InboundMessage): Promise<boolean> {
-    try {
-      const response = await fetch('http://127.0.0.1:18789', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'sessions_send',
-          params: {
-            text: `[relaycast:${message.channel}] @${message.from}: ${message.text}`,
-          },
-          id: message.id,
-        }),
-      });
-      return response.ok;
     } catch {
       return false;
     }

@@ -6,7 +6,7 @@ import type { InboundMessage, DeliveryResult } from './types.js';
  * Deliver a message to the local claw using the best available method.
  *
  * Primary: Agent Relay SDK sendMessage() via a shared, long-lived client
- * Fallback: OpenClaw sessions_send RPC on localhost (last resort only)
+ * Fallback: OpenClaw OpenResponses API (POST /v1/responses) on localhost
  *
  * Callers should maintain a single shared AgentRelayClient instance and pass it
  * to every deliverMessage() call. Creating a client per message is wasteful and
@@ -42,22 +42,26 @@ export async function deliverMessage(
     }
   }
 
-  // Fallback: OpenClaw sessions_send RPC (last resort — no relay client available)
+  // Fallback: OpenClaw OpenResponses API (POST /v1/responses on local gateway)
   try {
-    const gatewayPort = process.env.GATEWAY_PORT ?? '18789';
-    const response = await fetch(`http://127.0.0.1:${gatewayPort}`, {
+    const gatewayPort = process.env.OPENCLAW_GATEWAY_PORT ?? process.env.GATEWAY_PORT ?? '18789';
+    const token = process.env.OPENCLAW_GATEWAY_TOKEN;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'sessions_send',
-        params: { text: formattedText },
-        id: message.id,
+        model: 'openclaw:main',
+        input: formattedText,
       }),
     });
 
     if (response.ok) {
-      return { ok: true, method: 'sessions_rpc' };
+      return { ok: true, method: 'gateway_ws' };
     }
   } catch {
     // Both methods failed
@@ -67,7 +71,7 @@ export async function deliverMessage(
     ok: false,
     method: 'failed',
     error: relayClient
-      ? 'Both relay SDK and sessions RPC delivery failed'
-      : 'No relay client provided and sessions RPC fallback failed',
+      ? 'Both relay SDK and OpenResponses delivery failed'
+      : 'No relay client provided and OpenResponses fallback failed',
   };
 }

@@ -89,7 +89,15 @@ export class ProcessSpawnProvider implements SpawnProvider {
     });
 
     // Patch dist if available (best-effort)
-    await patchOpenClawDist('/usr/lib/node_modules/openclaw/dist', resolvedModel);
+    // Try known dist locations
+    const distCandidates = [
+      '/usr/lib/node_modules/openclaw/dist',
+      '/app/dist',
+      '/usr/local/lib/node_modules/openclaw/dist',
+    ];
+    for (const candidate of distCandidates) {
+      await patchOpenClawDist(candidate, resolvedModel);
+    }
     await clearJitCache();
 
     // Start openclaw gateway

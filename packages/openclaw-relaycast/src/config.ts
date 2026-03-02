@@ -79,6 +79,9 @@ export async function loadGatewayConfig(): Promise<GatewayConfig | null> {
       return null;
     }
 
+    const portStr = vars['OPENCLAW_GATEWAY_PORT'];
+    const port = portStr ? Number(portStr) : undefined;
+
     return {
       apiKey,
       clawName,
@@ -86,6 +89,8 @@ export async function loadGatewayConfig(): Promise<GatewayConfig | null> {
       channels: vars['RELAY_CHANNELS']
         ? vars['RELAY_CHANNELS'].split(',').map((c) => c.trim())
         : ['general'],
+      openclawGatewayToken: vars['OPENCLAW_GATEWAY_TOKEN'] || process.env.OPENCLAW_GATEWAY_TOKEN,
+      openclawGatewayPort: Number.isFinite(port) ? port : undefined,
     };
   } catch {
     return null;

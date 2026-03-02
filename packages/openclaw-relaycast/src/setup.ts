@@ -3,6 +3,7 @@ import { join, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { spawn as spawnProcess, execFileSync } from 'node:child_process';
 
 import { detectOpenClaw, saveGatewayConfig } from './config.js';
 import type { GatewayConfig } from './types.js';
@@ -43,14 +44,41 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   const channels = options.channels ?? ['general'];
 
   if (!detection.installed) {
-    return {
-      ok: false,
-      apiKey: '',
-      clawName,
-      skillDir: '',
-      message:
-        'OpenClaw not found. Please install OpenClaw first (expected ~/.openclaw/ directory).',
-    };
+    // Auto-create ~/.openclaw/ if OpenClaw binary is available but the config dir
+    // doesn't exist yet (common in Docker images before onboarding).
+    try {
+      await mkdir(detection.homeDir, { recursive: true });
+      await mkdir(join(detection.homeDir, 'workspace'), { recursive: true });
+      // Write a minimal openclaw.json so MCP servers can be registered
+      const configPath = join(detection.homeDir, 'openclaw.json');
+      if (!existsSync(configPath)) {
+        await writeFile(configPath, JSON.stringify({ mcpServers: {} }, null, 2) + '\n', 'utf-8');
+      }
+      // Re-detect after creating
+      const redetection = await detectOpenClaw();
+      Object.assign(detection, redetection);
+    } catch {
+      return {
+        ok: false,
+        apiKey: '',
+        clawName,
+        skillDir: '',
+        message:
+          'OpenClaw not found. Please install OpenClaw first (expected ~/.openclaw/ directory).',
+      };
+    }
+  }
+
+  // Enable the OpenResponses HTTP API so the inbound gateway can inject
+  // messages via POST /v1/responses on the local OpenClaw gateway.
+  try {
+    execFileSync('openclaw', [
+      'config', 'set',
+      'gateway.http.endpoints.responses.enabled', 'true',
+    ], { stdio: 'pipe' });
+  } catch {
+    console.warn('Could not enable OpenResponses API (non-fatal). Enable manually:');
+    console.warn('  openclaw config set gateway.http.endpoints.responses.enabled true');
   }
 
   // Resolve API key: use provided key or create a new workspace
@@ -64,7 +92,26 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
         body: JSON.stringify({ name: `${clawName}-workspace` }),
       });
 
-      if (!res.ok) {
+      if (res.status === 409) {
+        // Workspace already exists — look up its API key
+        const lookupRes = await fetch(`${baseUrl}/v1/workspaces/by-name/${encodeURIComponent(`${clawName}-workspace`)}`, {
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (lookupRes.ok) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const lookupBody = (await lookupRes.json()) as any;
+          apiKey = lookupBody.apiKey ?? lookupBody.api_key ?? lookupBody.data?.apiKey ?? lookupBody.data?.api_key;
+        }
+        if (!apiKey) {
+          return {
+            ok: false,
+            apiKey: '',
+            clawName,
+            skillDir: '',
+            message: `Workspace "${clawName}-workspace" already exists. Pass the workspace key: openclaw-relaycast setup <key> --name ${clawName}`,
+          };
+        }
+      } else if (!res.ok) {
         const body = await res.text();
         return {
           ok: false,
@@ -73,10 +120,11 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
           skillDir: '',
           message: `Failed to create workspace: ${res.status} ${body}`,
         };
+      } else {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const successBody = (await res.json()) as any;
+        apiKey = successBody.apiKey ?? successBody.api_key ?? successBody.data?.apiKey ?? successBody.data?.api_key;
       }
-
-      const data = (await res.json()) as { apiKey?: string; api_key?: string };
-      apiKey = data.apiKey ?? data.api_key;
 
       if (!apiKey) {
         return {
@@ -98,29 +146,8 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     }
   }
 
-  // Register this claw as an agent
-  try {
-    const res = await fetch(`${baseUrl}/v1/agents/register`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        name: clawName,
-        type: 'agent',
-        persona: 'OpenClaw instance with Relaycast bridge',
-      }),
-    });
-
-    if (!res.ok && res.status !== 409) {
-      // 409 = already registered, which is fine
-      console.warn(`Agent registration returned ${res.status} (non-fatal)`);
-    }
-  } catch {
-    // Non-fatal — agent registration may not be required
-    console.warn('Agent registration failed (non-fatal)');
-  }
+  // Agent registration is done after mcporter is configured (see below),
+  // since the register tool is accessed via mcporter call relaycast.register.
 
   // Install SKILL.md
   const skillDir = join(detection.workspaceDir, 'relaycast');
@@ -147,58 +174,102 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   };
   await saveGatewayConfig(gatewayConfig);
 
-  // Configure MCP server in openclaw.json
+  // Register MCP servers via mcporter
   let mcpConfigured = false;
-  if (detection.configFile && detection.config) {
+  {
+    const envArgs = [
+      '--env', `RELAY_API_KEY=${apiKey}`,
+      ...(baseUrl !== 'https://api.relaycast.dev'
+        ? ['--env', `RELAY_BASE_URL=${baseUrl}`]
+        : []),
+    ];
+
     try {
-      const raw = await readFile(detection.configFile, 'utf-8');
-      const config = JSON.parse(raw);
+      // Register relaycast messaging MCP server
+      execFileSync('mcporter', [
+        'config', 'add', 'relaycast',
+        '--command', 'npx',
+        '--arg', '@relaycast/mcp',
+        ...envArgs,
+        '--scope', 'home',
+        '--description', 'Relaycast messaging MCP server',
+      ], { stdio: 'pipe' });
 
-      if (!config.mcpServers) {
-        config.mcpServers = {};
-      }
+      // Register openclaw-spawner MCP server
+      execFileSync('mcporter', [
+        'config', 'add', 'openclaw-spawner',
+        '--command', 'npx',
+        '--arg', 'openclaw-relaycast',
+        '--arg', 'mcp-server',
+        ...envArgs,
+        '--scope', 'home',
+        '--description', 'OpenClaw spawner MCP server',
+      ], { stdio: 'pipe' });
 
-      let changed = false;
-
-      if (!config.mcpServers.relaycast) {
-        config.mcpServers.relaycast = {
-          command: 'npx',
-          args: ['@relaycast/mcp'],
-          env: {
-            RELAY_API_KEY: apiKey,
-            ...(baseUrl !== 'https://api.relaycast.dev'
-              ? { RELAY_BASE_URL: baseUrl }
-              : {}),
-          },
-        };
-        changed = true;
-      }
-
-      if (!config.mcpServers['openclaw-spawner']) {
-        config.mcpServers['openclaw-spawner'] = {
-          command: 'npx',
-          args: ['openclaw-relaycast', 'mcp-server'],
-          env: {
-            RELAY_API_KEY: apiKey,
-            ...(baseUrl !== 'https://api.relaycast.dev'
-              ? { RELAY_BASE_URL: baseUrl }
-              : {}),
-          },
-        };
-        changed = true;
-      }
-
-      if (changed) {
-        await writeFile(
-          detection.configFile,
-          JSON.stringify(config, null, 2) + '\n',
-          'utf-8',
-        );
-      }
       mcpConfigured = true;
-    } catch {
-      // Non-fatal
+
+      // Register this claw as an agent via mcporter and persist the agent token
+      try {
+        const registerOutput = execFileSync('mcporter', [
+          'call', 'relaycast.register',
+          'name=' + clawName,
+          'type=agent',
+        ], { stdio: 'pipe', encoding: 'utf-8' });
+
+        // Parse the agent token from the register output
+        let agentToken: string | undefined;
+        try {
+          const parsed = JSON.parse(registerOutput);
+          agentToken = parsed.token ?? parsed.agentToken ?? parsed.agent_token;
+        } catch {
+          // Try to find token in raw output
+          const tokenMatch = registerOutput.match(/"token"\s*:\s*"([^"]+)"/);
+          if (tokenMatch) agentToken = tokenMatch[1];
+        }
+
+        if (agentToken) {
+          // Reconfigure mcporter with the agent token so subsequent calls are authenticated
+          try {
+            execFileSync('mcporter', ['config', 'remove', 'relaycast'], { stdio: 'pipe' });
+          } catch { /* may not exist */ }
+
+          execFileSync('mcporter', [
+            'config', 'add', 'relaycast',
+            '--command', 'npx',
+            '--arg', '@relaycast/mcp',
+            ...envArgs,
+            '--env', `RELAY_AGENT_TOKEN=${agentToken}`,
+            '--scope', 'home',
+            '--description', 'Relaycast messaging MCP server',
+          ], { stdio: 'pipe' });
+
+          console.log(`Agent "${clawName}" registered with token.`);
+        } else {
+          console.warn('Agent registered but no token found in response.');
+        }
+      } catch (regErr) {
+        console.warn(`Agent registration via mcporter failed (non-fatal): ${regErr instanceof Error ? regErr.message : String(regErr)}`);
+      }
+    } catch (err) {
+      // mcporter not installed — non-fatal, print manual instructions
+      console.warn('mcporter not found. Install MCP servers manually:');
+      console.warn(`  mcporter config add relaycast --command npx --arg @relaycast/mcp --env RELAY_API_KEY=${apiKey} --scope home`);
+      console.warn(`  mcporter config add openclaw-spawner --command npx --arg openclaw-relaycast --arg mcp-server --env RELAY_API_KEY=${apiKey} --scope home`);
     }
+  }
+
+  // Auto-start the inbound gateway in the background
+  let gatewayStarted = false;
+  try {
+    const child = spawnProcess('npx', ['openclaw-relaycast', 'gateway'], {
+      stdio: 'ignore',
+      detached: true,
+      env: { ...process.env, RELAY_API_KEY: apiKey, RELAY_CLAW_NAME: clawName, RELAY_BASE_URL: baseUrl },
+    });
+    child.unref();
+    gatewayStarted = true;
+  } catch {
+    // Non-fatal — user can start manually
   }
 
   const parts = [
@@ -206,9 +277,9 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     mcpConfigured ? 'MCP server configured in openclaw.json.' : '',
     `Claw name: ${clawName}`,
     `Channels: ${channels.join(', ')}`,
-    '',
-    'Start the inbound gateway:',
-    '  npx openclaw-relaycast gateway',
+    gatewayStarted
+      ? 'Inbound gateway started in background.'
+      : 'Start the inbound gateway manually:\n  npx openclaw-relaycast gateway',
   ].filter(Boolean);
 
   return {

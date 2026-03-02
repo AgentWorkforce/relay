@@ -43,7 +43,15 @@ export async function runtimeSetup(options: RuntimeSetupOptions = {}): Promise<{
   const name = options.name ?? process.env.OPENCLAW_NAME ?? process.env.AGENT_NAME ?? 'agent';
   const workspaceId = options.workspaceId ?? process.env.OPENCLAW_WORKSPACE_ID ?? 'unknown';
   const role = options.role ?? process.env.OPENCLAW_ROLE ?? 'general';
-  const distDir = options.openclawDistDir ?? '/usr/lib/node_modules/openclaw/dist';
+  // Resolve OpenClaw dist dir: try explicit, then known install locations
+  const distDirCandidates = options.openclawDistDir
+    ? [options.openclawDistDir]
+    : [
+        '/usr/lib/node_modules/openclaw/dist',    // Global npm (ClawRunner sandbox)
+        '/app/dist',                                // Vanilla Docker image
+        '/usr/local/lib/node_modules/openclaw/dist', // Global npm (macOS/other)
+      ];
+  const distDir = distDirCandidates.find((d) => existsSync(d)) ?? distDirCandidates[0];
 
   // 1. Convert codex auth
   const { preferredProvider } = await convertCodexAuth();
