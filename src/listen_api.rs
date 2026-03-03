@@ -53,8 +53,9 @@ struct ListenApiState {
     events_tx: broadcast::Sender<String>,
     broker_api_key: Option<String>,
     replay_buffer: ReplayBuffer,
-    /// Relaycast workspace API key — included in /health so the dashboard can
-    /// bootstrap Relaycast calls without a relaycast.json or env var.
+    /// Relaycast workspace API key — returned by the authenticated /api/config
+    /// endpoint so the dashboard can bootstrap Relaycast calls without a
+    /// relaycast.json or env var.
     workspace_key: Option<String>,
 }
 
@@ -131,6 +132,7 @@ fn listen_api_router_with_auth(
         )
         .route("/api/send", routing::post(listen_api_send))
         .route("/api/history/stats", routing::get(listen_api_history_stats))
+        .route("/api/config", routing::get(listen_api_config))
         .route("/ws", routing::get(listen_api_ws))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
@@ -148,9 +150,7 @@ fn listen_api_router_with_auth(
 // Endpoints
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn listen_api_health(
-    axum::extract::State(state): axum::extract::State<ListenApiState>,
-) -> axum::Json<Value> {
+pub(crate) async fn listen_api_health() -> axum::Json<Value> {
     let startup_error_code = std::env::var("AGENT_RELAY_STARTUP_ERROR_CODE").ok();
     let status = startup_health_status(startup_error_code.as_deref());
 
@@ -170,6 +170,16 @@ pub(crate) async fn listen_api_health(
         "wsConnections": 0,
         "memoryMb": 0,
         "relaycastConnected": startup_error_code.is_none(),
+    }))
+}
+
+/// Authenticated endpoint that returns broker configuration, including the
+/// Relaycast workspace API key.  Unlike /health this endpoint sits behind the
+/// auth middleware so the key is not exposed to unauthenticated callers.
+async fn listen_api_config(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> axum::Json<Value> {
+    axum::Json(json!({
         "workspaceKey": state.workspace_key,
     }))
 }
