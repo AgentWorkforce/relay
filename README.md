@@ -9,9 +9,17 @@
 
 ## Install
 
+**TypeScript / Node.js**
 ```bash
 npm install @agent-relay/sdk
 ```
+
+**Python**
+```bash
+pip install agent-relay-sdk
+```
+
+See the [Python SDK](./packages/sdk-py) for full documentation.
 
 ## Usage
 
