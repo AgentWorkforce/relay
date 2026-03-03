@@ -14,6 +14,7 @@ import {
   type BrokerStats,
   type BrokerStatus,
   type CrashInsightsResponse,
+  type HeadlessProvider,
   type ProtocolEnvelope,
   type ProtocolError,
   type RestartPolicy,
@@ -51,8 +52,9 @@ export interface SpawnPtyInput {
   continueFrom?: string;
 }
 
-export interface SpawnHeadlessClaudeInput {
+export interface SpawnHeadlessInput {
   name: string;
+  provider: HeadlessProvider;
   args?: string[];
   channels?: string[];
   task?: string;
@@ -70,6 +72,7 @@ export interface SendMessageInput {
 export interface ListAgent {
   name: string;
   runtime: AgentRuntime;
+  provider?: HeadlessProvider;
   cli?: string;
   model?: string;
   team?: string;
@@ -250,13 +253,12 @@ export class AgentRelayClient {
     return result;
   }
 
-  async spawnHeadlessClaude(
-    input: SpawnHeadlessClaudeInput
-  ): Promise<{ name: string; runtime: AgentRuntime }> {
+  async spawnHeadless(input: SpawnHeadlessInput): Promise<{ name: string; runtime: AgentRuntime }> {
     await this.start();
     const agent: AgentSpec = {
       name: input.name,
-      runtime: 'headless_claude',
+      runtime: 'headless',
+      provider: input.provider,
       args: input.args ?? [],
       channels: input.channels ?? [],
     };
@@ -533,7 +535,11 @@ export class AgentRelayClient {
     pending.resolve(envelope);
   }
 
-  private async requestHello(): Promise<{ broker_version: string; protocol_version: number; workspace_key?: string }> {
+  private async requestHello(): Promise<{
+    broker_version: string;
+    protocol_version: number;
+    workspace_key?: string;
+  }> {
     const payload = {
       client_name: this.options.clientName,
       client_version: this.options.clientVersion,
@@ -654,10 +660,10 @@ function detectPlatformSuffix(): string | null {
 
 function getLatestVersionSync(): string | null {
   try {
-    const result = execSync(
-      'curl -fsSL https://api.github.com/repos/AgentWorkforce/relay/releases/latest',
-      { timeout: 15_000, stdio: ['pipe', 'pipe', 'pipe'] }
-    ).toString();
+    const result = execSync('curl -fsSL https://api.github.com/repos/AgentWorkforce/relay/releases/latest', {
+      timeout: 15_000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).toString();
     const match = result.match(/"tag_name"\s*:\s*"v?([^"]+)"/);
     return match?.[1] ?? null;
   } catch {
@@ -668,9 +674,7 @@ function getLatestVersionSync(): string | null {
 function installBrokerBinary(): string {
   const suffix = detectPlatformSuffix();
   if (!suffix) {
-    throw new AgentRelayProcessError(
-      `Unsupported platform: ${process.platform}-${process.arch}`
-    );
+    throw new AgentRelayProcessError(`Unsupported platform: ${process.platform}-${process.arch}`);
   }
 
   const homeDir = process.env.HOME || process.env.USERPROFILE || '';
@@ -684,7 +688,7 @@ function installBrokerBinary(): string {
   if (!version) {
     throw new AgentRelayProcessError(
       'Failed to fetch latest agent-relay version from GitHub.\n' +
-      'Install manually: curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash'
+        'Install manually: curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash'
     );
   }
 
@@ -716,11 +720,15 @@ function installBrokerBinary(): string {
     // Verify
     execSync(`"${targetPath}" --help`, { timeout: 10_000, stdio: ['pipe', 'pipe', 'pipe'] });
   } catch (err) {
-    try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(targetPath);
+    } catch {
+      /* ignore */
+    }
     const message = err instanceof Error ? err.message : String(err);
     throw new AgentRelayProcessError(
       `Failed to install broker binary: ${message}\n` +
-      'Install manually: curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash'
+        'Install manually: curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash'
     );
   }
 

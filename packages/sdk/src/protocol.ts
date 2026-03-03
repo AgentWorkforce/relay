@@ -1,6 +1,7 @@
 export const PROTOCOL_VERSION = 1 as const;
 
-export type AgentRuntime = 'pty' | 'headless_claude';
+export type AgentRuntime = 'pty' | 'headless';
+export type HeadlessProvider = 'claude' | 'opencode';
 
 export interface RestartPolicy {
   enabled?: boolean;
@@ -12,6 +13,7 @@ export interface RestartPolicy {
 export interface AgentSpec {
   name: string;
   runtime: AgentRuntime;
+  provider?: HeadlessProvider;
   cli?: string;
   args?: string[];
   channels?: string[];
@@ -112,6 +114,7 @@ export interface BrokerStatus {
   agents: Array<{
     name: string;
     runtime: AgentRuntime;
+    provider?: HeadlessProvider;
     cli?: string;
     model?: string;
     team?: string;
@@ -180,6 +183,7 @@ export type BrokerEvent =
       kind: 'agent_spawned';
       name: string;
       runtime: AgentRuntime;
+      provider?: HeadlessProvider;
       cli?: string;
       model?: string;
       parent?: string;
@@ -271,6 +275,7 @@ export type BrokerEvent =
       kind: 'worker_ready';
       name: string;
       runtime: AgentRuntime;
+      provider?: HeadlessProvider;
       cli?: string;
       model?: string;
     }
@@ -361,7 +366,7 @@ export type BrokerToWorker =
 export type WorkerToBroker =
   | {
       type: 'worker_ready';
-      payload: { name: string; runtime: AgentRuntime };
+      payload: { name: string; runtime: AgentRuntime; provider?: HeadlessProvider };
     }
   | {
       type: 'delivery_ack';

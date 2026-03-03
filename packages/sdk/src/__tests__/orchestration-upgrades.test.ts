@@ -12,11 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 function readWave0Fixture<T>(name: string): T {
-  const fixturePath = path.resolve(
-    __dirname,
-    '../../../../tests/fixtures/contracts/wave0',
-    name
-  );
+  const fixturePath = path.resolve(__dirname, '../../../../tests/fixtures/contracts/wave0', name);
   return JSON.parse(fs.readFileSync(fixturePath, 'utf8')) as T;
 }
 
@@ -29,7 +25,7 @@ function createMockFacadeClient() {
       async () =>
         [] as Array<{
           name: string;
-          runtime: 'pty' | 'headless_claude';
+          runtime: 'pty' | 'headless';
           channels: string[];
           parent?: string;
           pid?: number;
