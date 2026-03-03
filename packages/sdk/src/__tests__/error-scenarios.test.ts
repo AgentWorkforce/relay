@@ -619,7 +619,7 @@ describe('WorkflowRunner error scenarios', () => {
           agents: [{ name: 'a', cli: 'claude' }],
           workflows: [{ name: 'wf', steps: [{ name: 's1', agent: 'a' }] }],
         }),
-      ).toThrow('each step must have "name", "agent", and "task"');
+      ).toThrow('must have "agent" and "task" string fields');
     });
   });
 

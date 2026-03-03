@@ -1237,30 +1237,6 @@ export class WorkflowRunner {
         await this.runPreflightChecks(workflow.preflight, runId);
       }
 
-      // Pre-register all interactive agent steps with Relaycast before execution.
-      // This warms the broker's token cache so spawn_agent calls are instant cache
-      // hits rather than blocking on individual HTTP registrations per spawn.
-      // Agent names use the run ID prefix (deterministic) so we can predict them.
-      if (this.relay && !isResume) {
-        const agentPreflight = workflow.steps
-          .filter((s) => s.type !== 'deterministic' && s.type !== 'worktree' && s.agent)
-          .map((s) => {
-            const agentDef = agentMap.get(s.agent!);
-            return agentDef && agentDef.interactive !== false
-              ? { name: `${s.name}-${runId.slice(0, 8)}`, cli: agentDef.cli }
-              : null;
-          })
-          .filter((e): e is { name: string; cli: AgentCli } => e !== null);
-
-        if (agentPreflight.length > 0) {
-          this.log(`Pre-registering ${agentPreflight.length} agents with Relaycast...`);
-          await this.relay.preflightAgents(agentPreflight).catch((err: Error) => {
-            this.log(`[preflight-agents] warning: ${err.message} — continuing without pre-registration`);
-          });
-          this.log('Agent pre-registration complete');
-        }
-      }
-
       this.log(`Executing ${workflow.steps.length} steps (pattern: ${config.swarm.pattern})`);
       await this.executeSteps(workflow, stepStates, agentMap, config.errorHandling, runId);
 
@@ -2386,10 +2362,6 @@ export class WorkflowRunner {
     }
 
     // Deterministic name: step name + first 8 chars of run ID.
-    // This matches the names pre-registered in preflightAgents(), so the broker
-    // hits its token cache instantly instead of making a fresh Relaycast HTTP call.
-    // On retry the broker may suffix a UUID (409 conflict) — that's fine, the agent
-    // still works, just without the cache benefit.
     let agentName = `${step.name}-${(this.currentRunId ?? this.generateShortId()).slice(0, 8)}`;
 
     // Only inject delegation guidance for lead/coordinator agents, not spokes/workers.
@@ -2628,8 +2600,19 @@ export class WorkflowRunner {
   ): Promise<'exited' | 'timeout' | 'released'> {
     const nudgeConfig = this.currentConfig?.swarm.idleNudge;
     if (!nudgeConfig) {
-      // No nudge config — backward compatible simple wait
-      return agent.waitForExit(timeoutMs);
+      // Idle = done: race exit against idle. Whichever fires first completes the step.
+      const result = await Promise.race([
+        agent.waitForExit(timeoutMs).then((r) => ({ kind: 'exit' as const, result: r })),
+        agent.waitForIdle(timeoutMs).then((r) => ({ kind: 'idle' as const, result: r })),
+      ]);
+      if (result.kind === 'idle' && result.result === 'idle') {
+        this.log(`[${step.name}] Agent "${agent.name}" went idle — treating as complete`);
+        this.postToChannel(`**[${step.name}]** Agent \`${agent.name}\` idle — treating as complete`);
+        await agent.release();
+        return 'released';
+      }
+      // Exit won the race, or idle returned 'exited'/'timeout' — pass through.
+      return result.result as 'exited' | 'timeout' | 'released';
     }
 
     const nudgeAfterMs = nudgeConfig.nudgeAfterMs ?? 120_000;
