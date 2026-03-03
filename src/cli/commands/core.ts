@@ -73,6 +73,8 @@ export interface CoreRelay {
   }>;
   shutdown: () => Promise<unknown>;
   onBrokerStderr?: (listener: (line: string) => void) => () => void;
+  /** Relaycast workspace API key, available after the hello handshake. */
+  workspaceKey?: string;
 }
 
 export interface CoreFileSystem {
@@ -167,6 +169,20 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
     return envOverride;
   }
 
+  // In local multi-repo workspaces, prefer a sibling relay-dashboard build when available.
+  const siblingWorkspaceBuild = path.resolve(
+    process.cwd(),
+    '..',
+    'relay-dashboard',
+    'packages',
+    'dashboard-server',
+    'dist',
+    'start.js'
+  );
+  if (fileSystem.existsSync(siblingWorkspaceBuild)) {
+    return siblingWorkspaceBuild;
+  }
+
   // In workspace / local dev mode, try resolving the dashboard-server package directly
   if (process.env.RELAY_LOCAL_DEV === '1') {
     try {
@@ -231,16 +247,18 @@ function createDefaultRelay(cwd: string, apiPort = 0): CoreRelay {
     Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 30_000;
   const client = createAgentRelayClient({
     cwd,
-    binaryArgs: apiPort > 0 ? ['--api-port', String(apiPort)] : [],
+    binaryArgs: apiPort > 0 ? ['--persist', '--api-port', String(apiPort)] : [],
     requestTimeoutMs,
   });
 
-  return {
+  const relay: CoreRelay = {
     spawn: (input) => spawnAgentWithClient(client, input),
     getStatus: () => client.getStatus(),
     shutdown: () => client.shutdown(),
     onBrokerStderr: (listener: (line: string) => void) => client.onBrokerStderr(listener),
+    get workspaceKey() { return client.workspaceKey; },
   };
+  return relay;
 }
 
 function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependencies {

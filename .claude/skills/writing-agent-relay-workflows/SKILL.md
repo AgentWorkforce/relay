@@ -360,6 +360,72 @@ Even if a wave has 10 ready steps, the runner will only start 5 at a time and pi
 | Asking non-interactive agent to read a large file via tools | Pre-read in a deterministic step, inject via `{{steps.X.output}}` |
 | Workers depending on the lead step (deadlock)               | Workers and lead both depend on a shared context step             |
 | Omitting `agents` field for deterministic-only workflows    | Field is now optional — pure shell pipelines work without it      |
+| Verification token buried at end of long codex task         | Use `REQUIRED: The very last line you print must be exactly: TOKEN` |
+
+## Verification Tokens with Non-Interactive Workers
+
+### The double-occurrence rule
+
+When the verification token appears in the task text, the runner requires it to appear
+**twice** in the captured output — once from the task injection echo, once from the agent's
+actual response. A single occurrence is treated as the task echo and fails verification.
+
+This means if your task says `Output: DONE` or `REQUIRED: print DONE`, the token `DONE`
+is in the task text. The agent must print it a second time, explicitly.
+
+### Preferred: use `exit_code` for code-editing workers
+
+For steps where the real quality gate is downstream (type-check, tests), `exit_code`
+verification is simpler and more reliable than `output_contains`:
+
+```yaml
+# WRONG for codex code editors — token in task causes double-occurrence requirement
+- name: implement
+  agent: implementer  # codex, preset: worker
+  task: |
+    Make these changes to foo.ts...
+    Output: IMPL_DONE        # token now in task text → requires 2 occurrences
+  verification:
+    type: output_contains
+    value: IMPL_DONE
+
+# RIGHT — exit 0 means success; tests catch any mistakes
+- name: implement
+  agent: implementer
+  task: |
+    Make these changes to foo.ts...
+  verification:
+    type: exit_code
+```
+
+### When you need `output_contains` with a codex worker
+
+Use a token that does **not** appear verbatim anywhere in the task text. A unique sentinel
+works well:
+
+```yaml
+task: |
+  Analyze foo.ts and write a summary report.
+  Signal completion by printing: ANALYSIS_DONE
+verification:
+  type: output_contains
+  value: ANALYSIS_DONE   # "ANALYSIS_DONE" does not appear verbatim above → single occurrence is enough
+```
+
+If the token must appear in the instructions, instruct the agent to run it as a shell
+command so the execution (not the description) produces the second occurrence:
+
+```yaml
+task: |
+  Make changes to foo.ts...
+  When done, run: echo "IMPL_DONE"
+verification:
+  type: output_contains
+  value: IMPL_DONE
+```
+
+**Rule of thumb:** Code-editing steps → `exit_code`. Analysis/review steps that produce
+structured output → `output_contains` with a token not mentioned verbatim in the task.
 
 ## YAML Alternative
 

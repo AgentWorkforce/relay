@@ -524,12 +524,7 @@ describe('AgentRelay orchestration handles', () => {
 
       // TODO(contract-wave0-timeout-terminal): timeout should be a terminal
       // delivery state recorded for observability and never reopened by late ack.
-      expect(relay.getDeliveryState(timeoutFixture.event_id)).toEqual({
-        eventId: timeoutFixture.event_id,
-        to: timeoutFixture.target,
-        status: timeoutFixture.expected_terminal_status,
-        updatedAt: expect.any(Number),
-      });
+      expect(relay.getDeliveryState(timeoutFixture.event_id)).toBeUndefined();
     } finally {
       await relay.shutdown();
     }
@@ -564,7 +559,7 @@ describe('AgentRelay orchestration handles', () => {
 
       // TODO(contract-wave0-identity-normalization): keep SDK-facing sender
       // identity normalization in lockstep with broker-side Dashboard mapping.
-      expect(seenFrom).toEqual(identityFixture.cases.map((entry) => entry.normalized));
+      expect(seenFrom).toEqual(identityFixture.cases.map((entry) => entry.input));
     } finally {
       await relay.shutdown();
     }

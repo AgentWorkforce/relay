@@ -4,7 +4,7 @@
  * persists state to DB, and supports pause/resume/abort with retries.
  */
 
-import { spawn as cpSpawn } from 'node:child_process';
+import { spawn as cpSpawn, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { WriteStream } from 'node:fs';
@@ -101,6 +101,31 @@ export interface VariableContext {
 interface StepState {
   row: WorkflowStepRow;
   agent?: Agent;
+}
+
+// ── CLI resolution ───────────────────────────────────────────────────────────
+
+/**
+ * Resolve `cursor` to the concrete cursor agent binary available in PATH.
+ * Prefers `cursor-agent` over `agent`. Falls back to `agent` if neither
+ * `cursor-agent` nor a real cursor IDE CLI is found.
+ * Result is memoized after the first call to avoid repeated sync PATH lookups.
+ */
+let _resolvedCursorCli: 'cursor-agent' | 'agent' | undefined;
+function resolveCursorCli(): 'cursor-agent' | 'agent' {
+  if (_resolvedCursorCli !== undefined) return _resolvedCursorCli;
+  const candidates: Array<'cursor-agent' | 'agent'> = ['cursor-agent', 'agent'];
+  for (const candidate of candidates) {
+    try {
+      execFileSync('which', [candidate], { stdio: 'ignore' });
+      _resolvedCursorCli = candidate;
+      return candidate;
+    } catch {
+      // not in PATH, try next
+    }
+  }
+  _resolvedCursorCli = 'agent'; // last-resort default
+  return _resolvedCursorCli;
 }
 
 // ── WorkflowRunner ──────────────────────────────────────────────────────────
@@ -223,6 +248,21 @@ export class WorkflowRunner {
 
     this.relayApiKey = apiKey;
     this.relayApiKeyAutoCreated = true;
+
+    // Best-effort: push the key to a co-running dashboard (agent-relay up) so it
+    // can make Relaycast API calls without any file or manual env var setup.
+    const dashboardPort = process.env.AGENT_RELAY_DASHBOARD_PORT || '3888';
+    fetch(`http://127.0.0.1:${dashboardPort}/api/relay-config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ apiKey }),
+    }).then((res) => {
+      if (!res.ok) {
+        console.warn(`[WorkflowRunner] dashboard key push failed: HTTP ${res.status}`);
+      }
+    }).catch(() => {
+      // Dashboard not running — silently ignore.
+    });
   }
 
   private getRelayEnv(): NodeJS.ProcessEnv | undefined {
@@ -1102,8 +1142,7 @@ export class WorkflowRunner {
       this.log('API key resolved');
       if (this.relayApiKeyAutoCreated && this.relayApiKey) {
         this.log(`Workspace created — follow this run in Relaycast:`);
-        this.log(`  RELAY_API_KEY=${this.relayApiKey}`);
-        this.log(`  Observer: https://observer.relaycast.dev (paste key above)`);
+        this.log(`  Observer: https://observer.relaycast.dev/?key=${this.relayApiKey}`);
         this.log(`  Channel: ${channel}`);
       }
 
@@ -1235,30 +1274,6 @@ export class WorkflowRunner {
       // Run preflight checks before any steps (skip on resume)
       if (!isResume && workflow.preflight?.length) {
         await this.runPreflightChecks(workflow.preflight, runId);
-      }
-
-      // Pre-register all interactive agent steps with Relaycast before execution.
-      // This warms the broker's token cache so spawn_agent calls are instant cache
-      // hits rather than blocking on individual HTTP registrations per spawn.
-      // Agent names use the run ID prefix (deterministic) so we can predict them.
-      if (this.relay && !isResume) {
-        const agentPreflight = workflow.steps
-          .filter((s) => s.type !== 'deterministic' && s.type !== 'worktree' && s.agent)
-          .map((s) => {
-            const agentDef = agentMap.get(s.agent!);
-            return agentDef && agentDef.interactive !== false
-              ? { name: `${s.name}-${runId.slice(0, 8)}`, cli: agentDef.cli }
-              : null;
-          })
-          .filter((e): e is { name: string; cli: AgentCli } => e !== null);
-
-        if (agentPreflight.length > 0) {
-          this.log(`Pre-registering ${agentPreflight.length} agents with Relaycast...`);
-          await this.relay.preflightAgents(agentPreflight).catch((err: Error) => {
-            this.log(`[preflight-agents] warning: ${err.message} — continuing without pre-registration`);
-          });
-          this.log('Agent pre-registration complete');
-        }
       }
 
       this.log(`Executing ${workflow.steps.length} steps (pattern: ${config.swarm.pattern})`);
@@ -1785,9 +1800,6 @@ export class WorkflowRunner {
       await this.persistStepOutput(runId, step.name, output);
 
       this.emit({ type: 'step:completed', runId, stepName: step.name, output });
-      this.postToChannel(
-        `**[${step.name}]** Completed (deterministic)\n${output.slice(0, 500)}${output.length > 500 ? '\n...(truncated)' : ''}`
-      );
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.postToChannel(`**[${step.name}]** Failed: ${errorMsg}`);
@@ -2081,9 +2093,6 @@ export class WorkflowRunner {
         await this.persistStepOutput(runId, step.name, output);
 
         this.emit({ type: 'step:completed', runId, stepName: step.name, output });
-        this.postToChannel(
-          `**[${step.name}]** Completed\n${output.slice(0, 500)}${output.length > 500 ? '\n...(truncated)' : ''}`
-        );
         await this.trajectory?.stepCompleted(step, output, attempt + 1);
         return;
       } catch (err) {
@@ -2136,6 +2145,13 @@ export class WorkflowRunner {
         return { cmd: 'aider', args: ['--message', task, '--yes-always', '--no-git', ...extraArgs] };
       case 'goose':
         return { cmd: 'goose', args: ['run', '--text', task, '--no-session', ...extraArgs] };
+      case 'cursor-agent':
+      case 'agent':
+        return { cmd: cli, args: ['--force', '-p', task, ...extraArgs] };
+      case 'cursor':
+        // Should not reach here after resolveAgentDef resolves to agent/cursor-agent,
+        // but handle as fallback.
+        return { cmd: resolveCursorCli(), args: ['--force', '-p', task, ...extraArgs] };
     }
   }
 
@@ -2144,13 +2160,16 @@ export class WorkflowRunner {
    * Explicit fields on the definition always win over preset-inferred defaults.
    */
   private static resolveAgentDef(def: AgentDefinition): AgentDefinition {
-    if (!def.preset) return def;
+    // Resolve "cursor" alias to whichever cursor agent binary is in PATH
+    const resolvedCli: AgentCli = def.cli === 'cursor' ? resolveCursorCli() : def.cli;
+
+    if (!def.preset) return resolvedCli !== def.cli ? { ...def, cli: resolvedCli } : def;
     const nonInteractivePresets: AgentPreset[] = ['worker', 'reviewer', 'analyst'];
     const defaults: Partial<AgentDefinition> = nonInteractivePresets.includes(def.preset)
       ? { interactive: false }
       : {};
     // Explicit fields on the def always win
-    return { ...defaults, ...def } as AgentDefinition;
+    return { ...defaults, ...def, cli: resolvedCli } as AgentDefinition;
   }
 
   /**
@@ -2386,10 +2405,6 @@ export class WorkflowRunner {
     }
 
     // Deterministic name: step name + first 8 chars of run ID.
-    // This matches the names pre-registered in preflightAgents(), so the broker
-    // hits its token cache instantly instead of making a fresh Relaycast HTTP call.
-    // On retry the broker may suffix a UUID (409 conflict) — that's fine, the agent
-    // still works, just without the cache benefit.
     let agentName = `${step.name}-${(this.currentRunId ?? this.generateShortId()).slice(0, 8)}`;
 
     // Only inject delegation guidance for lead/coordinator agents, not spokes/workers.
@@ -2628,8 +2643,19 @@ export class WorkflowRunner {
   ): Promise<'exited' | 'timeout' | 'released'> {
     const nudgeConfig = this.currentConfig?.swarm.idleNudge;
     if (!nudgeConfig) {
-      // No nudge config — backward compatible simple wait
-      return agent.waitForExit(timeoutMs);
+      // Idle = done: race exit against idle. Whichever fires first completes the step.
+      const result = await Promise.race([
+        agent.waitForExit(timeoutMs).then((r) => ({ kind: 'exit' as const, result: r })),
+        agent.waitForIdle(timeoutMs).then((r) => ({ kind: 'idle' as const, result: r })),
+      ]);
+      if (result.kind === 'idle' && result.result === 'idle') {
+        this.log(`[${step.name}] Agent "${agent.name}" went idle — treating as complete`);
+        this.postToChannel(`**[${step.name}]** Agent \`${agent.name}\` idle — treating as complete`);
+        await agent.release();
+        return 'released';
+      }
+      // Exit won the race, or idle returned 'exited'/'timeout' — pass through.
+      return result.result as 'exited' | 'timeout' | 'released';
     }
 
     const nudgeAfterMs = nudgeConfig.nudgeAfterMs ?? 120_000;
@@ -3209,7 +3235,8 @@ export class WorkflowRunner {
     // Includes block-element chars (▗▖▘▝) used in the Claude Code header bar.
     const SPINNER =
       '\\u2756\\u2738\\u2739\\u273a\\u273b\\u273c\\u273d\\u2731\\u2732\\u2733\\u2734\\u2735\\u2736\\u2737\\u2743\\u2745\\u2746\\u25d6\\u25d7\\u25d8\\u25d9\\u2022\\u25cf\\u25cb\\u25a0\\u25a1\\u25b6\\u25c0\\u23f5\\u23f6\\u23f7\\u23f8\\u23f9\\u25e2\\u25e3\\u25e4\\u25e5\\u2597\\u2596\\u2598\\u259d\\u2bc8\\u2bc7\\u2bc5\\u2bc6\\u00b7' +
-      '\\u2590\\u258c\\u2588\\u2584\\u2580\\u259a\\u259e'; // additional block elements
+      '\\u2590\\u258c\\u2588\\u2584\\u2580\\u259a\\u259e' + // additional block elements
+      '\\u2b21\\u2b22'; // hex-hollow ⬡ and hex-filled ⬢ (Cursor "Generating" spinner)
     const spinnerRe = new RegExp(`[${SPINNER}]`, 'gu');
     const spinnerClassRe = new RegExp(`^[\\s${SPINNER}]*$`, 'u');
 
@@ -3227,6 +3254,9 @@ export class WorkflowRunner {
     // regardless of the specific word used (Thinking, Cascading, Flibbertigibbeting, etc.)
     const thinkingLineRe = new RegExp(`^[\\s${SPINNER}]*\\s*\\w[\\w\\s]*\\u2026\\s*$`, 'u');
     const cursorOnlyRe = /^[\s❯⎿›»◀▶←→↑↓⟨⟩⟪⟫·]+$/u;
+    // Cursor Agent TUI lines: generating animations, pasted text indicators, UI chrome
+    const cursorAgentRe =
+      /^(?:Cursor Agent|[\s⬡⬢]*Generating[.\s]|\[Pasted text|Auto-run all|Add a follow-up|ctrl\+c to stop|shift\+tab|Auto$|\/\s*commands|@\s*files|!\s*shell|follow-ups?\s|The user ha)/iu;
     const slashCommandRe = /^\/\w+\s*$/u;
     const mcpJsonKvRe =
       /^\s*"(?:type|method|params|result|id|jsonrpc|tool|name|arguments|content|role|metadata)"\s*:/u;
@@ -3270,6 +3300,7 @@ export class WorkflowRunner {
       if (uiHintRe.test(trimmed)) continue;
       if (thinkingLineRe.test(trimmed)) continue;
       if (cursorOnlyRe.test(trimmed)) continue;
+      if (cursorAgentRe.test(trimmed)) continue;
       if (slashCommandRe.test(trimmed)) continue;
       if (!meaningfulContentRe.test(trimmed)) continue;
 

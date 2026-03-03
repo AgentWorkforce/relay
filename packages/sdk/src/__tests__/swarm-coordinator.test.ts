@@ -28,6 +28,7 @@ function makeConfig(overrides: Partial<RelayYamlConfig> = {}): RelayYamlConfig {
       { name: 'worker-1', cli: 'claude' },
       { name: 'worker-2', cli: 'codex' },
     ],
+    trajectories: false,
     ...overrides,
   };
 }

@@ -1,8 +1,9 @@
 /**
  * Idle nudge detection and escalation tests.
  *
- * Tests that the WorkflowRunner correctly detects idle agents, sends nudges
- * (hub-mediated or direct), and force-releases after maxNudges.
+ * Covers both modes:
+ * - No idleNudge config: idle is treated as completion.
+ * - idleNudge config enabled: waitForExit timeout drives nudges/escalation.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -18,7 +19,7 @@ const mockFetch = vi.fn().mockResolvedValue({
 });
 vi.stubGlobal('fetch', mockFetch);
 
-// ── Mock RelayCast SDK ──────────────────────────────────────────────────────
+// ── Mock RelayCast SDK ────────────────────────────────────────────────────────
 
 const mockRelaycastAgent = {
   send: vi.fn().mockResolvedValue(undefined),
@@ -52,9 +53,8 @@ vi.mock('@relaycast/sdk', () => ({
   RelayError: MockRelayError,
 }));
 
-// ── Mock AgentRelay ──────────────────────────────────────────────────────────
+// ── Mock AgentRelay ───────────────────────────────────────────────────────────
 
-/** Control how waitForExit / waitForIdle resolve in each test. */
 let waitForExitFn: (ms?: number) => Promise<'exited' | 'timeout' | 'released'>;
 let waitForIdleFn: (ms?: number) => Promise<'idle' | 'timeout' | 'exited'>;
 
@@ -84,15 +84,15 @@ vi.mock('../relay.js', () => ({
     spawnPty: vi.fn().mockResolvedValue(mockAgent),
     human: vi.fn().mockReturnValue(mockHuman),
     shutdown: vi.fn().mockResolvedValue(undefined),
+    onBrokerStderr: vi.fn().mockReturnValue(() => {}),
     onWorkerOutput: null,
     listAgentsRaw: vi.fn().mockResolvedValue([]),
   })),
 }));
 
-// Import after mocking
 const { WorkflowRunner } = await import('../workflows/runner.js');
 
-// ── Test fixtures ────────────────────────────────────────────────────────────
+// ── Test fixtures ─────────────────────────────────────────────────────────────
 
 function makeDb(): WorkflowDb {
   const runs = new Map<string, WorkflowRunRow>();
@@ -135,11 +135,14 @@ function makeConfig(overrides: Partial<RelayYamlConfig> = {}): RelayYamlConfig {
         steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1' }],
       },
     ],
+    trajectories: false,
     ...overrides,
   };
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+function never<T>(): Promise<T> {
+  return new Promise(() => {});
+}
 
 describe('Idle Nudge Detection', () => {
   let db: WorkflowDb;
@@ -150,289 +153,234 @@ describe('Idle Nudge Detection', () => {
     db = makeDb();
     runner = new WorkflowRunner({ db, workspaceId: 'ws-test' });
 
-    // Default: agent exits immediately (no idle)
     waitForExitFn = vi.fn().mockResolvedValue('exited');
     waitForIdleFn = vi.fn().mockResolvedValue('timeout');
   });
 
-  it('should not nudge when idleNudge config is absent', async () => {
-    // No idleNudge in swarm config — simple waitForExit
-    const config = makeConfig();
-    const run = await runner.execute(config, 'default');
+  describe('idleNudge enabled', () => {
+    it('sends direct nudge then completes when exit follows', async () => {
+      let exitCallCount = 0;
+      waitForExitFn = vi.fn().mockImplementation(() => {
+        exitCallCount++;
+        return Promise.resolve(exitCallCount === 1 ? 'timeout' : 'exited');
+      });
 
-    expect(run.status).toBe('completed');
-    expect(mockHumanSendMessage).not.toHaveBeenCalled();
-    expect(mockSendMessage).not.toHaveBeenCalled();
-    expect(mockRelease).not.toHaveBeenCalled();
+      const run = await runner.execute(
+        makeConfig({
+          swarm: {
+            pattern: 'mesh',
+            idleNudge: { nudgeAfterMs: 100, escalateAfterMs: 100, maxNudges: 1 },
+          },
+        }),
+        'default'
+      );
+
+      expect(run.status).toBe('completed');
+      expect(mockHumanSendMessage).toHaveBeenCalledTimes(1);
+      expect(mockHumanSendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: 'test-agent-abc',
+          text: expect.stringContaining('/exit'),
+        })
+      );
+      expect(mockRelease).not.toHaveBeenCalled();
+      expect(waitForIdleFn).not.toHaveBeenCalled();
+    });
+
+    it('uses hub fallback behavior without failing when hub is not active', async () => {
+      let exitCallCount = 0;
+      waitForExitFn = vi.fn().mockImplementation(() => {
+        exitCallCount++;
+        return Promise.resolve(exitCallCount === 1 ? 'timeout' : 'exited');
+      });
+
+      const run = await runner.execute(
+        makeConfig({
+          swarm: {
+            pattern: 'hub-spoke',
+            idleNudge: { nudgeAfterMs: 100, escalateAfterMs: 100, maxNudges: 1 },
+          },
+          agents: [
+            { name: 'lead', cli: 'claude', role: 'Lead coordinator' },
+            { name: 'worker', cli: 'claude' },
+          ],
+          workflows: [
+            {
+              name: 'default',
+              steps: [{ name: 'step-1', agent: 'worker', task: 'Do work' }],
+            },
+          ],
+        }),
+        'default'
+      );
+
+      expect(run.status).toBe('completed');
+      expect(mockHumanSendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('force-releases after maxNudges is exceeded', async () => {
+      waitForExitFn = vi.fn().mockResolvedValue('timeout');
+
+      const run = await runner.execute(
+        makeConfig({
+          swarm: {
+            pattern: 'dag',
+            idleNudge: { nudgeAfterMs: 50, escalateAfterMs: 50, maxNudges: 1 },
+          },
+        }),
+        'default'
+      );
+
+      expect(run.status).toBe('completed');
+      expect(mockHumanSendMessage).toHaveBeenCalledTimes(1);
+      expect(mockRelease).toHaveBeenCalledTimes(1);
+      expect(waitForIdleFn).not.toHaveBeenCalled();
+    });
+
+    it('force-releases after multiple nudges', async () => {
+      waitForExitFn = vi.fn().mockResolvedValue('timeout');
+
+      const run = await runner.execute(
+        makeConfig({
+          swarm: {
+            pattern: 'dag',
+            idleNudge: { nudgeAfterMs: 50, escalateAfterMs: 50, maxNudges: 3 },
+          },
+        }),
+        'default'
+      );
+
+      expect(run.status).toBe('completed');
+      expect(mockHumanSendMessage).toHaveBeenCalledTimes(3);
+      expect(mockRelease).toHaveBeenCalledTimes(1);
+    });
+
+    it('emits step:nudged event', async () => {
+      let exitCallCount = 0;
+      waitForExitFn = vi.fn().mockImplementation(() => {
+        exitCallCount++;
+        return Promise.resolve(exitCallCount === 1 ? 'timeout' : 'exited');
+      });
+
+      const events: Array<{ type: string }> = [];
+      runner.on((event) => events.push(event));
+
+      await runner.execute(
+        makeConfig({
+          swarm: {
+            pattern: 'dag',
+            idleNudge: { nudgeAfterMs: 50, escalateAfterMs: 50, maxNudges: 1 },
+          },
+        }),
+        'default'
+      );
+
+      expect(events.filter((e) => e.type === 'step:nudged')).toHaveLength(1);
+    });
+
+    it('emits step:force-released event on escalation', async () => {
+      waitForExitFn = vi.fn().mockResolvedValue('timeout');
+
+      const events: Array<{ type: string }> = [];
+      runner.on((event) => events.push(event));
+
+      await runner.execute(
+        makeConfig({
+          swarm: {
+            pattern: 'dag',
+            idleNudge: { nudgeAfterMs: 50, escalateAfterMs: 50, maxNudges: 1 },
+          },
+        }),
+        'default'
+      );
+
+      expect(events.filter((e) => e.type === 'step:force-released')).toHaveLength(1);
+    });
+
+    it('uses defaults when idleNudge is empty object', async () => {
+      waitForExitFn = vi.fn().mockResolvedValue('timeout');
+
+      const run = await runner.execute(
+        makeConfig({
+          swarm: {
+            pattern: 'dag',
+            idleNudge: {},
+          },
+        }),
+        'default'
+      );
+
+      expect(run.status).toBe('completed');
+      // default maxNudges is 1
+      expect(mockHumanSendMessage).toHaveBeenCalledTimes(1);
+      expect(mockRelease).toHaveBeenCalledTimes(1);
+    });
+
+    it('respects overall timeout during nudge loop', async () => {
+      // Each waitForExit call takes 100ms (real timer), but the overall timeout
+      // is only 80ms. After the first call (~100ms elapsed), the loop detects
+      // that remaining time is exhausted and returns 'timeout'.
+      waitForExitFn = vi
+        .fn()
+        .mockImplementation(
+          () => new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 100))
+        );
+
+      const run = await runner.execute(
+        makeConfig({
+          swarm: {
+            pattern: 'dag',
+            idleNudge: { nudgeAfterMs: 10, escalateAfterMs: 10, maxNudges: 10 },
+          },
+          agents: [{ name: 'agent-a', cli: 'claude', constraints: { timeoutMs: 80 } }],
+        }),
+        'default'
+      );
+
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('timed out');
+    });
   });
 
-  it('should send direct nudge after idle detection', async () => {
-    let idleCallCount = 0;
-    // First waitForIdle resolves with 'idle', second with 'exited' (agent responds)
-    waitForIdleFn = vi.fn().mockImplementation(() => {
-      idleCallCount++;
-      if (idleCallCount === 1) return Promise.resolve('idle');
-      return Promise.resolve('exited');
-    });
-    // waitForExit never resolves quickly — make it lose the race
-    waitForExitFn = vi.fn().mockImplementation(() => new Promise(() => {}));
-    // But after nudge, agent exits — so second iteration exit resolves
-    let exitCallCount = 0;
-    waitForExitFn = vi.fn().mockImplementation(() => {
-      exitCallCount++;
-      if (exitCallCount === 1) return new Promise(() => {}); // lose first race
-      return Promise.resolve('exited'); // win second race
+  describe('Idle = done (no idleNudge config)', () => {
+    it('idle fires first: releases agent and completes step', async () => {
+      waitForIdleFn = vi.fn().mockResolvedValue('idle');
+      waitForExitFn = vi.fn().mockImplementation(() => never());
+
+      const run = await runner.execute(makeConfig(), 'default');
+      const steps = await db.getStepsByRunId(run.id);
+
+      expect(run.status).toBe('completed');
+      expect(steps).toHaveLength(1);
+      expect(steps[0]?.status).toBe('completed');
+      expect(mockRelease).toHaveBeenCalledTimes(1);
     });
 
-    const config = makeConfig({
-      swarm: {
-        pattern: 'mesh', // non-hub pattern → direct nudge
-        idleNudge: { nudgeAfterMs: 100, escalateAfterMs: 100, maxNudges: 1 },
-      },
+    it('exit fires first: completes without idle-based release', async () => {
+      waitForExitFn = vi.fn().mockResolvedValue('exited');
+      waitForIdleFn = vi.fn().mockResolvedValue('timeout');
+
+      const run = await runner.execute(makeConfig(), 'default');
+      const steps = await db.getStepsByRunId(run.id);
+
+      expect(run.status).toBe('completed');
+      expect(steps).toHaveLength(1);
+      expect(steps[0]?.status).toBe('completed');
+      expect(mockRelease).not.toHaveBeenCalled();
     });
 
-    const run = await runner.execute(config, 'default');
+    it('both timeout: fails step with timeout error', async () => {
+      waitForExitFn = vi.fn().mockResolvedValue('timeout');
+      waitForIdleFn = vi.fn().mockResolvedValue('timeout');
 
-    expect(run.status).toBe('completed');
-    // Direct nudge via human handle
-    expect(mockHumanSendMessage).toHaveBeenCalledTimes(1);
-    expect(mockHumanSendMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: 'test-agent-abc',
-        text: expect.stringContaining('/exit'),
-      })
-    );
-  });
+      const run = await runner.execute(makeConfig(), 'default');
+      const steps = await db.getStepsByRunId(run.id);
 
-  it('should use hub-mediated nudge for hub patterns when hub exists', async () => {
-    let idleCallCount = 0;
-    waitForIdleFn = vi.fn().mockImplementation(() => {
-      idleCallCount++;
-      if (idleCallCount === 1) return Promise.resolve('idle');
-      return Promise.resolve('exited');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('timed out');
+      expect(steps).toHaveLength(1);
+      expect(steps[0]?.status).toBe('failed');
+      expect(steps[0]?.error).toContain('timed out');
     });
-    let exitCallCount = 0;
-    waitForExitFn = vi.fn().mockImplementation(() => {
-      exitCallCount++;
-      if (exitCallCount === 1) return new Promise(() => {});
-      return Promise.resolve('exited');
-    });
-
-    const config = makeConfig({
-      swarm: {
-        pattern: 'hub-spoke', // hub pattern
-        idleNudge: { nudgeAfterMs: 100, escalateAfterMs: 100, maxNudges: 1 },
-      },
-      agents: [
-        { name: 'lead', cli: 'claude', role: 'Lead coordinator' },
-        { name: 'worker', cli: 'claude' },
-      ],
-      workflows: [
-        {
-          name: 'default',
-          steps: [{ name: 'step-1', agent: 'worker', task: 'Do work' }],
-        },
-      ],
-    });
-
-    const run = await runner.execute(config, 'default');
-
-    // Since the hub (lead) is not spawned in this workflow step, it falls back to direct nudge
-    // The hub-mediated path requires the hub to be in activeAgentHandles
-    expect(run.status).toBe('completed');
-  });
-
-  it('should send direct nudge when idle agent IS the hub', async () => {
-    let idleCallCount = 0;
-    waitForIdleFn = vi.fn().mockImplementation(() => {
-      idleCallCount++;
-      if (idleCallCount === 1) return Promise.resolve('idle');
-      return Promise.resolve('exited');
-    });
-    let exitCallCount = 0;
-    waitForExitFn = vi.fn().mockImplementation(() => {
-      exitCallCount++;
-      if (exitCallCount === 1) return new Promise(() => {});
-      return Promise.resolve('exited');
-    });
-
-    const config = makeConfig({
-      swarm: {
-        pattern: 'hub-spoke',
-        idleNudge: { nudgeAfterMs: 100, escalateAfterMs: 100, maxNudges: 1 },
-      },
-      agents: [{ name: 'lead', cli: 'claude', role: 'Lead coordinator' }],
-      workflows: [
-        {
-          name: 'default',
-          steps: [{ name: 'step-1', agent: 'lead', task: 'Coordinate work' }],
-        },
-      ],
-    });
-
-    const run = await runner.execute(config, 'default');
-
-    expect(run.status).toBe('completed');
-    // Should use direct nudge since idle agent is the hub itself
-    expect(mockHumanSendMessage).toHaveBeenCalledTimes(1);
-  });
-
-  it('should force-release after maxNudges exceeded', async () => {
-    // Idle always fires, never exits
-    waitForIdleFn = vi.fn().mockResolvedValue('idle');
-    waitForExitFn = vi.fn().mockImplementation(() => new Promise(() => {})); // never resolves
-
-    const config = makeConfig({
-      swarm: {
-        pattern: 'dag',
-        idleNudge: { nudgeAfterMs: 50, escalateAfterMs: 50, maxNudges: 1 },
-      },
-    });
-
-    const run = await runner.execute(config, 'default');
-
-    // Force-released → still captures output → completes
-    expect(run.status).toBe('completed');
-    expect(mockRelease).toHaveBeenCalledTimes(1);
-    expect(mockHumanSendMessage).toHaveBeenCalledTimes(1); // 1 nudge before escalation
-  });
-
-  it('should force-release after multiple nudges', async () => {
-    waitForIdleFn = vi.fn().mockResolvedValue('idle');
-    waitForExitFn = vi.fn().mockImplementation(() => new Promise(() => {}));
-
-    const config = makeConfig({
-      swarm: {
-        pattern: 'dag',
-        idleNudge: { nudgeAfterMs: 50, escalateAfterMs: 50, maxNudges: 3 },
-      },
-    });
-
-    const run = await runner.execute(config, 'default');
-
-    expect(run.status).toBe('completed');
-    expect(mockRelease).toHaveBeenCalledTimes(1);
-    expect(mockHumanSendMessage).toHaveBeenCalledTimes(3); // 3 nudges before escalation
-  });
-
-  it('should respect overall timeout despite nudge loop', async () => {
-    // Idle fires quickly, but overall timeout is very short
-    waitForIdleFn = vi.fn().mockResolvedValue('idle');
-    waitForExitFn = vi
-      .fn()
-      .mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve('timeout'), 50)));
-
-    const config = makeConfig({
-      swarm: {
-        pattern: 'dag',
-        idleNudge: { nudgeAfterMs: 10, escalateAfterMs: 10, maxNudges: 10 },
-      },
-      agents: [{ name: 'agent-a', cli: 'claude', constraints: { timeoutMs: 100 } }],
-    });
-
-    // The step has a short timeout — should not loop forever
-    const run = await runner.execute(config, 'default');
-    // Either completed (force-released) or failed (timeout) — either is acceptable
-    expect(['completed', 'failed']).toContain(run.status);
-  });
-
-  it('should emit step:nudged event', async () => {
-    let idleCallCount = 0;
-    waitForIdleFn = vi.fn().mockImplementation(() => {
-      idleCallCount++;
-      if (idleCallCount === 1) return Promise.resolve('idle');
-      return Promise.resolve('exited');
-    });
-    let exitCallCount = 0;
-    waitForExitFn = vi.fn().mockImplementation(() => {
-      exitCallCount++;
-      if (exitCallCount === 1) return new Promise(() => {});
-      return Promise.resolve('exited');
-    });
-
-    const events: Array<{ type: string }> = [];
-    const config = makeConfig({
-      swarm: {
-        pattern: 'dag',
-        idleNudge: { nudgeAfterMs: 50, escalateAfterMs: 50, maxNudges: 1 },
-      },
-    });
-
-    runner.on((event) => events.push(event));
-    await runner.execute(config, 'default');
-
-    const nudgeEvents = events.filter((e) => e.type === 'step:nudged');
-    expect(nudgeEvents).toHaveLength(1);
-  });
-
-  it('should emit step:force-released event on escalation', async () => {
-    waitForIdleFn = vi.fn().mockResolvedValue('idle');
-    waitForExitFn = vi.fn().mockImplementation(() => new Promise(() => {}));
-
-    const events: Array<{ type: string }> = [];
-    const config = makeConfig({
-      swarm: {
-        pattern: 'dag',
-        idleNudge: { nudgeAfterMs: 50, escalateAfterMs: 50, maxNudges: 1 },
-      },
-    });
-
-    runner.on((event) => events.push(event));
-    await runner.execute(config, 'default');
-
-    const forceReleasedEvents = events.filter((e) => e.type === 'step:force-released');
-    expect(forceReleasedEvents).toHaveLength(1);
-  });
-
-  it('should handle agent responding to nudge: idle → nudge → output → idle → escalate', async () => {
-    let idleCallCount = 0;
-    // First idle → nudge. Second idle → escalate (maxNudges: 1)
-    waitForIdleFn = vi.fn().mockImplementation(() => {
-      idleCallCount++;
-      return Promise.resolve('idle');
-    });
-    waitForExitFn = vi.fn().mockImplementation(() => new Promise(() => {}));
-
-    const config = makeConfig({
-      swarm: {
-        pattern: 'dag',
-        idleNudge: { nudgeAfterMs: 50, escalateAfterMs: 50, maxNudges: 1 },
-      },
-    });
-
-    const run = await runner.execute(config, 'default');
-
-    expect(run.status).toBe('completed');
-    // 1 nudge sent, then force-released
-    expect(mockHumanSendMessage).toHaveBeenCalledTimes(1);
-    expect(mockRelease).toHaveBeenCalledTimes(1);
-  });
-
-  it('should use defaults when idleNudge is empty object', async () => {
-    let idleCallCount = 0;
-    waitForIdleFn = vi.fn().mockImplementation(() => {
-      idleCallCount++;
-      if (idleCallCount === 1) return Promise.resolve('idle');
-      return Promise.resolve('exited');
-    });
-    let exitCallCount = 0;
-    waitForExitFn = vi.fn().mockImplementation(() => {
-      exitCallCount++;
-      if (exitCallCount === 1) return new Promise(() => {});
-      return Promise.resolve('exited');
-    });
-
-    const config = makeConfig({
-      swarm: {
-        pattern: 'dag',
-        idleNudge: {}, // empty — should use defaults
-      },
-    });
-
-    const run = await runner.execute(config, 'default');
-
-    expect(run.status).toBe('completed');
-    // Default maxNudges: 1, so one nudge should have been sent
-    expect(mockHumanSendMessage).toHaveBeenCalledTimes(1);
   });
 });

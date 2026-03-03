@@ -176,7 +176,7 @@
     },
     "AgentCli": {
       "type": "string",
-      "enum": ["claude", "codex", "gemini", "aider", "goose", "opencode", "droid"]
+      "enum": ["claude", "codex", "gemini", "aider", "goose", "opencode", "droid", "cursor", "cursor-agent", "agent"]
     },
     "AgentConstraints": {
       "type": "object",

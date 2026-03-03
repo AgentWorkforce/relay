@@ -115,7 +115,7 @@ export interface AgentDefinition {
   preset?: AgentPreset;
 }
 
-export type AgentCli = 'claude' | 'codex' | 'gemini' | 'aider' | 'goose' | 'opencode' | 'droid';
+export type AgentCli = 'claude' | 'codex' | 'gemini' | 'aider' | 'goose' | 'opencode' | 'droid' | 'cursor' | 'cursor-agent' | 'agent';
 
 /** Resource and behavioral constraints for an agent. */
 export interface AgentConstraints {
