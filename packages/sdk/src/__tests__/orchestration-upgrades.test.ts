@@ -12,11 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 function readWave0Fixture<T>(name: string): T {
-  const fixturePath = path.resolve(
-    __dirname,
-    '../../../../tests/fixtures/contracts/wave0',
-    name
-  );
+  const fixturePath = path.resolve(__dirname, '../../../../tests/fixtures/contracts/wave0', name);
   return JSON.parse(fs.readFileSync(fixturePath, 'utf8')) as T;
 }
 
@@ -29,7 +25,7 @@ function createMockFacadeClient() {
       async () =>
         [] as Array<{
           name: string;
-          runtime: 'pty' | 'headless_claude';
+          runtime: 'pty' | 'headless';
           channels: string[];
           parent?: string;
           pid?: number;
@@ -128,6 +124,33 @@ describe('AgentRelayClient orchestration payloads', () => {
           model: 'opus',
           args: ['--model', 'opus', '--dangerously-skip-permissions'],
         }),
+      })
+    );
+  });
+
+  it('spawnClaude supports transport override to headless', async () => {
+    const client = new AgentRelayClient({ cwd: '/workspace/default' });
+    vi.spyOn(client, 'start').mockResolvedValue(undefined);
+    const requestOk = vi
+      .spyOn(client as any, 'requestOk')
+      .mockResolvedValue({ name: 'agent-headless', runtime: 'headless' });
+
+    await client.spawnClaude({
+      name: 'agent-headless',
+      transport: 'headless',
+      channels: ['general'],
+      task: 'run headless',
+    });
+
+    expect(requestOk).toHaveBeenCalledWith(
+      'spawn_agent',
+      expect.objectContaining({
+        agent: expect.objectContaining({
+          name: 'agent-headless',
+          runtime: 'headless',
+          provider: 'claude',
+        }),
+        initial_task: 'run headless',
       })
     );
   });

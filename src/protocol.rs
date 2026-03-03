@@ -9,13 +9,22 @@ pub const PROTOCOL_VERSION: u32 = 1;
 #[serde(rename_all = "snake_case")]
 pub enum AgentRuntime {
     Pty,
-    HeadlessClaude,
+    Headless,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadlessProvider {
+    Claude,
+    Opencode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSpec {
     pub name: String,
     pub runtime: AgentRuntime,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<HeadlessProvider>,
     #[serde(default)]
     pub cli: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -115,6 +124,8 @@ pub enum BrokerEvent {
     AgentSpawned {
         name: String,
         runtime: AgentRuntime,
+        #[serde(default)]
+        provider: Option<HeadlessProvider>,
         parent: Option<String>,
         cli: Option<String>,
         model: Option<String>,
@@ -276,8 +287,8 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        AgentRuntime, AgentSpec, BrokerEvent, BrokerToSdk, BrokerToWorker, ProtocolEnvelope,
-        RelayDelivery, WorkerToBroker, PROTOCOL_VERSION,
+        AgentRuntime, AgentSpec, BrokerEvent, BrokerToSdk, BrokerToWorker, HeadlessProvider,
+        ProtocolEnvelope, RelayDelivery, WorkerToBroker, PROTOCOL_VERSION,
     };
 
     #[test]
@@ -336,7 +347,8 @@ mod tests {
     fn broker_event_round_trip() {
         let event = BrokerToSdk::Event(BrokerEvent::AgentSpawned {
             name: "Worker2".into(),
-            runtime: AgentRuntime::HeadlessClaude,
+            runtime: AgentRuntime::Headless,
+            provider: Some(HeadlessProvider::Claude),
             parent: Some("Lead".into()),
             cli: None,
             model: None,
@@ -402,6 +414,7 @@ mod tests {
         let spec: AgentSpec = serde_json::from_str(raw).unwrap();
         assert_eq!(spec.name, "Worker3");
         assert_eq!(spec.runtime, AgentRuntime::Pty);
+        assert_eq!(spec.provider, None);
         assert_eq!(spec.cli, None);
         assert_eq!(spec.model, None);
         assert_eq!(spec.cwd, None);
@@ -410,5 +423,17 @@ mod tests {
         assert_eq!(spec.shadow_mode, None);
         assert!(spec.args.is_empty());
         assert!(spec.channels.is_empty());
+    }
+
+    #[test]
+    fn agent_spec_headless_provider_round_trip() {
+        let raw = r#"{"name":"Worker4","runtime":"headless","provider":"opencode"}"#;
+        let spec: AgentSpec = serde_json::from_str(raw).unwrap();
+        assert_eq!(spec.runtime, AgentRuntime::Headless);
+        assert_eq!(spec.provider, Some(HeadlessProvider::Opencode));
+
+        let encoded = serde_json::to_string(&spec).unwrap();
+        let decoded: AgentSpec = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.provider, Some(HeadlessProvider::Opencode));
     }
 }

@@ -33,7 +33,7 @@ import {
   type SendMessageInput,
   type SpawnPtyInput,
 } from './client.js';
-import type { AgentRuntime, BrokerEvent, BrokerStatus, RestartPolicy } from './protocol.js';
+import type { AgentRuntime, BrokerEvent, BrokerStatus, HeadlessProvider, RestartPolicy } from './protocol.js';
 import {
   followLogs as followLogsFromFile,
   getLogs as getLogsFromFile,
@@ -1124,8 +1124,15 @@ export class AgentRelay {
 
         const task = options?.task;
         let result: { name: string; runtime: AgentRuntime };
-        if (runtime === 'headless_claude') {
-          result = await client.spawnHeadlessClaude({ name, args, channels, task });
+        if (runtime === 'headless') {
+          result = await client.spawnProvider({
+            name,
+            provider: cli as HeadlessProvider,
+            transport: 'headless',
+            args,
+            channels,
+            task,
+          });
         } else {
           result = await client.spawnPty({
             name,

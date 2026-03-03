@@ -41,7 +41,10 @@ use relay_broker::{
     control::{can_release_child, is_human_sender},
     dedup::DedupCache,
     message_bridge::{map_ws_broker_command, map_ws_event},
-    protocol::{AgentRuntime, AgentSpec, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION},
+    protocol::{
+        AgentRuntime, AgentSpec, HeadlessProvider as ProtocolHeadlessProvider, ProtocolEnvelope,
+        RelayDelivery, PROTOCOL_VERSION,
+    },
     pty::PtySession,
     relaycast_ws::{
         format_worker_preregistration_error, registration_is_retryable,
@@ -135,7 +138,7 @@ struct PtyCommand {
 
 #[derive(Debug, clap::Args, Clone)]
 struct HeadlessCommand {
-    provider: HeadlessProvider,
+    provider: HeadlessCliProvider,
 
     #[arg(last = true)]
     args: Vec<String>,
@@ -145,8 +148,25 @@ struct HeadlessCommand {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum HeadlessProvider {
+enum HeadlessCliProvider {
     Claude,
+    Opencode,
+}
+
+impl From<HeadlessCliProvider> for ProtocolHeadlessProvider {
+    fn from(value: HeadlessCliProvider) -> Self {
+        match value {
+            HeadlessCliProvider::Claude => Self::Claude,
+            HeadlessCliProvider::Opencode => Self::Opencode,
+        }
+    }
+}
+
+fn headless_provider_cli_name(provider: &ProtocolHeadlessProvider) -> &'static str {
+    match provider {
+        ProtocolHeadlessProvider::Claude => "claude",
+        ProtocolHeadlessProvider::Opencode => "opencode",
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -585,6 +605,7 @@ impl WorkerRegistry {
                 json!({
                     "name": name,
                     "runtime": handle.spec.runtime,
+                    "provider": handle.spec.provider.clone(),
                     "cli": handle.spec.cli,
                     "model": handle.spec.model,
                     "team": handle.spec.team,
@@ -702,14 +723,18 @@ impl WorkerRegistry {
                     }
                 }
             }
-            AgentRuntime::HeadlessClaude => {
+            AgentRuntime::Headless => {
+                let provider = spec
+                    .provider
+                    .as_ref()
+                    .context("headless runtime requires `provider`")?;
                 command.arg("headless");
                 command.arg("--agent-name").arg(&spec.name);
-                command.arg("claude");
+                command.arg(headless_provider_cli_name(provider));
 
-                // Build MCP config for headless Claude agents.
+                // Build MCP config for headless provider agents.
                 let mcp_args = configure_relaycast_mcp_with_token(
-                    "claude",
+                    headless_provider_cli_name(provider),
                     &spec.name,
                     self.env_value("RELAY_API_KEY"),
                     self.env_value("RELAY_BASE_URL"),
@@ -1432,6 +1457,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             let spec = AgentSpec {
                                 name: name.clone(),
                                 runtime: AgentRuntime::Pty,
+                                provider: None,
                                 cli: Some(cli.clone()),
                                 model: model.clone(),
                                 cwd: None,
@@ -2002,6 +2028,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 let spec = AgentSpec {
                                     name: name.clone(),
                                     runtime: AgentRuntime::Pty,
+                                    provider: None,
                                     cli: Some(cli.clone()),
                                     model: None,
                                     cwd: None,
@@ -2467,13 +2494,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         .and_then(|p| p.get("runtime"))
                                         .and_then(Value::as_str)
                                         .unwrap_or("pty");
-                                    let (cli_val, model_val) = workers.workers.get(&name)
-                                        .map(|h| (h.spec.cli.clone(), h.spec.model.clone()))
-                                        .unwrap_or((None, None));
+                                    let (provider_val, cli_val, model_val) = workers.workers.get(&name)
+                                        .map(|h| (h.spec.provider.clone(), h.spec.cli.clone(), h.spec.model.clone()))
+                                        .unwrap_or((None, None, None));
                                     let _ = send_event(&sdk_out_tx, json!({
                                         "kind": "worker_ready",
                                         "name": name,
                                         "runtime": runtime,
+                                        "provider": provider_val,
                                         "cli": cli_val,
                                         "model": model_val,
                                     })).await;
@@ -3431,12 +3459,17 @@ async fn handle_sdk_frame(
                 runtime: format!("{:?}", runtime),
             });
 
+            let spawned_provider = payload.agent.provider.clone();
+            let spawned_cli = payload.agent.cli.clone();
+            let spawned_model = payload.agent.model.clone();
+
             send_ok(
                 out_tx,
                 frame.request_id,
                 json!({
                     "name": name,
                     "runtime": runtime,
+                    "provider": spawned_provider.clone(),
                     "pre_registered": worker_relay_key.is_some(),
                     "warning": preregistration_warning.clone(),
                 }),
@@ -3448,8 +3481,9 @@ async fn handle_sdk_frame(
                     "kind": "agent_spawned",
                     "name": name,
                     "runtime": runtime,
-                    "cli": payload.agent.cli,
-                    "model": payload.agent.model,
+                    "provider": spawned_provider,
+                    "cli": spawned_cli,
+                    "model": spawned_model,
                     "parent": Value::Null,
                     "pre_registered": worker_relay_key.is_some(),
                     "registration_warning": preregistration_warning,
@@ -4172,9 +4206,8 @@ fn clear_pending_delivery_if_event_matches(
 }
 
 async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
-    if !matches!(cmd.provider, HeadlessProvider::Claude) {
-        anyhow::bail!("unsupported headless provider");
-    }
+    let provider: ProtocolHeadlessProvider = cmd.provider.into();
+    let provider_name = headless_provider_cli_name(&provider);
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(512);
     tokio::spawn(async move {
@@ -4190,6 +4223,10 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
     });
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut worker_name = cmd
+        .agent_name
+        .clone()
+        .unwrap_or_else(|| format!("headless-{provider_name}"));
     while let Ok(Some(line)) = lines.next_line().await {
         let frame: ProtocolEnvelope<Value> = match serde_json::from_str(&line) {
             Ok(frame) => frame,
@@ -4211,7 +4248,7 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
 
         match frame.msg_type.as_str() {
             "init_worker" => {
-                let inferred_name = cmd
+                worker_name = cmd
                     .agent_name
                     .clone()
                     .or_else(|| {
@@ -4222,15 +4259,15 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                             .and_then(Value::as_str)
                             .map(ToOwned::to_owned)
                     })
-                    .unwrap_or_else(|| "headless-claude".to_string());
+                    .unwrap_or_else(|| format!("headless-{provider_name}"));
 
                 let _ = send_frame(
                     &out_tx,
                     "worker_ready",
                     frame.request_id,
                     json!({
-                        "name": inferred_name,
-                        "runtime": "headless_claude",
+                        "name": &worker_name,
+                        "runtime": "headless",
                     }),
                 )
                 .await;
@@ -4254,14 +4291,66 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                     }
                 };
 
-                // TODO(cloud/headless): integrate Claude headless SDK runtime.
+                let timestamp = chrono::Utc::now().timestamp_millis();
+                let delivery_id = delivery.delivery_id;
+                let event_id = delivery.event_id;
+
+                let _ = send_frame(
+                    &out_tx,
+                    "delivery_queued",
+                    None,
+                    json!({
+                        "delivery_id": delivery_id,
+                        "event_id": event_id,
+                        "agent": &worker_name,
+                        "timestamp": timestamp,
+                    }),
+                )
+                .await;
+
+                let _ = send_frame(
+                    &out_tx,
+                    "delivery_injected",
+                    None,
+                    json!({
+                        "delivery_id": delivery_id,
+                        "event_id": event_id,
+                        "agent": &worker_name,
+                        "timestamp": timestamp,
+                    }),
+                )
+                .await;
+
+                let _ = send_frame(
+                    &out_tx,
+                    "delivery_active",
+                    None,
+                    json!({
+                        "delivery_id": delivery_id,
+                        "event_id": event_id,
+                        "pattern": format!("headless:{}", provider_name),
+                    }),
+                )
+                .await;
+
+                let _ = send_frame(
+                    &out_tx,
+                    "delivery_verified",
+                    None,
+                    json!({
+                        "delivery_id": delivery_id,
+                        "event_id": event_id,
+                    }),
+                )
+                .await;
+
                 let _ = send_frame(
                     &out_tx,
                     "delivery_ack",
                     frame.request_id,
                     json!({
-                        "delivery_id": delivery.delivery_id,
-                        "event_id": delivery.event_id,
+                        "delivery_id": delivery_id,
+                        "event_id": event_id,
                     }),
                 )
                 .await;

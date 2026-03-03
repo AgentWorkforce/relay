@@ -103,7 +103,7 @@ test('sdk can start broker and manage agent lifecycle', async (t) => {
   }
 });
 
-test('sdk can spawn and release headless claude worker', async (t) => {
+test('sdk can spawn and release provider worker with transport override', async (t) => {
   const binaryPath = resolveBinaryPath();
   if (!fs.existsSync(binaryPath)) {
     t.skip(`agent-relay-broker binary not found at ${binaryPath}`);
@@ -124,17 +124,18 @@ test('sdk can spawn and release headless claude worker', async (t) => {
   });
 
   try {
-    const spawned = await client.spawnHeadlessClaude({
+    const spawned = await client.spawnClaude({
       name: spawnedName,
+      transport: 'headless',
       channels: ['general'],
     });
     assert.equal(spawned.name, spawnedName);
-    assert.equal(spawned.runtime, 'headless_claude');
+    assert.equal(spawned.runtime, 'headless');
 
     const agentsAfterSpawn = await client.listAgents();
     const spawnedAgent = agentsAfterSpawn.find((agent) => agent.name === spawnedName);
     assert.ok(spawnedAgent, 'spawned headless agent should be present in listAgents()');
-    assert.equal(spawnedAgent?.runtime, 'headless_claude');
+    assert.equal(spawnedAgent?.runtime, 'headless');
 
     const released = await client.release(spawnedName);
     assert.equal(released.name, spawnedName);

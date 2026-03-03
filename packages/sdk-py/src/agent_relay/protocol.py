@@ -10,7 +10,8 @@ from typing import Any, Literal, Optional
 
 PROTOCOL_VERSION = 1
 
-AgentRuntime = Literal["pty", "headless_claude"]
+AgentRuntime = Literal["pty", "headless"]
+HeadlessProvider = Literal["claude", "opencode"]
 
 
 @dataclass
@@ -35,6 +36,7 @@ class AgentSpec:
 
     name: str
     runtime: AgentRuntime = "pty"
+    provider: Optional[HeadlessProvider] = None
     cli: Optional[str] = None
     args: list[str] = field(default_factory=list)
     channels: list[str] = field(default_factory=list)
@@ -50,6 +52,8 @@ class AgentSpec:
             "name": self.name,
             "runtime": self.runtime,
         }
+        if self.provider is not None:
+            d["provider"] = self.provider
         if self.cli is not None:
             d["cli"] = self.cli
         if self.args:
