@@ -311,7 +311,15 @@ function resolveDashboardStaticDir(dashboardBinary: string | null, deps: CoreDep
     return pickDashboardStaticDir([dashboardServerOutDir, siblingDashboardOutDir], deps);
   }
 
-  return null;
+  const homeDir = deps.env.HOME || deps.env.USERPROFILE || '';
+  if (!homeDir) {
+    return null;
+  }
+
+  // Standalone installs download UI assets to ~/.relay/dashboard/out.
+  const standaloneDashboardOutDir = path.join(homeDir, '.relay', 'dashboard', 'out');
+  const legacyDashboardOutDir = path.join(homeDir, '.agent-relay', 'dashboard', 'out');
+  return pickDashboardStaticDir([standaloneDashboardOutDir, legacyDashboardOutDir], deps);
 }
 
 function normalizeLocalhostRelayUrl(relayUrl: string): string {

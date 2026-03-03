@@ -231,7 +231,7 @@ function createDefaultRelay(cwd: string, apiPort = 0): CoreRelay {
     Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 30_000;
   const client = createAgentRelayClient({
     cwd,
-    binaryArgs: apiPort > 0 ? ['--api-port', String(apiPort)] : [],
+    binaryArgs: apiPort > 0 ? ['--persist', '--api-port', String(apiPort)] : [],
     requestTimeoutMs,
   });
 
