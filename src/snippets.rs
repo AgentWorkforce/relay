@@ -544,9 +544,7 @@ pub async fn configure_relaycast_mcp_with_token(
     let is_gemini = cli_lower == "gemini";
     let is_droid = cli_lower == "droid";
     let is_opencode = cli_lower == "opencode";
-    let is_cursor = cli_lower == "cursor"
-        || cli_lower == "cursor-agent"
-        || cli_lower == "agent"; // "agent" is cursor-agent's binary name
+    let is_cursor = cli_lower == "cursor" || cli_lower == "cursor-agent" || cli_lower == "agent"; // "agent" is cursor-agent's binary name
 
     let api_key = api_key.map(str::trim).filter(|s| !s.is_empty());
     let base_url = base_url.map(str::trim).filter(|s| !s.is_empty());
