@@ -82,7 +82,13 @@ pub fn listen_api_router(
     replay_buffer: ReplayBuffer,
     workspace_key: Option<String>,
 ) -> axum::Router {
-    listen_api_router_with_auth(tx, events_tx, configured_broker_api_key(), replay_buffer, workspace_key)
+    listen_api_router_with_auth(
+        tx,
+        events_tx,
+        configured_broker_api_key(),
+        replay_buffer,
+        workspace_key,
+    )
 }
 
 fn configured_broker_api_key() -> Option<String> {
