@@ -4,7 +4,7 @@
  * persists state to DB, and supports pause/resume/abort with retries.
  */
 
-import { spawn as cpSpawn } from 'node:child_process';
+import { spawn as cpSpawn, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { WriteStream } from 'node:fs';
@@ -101,6 +101,26 @@ export interface VariableContext {
 interface StepState {
   row: WorkflowStepRow;
   agent?: Agent;
+}
+
+// ── CLI resolution ───────────────────────────────────────────────────────────
+
+/**
+ * Resolve `cursor` to the concrete cursor agent binary available in PATH.
+ * Prefers `cursor-agent` over `agent`. Falls back to `agent` if neither
+ * `cursor-agent` nor a real cursor IDE CLI is found.
+ */
+function resolveCursorCli(): 'cursor-agent' | 'agent' {
+  const candidates: Array<'cursor-agent' | 'agent'> = ['cursor-agent', 'agent'];
+  for (const candidate of candidates) {
+    try {
+      execFileSync('which', [candidate], { stdio: 'ignore' });
+      return candidate;
+    } catch {
+      // not in PATH, try next
+    }
+  }
+  return 'agent'; // last-resort default
 }
 
 // ── WorkflowRunner ──────────────────────────────────────────────────────────
@@ -1102,8 +1122,7 @@ export class WorkflowRunner {
       this.log('API key resolved');
       if (this.relayApiKeyAutoCreated && this.relayApiKey) {
         this.log(`Workspace created — follow this run in Relaycast:`);
-        this.log(`  RELAY_API_KEY=${this.relayApiKey}`);
-        this.log(`  Observer: https://observer.relaycast.dev (paste key above)`);
+        this.log(`  Observer: https://observer.relaycast.dev/?key=${this.relayApiKey}`);
         this.log(`  Channel: ${channel}`);
       }
 
@@ -2112,6 +2131,13 @@ export class WorkflowRunner {
         return { cmd: 'aider', args: ['--message', task, '--yes-always', '--no-git', ...extraArgs] };
       case 'goose':
         return { cmd: 'goose', args: ['run', '--text', task, '--no-session', ...extraArgs] };
+      case 'cursor-agent':
+      case 'agent':
+        return { cmd: cli, args: ['--force', '-p', task, ...extraArgs] };
+      case 'cursor':
+        // Should not reach here after resolveAgentDef resolves to agent/cursor-agent,
+        // but handle as fallback.
+        return { cmd: resolveCursorCli(), args: ['--force', '-p', task, ...extraArgs] };
     }
   }
 
@@ -2120,13 +2146,16 @@ export class WorkflowRunner {
    * Explicit fields on the definition always win over preset-inferred defaults.
    */
   private static resolveAgentDef(def: AgentDefinition): AgentDefinition {
-    if (!def.preset) return def;
+    // Resolve "cursor" alias to whichever cursor agent binary is in PATH
+    const resolvedCli: AgentCli = def.cli === 'cursor' ? resolveCursorCli() : def.cli;
+
+    if (!def.preset) return resolvedCli !== def.cli ? { ...def, cli: resolvedCli } : def;
     const nonInteractivePresets: AgentPreset[] = ['worker', 'reviewer', 'analyst'];
     const defaults: Partial<AgentDefinition> = nonInteractivePresets.includes(def.preset)
       ? { interactive: false }
       : {};
     // Explicit fields on the def always win
-    return { ...defaults, ...def } as AgentDefinition;
+    return { ...defaults, ...def, cli: resolvedCli } as AgentDefinition;
   }
 
   /**

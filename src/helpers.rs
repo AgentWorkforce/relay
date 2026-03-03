@@ -31,7 +31,18 @@ pub(crate) fn parse_cli_command(raw: &str) -> Result<(String, Vec<String>)> {
     let mut args = args.to_vec();
 
     let cli_lower = normalize_cli_name(&command).to_lowercase();
-    if cli_lower == "cursor" && !args.iter().any(|arg| arg == "--force") {
+    // "cursor" is an alias for the standalone cursor agent binary ("agent").
+    // The cursor shim only accepts "cursor agent [...]", not "cursor --force",
+    // so we resolve directly to "agent" to bypass the shim entirely.
+    let command = if cli_lower == "cursor" {
+        "agent".to_string()
+    } else {
+        command
+    };
+    let normalized = normalize_cli_name(&command).to_lowercase();
+    if (normalized == "agent" || normalized == "cursor-agent")
+        && !args.iter().any(|arg| arg == "--force")
+    {
         args.insert(0, "--force".to_string());
     }
 
@@ -1474,16 +1485,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_cli_command_maps_cursor_to_force() {
+    fn parse_cli_command_maps_cursor_to_agent_with_force() {
+        // "cursor" resolves to "agent" to bypass the cursor shim
         let (cli, args) = parse_cli_command("cursor").unwrap();
-        assert_eq!(cli, "cursor");
+        assert_eq!(cli, "agent");
         assert_eq!(args, vec!["--force".to_string()]);
     }
 
     #[test]
-    fn parse_cli_command_maps_cursor_agent_to_cursor_with_force() {
+    fn parse_cli_command_maps_cursor_agent_to_agent_with_force() {
         let (cli, args) = parse_cli_command("cursor agent --model opus").unwrap();
-        assert_eq!(cli, "cursor");
+        assert_eq!(cli, "agent");
         assert_eq!(
             args,
             vec![
@@ -1498,7 +1510,7 @@ mod tests {
     #[test]
     fn parse_cli_command_dedups_force_for_cursor() {
         let (cli, args) = parse_cli_command("cursor --force --model opus").unwrap();
-        assert_eq!(cli, "cursor");
+        assert_eq!(cli, "agent");
         assert_eq!(
             args,
             vec![

@@ -42,6 +42,7 @@ pub enum ListenApiRequest {
         to: String,
         text: String,
         from: Option<String>,
+        thread_id: Option<String>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
 }
@@ -397,11 +398,20 @@ async fn listen_api_send(
         .trim()
         .to_string();
     let from = body.get("from").and_then(Value::as_str).map(String::from);
+    let thread_id = body
+        .get("thread")
+        .or_else(|| body.get("thread_id"))
+        .or_else(|| body.get("threadId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     tracing::info!(
         target = "relay_broker::http_api",
         request_id = %request_id,
         to = %to,
         from = ?from,
+        thread_id = ?thread_id,
         "received HTTP API send request"
     );
 
@@ -427,6 +437,7 @@ async fn listen_api_send(
             to: to.clone(),
             text,
             from,
+            thread_id,
             reply: reply_tx,
         })
         .await

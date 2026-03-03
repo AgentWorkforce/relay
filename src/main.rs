@@ -1583,6 +1583,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             to,
                             text,
                             from,
+                            thread_id,
                             reply,
                             ..
                         } => {
@@ -1603,6 +1604,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 from_dashboard = %from_dashboard,
                                 delivery_from = %delivery_from,
                                 to = %normalized_to,
+                                thread_id = ?thread_id,
                                 self_name = %self_name,
                                 "HTTP API send request"
                             );
@@ -1628,7 +1630,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     "target": normalized_to.clone(),
                                     "to": normalized_to.clone(),
                                     "text": text.clone(),
-                                    "thread_id": Value::Null,
+                                    "thread_id": thread_id.clone(),
                                     "timestamp": chrono::Utc::now().to_rfc3339(),
                                 }),
                             );
@@ -1660,7 +1662,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         &delivery_from,
                                         &normalized_to,
                                         &text,
-                                        None,
+                                        thread_id.clone(),
                                         priority,
                                         delivery_retry_interval,
                                     ),
@@ -1716,7 +1718,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "from": ui_from,
                                         "target": normalized_to,
                                         "body": text,
-                                        "thread_id": Value::Null,
+                                        "thread_id": thread_id.clone(),
                                     }),
                                     event_emit_timeout,
                                 )
@@ -1770,7 +1772,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 "from": ui_from,
                                                 "target": normalized_to,
                                                 "body": text,
-                                                "thread_id": Value::Null,
+                                                "thread_id": thread_id.clone(),
                                             }),
                                             event_emit_timeout,
                                         )
