@@ -109,18 +109,23 @@ interface StepState {
  * Resolve `cursor` to the concrete cursor agent binary available in PATH.
  * Prefers `cursor-agent` over `agent`. Falls back to `agent` if neither
  * `cursor-agent` nor a real cursor IDE CLI is found.
+ * Result is memoized after the first call to avoid repeated sync PATH lookups.
  */
+let _resolvedCursorCli: 'cursor-agent' | 'agent' | undefined;
 function resolveCursorCli(): 'cursor-agent' | 'agent' {
+  if (_resolvedCursorCli !== undefined) return _resolvedCursorCli;
   const candidates: Array<'cursor-agent' | 'agent'> = ['cursor-agent', 'agent'];
   for (const candidate of candidates) {
     try {
       execFileSync('which', [candidate], { stdio: 'ignore' });
+      _resolvedCursorCli = candidate;
       return candidate;
     } catch {
       // not in PATH, try next
     }
   }
-  return 'agent'; // last-resort default
+  _resolvedCursorCli = 'agent'; // last-resort default
+  return _resolvedCursorCli;
 }
 
 // ── WorkflowRunner ──────────────────────────────────────────────────────────
@@ -243,6 +248,21 @@ export class WorkflowRunner {
 
     this.relayApiKey = apiKey;
     this.relayApiKeyAutoCreated = true;
+
+    // Best-effort: push the key to a co-running dashboard (agent-relay up) so it
+    // can make Relaycast API calls without any file or manual env var setup.
+    const dashboardPort = process.env.AGENT_RELAY_DASHBOARD_PORT || '3888';
+    fetch(`http://127.0.0.1:${dashboardPort}/api/relay-config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ apiKey }),
+    }).then((res) => {
+      if (!res.ok) {
+        console.warn(`[WorkflowRunner] dashboard key push failed: HTTP ${res.status}`);
+      }
+    }).catch(() => {
+      // Dashboard not running — silently ignore.
+    });
   }
 
   private getRelayEnv(): NodeJS.ProcessEnv | undefined {
