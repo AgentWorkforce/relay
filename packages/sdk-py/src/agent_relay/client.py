@@ -18,7 +18,7 @@ import subprocess
 import sys
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 
 from .protocol import (
     PROTOCOL_VERSION,
@@ -45,6 +45,9 @@ class AgentRelayProtocolError(Exception):
 
 class AgentRelayProcessError(Exception):
     """Raised for broker process lifecycle errors."""
+
+
+AgentTransport = Literal["pty", "headless"]
 
 
 # ── CLI / model helpers ───────────────────────────────────────────────────────
@@ -605,6 +608,66 @@ class AgentRelayClient:
         if task is not None:
             request_payload["initial_task"] = task
         return await self._request_ok("spawn_agent", request_payload)
+
+    async def spawn_provider(
+        self,
+        *,
+        name: str,
+        provider: str,
+        transport: Optional[AgentTransport] = None,
+        args: Optional[list[str]] = None,
+        channels: Optional[list[str]] = None,
+        task: Optional[str] = None,
+        model: Optional[str] = None,
+        cwd: Optional[str] = None,
+        team: Optional[str] = None,
+        shadow_of: Optional[str] = None,
+        shadow_mode: Optional[str] = None,
+        idle_threshold_secs: Optional[int] = None,
+        restart_policy: Optional[dict[str, Any]] = None,
+        continue_from: Optional[str] = None,
+    ) -> dict[str, Any]:
+        resolved_transport: AgentTransport = transport or (
+            "headless" if provider == "opencode" else "pty"
+        )
+
+        if resolved_transport == "headless":
+            if provider not in ("claude", "opencode"):
+                raise AgentRelayProcessError(
+                    f"provider '{provider}' does not support headless transport (supported: claude, opencode)"
+                )
+            headless_provider: HeadlessProvider = (
+                "claude" if provider == "claude" else "opencode"
+            )
+            return await self.spawn_headless(
+                name=name,
+                provider=headless_provider,
+                args=args,
+                channels=channels,
+                task=task,
+            )
+
+        return await self.spawn_pty(
+            name=name,
+            cli=provider,
+            args=args,
+            channels=channels,
+            task=task,
+            model=model,
+            cwd=cwd,
+            team=team,
+            shadow_of=shadow_of,
+            shadow_mode=shadow_mode,
+            idle_threshold_secs=idle_threshold_secs,
+            restart_policy=restart_policy,
+            continue_from=continue_from,
+        )
+
+    async def spawn_claude(self, **kwargs: Any) -> dict[str, Any]:
+        return await self.spawn_provider(provider="claude", **kwargs)
+
+    async def spawn_opencode(self, **kwargs: Any) -> dict[str, Any]:
+        return await self.spawn_provider(provider="opencode", **kwargs)
 
     async def release(self, name: str, reason: Optional[str] = None) -> dict[str, Any]:
         await self.start_client()

@@ -128,6 +128,33 @@ describe('AgentRelayClient orchestration payloads', () => {
     );
   });
 
+  it('spawnClaude supports transport override to headless', async () => {
+    const client = new AgentRelayClient({ cwd: '/workspace/default' });
+    vi.spyOn(client, 'start').mockResolvedValue(undefined);
+    const requestOk = vi
+      .spyOn(client as any, 'requestOk')
+      .mockResolvedValue({ name: 'agent-headless', runtime: 'headless' });
+
+    await client.spawnClaude({
+      name: 'agent-headless',
+      transport: 'headless',
+      channels: ['general'],
+      task: 'run headless',
+    });
+
+    expect(requestOk).toHaveBeenCalledWith(
+      'spawn_agent',
+      expect.objectContaining({
+        agent: expect.objectContaining({
+          name: 'agent-headless',
+          runtime: 'headless',
+          provider: 'claude',
+        }),
+        initial_task: 'run headless',
+      })
+    );
+  });
+
   it('sendMessage preserves structured data payload', async () => {
     const client = new AgentRelayClient();
     vi.spyOn(client, 'start').mockResolvedValue(undefined);

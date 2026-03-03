@@ -1125,9 +1125,10 @@ export class AgentRelay {
         const task = options?.task;
         let result: { name: string; runtime: AgentRuntime };
         if (runtime === 'headless') {
-          result = await client.spawnHeadless({
+          result = await client.spawnProvider({
             name,
             provider: cli as HeadlessProvider,
+            transport: 'headless',
             args,
             channels,
             task,

@@ -60,6 +60,25 @@ export interface SpawnHeadlessInput {
   task?: string;
 }
 
+export type AgentTransport = 'pty' | 'headless';
+
+export interface SpawnProviderInput {
+  name: string;
+  provider: string;
+  transport?: AgentTransport;
+  args?: string[];
+  channels?: string[];
+  task?: string;
+  model?: string;
+  cwd?: string;
+  team?: string;
+  shadowOf?: string;
+  shadowMode?: string;
+  idleThresholdSecs?: number;
+  restartPolicy?: RestartPolicy;
+  continueFrom?: string;
+}
+
 export interface SendMessageInput {
   to: string;
   text: string;
@@ -114,6 +133,10 @@ export class AgentRelayProcessError extends Error {
     super(message);
     this.name = 'AgentRelayProcessError';
   }
+}
+
+function isHeadlessProvider(value: string): value is HeadlessProvider {
+  return value === 'claude' || value === 'opencode';
 }
 
 export class AgentRelayClient {
@@ -267,6 +290,52 @@ export class AgentRelayClient {
       ...(input.task != null ? { initial_task: input.task } : {}),
     });
     return result;
+  }
+
+  async spawnProvider(input: SpawnProviderInput): Promise<{ name: string; runtime: AgentRuntime }> {
+    const transport = input.transport ?? (input.provider === 'opencode' ? 'headless' : 'pty');
+    if (transport === 'headless') {
+      if (!isHeadlessProvider(input.provider)) {
+        throw new AgentRelayProcessError(
+          `provider '${input.provider}' does not support headless transport (supported: claude, opencode)`
+        );
+      }
+      return this.spawnHeadless({
+        name: input.name,
+        provider: input.provider,
+        args: input.args,
+        channels: input.channels,
+        task: input.task,
+      });
+    }
+
+    return this.spawnPty({
+      name: input.name,
+      cli: input.provider,
+      args: input.args,
+      channels: input.channels,
+      task: input.task,
+      model: input.model,
+      cwd: input.cwd,
+      team: input.team,
+      shadowOf: input.shadowOf,
+      shadowMode: input.shadowMode,
+      idleThresholdSecs: input.idleThresholdSecs,
+      restartPolicy: input.restartPolicy,
+      continueFrom: input.continueFrom,
+    });
+  }
+
+  async spawnClaude(
+    input: Omit<SpawnProviderInput, 'provider'>
+  ): Promise<{ name: string; runtime: AgentRuntime }> {
+    return this.spawnProvider({ ...input, provider: 'claude' });
+  }
+
+  async spawnOpencode(
+    input: Omit<SpawnProviderInput, 'provider'>
+  ): Promise<{ name: string; runtime: AgentRuntime }> {
+    return this.spawnProvider({ ...input, provider: 'opencode' });
   }
 
   async release(name: string, reason?: string): Promise<{ name: string }> {
