@@ -1780,9 +1780,6 @@ export class WorkflowRunner {
       await this.persistStepOutput(runId, step.name, output);
 
       this.emit({ type: 'step:completed', runId, stepName: step.name, output });
-      this.postToChannel(
-        `**[${step.name}]** Completed (deterministic)\n${output.slice(0, 500)}${output.length > 500 ? '\n...(truncated)' : ''}`
-      );
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.postToChannel(`**[${step.name}]** Failed: ${errorMsg}`);
@@ -2076,9 +2073,6 @@ export class WorkflowRunner {
         await this.persistStepOutput(runId, step.name, output);
 
         this.emit({ type: 'step:completed', runId, stepName: step.name, output });
-        this.postToChannel(
-          `**[${step.name}]** Completed\n${output.slice(0, 500)}${output.length > 500 ? '\n...(truncated)' : ''}`
-        );
         await this.trajectory?.stepCompleted(step, output, attempt + 1);
         return;
       } catch (err) {
@@ -3221,7 +3215,8 @@ export class WorkflowRunner {
     // Includes block-element chars (▗▖▘▝) used in the Claude Code header bar.
     const SPINNER =
       '\\u2756\\u2738\\u2739\\u273a\\u273b\\u273c\\u273d\\u2731\\u2732\\u2733\\u2734\\u2735\\u2736\\u2737\\u2743\\u2745\\u2746\\u25d6\\u25d7\\u25d8\\u25d9\\u2022\\u25cf\\u25cb\\u25a0\\u25a1\\u25b6\\u25c0\\u23f5\\u23f6\\u23f7\\u23f8\\u23f9\\u25e2\\u25e3\\u25e4\\u25e5\\u2597\\u2596\\u2598\\u259d\\u2bc8\\u2bc7\\u2bc5\\u2bc6\\u00b7' +
-      '\\u2590\\u258c\\u2588\\u2584\\u2580\\u259a\\u259e'; // additional block elements
+      '\\u2590\\u258c\\u2588\\u2584\\u2580\\u259a\\u259e' + // additional block elements
+      '\\u2b21\\u2b22'; // hex-hollow ⬡ and hex-filled ⬢ (Cursor "Generating" spinner)
     const spinnerRe = new RegExp(`[${SPINNER}]`, 'gu');
     const spinnerClassRe = new RegExp(`^[\\s${SPINNER}]*$`, 'u');
 
@@ -3239,6 +3234,9 @@ export class WorkflowRunner {
     // regardless of the specific word used (Thinking, Cascading, Flibbertigibbeting, etc.)
     const thinkingLineRe = new RegExp(`^[\\s${SPINNER}]*\\s*\\w[\\w\\s]*\\u2026\\s*$`, 'u');
     const cursorOnlyRe = /^[\s❯⎿›»◀▶←→↑↓⟨⟩⟪⟫·]+$/u;
+    // Cursor Agent TUI lines: generating animations, pasted text indicators, UI chrome
+    const cursorAgentRe =
+      /^(?:Cursor Agent|[\s⬡⬢]*Generating[.\s]|\[Pasted text|Auto-run all|Add a follow-up|ctrl\+c to stop|shift\+tab|Auto$|\/\s*commands|@\s*files|!\s*shell|follow-ups?\s|The user ha)/iu;
     const slashCommandRe = /^\/\w+\s*$/u;
     const mcpJsonKvRe =
       /^\s*"(?:type|method|params|result|id|jsonrpc|tool|name|arguments|content|role|metadata)"\s*:/u;
@@ -3282,6 +3280,7 @@ export class WorkflowRunner {
       if (uiHintRe.test(trimmed)) continue;
       if (thinkingLineRe.test(trimmed)) continue;
       if (cursorOnlyRe.test(trimmed)) continue;
+      if (cursorAgentRe.test(trimmed)) continue;
       if (slashCommandRe.test(trimmed)) continue;
       if (!meaningfulContentRe.test(trimmed)) continue;
 

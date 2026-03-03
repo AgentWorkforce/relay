@@ -697,8 +697,11 @@ impl WorkerRegistry {
 
                 // Build MCP config args for CLIs that support dynamic MCP configuration.
                 let cwd = spec.cwd.as_deref().unwrap_or(".");
+                // Pass the original CLI name (e.g. "cursor") so cursor-specific
+                // MCP config logic is triggered. `resolved_cli` may differ
+                // (parse_cli_command maps "cursor" → "agent").
                 let mcp_args = configure_relaycast_mcp_with_token(
-                    &resolved_cli,
+                    cli,
                     &spec.name,
                     self.env_value("RELAY_API_KEY"),
                     self.env_value("RELAY_BASE_URL"),

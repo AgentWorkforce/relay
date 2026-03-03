@@ -449,12 +449,30 @@ pub fn ensure_cursor_mcp_config(
         relay_agent_name,
         relay_agent_token,
     );
-    let new_value: Value = serde_json::from_str(&mcp_json).map_err(|e| {
+    let mut new_value: Value = serde_json::from_str(&mcp_json).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("MCP config serialization error: {e}"),
         )
     })?;
+    // Cursor does not pass parent process env vars to MCP server subprocesses,
+    // so RELAY_API_KEY must be in the .cursor/mcp.json env block explicitly.
+    // (The shared relaycast_server_config omits it because codex strips API keys.)
+    if let Some(key) = relay_api_key.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(env_obj) = new_value
+            .pointer_mut("/mcpServers/relaycast/env")
+            .and_then(Value::as_object_mut)
+        {
+            env_obj.insert("RELAY_API_KEY".into(), Value::String(key.to_string()));
+        } else if let Some(server) = new_value
+            .pointer_mut("/mcpServers/relaycast")
+            .and_then(Value::as_object_mut)
+        {
+            let mut env_map = Map::new();
+            env_map.insert("RELAY_API_KEY".into(), Value::String(key.to_string()));
+            server.insert("env".into(), Value::Object(env_map));
+        }
+    }
 
     if !path.exists() {
         write_pretty_json(&path, &new_value)?;
@@ -526,7 +544,9 @@ pub async fn configure_relaycast_mcp_with_token(
     let is_gemini = cli_lower == "gemini";
     let is_droid = cli_lower == "droid";
     let is_opencode = cli_lower == "opencode";
-    let is_cursor = cli_lower == "cursor";
+    let is_cursor = cli_lower == "cursor"
+        || cli_lower == "cursor-agent"
+        || cli_lower == "agent"; // "agent" is cursor-agent's binary name
 
     let api_key = api_key.map(str::trim).filter(|s| !s.is_empty());
     let base_url = base_url.map(str::trim).filter(|s| !s.is_empty());
