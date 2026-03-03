@@ -46,10 +46,16 @@ pub(crate) fn parse_cli_command(raw: &str) -> Result<(String, Vec<String>)> {
         command
     };
     let normalized = normalize_cli_name(&command).to_lowercase();
-    if (normalized == "agent" || normalized == "cursor-agent")
-        && !args.iter().any(|arg| arg == "--force")
-    {
-        args.insert(0, "--force".to_string());
+    if normalized == "agent" || normalized == "cursor-agent" {
+        // --approve-mcps: skip the interactive MCP server approval dialog so
+        // task injection isn't blocked waiting for user input at startup.
+        if !args.iter().any(|arg| arg == "--approve-mcps") {
+            args.insert(0, "--approve-mcps".to_string());
+        }
+        // --force: auto-approve command execution (equivalent to --yolo).
+        if !args.iter().any(|arg| arg == "--force") {
+            args.insert(0, "--force".to_string());
+        }
     }
 
     Ok((command, args))
@@ -1491,23 +1497,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_cli_command_maps_cursor_to_agent_with_force() {
-        // "cursor" resolves to "agent" to bypass the cursor shim
+    fn parse_cli_command_maps_cursor_to_agent_with_force_and_approve_mcps() {
+        // "cursor" resolves to "agent" with both --force and --approve-mcps
         let (cli, args) = parse_cli_command("cursor").unwrap();
         assert_eq!(cli, "agent");
-        assert_eq!(args, vec!["--force".to_string()]);
+        assert_eq!(args, vec!["--force".to_string(), "--approve-mcps".to_string()]);
     }
 
     #[test]
-    fn parse_cli_command_maps_cursor_agent_to_agent_with_force() {
-        // "cursor agent --model opus" → the "agent" subcommand is the cursor shim's
-        // routing token and must be stripped; only real flags/args should remain.
+    fn parse_cli_command_maps_cursor_agent_to_agent_with_force_and_approve_mcps() {
+        // "cursor agent --model opus" → "agent" subcommand stripped, flags injected
         let (cli, args) = parse_cli_command("cursor agent --model opus").unwrap();
         assert_eq!(cli, "agent");
         assert_eq!(
             args,
             vec![
                 "--force".to_string(),
+                "--approve-mcps".to_string(),
                 "--model".to_string(),
                 "opus".to_string()
             ]
@@ -1515,13 +1521,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_cli_command_dedups_force_for_cursor() {
-        let (cli, args) = parse_cli_command("cursor --force --model opus").unwrap();
+    fn parse_cli_command_dedups_force_and_approve_mcps_for_cursor() {
+        let (cli, args) = parse_cli_command("cursor --force --approve-mcps --model opus").unwrap();
         assert_eq!(cli, "agent");
         assert_eq!(
             args,
             vec![
                 "--force".to_string(),
+                "--approve-mcps".to_string(),
                 "--model".to_string(),
                 "opus".to_string()
             ]
