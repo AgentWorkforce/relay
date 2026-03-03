@@ -34,7 +34,13 @@ pub(crate) fn parse_cli_command(raw: &str) -> Result<(String, Vec<String>)> {
     // "cursor" is an alias for the standalone cursor agent binary ("agent").
     // The cursor shim only accepts "cursor agent [...]", not "cursor --force",
     // so we resolve directly to "agent" to bypass the shim entirely.
+    // Also strip the leading "agent" subcommand token if it was present (e.g.
+    // "cursor agent --model opus" → args starts with "agent" which was the
+    // shim's routing token, not an argument to the real binary).
     let command = if cli_lower == "cursor" {
+        if args.first().map(|s| s.as_str()) == Some("agent") {
+            args.remove(0);
+        }
         "agent".to_string()
     } else {
         command
@@ -1494,13 +1500,14 @@ mod tests {
 
     #[test]
     fn parse_cli_command_maps_cursor_agent_to_agent_with_force() {
+        // "cursor agent --model opus" → the "agent" subcommand is the cursor shim's
+        // routing token and must be stripped; only real flags/args should remain.
         let (cli, args) = parse_cli_command("cursor agent --model opus").unwrap();
         assert_eq!(cli, "agent");
         assert_eq!(
             args,
             vec![
                 "--force".to_string(),
-                "agent".to_string(),
                 "--model".to_string(),
                 "opus".to_string()
             ]

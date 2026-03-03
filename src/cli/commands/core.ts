@@ -167,6 +167,20 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
     return envOverride;
   }
 
+  // In local multi-repo workspaces, prefer a sibling relay-dashboard build when available.
+  const siblingWorkspaceBuild = path.resolve(
+    process.cwd(),
+    '..',
+    'relay-dashboard',
+    'packages',
+    'dashboard-server',
+    'dist',
+    'start.js'
+  );
+  if (fileSystem.existsSync(siblingWorkspaceBuild)) {
+    return siblingWorkspaceBuild;
+  }
+
   // In workspace / local dev mode, try resolving the dashboard-server package directly
   if (process.env.RELAY_LOCAL_DEV === '1') {
     try {
