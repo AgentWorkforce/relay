@@ -73,6 +73,8 @@ export interface CoreRelay {
   }>;
   shutdown: () => Promise<unknown>;
   onBrokerStderr?: (listener: (line: string) => void) => () => void;
+  /** Relaycast workspace API key, available after the hello handshake. */
+  workspaceKey?: string;
 }
 
 export interface CoreFileSystem {
@@ -249,12 +251,14 @@ function createDefaultRelay(cwd: string, apiPort = 0): CoreRelay {
     requestTimeoutMs,
   });
 
-  return {
+  const relay: CoreRelay = {
     spawn: (input) => spawnAgentWithClient(client, input),
     getStatus: () => client.getStatus(),
     shutdown: () => client.shutdown(),
     onBrokerStderr: (listener: (line: string) => void) => client.onBrokerStderr(listener),
+    get workspaceKey() { return client.workspaceKey; },
   };
+  return relay;
 }
 
 function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependencies {

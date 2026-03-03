@@ -355,13 +355,20 @@ function isDebugLikeLoggingEnabled(deps: CoreDependencies): boolean {
 function getDashboardSpawnEnv(
   deps: CoreDependencies,
   relayUrl: string,
-  enableVerboseLogging: boolean
+  enableVerboseLogging: boolean,
+  relayApiKey?: string
 ): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...deps.env,
     RELAY_URL: relayUrl,
     VERBOSE: enableVerboseLogging || deps.env.VERBOSE === 'true' ? 'true' : deps.env.VERBOSE,
   };
+  // Pass the workspace API key so the dashboard can make Relaycast API calls
+  // (e.g. posting thread replies) without requiring a relaycast.json file.
+  if (relayApiKey && !env.RELAY_API_KEY) {
+    env.RELAY_API_KEY = relayApiKey;
+  }
+  return env;
 }
 
 function getDashboardSpawnArgs(
@@ -413,7 +420,8 @@ function startDashboard(
   apiPort: number,
   deps: CoreDependencies,
   enableVerboseLogging: boolean,
-  dashboardBinaryOverride?: string | null
+  dashboardBinaryOverride?: string | null,
+  relayApiKey?: string
 ): DashboardStartupProcess {
   const dashboardBinary =
     dashboardBinaryOverride === undefined ? deps.findDashboardBinary() : dashboardBinaryOverride;
@@ -436,7 +444,7 @@ function startDashboard(
 
   const spawnOpts = {
     stdio: ['ignore', 'pipe', 'pipe'] as unknown,
-    env: getDashboardSpawnEnv(deps, relayUrl, shouldEnableVerbose),
+    env: getDashboardSpawnEnv(deps, relayUrl, shouldEnableVerbose, relayApiKey),
   };
   if (shouldEnableVerbose) {
     deps.log(`[dashboard] Starting: ${launchTarget} ${args.join(' ')}`);
@@ -586,7 +594,8 @@ async function startDashboardWithFallback(
   dashboardPort: number,
   apiPort: number,
   deps: CoreDependencies,
-  enableVerboseLogging: boolean
+  enableVerboseLogging: boolean,
+  relayApiKey?: string
 ): Promise<{ process: SpawnedProcess; port: number | null }> {
   const preferredBinary = deps.findDashboardBinary();
   let process = startDashboard(
@@ -595,7 +604,8 @@ async function startDashboardWithFallback(
     apiPort,
     deps,
     enableVerboseLogging,
-    preferredBinary
+    preferredBinary,
+    relayApiKey
   );
   let port = await resolveStartedDashboardPort(
     process as DashboardStartupProcess,
@@ -605,7 +615,7 @@ async function startDashboardWithFallback(
 
   if (port === null && preferredBinary) {
     deps.warn('Retrying dashboard startup using npx @agent-relay/dashboard-server@latest');
-    process = startDashboard(paths, dashboardPort, apiPort, deps, enableVerboseLogging, null);
+    process = startDashboard(paths, dashboardPort, apiPort, deps, enableVerboseLogging, null, relayApiKey);
     port = await resolveStartedDashboardPort(
       process as DashboardStartupProcess,
       dashboardPort,
@@ -796,7 +806,8 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
               dashboardPort,
               apiPort,
               deps,
-              dashboardVerbose
+              dashboardVerbose,
+              relay?.workspaceKey
             );
             dashboardProcess = dashboardStart.process;
             const startedDashboardPort = dashboardStart.port;
@@ -887,7 +898,8 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         dashboardPort,
         apiPort,
         deps,
-        dashboardVerbose
+        dashboardVerbose,
+        relay?.workspaceKey
       );
       dashboardProcess = dashboardStart.process;
       const startedDashboardPort = dashboardStart.port;
