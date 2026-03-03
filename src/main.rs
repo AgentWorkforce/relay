@@ -1419,7 +1419,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     // Optional HTTP API (for dashboard proxy)
     let (api_tx, mut api_rx) = if cmd.api_port > 0 {
         let (tx, rx) = mpsc::channel::<ListenApiRequest>(32);
-        let router = listen_api_router(tx.clone(), events_tx.clone(), replay_buffer.clone());
+        let router = listen_api_router(tx.clone(), events_tx.clone(), replay_buffer.clone(), Some(relay_workspace_key.clone()));
         let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", cmd.api_port))
             .await
             .with_context(|| format!("failed to bind API on port {}", cmd.api_port))?;

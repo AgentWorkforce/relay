@@ -53,6 +53,9 @@ struct ListenApiState {
     events_tx: broadcast::Sender<String>,
     broker_api_key: Option<String>,
     replay_buffer: ReplayBuffer,
+    /// Relaycast workspace API key — included in /health so the dashboard can
+    /// bootstrap Relaycast calls without a relaycast.json or env var.
+    workspace_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -77,8 +80,9 @@ pub fn listen_api_router(
     tx: mpsc::Sender<ListenApiRequest>,
     events_tx: broadcast::Sender<String>,
     replay_buffer: ReplayBuffer,
+    workspace_key: Option<String>,
 ) -> axum::Router {
-    listen_api_router_with_auth(tx, events_tx, configured_broker_api_key(), replay_buffer)
+    listen_api_router_with_auth(tx, events_tx, configured_broker_api_key(), replay_buffer, workspace_key)
 }
 
 fn configured_broker_api_key() -> Option<String> {
@@ -93,6 +97,7 @@ fn listen_api_router_with_auth(
     events_tx: broadcast::Sender<String>,
     broker_api_key: Option<String>,
     replay_buffer: ReplayBuffer,
+    workspace_key: Option<String>,
 ) -> axum::Router {
     use axum::{middleware, routing, Router};
 
@@ -103,6 +108,9 @@ fn listen_api_router_with_auth(
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
         replay_buffer,
+        workspace_key: workspace_key
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
     };
 
     let protected = Router::new()
@@ -127,14 +135,16 @@ fn listen_api_router_with_auth(
     Router::new()
         .route("/health", routing::get(listen_api_health))
         .merge(protected)
-        .with_state(state)
+        .with_state(state.clone())
 }
 
 // ---------------------------------------------------------------------------
 // Endpoints
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn listen_api_health() -> axum::Json<Value> {
+pub(crate) async fn listen_api_health(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> axum::Json<Value> {
     let startup_error_code = std::env::var("AGENT_RELAY_STARTUP_ERROR_CODE").ok();
     let status = startup_health_status(startup_error_code.as_deref());
 
@@ -154,6 +164,7 @@ pub(crate) async fn listen_api_health() -> axum::Json<Value> {
         "wsConnections": 0,
         "memoryMb": 0,
         "relaycastConnected": startup_error_code.is_none(),
+        "workspaceKey": state.workspace_key,
     }))
 }
 
@@ -849,6 +860,7 @@ mod auth_tests {
                 events_tx,
                 broker_api_key.map(ToString::to_string),
                 replay_buffer,
+                None,
             ),
             rx,
         )
