@@ -108,48 +108,6 @@ Models.Gemini.GEMINI_2_5_PRO
 Models.Gemini.GEMINI_2_5_FLASH
 ```
 
-## Workflow Builder
-
-For structured DAG-based workflows, the builder API is also available:
-
-```python
-from agent_relay import workflow, VerificationCheck
-
-result = (
-    workflow("ship-feature")
-    .description("Plan, build, and verify a feature")
-    .pattern("dag")
-    .agent("planner", cli="claude", role="Planning lead")
-    .agent("builder", cli="codex", role="Implementation engineer")
-    .step("plan", agent="planner", task="Create a detailed plan")
-    .step("build", agent="builder", task="Implement the plan", depends_on=["plan"])
-    .run()
-)
-```
-
-### Workflow Templates
-
-Built-in templates for common patterns:
-
-```python
-from agent_relay import fan_out, pipeline, dag
-
-# Fan-out: parallel execution with synthesis
-builder = fan_out(
-    "parallel-analysis",
-    tasks=["Analyze backend", "Analyze frontend"],
-    synthesis_task="Combine analyses",
-)
-
-# Pipeline: sequential stages
-builder = pipeline(
-    "release-pipeline",
-    stages=[
-        PipelineStage(name="plan", task="Create release plan"),
-        PipelineStage(name="implement", task="Implement changes"),
-    ],
-)
-```
 
 ## License
 
