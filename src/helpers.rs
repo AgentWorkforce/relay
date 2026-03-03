@@ -1501,7 +1501,10 @@ mod tests {
         // "cursor" resolves to "agent" with both --force and --approve-mcps
         let (cli, args) = parse_cli_command("cursor").unwrap();
         assert_eq!(cli, "agent");
-        assert_eq!(args, vec!["--force".to_string(), "--approve-mcps".to_string()]);
+        assert_eq!(
+            args,
+            vec!["--force".to_string(), "--approve-mcps".to_string()]
+        );
     }
 
     #[test]
