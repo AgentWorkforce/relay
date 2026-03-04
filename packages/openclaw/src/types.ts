@@ -1,3 +1,6 @@
+/** Default port for the local OpenClaw gateway WebSocket API. */
+export const DEFAULT_OPENCLAW_GATEWAY_PORT = 18789;
+
 export interface GatewayConfig {
   /** Relaycast workspace API key (rk_live_*). */
   apiKey: string;
