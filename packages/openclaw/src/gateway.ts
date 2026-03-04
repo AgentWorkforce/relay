@@ -14,7 +14,7 @@ import type {
 } from '@relaycast/sdk';
 import WebSocket from 'ws';
 
-import type { GatewayConfig, InboundMessage, DeliveryResult } from './types.js';
+import { DEFAULT_OPENCLAW_GATEWAY_PORT, type GatewayConfig, type InboundMessage, type DeliveryResult } from './types.js';
 import { SpawnManager } from './spawn/manager.js';
 import type { SpawnOptions } from './spawn/types.js';
 
@@ -129,9 +129,14 @@ export class OpenClawGatewayClient {
   private connectResolve: (() => void) | null = null;
   private connectReject: ((error: Error) => void) | null = null;
   private connectTimeout: ReturnType<typeof setTimeout> | null = null;
+  private pairingRejected = false;
+  private consecutiveFailures = 0;
 
   /** Default timeout for initial connection (30 seconds). */
   private static readonly CONNECT_TIMEOUT_MS = 30_000;
+  private static readonly MAX_CONSECUTIVE_FAILURES = 5;
+  private static readonly BASE_RECONNECT_MS = 3_000;
+  private static readonly MAX_RECONNECT_MS = 30_000;
 
   constructor(token: string, port: number) {
     this.token = token;
@@ -142,6 +147,10 @@ export class OpenClawGatewayClient {
   /** Connect and authenticate. Resolves when chat.send is ready, rejects on timeout or error. */
   async connect(): Promise<void> {
     if (this.authenticated && this.ws?.readyState === WebSocket.OPEN) return;
+
+    // Explicit connect() clears pairing rejection so users can retry after fixing their token
+    this.pairingRejected = false;
+    this.stopped = false;
 
     // Cancel any pending reconnect timer to prevent orphaned WebSocket connections
     if (this.reconnectTimer) {
@@ -196,9 +205,18 @@ export class OpenClawGatewayClient {
     });
 
     this.ws.on('close', (code, reason) => {
-      console.warn(`[openclaw-ws] Disconnected: ${code} ${reason.toString()}`);
+      const reasonStr = reason.toString();
+      console.warn(`[openclaw-ws] Disconnected: ${code} ${reasonStr}`);
       const wasAuthenticated = this.authenticated;
       this.authenticated = false;
+
+      // Detect pairing rejection via close code 1008 (Policy Violation)
+      if (code === 1008 || /pairing|not.paired/i.test(reasonStr)) {
+        console.error('[openclaw-ws] Connection closed due to pairing policy. Device is not paired.');
+        console.error('[openclaw-ws] Ensure OPENCLAW_GATEWAY_TOKEN matches ~/.openclaw/openclaw.json gateway.auth.token');
+        this.pairingRejected = true;
+      }
+
       // Reject all pending RPCs
       for (const [id, pending] of this.pendingRpcs) {
         clearTimeout(pending.timer);
@@ -213,7 +231,7 @@ export class OpenClawGatewayClient {
         this.connectReject = null;
         this.connectResolve = null;
       }
-      if (!this.stopped) {
+      if (!this.stopped && !this.pairingRejected) {
         this.scheduleReconnect();
       }
     });
@@ -307,14 +325,23 @@ export class OpenClawGatewayClient {
       if (msg.ok) {
         console.log('[openclaw-ws] Authenticated successfully');
         this.authenticated = true;
+        this.consecutiveFailures = 0;
         this.connectResolve?.();
         this.connectResolve = null;
         this.connectReject = null;
       } else {
-        console.warn(`[openclaw-ws] Auth rejected: ${JSON.stringify(msg.error ?? msg)}`);
-        // Reject the connect promise on auth failure
-        const errMsg = msg.error ? JSON.stringify(msg.error) : 'Authentication rejected';
-        this.connectReject?.(new Error(`OpenClaw gateway auth failed: ${errMsg}`));
+        const errStr = msg.error ? JSON.stringify(msg.error) : 'Authentication rejected';
+        const isPairing = /pairing.required|not.paired/i.test(errStr);
+
+        if (isPairing) {
+          console.error('[openclaw-ws] Pairing rejected — device is not paired with the OpenClaw gateway.');
+          console.error('[openclaw-ws] Ensure OPENCLAW_GATEWAY_TOKEN matches ~/.openclaw/openclaw.json gateway.auth.token');
+          this.pairingRejected = true;
+        } else {
+          console.warn(`[openclaw-ws] Auth rejected: ${errStr}`);
+        }
+
+        this.connectReject?.(new Error(`OpenClaw gateway auth failed: ${errStr}`));
         this.connectReject = null;
         this.connectResolve = null;
       }
@@ -388,12 +415,25 @@ export class OpenClawGatewayClient {
   }
 
   private scheduleReconnect(): void {
-    if (this.stopped || this.reconnectTimer) return;
-    console.log('[openclaw-ws] Reconnecting in 3s...');
+    if (this.stopped || this.pairingRejected || this.reconnectTimer) return;
+
+    this.consecutiveFailures++;
+
+    if (this.consecutiveFailures >= OpenClawGatewayClient.MAX_CONSECUTIVE_FAILURES) {
+      console.warn(`[openclaw-ws] ${this.consecutiveFailures} consecutive connection failures — stopping reconnect.`);
+      console.warn('[openclaw-ws] Check that the OpenClaw gateway is running and OPENCLAW_GATEWAY_TOKEN is correct.');
+      return;
+    }
+
+    const delay = Math.min(
+      OpenClawGatewayClient.BASE_RECONNECT_MS * Math.pow(2, this.consecutiveFailures - 1),
+      OpenClawGatewayClient.MAX_RECONNECT_MS,
+    );
+    console.log(`[openclaw-ws] Reconnecting in ${delay / 1000}s (attempt ${this.consecutiveFailures})...`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.doConnect();
-    }, 3_000);
+    }, delay);
   }
 
   async disconnect(): Promise<void> {
@@ -475,7 +515,7 @@ export class InboundGateway {
 
     // Connect to the local OpenClaw gateway WebSocket (persistent connection)
     const token = this.config.openclawGatewayToken ?? process.env.OPENCLAW_GATEWAY_TOKEN;
-    const port = this.config.openclawGatewayPort ?? 18789;
+    const port = this.config.openclawGatewayPort ?? DEFAULT_OPENCLAW_GATEWAY_PORT;
 
     if (token) {
       this.openclawClient = new OpenClawGatewayClient(token, port);

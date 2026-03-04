@@ -1,6 +1,6 @@
 import type { AgentRelayClient, SendMessageInput } from '@agent-relay/sdk';
 
-import type { InboundMessage, DeliveryResult } from './types.js';
+import { DEFAULT_OPENCLAW_GATEWAY_PORT, type InboundMessage, type DeliveryResult } from './types.js';
 
 /**
  * Deliver a message to the local claw using the best available method.
@@ -44,7 +44,7 @@ export async function deliverMessage(
 
   // Fallback: OpenClaw OpenResponses API (POST /v1/responses on local gateway)
   try {
-    const gatewayPort = process.env.OPENCLAW_GATEWAY_PORT ?? process.env.GATEWAY_PORT ?? '18789';
+    const gatewayPort = process.env.OPENCLAW_GATEWAY_PORT ?? process.env.GATEWAY_PORT ?? String(DEFAULT_OPENCLAW_GATEWAY_PORT);
     const token = process.env.OPENCLAW_GATEWAY_TOKEN;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) {

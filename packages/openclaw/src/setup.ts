@@ -1,4 +1,5 @@
 import { mkdir, writeFile, readFile, copyFile } from 'node:fs/promises';
+import { createConnection } from 'node:net';
 import { join, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import { hostname } from 'node:os';
@@ -8,7 +9,21 @@ import { spawn as spawnProcess, execFileSync } from 'node:child_process';
 import { RelayCast } from '@relaycast/sdk';
 
 import { detectOpenClaw, saveGatewayConfig } from './config.js';
-import type { GatewayConfig } from './types.js';
+import { InboundGateway } from './gateway.js';
+import { DEFAULT_OPENCLAW_GATEWAY_PORT, type GatewayConfig } from './types.js';
+
+/**
+ * Safely traverse a nested object by dot-separated path.
+ * Returns undefined if any segment is missing.
+ */
+function extractNestedValue(obj: unknown, path: string): unknown {
+  let current: unknown = obj;
+  for (const key of path.split('.')) {
+    if (current == null || typeof current !== 'object') return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
+}
 
 /**
  * Resolve how to invoke mcporter. Prefers a global binary, falls back to npx.
@@ -26,6 +41,26 @@ function resolveMcporter(): { cmd: string; prefix: string[] } {
       throw new Error('mcporter not found (tried global binary and npx)');
     }
   }
+}
+
+/** Check if a port is already in use by attempting a TCP connection. */
+function isPortInUse(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ port, host: '127.0.0.1' });
+    socket.setTimeout(2000);
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('timeout', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once('error', () => {
+      socket.destroy();
+      resolve(false);
+    });
+  });
 }
 
 export interface SetupOptions {
@@ -185,12 +220,29 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     );
   }
 
+  // Extract gateway auth from openclaw.json (if available)
+  const openclawGatewayToken =
+    process.env.OPENCLAW_GATEWAY_TOKEN ??
+    (extractNestedValue(detection.config, 'gateway.auth.token') as string | undefined);
+  const openclawGatewayPortRaw =
+    process.env.OPENCLAW_GATEWAY_PORT ??
+    (extractNestedValue(detection.config, 'gateway.port') as number | string | undefined);
+  const openclawGatewayPort = openclawGatewayPortRaw ? Number(openclawGatewayPortRaw) : undefined;
+
+  if (!openclawGatewayToken) {
+    console.warn('[setup] No gateway token found in openclaw.json or OPENCLAW_GATEWAY_TOKEN env.');
+    console.warn('[setup] Inbound gateway may fail to pair. Set it manually:');
+    console.warn('[setup]   export OPENCLAW_GATEWAY_TOKEN=$(cat ~/.openclaw/openclaw.json | jq -r .gateway.auth.token)');
+  }
+
   // Save gateway config (.env)
   const gatewayConfig: GatewayConfig = {
     apiKey,
     clawName,
     baseUrl,
     channels,
+    openclawGatewayToken,
+    openclawGatewayPort: Number.isFinite(openclawGatewayPort) ? openclawGatewayPort : undefined,
   };
   await saveGatewayConfig(gatewayConfig);
 
@@ -281,18 +333,41 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     }
   }
 
-  // Auto-start the inbound gateway in the background
+  // Auto-start the inbound gateway in the background, but only if one isn't
+  // already running. Re-running setup without this check spawns duplicates
+  // that fight over the control port.
   let gatewayStarted = false;
-  try {
-    const child = spawnProcess('npx', ['@agent-relay/openclaw', 'gateway'], {
-      stdio: 'ignore',
-      detached: true,
-      env: { ...process.env, RELAY_API_KEY: apiKey, RELAY_CLAW_NAME: clawName, RELAY_BASE_URL: baseUrl },
-    });
-    child.unref();
+  // Check the inbound gateway's control port (18790), NOT the OpenClaw
+  // gateway WS port (18789) — they are different processes.
+  const controlPort = Number(process.env.RELAYCAST_CONTROL_PORT) || InboundGateway.DEFAULT_CONTROL_PORT;
+  const gatewayAlreadyRunning = await isPortInUse(controlPort);
+  if (gatewayAlreadyRunning) {
+    console.log('[setup] Inbound gateway already running — skipping spawn.');
     gatewayStarted = true;
-  } catch {
-    // Non-fatal — user can start manually
+  } else {
+    try {
+      const gatewayEnv: Record<string, string> = {
+        ...process.env as Record<string, string>,
+        RELAY_API_KEY: apiKey,
+        RELAY_CLAW_NAME: clawName,
+        RELAY_BASE_URL: baseUrl,
+      };
+      if (openclawGatewayToken) {
+        gatewayEnv.OPENCLAW_GATEWAY_TOKEN = openclawGatewayToken;
+      }
+      if (openclawGatewayPort && Number.isFinite(openclawGatewayPort)) {
+        gatewayEnv.OPENCLAW_GATEWAY_PORT = String(openclawGatewayPort);
+      }
+      const child = spawnProcess('npx', ['@agent-relay/openclaw', 'gateway'], {
+        stdio: 'ignore',
+        detached: true,
+        env: gatewayEnv,
+      });
+      child.unref();
+      gatewayStarted = true;
+    } catch {
+      // Non-fatal — user can start manually
+    }
   }
 
   const parts = [
