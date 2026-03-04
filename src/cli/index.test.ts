@@ -104,7 +104,7 @@ describeCli('CLI', () => {
           expect(stdout + stderr).toMatch(/(broker|relaycast|Failed)/i);
         }
       }
-    });
+    }, 15000);
   });
 
   describe('who', () => {

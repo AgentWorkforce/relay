@@ -114,7 +114,8 @@ interface PendingRpc {
   timer: ReturnType<typeof setTimeout>;
 }
 
-class OpenClawGatewayClient {
+/** @internal */
+export class OpenClawGatewayClient {
   private ws: WebSocket | null = null;
   private authenticated = false;
   private device: DeviceIdentity;
@@ -735,8 +736,12 @@ export class InboundGateway {
     const channel = normalizeChannelName(event.channel);
     if (!this.config.channels.includes(channel)) return;
 
-    // Synthesize a unique ID from command + channel + invoker + timestamp
-    const syntheticId = `cmd_${event.command}_${channel}_${event.invokedBy}_${Date.now()}`;
+    // Deterministic synthetic ID — stable across duplicate SDK deliveries.
+    // Commands don't carry a server-assigned ID, so we derive one from
+    // the invocation's unique attributes.  A given invoker can fire the
+    // same command multiple times, but duplicate SDK deliveries of the
+    // *same* invocation need to dedup, so we omit Date.now().
+    const syntheticId = `cmd_${event.command}_${channel}_${event.invokedBy}`;
     const argsText = event.args ? ` ${event.args}` : '';
 
     const inbound: InboundMessage = {
@@ -755,7 +760,8 @@ export class InboundGateway {
     event: ReactionAddedEvent | ReactionRemovedEvent,
     action: 'added' | 'removed',
   ): Promise<void> {
-    const syntheticId = `reaction_${event.messageId}_${event.emoji}_${event.agentName}_${action}_${Date.now()}`;
+    // Deterministic — an agent can only add/remove a specific emoji once per message.
+    const syntheticId = `reaction_${event.messageId}_${event.emoji}_${event.agentName}_${action}`;
     const text = action === 'added'
       ? `[relaycast:reaction] @${event.agentName} reacted ${event.emoji} to message ${event.messageId} (soft notification, no action required)`
       : `[relaycast:reaction] @${event.agentName} removed ${event.emoji} from message ${event.messageId} (soft notification, no action required)`;
