@@ -75,6 +75,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'sdk'
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
@@ -99,29 +100,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install musl cross-compilation tools
-        if: contains(matrix.target, 'linux-musl')
+      - name: Install musl tools (x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
-          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
-            sudo apt-get install -y gcc-aarch64-linux-gnu
-            MUSL_URL="https://musl.cc/aarch64-linux-musl-cross.tgz"
-            MUSL_ARCHIVE="/tmp/aarch64-linux-musl-cross.tgz"
-            for attempt in 1 2 3; do
-              if curl -fL --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 2 --retry-all-errors \
-                "$MUSL_URL" -o "$MUSL_ARCHIVE"; then
-                break
-              fi
-              if [[ "$attempt" -eq 3 ]]; then
-                echo "Failed to download aarch64 musl cross-compiler"
-                exit 1
-              fi
-              sleep $((attempt * 5))
-            done
-            sudo tar -xzf "$MUSL_ARCHIVE" -C /opt
-            echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
-          fi
+
+      - name: Install cross (aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        uses: taiki-e/install-action@cross
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -131,12 +118,11 @@ jobs:
       - name: Build broker binary
         run: |
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc
-            export CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc
+            RUSTFLAGS="-C target-feature=+crt-static" cross build --release --bin agent-relay-broker --target ${{ matrix.target }}
+          else
+            RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --bin agent-relay-broker --target ${{ matrix.target }}
           fi
-          RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --bin agent-relay-broker --target ${{ matrix.target }}
-          strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || \
-            aarch64-linux-musl-strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || true
+          strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || true
 
       - name: Copy binary with platform name
         run: |

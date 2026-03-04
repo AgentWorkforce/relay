@@ -187,6 +187,39 @@ describe('registerMessagingCommands', () => {
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('One -> #general'));
   });
 
+  it('shows message history as JSON with stable payload fields', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => [
+        {
+          id: 'm1',
+          agent_name: 'One',
+          text: 'first',
+          created_at: '2026-02-20T11:00:01.000Z',
+        },
+      ]),
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--json', '--limit', '1']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({ agentName: '__cli_history__' });
+    expect(relaycastClient.messages).toHaveBeenCalledWith('general', { limit: 100 });
+    expect(deps.log).toHaveBeenCalledTimes(1);
+    expect(JSON.parse((deps.log as ReturnType<typeof vi.fn>).mock.calls[0][0] as string)).toEqual([
+      {
+        id: 'm1',
+        ts: Date.parse('2026-02-20T11:00:01.000Z'),
+        timestamp: '2026-02-20T11:00:01.000Z',
+        from: 'One',
+        to: '#general',
+        thread: null,
+        kind: 'message',
+        body: 'first',
+      },
+    ]);
+  });
+
   it('shows unread inbox summary', async () => {
     const relaycastClient = createRelaycastClientMock({
       inbox: vi.fn(async () => ({

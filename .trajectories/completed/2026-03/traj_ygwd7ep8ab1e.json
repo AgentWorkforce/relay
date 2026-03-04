@@ -1,0 +1,78 @@
+{
+  "id": "traj_ygwd7ep8ab1e",
+  "version": 1,
+  "task": {
+    "title": "Stabilize flaky CLI agents --json test timeout"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-04T21:01:07.410Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-03-04T21:12:10.243Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_8fpb7wtgaj1m",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-04T21:12:10.243Z",
+      "events": [
+        {
+          "ts": 1772658730244,
+          "type": "decision",
+          "content": "Moved agents/who/history JSON assertions from process-level CLI test to deterministic unit tests: Moved agents/who/history JSON assertions from process-level CLI test to deterministic unit tests",
+          "raw": {
+            "question": "Moved agents/who/history JSON assertions from process-level CLI test to deterministic unit tests",
+            "chosen": "Moved agents/who/history JSON assertions from process-level CLI test to deterministic unit tests",
+            "alternatives": [],
+            "reasoning": "direct handler tests avoid broker startup/network timing and remove CI timeout flake while keeping one end-to-end smoke check"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-04T21:12:10.460Z"
+    }
+  ],
+  "commits": [
+    "be51324e",
+    "4e2a8934"
+  ],
+  "filesChanged": [
+    ".github/workflows/build-broker-binary.yml",
+    ".trajectories/active/traj_ygwd7ep8ab1e.json",
+    ".trajectories/index.json",
+    "CHANGELOG.md",
+    "package-lock.json",
+    "package.json",
+    "packages/acp-bridge/package.json",
+    "packages/config/package.json",
+    "packages/hooks/package.json",
+    "packages/memory/package.json",
+    "packages/openclaw/package.json",
+    "packages/policy/package.json",
+    "packages/sdk-py/pyproject.toml",
+    "packages/sdk/package.json",
+    "packages/telemetry/package.json",
+    "packages/trajectory/package.json",
+    "packages/user-directory/package.json",
+    "packages/utils/package.json",
+    "src/cli/commands/agent-management.ts",
+    "src/cli/index.test.ts"
+  ],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "2c332bd4bbfdf971c3b424515d62493b0582a53f",
+    "endRef": "be51324e0be71d973c950aab4a61b7bf96a0c151",
+    "traceId": "trace_nbs8xyxldw67"
+  },
+  "completedAt": "2026-03-04T21:12:10.460Z",
+  "retrospective": {
+    "summary": "Added deterministic unit tests for agent-management-listing and messaging history JSON; reduced CLI JSON integration surface to a single agents --json smoke test",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  }
+}
