@@ -42,50 +42,28 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Install musl tools
+      - name: Install musl tools (x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
-          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
-            sudo apt-get install -y gcc-aarch64-linux-gnu
-            # Install aarch64 musl cross-compiler with retries for transient network failures.
-            MUSL_URL="https://musl.cc/aarch64-linux-musl-cross.tgz"
-            MUSL_ARCHIVE="/tmp/aarch64-linux-musl-cross.tgz"
-            for attempt in 1 2 3; do
-              if curl -fL --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 2 --retry-all-errors \
-                "$MUSL_URL" -o "$MUSL_ARCHIVE"; then
-                break
-              fi
-              if [[ "$attempt" -eq 3 ]]; then
-                echo "Failed to download aarch64 musl cross-compiler from $MUSL_URL"
-                exit 1
-              fi
-              sleep $((attempt * 5))
-            done
-            # Optional hardening: verify archive SHA256 if EXPECTED_MUSL_SHA256_AARCH64 is set.
-            EXPECTED_MUSL_SHA256_AARCH64="${EXPECTED_MUSL_SHA256_AARCH64:-}"
-            if [[ -n "$EXPECTED_MUSL_SHA256_AARCH64" ]]; then
-              echo "$EXPECTED_MUSL_SHA256_AARCH64  $MUSL_ARCHIVE" | sha256sum -c - || {
-                echo "SHA256 checksum verification failed for $MUSL_ARCHIVE"
-                exit 1
-              }
-            else
-              echo "WARNING: EXPECTED_MUSL_SHA256_AARCH64 not set; skipping SHA256 verification for $MUSL_ARCHIVE"
-            fi
-            sudo tar -xzf "$MUSL_ARCHIVE" -C /opt
-            echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
-            /opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc --version
-          fi
+
+      - name: Install cross and strip tools (aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu
+      - name: Install cross (aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        uses: taiki-e/install-action@cross
 
       - name: Build static binary
         run: |
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc
-            export CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc
+            RUSTFLAGS="-C target-feature=+crt-static" cross build --release --target ${{ matrix.target }} --bin agent-relay-broker
+            aarch64-linux-gnu-strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || true
+          else
+            RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target ${{ matrix.target }} --bin agent-relay-broker
+            strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || true
           fi
-          RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target ${{ matrix.target }} --bin agent-relay-broker
-          strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || \
-            aarch64-linux-musl-strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || true
 
       - name: Verify static linking
         run: |

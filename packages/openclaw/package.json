@@ -1,0 +1,63 @@
+{
+  "name": "@agent-relay/openclaw",
+  "version": "3.1.2",
+  "description": "Relaycast bridge for OpenClaw — messaging, identity, runtime setup, and local spawning",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "relay-openclaw": "./bin/relay-openclaw.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/openclaw"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepack": "npm run build",
+    "postinstall": "node -e \"try{require('child_process').execSync('ldd --version 2>&1',{stdio:'pipe'})}catch{try{require('child_process').execSync('apk info gcompat 2>/dev/null',{stdio:'pipe'})}catch{console.warn('\\n\\u26a0\\ufe0f  @agent-relay/openclaw: Alpine detected without gcompat. Spawning requires glibc.\\n   Install with: apk add gcompat libstdc++\\n')}}\""
+  },
+  "dependencies": {
+    "@agent-relay/sdk": "3.1.2",
+    "@relaycast/sdk": "^0.4.0",
+    "ws": "^8.0.0"
+  },
+  "optionalDependencies": {
+    "dockerode": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/ws": "^8.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.0"
+  },
+  "files": [
+    "dist/",
+    "bin/",
+    "bridge/",
+    "skill/",
+    "templates/",
+    "README.md"
+  ],
+  "keywords": [
+    "openclaw",
+    "relaycast",
+    "agent-relay",
+    "multi-agent",
+    "messaging",
+    "spawn",
+    "ai-agents"
+  ],
+  "license": "Apache-2.0"
+}
