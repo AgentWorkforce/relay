@@ -17,17 +17,23 @@ vi.mock('../spawn/docker.js', () => ({
 }));
 
 vi.mock('../spawn/process.js', () => ({
-  ProcessSpawnProvider: vi.fn().mockImplementation(() => ({
-    spawn: vi.fn().mockResolvedValue({
-      id: 'test-id-1',
-      displayName: 'test-claw',
-      agentName: 'claw-ws123-test-claw',
-      gatewayPort: 18790,
+  ProcessSpawnProvider: vi.fn().mockImplementation(() => {
+    let callCount = 0;
+    return {
+      spawn: vi.fn().mockImplementation((options: { name: string }) => {
+        callCount++;
+        return Promise.resolve({
+          id: `test-id-${callCount}`,
+          displayName: options.name,
+          agentName: `claw-ws123-${options.name}`,
+          gatewayPort: 18790,
+          destroy: vi.fn().mockResolvedValue(undefined),
+        });
+      }),
       destroy: vi.fn().mockResolvedValue(undefined),
-    }),
-    destroy: vi.fn().mockResolvedValue(undefined),
-    list: vi.fn().mockResolvedValue([]),
-  })),
+      list: vi.fn().mockResolvedValue([]),
+    };
+  }),
 }));
 
 // Mock fs operations
@@ -106,7 +112,7 @@ describe('SpawnManager', () => {
 
     const list = manager.list();
     expect(list).toHaveLength(1);
-    expect(list[0].displayName).toBe('test-claw');
+    expect(list[0].displayName).toBe('worker-1');
   });
 
   it('should release by id', async () => {
@@ -132,7 +138,7 @@ describe('SpawnManager', () => {
       relayApiKey: 'rk_live_test',
     });
 
-    const released = await manager.releaseByName('test-claw');
+    const released = await manager.releaseByName('worker-1');
     expect(released).toBe(true);
     expect(manager.size).toBe(0);
   });
