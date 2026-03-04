@@ -135,17 +135,9 @@ mcporter call relaycast.get_thread message_id=MSG_ID
 
 ### Agent token location (easy to miss)
 - `workspace/relaycast/.env` contains workspace config (`RELAY_API_KEY`, `RELAY_CLAW_NAME`, etc.)
-- `RELAY_AGENT_TOKEN` is typically persisted in:
-  - `~/.mcporter/mcporter.json`
-  - path: `mcpServers.relaycast.env.RELAY_AGENT_TOKEN`
+- `RELAY_AGENT_TOKEN` is in `~/.mcporter/mcporter.json` at path `mcpServers.relaycast.env.RELAY_AGENT_TOKEN` — **not** in `workspace/relaycast/.env`
 
 If direct API calls 401, check token location first.
-
-### Status health endpoint caveat
-`relay-openclaw status` may show `/v1/health` as 404 even when messaging works.
-Treat as non-fatal if these succeed:
-- `mcporter call relaycast.post_message ...`
-- `mcporter call relaycast.check_inbox`
 
 ---
 
