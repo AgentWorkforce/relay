@@ -14,7 +14,7 @@ import type {
   WorkflowRunRow,
   WorkflowStep,
 } from './types.js';
-import { WorkflowRunner, type WorkflowEventListener, type VariableContext } from './runner.js';
+import { WorkflowRunner, type WorkflowEventListener, type VariableContext, type StepExecutor } from './runner.js';
 import { formatDryRunReport } from './dry-run-format.js';
 
 // ── Option types for the builder API ────────────────────────────────────────
@@ -63,6 +63,8 @@ export interface WorkflowRunOptions {
   onEvent?: WorkflowEventListener;
   /** Validate and print execution plan without spawning agents. */
   dryRun?: boolean;
+  /** External step executor (e.g. Daytona sandbox backend). */
+  executor?: StepExecutor;
 }
 
 // ── WorkflowBuilder ─────────────────────────────────────────────────────────
@@ -240,6 +242,7 @@ export class WorkflowBuilder {
     const runner = new WorkflowRunner({
       cwd: options.cwd,
       relay: options.relay,
+      executor: options.executor,
     });
 
     // Auto-detect DRY_RUN env var so existing scripts get dry-run for free
