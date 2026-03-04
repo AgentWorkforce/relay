@@ -489,11 +489,8 @@ export class InboundGateway {
       console.warn('[gateway] No OPENCLAW_GATEWAY_TOKEN — local delivery disabled');
     }
 
-    // Register with a viewer- prefixed name so we don't collide with the
-    // container broker's agent registration (which uses the bare clawName).
-    const viewerName = `viewer-${this.config.clawName}`;
     const registered = await this.relaycast.agents.registerOrGet({
-      name: viewerName,
+      name: this.config.clawName,
       type: 'agent',
       persona: 'Relaycast inbound gateway for OpenClaw',
     });
@@ -785,9 +782,8 @@ export class InboundGateway {
     if (!this.running) return;
     if (this.processingMessageIds.has(message.id) || this.isSeen(message.id)) return;
 
-    // Avoid echo loops — skip messages from this claw or its viewer identity.
-    const viewerName = `viewer-${this.config.clawName}`;
-    if (message.from === this.config.clawName || message.from === viewerName) {
+    // Avoid echo loops — skip messages from this claw.
+    if (message.from === this.config.clawName) {
       // Only update cursor for real channels with real (non-synthetic) message IDs.
       this.markSeen(message.id);
       return;
