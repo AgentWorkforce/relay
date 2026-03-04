@@ -29,6 +29,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.1.1] - 2026-03-04
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add openclaw-relaycast package (#474)** (#474)
+
+#### User-Impacting Fixes
+- Remove unsupported dashboard flag from dev script
+
+### Technical Perspective
+#### Releases
+- v3.1.1
+
+---
+
 ## [3.1.0] - 2026-03-04
 
 ### Product Perspective
