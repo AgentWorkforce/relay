@@ -32,6 +32,7 @@ async function runCli(args: string): Promise<{ stdout: string; stderr: string; c
         ...process.env,
         DOTENV_CONFIG_QUIET: 'true',
         AGENT_RELAY_SKIP_UPDATE_CHECK: '1', // Skip update check in tests
+        AGENT_RELAY_REQUEST_TIMEOUT_MS: '5000', // Keep broker RPC failures bounded in CI
         RELAY_API_KEY: '', // Keep CLI tests offline and avoid network-dependent delays
       },
     });
