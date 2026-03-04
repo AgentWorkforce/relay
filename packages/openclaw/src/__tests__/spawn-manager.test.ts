@@ -149,4 +149,41 @@ describe('SpawnManager', () => {
     const released = await manager.release('non-existent-id');
     expect(released).toBe(false);
   });
+
+  it('should return handle by id via get()', async () => {
+    const manager = new SpawnManager({ mode: 'process' });
+
+    const handle = await manager.spawn({
+      name: 'getter-test',
+      relayApiKey: 'rk_live_test',
+    });
+
+    expect(manager.get(handle.id)).toBeDefined();
+    expect(manager.get(handle.id)!.displayName).toBe('getter-test');
+    expect(manager.get('nonexistent')).toBeUndefined();
+  });
+
+  it('should persist state on spawn', async () => {
+    const { writeFile } = await import('node:fs/promises');
+
+    const manager = new SpawnManager({ mode: 'process' });
+    await manager.spawn({
+      name: 'persist-test',
+      relayApiKey: 'rk_live_test',
+    });
+
+    expect(writeFile).toHaveBeenCalled();
+    const writeCall = vi.mocked(writeFile).mock.calls[0];
+    expect(writeCall[0]).toContain('spawns.json');
+    const written = JSON.parse(writeCall[1] as string) as { spawns: Array<{ displayName: string }> };
+    expect(written.spawns).toHaveLength(1);
+    expect(written.spawns[0].displayName).toBe('persist-test');
+  });
+
+  it('should return empty array from loadPersistedState when no file exists', async () => {
+    const manager = new SpawnManager({ mode: 'process' });
+
+    const state = await manager.loadPersistedState();
+    expect(state).toEqual([]);
+  });
 });

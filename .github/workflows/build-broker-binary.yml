@@ -51,16 +51,17 @@ jobs:
             # Install aarch64 musl cross-compiler with retries for transient network failures.
             MUSL_URL="https://musl.cc/aarch64-linux-musl-cross.tgz"
             MUSL_ARCHIVE="/tmp/aarch64-linux-musl-cross.tgz"
-            for attempt in 1 2 3; do
-              if curl -fL --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 2 --retry-all-errors \
+            for attempt in 1 2 3 4 5; do
+              if curl -fL --connect-timeout 60 --max-time 300 --retry 3 --retry-delay 5 --retry-all-errors \
                 "$MUSL_URL" -o "$MUSL_ARCHIVE"; then
                 break
               fi
-              if [[ "$attempt" -eq 3 ]]; then
-                echo "Failed to download aarch64 musl cross-compiler from $MUSL_URL"
+              if [[ "$attempt" -eq 5 ]]; then
+                echo "Failed to download aarch64 musl cross-compiler from $MUSL_URL after 5 attempts"
                 exit 1
               fi
-              sleep $((attempt * 5))
+              echo "Attempt $attempt failed, retrying in $((attempt * 10))s..."
+              sleep $((attempt * 10))
             done
             # Optional hardening: verify archive SHA256 if EXPECTED_MUSL_SHA256_AARCH64 is set.
             EXPECTED_MUSL_SHA256_AARCH64="${EXPECTED_MUSL_SHA256_AARCH64:-}"

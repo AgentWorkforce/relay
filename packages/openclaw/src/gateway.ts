@@ -3,7 +3,15 @@ import { createServer, type Server as HttpServer, type IncomingMessage, type Ser
 
 import type { SendMessageInput } from '@agent-relay/sdk';
 import { RelayCast, type AgentClient } from '@relaycast/sdk';
-import type { MessageCreatedEvent, MessageWithMeta, ThreadReplyEvent } from '@relaycast/sdk';
+import type {
+  MessageCreatedEvent,
+  ThreadReplyEvent,
+  DmReceivedEvent,
+  GroupDmReceivedEvent,
+  CommandInvokedEvent,
+  ReactionAddedEvent,
+  ReactionRemovedEvent,
+} from '@relaycast/sdk';
 import WebSocket from 'ws';
 
 import type { GatewayConfig, InboundMessage, DeliveryResult } from './types.js';
@@ -106,7 +114,8 @@ interface PendingRpc {
   timer: ReturnType<typeof setTimeout>;
 }
 
-class OpenClawGatewayClient {
+/** @internal */
+export class OpenClawGatewayClient {
   private ws: WebSocket | null = null;
   private authenticated = false;
   private device: DeviceIdentity;
@@ -419,15 +428,12 @@ export class InboundGateway {
   private relayAgentClient: AgentClient | null = null;
   private readonly relaycast: RelayCast;
   private readonly config: GatewayConfig;
-  private readonly fallbackPollMs: number;
   private readonly dedupeTtlMs: number;
 
   private running = false;
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
   private unsubscribeHandlers: Array<() => void> = [];
   private seenMessageIds = new Map<string, number>();
   private processingMessageIds = new Set<string>();
-  private channelCursor = new Map<string, string>();
 
   /** Persistent WebSocket client for the local OpenClaw gateway. */
   private openclawClient: OpenClawGatewayClient | null = null;
@@ -453,11 +459,6 @@ export class InboundGateway {
       baseUrl: this.config.baseUrl,
     });
 
-    const fallbackPollMs = Number(process.env.RELAYCAST_FALLBACK_POLL_MS ?? 15000);
-    this.fallbackPollMs = Number.isFinite(fallbackPollMs) && fallbackPollMs >= 1000
-      ? Math.floor(fallbackPollMs)
-      : 15000;
-
     const dedupeTtlMs = Number(process.env.RELAYCAST_DEDUPE_TTL_MS ?? 15 * 60 * 1000);
     this.dedupeTtlMs = Number.isFinite(dedupeTtlMs) && dedupeTtlMs >= 1000
       ? Math.floor(dedupeTtlMs)
@@ -467,7 +468,7 @@ export class InboundGateway {
     this.spawnManager = new SpawnManager({ spawnDepth: parentDepth + 1 });
   }
 
-  /** Start the gateway — register agent, subscribe for realtime events, and run fallback polling. */
+  /** Start the gateway — register agent and subscribe for realtime events. */
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
@@ -522,6 +523,36 @@ export class InboundGateway {
       }),
     );
     this.unsubscribeHandlers.push(
+      this.relayAgentClient.on.dmReceived((event: DmReceivedEvent) => {
+        console.log(`[gateway] DM from @${event.message?.agentName} (conv: ${event.conversationId})`);
+        void this.handleRealtimeDm(event);
+      }),
+    );
+    this.unsubscribeHandlers.push(
+      this.relayAgentClient.on.groupDmReceived((event: GroupDmReceivedEvent) => {
+        console.log(`[gateway] Group DM from @${event.message?.agentName} (conv: ${event.conversationId})`);
+        void this.handleRealtimeGroupDm(event);
+      }),
+    );
+    this.unsubscribeHandlers.push(
+      this.relayAgentClient.on.commandInvoked((event: CommandInvokedEvent) => {
+        console.log(`[gateway] Command /${event.command} invoked by @${event.invokedBy} in #${event.channel}`);
+        void this.handleRealtimeCommand(event);
+      }),
+    );
+    this.unsubscribeHandlers.push(
+      this.relayAgentClient.on.reactionAdded((event: ReactionAddedEvent) => {
+        console.log(`[gateway] Reaction :${event.emoji}: added by @${event.agentName} on ${event.messageId}`);
+        void this.handleRealtimeReaction(event, 'added');
+      }),
+    );
+    this.unsubscribeHandlers.push(
+      this.relayAgentClient.on.reactionRemoved((event: ReactionRemovedEvent) => {
+        console.log(`[gateway] Reaction :${event.emoji}: removed by @${event.agentName} from ${event.messageId}`);
+        void this.handleRealtimeReaction(event, 'removed');
+      }),
+    );
+    this.unsubscribeHandlers.push(
       this.relayAgentClient.on.reconnecting((attempt: number) => {
         console.warn(`[gateway] Relaycast reconnecting (attempt ${attempt})`);
       }),
@@ -547,14 +578,6 @@ export class InboundGateway {
       // Will subscribe on next connected event
     }
 
-    // Initial catch-up in case messages arrived before realtime subscription was active.
-    await this.pollMessages();
-
-    // Keep a low-frequency poll as recovery/backfill only.
-    this.pollTimer = setInterval(() => {
-      void this.pollMessages();
-    }, this.fallbackPollMs);
-
     console.log(
       `[gateway] Realtime listening on channels: ${this.config.channels.join(', ')}`,
     );
@@ -566,11 +589,6 @@ export class InboundGateway {
   /** Stop the gateway — clean up websocket and relay clients. */
   async stop(): Promise<void> {
     this.running = false;
-
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
 
     for (const unsubscribe of this.unsubscribeHandlers) {
       try {
@@ -603,7 +621,6 @@ export class InboundGateway {
     await this.spawnManager.releaseAll();
 
     this.processingMessageIds.clear();
-    this.channelCursor.clear();
     this.seenMessageIds.clear();
   }
 
@@ -681,40 +698,87 @@ export class InboundGateway {
     await this.handleInbound(inbound);
   }
 
-  private normalizePolledMessage(channel: string, message: MessageWithMeta): InboundMessage {
-    return {
-      id: message.id,
-      channel,
-      from: message.agentName,
-      text: message.text,
-      timestamp: message.createdAt,
+  private async handleRealtimeDm(event: DmReceivedEvent): Promise<void> {
+    const messageId = event.message?.id;
+    if (!messageId) return;
+
+    const inbound: InboundMessage = {
+      id: messageId,
+      channel: 'dm',
+      from: event.message.agentName,
+      text: event.message.text,
+      timestamp: new Date().toISOString(),
+      conversationId: event.conversationId,
+      kind: 'dm',
     };
+
+    await this.handleInbound(inbound);
   }
 
-  /** Poll channels for catch-up/recovery only. */
-  private async pollMessages(): Promise<void> {
-    if (!this.running) return;
+  private async handleRealtimeGroupDm(event: GroupDmReceivedEvent): Promise<void> {
+    const messageId = event.message?.id;
+    if (!messageId) return;
 
-    for (const channel of this.config.channels) {
-      try {
-        const after = this.channelCursor.get(channel);
-        const query: { limit: number; after?: string } = { limit: 50 };
-        if (after) {
-          query.after = after;
-        }
+    const inbound: InboundMessage = {
+      id: messageId,
+      channel: `groupdm:${event.conversationId}`,
+      from: event.message.agentName,
+      text: event.message.text,
+      timestamp: new Date().toISOString(),
+      conversationId: event.conversationId,
+      kind: 'groupdm',
+    };
 
-        const messages = await this.relaycast.messages.list(channel, query);
-        const ordered = [...messages].sort((a, b) =>
-          a.createdAt.localeCompare(b.createdAt),
-        );
+    await this.handleInbound(inbound);
+  }
 
-        for (const message of ordered) {
-          await this.handleInbound(this.normalizePolledMessage(channel, message));
-        }
-      } catch (err) {
-        console.warn(`[gateway] Poll error for #${channel}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
+  private async handleRealtimeCommand(event: CommandInvokedEvent): Promise<void> {
+    const channel = normalizeChannelName(event.channel);
+    if (!this.config.channels.includes(channel)) return;
+
+    // Commands lack a server-assigned event ID, so we synthesize one.
+    // We include args + timestamp to avoid silently dropping legitimate
+    // repeat invocations (e.g. /deploy twice in 15 min). This means SDK
+    // reconnection replays may deliver a duplicate, but that's less
+    // harmful than silently swallowing a real command.
+    const argsSlug = event.args ? `_${event.args}` : '';
+    const syntheticId = `cmd_${event.command}_${channel}_${event.invokedBy}${argsSlug}_${Date.now()}`;
+    const argsText = event.args ? ` ${event.args}` : '';
+
+    const inbound: InboundMessage = {
+      id: syntheticId,
+      channel,
+      from: event.invokedBy,
+      text: `[relaycast:command:${channel}] @${event.invokedBy} /${event.command}${argsText}`,
+      timestamp: new Date().toISOString(),
+      kind: 'command',
+    };
+
+    await this.handleInbound(inbound);
+  }
+
+  private async handleRealtimeReaction(
+    event: ReactionAddedEvent | ReactionRemovedEvent,
+    action: 'added' | 'removed',
+  ): Promise<void> {
+    // Include timestamp so add→remove→re-add of the same emoji isn't
+    // silently dropped within the 15-min dedup window. Reactions are soft
+    // notifications, so a rare duplicate on SDK reconnect is acceptable.
+    const syntheticId = `reaction_${event.messageId}_${event.emoji}_${event.agentName}_${action}_${Date.now()}`;
+    const text = action === 'added'
+      ? `[relaycast:reaction] @${event.agentName} reacted ${event.emoji} to message ${event.messageId} (soft notification, no action required)`
+      : `[relaycast:reaction] @${event.agentName} removed ${event.emoji} from message ${event.messageId} (soft notification, no action required)`;
+
+    const inbound: InboundMessage = {
+      id: syntheticId,
+      channel: 'reaction',
+      from: event.agentName,
+      text,
+      timestamp: new Date().toISOString(),
+      kind: 'reaction',
+    };
+
+    await this.handleInbound(inbound);
   }
 
   private async handleInbound(message: InboundMessage): Promise<void> {
@@ -724,13 +788,13 @@ export class InboundGateway {
     // Avoid echo loops — skip messages from this claw or its viewer identity.
     const viewerName = `viewer-${this.config.clawName}`;
     if (message.from === this.config.clawName || message.from === viewerName) {
-      this.channelCursor.set(normalizeChannelName(message.channel), message.id);
+      // Only update cursor for real channels with real (non-synthetic) message IDs.
       this.markSeen(message.id);
       return;
     }
 
     // Mark as seen immediately to prevent duplicate delivery from concurrent
-    // realtime + poll paths processing the same message.
+    // realtime events processing the same message.
     this.markSeen(message.id);
     this.processingMessageIds.add(message.id);
 
@@ -738,7 +802,6 @@ export class InboundGateway {
     try {
       const result = await this.onMessage(message);
       console.log(`[gateway] Delivery result: ${result.method} ok=${result.ok}${result.error ? ' error=' + result.error : ''}`);
-      this.channelCursor.set(normalizeChannelName(message.channel), message.id);
     } finally {
       this.processingMessageIds.delete(message.id);
     }
@@ -746,6 +809,16 @@ export class InboundGateway {
 
   /** Format delivery text with channel, sender, and optional thread prefix. */
   private formatDeliveryText(message: InboundMessage): string {
+    // Pre-formatted kinds (command, reaction) already have the full text.
+    if (message.kind === 'command' || message.kind === 'reaction') {
+      return message.text;
+    }
+    if (message.kind === 'dm') {
+      return `[relaycast:dm] @${message.from}: ${message.text}`;
+    }
+    if (message.kind === 'groupdm') {
+      return `[relaycast:groupdm] @${message.from}: ${message.text}`;
+    }
     const threadPrefix = message.threadParentId ? '[thread] ' : '';
     return `${threadPrefix}[relaycast:${message.channel}] @${message.from}: ${message.text}`;
   }

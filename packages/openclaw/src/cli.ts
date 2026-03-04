@@ -144,7 +144,7 @@ async function runStatus(): Promise<void> {
 
   // Try to check connectivity
   try {
-    const res = await fetch(`${config.baseUrl}/v1/health`);
+    const res = await fetch(`${config.baseUrl}/health`);
     console.log(
       `API connectivity: ${res.ok ? 'OK' : `Error (${res.status})`}`,
     );

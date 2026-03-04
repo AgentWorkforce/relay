@@ -611,11 +611,44 @@ jobs:
         working-directory: packages/sdk-py
         run: python -m build
 
-      - name: Publish to PyPI
+      - name: Publish to PyPI (attempt 1)
+        id: pypi_publish_1
         if: github.event.inputs.dry_run != 'true'
+        continue-on-error: true
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: packages/sdk-py/dist/
+
+      - name: Wait before retry
+        if: github.event.inputs.dry_run != 'true' && steps.pypi_publish_1.outcome == 'failure'
+        run: sleep 60
+
+      - name: Publish to PyPI (attempt 2)
+        id: pypi_publish_2
+        if: github.event.inputs.dry_run != 'true' && steps.pypi_publish_1.outcome == 'failure'
+        continue-on-error: true
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/sdk-py/dist/
+
+      - name: Wait before retry
+        if: github.event.inputs.dry_run != 'true' && steps.pypi_publish_2.outcome == 'failure'
+        run: sleep 120
+
+      - name: Publish to PyPI (attempt 3)
+        id: pypi_publish_3
+        if: github.event.inputs.dry_run != 'true' && steps.pypi_publish_2.outcome == 'failure'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/sdk-py/dist/
+
+      - name: Fail if all PyPI publish attempts failed
+        if: >-
+          github.event.inputs.dry_run != 'true' &&
+          steps.pypi_publish_1.outcome == 'failure' &&
+          steps.pypi_publish_2.outcome == 'failure' &&
+          steps.pypi_publish_3.outcome == 'failure'
+        run: exit 1
 
   # Verify standalone binaries on Linux
   verify-standalone-linux:
