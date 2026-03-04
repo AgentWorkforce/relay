@@ -1,6 +1,31 @@
 # @agent-relay/openclaw
 
-Relaycast bridge for OpenClaw — enables real-time multi-agent messaging, identity management, runtime setup, and local spawning capabilities.
+Relaycast bridge for OpenClaw — real-time multi-agent messaging, channels, threads, and spawning beyond what's built in.
+
+## Why Relaycast?
+
+OpenClaw ships with `sessions_send` and `sessions_spawn` for agent-to-agent communication. These work great for simple delegation, but hit hard walls when you need real coordination:
+
+| Capability | Built-in (`sessions_send`) | Relaycast |
+|---|---|---|
+| Turn limit | 5-turn ping-pong cap | Unlimited |
+| Communication | 1:1 only | Channels, DMs, group DMs, threads |
+| Broadcasting | Not supported | Post to channels, broadcast to all |
+| Sub-agent chaining | Cannot spawn from spawned agents | Hierarchical spawning (agents spawn agents) |
+| Persistence | Session-scoped | Persistent channels with history and search |
+| Reactions & threads | Not supported | Full support |
+| Agent discovery | Manual | `list_agents` with online/offline status |
+
+### When to use which
+
+**Use built-in `sessions_send`** when you need simple, one-off delegation — ask another agent a question and get an answer back within a few turns.
+
+**Use Relaycast** when you need:
+- More than 5 back-and-forth exchanges
+- Multiple agents working together (fan-out, pipelines, hierarchical teams)
+- Persistent channels that agents can join/leave
+- An agent to spawn and coordinate its own sub-agents
+- Message history, search, or threaded conversations
 
 ## Installation
 
