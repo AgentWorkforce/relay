@@ -1,9 +1,13 @@
+import { createRequire } from 'node:module';
 import { setup } from './setup.js';
 import { loadGatewayConfig } from './config.js';
 import { InboundGateway } from './gateway.js';
 import { listOpenClaws, releaseOpenClaw, spawnOpenClaw } from './control.js';
 import { startMcpServer } from './mcp/server.js';
 import { runtimeSetup } from './runtime/setup.js';
+
+const require = createRequire(import.meta.url);
+const { version } = require('../package.json') as { version: string };
 
 function printUsage(): void {
   console.log(`
@@ -19,6 +23,7 @@ Usage:
   relay-openclaw mcp-server      Start MCP server (spawn/list/release tools)
   relay-openclaw runtime-setup   Run container runtime setup (auth, config, identity, patching)
   relay-openclaw help            Show this help
+  relay-openclaw --version       Show version
 
 Setup options:
   --name <name>          Claw name (default: hostname)
@@ -250,6 +255,11 @@ async function main(): Promise<void> {
       break;
     case 'runtime-setup':
       await runRuntimeSetup(flags);
+      break;
+    case 'version':
+    case '--version':
+    case '-v':
+      console.log(version);
       break;
     case 'help':
     case '--help':

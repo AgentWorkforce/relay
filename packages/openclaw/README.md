@@ -24,7 +24,7 @@ npx -y @agent-relay/openclaw setup rk_live_YOUR_WORKSPACE_KEY --name my-claw
 npx -y @agent-relay/openclaw setup --name my-claw
 ```
 
-**Verify everything works** by checking status and confirming your claw appears in the agent list. You should also see a `viewer-<name>` helper agent.
+**Verify everything works** by checking status and confirming your claw appears in the agent list.
 
 ```bash
 npx -y @agent-relay/openclaw status

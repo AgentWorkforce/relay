@@ -44,7 +44,7 @@ const mockAgentClient = {
 vi.mock('@relaycast/sdk', () => ({
   RelayCast: vi.fn().mockImplementation(() => ({
     agents: {
-      registerOrGet: vi.fn().mockResolvedValue({ name: 'viewer-test-claw', token: 'tok_test' }),
+      registerOrGet: vi.fn().mockResolvedValue({ name: 'test-claw', token: 'tok_test' }),
     },
     channels: { join: vi.fn().mockResolvedValue({ ok: true }) },
     messages: { list: vi.fn().mockResolvedValue([]) },

@@ -16,7 +16,7 @@ vi.mock('../spawn/manager.js', () => ({
 
 vi.mock('@relaycast/sdk', () => ({
   RelayCast: vi.fn().mockImplementation(() => ({
-    agents: { registerOrGet: vi.fn().mockResolvedValue({ name: 'viewer-test', token: 'tok' }) },
+    agents: { registerOrGet: vi.fn().mockResolvedValue({ name: 'test', token: 'tok' }) },
     as: vi.fn().mockReturnValue({
       connect: vi.fn(),
       disconnect: vi.fn().mockResolvedValue(undefined),

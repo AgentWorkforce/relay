@@ -56,7 +56,7 @@ const mockAgentClient = {
 vi.mock('@relaycast/sdk', () => ({
   RelayCast: vi.fn().mockImplementation(() => ({
     agents: {
-      registerOrGet: vi.fn().mockResolvedValue({ name: 'viewer-test-claw', token: 'tok_test' }),
+      registerOrGet: vi.fn().mockResolvedValue({ name: 'test-claw', token: 'tok_test' }),
     },
     channels: { join: vi.fn().mockResolvedValue({ ok: true }) },
     messages: { list: vi.fn().mockResolvedValue([]) },
@@ -256,27 +256,6 @@ describe('InboundGateway — thread reply injection', () => {
           id: 'msg_301',
           agentName: 'my-claw',
           text: 'my own reply',
-        },
-      });
-
-      await new Promise((r) => setTimeout(r, 50));
-      expect(sendMessage).not.toHaveBeenCalled();
-
-      await gateway.stop();
-    });
-
-    it('should skip thread replies from the viewer identity', async () => {
-      const { gateway, sendMessage } = createGateway({ clawName: 'my-claw' });
-      await gateway.start();
-
-      fireEvent('threadReply', {
-        type: 'thread.reply',
-        channel: 'general',
-        parentId: 'msg_400',
-        message: {
-          id: 'msg_401',
-          agentName: 'viewer-my-claw',
-          text: 'viewer echo',
         },
       });
 
