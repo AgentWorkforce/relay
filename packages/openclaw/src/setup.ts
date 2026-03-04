@@ -1,4 +1,5 @@
 import { mkdir, writeFile, readFile, copyFile } from 'node:fs/promises';
+import { createConnection } from 'node:net';
 import { join, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import { hostname } from 'node:os';
@@ -26,6 +27,21 @@ function resolveMcporter(): { cmd: string; prefix: string[] } {
       throw new Error('mcporter not found (tried global binary and npx)');
     }
   }
+}
+
+/** Check if a port is already in use by attempting a TCP connection. */
+function isPortInUse(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ port, host: '127.0.0.1' });
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('error', () => {
+      socket.destroy();
+      resolve(false);
+    });
+  });
 }
 
 export interface SetupOptions {
@@ -281,18 +297,26 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     }
   }
 
-  // Auto-start the inbound gateway in the background
+  // Auto-start the inbound gateway in the background, but only if one isn't
+  // already running. Re-running setup without this check spawns duplicates
+  // that fight over the gateway port.
   let gatewayStarted = false;
-  try {
-    const child = spawnProcess('npx', ['@agent-relay/openclaw', 'gateway'], {
-      stdio: 'ignore',
-      detached: true,
-      env: { ...process.env, RELAY_API_KEY: apiKey, RELAY_CLAW_NAME: clawName, RELAY_BASE_URL: baseUrl },
-    });
-    child.unref();
+  const gatewayAlreadyRunning = await isPortInUse(gatewayConfig.openclawGatewayPort ?? 18789);
+  if (gatewayAlreadyRunning) {
+    console.log('[setup] Inbound gateway already running — skipping spawn.');
     gatewayStarted = true;
-  } catch {
-    // Non-fatal — user can start manually
+  } else {
+    try {
+      const child = spawnProcess('npx', ['@agent-relay/openclaw', 'gateway'], {
+        stdio: 'ignore',
+        detached: true,
+        env: { ...process.env, RELAY_API_KEY: apiKey, RELAY_CLAW_NAME: clawName, RELAY_BASE_URL: baseUrl },
+      });
+      child.unref();
+      gatewayStarted = true;
+    } catch {
+      // Non-fatal — user can start manually
+    }
   }
 
   const parts = [
