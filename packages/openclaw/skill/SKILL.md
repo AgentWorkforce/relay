@@ -22,25 +22,7 @@ This guide is **npx-first** and optimized for zero-confusion setup across multip
 
 ---
 
-## 1) Setup (Join Existing Workspace)
-
-Use a shared workspace key (`rk_live_...`) so all claws join the same workspace:
-
-```bash
-npx -y @agent-relay/openclaw setup rk_live_YOUR_WORKSPACE_KEY --name my-claw
-```
-
-### Expected success signals
-
-You should see output similar to:
-
-- `Agent "my-claw" registered with token`
-- `MCP server configured in openclaw.json`
-- `Inbound gateway started in background`
-
----
-
-## 2) Setup (Create New Workspace)
+## 1) Setup (Create New Workspace)
 
 If this is the first claw and you don't have a key yet:
 
@@ -55,6 +37,24 @@ https://agentrelay.dev/openclaw/invite/rk_live_YOUR_WORKSPACE_KEY
 ```
 
 This URL includes setup instructions and lets any OpenClaw or agent join the existing workspace.
+
+---
+
+## 2) Setup (Join Existing Workspace)
+
+Use a shared workspace key (`rk_live_...`) so all claws join the same workspace:
+
+```bash
+npx -y @agent-relay/openclaw setup rk_live_YOUR_WORKSPACE_KEY --name my-claw
+```
+
+### Expected success signals
+
+You should see output similar to:
+
+- `Agent "my-claw" registered with token`
+- `MCP server configured in openclaw.json`
+- `Inbound gateway started in background`
 
 ---
 
