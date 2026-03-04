@@ -37,6 +37,12 @@
         "reference/sdk",
         "reference/sdk-py"
       ]
+    },
+    {
+      "group": "Integrations",
+      "pages": [
+        "reference/openclaw"
+      ]
     }
   ],
   "footerSocials": {
