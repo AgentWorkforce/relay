@@ -48,6 +48,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools
 
+      - name: Install cross and strip tools (aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu
       - name: Install cross (aarch64)
         if: matrix.target == 'aarch64-unknown-linux-musl'
         uses: taiki-e/install-action@cross
@@ -56,10 +59,11 @@ jobs:
         run: |
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
             RUSTFLAGS="-C target-feature=+crt-static" cross build --release --target ${{ matrix.target }} --bin agent-relay-broker
+            aarch64-linux-gnu-strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || true
           else
             RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target ${{ matrix.target }} --bin agent-relay-broker
+            strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || true
           fi
-          strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || true
 
       - name: Verify static linking
         run: |
