@@ -816,9 +816,9 @@ function resolveDefaultBinaryPath(): string {
     return workspaceRelease;
   }
 
-  // 2. Check for bundled broker binary in SDK package (npm install)
-  //    Try platform-specific name first (CI publishes per-platform binaries),
-  //    then fall back to the generic name (local dev / postinstall copy).
+  // 2. Check for bundled platform-specific broker binary in SDK package (npm install).
+  //    Only use binaries that match the current platform to avoid running
+  //    e.g. a macOS binary on Linux (or vice-versa).
   const binDir = path.resolve(moduleDir, '..', 'bin');
   const suffix = detectPlatformSuffix();
   if (suffix) {
@@ -826,10 +826,6 @@ function resolveDefaultBinaryPath(): string {
     if (fs.existsSync(platformBinary)) {
       return platformBinary;
     }
-  }
-  const bundled = path.join(binDir, brokerExe);
-  if (fs.existsSync(bundled)) {
-    return bundled;
   }
 
   // 3. Check for standalone broker binary in ~/.agent-relay/bin/ (install.sh)
