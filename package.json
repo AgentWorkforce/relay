@@ -108,7 +108,7 @@
     "watch:start:cli-tools": "npm run build && bash ./scripts/watch-cli-tools.sh",
     "watch:start:claude": "npm run watch:start:cli-tools -- --tool=claude",
     "predev": "npm run clean && npm run build:packages && tsc && chmod +x dist/src/cli/bootstrap.js",
-    "dev": "node dist/src/cli/bootstrap.js up --dashboard --port 3888",
+    "dev": "node dist/src/cli/bootstrap.js up --port 3888",
     "dev:local": "npm run build && npm link && echo '✓ agent-relay linked globally'",
     "dev:unlink": "npm unlink -g agent-relay && echo '✓ agent-relay unlinked'",
     "dev:rebuild": "npm run build && echo '✓ Rebuilt (linked version updated)'",
