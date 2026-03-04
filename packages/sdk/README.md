@@ -40,7 +40,14 @@ relay.onMessageReceived = (msg) => console.log(`${msg.from}: ${msg.text}`);
 relay.onAgentIdle = ({ name, idleSecs }) => console.log(`${name} idle for ${idleSecs}s`);
 
 // Spawn agents using shorthand spawners
-const worker = await relay.claude.spawn({ name: 'Worker1', channels: ['general'] });
+const worker = await relay.claude.spawn({
+  name: 'Worker1',
+  channels: ['general'],
+  // Lifecycle hooks can be sync or async functions.
+  onStart: ({ name }) => console.log(`spawning ${name}`),
+  onSuccess: ({ name, runtime }) => console.log(`spawned ${name} (${runtime})`),
+  onError: ({ name, error }) => console.error(`failed to spawn ${name}`, error),
+});
 
 // Or use the generic spawn method
 const agent = await relay.spawn('Worker2', 'codex', 'Build the API', {
@@ -50,6 +57,13 @@ const agent = await relay.spawn('Worker2', 'codex', 'Build the API', {
 
 // Wait for agent to finish (go idle or exit)
 const result = await agent.waitForIdle(120_000);
+
+// Release with lifecycle hooks
+await worker.release({
+  reason: 'done',
+  onStart: ({ name }) => console.log(`releasing ${name}`),
+  onSuccess: ({ name }) => console.log(`released ${name}`),
+});
 
 // Send messages
 const human = relay.human({ name: 'Orchestrator' });

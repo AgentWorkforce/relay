@@ -74,6 +74,21 @@ Use runtime-specific spawners:
 await relay.claude.spawn(name="Agent1", model=Models.Claude.SONNET, channels=["dev"], task="...")
 await relay.codex.spawn(name="Agent2", model=Models.Codex.GPT_5_3_CODEX, channels=["dev"], task="...")
 await relay.gemini.spawn(name="Agent3", model=Models.Gemini.GEMINI_2_5_PRO, channels=["dev"], task="...")
+
+worker = await relay.claude.spawn(
+    name="HookedWorker",
+    channels=["dev"],
+    # Lifecycle hooks can be sync or async callables.
+    on_start=lambda ctx: print(f"spawning {ctx['name']}"),
+    on_success=lambda ctx: print(f"spawned {ctx['name']} ({ctx['runtime']})"),
+    on_error=lambda ctx: print(f"failed to spawn {ctx['name']}: {ctx['error']}"),
+)
+
+await worker.release(
+    "done",
+    on_start=lambda ctx: print(f"releasing {ctx['name']}"),
+    on_success=lambda ctx: print(f"released {ctx['name']}"),
+)
 ```
 
 ### Sending Messages
@@ -107,7 +122,6 @@ Models.Codex.GPT_5_3_CODEX
 Models.Gemini.GEMINI_2_5_PRO
 Models.Gemini.GEMINI_2_5_FLASH
 ```
-
 
 ## License
 

@@ -9,10 +9,11 @@ Mirrors packages/sdk/src/relay.ts.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import secrets
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from .client import AgentRelayClient
 from .protocol import AgentRuntime, BrokerEvent
@@ -22,6 +23,7 @@ from .protocol import AgentRuntime, BrokerEvent
 AgentStatus = str  # "spawning" | "ready" | "idle" | "exited"
 
 EventHook = Optional[Callable[..., None]]
+LifecycleHook = Optional[Callable[[dict[str, Any]], None | Awaitable[None]]]
 
 
 @dataclass
@@ -49,6 +51,9 @@ class SpawnOptions:
     shadow_mode: Optional[str] = None
     idle_threshold_secs: Optional[int] = None
     restart_policy: Optional[dict[str, Any]] = None
+    on_start: LifecycleHook = None
+    on_success: LifecycleHook = None
+    on_error: LifecycleHook = None
 
 
 # ── Agent handle ──────────────────────────────────────────────────────────────
@@ -94,9 +99,41 @@ class Agent:
             return "ready"
         return "spawning"
 
-    async def release(self, reason: Optional[str] = None) -> None:
+    async def release(
+        self,
+        reason: Optional[str] = None,
+        *,
+        on_start: LifecycleHook = None,
+        on_success: LifecycleHook = None,
+        on_error: LifecycleHook = None,
+    ) -> None:
+        context = {
+            "name": self._name,
+            "reason": reason,
+        }
         client = await self._relay._ensure_started()
-        await client.release(self._name, reason)
+        await self._relay._invoke_lifecycle_hook(
+            on_start,
+            context,
+            f'release("{self._name}") on_start',
+        )
+        try:
+            await client.release(self._name, reason)
+            await self._relay._invoke_lifecycle_hook(
+                on_success,
+                context,
+                f'release("{self._name}") on_success',
+            )
+        except Exception as error:
+            await self._relay._invoke_lifecycle_hook(
+                on_error,
+                {
+                    **context,
+                    "error": error,
+                },
+                f'release("{self._name}") on_error',
+            )
+            raise
 
     async def wait_for_ready(self, timeout_ms: int = 60_000) -> None:
         await self._relay.wait_for_agent_ready(self._name, timeout_ms)
@@ -267,20 +304,45 @@ class AgentSpawner:
         task: Optional[str] = None,
         model: Optional[str] = None,
         cwd: Optional[str] = None,
+        on_start: LifecycleHook = None,
+        on_success: LifecycleHook = None,
+        on_error: LifecycleHook = None,
     ) -> Agent:
         agent_name = name or self._default_name
         agent_channels = channels or ["general"]
+        context = {
+            "name": agent_name,
+            "cli": self._cli,
+            "channels": agent_channels,
+            "task": task,
+        }
         client = await self._relay._ensure_started()
-
-        result = await client.spawn_pty(
-            name=agent_name,
-            cli=self._cli,
-            args=args or [],
-            channels=agent_channels,
-            task=task,
-            model=model,
-            cwd=cwd,
+        await self._relay._invoke_lifecycle_hook(
+            on_start,
+            context,
+            f'spawn("{agent_name}") on_start',
         )
+
+        try:
+            result = await client.spawn_pty(
+                name=agent_name,
+                cli=self._cli,
+                args=args or [],
+                channels=agent_channels,
+                task=task,
+                model=model,
+                cwd=cwd,
+            )
+        except Exception as error:
+            await self._relay._invoke_lifecycle_hook(
+                on_error,
+                {
+                    **context,
+                    "error": error,
+                },
+                f'spawn("{agent_name}") on_error',
+            )
+            raise
 
         agent = Agent(
             name=result.get("name", agent_name),
@@ -289,10 +351,16 @@ class AgentSpawner:
             relay=self._relay,
         )
         self._relay._known_agents[agent.name] = agent
-        self._relay._ready_agents.discard(agent.name)
-        self._relay._message_ready_agents.discard(agent.name)
-        self._relay._exited_agents.discard(agent.name)
-        self._relay._idle_agents.discard(agent.name)
+        self._relay._reset_agent_lifecycle_state(agent.name)
+        await self._relay._invoke_lifecycle_hook(
+            on_success,
+            {
+                **context,
+                "name": agent.name,
+                "runtime": agent.runtime,
+            },
+            f'spawn("{agent_name}") on_success',
+        )
         return agent
 
 
@@ -418,21 +486,43 @@ class AgentRelay:
         client = await self._ensure_started()
         opts = options or SpawnOptions()
         channels = opts.channels or ["general"]
-
-        result = await client.spawn_pty(
-            name=name,
-            cli=cli,
-            task=task,
-            args=opts.args,
-            channels=channels,
-            model=opts.model,
-            cwd=opts.cwd,
-            team=opts.team,
-            shadow_of=opts.shadow_of,
-            shadow_mode=opts.shadow_mode,
-            idle_threshold_secs=opts.idle_threshold_secs,
-            restart_policy=opts.restart_policy,
+        context = {
+            "name": name,
+            "cli": cli,
+            "channels": channels,
+            "task": task,
+        }
+        await self._invoke_lifecycle_hook(
+            opts.on_start,
+            context,
+            f'spawn("{name}") on_start',
         )
+
+        try:
+            result = await client.spawn_pty(
+                name=name,
+                cli=cli,
+                task=task,
+                args=opts.args,
+                channels=channels,
+                model=opts.model,
+                cwd=opts.cwd,
+                team=opts.team,
+                shadow_of=opts.shadow_of,
+                shadow_mode=opts.shadow_mode,
+                idle_threshold_secs=opts.idle_threshold_secs,
+                restart_policy=opts.restart_policy,
+            )
+        except Exception as error:
+            await self._invoke_lifecycle_hook(
+                opts.on_error,
+                {
+                    **context,
+                    "error": error,
+                },
+                f'spawn("{name}") on_error',
+            )
+            raise
 
         agent = Agent(
             name=result.get("name", name),
@@ -441,10 +531,16 @@ class AgentRelay:
             relay=self,
         )
         self._known_agents[agent.name] = agent
-        self._ready_agents.discard(agent.name)
-        self._message_ready_agents.discard(agent.name)
-        self._exited_agents.discard(agent.name)
-        self._idle_agents.discard(agent.name)
+        self._reset_agent_lifecycle_state(agent.name)
+        await self._invoke_lifecycle_hook(
+            opts.on_success,
+            {
+                **context,
+                "name": agent.name,
+                "runtime": agent.runtime,
+            },
+            f'spawn("{name}") on_success',
+        )
         return agent
 
     async def spawn_and_wait(
@@ -621,6 +717,27 @@ class AgentRelay:
         self._idle_resolvers.clear()
 
     # ── Private helpers ───────────────────────────────────────────────────
+
+    async def _invoke_lifecycle_hook(
+        self,
+        hook: LifecycleHook,
+        context: dict[str, Any],
+        label: str,
+    ) -> None:
+        if hook is None:
+            return
+        try:
+            result = hook(context)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as error:
+            print(f"[AgentRelay] {label} hook threw: {error}")
+
+    def _reset_agent_lifecycle_state(self, name: str) -> None:
+        self._ready_agents.discard(name)
+        self._message_ready_agents.discard(name)
+        self._exited_agents.discard(name)
+        self._idle_agents.discard(name)
 
     def _ensure_agent_handle(
         self, name: str, runtime: AgentRuntime = "pty", channels: Optional[list[str]] = None,

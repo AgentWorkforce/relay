@@ -87,7 +87,47 @@ export interface DeliveryState {
   updatedAt: number;
 }
 
-export interface SpawnOptions {
+export interface SpawnLifecycleContext {
+  name: string;
+  cli: string;
+  channels: string[];
+  task?: string;
+}
+
+export interface SpawnLifecycleSuccessContext extends SpawnLifecycleContext {
+  runtime: AgentRuntime;
+}
+
+export interface SpawnLifecycleErrorContext extends SpawnLifecycleContext {
+  error: unknown;
+}
+
+export interface SpawnLifecycleHooks {
+  onStart?: (context: SpawnLifecycleContext) => void | Promise<void>;
+  onSuccess?: (context: SpawnLifecycleSuccessContext) => void | Promise<void>;
+  onError?: (context: SpawnLifecycleErrorContext) => void | Promise<void>;
+}
+
+export interface ReleaseLifecycleContext {
+  name: string;
+  reason?: string;
+}
+
+export interface ReleaseLifecycleErrorContext extends ReleaseLifecycleContext {
+  error: unknown;
+}
+
+export interface ReleaseLifecycleHooks {
+  onStart?: (context: ReleaseLifecycleContext) => void | Promise<void>;
+  onSuccess?: (context: ReleaseLifecycleContext) => void | Promise<void>;
+  onError?: (context: ReleaseLifecycleErrorContext) => void | Promise<void>;
+}
+
+export interface ReleaseOptions extends ReleaseLifecycleHooks {
+  reason?: string;
+}
+
+export interface SpawnOptions extends SpawnLifecycleHooks {
   args?: string[];
   channels?: string[];
   model?: string;
@@ -119,7 +159,7 @@ export interface Agent {
   exitSignal?: string;
   /** Set when the agent requests exit via /exit. Available after `onAgentExitRequested` fires. */
   exitReason?: string;
-  release(reason?: string): Promise<void>;
+  release(reasonOrOptions?: string | ReleaseOptions): Promise<void>;
   waitForReady(timeoutMs?: number): Promise<void>;
   /** Wait for the agent process to exit on its own.
    *  @param timeoutMs — optional timeout in ms. Resolves with `"timeout"` if exceeded,
@@ -152,14 +192,16 @@ export interface HumanHandle {
 }
 
 export interface AgentSpawner {
-  spawn(options?: {
-    name?: string;
-    args?: string[];
-    channels?: string[];
-    task?: string;
-    model?: string;
-    cwd?: string;
-  }): Promise<Agent>;
+  spawn(options?: SpawnerSpawnOptions): Promise<Agent>;
+}
+
+export interface SpawnerSpawnOptions extends SpawnLifecycleHooks {
+  name?: string;
+  args?: string[];
+  channels?: string[];
+  task?: string;
+  model?: string;
+  cwd?: string;
 }
 
 export type EventHook<T> = ((value: T) => void) | null;
@@ -296,7 +338,7 @@ export class AgentRelay {
 
   // ── Spawning ────────────────────────────────────────────────────────────
 
-  async spawnPty(input: SpawnPtyInput): Promise<Agent> {
+  async spawnPty(input: SpawnPtyInput & SpawnLifecycleHooks): Promise<Agent> {
     const client = await this.ensureStarted();
     if (!input.channels || input.channels.length === 0) {
       console.warn(
@@ -305,26 +347,52 @@ export class AgentRelay {
       );
     }
     const channels = input.channels ?? ['general'];
-    const result = await client.spawnPty({
+    const lifecycleContext: SpawnLifecycleContext = {
       name: input.name,
       cli: input.cli,
-      args: input.args,
       channels,
       task: input.task,
-      model: input.model,
-      cwd: input.cwd,
-      team: input.team,
-      shadowOf: input.shadowOf,
-      shadowMode: input.shadowMode,
-      idleThresholdSecs: input.idleThresholdSecs,
-      restartPolicy: input.restartPolicy,
-    });
-    this.readyAgents.delete(result.name);
-    this.messageReadyAgents.delete(result.name);
-    this.exitedAgents.delete(result.name);
-    this.idleAgents.delete(result.name);
+    };
+    await this.invokeLifecycleHook(input.onStart, lifecycleContext, `spawnPty("${input.name}") onStart`);
+    let result: { name: string; runtime: AgentRuntime };
+    try {
+      result = await client.spawnPty({
+        name: input.name,
+        cli: input.cli,
+        args: input.args,
+        channels,
+        task: input.task,
+        model: input.model,
+        cwd: input.cwd,
+        team: input.team,
+        shadowOf: input.shadowOf,
+        shadowMode: input.shadowMode,
+        idleThresholdSecs: input.idleThresholdSecs,
+        restartPolicy: input.restartPolicy,
+      });
+    } catch (error) {
+      await this.invokeLifecycleHook(
+        input.onError,
+        {
+          ...lifecycleContext,
+          error,
+        },
+        `spawnPty("${input.name}") onError`
+      );
+      throw error;
+    }
+    this.resetAgentLifecycleState(result.name);
     const agent = this.makeAgent(result.name, result.runtime, channels);
     this.knownAgents.set(agent.name, agent);
+    await this.invokeLifecycleHook(
+      input.onSuccess,
+      {
+        ...lifecycleContext,
+        name: result.name,
+        runtime: result.runtime,
+      },
+      `spawnPty("${input.name}") onSuccess`
+    );
     return agent;
   }
 
@@ -342,6 +410,9 @@ export class AgentRelay {
       shadowMode: options?.shadowMode,
       idleThresholdSecs: options?.idleThresholdSecs,
       restartPolicy: options?.restartPolicy,
+      onStart: options?.onStart,
+      onSuccess: options?.onSuccess,
+      onError: options?.onError,
     });
   }
 
@@ -990,9 +1061,32 @@ export class AgentRelay {
       },
       exitCode: undefined,
       exitSignal: undefined,
-      async release(reason?: string) {
+      async release(reasonOrOptions?: string | ReleaseOptions) {
+        const releaseOptions = relay.normalizeReleaseOptions(reasonOrOptions);
+        const releaseContext: ReleaseLifecycleContext = {
+          name,
+          reason: releaseOptions.reason,
+        };
         const client = await relay.ensureStarted();
-        await client.release(name, reason);
+        await relay.invokeLifecycleHook(releaseOptions.onStart, releaseContext, `release("${name}") onStart`);
+        try {
+          await client.release(name, releaseOptions.reason);
+          await relay.invokeLifecycleHook(
+            releaseOptions.onSuccess,
+            releaseContext,
+            `release("${name}") onSuccess`
+          );
+        } catch (error) {
+          await relay.invokeLifecycleHook(
+            releaseOptions.onError,
+            {
+              ...releaseContext,
+              error,
+            },
+            `release("${name}") onError`
+          );
+          throw error;
+        }
       },
       async waitForReady(timeoutMs = 60_000) {
         await relay.waitForAgentReady(name, timeoutMs);
@@ -1117,14 +1211,36 @@ export class AgentRelay {
   private createSpawner(cli: string, defaultName: string, runtime: AgentRuntime): AgentSpawner {
     return {
       spawn: async (options?) => {
-        const client = await this.ensureStarted();
         const name = options?.name ?? defaultName;
         const channels = options?.channels ?? ['general'];
         const args = options?.args ?? [];
 
         const task = options?.task;
+        if (runtime === 'pty') {
+          return this.spawnPty({
+            name,
+            cli,
+            args,
+            channels,
+            task,
+            model: options?.model,
+            cwd: options?.cwd,
+            onStart: options?.onStart,
+            onSuccess: options?.onSuccess,
+            onError: options?.onError,
+          });
+        }
+
+        const client = await this.ensureStarted();
+        const lifecycleContext: SpawnLifecycleContext = {
+          name,
+          cli,
+          channels,
+          task,
+        };
+        await this.invokeLifecycleHook(options?.onStart, lifecycleContext, `spawn("${name}") onStart`);
         let result: { name: string; runtime: AgentRuntime };
-        if (runtime === 'headless') {
+        try {
           result = await client.spawnProvider({
             name,
             provider: cli as HeadlessProvider,
@@ -1133,22 +1249,61 @@ export class AgentRelay {
             channels,
             task,
           });
-        } else {
-          result = await client.spawnPty({
-            name,
-            cli,
-            args,
-            channels,
-            task,
-            model: options?.model,
-            cwd: options?.cwd,
-          });
+        } catch (error) {
+          await this.invokeLifecycleHook(
+            options?.onError,
+            {
+              ...lifecycleContext,
+              error,
+            },
+            `spawn("${name}") onError`
+          );
+          throw error;
         }
 
+        this.resetAgentLifecycleState(result.name);
         const agent = this.makeAgent(result.name, result.runtime, channels);
         this.knownAgents.set(agent.name, agent);
+        await this.invokeLifecycleHook(
+          options?.onSuccess,
+          {
+            ...lifecycleContext,
+            name: result.name,
+            runtime: result.runtime,
+          },
+          `spawn("${name}") onSuccess`
+        );
         return agent;
       },
     };
+  }
+
+  private async invokeLifecycleHook<T>(
+    hook: ((context: T) => void | Promise<void>) | undefined,
+    context: T,
+    label: string
+  ): Promise<void> {
+    if (!hook) {
+      return;
+    }
+    try {
+      await hook(context);
+    } catch (error) {
+      console.warn(`[AgentRelay] ${label} hook threw`, error);
+    }
+  }
+
+  private resetAgentLifecycleState(name: string): void {
+    this.readyAgents.delete(name);
+    this.messageReadyAgents.delete(name);
+    this.exitedAgents.delete(name);
+    this.idleAgents.delete(name);
+  }
+
+  private normalizeReleaseOptions(reasonOrOptions?: string | ReleaseOptions): ReleaseOptions {
+    if (typeof reasonOrOptions === 'string' || reasonOrOptions === undefined) {
+      return { reason: reasonOrOptions };
+    }
+    return reasonOrOptions;
   }
 }
