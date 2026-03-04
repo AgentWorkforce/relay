@@ -193,7 +193,7 @@ describe('WorkflowTrajectory', () => {
 
       const data = readTrajectoryFile(tmpDir);
       const events = data.chapters.flatMap((c: any) => c.events);
-      expect(events.some((e: any) => e.content.includes('Skipped'))).toBe(true);
+      expect(events.some((e: any) => e.content.includes('skipped'))).toBe(true);
     });
   });
 
@@ -379,10 +379,9 @@ describe('WorkflowTrajectory', () => {
       ];
 
       const summary = traj.buildRunSummary(outcomes);
-      expect(summary).toContain('2/4 steps passed');
-      expect(summary).toContain('1 failed');
-      expect(summary).toContain('1 skipped');
-      expect(summary).toContain('retries');
+      expect(summary).toContain('Failed at "c"');
+      expect(summary).toContain('2/4 steps completed before failure');
+      expect(summary).toContain('downstream step(s) to be skipped');
     });
   });
 

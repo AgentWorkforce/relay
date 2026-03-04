@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
     process::Stdio,
     time::{Duration, Instant},
@@ -40,7 +41,10 @@ use relay_broker::{
     control::{can_release_child, is_human_sender},
     dedup::DedupCache,
     message_bridge::{map_ws_broker_command, map_ws_event},
-    protocol::{AgentRuntime, AgentSpec, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION},
+    protocol::{
+        AgentRuntime, AgentSpec, HeadlessProvider as ProtocolHeadlessProvider, ProtocolEnvelope,
+        RelayDelivery, PROTOCOL_VERSION,
+    },
     pty::PtySession,
     relaycast_ws::{
         format_worker_preregistration_error, registration_is_retryable,
@@ -105,10 +109,10 @@ struct InitCommand {
     api_port: u16,
 
     /// Enable persistence: write state, pending-deliveries, lock, PID, and MCP
-    /// config to `.agent-relay/` in the working directory.  When omitted (the
-    /// default), the broker runs entirely in memory — Relaycast strict-name
-    /// registration is the only duplicate-broker guard.  Pass `--persist` for
-    /// long-lived CLI sessions that need crash recovery.
+    /// config to `.agent-relay/` in the working directory. When omitted (the
+    /// default), runtime files are written to a deterministic temp directory and
+    /// cleaned up opportunistically; identity registration is non-strict to avoid
+    /// stale-name collisions across short-lived sessions.
     #[arg(long, default_value_t = false)]
     persist: bool,
 }
@@ -134,7 +138,7 @@ struct PtyCommand {
 
 #[derive(Debug, clap::Args, Clone)]
 struct HeadlessCommand {
-    provider: HeadlessProvider,
+    provider: HeadlessCliProvider,
 
     #[arg(last = true)]
     args: Vec<String>,
@@ -144,8 +148,25 @@ struct HeadlessCommand {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum HeadlessProvider {
+enum HeadlessCliProvider {
     Claude,
+    Opencode,
+}
+
+impl From<HeadlessCliProvider> for ProtocolHeadlessProvider {
+    fn from(value: HeadlessCliProvider) -> Self {
+        match value {
+            HeadlessCliProvider::Claude => Self::Claude,
+            HeadlessCliProvider::Opencode => Self::Opencode,
+        }
+    }
+}
+
+fn headless_provider_cli_name(provider: &ProtocolHeadlessProvider) -> &'static str {
+    match provider {
+        ProtocolHeadlessProvider::Claude => "claude",
+        ProtocolHeadlessProvider::Opencode => "opencode",
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -584,6 +605,7 @@ impl WorkerRegistry {
                 json!({
                     "name": name,
                     "runtime": handle.spec.runtime,
+                    "provider": handle.spec.provider.clone(),
                     "cli": handle.spec.cli,
                     "model": handle.spec.model,
                     "team": handle.spec.team,
@@ -675,8 +697,11 @@ impl WorkerRegistry {
 
                 // Build MCP config args for CLIs that support dynamic MCP configuration.
                 let cwd = spec.cwd.as_deref().unwrap_or(".");
+                // Pass the original CLI name (e.g. "cursor") so cursor-specific
+                // MCP config logic is triggered. `resolved_cli` may differ
+                // (parse_cli_command maps "cursor" → "agent").
                 let mcp_args = configure_relaycast_mcp_with_token(
-                    &resolved_cli,
+                    cli,
                     &spec.name,
                     self.env_value("RELAY_API_KEY"),
                     self.env_value("RELAY_BASE_URL"),
@@ -701,14 +726,18 @@ impl WorkerRegistry {
                     }
                 }
             }
-            AgentRuntime::HeadlessClaude => {
+            AgentRuntime::Headless => {
+                let provider = spec
+                    .provider
+                    .as_ref()
+                    .context("headless runtime requires `provider`")?;
                 command.arg("headless");
                 command.arg("--agent-name").arg(&spec.name);
-                command.arg("claude");
+                command.arg(headless_provider_cli_name(provider));
 
-                // Build MCP config for headless Claude agents.
+                // Build MCP config for headless provider agents.
                 let mcp_args = configure_relaycast_mcp_with_token(
-                    "claude",
+                    headless_provider_cli_name(provider),
                     &spec.name,
                     self.env_value("RELAY_API_KEY"),
                     self.env_value("RELAY_BASE_URL"),
@@ -1218,7 +1247,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                 stale_dir.display()
             );
         }
-        ensure_ephemeral_paths(&resolved_name)?
+        ensure_ephemeral_paths(&runtime_cwd, &resolved_name)?
     };
     let mut state = if cmd.persist {
         BrokerState::load(&paths.state).unwrap_or_default()
@@ -1247,12 +1276,20 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
         );
     }
 
+    // Use RELAY_AGENT_TYPE env var if set (e.g. "agent" for SDK-spawned brokers),
+    // otherwise default to "human" for interactive CLI usage.
+    let agent_type_env = std::env::var("RELAY_AGENT_TYPE").ok();
+    let agent_type_ref = agent_type_env.as_deref().unwrap_or("human");
+
     let relay = connect_relay(RelaySessionOptions {
         paths: &paths,
         requested_name: &resolved_name,
         channels: channels_from_csv(&cmd.channels),
-        strict_name: true,
-        agent_type: Some("human"),
+        // Ephemeral brokers are short-lived and frequently restarted by tests/SDK
+        // callers. Use non-strict registration so stale Relaycast identities from
+        // prior runs don't hard-fail startup.
+        strict_name: cmd.persist,
+        agent_type: Some(agent_type_ref),
         read_mcp_identity: true,
         ensure_mcp_config: cmd.persist,
         runtime_cwd: &runtime_cwd,
@@ -1382,7 +1419,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     // Optional HTTP API (for dashboard proxy)
     let (api_tx, mut api_rx) = if cmd.api_port > 0 {
         let (tx, rx) = mpsc::channel::<ListenApiRequest>(32);
-        let router = listen_api_router(tx.clone(), events_tx.clone(), replay_buffer.clone());
+        let router = listen_api_router(
+            tx.clone(),
+            events_tx.clone(),
+            replay_buffer.clone(),
+            Some(relay_workspace_key.clone()),
+        );
         let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", cmd.api_port))
             .await
             .with_context(|| format!("failed to bind API on port {}", cmd.api_port))?;
@@ -1423,6 +1465,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             let spec = AgentSpec {
                                 name: name.clone(),
                                 runtime: AgentRuntime::Pty,
+                                provider: None,
                                 cli: Some(cli.clone()),
                                 model: model.clone(),
                                 cwd: None,
@@ -1574,6 +1617,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             to,
                             text,
                             from,
+                            thread_id,
                             reply,
                             ..
                         } => {
@@ -1594,6 +1638,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 from_dashboard = %from_dashboard,
                                 delivery_from = %delivery_from,
                                 to = %normalized_to,
+                                thread_id = ?thread_id,
                                 self_name = %self_name,
                                 "HTTP API send request"
                             );
@@ -1619,7 +1664,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     "target": normalized_to.clone(),
                                     "to": normalized_to.clone(),
                                     "text": text.clone(),
-                                    "thread_id": Value::Null,
+                                    "thread_id": thread_id.clone(),
                                     "timestamp": chrono::Utc::now().to_rfc3339(),
                                 }),
                             );
@@ -1651,7 +1696,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         &delivery_from,
                                         &normalized_to,
                                         &text,
-                                        None,
+                                        thread_id.clone(),
                                         priority,
                                         delivery_retry_interval,
                                     ),
@@ -1707,7 +1752,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "from": ui_from,
                                         "target": normalized_to,
                                         "body": text,
-                                        "thread_id": Value::Null,
+                                        "thread_id": thread_id.clone(),
                                     }),
                                     event_emit_timeout,
                                 )
@@ -1761,7 +1806,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 "from": ui_from,
                                                 "target": normalized_to,
                                                 "body": text,
-                                                "thread_id": Value::Null,
+                                                "thread_id": thread_id.clone(),
                                             }),
                                             event_emit_timeout,
                                         )
@@ -1991,6 +2036,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 let spec = AgentSpec {
                                     name: name.clone(),
                                     runtime: AgentRuntime::Pty,
+                                    provider: None,
                                     cli: Some(cli.clone()),
                                     model: None,
                                     cwd: None,
@@ -2456,13 +2502,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         .and_then(|p| p.get("runtime"))
                                         .and_then(Value::as_str)
                                         .unwrap_or("pty");
-                                    let (cli_val, model_val) = workers.workers.get(&name)
-                                        .map(|h| (h.spec.cli.clone(), h.spec.model.clone()))
-                                        .unwrap_or((None, None));
+                                    let (provider_val, cli_val, model_val) = workers.workers.get(&name)
+                                        .map(|h| (h.spec.provider.clone(), h.spec.cli.clone(), h.spec.model.clone()))
+                                        .unwrap_or((None, None, None));
                                     let _ = send_event(&sdk_out_tx, json!({
                                         "kind": "worker_ready",
                                         "name": name,
                                         "runtime": runtime,
+                                        "provider": provider_val,
                                         "cli": cli_val,
                                         "model": model_val,
                                     })).await;
@@ -3420,12 +3467,17 @@ async fn handle_sdk_frame(
                 runtime: format!("{:?}", runtime),
             });
 
+            let spawned_provider = payload.agent.provider.clone();
+            let spawned_cli = payload.agent.cli.clone();
+            let spawned_model = payload.agent.model.clone();
+
             send_ok(
                 out_tx,
                 frame.request_id,
                 json!({
                     "name": name,
                     "runtime": runtime,
+                    "provider": spawned_provider.clone(),
                     "pre_registered": worker_relay_key.is_some(),
                     "warning": preregistration_warning.clone(),
                 }),
@@ -3437,8 +3489,9 @@ async fn handle_sdk_frame(
                     "kind": "agent_spawned",
                     "name": name,
                     "runtime": runtime,
-                    "cli": payload.agent.cli,
-                    "model": payload.agent.model,
+                    "provider": spawned_provider,
+                    "cli": spawned_cli,
+                    "model": spawned_model,
                     "parent": Value::Null,
                     "pre_registered": worker_relay_key.is_some(),
                     "registration_warning": preregistration_warning,
@@ -4161,9 +4214,8 @@ fn clear_pending_delivery_if_event_matches(
 }
 
 async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
-    if !matches!(cmd.provider, HeadlessProvider::Claude) {
-        anyhow::bail!("unsupported headless provider");
-    }
+    let provider: ProtocolHeadlessProvider = cmd.provider.into();
+    let provider_name = headless_provider_cli_name(&provider);
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(512);
     tokio::spawn(async move {
@@ -4179,6 +4231,10 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
     });
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut worker_name = cmd
+        .agent_name
+        .clone()
+        .unwrap_or_else(|| format!("headless-{provider_name}"));
     while let Ok(Some(line)) = lines.next_line().await {
         let frame: ProtocolEnvelope<Value> = match serde_json::from_str(&line) {
             Ok(frame) => frame,
@@ -4200,7 +4256,7 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
 
         match frame.msg_type.as_str() {
             "init_worker" => {
-                let inferred_name = cmd
+                worker_name = cmd
                     .agent_name
                     .clone()
                     .or_else(|| {
@@ -4211,15 +4267,15 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                             .and_then(Value::as_str)
                             .map(ToOwned::to_owned)
                     })
-                    .unwrap_or_else(|| "headless-claude".to_string());
+                    .unwrap_or_else(|| format!("headless-{provider_name}"));
 
                 let _ = send_frame(
                     &out_tx,
                     "worker_ready",
                     frame.request_id,
                     json!({
-                        "name": inferred_name,
-                        "runtime": "headless_claude",
+                        "name": &worker_name,
+                        "runtime": "headless",
                     }),
                 )
                 .await;
@@ -4243,14 +4299,66 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                     }
                 };
 
-                // TODO(cloud/headless): integrate Claude headless SDK runtime.
+                let timestamp = chrono::Utc::now().timestamp_millis();
+                let delivery_id = delivery.delivery_id;
+                let event_id = delivery.event_id;
+
+                let _ = send_frame(
+                    &out_tx,
+                    "delivery_queued",
+                    None,
+                    json!({
+                        "delivery_id": delivery_id,
+                        "event_id": event_id,
+                        "agent": &worker_name,
+                        "timestamp": timestamp,
+                    }),
+                )
+                .await;
+
+                let _ = send_frame(
+                    &out_tx,
+                    "delivery_injected",
+                    None,
+                    json!({
+                        "delivery_id": delivery_id,
+                        "event_id": event_id,
+                        "agent": &worker_name,
+                        "timestamp": timestamp,
+                    }),
+                )
+                .await;
+
+                let _ = send_frame(
+                    &out_tx,
+                    "delivery_active",
+                    None,
+                    json!({
+                        "delivery_id": delivery_id,
+                        "event_id": event_id,
+                        "pattern": format!("headless:{}", provider_name),
+                    }),
+                )
+                .await;
+
+                let _ = send_frame(
+                    &out_tx,
+                    "delivery_verified",
+                    None,
+                    json!({
+                        "delivery_id": delivery_id,
+                        "event_id": event_id,
+                    }),
+                )
+                .await;
+
                 let _ = send_frame(
                     &out_tx,
                     "delivery_ack",
                     frame.request_id,
                     json!({
-                        "delivery_id": delivery.delivery_id,
-                        "event_id": delivery.event_id,
+                        "delivery_id": delivery_id,
+                        "event_id": event_id,
                     }),
                 )
                 .await;
@@ -4992,15 +5100,13 @@ fn continuity_dir(state_path: &Path) -> PathBuf {
 ///
 /// Unlike `ensure_runtime_paths`, this function:
 /// - Writes nothing to the project directory
-/// - Skips the flock-based duplicate-broker check (Relaycast strict-name
-///   registration provides the duplicate guard instead)
-/// - Uses a randomly-suffixed temp directory so concurrent test runs don't
-///   collide
+/// - Uses a deterministic temp directory derived from cwd+broker name so
+///   duplicate brokers still collide on the same lock/PID files
 ///
 /// The temp directory is NOT removed on exit — the OS cleans it up on reboot.
 /// State and pending-delivery files are still written there so they don't
 /// interfere with the project tree; they're just ephemeral.
-fn ensure_ephemeral_paths(broker_name: &str) -> Result<RuntimePaths> {
+fn ensure_ephemeral_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
     let safe_name: String = broker_name
         .chars()
         .map(|c| {
@@ -5012,22 +5118,80 @@ fn ensure_ephemeral_paths(broker_name: &str) -> Result<RuntimePaths> {
         })
         .collect();
 
-    // Use a unique temp subdir so parallel runs don't share state.
-    let root = std::env::temp_dir().join(format!("agent-relay-{safe_name}-{}", std::process::id()));
+    let canonical_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let mut hasher = DefaultHasher::new();
+    canonical_cwd.to_string_lossy().hash(&mut hasher);
+    safe_name.hash(&mut hasher);
+    let suffix = format!("{:016x}", hasher.finish());
+
+    // Use a deterministic temp subdir so duplicate brokers (same cwd + name)
+    // contend on a shared lock, even in ephemeral mode.
+    let root = std::env::temp_dir().join(format!("agent-relay-ephemeral-{suffix}"));
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create ephemeral temp dir {}", root.display()))?;
 
-    // No lock file — Relaycast strict-name registration (409 on duplicate)
-    // is the duplicate-broker guard in ephemeral mode.
-    let dummy_lock = std::fs::File::create(root.join("broker.lock"))
-        .context("failed to create ephemeral lock placeholder")?;
+    let lock_path = root.join("broker.lock");
+    let pid_path = root.join("broker.pid");
+    let lock_file = std::fs::File::create(&lock_path)
+        .with_context(|| format!("failed to create lock file {}", lock_path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = lock_file.as_raw_fd();
+        let rc = unsafe { nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
+        if rc != 0 {
+            if let Ok(contents) = std::fs::read_to_string(&pid_path) {
+                if let Ok(old_pid) = contents.trim().parse::<u32>() {
+                    if !is_pid_alive(old_pid) {
+                        tracing::warn!(
+                            old_pid = old_pid,
+                            "stale ephemeral broker lock detected (PID {} is dead), recovering",
+                            old_pid
+                        );
+                        drop(lock_file);
+                        let lock_file = std::fs::File::create(&lock_path).with_context(|| {
+                            format!(
+                                "failed to re-create lock file after stale recovery {}",
+                                lock_path.display()
+                            )
+                        })?;
+                        let fd = lock_file.as_raw_fd();
+                        let rc = unsafe {
+                            nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB)
+                        };
+                        if rc != 0 {
+                            anyhow::bail!(
+                                "another broker instance is already running in this directory ({})",
+                                root.display()
+                            );
+                        }
+                        write_pid_file(&pid_path)?;
+                        return Ok(RuntimePaths {
+                            persist: false,
+                            state: root.join("state.json"),
+                            pending: root.join("pending.json"),
+                            pid: pid_path,
+                            _lock: lock_file,
+                        });
+                    }
+                }
+            }
+            anyhow::bail!(
+                "another broker instance is already running in this directory ({})",
+                root.display()
+            );
+        }
+    }
+
+    write_pid_file(&pid_path)?;
 
     Ok(RuntimePaths {
         persist: false,
-        state: root.join(format!("state-{safe_name}.json")),
-        pending: root.join(format!("pending-{safe_name}.json")),
-        pid: root.join(format!("broker-{safe_name}.pid")),
-        _lock: dummy_lock,
+        state: root.join("state.json"),
+        pending: root.join("pending.json"),
+        pid: pid_path,
+        _lock: lock_file,
     })
 }
 

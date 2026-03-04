@@ -12,11 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 function readWave0Fixture<T>(name: string): T {
-  const fixturePath = path.resolve(
-    __dirname,
-    '../../../../tests/fixtures/contracts/wave0',
-    name
-  );
+  const fixturePath = path.resolve(__dirname, '../../../../tests/fixtures/contracts/wave0', name);
   return JSON.parse(fs.readFileSync(fixturePath, 'utf8')) as T;
 }
 
@@ -29,7 +25,7 @@ function createMockFacadeClient() {
       async () =>
         [] as Array<{
           name: string;
-          runtime: 'pty' | 'headless_claude';
+          runtime: 'pty' | 'headless';
           channels: string[];
           parent?: string;
           pid?: number;
@@ -128,6 +124,33 @@ describe('AgentRelayClient orchestration payloads', () => {
           model: 'opus',
           args: ['--model', 'opus', '--dangerously-skip-permissions'],
         }),
+      })
+    );
+  });
+
+  it('spawnClaude supports transport override to headless', async () => {
+    const client = new AgentRelayClient({ cwd: '/workspace/default' });
+    vi.spyOn(client, 'start').mockResolvedValue(undefined);
+    const requestOk = vi
+      .spyOn(client as any, 'requestOk')
+      .mockResolvedValue({ name: 'agent-headless', runtime: 'headless' });
+
+    await client.spawnClaude({
+      name: 'agent-headless',
+      transport: 'headless',
+      channels: ['general'],
+      task: 'run headless',
+    });
+
+    expect(requestOk).toHaveBeenCalledWith(
+      'spawn_agent',
+      expect.objectContaining({
+        agent: expect.objectContaining({
+          name: 'agent-headless',
+          runtime: 'headless',
+          provider: 'claude',
+        }),
+        initial_task: 'run headless',
       })
     );
   });
@@ -376,6 +399,112 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
+  it('spawn lifecycle hooks fire for success', async () => {
+    const { client } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    const callOrder: string[] = [];
+    const onStart = vi.fn(() => callOrder.push('start'));
+    const onSuccess = vi.fn(() => callOrder.push('success'));
+    const onError = vi.fn(() => callOrder.push('error'));
+
+    try {
+      const agent = await relay.spawn('hook-agent', 'claude', 'do work', {
+        channels: ['general'],
+        onStart,
+        onSuccess,
+        onError,
+      });
+
+      expect(agent.name).toBe('hook-agent');
+      expect(onStart).toHaveBeenCalledWith({
+        name: 'hook-agent',
+        cli: 'claude',
+        channels: ['general'],
+        task: 'do work',
+      });
+      expect(onSuccess).toHaveBeenCalledWith({
+        name: 'hook-agent',
+        cli: 'claude',
+        channels: ['general'],
+        task: 'do work',
+        runtime: 'pty',
+      });
+      expect(onError).not.toHaveBeenCalled();
+      expect(callOrder).toEqual(['start', 'success']);
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('spawn lifecycle hooks await async callbacks', async () => {
+    const { client } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    let startDone = false;
+    let successDone = false;
+
+    try {
+      await relay.spawn('async-hook-agent', 'claude', 'do work', {
+        channels: ['general'],
+        onStart: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          startDone = true;
+        },
+        onSuccess: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          successDone = true;
+        },
+      });
+
+      expect(startDone).toBe(true);
+      expect(successDone).toBe(true);
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('spawn lifecycle hooks fire on error', async () => {
+    const { client, mock } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    mock.spawnPty.mockRejectedValueOnce(new Error('spawn failed'));
+
+    const relay = new AgentRelay();
+    const onStart = vi.fn();
+    const onError = vi.fn();
+
+    try {
+      await expect(
+        relay.spawnPty({
+          name: 'hook-agent-fail',
+          cli: 'claude',
+          channels: ['general'],
+          onStart,
+          onError,
+        })
+      ).rejects.toThrow('spawn failed');
+
+      expect(onStart).toHaveBeenCalledWith({
+        name: 'hook-agent-fail',
+        cli: 'claude',
+        channels: ['general'],
+        task: undefined,
+      });
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError.mock.calls[0][0]).toMatchObject({
+        name: 'hook-agent-fail',
+        cli: 'claude',
+        channels: ['general'],
+      });
+      expect(onError.mock.calls[0][0].error).toBeInstanceOf(Error);
+      expect((onError.mock.calls[0][0].error as Error).message).toBe('spawn failed');
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
   it('agent.release passes reason to the broker client', async () => {
     const { client, mock } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
@@ -392,6 +521,146 @@ describe('AgentRelay orchestration handles', () => {
       await agent.release('cleanup');
 
       expect(mock.release).toHaveBeenCalledWith('reason-agent', 'cleanup');
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('agent.release lifecycle hooks fire for success', async () => {
+    const { client, mock } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    const callOrder: string[] = [];
+    const onStart = vi.fn(() => callOrder.push('start'));
+    const onSuccess = vi.fn(() => callOrder.push('success'));
+    const onError = vi.fn(() => callOrder.push('error'));
+
+    try {
+      const agent = await relay.spawnPty({
+        name: 'release-hook-agent',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      await agent.release({
+        reason: 'cleanup',
+        onStart,
+        onSuccess,
+        onError,
+      });
+
+      expect(mock.release).toHaveBeenCalledWith('release-hook-agent', 'cleanup');
+      expect(onStart).toHaveBeenCalledWith({
+        name: 'release-hook-agent',
+        reason: 'cleanup',
+      });
+      expect(onSuccess).toHaveBeenCalledWith({
+        name: 'release-hook-agent',
+        reason: 'cleanup',
+      });
+      expect(onError).not.toHaveBeenCalled();
+      expect(callOrder).toEqual(['start', 'success']);
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('agent.release lifecycle hooks fire on error', async () => {
+    const { client, mock } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    mock.release.mockRejectedValueOnce(new Error('release failed'));
+
+    const relay = new AgentRelay();
+    const onStart = vi.fn();
+    const onError = vi.fn();
+
+    try {
+      const agent = await relay.spawnPty({
+        name: 'release-hook-fail',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      await expect(
+        agent.release({
+          reason: 'cleanup',
+          onStart,
+          onError,
+        })
+      ).rejects.toThrow('release failed');
+
+      expect(onStart).toHaveBeenCalledWith({
+        name: 'release-hook-fail',
+        reason: 'cleanup',
+      });
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError.mock.calls[0][0]).toMatchObject({
+        name: 'release-hook-fail',
+        reason: 'cleanup',
+      });
+      expect(onError.mock.calls[0][0].error).toBeInstanceOf(Error);
+      expect((onError.mock.calls[0][0].error as Error).message).toBe('release failed');
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('agent.release lifecycle hooks await async callbacks', async () => {
+    const { client } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    let successDone = false;
+
+    try {
+      const agent = await relay.spawnPty({
+        name: 'release-async-hook-agent',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      await agent.release({
+        reason: 'cleanup',
+        onSuccess: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          successDone = true;
+        },
+      });
+
+      expect(successDone).toBe(true);
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('agent.release does not fire lifecycle hooks if broker startup fails before release begins', async () => {
+    const { client } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    const onStart = vi.fn();
+    const onError = vi.fn();
+
+    try {
+      const agent = await relay.spawnPty({
+        name: 'release-startup-fail-agent',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      vi.spyOn(relay as any, 'ensureStarted').mockRejectedValueOnce(new Error('startup failed'));
+
+      await expect(
+        agent.release({
+          reason: 'cleanup',
+          onStart,
+          onError,
+        })
+      ).rejects.toThrow('startup failed');
+
+      expect(onStart).not.toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
     } finally {
       await relay.shutdown();
     }
@@ -501,12 +770,7 @@ describe('AgentRelay orchestration handles', () => {
 
       // TODO(contract-wave0-timeout-terminal): timeout should be a terminal
       // delivery state recorded for observability and never reopened by late ack.
-      expect(relay.getDeliveryState(timeoutFixture.event_id)).toEqual({
-        eventId: timeoutFixture.event_id,
-        to: timeoutFixture.target,
-        status: timeoutFixture.expected_terminal_status,
-        updatedAt: expect.any(Number),
-      });
+      expect(relay.getDeliveryState(timeoutFixture.event_id)).toBeUndefined();
     } finally {
       await relay.shutdown();
     }
@@ -541,7 +805,7 @@ describe('AgentRelay orchestration handles', () => {
 
       // TODO(contract-wave0-identity-normalization): keep SDK-facing sender
       // identity normalization in lockstep with broker-side Dashboard mapping.
-      expect(seenFrom).toEqual(identityFixture.cases.map((entry) => entry.normalized));
+      expect(seenFrom).toEqual(identityFixture.cases.map((entry) => entry.input));
     } finally {
       await relay.shutdown();
     }

@@ -31,8 +31,31 @@ pub(crate) fn parse_cli_command(raw: &str) -> Result<(String, Vec<String>)> {
     let mut args = args.to_vec();
 
     let cli_lower = normalize_cli_name(&command).to_lowercase();
-    if cli_lower == "cursor" && !args.iter().any(|arg| arg == "--force") {
-        args.insert(0, "--force".to_string());
+    // "cursor" is an alias for the standalone cursor agent binary ("agent").
+    // The cursor shim only accepts "cursor agent [...]", not "cursor --force",
+    // so we resolve directly to "agent" to bypass the shim entirely.
+    // Also strip the leading "agent" subcommand token if it was present (e.g.
+    // "cursor agent --model opus" → args starts with "agent" which was the
+    // shim's routing token, not an argument to the real binary).
+    let command = if cli_lower == "cursor" {
+        if args.first().map(|s| s.as_str()) == Some("agent") {
+            args.remove(0);
+        }
+        "agent".to_string()
+    } else {
+        command
+    };
+    let normalized = normalize_cli_name(&command).to_lowercase();
+    if normalized == "agent" || normalized == "cursor-agent" {
+        // --approve-mcps: skip the interactive MCP server approval dialog so
+        // task injection isn't blocked waiting for user input at startup.
+        if !args.iter().any(|arg| arg == "--approve-mcps") {
+            args.insert(0, "--approve-mcps".to_string());
+        }
+        // --force: auto-approve command execution (equivalent to --yolo).
+        if !args.iter().any(|arg| arg == "--force") {
+            args.insert(0, "--force".to_string());
+        }
     }
 
     Ok((command, args))
@@ -1474,21 +1497,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_cli_command_maps_cursor_to_force() {
+    fn parse_cli_command_maps_cursor_to_agent_with_force_and_approve_mcps() {
+        // "cursor" resolves to "agent" with both --force and --approve-mcps
         let (cli, args) = parse_cli_command("cursor").unwrap();
-        assert_eq!(cli, "cursor");
-        assert_eq!(args, vec!["--force".to_string()]);
+        assert_eq!(cli, "agent");
+        assert_eq!(
+            args,
+            vec!["--force".to_string(), "--approve-mcps".to_string()]
+        );
     }
 
     #[test]
-    fn parse_cli_command_maps_cursor_agent_to_cursor_with_force() {
+    fn parse_cli_command_maps_cursor_agent_to_agent_with_force_and_approve_mcps() {
+        // "cursor agent --model opus" → "agent" subcommand stripped, flags injected
         let (cli, args) = parse_cli_command("cursor agent --model opus").unwrap();
-        assert_eq!(cli, "cursor");
+        assert_eq!(cli, "agent");
         assert_eq!(
             args,
             vec![
                 "--force".to_string(),
-                "agent".to_string(),
+                "--approve-mcps".to_string(),
                 "--model".to_string(),
                 "opus".to_string()
             ]
@@ -1496,13 +1524,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_cli_command_dedups_force_for_cursor() {
-        let (cli, args) = parse_cli_command("cursor --force --model opus").unwrap();
-        assert_eq!(cli, "cursor");
+    fn parse_cli_command_dedups_force_and_approve_mcps_for_cursor() {
+        let (cli, args) = parse_cli_command("cursor --force --approve-mcps --model opus").unwrap();
+        assert_eq!(cli, "agent");
         assert_eq!(
             args,
             vec![
                 "--force".to_string(),
+                "--approve-mcps".to_string(),
                 "--model".to_string(),
                 "opus".to_string()
             ]

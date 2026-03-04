@@ -216,6 +216,7 @@ mod tests {
         AgentSpec {
             name: name.to_string(),
             runtime: AgentRuntime::Pty,
+            provider: None,
             cli: Some("claude".to_string()),
             model: None,
             cwd: None,

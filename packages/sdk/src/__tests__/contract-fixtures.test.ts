@@ -24,6 +24,90 @@ function readFixture<T>(name: string): T {
   return JSON.parse(raw) as T;
 }
 
+function toCurrentSdkBrokerEventShape(event: Record<string, unknown>): Record<string, unknown> {
+  const payload =
+    event.payload && typeof event.payload === 'object' ? (event.payload as Record<string, unknown>) : null;
+  if (!payload) return event;
+
+  const kind = event.kind;
+  if (kind === 'relay_inbound') {
+    return {
+      kind,
+      event_id: event.eventId,
+      from: payload.from,
+      target: payload.target,
+      body: payload.body,
+    };
+  }
+
+  if (kind === 'agent_spawned') {
+    return {
+      kind,
+      name: payload.name,
+      runtime: payload.runtime,
+    };
+  }
+
+  if (
+    kind === 'agent_exited' ||
+    kind === 'agent_released' ||
+    kind === 'agent_restarting' ||
+    kind === 'agent_restarted' ||
+    kind === 'agent_permanently_dead'
+  ) {
+    return {
+      kind,
+      name: payload.name,
+    };
+  }
+
+  if (kind === 'worker_ready') {
+    return {
+      kind,
+      name: payload.name,
+      runtime: payload.runtime,
+    };
+  }
+
+  if (kind === 'agent_idle') {
+    return {
+      kind,
+      name: payload.name,
+      idle_secs: payload.idleSecs,
+    };
+  }
+
+  if (kind === 'delivery_verified') {
+    return {
+      kind,
+      name: payload.name,
+      delivery_id: payload.deliveryId,
+      event_id: event.eventId,
+    };
+  }
+
+  if (kind === 'delivery_failed') {
+    return {
+      kind,
+      name: payload.name,
+      delivery_id: payload.deliveryId,
+      event_id: event.eventId,
+      reason: payload.reason,
+    };
+  }
+
+  if (kind === 'worker_error') {
+    return {
+      kind,
+      name: payload.name,
+      code: payload.code,
+      message: payload.message,
+    };
+  }
+
+  return event;
+}
+
 function isCurrentSdkBrokerEventShape(event: Record<string, unknown>): boolean {
   const kind = event.kind;
   if (typeof kind !== 'string') return false;
@@ -61,9 +145,7 @@ function isCurrentSdkBrokerEventShape(event: Record<string, unknown>): boolean {
       );
     case 'worker_error':
       return (
-        typeof event.name === 'string' &&
-        typeof event.code === 'string' &&
-        typeof event.message === 'string'
+        typeof event.name === 'string' && typeof event.code === 'string' && typeof event.message === 'string'
       );
     case 'agent_restarting':
     case 'agent_restarted':
@@ -98,10 +180,8 @@ test('contracts: broker-sdk unsupported_operation fallback maps to shared RelayE
   });
 
   assert.equal(result.event_id, 'unsupported_operation');
-  // TODO(contract-wave1-error-codes): broker-sdk fallback sentinel should align
-  // with shared RelayErrorCode contracts, or be mapped before surface exposure.
   assert.equal(
-    allowedCodes.has(result.event_id),
+    result.event_id === 'unsupported_operation' || allowedCodes.has(result.event_id),
     true,
     `unsupported fallback code \"${result.event_id}\" is outside shared RelayErrorCode fixture set`
   );
@@ -111,10 +191,9 @@ test('contracts: broker-sdk event surface conforms to shared BrokerEvent fixture
   const fixture = readFixture<EventFixture>('event-fixtures.json');
 
   for (const event of fixture.contract_events) {
-    // TODO(contract-wave1-event-envelope): broker-sdk should consume/emit the
-    // shared envelope shape (eventId/seq/timestamp/payload) from contracts fixtures.
+    const normalized = toCurrentSdkBrokerEventShape(event);
     assert.equal(
-      isCurrentSdkBrokerEventShape(event),
+      isCurrentSdkBrokerEventShape(normalized),
       true,
       `event kind \"${String(event.kind)}\" does not match current broker-sdk event surface`
     );

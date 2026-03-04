@@ -15,14 +15,14 @@ npm install @agent-relay/sdk
 The workflow builder is the primary way to define and run multi-agent workflows:
 
 ```ts
-import { workflow } from "@agent-relay/sdk/workflows";
+import { workflow } from '@agent-relay/sdk/workflows';
 
-const result = await workflow("my-feature")
-  .pattern("dag")
-  .agent("planner", { cli: "claude", role: "Planning lead" })
-  .agent("builder", { cli: "codex", role: "Implementation engineer" })
-  .step("plan", { agent: "planner", task: "Create a detailed plan" })
-  .step("build", { agent: "builder", task: "Implement the plan", dependsOn: ["plan"] })
+const result = await workflow('my-feature')
+  .pattern('dag')
+  .agent('planner', { cli: 'claude', role: 'Planning lead' })
+  .agent('builder', { cli: 'codex', role: 'Implementation engineer' })
+  .step('plan', { agent: 'planner', task: 'Create a detailed plan' })
+  .step('build', { agent: 'builder', task: 'Implement the plan', dependsOn: ['plan'] })
   .run();
 ```
 
@@ -31,7 +31,7 @@ const result = await workflow("my-feature")
 The `AgentRelay` class provides a clean API for spawning and managing agents:
 
 ```ts
-import { AgentRelay } from "@agent-relay/sdk";
+import { AgentRelay } from '@agent-relay/sdk';
 
 const relay = new AgentRelay();
 
@@ -40,20 +40,34 @@ relay.onMessageReceived = (msg) => console.log(`${msg.from}: ${msg.text}`);
 relay.onAgentIdle = ({ name, idleSecs }) => console.log(`${name} idle for ${idleSecs}s`);
 
 // Spawn agents using shorthand spawners
-const worker = await relay.claude.spawn({ name: "Worker1", channels: ["general"] });
+const worker = await relay.claude.spawn({
+  name: 'Worker1',
+  channels: ['general'],
+  // Lifecycle hooks can be sync or async functions.
+  onStart: ({ name }) => console.log(`spawning ${name}`),
+  onSuccess: ({ name, runtime }) => console.log(`spawned ${name} (${runtime})`),
+  onError: ({ name, error }) => console.error(`failed to spawn ${name}`, error),
+});
 
 // Or use the generic spawn method
-const agent = await relay.spawn("Worker2", "codex", "Build the API", {
-  channels: ["dev"],
-  model: "gpt-4o",
+const agent = await relay.spawn('Worker2', 'codex', 'Build the API', {
+  channels: ['dev'],
+  model: 'gpt-4o',
 });
 
 // Wait for agent to finish (go idle or exit)
 const result = await agent.waitForIdle(120_000);
 
+// Release with lifecycle hooks
+await worker.release({
+  reason: 'done',
+  onStart: ({ name }) => console.log(`releasing ${name}`),
+  onSuccess: ({ name }) => console.log(`released ${name}`),
+});
+
 // Send messages
-const human = relay.human({ name: "Orchestrator" });
-await human.sendMessage({ to: "Worker1", text: "Start the task" });
+const human = relay.human({ name: 'Orchestrator' });
+await human.sendMessage({ to: 'Worker1', text: 'Start the task' });
 
 // Clean up
 await relay.shutdown();
@@ -64,24 +78,61 @@ await relay.shutdown();
 For direct broker control:
 
 ```ts
-import { AgentRelayClient } from "@agent-relay/sdk";
+import { AgentRelayClient } from '@agent-relay/sdk';
 
 const client = await AgentRelayClient.start({
-  binaryPath: "/path/to/agent-relay-broker", // optional, auto-detected
-  channels: ["general"],
+  binaryPath: '/path/to/agent-relay-broker', // optional, auto-detected
+  channels: ['general'],
 });
 
 await client.spawnPty({
-  name: "Worker1",
-  cli: "claude",
-  channels: ["general"],
-  task: "Implement user authentication",
+  name: 'Worker1',
+  cli: 'claude',
+  channels: ['general'],
+  task: 'Implement user authentication',
 });
 
 const agents = await client.listAgents();
-await client.release("Worker1");
+await client.release('Worker1');
 await client.shutdown();
 ```
+
+### Provider + Transport Spawning (Opencode/Claude)
+
+Use provider-first spawn helpers and set `transport` when you want headless mode.
+
+```ts
+import { AgentRelayClient } from '@agent-relay/sdk';
+
+const client = await AgentRelayClient.start({
+  channels: ['general'],
+});
+
+await client.spawnOpencode({
+  name: 'OpencodeWorker',
+  transport: 'headless',
+  channels: ['general'],
+  task: 'Review this PR and report risks',
+});
+
+await client.spawnClaude({
+  name: 'ClaudeHeadless',
+  transport: 'headless', // override default PTY transport
+  channels: ['general'],
+  task: 'Summarize release risks',
+});
+
+// ... interact with the worker via sendMessage/listAgents/events ...
+
+await client.shutdown();
+```
+
+Notes:
+
+- Transport is a setting (`'pty'` or `'headless'`) on provider spawn methods.
+- `spawnClaude(...)` defaults to PTY unless you pass `transport: 'headless'`.
+- `spawnOpencode(...)` defaults to headless.
+- You can also use `client.spawnProvider({ provider, transport, ... })` for generic provider-driven spawning.
 
 ## Features
 
@@ -96,10 +147,10 @@ await client.shutdown();
 ## Subpath Exports
 
 ```ts
-import { AgentRelayClient } from "@agent-relay/sdk/client";
-import { workflow, WorkflowBuilder } from "@agent-relay/sdk/workflows";
-import { ConsensusCoordinator } from "@agent-relay/sdk/consensus";
-import { ShadowCoordinator } from "@agent-relay/sdk/shadow";
+import { AgentRelayClient } from '@agent-relay/sdk/client';
+import { workflow, WorkflowBuilder } from '@agent-relay/sdk/workflows';
+import { ConsensusCoordinator } from '@agent-relay/sdk/consensus';
+import { ShadowCoordinator } from '@agent-relay/sdk/shadow';
 ```
 
 ## Workflow Templates
@@ -107,20 +158,20 @@ import { ShadowCoordinator } from "@agent-relay/sdk/shadow";
 Built-in templates for common patterns:
 
 ```ts
-import { fanOut, pipeline, dag } from "@agent-relay/sdk/workflows";
+import { fanOut, pipeline, dag } from '@agent-relay/sdk/workflows';
 
 // Fan-out: parallel execution with synthesis
-const builder = fanOut("analysis", {
-  tasks: ["Analyze backend", "Analyze frontend"],
-  synthesisTask: "Combine analyses into action plan",
+const builder = fanOut('analysis', {
+  tasks: ['Analyze backend', 'Analyze frontend'],
+  synthesisTask: 'Combine analyses into action plan',
 });
 
 // Pipeline: sequential stages
-const builder = pipeline("release", {
+const builder = pipeline('release', {
   stages: [
-    { name: "plan", task: "Create release plan" },
-    { name: "implement", task: "Implement changes" },
-    { name: "verify", task: "Run verification" },
+    { name: 'plan', task: 'Create release plan' },
+    { name: 'implement', task: 'Implement changes' },
+    { name: 'verify', task: 'Run verification' },
   ],
 });
 ```
@@ -130,7 +181,7 @@ const builder = pipeline("release", {
 The SDK re-exports Relaycast client types for cloud-based relay coordination:
 
 ```ts
-import { RelayCast, AgentClient } from "@agent-relay/sdk";
+import { RelayCast, AgentClient } from '@agent-relay/sdk';
 ```
 
 ## Development

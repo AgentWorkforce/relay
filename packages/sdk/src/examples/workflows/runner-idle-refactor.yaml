@@ -1,0 +1,306 @@
+version: '1.0'
+name: runner-idle-refactor
+description: >
+  Refactors WorkflowRunner with two changes:
+    1. Remove agent pre-registration (preflightAgents) — agents spawn only when their step runs.
+    2. Idle = done — when no idleNudge config is set, race waitForExit vs waitForIdle;
+       if idle fires first the step completes immediately.
+
+  Workflow: read context → implement → update tests → type-check → run tests
+  → fix if broken → final test run → review.
+
+swarm:
+  pattern: pipeline
+  maxConcurrency: 3
+  timeoutMs: 1800000 # 30 min
+  channel: wf-runner-refactor
+
+# No idleNudge — each agent is spawned per step and exits when done.
+# Non-interactive preset for all agents (pure code changes, no relay tools needed).
+
+agents:
+  - name: implementer
+    cli: codex
+    preset: worker
+    role: 'Makes the two targeted edits to packages/sdk/src/workflows/runner.ts.'
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: test-writer
+    cli: codex
+    preset: worker
+    role: 'Adds new test cases to idle-nudge.test.ts covering the idle=done behavior.'
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: fixer
+    cli: codex
+    preset: worker
+    role: 'Fixes TypeScript errors or failing tests found in the test run.'
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: reviewer
+    cli: claude
+    preset: reviewer
+    role: 'Reviews the diff for correctness, edge cases, and backwards compatibility.'
+    constraints:
+      model: sonnet
+
+workflows:
+  - name: default
+    onError: continue
+
+    steps:
+      # ── Phase 1: Capture context for agents ───────────────────────────────
+
+      - name: read-prespawn-block
+        type: deterministic
+        command: >
+          grep -n "Pre-register all interactive\|preflightAgents\|Agent pre-registration"
+          packages/sdk/src/workflows/runner.ts | head -10 &&
+          echo "---" &&
+          awk '/Pre-register all interactive agent steps/,/Agent pre-registration complete/{print NR": "$0}'
+          packages/sdk/src/workflows/runner.ts
+        captureOutput: true
+        failOnError: false
+
+      - name: read-spawn-comment
+        type: deterministic
+        command: >
+          grep -n "cache.*hit\|preflightAgents\|token cache"
+          packages/sdk/src/workflows/runner.ts | head -10
+        captureOutput: true
+        failOnError: false
+
+      - name: read-idle-method
+        type: deterministic
+        command: >
+          awk '/private async waitForExitWithIdleNudging/,/^  \}$/{print NR": "$0}'
+          packages/sdk/src/workflows/runner.ts | head -80
+        captureOutput: true
+        failOnError: false
+
+      - name: read-test-file
+        type: deterministic
+        dependsOn: [read-prespawn-block]
+        command: cat packages/sdk/src/__tests__/idle-nudge.test.ts
+        captureOutput: true
+        failOnError: false
+
+      # ── Phase 2: Implement runner.ts changes ──────────────────────────────
+
+      - name: implement
+        type: agent
+        agent: implementer
+        dependsOn: [read-prespawn-block, read-spawn-comment, read-idle-method]
+        task: |
+          Make exactly two changes to `packages/sdk/src/workflows/runner.ts`:
+
+          ── Change 1: Remove agent pre-registration block ──
+
+          Find the block that starts with this comment and delete it entirely:
+            // Pre-register all interactive agent steps with Relaycast before execution.
+
+          The block ends with:
+            this.log('Agent pre-registration complete');
+          followed by the closing `}` of the if statement.
+
+          Here is what the block looks like (with line numbers for reference):
+          {{steps.read-prespawn-block.output}}
+
+          Also find and update the stale comment inside `spawnAndWait` that says something
+          about "token cache" / "cache hits" / "preflightAgents" — those references are now
+          stale. Keep just: "Deterministic name: step name + first 8 chars of run ID."
+
+          Stale comment location:
+          {{steps.read-spawn-comment.output}}
+
+          ── Change 2: Idle = done in waitForExitWithIdleNudging ──
+
+          Find the `waitForExitWithIdleNudging` method. In the branch where `nudgeConfig` is
+          absent, replace the simple `return agent.waitForExit(timeoutMs)` with a race between
+          `waitForExit` and `waitForIdle`. If idle wins, release the agent and return 'released'.
+
+          Current method (with line numbers):
+          {{steps.read-idle-method.output}}
+
+          Replace the no-nudge-config branch with:
+          ```typescript
+          if (!nudgeConfig) {
+            // Idle = done: race exit against idle. Whichever fires first completes the step.
+            const result = await Promise.race([
+              agent.waitForExit(timeoutMs).then((r) => ({ kind: 'exit' as const, result: r })),
+              agent.waitForIdle(timeoutMs).then((r) => ({ kind: 'idle' as const, result: r })),
+            ]);
+            if (result.kind === 'idle' && result.result === 'idle') {
+              this.log(`[${step.name}] Agent "${agent.name}" went idle — treating as complete`);
+              this.postToChannel(`**[${step.name}]** Agent \`${agent.name}\` idle — treating as complete`);
+              await agent.release();
+              return 'released';
+            }
+            // Exit won the race, or idle returned 'exited'/'timeout' — pass through.
+            return result.result as 'exited' | 'timeout' | 'released';
+          }
+          ```
+
+          Only modify these two things. Do not change anything else.
+        verification:
+          type: exit_code
+
+      # ── Phase 3: Update tests ──────────────────────────────────────────────
+
+      - name: update-tests
+        type: agent
+        agent: test-writer
+        dependsOn: [implement, read-test-file]
+        task: |
+          Add new test cases to `packages/sdk/src/__tests__/idle-nudge.test.ts` for the
+          new idle=done behavior. Do NOT modify any existing tests — only append new ones.
+
+          Current test file:
+          {{steps.read-test-file.output}}
+
+          Background on the change:
+          - When `idleNudge` config is absent in the swarm config, `waitForExitWithIdleNudging`
+            now races `waitForExit` vs `waitForIdle`.
+          - If `waitForIdle` resolves with `'idle'` first → `agent.release()` is called and
+            the method returns `'released'`.
+          - If `waitForExit` resolves first → that result is returned as-is.
+          - If `waitForIdle` resolves with `'exited'` or `'timeout'` → exit result wins.
+
+          The mock infrastructure already has `waitForExitFn` and `waitForIdleFn` that you
+          can control. Add a new describe block: `'Idle = done (no idleNudge config)'` with:
+
+          Test 1 — idle fires first:
+            waitForIdleFn resolves 'idle' immediately
+            waitForExitFn never resolves (returns a never-settling promise or very long timeout)
+            → workflow run should complete (step succeeds, agent.release() is called)
+
+          Test 2 — exit fires first:
+            waitForExitFn resolves 'exited' immediately
+            waitForIdleFn resolves 'timeout' (or never fires before exit)
+            → workflow run should complete, agent.release() NOT called by idle logic
+
+          Test 3 — both timeout:
+            waitForExitFn resolves 'timeout'
+            waitForIdleFn resolves 'timeout'
+            → step should fail with a timeout error
+
+          Use the existing `makeConfig()` and `makeDb()` helpers. Use the existing
+          `WorkflowRunner` import pattern already in the file.
+        verification:
+          type: exit_code
+
+      # ── Phase 4: Type-check ────────────────────────────────────────────────
+
+      - name: type-check
+        type: deterministic
+        dependsOn: [implement, update-tests]
+        command: >
+          cd packages/sdk &&
+          npx tsc --noEmit 2>&1 | tail -30 &&
+          echo "TYPE_CHECK_PASSED" || echo "TYPE_CHECK_FAILED"
+        captureOutput: true
+        failOnError: false
+
+      # ── Phase 5: Run vitest ────────────────────────────────────────────────
+
+      - name: run-tests
+        type: deterministic
+        dependsOn: [type-check]
+        command: >-
+          cd packages/sdk && { npx vitest run 2>&1; echo "EXIT:$?"; } | tail -80
+        captureOutput: true
+        failOnError: false
+
+      # ── Phase 6: Fix failures ──────────────────────────────────────────────
+
+      - name: fix-if-broken
+        type: agent
+        agent: fixer
+        dependsOn: [run-tests, type-check]
+        task: |
+          Review the type-check and test results. Fix any failures.
+
+          Type-check:
+          {{steps.type-check.output}}
+
+          Test run:
+          {{steps.run-tests.output}}
+
+          If both show PASSED / ALL_TESTS_PASSED, output: FIX_DONE:none
+
+          Otherwise:
+          - For TypeScript errors: fix packages/sdk/src/workflows/runner.ts
+          - For failing tests: fix packages/sdk/src/__tests__/idle-nudge.test.ts
+          - Do NOT change the intended behavior — only fix syntax/type/mock issues
+
+        verification:
+          type: exit_code
+        maxIterations: 2
+
+      # ── Phase 7: Final test run ────────────────────────────────────────────
+
+      - name: final-tests
+        type: deterministic
+        dependsOn: [fix-if-broken]
+        command: >-
+          cd packages/sdk && { npx vitest run 2>&1; echo "EXIT:$?"; } | tail -60
+        captureOutput: true
+        failOnError: false
+
+      # ── Phase 8: Capture diff for review ──────────────────────────────────
+
+      - name: capture-diff
+        type: deterministic
+        dependsOn: [final-tests]
+        command: >
+          git diff packages/sdk/src/workflows/runner.ts
+          packages/sdk/src/__tests__/idle-nudge.test.ts
+        captureOutput: true
+        failOnError: false
+
+      # ── Phase 9: Code review ───────────────────────────────────────────────
+
+      - name: review
+        type: agent
+        agent: reviewer
+        dependsOn: [capture-diff, final-tests]
+        task: |
+          Review these changes to WorkflowRunner. Be precise and thorough.
+
+          Final test result:
+          {{steps.final-tests.output}}
+
+          Diff:
+          {{steps.capture-diff.output}}
+
+          Review checklist:
+          1. Pre-registration block is fully gone — no leftover `preflightAgents` calls or
+             stale comments referencing "token cache" / "cache hits"
+          2. Race logic in `waitForExitWithIdleNudging`: both promises created before awaiting?
+             No floating promise leak if exit wins before idle settles?
+          3. Edge case: `waitForIdle` returns 'exited' (agent already gone) — does the cast
+             `result.result as 'exited' | 'timeout' | 'released'` hold? Check the union types.
+          4. Edge case: `waitForIdle` returns 'timeout' and exit won — correct fallthrough?
+          5. New tests: do they actually cover all three cases with proper mock wiring?
+          6. No unintended changes to the nudge path (idleNudge config present) — that code
+             should be unchanged.
+
+        verification:
+          type: exit_code
+
+errorHandling:
+  strategy: continue # best-effort — don't abort if an optional step fails
+  maxRetries: 1
+  retryDelayMs: 3000
+  notifyChannel: wf-runner-refactor
+
+state:
+  backend: memory
+  ttlMs: 7200000 # 2 hours
+
+trajectories:
+  enabled: true
+  autoDecisions: true

@@ -34,7 +34,8 @@
     {
       "group": "SDK",
       "pages": [
-        "reference/sdk"
+        "reference/sdk",
+        "reference/sdk-py"
       ]
     },
     {

@@ -1,5 +1,5 @@
 import { once } from 'node:events';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface, type Interface as ReadlineInterface } from 'node:readline';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,6 +14,7 @@ import {
   type BrokerStats,
   type BrokerStatus,
   type CrashInsightsResponse,
+  type HeadlessProvider,
   type ProtocolEnvelope,
   type ProtocolError,
   type RestartPolicy,
@@ -51,11 +52,31 @@ export interface SpawnPtyInput {
   continueFrom?: string;
 }
 
-export interface SpawnHeadlessClaudeInput {
+export interface SpawnHeadlessInput {
   name: string;
+  provider: HeadlessProvider;
   args?: string[];
   channels?: string[];
   task?: string;
+}
+
+export type AgentTransport = 'pty' | 'headless';
+
+export interface SpawnProviderInput {
+  name: string;
+  provider: string;
+  transport?: AgentTransport;
+  args?: string[];
+  channels?: string[];
+  task?: string;
+  model?: string;
+  cwd?: string;
+  team?: string;
+  shadowOf?: string;
+  shadowMode?: string;
+  idleThresholdSecs?: number;
+  restartPolicy?: RestartPolicy;
+  continueFrom?: string;
 }
 
 export interface SendMessageInput {
@@ -70,6 +91,7 @@ export interface SendMessageInput {
 export interface ListAgent {
   name: string;
   runtime: AgentRuntime;
+  provider?: HeadlessProvider;
   cli?: string;
   model?: string;
   team?: string;
@@ -111,6 +133,10 @@ export class AgentRelayProcessError extends Error {
     super(message);
     this.name = 'AgentRelayProcessError';
   }
+}
+
+function isHeadlessProvider(value: string): value is HeadlessProvider {
+  return value === 'claude' || value === 'opencode';
 }
 
 export class AgentRelayClient {
@@ -250,13 +276,12 @@ export class AgentRelayClient {
     return result;
   }
 
-  async spawnHeadlessClaude(
-    input: SpawnHeadlessClaudeInput
-  ): Promise<{ name: string; runtime: AgentRuntime }> {
+  async spawnHeadless(input: SpawnHeadlessInput): Promise<{ name: string; runtime: AgentRuntime }> {
     await this.start();
     const agent: AgentSpec = {
       name: input.name,
-      runtime: 'headless_claude',
+      runtime: 'headless',
+      provider: input.provider,
       args: input.args ?? [],
       channels: input.channels ?? [],
     };
@@ -265,6 +290,52 @@ export class AgentRelayClient {
       ...(input.task != null ? { initial_task: input.task } : {}),
     });
     return result;
+  }
+
+  async spawnProvider(input: SpawnProviderInput): Promise<{ name: string; runtime: AgentRuntime }> {
+    const transport = input.transport ?? (input.provider === 'opencode' ? 'headless' : 'pty');
+    if (transport === 'headless') {
+      if (!isHeadlessProvider(input.provider)) {
+        throw new AgentRelayProcessError(
+          `provider '${input.provider}' does not support headless transport (supported: claude, opencode)`
+        );
+      }
+      return this.spawnHeadless({
+        name: input.name,
+        provider: input.provider,
+        args: input.args,
+        channels: input.channels,
+        task: input.task,
+      });
+    }
+
+    return this.spawnPty({
+      name: input.name,
+      cli: input.provider,
+      args: input.args,
+      channels: input.channels,
+      task: input.task,
+      model: input.model,
+      cwd: input.cwd,
+      team: input.team,
+      shadowOf: input.shadowOf,
+      shadowMode: input.shadowMode,
+      idleThresholdSecs: input.idleThresholdSecs,
+      restartPolicy: input.restartPolicy,
+      continueFrom: input.continueFrom,
+    });
+  }
+
+  async spawnClaude(
+    input: Omit<SpawnProviderInput, 'provider'>
+  ): Promise<{ name: string; runtime: AgentRuntime }> {
+    return this.spawnProvider({ ...input, provider: 'claude' });
+  }
+
+  async spawnOpencode(
+    input: Omit<SpawnProviderInput, 'provider'>
+  ): Promise<{ name: string; runtime: AgentRuntime }> {
+    return this.spawnProvider({ ...input, provider: 'opencode' });
   }
 
   async release(name: string, reason?: string): Promise<{ name: string }> {
@@ -533,7 +604,11 @@ export class AgentRelayClient {
     pending.resolve(envelope);
   }
 
-  private async requestHello(): Promise<{ broker_version: string; protocol_version: number; workspace_key?: string }> {
+  private async requestHello(): Promise<{
+    broker_version: string;
+    protocol_version: number;
+    workspace_key?: string;
+  }> {
     const payload = {
       client_name: this.options.clientName,
       client_version: this.options.clientVersion,
@@ -644,6 +719,92 @@ function isExplicitPath(binaryPath: string): boolean {
   );
 }
 
+function detectPlatformSuffix(): string | null {
+  const platformMap: Record<string, Record<string, string>> = {
+    darwin: { arm64: 'darwin-arm64', x64: 'darwin-x64' },
+    linux: { arm64: 'linux-arm64', x64: 'linux-x64' },
+  };
+  return platformMap[process.platform]?.[process.arch] ?? null;
+}
+
+function getLatestVersionSync(): string | null {
+  try {
+    const result = execSync('curl -fsSL https://api.github.com/repos/AgentWorkforce/relay/releases/latest', {
+      timeout: 15_000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).toString();
+    const match = result.match(/"tag_name"\s*:\s*"v?([^"]+)"/);
+    return match?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function installBrokerBinary(): string {
+  const suffix = detectPlatformSuffix();
+  if (!suffix) {
+    throw new AgentRelayProcessError(`Unsupported platform: ${process.platform}-${process.arch}`);
+  }
+
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+  const installDir = path.join(homeDir, '.agent-relay', 'bin');
+  const brokerExe = process.platform === 'win32' ? 'agent-relay-broker.exe' : 'agent-relay-broker';
+  const targetPath = path.join(installDir, brokerExe);
+
+  console.log(`[agent-relay] Broker binary not found, installing for ${suffix}...`);
+
+  const version = getLatestVersionSync();
+  if (!version) {
+    throw new AgentRelayProcessError(
+      'Failed to fetch latest agent-relay version from GitHub.\n' +
+        'Install manually: curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash'
+    );
+  }
+
+  const binaryName = `agent-relay-broker-${suffix}`;
+  const downloadUrl = `https://github.com/AgentWorkforce/relay/releases/download/v${version}/${binaryName}`;
+
+  console.log(`[agent-relay] Downloading v${version} from ${downloadUrl}`);
+
+  try {
+    fs.mkdirSync(installDir, { recursive: true });
+    execSync(`curl -fsSL "${downloadUrl}" -o "${targetPath}"`, {
+      timeout: 60_000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    fs.chmodSync(targetPath, 0o755);
+
+    // macOS: re-sign to avoid Gatekeeper issues
+    if (process.platform === 'darwin') {
+      try {
+        execSync(`codesign --force --sign - "${targetPath}"`, {
+          timeout: 10_000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    // Verify
+    execSync(`"${targetPath}" --help`, { timeout: 10_000, stdio: ['pipe', 'pipe', 'pipe'] });
+  } catch (err) {
+    try {
+      fs.unlinkSync(targetPath);
+    } catch {
+      /* ignore */
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    throw new AgentRelayProcessError(
+      `Failed to install broker binary: ${message}\n` +
+        'Install manually: curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash'
+    );
+  }
+
+  console.log(`[agent-relay] Broker installed to ${targetPath}`);
+  return targetPath;
+}
+
 function resolveDefaultBinaryPath(): string {
   const brokerExe = process.platform === 'win32' ? 'agent-relay-broker.exe' : 'agent-relay-broker';
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -659,11 +820,7 @@ function resolveDefaultBinaryPath(): string {
   //    Try platform-specific name first (CI publishes per-platform binaries),
   //    then fall back to the generic name (local dev / postinstall copy).
   const binDir = path.resolve(moduleDir, '..', 'bin');
-  const platformMap: Record<string, Record<string, string>> = {
-    darwin: { arm64: 'darwin-arm64', x64: 'darwin-x64' },
-    linux:  { arm64: 'linux-arm64',  x64: 'linux-x64' },
-  };
-  const suffix = platformMap[process.platform]?.[process.arch];
+  const suffix = detectPlatformSuffix();
   if (suffix) {
     const platformBinary = path.join(binDir, `agent-relay-broker-${suffix}`);
     if (fs.existsSync(platformBinary)) {
@@ -682,6 +839,6 @@ function resolveDefaultBinaryPath(): string {
     return standaloneBroker;
   }
 
-  // 4. Fall back to agent-relay on PATH (may be Node CLI — will fail for broker ops)
-  return 'agent-relay';
+  // 4. Auto-install from GitHub releases
+  return installBrokerBinary();
 }
