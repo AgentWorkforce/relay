@@ -399,6 +399,84 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
+  it('spawn lifecycle hooks fire for success', async () => {
+    const { client } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    const callOrder: string[] = [];
+    const onStart = vi.fn(() => callOrder.push('start'));
+    const onSuccess = vi.fn(() => callOrder.push('success'));
+    const onError = vi.fn(() => callOrder.push('error'));
+
+    try {
+      const agent = await relay.spawn('hook-agent', 'claude', 'do work', {
+        channels: ['general'],
+        onStart,
+        onSuccess,
+        onError,
+      });
+
+      expect(agent.name).toBe('hook-agent');
+      expect(onStart).toHaveBeenCalledWith({
+        name: 'hook-agent',
+        cli: 'claude',
+        channels: ['general'],
+        task: 'do work',
+      });
+      expect(onSuccess).toHaveBeenCalledWith({
+        name: 'hook-agent',
+        cli: 'claude',
+        channels: ['general'],
+        task: 'do work',
+        runtime: 'pty',
+      });
+      expect(onError).not.toHaveBeenCalled();
+      expect(callOrder).toEqual(['start', 'success']);
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('spawn lifecycle hooks fire on error', async () => {
+    const { client, mock } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    mock.spawnPty.mockRejectedValueOnce(new Error('spawn failed'));
+
+    const relay = new AgentRelay();
+    const onStart = vi.fn();
+    const onError = vi.fn();
+
+    try {
+      await expect(
+        relay.spawnPty({
+          name: 'hook-agent-fail',
+          cli: 'claude',
+          channels: ['general'],
+          onStart,
+          onError,
+        })
+      ).rejects.toThrow('spawn failed');
+
+      expect(onStart).toHaveBeenCalledWith({
+        name: 'hook-agent-fail',
+        cli: 'claude',
+        channels: ['general'],
+        task: undefined,
+      });
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError.mock.calls[0][0]).toMatchObject({
+        name: 'hook-agent-fail',
+        cli: 'claude',
+        channels: ['general'],
+      });
+      expect(onError.mock.calls[0][0].error).toBeInstanceOf(Error);
+      expect((onError.mock.calls[0][0].error as Error).message).toBe('spawn failed');
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
   it('agent.release passes reason to the broker client', async () => {
     const { client, mock } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
@@ -415,6 +493,86 @@ describe('AgentRelay orchestration handles', () => {
       await agent.release('cleanup');
 
       expect(mock.release).toHaveBeenCalledWith('reason-agent', 'cleanup');
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('agent.release lifecycle hooks fire for success', async () => {
+    const { client, mock } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    const callOrder: string[] = [];
+    const onStart = vi.fn(() => callOrder.push('start'));
+    const onSuccess = vi.fn(() => callOrder.push('success'));
+    const onError = vi.fn(() => callOrder.push('error'));
+
+    try {
+      const agent = await relay.spawnPty({
+        name: 'release-hook-agent',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      await agent.release({
+        reason: 'cleanup',
+        onStart,
+        onSuccess,
+        onError,
+      });
+
+      expect(mock.release).toHaveBeenCalledWith('release-hook-agent', 'cleanup');
+      expect(onStart).toHaveBeenCalledWith({
+        name: 'release-hook-agent',
+        reason: 'cleanup',
+      });
+      expect(onSuccess).toHaveBeenCalledWith({
+        name: 'release-hook-agent',
+        reason: 'cleanup',
+      });
+      expect(onError).not.toHaveBeenCalled();
+      expect(callOrder).toEqual(['start', 'success']);
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('agent.release lifecycle hooks fire on error', async () => {
+    const { client, mock } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    mock.release.mockRejectedValueOnce(new Error('release failed'));
+
+    const relay = new AgentRelay();
+    const onStart = vi.fn();
+    const onError = vi.fn();
+
+    try {
+      const agent = await relay.spawnPty({
+        name: 'release-hook-fail',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      await expect(
+        agent.release({
+          reason: 'cleanup',
+          onStart,
+          onError,
+        })
+      ).rejects.toThrow('release failed');
+
+      expect(onStart).toHaveBeenCalledWith({
+        name: 'release-hook-fail',
+        reason: 'cleanup',
+      });
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError.mock.calls[0][0]).toMatchObject({
+        name: 'release-hook-fail',
+        reason: 'cleanup',
+      });
+      expect(onError.mock.calls[0][0].error).toBeInstanceOf(Error);
+      expect((onError.mock.calls[0][0].error as Error).message).toBe('release failed');
     } finally {
       await relay.shutdown();
     }

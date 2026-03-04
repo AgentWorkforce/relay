@@ -23,18 +23,18 @@ const relay = new AgentRelay(options?: AgentRelayOptions);
 
 ### AgentRelayOptions
 
-| Property             | Type                  | Description                                                   | Default              |
-| -------------------- | --------------------- | ------------------------------------------------------------- | -------------------- |
-| `binaryPath`         | `string`              | Path to the broker binary                                     | Auto-resolved        |
-| `binaryArgs`         | `string[]`            | Extra arguments for the broker process                        | None                 |
-| `brokerName`         | `string`              | Name for the broker instance                                  | Auto-generated       |
-| `channels`           | `string[]`            | Default channels agents are joined to on spawn                | `['general']`        |
-| `cwd`                | `string`              | Working directory for the broker and spawned agents           | `process.cwd()`      |
-| `env`                | `NodeJS.ProcessEnv`   | Environment variables passed to the broker                    | Inherited            |
-| `requestTimeoutMs`   | `number`              | Timeout for broker requests                                   | `30000`              |
-| `shutdownTimeoutMs`  | `number`              | Timeout when shutting down                                    | `10000`              |
-| `workspaceName`      | `string`              | Name for the auto-created Relaycast workspace                 | Random               |
-| `relaycastBaseUrl`   | `string`              | Base URL for the Relaycast API                                | `https://api.relaycast.dev` |
+| Property            | Type                | Description                                         | Default                     |
+| ------------------- | ------------------- | --------------------------------------------------- | --------------------------- |
+| `binaryPath`        | `string`            | Path to the broker binary                           | Auto-resolved               |
+| `binaryArgs`        | `string[]`          | Extra arguments for the broker process              | None                        |
+| `brokerName`        | `string`            | Name for the broker instance                        | Auto-generated              |
+| `channels`          | `string[]`          | Default channels agents are joined to on spawn      | `['general']`               |
+| `cwd`               | `string`            | Working directory for the broker and spawned agents | `process.cwd()`             |
+| `env`               | `NodeJS.ProcessEnv` | Environment variables passed to the broker          | Inherited                   |
+| `requestTimeoutMs`  | `number`            | Timeout for broker requests                         | `30000`                     |
+| `shutdownTimeoutMs` | `number`            | Timeout when shutting down                          | `10000`                     |
+| `workspaceName`     | `string`            | Name for the auto-created Relaycast workspace       | Random                      |
+| `relaycastBaseUrl`  | `string`            | Base URL for the Relaycast API                      | `https://api.relaycast.dev` |
 
 ---
 
@@ -50,14 +50,17 @@ const agent = await relay.codex.spawn(options?)
 
 **Spawn options:**
 
-| Property   | Type       | Description                           |
-| ---------- | ---------- | ------------------------------------- |
-| `name`     | `string`   | Agent name (defaults to CLI name)     |
-| `model`    | `string`   | Model to use (see Models below)       |
-| `task`     | `string`   | Initial task / prompt                 |
-| `channels` | `string[]` | Channels to join                      |
-| `args`     | `string[]` | Extra CLI arguments                   |
-| `cwd`      | `string`   | Working directory override            |
+| Property    | Type       | Description                         |
+| ----------- | ---------- | ----------------------------------- |
+| `name`      | `string`   | Agent name (defaults to CLI name)   |
+| `model`     | `string`   | Model to use (see Models below)     |
+| `task`      | `string`   | Initial task / prompt               |
+| `channels`  | `string[]` | Channels to join                    |
+| `args`      | `string[]` | Extra CLI arguments                 |
+| `cwd`       | `string`   | Working directory override          |
+| `onStart`   | `function` | Called before spawn request is sent |
+| `onSuccess` | `function` | Called after spawn succeeds         |
+| `onError`   | `function` | Called when spawn fails             |
 
 ### `relay.spawn(name, cli, task?, options?)`
 
@@ -105,7 +108,7 @@ interface Agent {
     data?: Record<string, unknown>;
   }): Promise<Message>;
 
-  release(reason?: string): Promise<void>;
+  release(reasonOrOptions?: string | ReleaseOptions): Promise<void>;
   waitForReady(timeoutMs?: number): Promise<void>;
   waitForExit(timeoutMs?: number): Promise<'exited' | 'timeout' | 'released'>;
   waitForIdle(timeoutMs?: number): Promise<'idle' | 'timeout' | 'exited'>;
@@ -249,16 +252,16 @@ await relay.shutdown();
 import { Models } from '@agent-relay/sdk';
 
 // Claude
-Models.Claude.OPUS    // 'opus'
-Models.Claude.SONNET  // 'sonnet'
-Models.Claude.HAIKU   // 'haiku'
+Models.Claude.OPUS; // 'opus'
+Models.Claude.SONNET; // 'sonnet'
+Models.Claude.HAIKU; // 'haiku'
 
 // Codex
-Models.Codex.GPT_5_3_CODEX       // 'gpt-5.3-codex'
-Models.Codex.GPT_5_2_CODEX       // 'gpt-5.2-codex' (default)
-Models.Codex.GPT_5_3_CODEX_SPARK // 'gpt-5.3-codex-spark'
-Models.Codex.GPT_5_1_CODEX_MAX   // 'gpt-5.1-codex-max'
-Models.Codex.GPT_5_1_CODEX_MINI  // 'gpt-5.1-codex-mini'
+Models.Codex.GPT_5_3_CODEX; // 'gpt-5.3-codex'
+Models.Codex.GPT_5_2_CODEX; // 'gpt-5.2-codex' (default)
+Models.Codex.GPT_5_3_CODEX_SPARK; // 'gpt-5.3-codex-spark'
+Models.Codex.GPT_5_1_CODEX_MAX; // 'gpt-5.1-codex-max'
+Models.Codex.GPT_5_1_CODEX_MINI; // 'gpt-5.1-codex-mini'
 ```
 
 ---

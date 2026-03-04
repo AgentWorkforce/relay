@@ -47,14 +47,17 @@ agent = await relay.gemini.spawn(name="Researcher", model=Models.Gemini.GEMINI_2
 
 **Spawn keyword arguments:**
 
-| Parameter  | Type            | Description                       |
-| ---------- | --------------- | --------------------------------- |
-| `name`     | `str`           | Agent name (defaults to CLI name) |
-| `model`    | `str`           | Model to use (see Models below)   |
-| `task`     | `str`           | Initial task / prompt             |
-| `channels` | `list[str]`     | Channels to join                  |
-| `args`     | `list[str]`     | Extra CLI arguments               |
-| `cwd`      | `str`           | Working directory override        |
+| Parameter    | Type        | Description                       |
+| ------------ | ----------- | --------------------------------- |
+| `name`       | `str`       | Agent name (defaults to CLI name) |
+| `model`      | `str`       | Model to use (see Models below)   |
+| `task`       | `str`       | Initial task / prompt             |
+| `channels`   | `list[str]` | Channels to join                  |
+| `args`       | `list[str]` | Extra CLI arguments               |
+| `cwd`        | `str`       | Working directory override        |
+| `on_start`   | `Callable`  | Called before spawn request       |
+| `on_success` | `Callable`  | Called after spawn succeeds       |
+| `on_error`   | `Callable`  | Called when spawn fails           |
 
 ### `relay.spawn(name, cli, task?, options?)`
 
@@ -94,7 +97,7 @@ class Agent:
     exit_reason: str | None
 
     async def send_message(*, to: str, text: str, thread_id=None, priority=None, data=None) -> Message
-    async def release(reason=None) -> None
+    async def release(reason=None, *, on_start=None, on_success=None, on_error=None) -> None
     async def wait_for_ready(timeout_ms=60_000) -> None
     async def wait_for_exit(timeout_ms=None) -> str   # "exited" | "timeout" | "released"
     async def wait_for_idle(timeout_ms=None) -> str    # "idle" | "timeout" | "exited"
