@@ -24,6 +24,8 @@ export interface InboundMessage {
   text: string;
   /** ISO timestamp. */
   timestamp: string;
+  /** Parent message ID when this is a thread reply. */
+  threadParentId?: string;
 }
 
 export interface DeliveryResult {

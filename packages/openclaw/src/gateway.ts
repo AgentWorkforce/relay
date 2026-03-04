@@ -3,7 +3,7 @@ import { createServer, type Server as HttpServer, type IncomingMessage, type Ser
 
 import type { SendMessageInput } from '@agent-relay/sdk';
 import { RelayCast, type AgentClient } from '@relaycast/sdk';
-import type { MessageCreatedEvent, MessageWithMeta } from '@relaycast/sdk';
+import type { MessageCreatedEvent, MessageWithMeta, ThreadReplyEvent } from '@relaycast/sdk';
 import WebSocket from 'ws';
 
 import type { GatewayConfig, InboundMessage, DeliveryResult } from './types.js';
@@ -516,6 +516,12 @@ export class InboundGateway {
       }),
     );
     this.unsubscribeHandlers.push(
+      this.relayAgentClient.on.threadReply((event: ThreadReplyEvent) => {
+        console.log(`[gateway] Thread reply from @${event.message?.agentName} in #${event.channel} (parent: ${event.parentId})`);
+        void this.handleRealtimeThreadReply(event);
+      }),
+    );
+    this.unsubscribeHandlers.push(
       this.relayAgentClient.on.reconnecting((attempt: number) => {
         console.warn(`[gateway] Relaycast reconnecting (attempt ${attempt})`);
       }),
@@ -656,6 +662,25 @@ export class InboundGateway {
     await this.handleInbound(inbound);
   }
 
+  private async handleRealtimeThreadReply(event: ThreadReplyEvent): Promise<void> {
+    const channel = normalizeChannelName(event.channel);
+    if (!this.config.channels.includes(channel)) return;
+
+    const messageId = event.message?.id;
+    if (!messageId) return;
+
+    const inbound: InboundMessage = {
+      id: messageId,
+      channel,
+      from: event.message.agentName,
+      text: event.message.text,
+      timestamp: new Date().toISOString(),
+      threadParentId: event.parentId,
+    };
+
+    await this.handleInbound(inbound);
+  }
+
   private normalizePolledMessage(channel: string, message: MessageWithMeta): InboundMessage {
     return {
       id: message.id,
@@ -719,6 +744,12 @@ export class InboundGateway {
     }
   }
 
+  /** Format delivery text with channel, sender, and optional thread prefix. */
+  private formatDeliveryText(message: InboundMessage): string {
+    const threadPrefix = message.threadParentId ? '[thread] ' : '';
+    return `${threadPrefix}[relaycast:${message.channel}] @${message.from}: ${message.text}`;
+  }
+
   /** Handle an inbound Relaycast message. */
   private async onMessage(message: InboundMessage): Promise<DeliveryResult> {
     // Try primary delivery via the shared relay sender (no extra broker spawned).
@@ -731,7 +762,7 @@ export class InboundGateway {
 
     // Deliver via persistent OpenClaw gateway WebSocket connection
     if (this.openclawClient) {
-      const text = `[relaycast:${message.channel}] @${message.from}: ${message.text}`;
+      const text = this.formatDeliveryText(message);
       const ok = await this.openclawClient.sendChatMessage(text, message.id);
       if (ok) {
         return { ok: true, method: 'gateway_ws' };
@@ -750,7 +781,7 @@ export class InboundGateway {
 
     const input: SendMessageInput = {
       to: this.config.clawName,
-      text: `[relaycast:${message.channel}] @${message.from}: ${message.text}`,
+      text: this.formatDeliveryText(message),
       from: message.from,
       data: {
         source: 'relaycast',
