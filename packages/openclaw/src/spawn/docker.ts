@@ -8,6 +8,7 @@ import { normalizeModelRef } from '../identity/model.js';
 import { buildIdentityTask } from '../identity/contract.js';
 import { buildAgentName } from '../identity/naming.js';
 import { convertCodexAuth } from '../auth/converter.js';
+import { DEFAULT_OPENCLAW_GATEWAY_PORT } from '../types.js';
 
 async function pathExists(targetPath: string): Promise<boolean> {
   try {
@@ -152,7 +153,7 @@ export class DockerSpawnProvider implements SpawnProvider {
     const modelRef = normalizeModelRef(options.model, preferredProvider);
     const workspaceId = options.workspaceId ?? `local-${Date.now().toString(36)}`;
     const agentName = buildAgentName(workspaceId, options.name);
-    const gatewayPort = 18789; // Internal to container — each container is isolated
+    const gatewayPort = DEFAULT_OPENCLAW_GATEWAY_PORT; // Internal to container — each container is isolated
     const identityTask = buildIdentityTask(agentName, workspaceId, modelRef);
     const channels = options.channels?.length ? options.channels : ['general'];
     const gatewayToken = randomUUID().replace(/-/g, '').slice(0, 32);
