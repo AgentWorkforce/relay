@@ -204,7 +204,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
         : []),
     ];
 
-    let mcp: { cmd: string; prefix: string[] };
+    let mcp: { cmd: string; prefix: string[] } | null = null;
     try {
       mcp = resolveMcporter();
     } catch {
@@ -212,7 +212,6 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
       console.warn('Install mcporter and re-run setup to enable MCP tools:');
       console.warn('  npm install -g mcporter');
       console.warn(`  npx -y @agent-relay/openclaw@latest setup ${apiKey} --name ${clawName}`);
-      mcp = null as never;
     }
 
     if (mcp) {
