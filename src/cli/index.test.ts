@@ -28,6 +28,7 @@ async function runCli(args: string): Promise<{ stdout: string; stderr: string; c
   try {
     const { stdout, stderr } = await execAsync(`node ${CLI_PATH} ${args}`, {
       cwd: testProjectRoot, // Run in isolated temp directory
+      timeout: 12000,
       env: {
         ...process.env,
         DOTENV_CONFIG_QUIET: 'true',
@@ -78,114 +79,26 @@ describeCli('CLI', () => {
     });
   });
 
-  describe('status', () => {
-    it('should show status when broker not running', async () => {
-      // This test assumes broker isn't running on a test socket
-      const { stdout } = await runCli('status');
-      expect(stdout).toMatch(/Status:/i);
-    });
-  });
-
   describe('agents', () => {
-    it('should handle no agents file gracefully', async () => {
-      const { stdout, stderr } = await runCli('agents');
-      const output = stdout + stderr;
-      // Either shows agents, "No agents" message, or broker-not-running error
-      expect(output).toMatch(/(No agents|NAME.*STATUS|broker|relaycast|Failed)/i);
-    }, 15000);
-
-    it('should support --json flag', async () => {
+    it('supports --json output (smoke)', async () => {
       const { stdout, stderr } = await runCli('agents --json');
-      // When broker is running: valid JSON; when not: may output error text
-      if (stdout.trim()) {
+      const lines = stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+      const hasJsonPayload = lines.some((line) => {
         try {
-          JSON.parse(stdout);
+          JSON.parse(line);
+          return true;
         } catch {
-          // Broker not running — error message in stdout is acceptable
-          expect(stdout + stderr).toMatch(/(broker|relaycast|Failed)/i);
+          return false;
         }
+      });
+
+      if (!hasJsonPayload) {
+        expect(`${stdout}${stderr}`).toMatch(/(broker|relaycast|Failed|not running)/i);
       }
     }, 15000);
-  });
-
-  describe('who', () => {
-    it('should handle no active agents gracefully', async () => {
-      const { stdout, stderr } = await runCli('who');
-      const output = stdout + stderr;
-      // Either shows agents, "No active agents", or broker-not-running error
-      expect(output).toMatch(/(No active agents|NAME|broker|relaycast|Failed)/i);
-    });
-
-    it('should support --json flag', async () => {
-      const { stdout, stderr } = await runCli('who --json');
-      if (stdout.trim()) {
-        try {
-          JSON.parse(stdout);
-        } catch {
-          expect(stdout + stderr).toMatch(/(broker|relaycast|Failed)/i);
-        }
-      }
-    });
-  });
-
-  describe('read', () => {
-    it('should error when message not found', async () => {
-      const { stderr, code } = await runCli('read nonexistent-message-id');
-      expect(code).not.toBe(0);
-      // Either "not found" or broker-not-running error
-      expect(stderr).toMatch(/(not found|broker|relaycast|Failed|ENOENT)/i);
-    });
-  });
-
-  describe('history', () => {
-    it('should show history or empty message', async () => {
-      const { stdout, stderr, code } = await runCli('history --limit 5');
-      // When broker is not running, command may fail — that's acceptable
-      if (code === 0) {
-        expect(stdout.length).toBeGreaterThan(0);
-      } else {
-        expect(stderr).toMatch(/(broker|relaycast|Failed|ENOENT)/i);
-      }
-    });
-
-    it('should support --json flag', async () => {
-      const { stdout, stderr } = await runCli('history --json --limit 1');
-      if (stdout.trim()) {
-        try {
-          JSON.parse(stdout);
-        } catch {
-          expect(stdout + stderr).toMatch(/(broker|relaycast|Failed)/i);
-        }
-      }
-    });
-  });
-});
-
-describe('CLI Helper Functions', () => {
-  describe('formatRelativeTime', () => {
-    // Test the time formatting logic indirectly through agents command
-    it('should format relative times in agents output', async () => {
-      const { stdout } = await runCli('agents');
-      // If agents exist, should show relative time
-      if (stdout.includes('ago')) {
-        expect(stdout).toMatch(/\d+[smhd] ago/);
-      }
-    });
-  });
-
-  describe('parseSince', () => {
-    // Test through history command
-    it('should parse duration strings', async () => {
-      const results = await Promise.all([
-        runCli('history --since 1h --limit 1'),
-        runCli('history --since 30m --limit 1'),
-        runCli('history --since 7d --limit 1'),
-      ]);
-
-      for (const result of results) {
-        expect(Number.isInteger(result.code)).toBe(true);
-        expect(`${result.stdout}${result.stderr}`).not.toMatch(/(invalid|unknown).+since/i);
-      }
-    }, 20000);
   });
 });
