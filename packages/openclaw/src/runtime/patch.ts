@@ -29,11 +29,13 @@ export async function patchOpenClawDist(distDir: string, modelRef: string): Prom
   // Extract bare model ID (e.g. "gpt-5.3-codex" from "openai-codex/gpt-5.3-codex")
   const modelId = modelRef.includes('/') ? modelRef.split('/').pop()! : modelRef;
 
+  // Order matters: replace fully-qualified patterns before bare model IDs,
+  // otherwise the bare pattern destroys the substring the qualified pattern needs.
   const replacements: [RegExp, string][] = [
-    [/claude-opus-4-6/g, modelId],
-    [/claude-opus-4\.6/g, modelId],
     [/anthropic\/claude-opus-4\.6/g, modelRef],
     [/Claude Opus 4\.6/g, modelRef],
+    [/claude-opus-4\.6/g, modelId],
+    [/claude-opus-4-6/g, modelId],
     [/Claude Code/g, 'OpenClaw Agent'],
   ];
 

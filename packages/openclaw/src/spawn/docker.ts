@@ -7,6 +7,7 @@ import type { SpawnProvider, SpawnOptions, SpawnHandle } from './types.js';
 import { normalizeModelRef } from '../identity/model.js';
 import { buildIdentityTask } from '../identity/contract.js';
 import { buildAgentName } from '../identity/naming.js';
+import { convertCodexAuth } from '../auth/converter.js';
 
 async function pathExists(targetPath: string): Promise<boolean> {
   try {
@@ -147,7 +148,8 @@ export class DockerSpawnProvider implements SpawnProvider {
 
   async spawn(options: SpawnOptions): Promise<SpawnHandle> {
     const docker = await this.getDocker();
-    const modelRef = normalizeModelRef(options.model);
+    const { preferredProvider } = await convertCodexAuth();
+    const modelRef = normalizeModelRef(options.model, preferredProvider);
     const workspaceId = options.workspaceId ?? `local-${Date.now().toString(36)}`;
     const agentName = buildAgentName(workspaceId, options.name);
     const gatewayPort = 18789; // Internal to container — each container is isolated

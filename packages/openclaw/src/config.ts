@@ -69,7 +69,12 @@ export async function loadGatewayConfig(): Promise<GatewayConfig | null> {
       if (!trimmed || trimmed.startsWith('#')) continue;
       const eqIdx = trimmed.indexOf('=');
       if (eqIdx === -1) continue;
-      vars[trimmed.slice(0, eqIdx)] = trimmed.slice(eqIdx + 1);
+      let value = trimmed.slice(eqIdx + 1);
+      // Strip surrounding quotes (single or double) that are common in .env files
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      vars[trimmed.slice(0, eqIdx)] = value;
     }
 
     const apiKey = vars['RELAY_API_KEY'];

@@ -3,7 +3,7 @@ import { createServer, type Server as HttpServer, type IncomingMessage, type Ser
 
 import type { SendMessageInput } from '@agent-relay/sdk';
 import { RelayCast, type AgentClient } from '@relaycast/sdk';
-import type { MessageCreatedEvent, MessageWithMeta } from '@relaycast/types';
+import type { MessageCreatedEvent, MessageWithMeta } from '@relaycast/sdk';
 import WebSocket from 'ws';
 
 import type { GatewayConfig, InboundMessage, DeliveryResult } from './types.js';
@@ -133,6 +133,12 @@ class OpenClawGatewayClient {
   /** Connect and authenticate. Resolves when chat.send is ready, rejects on timeout or error. */
   async connect(): Promise<void> {
     if (this.authenticated && this.ws?.readyState === WebSocket.OPEN) return;
+
+    // Cancel any pending reconnect timer to prevent orphaned WebSocket connections
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
 
     this.connectPromise = new Promise<void>((resolve, reject) => {
       this.connectResolve = resolve;
@@ -505,7 +511,7 @@ export class InboundGateway {
     );
     this.unsubscribeHandlers.push(
       this.relayAgentClient.on.messageCreated((event: MessageCreatedEvent) => {
-        console.log(`[gateway] Realtime message from @${event.message?.agent_name} in #${event.channel}`);
+        console.log(`[gateway] Realtime message from @${event.message?.agentName} in #${event.channel}`);
         void this.handleRealtimeMessage(event);
       }),
     );
@@ -642,7 +648,7 @@ export class InboundGateway {
     const inbound: InboundMessage = {
       id: messageId,
       channel,
-      from: event.message.agent_name,
+      from: event.message.agentName,
       text: event.message.text,
       timestamp: new Date().toISOString(),
     };
@@ -654,9 +660,9 @@ export class InboundGateway {
     return {
       id: message.id,
       channel,
-      from: message.agent_name,
+      from: message.agentName,
       text: message.text,
-      timestamp: message.created_at,
+      timestamp: message.createdAt,
     };
   }
 
@@ -674,7 +680,7 @@ export class InboundGateway {
 
         const messages = await this.relaycast.messages.list(channel, query);
         const ordered = [...messages].sort((a, b) =>
-          a.created_at.localeCompare(b.created_at),
+          a.createdAt.localeCompare(b.createdAt),
         );
 
         for (const message of ordered) {
@@ -895,9 +901,10 @@ export class InboundGateway {
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    req.on('error', (err) => reject(err));
   });
 }

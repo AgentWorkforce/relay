@@ -104,7 +104,6 @@ function connect() {
 
   ws.on('open', () => {
     process.stderr.write('[bridge] WebSocket open, sending connect handshake\n');
-    reconnectAttempts = 0;
     connected = false;
     sendConnect();
   });
@@ -121,8 +120,9 @@ function connect() {
     // Handle RPC responses
     if (msg.type === 'res') {
       if (msg.ok && !connected) {
-        // This is the connect response
+        // This is the connect response — auth succeeded
         connected = true;
+        reconnectAttempts = 0;
         process.stderr.write('[bridge] Gateway handshake complete\n');
         flushPending();
         return;
