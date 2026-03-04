@@ -116,6 +116,17 @@ interface Agent {
 }
 ```
 
+### `ReleaseOptions`
+
+`agent.release(...)` accepts either a reason string or a `ReleaseOptions` object:
+
+| Property    | Type       | Description                                        |
+| ----------- | ---------- | -------------------------------------------------- |
+| `reason`    | `string`   | Optional release reason sent to the broker         |
+| `onStart`   | `function` | Sync/async callback before release request is sent |
+| `onSuccess` | `function` | Sync/async callback after release succeeds         |
+| `onError`   | `function` | Sync/async callback when release fails             |
+
 ---
 
 ## Human Handles

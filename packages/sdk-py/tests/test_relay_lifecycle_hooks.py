@@ -145,6 +145,33 @@ async def test_shorthand_spawn_lifecycle_hooks_success():
 
 
 @pytest.mark.asyncio
+async def test_shorthand_spawn_does_not_fire_start_hook_if_broker_startup_fails():
+    relay = AgentRelay()
+    relay._ensure_started = AsyncMock(side_effect=RuntimeError("broker startup failed"))
+
+    start_called = False
+    error_called = False
+
+    def _mark_called(kind: str) -> None:
+        nonlocal start_called, error_called
+        if kind == "start":
+            start_called = True
+        else:
+            error_called = True
+
+    with pytest.raises(RuntimeError, match="broker startup failed"):
+        await relay.claude.spawn(
+            name="ShorthandWorkerStartupFail",
+            channels=["general"],
+            on_start=lambda _ctx: _mark_called("start"),
+            on_error=lambda _ctx: _mark_called("error"),
+        )
+
+    assert start_called is False
+    assert error_called is False
+
+
+@pytest.mark.asyncio
 async def test_release_lifecycle_hooks_success_and_error():
     relay = AgentRelay()
     client = _FakeRelayClient()

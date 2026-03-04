@@ -316,12 +316,12 @@ class AgentSpawner:
             "channels": agent_channels,
             "task": task,
         }
+        client = await self._relay._ensure_started()
         await self._relay._invoke_lifecycle_hook(
             on_start,
             context,
             f'spawn("{agent_name}") on_start',
         )
-        client = await self._relay._ensure_started()
 
         try:
             result = await client.spawn_pty(
