@@ -1,6 +1,5 @@
 import { createHash, createPrivateKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { chmod, readFile, rename, writeFile, mkdir } from 'node:fs/promises';
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 
@@ -91,27 +90,31 @@ interface PersistedDevice {
 async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
   const filePath = deviceIdentityPath();
 
-  if (existsSync(filePath)) {
-    try {
-      const raw = await readFile(filePath, 'utf-8');
-      const persisted = JSON.parse(raw) as PersistedDevice;
-      const privateKeyObj = createPrivateKey({
-        key: Buffer.from(persisted.privateKeyPkcs8B64, 'base64'),
-        format: 'der',
-        type: 'pkcs8',
-      });
-      console.log(`[openclaw-ws] Loaded persisted device identity (deviceId=${persisted.deviceId.slice(0, 12)}...)`);
-      return {
-        publicKeyB64: persisted.publicKeyB64,
-        privateKeyObj,
-        deviceId: persisted.deviceId,
-      };
-    } catch (err) {
+  // Attempt to load existing identity (no existsSync — just try the read)
+  try {
+    const raw = await readFile(filePath, 'utf-8');
+    const persisted = JSON.parse(raw) as PersistedDevice;
+    const privateKeyObj = createPrivateKey({
+      key: Buffer.from(persisted.privateKeyPkcs8B64, 'base64'),
+      format: 'der',
+      type: 'pkcs8',
+    });
+    // Ensure permissions are tight even if file was created with looser perms
+    await chmod(filePath, 0o600).catch(() => {});
+    console.log(`[openclaw-ws] Loaded persisted device identity (deviceId=${persisted.deviceId.slice(0, 12)}...)`);
+    return {
+      publicKeyB64: persisted.publicKeyB64,
+      privateKeyObj,
+      deviceId: persisted.deviceId,
+    };
+  } catch (err) {
+    // ENOENT is expected on first run; other errors mean corruption
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
       console.warn(`[openclaw-ws] Failed to load device identity, generating new: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  // Generate fresh and persist
+  // Generate fresh and persist via atomic write-then-rename
   const identity = generateDeviceIdentity();
   const pkcs8Der = identity.privateKeyObj.export({ type: 'pkcs8', format: 'der' });
   const persisted: PersistedDevice = {
@@ -121,8 +124,11 @@ async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
   };
 
   try {
-    await mkdir(join(openclawHome(), 'workspace', 'relaycast'), { recursive: true });
-    await writeFile(filePath, JSON.stringify(persisted, null, 2) + '\n', { mode: 0o600 });
+    const dir = join(openclawHome(), 'workspace', 'relaycast');
+    await mkdir(dir, { recursive: true });
+    const tmpPath = filePath + '.tmp';
+    await writeFile(tmpPath, JSON.stringify(persisted, null, 2) + '\n', { mode: 0o600 });
+    await rename(tmpPath, filePath);
     console.log(`[openclaw-ws] Persisted new device identity (deviceId=${identity.deviceId.slice(0, 12)}...)`);
   } catch (err) {
     console.warn(`[openclaw-ws] Could not persist device identity: ${err instanceof Error ? err.message : String(err)}`);
@@ -283,8 +289,8 @@ export class OpenClawGatewayClient {
       const wasAuthenticated = this.authenticated;
       this.authenticated = false;
 
-      // Detect pairing rejection via close code 1008 (Policy Violation)
-      if (code === 1008 || /pairing|not.paired/i.test(reasonStr)) {
+      // Detect pairing rejection: code 1008 (Policy Violation) with pairing reason
+      if (code === 1008 && /pairing|not.paired/i.test(reasonStr)) {
         console.error('[openclaw-ws] Connection closed due to pairing policy. Device is not paired.');
         console.error('[openclaw-ws] Ensure OPENCLAW_GATEWAY_TOKEN matches ~/.openclaw/openclaw.json gateway.auth.token');
         this.pairingRejected = true;
