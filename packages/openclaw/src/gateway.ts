@@ -3,7 +3,16 @@ import { createServer, type Server as HttpServer, type IncomingMessage, type Ser
 
 import type { SendMessageInput } from '@agent-relay/sdk';
 import { RelayCast, type AgentClient } from '@relaycast/sdk';
-import type { MessageCreatedEvent, MessageWithMeta, ThreadReplyEvent } from '@relaycast/sdk';
+import type {
+  MessageCreatedEvent,
+  MessageWithMeta,
+  ThreadReplyEvent,
+  DmReceivedEvent,
+  GroupDmReceivedEvent,
+  CommandInvokedEvent,
+  ReactionAddedEvent,
+  ReactionRemovedEvent,
+} from '@relaycast/sdk';
 import WebSocket from 'ws';
 
 import type { GatewayConfig, InboundMessage, DeliveryResult } from './types.js';
@@ -522,6 +531,36 @@ export class InboundGateway {
       }),
     );
     this.unsubscribeHandlers.push(
+      this.relayAgentClient.on.dmReceived((event: DmReceivedEvent) => {
+        console.log(`[gateway] DM from @${event.message?.agentName} (conv: ${event.conversationId})`);
+        void this.handleRealtimeDm(event);
+      }),
+    );
+    this.unsubscribeHandlers.push(
+      this.relayAgentClient.on.groupDmReceived((event: GroupDmReceivedEvent) => {
+        console.log(`[gateway] Group DM from @${event.message?.agentName} (conv: ${event.conversationId})`);
+        void this.handleRealtimeGroupDm(event);
+      }),
+    );
+    this.unsubscribeHandlers.push(
+      this.relayAgentClient.on.commandInvoked((event: CommandInvokedEvent) => {
+        console.log(`[gateway] Command /${event.command} invoked by @${event.invokedBy} in #${event.channel}`);
+        void this.handleRealtimeCommand(event);
+      }),
+    );
+    this.unsubscribeHandlers.push(
+      this.relayAgentClient.on.reactionAdded((event: ReactionAddedEvent) => {
+        console.log(`[gateway] Reaction :${event.emoji}: added by @${event.agentName} on ${event.messageId}`);
+        void this.handleRealtimeReaction(event, 'added');
+      }),
+    );
+    this.unsubscribeHandlers.push(
+      this.relayAgentClient.on.reactionRemoved((event: ReactionRemovedEvent) => {
+        console.log(`[gateway] Reaction :${event.emoji}: removed by @${event.agentName} from ${event.messageId}`);
+        void this.handleRealtimeReaction(event, 'removed');
+      }),
+    );
+    this.unsubscribeHandlers.push(
       this.relayAgentClient.on.reconnecting((attempt: number) => {
         console.warn(`[gateway] Relaycast reconnecting (attempt ${attempt})`);
       }),
@@ -607,6 +646,11 @@ export class InboundGateway {
     this.seenMessageIds.clear();
   }
 
+  /** Returns true for real channel names, false for synthetic ones (dm, reaction, groupdm:*). */
+  private isRealChannel(channel: string): boolean {
+    return channel !== 'dm' && channel !== 'reaction' && !channel.startsWith('groupdm:');
+  }
+
   private cleanupSeenMap(nowMs: number): void {
     for (const [id, seenAt] of this.seenMessageIds.entries()) {
       if (nowMs - seenAt > this.dedupeTtlMs) {
@@ -681,6 +725,81 @@ export class InboundGateway {
     await this.handleInbound(inbound);
   }
 
+  private async handleRealtimeDm(event: DmReceivedEvent): Promise<void> {
+    const messageId = event.message?.id;
+    if (!messageId) return;
+
+    const inbound: InboundMessage = {
+      id: messageId,
+      channel: 'dm',
+      from: event.message.agentName,
+      text: event.message.text,
+      timestamp: new Date().toISOString(),
+      conversationId: event.conversationId,
+      kind: 'dm',
+    };
+
+    await this.handleInbound(inbound);
+  }
+
+  private async handleRealtimeGroupDm(event: GroupDmReceivedEvent): Promise<void> {
+    const messageId = event.message?.id;
+    if (!messageId) return;
+
+    const inbound: InboundMessage = {
+      id: messageId,
+      channel: `groupdm:${event.conversationId}`,
+      from: event.message.agentName,
+      text: event.message.text,
+      timestamp: new Date().toISOString(),
+      conversationId: event.conversationId,
+      kind: 'groupdm',
+    };
+
+    await this.handleInbound(inbound);
+  }
+
+  private async handleRealtimeCommand(event: CommandInvokedEvent): Promise<void> {
+    const channel = normalizeChannelName(event.channel);
+    if (!this.config.channels.includes(channel)) return;
+
+    // Synthesize a unique ID from command + channel + invoker + timestamp
+    const syntheticId = `cmd_${event.command}_${channel}_${Date.now()}`;
+    const argsText = event.args ? ` ${event.args}` : '';
+
+    const inbound: InboundMessage = {
+      id: syntheticId,
+      channel,
+      from: event.invokedBy,
+      text: `[relaycast:command:${channel}] @${event.invokedBy} /${event.command}${argsText}`,
+      timestamp: new Date().toISOString(),
+      kind: 'command',
+    };
+
+    await this.handleInbound(inbound);
+  }
+
+  private async handleRealtimeReaction(
+    event: ReactionAddedEvent | ReactionRemovedEvent,
+    action: 'added' | 'removed',
+  ): Promise<void> {
+    const syntheticId = `reaction_${event.messageId}_${event.emoji}_${event.agentName}_${action}_${Date.now()}`;
+    const text = action === 'added'
+      ? `[relaycast:reaction] @${event.agentName} reacted ${event.emoji} to message ${event.messageId} (soft notification, no action required)`
+      : `[relaycast:reaction] @${event.agentName} removed ${event.emoji} from message ${event.messageId} (soft notification, no action required)`;
+
+    const inbound: InboundMessage = {
+      id: syntheticId,
+      channel: 'reaction',
+      from: event.agentName,
+      text,
+      timestamp: new Date().toISOString(),
+      kind: 'reaction',
+    };
+
+    await this.handleInbound(inbound);
+  }
+
   private normalizePolledMessage(channel: string, message: MessageWithMeta): InboundMessage {
     return {
       id: message.id,
@@ -724,7 +843,10 @@ export class InboundGateway {
     // Avoid echo loops — skip messages from this claw or its viewer identity.
     const viewerName = `viewer-${this.config.clawName}`;
     if (message.from === this.config.clawName || message.from === viewerName) {
-      this.channelCursor.set(normalizeChannelName(message.channel), message.id);
+      // Only update cursor for real channels (not synthetic like "dm", "reaction", "groupdm:*").
+      if (this.isRealChannel(message.channel)) {
+        this.channelCursor.set(normalizeChannelName(message.channel), message.id);
+      }
       this.markSeen(message.id);
       return;
     }
@@ -738,7 +860,9 @@ export class InboundGateway {
     try {
       const result = await this.onMessage(message);
       console.log(`[gateway] Delivery result: ${result.method} ok=${result.ok}${result.error ? ' error=' + result.error : ''}`);
-      this.channelCursor.set(normalizeChannelName(message.channel), message.id);
+      if (this.isRealChannel(message.channel)) {
+        this.channelCursor.set(normalizeChannelName(message.channel), message.id);
+      }
     } finally {
       this.processingMessageIds.delete(message.id);
     }
@@ -746,6 +870,16 @@ export class InboundGateway {
 
   /** Format delivery text with channel, sender, and optional thread prefix. */
   private formatDeliveryText(message: InboundMessage): string {
+    // Pre-formatted kinds (command, reaction) already have the full text.
+    if (message.kind === 'command' || message.kind === 'reaction') {
+      return message.text;
+    }
+    if (message.kind === 'dm') {
+      return `[relaycast:dm] @${message.from}: ${message.text}`;
+    }
+    if (message.kind === 'groupdm') {
+      return `[relaycast:groupdm] @${message.from}: ${message.text}`;
+    }
     const threadPrefix = message.threadParentId ? '[thread] ' : '';
     return `${threadPrefix}[relaycast:${message.channel}] @${message.from}: ${message.text}`;
   }

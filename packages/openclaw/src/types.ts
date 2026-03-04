@@ -16,7 +16,7 @@ export interface GatewayConfig {
 export interface InboundMessage {
   /** Relaycast message ID. */
   id: string;
-  /** Channel the message was posted to. */
+  /** Channel the message was posted to. Synthetic for DMs (e.g. "dm", "groupdm:{id}"). */
   channel: string;
   /** Agent name of the sender. */
   from: string;
@@ -26,6 +26,10 @@ export interface InboundMessage {
   timestamp: string;
   /** Parent message ID when this is a thread reply. */
   threadParentId?: string;
+  /** Conversation ID for DMs / group DMs. */
+  conversationId?: string;
+  /** Message kind hint for formatting. */
+  kind?: 'channel' | 'thread' | 'dm' | 'groupdm' | 'command' | 'reaction';
 }
 
 export interface DeliveryResult {

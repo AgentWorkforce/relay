@@ -41,6 +41,11 @@ const mockAgentClient = {
     connected: registerHandler('connected'),
     messageCreated: registerHandler('messageCreated'),
     threadReply: registerHandler('threadReply'),
+    dmReceived: registerHandler('dmReceived'),
+    groupDmReceived: registerHandler('groupDmReceived'),
+    commandInvoked: registerHandler('commandInvoked'),
+    reactionAdded: registerHandler('reactionAdded'),
+    reactionRemoved: registerHandler('reactionRemoved'),
     reconnecting: registerHandler('reconnecting'),
     disconnected: registerHandler('disconnected'),
     error: registerHandler('error'),
@@ -377,6 +382,212 @@ describe('InboundGateway — thread reply injection', () => {
       expect(call.data.source).toBe('relaycast');
       expect(call.data.channel).toBe('general');
       expect(call.data.messageId).toBe('msg_700');
+
+      await gateway.stop();
+    });
+  });
+
+  describe('DM event handling', () => {
+    it('should deliver DMs with [relaycast:dm] format', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+
+      fireEvent('dmReceived', {
+        type: 'dm.received',
+        conversationId: 'conv_1',
+        message: {
+          id: 'dm_1',
+          agentName: 'alice',
+          text: 'hey there',
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      const call = sendMessage.mock.calls[0][0];
+      expect(call.text).toBe('[relaycast:dm] @alice: hey there');
+
+      await gateway.stop();
+    });
+
+    it('should skip DMs from the claw itself (echo prevention)', async () => {
+      const { gateway, sendMessage } = createGateway({ clawName: 'my-claw' });
+      await gateway.start();
+
+      fireEvent('dmReceived', {
+        type: 'dm.received',
+        conversationId: 'conv_2',
+        message: {
+          id: 'dm_2',
+          agentName: 'my-claw',
+          text: 'echo',
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(sendMessage).not.toHaveBeenCalled();
+
+      await gateway.stop();
+    });
+
+    it('should deduplicate DMs with the same message ID', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+
+      const event = {
+        type: 'dm.received',
+        conversationId: 'conv_3',
+        message: {
+          id: 'dm_3',
+          agentName: 'bob',
+          text: 'duplicate dm',
+        },
+      };
+
+      fireEvent('dmReceived', event);
+      fireEvent('dmReceived', event);
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+
+      await gateway.stop();
+    });
+  });
+
+  describe('Group DM event handling', () => {
+    it('should deliver group DMs with [relaycast:groupdm] format', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+
+      fireEvent('groupDmReceived', {
+        type: 'group_dm.received',
+        conversationId: 'gconv_1',
+        message: {
+          id: 'gdm_1',
+          agentName: 'carol',
+          text: 'group message',
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      const call = sendMessage.mock.calls[0][0];
+      expect(call.text).toBe('[relaycast:groupdm] @carol: group message');
+
+      await gateway.stop();
+    });
+  });
+
+  describe('Command invocation handling', () => {
+    it('should deliver command invocations with formatted text', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+
+      fireEvent('commandInvoked', {
+        type: 'command.invoked',
+        command: 'deploy',
+        channel: 'general',
+        invokedBy: 'dave',
+        handlerAgentId: 'agent_1',
+        args: 'production --force',
+        parameters: null,
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      const call = sendMessage.mock.calls[0][0];
+      expect(call.text).toBe('[relaycast:command:general] @dave /deploy production --force');
+
+      await gateway.stop();
+    });
+
+    it('should ignore commands from unsubscribed channels', async () => {
+      const { gateway, sendMessage } = createGateway({ channels: ['general'] });
+      await gateway.start();
+
+      fireEvent('commandInvoked', {
+        type: 'command.invoked',
+        command: 'deploy',
+        channel: 'random',
+        invokedBy: 'dave',
+        handlerAgentId: 'agent_1',
+        args: null,
+        parameters: null,
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(sendMessage).not.toHaveBeenCalled();
+
+      await gateway.stop();
+    });
+  });
+
+  describe('Reaction event handling', () => {
+    it('should deliver reaction added as soft notification', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+
+      fireEvent('reactionAdded', {
+        type: 'reaction.added',
+        messageId: 'msg_800',
+        emoji: 'thumbsup',
+        agentName: 'eve',
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      const call = sendMessage.mock.calls[0][0];
+      expect(call.text).toBe('[relaycast:reaction] @eve reacted thumbsup to message msg_800 (soft notification, no action required)');
+
+      await gateway.stop();
+    });
+
+    it('should deliver reaction removed as soft notification', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+
+      fireEvent('reactionRemoved', {
+        type: 'reaction.removed',
+        messageId: 'msg_900',
+        emoji: 'rocket',
+        agentName: 'frank',
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      const call = sendMessage.mock.calls[0][0];
+      expect(call.text).toBe('[relaycast:reaction] @frank removed rocket from message msg_900 (soft notification, no action required)');
+
+      await gateway.stop();
+    });
+
+    it('should skip reactions from the claw itself', async () => {
+      const { gateway, sendMessage } = createGateway({ clawName: 'my-claw' });
+      await gateway.start();
+
+      fireEvent('reactionAdded', {
+        type: 'reaction.added',
+        messageId: 'msg_1000',
+        emoji: 'check',
+        agentName: 'my-claw',
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(sendMessage).not.toHaveBeenCalled();
 
       await gateway.stop();
     });
