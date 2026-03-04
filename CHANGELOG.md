@@ -29,6 +29,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.1.0] - 2026-03-04
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Make provider spawn transport-driven**
+- **Add direct spawn/message API (#473)** (#473)
+
+#### User-Impacting Fixes
+- Make SDK lifecycle release test more robust (#471) (#471)
+
+### Technical Perspective
+#### Architecture & API Changes
+- Switch runtime contract to provider-driven headless
+
+#### Performance & Reliability
+- Align contract fixture checks with broker event shapes
+
+#### Releases
+- v3.1.0
+
+---
+
 ## [3.0.2] - 2026-03-02
 
 ### Product Perspective
