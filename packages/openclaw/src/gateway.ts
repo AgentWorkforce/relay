@@ -736,12 +736,13 @@ export class InboundGateway {
     const channel = normalizeChannelName(event.channel);
     if (!this.config.channels.includes(channel)) return;
 
-    // Deterministic synthetic ID — stable across duplicate SDK deliveries.
-    // Commands don't carry a server-assigned ID, so we derive one from
-    // the invocation's unique attributes.  A given invoker can fire the
-    // same command multiple times, but duplicate SDK deliveries of the
-    // *same* invocation need to dedup, so we omit Date.now().
-    const syntheticId = `cmd_${event.command}_${channel}_${event.invokedBy}`;
+    // Commands lack a server-assigned event ID, so we synthesize one.
+    // We include args + timestamp to avoid silently dropping legitimate
+    // repeat invocations (e.g. /deploy twice in 15 min). This means SDK
+    // reconnection replays may deliver a duplicate, but that's less
+    // harmful than silently swallowing a real command.
+    const argsSlug = event.args ? `_${event.args}` : '';
+    const syntheticId = `cmd_${event.command}_${channel}_${event.invokedBy}${argsSlug}_${Date.now()}`;
     const argsText = event.args ? ` ${event.args}` : '';
 
     const inbound: InboundMessage = {
@@ -760,8 +761,10 @@ export class InboundGateway {
     event: ReactionAddedEvent | ReactionRemovedEvent,
     action: 'added' | 'removed',
   ): Promise<void> {
-    // Deterministic — an agent can only add/remove a specific emoji once per message.
-    const syntheticId = `reaction_${event.messageId}_${event.emoji}_${event.agentName}_${action}`;
+    // Include timestamp so add→remove→re-add of the same emoji isn't
+    // silently dropped within the 15-min dedup window. Reactions are soft
+    // notifications, so a rare duplicate on SDK reconnect is acceptable.
+    const syntheticId = `reaction_${event.messageId}_${event.emoji}_${event.agentName}_${action}_${Date.now()}`;
     const text = action === 'added'
       ? `[relaycast:reaction] @${event.agentName} reacted ${event.emoji} to message ${event.messageId} (soft notification, no action required)`
       : `[relaycast:reaction] @${event.agentName} removed ${event.emoji} from message ${event.messageId} (soft notification, no action required)`;
