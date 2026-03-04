@@ -121,7 +121,9 @@ export async function saveGatewayConfig(config: GatewayConfig): Promise<void> {
 
   if (config.openclawGatewayToken) {
     lines.push(`OPENCLAW_GATEWAY_TOKEN=${config.openclawGatewayToken}`);
-    const masked = config.openclawGatewayToken.slice(0, 8) + '...';
+    const masked = config.openclawGatewayToken.length > 12
+      ? config.openclawGatewayToken.slice(0, 8) + '...'
+      : '***';
     console.log(`[config] Persisting OPENCLAW_GATEWAY_TOKEN (${masked})`);
   }
   if (config.openclawGatewayPort) {

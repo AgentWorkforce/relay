@@ -334,11 +334,12 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
 
   // Auto-start the inbound gateway in the background, but only if one isn't
   // already running. Re-running setup without this check spawns duplicates
-  // that fight over the gateway port.
+  // that fight over the control port.
   let gatewayStarted = false;
-  // Default OpenClaw gateway port — matches the fallback in gateway.ts
-  const gatewayPort = gatewayConfig.openclawGatewayPort ?? DEFAULT_OPENCLAW_GATEWAY_PORT;
-  const gatewayAlreadyRunning = await isPortInUse(gatewayPort);
+  // Check the inbound gateway's control port (18790), NOT the OpenClaw
+  // gateway WS port (18789) — they are different processes.
+  const controlPort = Number(process.env.RELAYCAST_CONTROL_PORT) || 18790;
+  const gatewayAlreadyRunning = await isPortInUse(controlPort);
   if (gatewayAlreadyRunning) {
     console.log('[setup] Inbound gateway already running — skipping spawn.');
     gatewayStarted = true;

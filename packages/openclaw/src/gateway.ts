@@ -148,6 +148,10 @@ export class OpenClawGatewayClient {
   async connect(): Promise<void> {
     if (this.authenticated && this.ws?.readyState === WebSocket.OPEN) return;
 
+    // Explicit connect() clears pairing rejection so users can retry after fixing their token
+    this.pairingRejected = false;
+    this.stopped = false;
+
     // Cancel any pending reconnect timer to prevent orphaned WebSocket connections
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
