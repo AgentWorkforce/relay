@@ -1,5 +1,8 @@
-import { createHash, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { createHash, createPrivateKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { join } from 'node:path';
 
 import type { SendMessageInput } from '@agent-relay/sdk';
 import { RelayCast, type AgentClient } from '@relaycast/sdk';
@@ -14,6 +17,7 @@ import type {
 } from '@relaycast/sdk';
 import WebSocket from 'ws';
 
+import { openclawHome } from './config.js';
 import { DEFAULT_OPENCLAW_GATEWAY_PORT, type GatewayConfig, type InboundMessage, type DeliveryResult } from './types.js';
 import { SpawnManager } from './spawn/manager.js';
 import type { SpawnOptions } from './spawn/types.js';
@@ -66,6 +70,65 @@ function generateDeviceIdentity(): DeviceIdentity {
     privateKeyObj: privateKey,
     deviceId,
   };
+}
+
+/** Path to persisted device identity file. */
+function deviceIdentityPath(): string {
+  return join(openclawHome(), 'workspace', 'relaycast', 'device.json');
+}
+
+interface PersistedDevice {
+  publicKeyB64: string;
+  privateKeyPkcs8B64: string; // base64-encoded PKCS#8 DER
+  deviceId: string;
+}
+
+/**
+ * Load a persisted device identity from disk, or generate and persist a new one.
+ * This ensures the same device ID survives restarts so the OpenClaw gateway
+ * can pair it once and recognize it on subsequent connections.
+ */
+async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
+  const filePath = deviceIdentityPath();
+
+  if (existsSync(filePath)) {
+    try {
+      const raw = await readFile(filePath, 'utf-8');
+      const persisted = JSON.parse(raw) as PersistedDevice;
+      const privateKeyObj = createPrivateKey({
+        key: Buffer.from(persisted.privateKeyPkcs8B64, 'base64'),
+        format: 'der',
+        type: 'pkcs8',
+      });
+      console.log(`[openclaw-ws] Loaded persisted device identity (deviceId=${persisted.deviceId.slice(0, 12)}...)`);
+      return {
+        publicKeyB64: persisted.publicKeyB64,
+        privateKeyObj,
+        deviceId: persisted.deviceId,
+      };
+    } catch (err) {
+      console.warn(`[openclaw-ws] Failed to load device identity, generating new: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // Generate fresh and persist
+  const identity = generateDeviceIdentity();
+  const pkcs8Der = identity.privateKeyObj.export({ type: 'pkcs8', format: 'der' });
+  const persisted: PersistedDevice = {
+    publicKeyB64: identity.publicKeyB64,
+    privateKeyPkcs8B64: Buffer.from(pkcs8Der).toString('base64'),
+    deviceId: identity.deviceId,
+  };
+
+  try {
+    await mkdir(join(openclawHome(), 'workspace', 'relaycast'), { recursive: true });
+    await writeFile(filePath, JSON.stringify(persisted, null, 2) + '\n', { mode: 0o600 });
+    console.log(`[openclaw-ws] Persisted new device identity (deviceId=${identity.deviceId.slice(0, 12)}...)`);
+  } catch (err) {
+    console.warn(`[openclaw-ws] Could not persist device identity: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  return identity;
 }
 
 function signConnectPayload(
@@ -138,10 +201,20 @@ export class OpenClawGatewayClient {
   private static readonly BASE_RECONNECT_MS = 3_000;
   private static readonly MAX_RECONNECT_MS = 30_000;
 
-  constructor(token: string, port: number) {
+  constructor(token: string, port: number, device?: DeviceIdentity) {
     this.token = token;
     this.port = port;
-    this.device = generateDeviceIdentity();
+    this.device = device ?? generateDeviceIdentity();
+  }
+
+  /**
+   * Create a client with a persisted device identity (loaded from disk or
+   * freshly generated and saved). This ensures the same device ID is reused
+   * across restarts so the OpenClaw gateway can pair it once.
+   */
+  static async create(token: string, port: number): Promise<OpenClawGatewayClient> {
+    const device = await loadOrCreateDeviceIdentity();
+    return new OpenClawGatewayClient(token, port, device);
   }
 
   /** Connect and authenticate. Resolves when chat.send is ready, rejects on timeout or error. */
@@ -518,7 +591,7 @@ export class InboundGateway {
     const port = this.config.openclawGatewayPort ?? DEFAULT_OPENCLAW_GATEWAY_PORT;
 
     if (token) {
-      this.openclawClient = new OpenClawGatewayClient(token, port);
+      this.openclawClient = await OpenClawGatewayClient.create(token, port);
       try {
         await this.openclawClient.connect();
         console.log('[gateway] OpenClaw gateway WebSocket client ready');
