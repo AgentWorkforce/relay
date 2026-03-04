@@ -103,9 +103,9 @@ export interface SpawnLifecycleErrorContext extends SpawnLifecycleContext {
 }
 
 export interface SpawnLifecycleHooks {
-  onStart?: (context: SpawnLifecycleContext) => void;
-  onSuccess?: (context: SpawnLifecycleSuccessContext) => void;
-  onError?: (context: SpawnLifecycleErrorContext) => void;
+  onStart?: (context: SpawnLifecycleContext) => void | Promise<void>;
+  onSuccess?: (context: SpawnLifecycleSuccessContext) => void | Promise<void>;
+  onError?: (context: SpawnLifecycleErrorContext) => void | Promise<void>;
 }
 
 export interface ReleaseLifecycleContext {
@@ -118,9 +118,9 @@ export interface ReleaseLifecycleErrorContext extends ReleaseLifecycleContext {
 }
 
 export interface ReleaseLifecycleHooks {
-  onStart?: (context: ReleaseLifecycleContext) => void;
-  onSuccess?: (context: ReleaseLifecycleContext) => void;
-  onError?: (context: ReleaseLifecycleErrorContext) => void;
+  onStart?: (context: ReleaseLifecycleContext) => void | Promise<void>;
+  onSuccess?: (context: ReleaseLifecycleContext) => void | Promise<void>;
+  onError?: (context: ReleaseLifecycleErrorContext) => void | Promise<void>;
 }
 
 export interface ReleaseOptions extends ReleaseLifecycleHooks {
@@ -353,7 +353,7 @@ export class AgentRelay {
       channels,
       task: input.task,
     };
-    this.invokeLifecycleHook(input.onStart, lifecycleContext, `spawnPty("${input.name}") onStart`);
+    await this.invokeLifecycleHook(input.onStart, lifecycleContext, `spawnPty("${input.name}") onStart`);
     let result: { name: string; runtime: AgentRuntime };
     try {
       result = await client.spawnPty({
@@ -371,7 +371,7 @@ export class AgentRelay {
         restartPolicy: input.restartPolicy,
       });
     } catch (error) {
-      this.invokeLifecycleHook(
+      await this.invokeLifecycleHook(
         input.onError,
         {
           ...lifecycleContext,
@@ -384,7 +384,7 @@ export class AgentRelay {
     this.resetAgentLifecycleState(result.name);
     const agent = this.makeAgent(result.name, result.runtime, channels);
     this.knownAgents.set(agent.name, agent);
-    this.invokeLifecycleHook(
+    await this.invokeLifecycleHook(
       input.onSuccess,
       {
         ...lifecycleContext,
@@ -1067,13 +1067,17 @@ export class AgentRelay {
           name,
           reason: releaseOptions.reason,
         };
-        relay.invokeLifecycleHook(releaseOptions.onStart, releaseContext, `release("${name}") onStart`);
+        await relay.invokeLifecycleHook(releaseOptions.onStart, releaseContext, `release("${name}") onStart`);
         const client = await relay.ensureStarted();
         try {
           await client.release(name, releaseOptions.reason);
-          relay.invokeLifecycleHook(releaseOptions.onSuccess, releaseContext, `release("${name}") onSuccess`);
+          await relay.invokeLifecycleHook(
+            releaseOptions.onSuccess,
+            releaseContext,
+            `release("${name}") onSuccess`
+          );
         } catch (error) {
-          relay.invokeLifecycleHook(
+          await relay.invokeLifecycleHook(
             releaseOptions.onError,
             {
               ...releaseContext,
@@ -1234,7 +1238,7 @@ export class AgentRelay {
           channels,
           task,
         };
-        this.invokeLifecycleHook(options?.onStart, lifecycleContext, `spawn("${name}") onStart`);
+        await this.invokeLifecycleHook(options?.onStart, lifecycleContext, `spawn("${name}") onStart`);
         let result: { name: string; runtime: AgentRuntime };
         try {
           result = await client.spawnProvider({
@@ -1246,7 +1250,7 @@ export class AgentRelay {
             task,
           });
         } catch (error) {
-          this.invokeLifecycleHook(
+          await this.invokeLifecycleHook(
             options?.onError,
             {
               ...lifecycleContext,
@@ -1260,7 +1264,7 @@ export class AgentRelay {
         this.resetAgentLifecycleState(result.name);
         const agent = this.makeAgent(result.name, result.runtime, channels);
         this.knownAgents.set(agent.name, agent);
-        this.invokeLifecycleHook(
+        await this.invokeLifecycleHook(
           options?.onSuccess,
           {
             ...lifecycleContext,
@@ -1274,12 +1278,16 @@ export class AgentRelay {
     };
   }
 
-  private invokeLifecycleHook<T>(hook: ((context: T) => void) | undefined, context: T, label: string): void {
+  private async invokeLifecycleHook<T>(
+    hook: ((context: T) => void | Promise<void>) | undefined,
+    context: T,
+    label: string
+  ): Promise<void> {
     if (!hook) {
       return;
     }
     try {
-      hook(context);
+      await hook(context);
     } catch (error) {
       console.warn(`[AgentRelay] ${label} hook threw`, error);
     }

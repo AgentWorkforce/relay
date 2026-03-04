@@ -78,6 +78,7 @@ await relay.gemini.spawn(name="Agent3", model=Models.Gemini.GEMINI_2_5_PRO, chan
 worker = await relay.claude.spawn(
     name="HookedWorker",
     channels=["dev"],
+    # Lifecycle hooks can be sync or async callables.
     on_start=lambda ctx: print(f"spawning {ctx['name']}"),
     on_success=lambda ctx: print(f"spawned {ctx['name']} ({ctx['runtime']})"),
     on_error=lambda ctx: print(f"failed to spawn {ctx['name']}: {ctx['error']}"),

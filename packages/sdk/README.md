@@ -43,6 +43,7 @@ relay.onAgentIdle = ({ name, idleSecs }) => console.log(`${name} idle for ${idle
 const worker = await relay.claude.spawn({
   name: 'Worker1',
   channels: ['general'],
+  // Lifecycle hooks can be sync or async functions.
   onStart: ({ name }) => console.log(`spawning ${name}`),
   onSuccess: ({ name, runtime }) => console.log(`spawned ${name} (${runtime})`),
   onError: ({ name, error }) => console.error(`failed to spawn ${name}`, error),

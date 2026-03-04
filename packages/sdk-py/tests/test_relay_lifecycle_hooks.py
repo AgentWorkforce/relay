@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -66,6 +67,37 @@ async def test_spawn_lifecycle_hooks_success():
         },
     )
     assert len(events) == 2
+
+
+@pytest.mark.asyncio
+async def test_spawn_lifecycle_hooks_support_async_callbacks():
+    relay = AgentRelay()
+    client = _FakeRelayClient()
+    relay._ensure_started = AsyncMock(return_value=client)
+
+    start_done = False
+    success_done = False
+
+    async def on_start(_ctx):
+        nonlocal start_done
+        await asyncio.sleep(0)
+        start_done = True
+
+    async def on_success(_ctx):
+        nonlocal success_done
+        await asyncio.sleep(0)
+        success_done = True
+
+    options = SpawnOptions(
+        channels=["general"],
+        on_start=on_start,
+        on_success=on_success,
+    )
+
+    await relay.spawn("AsyncHookWorker", "claude", "Do the work", options)
+
+    assert start_done is True
+    assert success_done is True
 
 
 @pytest.mark.asyncio
@@ -142,3 +174,23 @@ async def test_release_lifecycle_hooks_success_and_error():
     assert len(error_calls) == 1
     assert error_calls[0]["name"] == "ReleaseWorker"
     assert isinstance(error_calls[0]["error"], RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_release_lifecycle_hooks_support_async_callbacks():
+    relay = AgentRelay()
+    client = _FakeRelayClient()
+    relay._ensure_started = AsyncMock(return_value=client)
+
+    agent = await relay.spawn("ReleaseAsyncWorker", "claude")
+
+    success_done = False
+
+    async def on_success(_ctx):
+        nonlocal success_done
+        await asyncio.sleep(0)
+        success_done = True
+
+    await agent.release("cleanup", on_success=on_success)
+
+    assert success_done is True

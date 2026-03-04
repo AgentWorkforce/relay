@@ -438,6 +438,34 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
+  it('spawn lifecycle hooks await async callbacks', async () => {
+    const { client } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    let startDone = false;
+    let successDone = false;
+
+    try {
+      await relay.spawn('async-hook-agent', 'claude', 'do work', {
+        channels: ['general'],
+        onStart: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          startDone = true;
+        },
+        onSuccess: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          successDone = true;
+        },
+      });
+
+      expect(startDone).toBe(true);
+      expect(successDone).toBe(true);
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
   it('spawn lifecycle hooks fire on error', async () => {
     const { client, mock } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
@@ -573,6 +601,34 @@ describe('AgentRelay orchestration handles', () => {
       });
       expect(onError.mock.calls[0][0].error).toBeInstanceOf(Error);
       expect((onError.mock.calls[0][0].error as Error).message).toBe('release failed');
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('agent.release lifecycle hooks await async callbacks', async () => {
+    const { client } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    let successDone = false;
+
+    try {
+      const agent = await relay.spawnPty({
+        name: 'release-async-hook-agent',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      await agent.release({
+        reason: 'cleanup',
+        onSuccess: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          successDone = true;
+        },
+      });
+
+      expect(successDone).toBe(true);
     } finally {
       await relay.shutdown();
     }

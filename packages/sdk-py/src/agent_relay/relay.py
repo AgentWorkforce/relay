@@ -9,10 +9,11 @@ Mirrors packages/sdk/src/relay.ts.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import secrets
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from .client import AgentRelayClient
 from .protocol import AgentRuntime, BrokerEvent
@@ -22,7 +23,7 @@ from .protocol import AgentRuntime, BrokerEvent
 AgentStatus = str  # "spawning" | "ready" | "idle" | "exited"
 
 EventHook = Optional[Callable[..., None]]
-LifecycleHook = Optional[Callable[[dict[str, Any]], None]]
+LifecycleHook = Optional[Callable[[dict[str, Any]], None | Awaitable[None]]]
 
 
 @dataclass
@@ -110,7 +111,7 @@ class Agent:
             "name": self._name,
             "reason": reason,
         }
-        self._relay._invoke_lifecycle_hook(
+        await self._relay._invoke_lifecycle_hook(
             on_start,
             context,
             f'release("{self._name}") on_start',
@@ -118,13 +119,13 @@ class Agent:
         client = await self._relay._ensure_started()
         try:
             await client.release(self._name, reason)
-            self._relay._invoke_lifecycle_hook(
+            await self._relay._invoke_lifecycle_hook(
                 on_success,
                 context,
                 f'release("{self._name}") on_success',
             )
         except Exception as error:
-            self._relay._invoke_lifecycle_hook(
+            await self._relay._invoke_lifecycle_hook(
                 on_error,
                 {
                     **context,
@@ -315,7 +316,7 @@ class AgentSpawner:
             "channels": agent_channels,
             "task": task,
         }
-        self._relay._invoke_lifecycle_hook(
+        await self._relay._invoke_lifecycle_hook(
             on_start,
             context,
             f'spawn("{agent_name}") on_start',
@@ -333,7 +334,7 @@ class AgentSpawner:
                 cwd=cwd,
             )
         except Exception as error:
-            self._relay._invoke_lifecycle_hook(
+            await self._relay._invoke_lifecycle_hook(
                 on_error,
                 {
                     **context,
@@ -351,7 +352,7 @@ class AgentSpawner:
         )
         self._relay._known_agents[agent.name] = agent
         self._relay._reset_agent_lifecycle_state(agent.name)
-        self._relay._invoke_lifecycle_hook(
+        await self._relay._invoke_lifecycle_hook(
             on_success,
             {
                 **context,
@@ -491,7 +492,7 @@ class AgentRelay:
             "channels": channels,
             "task": task,
         }
-        self._invoke_lifecycle_hook(
+        await self._invoke_lifecycle_hook(
             opts.on_start,
             context,
             f'spawn("{name}") on_start',
@@ -513,7 +514,7 @@ class AgentRelay:
                 restart_policy=opts.restart_policy,
             )
         except Exception as error:
-            self._invoke_lifecycle_hook(
+            await self._invoke_lifecycle_hook(
                 opts.on_error,
                 {
                     **context,
@@ -531,7 +532,7 @@ class AgentRelay:
         )
         self._known_agents[agent.name] = agent
         self._reset_agent_lifecycle_state(agent.name)
-        self._invoke_lifecycle_hook(
+        await self._invoke_lifecycle_hook(
             opts.on_success,
             {
                 **context,
@@ -717,7 +718,7 @@ class AgentRelay:
 
     # ── Private helpers ───────────────────────────────────────────────────
 
-    def _invoke_lifecycle_hook(
+    async def _invoke_lifecycle_hook(
         self,
         hook: LifecycleHook,
         context: dict[str, Any],
@@ -726,7 +727,9 @@ class AgentRelay:
         if hook is None:
             return
         try:
-            hook(context)
+            result = hook(context)
+            if inspect.isawaitable(result):
+                await result
         except Exception as error:
             print(f"[AgentRelay] {label} hook threw: {error}")
 
