@@ -86,8 +86,20 @@ async function readTaskFromStdin(): Promise<string | undefined> {
   return task.length > 0 ? task : undefined;
 }
 
+function resolveRequestTimeoutMsFromEnv(): number | undefined {
+  const raw = process.env.AGENT_RELAY_REQUEST_TIMEOUT_MS;
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return parsed;
+}
+
 function createDefaultClient(cwd: string): AgentManagementClient {
-  return createAgentRelayClient({ cwd }) as unknown as AgentManagementClient;
+  const requestTimeoutMs = resolveRequestTimeoutMsFromEnv();
+  return createAgentRelayClient({
+    cwd,
+    ...(requestTimeoutMs ? { requestTimeoutMs } : {}),
+  }) as unknown as AgentManagementClient;
 }
 
 function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): AgentManagementDependencies {
