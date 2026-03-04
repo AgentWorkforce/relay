@@ -9,6 +9,7 @@ import { spawn as spawnProcess, execFileSync } from 'node:child_process';
 import { RelayCast } from '@relaycast/sdk';
 
 import { detectOpenClaw, saveGatewayConfig } from './config.js';
+import { InboundGateway } from './gateway.js';
 import { DEFAULT_OPENCLAW_GATEWAY_PORT, type GatewayConfig } from './types.js';
 
 /**
@@ -338,7 +339,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   let gatewayStarted = false;
   // Check the inbound gateway's control port (18790), NOT the OpenClaw
   // gateway WS port (18789) — they are different processes.
-  const controlPort = Number(process.env.RELAYCAST_CONTROL_PORT) || 18790;
+  const controlPort = Number(process.env.RELAYCAST_CONTROL_PORT) || InboundGateway.DEFAULT_CONTROL_PORT;
   const gatewayAlreadyRunning = await isPortInUse(controlPort);
   if (gatewayAlreadyRunning) {
     console.log('[setup] Inbound gateway already running — skipping spawn.');
