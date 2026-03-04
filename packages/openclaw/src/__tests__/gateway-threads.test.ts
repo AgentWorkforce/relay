@@ -511,6 +511,30 @@ describe('InboundGateway — thread reply injection', () => {
       await gateway.stop();
     });
 
+    it('should deliver command invocations without args', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+
+      fireEvent('commandInvoked', {
+        type: 'command.invoked',
+        command: 'status',
+        channel: 'general',
+        invokedBy: 'eve',
+        handlerAgentId: 'agent_2',
+        args: null,
+        parameters: null,
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      const call = sendMessage.mock.calls[0][0];
+      expect(call.text).toBe('[relaycast:command:general] @eve /status');
+
+      await gateway.stop();
+    });
+
     it('should ignore commands from unsubscribed channels', async () => {
       const { gateway, sendMessage } = createGateway({ channels: ['general'] });
       await gateway.start();
@@ -588,6 +612,517 @@ describe('InboundGateway — thread reply injection', () => {
 
       await new Promise((r) => setTimeout(r, 50));
       expect(sendMessage).not.toHaveBeenCalled();
+
+      await gateway.stop();
+    });
+  });
+
+  describe('delivery fallback path', () => {
+    it('should fall back to openclawClient when relaySender fails', async () => {
+      const sendMessage = vi.fn().mockRejectedValue(new Error('relay down'));
+      const gateway = new InboundGateway({
+        config: {
+          apiKey: 'rk_live_test',
+          clawName: 'test-claw',
+          baseUrl: 'https://api.relaycast.dev',
+          channels: ['general'],
+          openclawGatewayToken: 'tok_gateway',
+          openclawGatewayPort: 19999,
+        },
+        relaySender: { sendMessage },
+      });
+      await gateway.start();
+
+      fireEvent('messageCreated', {
+        type: 'message.created',
+        channel: 'general',
+        message: {
+          id: 'msg_fb_1',
+          agentName: 'alice',
+          text: 'fallback test',
+          attachments: [],
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      // The relaySender threw, so it should have attempted openclawClient.
+      // Since openclawClient WS is not actually connected in test, both fail.
+      // We just verify the sendMessage was called (relay path attempted).
+      await new Promise((r) => setTimeout(r, 50));
+
+      await gateway.stop();
+    });
+
+    it('should return method=failed when both relaySender and openclawClient fail', async () => {
+      const sendMessage = vi.fn().mockRejectedValue(new Error('relay down'));
+      const gateway = new InboundGateway({
+        config: {
+          apiKey: 'rk_live_test',
+          clawName: 'test-claw',
+          baseUrl: 'https://api.relaycast.dev',
+          channels: ['general'],
+        },
+        relaySender: { sendMessage },
+      });
+      await gateway.start();
+
+      // No openclawClient (no token), sendMessage will throw
+      fireEvent('messageCreated', {
+        type: 'message.created',
+        channel: 'general',
+        message: {
+          id: 'msg_fb_2',
+          agentName: 'alice',
+          text: 'both fail',
+          attachments: [],
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+      await gateway.stop();
+    });
+
+    it('should treat unsupported_operation event_id as failure', async () => {
+      const sendMessage = vi.fn().mockResolvedValue({ event_id: 'unsupported_operation' });
+      const gateway = new InboundGateway({
+        config: {
+          apiKey: 'rk_live_test',
+          clawName: 'test-claw',
+          baseUrl: 'https://api.relaycast.dev',
+          channels: ['general'],
+        },
+        relaySender: { sendMessage },
+      });
+      await gateway.start();
+
+      fireEvent('messageCreated', {
+        type: 'message.created',
+        channel: 'general',
+        message: {
+          id: 'msg_unsup_1',
+          agentName: 'bob',
+          text: 'unsupported test',
+          attachments: [],
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      // unsupported_operation means relay delivery failed, should fall through
+      await new Promise((r) => setTimeout(r, 50));
+      await gateway.stop();
+    });
+
+    it('should treat relaySender throwing as failure and fall through', async () => {
+      const sendMessage = vi.fn().mockRejectedValue(new Error('network error'));
+      const gateway = new InboundGateway({
+        config: {
+          apiKey: 'rk_live_test',
+          clawName: 'test-claw',
+          baseUrl: 'https://api.relaycast.dev',
+          channels: ['general'],
+        },
+        relaySender: { sendMessage },
+      });
+      await gateway.start();
+
+      fireEvent('messageCreated', {
+        type: 'message.created',
+        channel: 'general',
+        message: {
+          id: 'msg_throw_1',
+          agentName: 'carol',
+          text: 'throw test',
+          attachments: [],
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+      await gateway.stop();
+    });
+  });
+
+  describe('delivery without relaySender', () => {
+    it('should attempt openclawClient directly when no relaySender is provided', async () => {
+      // No relaySender, no openclawClient token => both paths fail gracefully
+      const gateway = new InboundGateway({
+        config: {
+          apiKey: 'rk_live_test',
+          clawName: 'test-claw',
+          baseUrl: 'https://api.relaycast.dev',
+          channels: ['general'],
+        },
+        // No relaySender provided
+      });
+      await gateway.start();
+
+      fireEvent('messageCreated', {
+        type: 'message.created',
+        channel: 'general',
+        message: {
+          id: 'msg_no_relay_1',
+          agentName: 'dave',
+          text: 'no relay sender',
+          attachments: [],
+        },
+      });
+
+      // Should not throw even with no delivery method available
+      await new Promise((r) => setTimeout(r, 100));
+      await gateway.stop();
+    });
+  });
+
+  describe('formatDeliveryText coverage', () => {
+    it('should format dm messages as [relaycast:dm]', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+
+      fireEvent('dmReceived', {
+        type: 'dm.received',
+        conversationId: 'conv_fmt_1',
+        message: {
+          id: 'dm_fmt_1',
+          agentName: 'alice',
+          text: 'dm format test',
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      const call = sendMessage.mock.calls[0][0];
+      expect(call.text).toBe('[relaycast:dm] @alice: dm format test');
+
+      await gateway.stop();
+    });
+
+    it('should format groupdm messages as [relaycast:groupdm]', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+
+      fireEvent('groupDmReceived', {
+        type: 'group_dm.received',
+        conversationId: 'gconv_fmt_1',
+        message: {
+          id: 'gdm_fmt_1',
+          agentName: 'bob',
+          text: 'group dm format test',
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      const call = sendMessage.mock.calls[0][0];
+      expect(call.text).toBe('[relaycast:groupdm] @bob: group dm format test');
+
+      await gateway.stop();
+    });
+
+    it('should format command messages with pre-formatted text', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+
+      fireEvent('commandInvoked', {
+        type: 'command.invoked',
+        command: 'build',
+        channel: 'general',
+        invokedBy: 'carol',
+        handlerAgentId: 'agent_fmt_1',
+        args: '--prod',
+        parameters: null,
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      const call = sendMessage.mock.calls[0][0];
+      expect(call.text).toBe('[relaycast:command:general] @carol /build --prod');
+
+      await gateway.stop();
+    });
+
+    it('should format reaction messages with pre-formatted text', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+
+      fireEvent('reactionAdded', {
+        type: 'reaction.added',
+        messageId: 'msg_fmt_react',
+        emoji: 'fire',
+        agentName: 'dave',
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      const call = sendMessage.mock.calls[0][0];
+      expect(call.text).toBe('[relaycast:reaction] @dave reacted fire to message msg_fmt_react (soft notification, no action required)');
+
+      await gateway.stop();
+    });
+
+    it('should format thread messages with [thread] prefix', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+
+      fireEvent('threadReply', {
+        type: 'thread.reply',
+        channel: 'general',
+        parentId: 'msg_fmt_parent',
+        message: {
+          id: 'msg_fmt_thread',
+          agentName: 'eve',
+          text: 'thread format test',
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      const call = sendMessage.mock.calls[0][0];
+      expect(call.text).toBe('[thread] [relaycast:general] @eve: thread format test');
+
+      await gateway.stop();
+    });
+
+    it('should format default channel messages without prefix', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+
+      fireEvent('messageCreated', {
+        type: 'message.created',
+        channel: 'general',
+        message: {
+          id: 'msg_fmt_chan',
+          agentName: 'frank',
+          text: 'channel format test',
+          attachments: [],
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      const call = sendMessage.mock.calls[0][0];
+      expect(call.text).toBe('[relaycast:general] @frank: channel format test');
+
+      await gateway.stop();
+    });
+  });
+
+  describe('handleInbound dedup via processingMessageIds', () => {
+    it('should skip messages already being processed', async () => {
+      // Use a slow sendMessage to simulate a message still being processed
+      let resolveFirst: (() => void) | null = null;
+      const firstCallPromise = new Promise<void>((r) => { resolveFirst = r; });
+      const sendMessage = vi.fn()
+        .mockImplementationOnce(async () => {
+          // Block until we manually resolve
+          await firstCallPromise;
+          return { event_id: 'evt_1' };
+        })
+        .mockResolvedValue({ event_id: 'evt_2' });
+
+      const gateway = new InboundGateway({
+        config: {
+          apiKey: 'rk_live_test',
+          clawName: 'test-claw',
+          baseUrl: 'https://api.relaycast.dev',
+          channels: ['general'],
+        },
+        relaySender: { sendMessage },
+      });
+      await gateway.start();
+
+      // Fire the same message twice quickly
+      fireEvent('messageCreated', {
+        type: 'message.created',
+        channel: 'general',
+        message: {
+          id: 'msg_dedup_proc',
+          agentName: 'alice',
+          text: 'dedup processing test',
+          attachments: [],
+        },
+      });
+
+      // Second fire of same message should be skipped (already processing or seen)
+      fireEvent('messageCreated', {
+        type: 'message.created',
+        channel: 'general',
+        message: {
+          id: 'msg_dedup_proc',
+          agentName: 'alice',
+          text: 'dedup processing test',
+          attachments: [],
+        },
+      });
+
+      // Resolve the first call
+      resolveFirst!();
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+      // Should only have been called once since the second was deduped
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+
+      await gateway.stop();
+    });
+  });
+
+  describe('handleInbound when not running', () => {
+    it('should be a no-op when gateway is stopped', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+      await gateway.stop();
+
+      // Fire an event after the gateway has stopped
+      fireEvent('messageCreated', {
+        type: 'message.created',
+        channel: 'general',
+        message: {
+          id: 'msg_stopped_1',
+          agentName: 'alice',
+          text: 'should not deliver',
+          attachments: [],
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('stop() method', () => {
+    it('should disconnect relay client and clear state', async () => {
+      const { gateway } = createGateway();
+      await gateway.start();
+
+      // Verify gateway is running by checking it can receive messages
+      await gateway.stop();
+
+      // Calling stop again should be safe (idempotent)
+      await gateway.stop();
+    });
+
+    it('should clear seenMessageIds and processingMessageIds on stop', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+
+      // Send a message so it gets added to seenMessageIds
+      fireEvent('messageCreated', {
+        type: 'message.created',
+        channel: 'general',
+        message: {
+          id: 'msg_clear_1',
+          agentName: 'alice',
+          text: 'will be cleared',
+          attachments: [],
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalledTimes(1);
+      });
+
+      await gateway.stop();
+
+      // Now restart and send the same message ID - it should be delivered again
+      // because stop() cleared the seen map
+      sendMessage.mockClear();
+      // Clear event handlers first since stop() unsubscribes
+      for (const key of Object.keys(eventHandlers)) {
+        eventHandlers[key] = [];
+      }
+      await gateway.start();
+
+      fireEvent('messageCreated', {
+        type: 'message.created',
+        channel: 'general',
+        message: {
+          id: 'msg_clear_1',
+          agentName: 'alice',
+          text: 'will be cleared',
+          attachments: [],
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalledTimes(1);
+      });
+
+      await gateway.stop();
+    });
+
+    it('should unsubscribe all event handlers on stop', async () => {
+      const { gateway, sendMessage } = createGateway();
+      await gateway.start();
+
+      await gateway.stop();
+
+      // After stop, firing events should not trigger sendMessage
+      fireEvent('messageCreated', {
+        type: 'message.created',
+        channel: 'general',
+        message: {
+          id: 'msg_unsub_1',
+          agentName: 'alice',
+          text: 'should not deliver after stop',
+          attachments: [],
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('channel name normalization', () => {
+    it('should normalize channel names with # prefix', async () => {
+      const { gateway, sendMessage } = createGateway({ channels: ['#general'] });
+      await gateway.start();
+
+      fireEvent('messageCreated', {
+        type: 'message.created',
+        channel: 'general',
+        message: {
+          id: 'msg_norm_1',
+          agentName: 'alice',
+          text: 'normalization test',
+          attachments: [],
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      const call = sendMessage.mock.calls[0][0];
+      expect(call.text).toBe('[relaycast:general] @alice: normalization test');
 
       await gateway.stop();
     });

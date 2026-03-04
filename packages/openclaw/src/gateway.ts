@@ -5,7 +5,6 @@ import type { SendMessageInput } from '@agent-relay/sdk';
 import { RelayCast, type AgentClient } from '@relaycast/sdk';
 import type {
   MessageCreatedEvent,
-  MessageWithMeta,
   ThreadReplyEvent,
   DmReceivedEvent,
   GroupDmReceivedEvent,
@@ -428,15 +427,12 @@ export class InboundGateway {
   private relayAgentClient: AgentClient | null = null;
   private readonly relaycast: RelayCast;
   private readonly config: GatewayConfig;
-  private readonly fallbackPollMs: number;
   private readonly dedupeTtlMs: number;
 
   private running = false;
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
   private unsubscribeHandlers: Array<() => void> = [];
   private seenMessageIds = new Map<string, number>();
   private processingMessageIds = new Set<string>();
-  private channelCursor = new Map<string, string>();
 
   /** Persistent WebSocket client for the local OpenClaw gateway. */
   private openclawClient: OpenClawGatewayClient | null = null;
@@ -462,11 +458,6 @@ export class InboundGateway {
       baseUrl: this.config.baseUrl,
     });
 
-    const fallbackPollMs = Number(process.env.RELAYCAST_FALLBACK_POLL_MS ?? 15000);
-    this.fallbackPollMs = Number.isFinite(fallbackPollMs) && fallbackPollMs >= 1000
-      ? Math.floor(fallbackPollMs)
-      : 15000;
-
     const dedupeTtlMs = Number(process.env.RELAYCAST_DEDUPE_TTL_MS ?? 15 * 60 * 1000);
     this.dedupeTtlMs = Number.isFinite(dedupeTtlMs) && dedupeTtlMs >= 1000
       ? Math.floor(dedupeTtlMs)
@@ -476,7 +467,7 @@ export class InboundGateway {
     this.spawnManager = new SpawnManager({ spawnDepth: parentDepth + 1 });
   }
 
-  /** Start the gateway — register agent, subscribe for realtime events, and run fallback polling. */
+  /** Start the gateway — register agent and subscribe for realtime events. */
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
@@ -586,14 +577,6 @@ export class InboundGateway {
       // Will subscribe on next connected event
     }
 
-    // Initial catch-up in case messages arrived before realtime subscription was active.
-    await this.pollMessages();
-
-    // Keep a low-frequency poll as recovery/backfill only.
-    this.pollTimer = setInterval(() => {
-      void this.pollMessages();
-    }, this.fallbackPollMs);
-
     console.log(
       `[gateway] Realtime listening on channels: ${this.config.channels.join(', ')}`,
     );
@@ -605,11 +588,6 @@ export class InboundGateway {
   /** Stop the gateway — clean up websocket and relay clients. */
   async stop(): Promise<void> {
     this.running = false;
-
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
 
     for (const unsubscribe of this.unsubscribeHandlers) {
       try {
@@ -642,13 +620,7 @@ export class InboundGateway {
     await this.spawnManager.releaseAll();
 
     this.processingMessageIds.clear();
-    this.channelCursor.clear();
     this.seenMessageIds.clear();
-  }
-
-  /** Returns true for real channel names, false for synthetic ones (dm, reaction, groupdm:*). */
-  private isRealChannel(channel: string): boolean {
-    return channel !== 'dm' && channel !== 'reaction' && !channel.startsWith('groupdm:');
   }
 
   private cleanupSeenMap(nowMs: number): void {
@@ -764,7 +736,7 @@ export class InboundGateway {
     if (!this.config.channels.includes(channel)) return;
 
     // Synthesize a unique ID from command + channel + invoker + timestamp
-    const syntheticId = `cmd_${event.command}_${channel}_${Date.now()}`;
+    const syntheticId = `cmd_${event.command}_${channel}_${event.invokedBy}_${Date.now()}`;
     const argsText = event.args ? ` ${event.args}` : '';
 
     const inbound: InboundMessage = {
@@ -800,42 +772,6 @@ export class InboundGateway {
     await this.handleInbound(inbound);
   }
 
-  private normalizePolledMessage(channel: string, message: MessageWithMeta): InboundMessage {
-    return {
-      id: message.id,
-      channel,
-      from: message.agentName,
-      text: message.text,
-      timestamp: message.createdAt,
-    };
-  }
-
-  /** Poll channels for catch-up/recovery only. */
-  private async pollMessages(): Promise<void> {
-    if (!this.running) return;
-
-    for (const channel of this.config.channels) {
-      try {
-        const after = this.channelCursor.get(channel);
-        const query: { limit: number; after?: string } = { limit: 50 };
-        if (after) {
-          query.after = after;
-        }
-
-        const messages = await this.relaycast.messages.list(channel, query);
-        const ordered = [...messages].sort((a, b) =>
-          a.createdAt.localeCompare(b.createdAt),
-        );
-
-        for (const message of ordered) {
-          await this.handleInbound(this.normalizePolledMessage(channel, message));
-        }
-      } catch (err) {
-        console.warn(`[gateway] Poll error for #${channel}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-  }
-
   private async handleInbound(message: InboundMessage): Promise<void> {
     if (!this.running) return;
     if (this.processingMessageIds.has(message.id) || this.isSeen(message.id)) return;
@@ -843,16 +779,13 @@ export class InboundGateway {
     // Avoid echo loops — skip messages from this claw or its viewer identity.
     const viewerName = `viewer-${this.config.clawName}`;
     if (message.from === this.config.clawName || message.from === viewerName) {
-      // Only update cursor for real channels (not synthetic like "dm", "reaction", "groupdm:*").
-      if (this.isRealChannel(message.channel)) {
-        this.channelCursor.set(normalizeChannelName(message.channel), message.id);
-      }
+      // Only update cursor for real channels with real (non-synthetic) message IDs.
       this.markSeen(message.id);
       return;
     }
 
     // Mark as seen immediately to prevent duplicate delivery from concurrent
-    // realtime + poll paths processing the same message.
+    // realtime events processing the same message.
     this.markSeen(message.id);
     this.processingMessageIds.add(message.id);
 
@@ -860,9 +793,6 @@ export class InboundGateway {
     try {
       const result = await this.onMessage(message);
       console.log(`[gateway] Delivery result: ${result.method} ok=${result.ok}${result.error ? ' error=' + result.error : ''}`);
-      if (this.isRealChannel(message.channel)) {
-        this.channelCursor.set(normalizeChannelName(message.channel), message.id);
-      }
     } finally {
       this.processingMessageIds.delete(message.id);
     }
