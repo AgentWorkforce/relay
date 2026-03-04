@@ -18,7 +18,7 @@ const platformSuffixes = {
   win32: { x64: "win32-x64" },
 };
 const suffix = platformSuffixes[process.platform]?.[process.arch];
-const outName = suffix ? `${binaryName}-${suffix}` : binaryName;
+const outName = suffix ? `agent-relay-broker-${suffix}${isWindows ? '.exe' : ''}` : binaryName;
 const outPath = path.resolve(outDir, outName);
 
 function buildReleaseBinary() {

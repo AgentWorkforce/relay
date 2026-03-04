@@ -723,6 +723,7 @@ function detectPlatformSuffix(): string | null {
   const platformMap: Record<string, Record<string, string>> = {
     darwin: { arm64: 'darwin-arm64', x64: 'darwin-x64' },
     linux: { arm64: 'linux-arm64', x64: 'linux-x64' },
+    win32: { x64: 'win32-x64' },
   };
   return platformMap[process.platform]?.[process.arch] ?? null;
 }
@@ -822,7 +823,8 @@ function resolveDefaultBinaryPath(): string {
   const binDir = path.resolve(moduleDir, '..', 'bin');
   const suffix = detectPlatformSuffix();
   if (suffix) {
-    const platformBinary = path.join(binDir, `agent-relay-broker-${suffix}`);
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    const platformBinary = path.join(binDir, `agent-relay-broker-${suffix}${ext}`);
     if (fs.existsSync(platformBinary)) {
       return platformBinary;
     }
