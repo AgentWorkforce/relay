@@ -22,34 +22,11 @@ export default $config({
         : {}
     );
 
-    new sst.aws.StaticSite('OpenClawStaticPage', {
+    new sst.aws.Nextjs('OpenClawWeb', {
       path: '.',
-      build: {
-        command: 'node scripts/build-static.mjs',
-        output: 'site',
-      },
       router: {
         instance: router,
-        path: '/openclaw',
-      },
-    });
-
-    const openClawInviteFunctionArgs = {
-      handler: 'src/openclaw.handler',
-      nodejs: {
-        loader: {
-          '.md': 'text',
-        },
-      },
-    };
-
-    new sst.aws.Function('OpenClawInvitePage', {
-      ...openClawInviteFunctionArgs,
-      url: {
-        router: {
-          instance: router,
-          path: '/openclaw/invite',
-        },
+        path: '/',
       },
     });
   },

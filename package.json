@@ -69,7 +69,8 @@
     "agent-relay": "dist/src/cli/bootstrap.js"
   },
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "openclaw-web"
   ],
   "bundledDependencies": [
     "@agent-relay/sdk",
