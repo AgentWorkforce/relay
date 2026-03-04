@@ -634,6 +634,38 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
+  it('agent.release does not fire lifecycle hooks if broker startup fails before release begins', async () => {
+    const { client } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    const onStart = vi.fn();
+    const onError = vi.fn();
+
+    try {
+      const agent = await relay.spawnPty({
+        name: 'release-startup-fail-agent',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      vi.spyOn(relay as any, 'ensureStarted').mockRejectedValueOnce(new Error('startup failed'));
+
+      await expect(
+        agent.release({
+          reason: 'cleanup',
+          onStart,
+          onError,
+        })
+      ).rejects.toThrow('startup failed');
+
+      expect(onStart).not.toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
   it('system() sends messages from the system identity', async () => {
     const { client, mock } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);

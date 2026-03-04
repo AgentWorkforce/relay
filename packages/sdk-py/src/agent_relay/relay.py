@@ -111,12 +111,12 @@ class Agent:
             "name": self._name,
             "reason": reason,
         }
+        client = await self._relay._ensure_started()
         await self._relay._invoke_lifecycle_hook(
             on_start,
             context,
             f'release("{self._name}") on_start',
         )
-        client = await self._relay._ensure_started()
         try:
             await client.release(self._name, reason)
             await self._relay._invoke_lifecycle_hook(

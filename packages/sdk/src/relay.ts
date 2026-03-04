@@ -1067,8 +1067,8 @@ export class AgentRelay {
           name,
           reason: releaseOptions.reason,
         };
-        await relay.invokeLifecycleHook(releaseOptions.onStart, releaseContext, `release("${name}") onStart`);
         const client = await relay.ensureStarted();
+        await relay.invokeLifecycleHook(releaseOptions.onStart, releaseContext, `release("${name}") onStart`);
         try {
           await client.release(name, releaseOptions.reason);
           await relay.invokeLifecycleHook(

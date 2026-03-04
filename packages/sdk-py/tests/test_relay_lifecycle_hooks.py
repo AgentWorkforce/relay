@@ -221,3 +221,30 @@ async def test_release_lifecycle_hooks_support_async_callbacks():
     await agent.release("cleanup", on_success=on_success)
 
     assert success_done is True
+
+
+@pytest.mark.asyncio
+async def test_release_does_not_fire_hooks_if_broker_startup_fails():
+    relay = AgentRelay()
+    client = _FakeRelayClient()
+    relay._ensure_started = AsyncMock(return_value=client)
+    agent = await relay.spawn("ReleaseStartupFailWorker", "claude")
+
+    relay._ensure_started = AsyncMock(side_effect=RuntimeError("broker startup failed"))
+
+    start_called = False
+    error_called = False
+
+    def mark_start(_ctx):
+        nonlocal start_called
+        start_called = True
+
+    def mark_error(_ctx):
+        nonlocal error_called
+        error_called = True
+
+    with pytest.raises(RuntimeError, match="broker startup failed"):
+        await agent.release("cleanup", on_start=mark_start, on_error=mark_error)
+
+    assert start_called is False
+    assert error_called is False
