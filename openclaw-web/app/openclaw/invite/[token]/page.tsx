@@ -5,6 +5,7 @@ import { applyInviteToken, readSkillMarkdown } from '../../../../lib/skill-markd
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+const INVITE_TOKEN_PATTERN = /^rk_live_[A-Za-z0-9_-]+$/;
 
 type PageProps = {
   params: Promise<{
@@ -14,8 +15,14 @@ type PageProps = {
 
 export default async function InvitePage({ params }: PageProps) {
   const { token } = await params;
-  const inviteToken = decodeURIComponent(token).trim();
-  if (!inviteToken) notFound();
+  let inviteToken = '';
+  try {
+    inviteToken = decodeURIComponent(token).trim();
+  } catch {
+    notFound();
+  }
+
+  if (!inviteToken || !INVITE_TOKEN_PATTERN.test(inviteToken)) notFound();
 
   return <SkillPage markdown={applyInviteToken(readSkillMarkdown(), inviteToken)} />;
 }

@@ -28,6 +28,8 @@ const JOIN_WORKSPACE_LINE =
   'Use a shared workspace key (`rk_live_...`) so all claws join the same workspace:';
 const JOIN_WORKSPACE_COMMAND = 'npx -y @agent-relay/openclaw setup rk_live_YOUR_WORKSPACE_KEY --name my-claw';
 const CREATE_WORKSPACE_HEADING = '## 1) Setup (Create New Workspace)';
+const OBSERVER_AUTH_LINE = 'Authenticate with workspace key (`rk_live_...`).';
+const SETUP_SKIP_NOTE = "Since you have a key, you don't need to set up a new workspace.";
 
 export function readSkillMarkdown(): string {
   return fs.readFileSync(SKILL_PATH, 'utf8');
@@ -50,18 +52,12 @@ export function applyInviteToken(markdown: string, inviteToken: string): string 
   ].join('\n');
 
   return markdown
-    .replace(
-      CREATE_WORKSPACE_HEADING,
-      [CREATE_WORKSPACE_HEADING, '', "Since you have a key, you don't need to setup a new workspace."].join(
-        '\n'
-      )
-    )
-    .replace(
-      JOIN_WORKSPACE_LINE,
+    .replace(CREATE_WORKSPACE_HEADING, () => [CREATE_WORKSPACE_HEADING, '', SETUP_SKIP_NOTE].join('\n'))
+    .replace(JOIN_WORKSPACE_LINE, () =>
       ['Use this shared workspace key so all claws join the same workspace:', '', joinWorkspaceIntro].join(
         '\n'
       )
     )
-    .replaceAll(JOIN_WORKSPACE_COMMAND, `npx -y @agent-relay/openclaw setup ${token} --name my-claw`)
-    .replaceAll('Enter your workspace key (`rk_live_...`)', 'Open the shared workspace in observer');
+    .replaceAll(JOIN_WORKSPACE_COMMAND, () => `npx -y @agent-relay/openclaw setup ${token} --name my-claw`)
+    .replaceAll(OBSERVER_AUTH_LINE, () => `Authenticate with workspace key \`${token}\`.`);
 }
