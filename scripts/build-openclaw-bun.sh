@@ -38,10 +38,9 @@ info "Using bun $(bun --version)"
 rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR"
 
-# Build TypeScript first
-info "Building TypeScript..."
-cd "$PKG_DIR" && npm run build
-cd "$ROOT_DIR"
+# Build all workspace packages (SDK must be built before openclaw)
+info "Building packages..."
+npm run build:packages
 
 # Targets for cross-compilation
 TARGETS=(

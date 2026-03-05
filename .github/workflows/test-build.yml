@@ -4,11 +4,17 @@ on:
   push:
     paths:
       - 'scripts/build-bun.sh'
+      - 'scripts/build-openclaw-bun.sh'
+      - 'packages/openclaw/**'
       - '.github/workflows/test-build.yml'
+      - '.github/workflows/build-openclaw-binary.yml'
   pull_request:
     paths:
       - 'scripts/build-bun.sh'
+      - 'scripts/build-openclaw-bun.sh'
+      - 'packages/openclaw/**'
       - '.github/workflows/test-build.yml'
+      - '.github/workflows/build-openclaw-binary.yml'
   workflow_dispatch:
 
 jobs:
@@ -90,6 +96,58 @@ jobs:
             fi
           done
 
+  test-openclaw-build:
+    name: Test openclaw build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate script syntax
+        run: bash -n scripts/build-openclaw-bun.sh
+
+      - name: Build all packages (verify openclaw compiles)
+        run: npm run build:packages
+
+      - name: Build openclaw binary (current platform)
+        run: |
+          mkdir -p .release
+          VERSION=$(node -p "require('./packages/openclaw/package.json').version")
+          bun build \
+            --compile \
+            --minify \
+            --define="process.env.RELAY_OPENCLAW_VERSION=\"$VERSION\"" \
+            --external dockerode \
+            packages/openclaw/dist/cli.js \
+            --outfile .release/relay-openclaw
+
+      - name: Verify binary works
+        run: |
+          chmod +x .release/relay-openclaw
+          .release/relay-openclaw --version
+          echo "✓ relay-openclaw binary executes successfully"
+          .release/relay-openclaw help
+          echo "✓ relay-openclaw help works"
+
   test-build-edge-cases:
     name: Test edge cases
     runs-on: ubuntu-latest
@@ -136,7 +194,7 @@ jobs:
 
   summary:
     name: Summary
-    needs: [test-build-script, test-build-edge-cases]
+    needs: [test-build-script, test-openclaw-build, test-build-edge-cases]
     runs-on: ubuntu-latest
     if: always()
 
@@ -148,4 +206,5 @@ jobs:
           echo "| Test | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Build (macOS + Ubuntu) | ${{ needs.test-build-script.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| OpenClaw build (macOS + Ubuntu) | ${{ needs.test-openclaw-build.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Edge cases | ${{ needs.test-build-edge-cases.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
