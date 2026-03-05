@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+    paths:
+      - openclaw-web/**
+      - packages/openclaw/skill/SKILL.md
+      - .github/workflows/deploy-openclaw-page.yml
   workflow_dispatch:
     inputs:
       region:
