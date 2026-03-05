@@ -4,7 +4,25 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const SKILL_PATH = path.resolve(__dirname, '../../packages/openclaw/skill/SKILL.md');
+
+function resolveSkillPath(): string {
+  const candidates = [
+    path.resolve(process.cwd(), 'packages/openclaw/skill/SKILL.md'),
+    path.resolve(process.cwd(), '../packages/openclaw/skill/SKILL.md'),
+    path.resolve(process.cwd(), '../../packages/openclaw/skill/SKILL.md'),
+    path.resolve(__dirname, '../../packages/openclaw/skill/SKILL.md'),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`Unable to locate SKILL.md. Checked: ${candidates.join(', ')}`);
+}
+
+const SKILL_PATH = resolveSkillPath();
 
 const JOIN_WORKSPACE_LINE =
   'Use a shared workspace key (`rk_live_...`) so all claws join the same workspace:';
@@ -44,6 +62,6 @@ export function applyInviteToken(markdown: string, inviteToken: string): string 
         '\n'
       )
     )
-    .replace(JOIN_WORKSPACE_COMMAND, `npx -y @agent-relay/openclaw setup ${token} --name my-claw`)
+    .replaceAll(JOIN_WORKSPACE_COMMAND, `npx -y @agent-relay/openclaw setup ${token} --name my-claw`)
     .replaceAll('Enter your workspace key (`rk_live_...`)', 'Open the shared workspace in observer');
 }
