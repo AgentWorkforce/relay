@@ -1,4 +1,4 @@
-import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify, type KeyObject } from 'node:crypto';
 import { chmod, readFile, rename, writeFile, mkdir } from 'node:fs/promises';
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
@@ -71,9 +71,12 @@ const AUTH_PROFILES: Record<string, AuthProfile> = {
     signatureEncoding: 'base64url',
   },
   'clawdbot-v1': {
+    // Server (openclaw/openclaw device-identity.ts) accepts both PEM and raw-base64url
+    // public keys, and decodes signatures in both base64url and base64. Use base64url
+    // for consistency — matches the server's own signDevicePayload() output.
     name: 'clawdbot-v1',
-    publicKeyFormat: 'spki-pem',
-    signatureEncoding: 'base64',
+    publicKeyFormat: 'raw-base64url',
+    signatureEncoding: 'base64url',
   },
 };
 
@@ -342,8 +345,35 @@ function signConnectPayload(
 
   // Ed25519 sign — no hash algorithm needed (null), it's built into Ed25519
   const signature = sign(null, payloadBytes, device.privateKeyObj);
+  const encoded = Buffer.from(signature).toString(profile.signatureEncoding);
 
-  return Buffer.from(signature).toString(profile.signatureEncoding);
+  // Self-verification: replicate what the server does to confirm our signature
+  // is valid before sending. If this fails, the key/payload are mismatched locally.
+  if (process.env.RELAY_LOG_LEVEL === 'DEBUG' || process.env.OPENCLAW_WS_DEBUG === '1') {
+    try {
+      // Derive public key from private key (same as server would use from our publicKey field)
+      const pubKey = createPublicKey(device.privateKeyObj);
+      const selfVerifyRaw = verify(null, payloadBytes, pubKey, signature);
+
+      // Also verify the round-trip: decode our encoded signature like the server would
+      const decodedSig = Buffer.from(encoded, profile.signatureEncoding === 'base64url' ? 'base64url' : 'base64');
+      const selfVerifyEncoded = verify(null, payloadBytes, pubKey, decodedSig);
+
+      // Verify deviceId matches public key
+      const rawPubBytes = pubKey.export({ type: 'spki', format: 'der' }).subarray(12);
+      const derivedDeviceId = createHash('sha256').update(rawPubBytes).digest('hex');
+      const deviceIdMatch = derivedDeviceId === device.deviceId;
+
+      console.log(`[ws-auth-debug] self-verify: raw=${selfVerifyRaw} encoded=${selfVerifyEncoded} deviceIdMatch=${deviceIdMatch} derivedId=${derivedDeviceId.slice(0, 16)}...`);
+      if (!deviceIdMatch) {
+        console.error(`[ws-auth-debug] DEVICE ID MISMATCH: derived=${derivedDeviceId} sent=${device.deviceId}`);
+      }
+    } catch (err) {
+      console.error(`[ws-auth-debug] self-verify error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return encoded;
 }
 
 
