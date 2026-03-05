@@ -1,4 +1,4 @@
-import { createHash, createPrivateKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 import { chmod, readFile, rename, writeFile, mkdir } from 'node:fs/promises';
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
@@ -49,13 +49,27 @@ function normalizeChannelName(channel: string): string {
 // Ed25519 device identity for OpenClaw gateway WebSocket auth
 // ---------------------------------------------------------------------------
 
+/**
+ * WS auth compatibility mode.
+ * - `undefined` (default): use base64url encoding for public keys and signatures.
+ * - `'clawdbot'`: use PEM-formatted keys and standard base64 signatures.
+ */
+type WsAuthCompat = 'clawdbot' | undefined;
+
+function getWsAuthCompat(): WsAuthCompat {
+  const val = process.env.OPENCLAW_WS_AUTH_COMPAT;
+  if (val === 'clawdbot') return 'clawdbot';
+  return undefined;
+}
+
 interface DeviceIdentity {
-  publicKeyB64: string;    // base64url-encoded raw Ed25519 public key
+  publicKeyB64: string;    // base64url-encoded raw Ed25519 public key (default mode)
+  publicKeyPem?: string;   // PEM-encoded SPKI public key (clawdbot compat mode)
   privateKeyObj: KeyObject; // Node.js KeyObject for signing
   deviceId: string;         // SHA-256 hex of the raw public key
 }
 
-function generateDeviceIdentity(): DeviceIdentity {
+function generateDeviceIdentity(compat?: WsAuthCompat): DeviceIdentity {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 
   // Extract raw 32-byte public key from SPKI DER (12-byte header for Ed25519)
@@ -64,11 +78,17 @@ function generateDeviceIdentity(): DeviceIdentity {
   const deviceId = createHash('sha256').update(rawPublicBytes).digest('hex');
   const publicKeyB64 = Buffer.from(rawPublicBytes).toString('base64url');
 
-  return {
+  const identity: DeviceIdentity = {
     publicKeyB64,
     privateKeyObj: privateKey,
     deviceId,
   };
+
+  if (compat === 'clawdbot') {
+    identity.publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }) as string;
+  }
+
+  return identity;
 }
 
 /** Path to persisted device identity file. */
@@ -80,6 +100,10 @@ interface PersistedDevice {
   publicKeyB64: string;
   privateKeyPkcs8B64: string; // base64-encoded PKCS#8 DER
   deviceId: string;
+  /** PEM-encoded SPKI public key — present when generated with clawdbot compat mode. */
+  publicKeyPem?: string;
+  /** PEM-encoded PKCS#8 private key — present when generated with clawdbot compat mode. */
+  privateKeyPem?: string;
 }
 
 /**
@@ -89,6 +113,7 @@ interface PersistedDevice {
  */
 async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
   const filePath = deviceIdentityPath();
+  const compat = getWsAuthCompat();
 
   // Attempt to load existing identity (no existsSync — just try the read)
   try {
@@ -102,11 +127,31 @@ async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
     // Ensure permissions are tight even if file was created with looser perms
     await chmod(filePath, 0o600).catch(() => {});
     console.log(`[openclaw-ws] Loaded persisted device identity (deviceId=${persisted.deviceId.slice(0, 12)}...)`);
-    return {
+
+    const identity: DeviceIdentity = {
       publicKeyB64: persisted.publicKeyB64,
       privateKeyObj,
       deviceId: persisted.deviceId,
     };
+
+    // If compat mode is clawdbot but the persisted device has no PEM keys,
+    // derive them on-the-fly from the existing DER key material.
+    if (compat === 'clawdbot') {
+      if (persisted.publicKeyPem) {
+        identity.publicKeyPem = persisted.publicKeyPem;
+      } else {
+        // Reconstruct SPKI public key from the stored base64url raw bytes
+        const rawPublicBytes = Buffer.from(persisted.publicKeyB64, 'base64url');
+        // Ed25519 SPKI DER = 12-byte header + 32-byte raw key
+        const spkiHeader = Buffer.from('302a300506032b6570032100', 'hex');
+        const spkiDer = Buffer.concat([spkiHeader, rawPublicBytes]);
+        const publicKeyObj = createPublicKey({ key: spkiDer, format: 'der', type: 'spki' });
+        identity.publicKeyPem = publicKeyObj.export({ type: 'spki', format: 'pem' }) as string;
+        console.log('[openclaw-ws] Derived PEM public key from existing DER key for clawdbot compat mode');
+      }
+    }
+
+    return identity;
   } catch (err) {
     // ENOENT is expected on first run; other errors mean corruption
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -115,13 +160,18 @@ async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
   }
 
   // Generate fresh and persist via atomic write-then-rename
-  const identity = generateDeviceIdentity();
+  const identity = generateDeviceIdentity(compat);
   const pkcs8Der = identity.privateKeyObj.export({ type: 'pkcs8', format: 'der' });
   const persisted: PersistedDevice = {
     publicKeyB64: identity.publicKeyB64,
     privateKeyPkcs8B64: Buffer.from(pkcs8Der).toString('base64'),
     deviceId: identity.deviceId,
   };
+
+  if (compat === 'clawdbot' && identity.publicKeyPem) {
+    persisted.publicKeyPem = identity.publicKeyPem;
+    persisted.privateKeyPem = identity.privateKeyObj.export({ type: 'pkcs8', format: 'pem' }) as string;
+  }
 
   try {
     const dir = join(openclawHome(), 'workspace', 'relaycast');
@@ -151,6 +201,8 @@ function signConnectPayload(
     nonce: string;
   },
 ): string {
+  const compat = getWsAuthCompat();
+
   // v3 payload format: v3|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce|platform|deviceFamily
   const payload = [
     'v3',
@@ -168,8 +220,20 @@ function signConnectPayload(
 
   const payloadBytes = Buffer.from(payload, 'utf-8');
 
+  // Diagnostic logging: log pre-auth fingerprint (no secrets — only a truncated
+  // payload hash so this is safe to emit at info level).
+  const keyFormat = compat === 'clawdbot' ? 'pem' : 'base64url';
+  const payloadHash = createHash('sha256').update(payloadBytes).digest('hex').slice(0, 16);
+  console.log(`[ws-auth] compat=${compat ?? 'default'} deviceId=${device.deviceId.slice(0, 16)}... keyFormat=${keyFormat} payloadHash=${payloadHash}`);
+
   // Ed25519 sign — no hash algorithm needed (null), it's built into Ed25519
   const signature = sign(null, payloadBytes, device.privateKeyObj);
+
+  // In clawdbot compat mode, return standard base64 (with +/= chars) instead of base64url
+  if (compat === 'clawdbot') {
+    return Buffer.from(signature).toString('base64');
+  }
+
   return Buffer.from(signature).toString('base64url');
 }
 
@@ -212,7 +276,7 @@ export class OpenClawGatewayClient {
   constructor(token: string, port: number, device?: DeviceIdentity) {
     this.token = token;
     this.port = port;
-    this.device = device ?? generateDeviceIdentity();
+    this.device = device ?? generateDeviceIdentity(getWsAuthCompat());
   }
 
   /**
@@ -363,6 +427,13 @@ export class OpenClawGatewayClient {
         nonce: payload.nonce,
       });
 
+      // In clawdbot compat mode, send the PEM-formatted public key if available;
+      // otherwise fall back to the standard base64url raw key.
+      const compat = getWsAuthCompat();
+      const publicKeyField = compat === 'clawdbot' && this.device.publicKeyPem
+        ? this.device.publicKeyPem
+        : this.device.publicKeyB64;
+
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         console.warn('[openclaw-ws] WebSocket not open when trying to send connect');
         return;
@@ -391,7 +462,7 @@ export class OpenClawGatewayClient {
           userAgent: 'relaycast-gateway/1.0.0',
           device: {
             id: this.device.deviceId,
-            publicKey: this.device.publicKeyB64,
+            publicKey: publicKeyField,
             signature,
             signedAt,
             nonce: payload.nonce,
@@ -423,7 +494,10 @@ export class OpenClawGatewayClient {
             console.error(`[openclaw-ws] Approve this device:  openclaw devices approve ${requestId}`);
           }
           console.error(`[openclaw-ws] Device ID: ${this.device.deviceId.slice(0, 16)}...`);
-          console.error('[openclaw-ws] Ensure OPENCLAW_GATEWAY_TOKEN matches ~/.openclaw/openclaw.json gateway.auth.token');
+          const configHint = getWsAuthCompat() === 'clawdbot'
+            ? '~/.clawdbot/clawdbot.json'
+            : '~/.openclaw/openclaw.json';
+          console.error(`[openclaw-ws] Ensure OPENCLAW_GATEWAY_TOKEN matches ${configHint} gateway.auth.token`);
           this.pairingRejected = true;
         } else {
           console.warn(`[openclaw-ws] Auth rejected: ${errStr}`);
