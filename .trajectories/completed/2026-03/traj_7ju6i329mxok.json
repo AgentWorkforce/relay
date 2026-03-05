@@ -1,0 +1,61 @@
+{
+  "id": "traj_7ju6i329mxok",
+  "version": 1,
+  "task": {
+    "title": "Analyze @agent-relay/openclaw split to @relaycast/openclaw"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-05T19:52:24.102Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-03-05T19:52:24.104Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_2xaltemhuyhx",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-05T19:52:24.145Z",
+      "events": [
+        {
+          "ts": 1772740344146,
+          "type": "decision",
+          "content": "Use existing BOUNDARY.md as baseline and validate against current source exports: Use existing BOUNDARY.md as baseline and validate against current source exports",
+          "raw": {
+            "question": "Use existing BOUNDARY.md as baseline and validate against current source exports",
+            "chosen": "Use existing BOUNDARY.md as baseline and validate against current source exports",
+            "alternatives": [],
+            "reasoning": "Boundary doc exists but must be checked against real files and sibling @relaycast/openclaw package"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1772741654438,
+          "type": "decision",
+          "content": "@relaycast/openclaw should own only config detection, .env IO, lightweight delivery bridge, and shared types/constants: @relaycast/openclaw should own only config detection, .env IO, lightweight delivery bridge, and shared types/constants",
+          "raw": {
+            "question": "@relaycast/openclaw should own only config detection, .env IO, lightweight delivery bridge, and shared types/constants",
+            "chosen": "@relaycast/openclaw should own only config detection, .env IO, lightweight delivery bridge, and shared types/constants",
+            "alternatives": [],
+            "reasoning": "Current package exports orchestration/runtime/spawn/MCP concerns that belong in @agent-relay/openclaw; keeping bridge package minimal avoids heavy deps and circular boundaries"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-05T20:14:20.090Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-03-05T20:14:20.090Z",
+  "retrospective": {
+    "summary": "Analyzed openclaw package boundary and proposed @relaycast/openclaw ownership, API surface, and breaking changes for SDK/bridge split",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

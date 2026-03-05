@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "id": "trace_z9rs5eu64tsw",
+  "timestamp": "2026-03-05T15:08:05.148Z",
+  "trajectory": "traj_968u0ek22iru",
+  "files": [
+    {
+      "path": "packages/sdk/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 49,
+              "end_line": 59,
+              "revision": "839efd8d619d2742825d355927149924ca2bdb9d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/workflows/validator.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 88,
+              "end_line": 122,
+              "revision": "839efd8d619d2742825d355927149924ca2bdb9d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/cli/commands/setup.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 5,
+              "end_line": 12,
+              "revision": "839efd8d619d2742825d355927149924ca2bdb9d"
+            },
+            {
+              "start_line": 16,
+              "end_line": 22,
+              "revision": "839efd8d619d2742825d355927149924ca2bdb9d"
+            },
+            {
+              "start_line": 294,
+              "end_line": 316,
+              "revision": "839efd8d619d2742825d355927149924ca2bdb9d"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

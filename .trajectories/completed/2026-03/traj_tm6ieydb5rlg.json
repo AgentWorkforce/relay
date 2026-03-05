@@ -1,0 +1,49 @@
+{
+  "id": "traj_tm6ieydb5rlg",
+  "version": 1,
+  "task": {
+    "title": "Analyze openclaw package split between @agent-relay/openclaw and @relaycast/openclaw"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-05T15:49:17.329Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-03-05T15:49:17.331Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_hc6rfskx5euz",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-05T15:51:30.965Z",
+      "events": [
+        {
+          "ts": 1772725890968,
+          "type": "decision",
+          "content": "Keep orchestration runtime in @agent-relay/openclaw; move shared OpenClaw config primitives to @relaycast/openclaw: Keep orchestration runtime in @agent-relay/openclaw; move shared OpenClaw config primitives to @relaycast/openclaw",
+          "raw": {
+            "question": "Keep orchestration runtime in @agent-relay/openclaw; move shared OpenClaw config primitives to @relaycast/openclaw",
+            "chosen": "Keep orchestration runtime in @agent-relay/openclaw; move shared OpenClaw config primitives to @relaycast/openclaw",
+            "alternatives": [],
+            "reasoning": "Matches target architecture: orchestration package owns gateway/spawn/mcp/control; relaycast package owns reusable detection and relaycast env config shared by setup and status flows."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-05T15:51:31.007Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-03-05T15:51:31.007Z",
+  "retrospective": {
+    "summary": "Analyzed @agent-relay/openclaw vs @relaycast/openclaw and produced stay/migrate boundary, required imports, and migration risk assessment.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

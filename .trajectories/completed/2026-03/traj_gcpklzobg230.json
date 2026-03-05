@@ -1,0 +1,49 @@
+{
+  "id": "traj_gcpklzobg230",
+  "version": 1,
+  "task": {
+    "title": "Analyze openclaw separation of concerns and propose SDK bridge API"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-05T16:26:59.011Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-03-05T16:26:59.012Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_v8ns4fshanbk",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-05T16:29:28.014Z",
+      "events": [
+        {
+          "ts": 1772728168015,
+          "type": "decision",
+          "content": "Treat openclaw package as overloaded; keep @relaycast/openclaw limited to config/env/bridge/types and move orchestration to @agent-relay/openclaw: Treat openclaw package as overloaded; keep @relaycast/openclaw limited to config/env/bridge/types and move orchestration to @agent-relay/openclaw",
+          "raw": {
+            "question": "Treat openclaw package as overloaded; keep @relaycast/openclaw limited to config/env/bridge/types and move orchestration to @agent-relay/openclaw",
+            "chosen": "Treat openclaw package as overloaded; keep @relaycast/openclaw limited to config/env/bridge/types and move orchestration to @agent-relay/openclaw",
+            "alternatives": [],
+            "reasoning": "Current index exports include setup/runtime/spawn/MCP/identity/auth concerns and dependency on @agent-relay/sdk, which violates SDK-bridge boundary"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-05T16:29:43.120Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-03-05T16:29:43.120Z",
+  "retrospective": {
+    "summary": "Delivered separation-of-concerns analysis for openclaw package: current strengths, missing SDK primitives, proposed @relaycast/openclaw API, and required breaking changes for package split",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "id": "traj_4fks0nf1cqsr",
+  "version": 1,
+  "task": {
+    "title": "Plan package-boundary migration for openclaw split"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-05T16:49:42.725Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-03-05T16:49:42.728Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_1wev0ogs33dj",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-05T16:53:04.219Z",
+      "events": [
+        {
+          "ts": 1772729584221,
+          "type": "decision",
+          "content": "Create new workspace package at packages/relaycast-openclaw and migrate config/types/inject there first: Create new workspace package at packages/relaycast-openclaw and migrate config/types/inject there first",
+          "raw": {
+            "question": "Create new workspace package at packages/relaycast-openclaw and migrate config/types/inject there first",
+            "chosen": "Create new workspace package at packages/relaycast-openclaw and migrate config/types/inject there first",
+            "alternatives": [],
+            "reasoning": "Avoids renaming existing @agent-relay/openclaw package path and enables phased non-breaking rollout with compatibility re-exports"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-05T16:54:02.256Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-03-05T16:54:02.256Z",
+  "retrospective": {
+    "summary": "Delivered phased file-level migration plan for splitting @relaycast/openclaw from @agent-relay/openclaw",
+    "approach": "Standard approach",
+    "confidence": 0.89
+  }
+}
