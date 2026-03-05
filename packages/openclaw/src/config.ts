@@ -1,14 +1,14 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 import type { GatewayConfig } from './types.js';
 
 export interface OpenClawDetection {
   /** Whether OpenClaw is installed. */
   installed: boolean;
-  /** Path to ~/.openclaw/ */
+  /** Path to ~/.openclaw/ (or ~/.clawdbot/ for Clawdbot variant) */
   homeDir: string;
   /** Path to ~/.openclaw/workspace/ */
   workspaceDir: string;
@@ -16,19 +16,105 @@ export interface OpenClawDetection {
   configFile: string | null;
   /** Parsed openclaw.json (if exists). */
   config: Record<string, unknown> | null;
+  /** Detected variant: 'clawdbot' or 'openclaw'. */
+  variant: 'clawdbot' | 'openclaw';
+  /** Config filename (e.g. 'clawdbot.json' or 'openclaw.json'). */
+  configFilename: string;
 }
 
-/** Default OpenClaw config directory. Prefers OPENCLAW_HOME env var. */
+/**
+ * Determine whether a directory has a valid, parseable config file.
+ * Uses sync I/O — only called during startup, not on hot path.
+ */
+function hasValidConfig(dir: string, filename: string): boolean {
+  const configPath = join(dir, filename);
+  if (!existsSync(configPath)) return false;
+  try {
+    const raw = readFileSync(configPath, 'utf-8');
+    JSON.parse(raw);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Default OpenClaw config directory. Checks env vars and probes for Clawdbot variant. */
 export function openclawHome(): string {
-  return process.env.OPENCLAW_HOME || join(homedir(), '.openclaw');
+  if (process.env.OPENCLAW_CONFIG_PATH) {
+    // Direct config file path — return its parent directory
+    return dirname(process.env.OPENCLAW_CONFIG_PATH);
+  }
+  if (process.env.OPENCLAW_HOME) {
+    return process.env.OPENCLAW_HOME;
+  }
+  // Probe by valid config file presence (not just directory existence).
+  // When both dirs exist, prefer the one with a valid config file.
+  const clawdbotHome = join(homedir(), '.clawdbot');
+  const openclawHomePath = join(homedir(), '.openclaw');
+  const clawdbotValid = hasValidConfig(clawdbotHome, 'clawdbot.json');
+  const openclawValid = hasValidConfig(openclawHomePath, 'openclaw.json');
+
+  if (clawdbotValid && !openclawValid) return clawdbotHome;
+  if (openclawValid && !clawdbotValid) return openclawHomePath;
+  // Both valid or neither valid — prefer clawdbot if its dir exists (marketplace image)
+  if (existsSync(clawdbotHome)) return clawdbotHome;
+  return openclawHomePath;
 }
 
 /**
  * Detect whether OpenClaw is installed and return paths/config.
  */
 export async function detectOpenClaw(): Promise<OpenClawDetection> {
-  const homeDir = openclawHome();
-  const configPath = join(homeDir, 'openclaw.json');
+  // Determine variant and config filename
+  let homeDir: string;
+  let variant: 'clawdbot' | 'openclaw';
+  let configFilename: string;
+
+  if (process.env.OPENCLAW_CONFIG_PATH) {
+    // Direct config file path provided
+    homeDir = dirname(process.env.OPENCLAW_CONFIG_PATH);
+    const base = basename(process.env.OPENCLAW_CONFIG_PATH);
+    configFilename = base;
+    variant = base === 'clawdbot.json' ? 'clawdbot' : 'openclaw';
+  } else if (process.env.OPENCLAW_HOME) {
+    homeDir = process.env.OPENCLAW_HOME;
+    // Check if the home dir looks like a Clawdbot installation
+    const clawdbotConfig = join(homeDir, 'clawdbot.json');
+    if (existsSync(clawdbotConfig)) {
+      variant = 'clawdbot';
+      configFilename = 'clawdbot.json';
+    } else {
+      variant = 'openclaw';
+      configFilename = 'openclaw.json';
+    }
+  } else {
+    // Probe by valid config file, not just directory existence.
+    const clawdbotHome = join(homedir(), '.clawdbot');
+    const openclawHomePath = join(homedir(), '.openclaw');
+    const clawdbotValid = hasValidConfig(clawdbotHome, 'clawdbot.json');
+    const openclawValid = hasValidConfig(openclawHomePath, 'openclaw.json');
+
+    if (clawdbotValid && !openclawValid) {
+      homeDir = clawdbotHome;
+      variant = 'clawdbot';
+      configFilename = 'clawdbot.json';
+    } else if (openclawValid && !clawdbotValid) {
+      homeDir = openclawHomePath;
+      variant = 'openclaw';
+      configFilename = 'openclaw.json';
+    } else if (existsSync(clawdbotHome)) {
+      // Both valid or neither — prefer clawdbot if present (marketplace image)
+      homeDir = clawdbotHome;
+      variant = 'clawdbot';
+      configFilename = 'clawdbot.json';
+    } else {
+      homeDir = openclawHomePath;
+      variant = 'openclaw';
+      configFilename = 'openclaw.json';
+    }
+  }
+
+  const configPath = join(homeDir, configFilename);
   const workspaceDir = join(homeDir, 'workspace');
 
   const installed = existsSync(homeDir);
@@ -45,7 +131,7 @@ export async function detectOpenClaw(): Promise<OpenClawDetection> {
     }
   }
 
-  return { installed, homeDir, workspaceDir, configFile, config };
+  return { installed, homeDir, workspaceDir, configFile, config, variant, configFilename };
 }
 
 /**

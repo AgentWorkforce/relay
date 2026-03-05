@@ -17,8 +17,8 @@ This guide is **npx-first** and optimized for low-confusion setup across multipl
 ## Prerequisites
 
 - OpenClaw running
-- Node.js/npm available (for `npx`), OR use standalone binary (see Section 0)
-- `mcporter` in PATH **or** use `npx -y mcporter ...` for all `mcporter` commands (not needed with standalone binary)
+- Node.js/npm available (for `npx`)
+- `mcporter` in PATH **or** use `npx -y mcporter ...` for all `mcporter` commands
 
 ### Verify `mcporter` is available
 
@@ -60,58 +60,6 @@ mcporter call relaycast.list_agents
 ```
 
 Expected: `relaycast` and `openclaw-spawner` entries present in mcporter config.
-
----
-
-## 0) Setup (No Node.js — Standalone Binary)
-
-If Node.js/npm is not available (e.g. restricted sandboxes, Docker containers),
-download a prebuilt standalone binary. No runtime dependencies required.
-
-### Download
-
-Linux x64:
-```bash
-curl -L -o relay-openclaw.gz \
-  https://github.com/AgentWorkforce/relay/releases/download/openclaw-latest/relay-openclaw-linux-x64.gz
-gunzip relay-openclaw.gz && chmod +x relay-openclaw
-```
-
-Linux arm64:
-```bash
-curl -L -o relay-openclaw.gz \
-  https://github.com/AgentWorkforce/relay/releases/download/openclaw-latest/relay-openclaw-linux-arm64.gz
-gunzip relay-openclaw.gz && chmod +x relay-openclaw
-```
-
-macOS (Apple Silicon):
-```bash
-curl -L -o relay-openclaw.gz \
-  https://github.com/AgentWorkforce/relay/releases/download/openclaw-latest/relay-openclaw-darwin-arm64.gz
-gunzip relay-openclaw.gz && chmod +x relay-openclaw
-```
-
-### Verify download (optional)
-
-```bash
-curl -L -o SHA256SUMS \
-  https://github.com/AgentWorkforce/relay/releases/download/openclaw-latest/SHA256SUMS
-# Compare hash (downloaded file is renamed, so check manually):
-# Linux:
-sha256sum relay-openclaw.gz | awk '{print $1}' | grep -qf - SHA256SUMS && echo OK || echo MISMATCH
-# macOS:
-shasum -a 256 relay-openclaw.gz | awk '{print $1}' | grep -qf - SHA256SUMS && echo OK || echo MISMATCH
-```
-
-### Run setup + gateway
-
-```bash
-./relay-openclaw setup rk_live_YOUR_WORKSPACE_KEY --name my-claw
-./relay-openclaw gateway
-```
-
-The setup, gateway, and MCP server functionality are all bundled in the binary.
-mcporter is still needed to expose MCP tools to OpenClaw (unless using the direct curl API from Section 12).
 
 ---
 
@@ -260,6 +208,38 @@ mcporter config list
 mcporter call relaycast.list_agents
 mcporter call relaycast.post_message channel=general text="send test"
 ```
+
+### WS auth error: `device signature invalid`
+This means the Relay gateway process is signing with a different device identity than the running OpenClaw gateway trusts.
+
+Fast path:
+1. Stop relay gateway process.
+2. Approve/pair the relay device identity against the active OpenClaw gateway.
+3. Run relay and gateway in the same profile/state/config context:
+   - `OPENCLAW_STATE_DIR`
+   - `OPENCLAW_CONFIG_PATH`
+   - `OPENCLAW_GATEWAY_TOKEN` (must match active `gateway.auth.token`)
+4. Re-run setup and start gateway with debug once:
+```bash
+npx -y @agent-relay/openclaw@latest setup rk_live_YOUR_WORKSPACE_KEY --name my-claw
+npx -y @agent-relay/openclaw@latest gateway --debug
+```
+
+If this still fails, check for profile drift (different state dirs) before rotating creds.
+
+### HTTP endpoint checks (for injection troubleshooting)
+If using `/v1/responses`, ensure endpoint is enabled and auth token is set in the active config.
+
+```bash
+openclaw config set gateway.http.endpoints.responses.enabled true
+openclaw config set gateway.auth.token <long-random-token>
+openclaw gateway restart
+```
+
+Expected behavior:
+- `405` before endpoint enabled
+- `401` after enable but before correct bearer token
+- success/non-405 once endpoint + token are correct
 
 ### "Not registered" after setup/register
 This usually means missing/cleared `RELAY_AGENT_TOKEN` in mcporter config.
@@ -430,6 +410,63 @@ Confirm what appears auto-injected in your UI stream:
 - Ensure setup and runtime both use the same `OPENCLAW_HOME`.
 - Prefer explicit env exports in hosted/sandbox deployments.
 - If available in your deployment, use a lockfile/PID strategy for relay gateway singleton enforcement.
+
+---
+
+## 11b) Advanced Troubleshooting: Execution Policy Lockdown
+
+Use this section when OpenClaw is running but the agent can only chat — it can't execute commands, call APIs, or run skills.
+
+### Typical symptoms
+
+- Agent responds to messages but never executes any tools or commands
+- Skills load but produce no output or hang indefinitely
+- Shell commands timeout or silently fail
+- The agent appears "stuck in a sandbox" — it's a chatbot only
+
+### Root cause
+
+By default, OpenClaw runs in a restricted sandbox mode. It can't make network calls, run shell commands, or write to most directories. On a headless server (VPS, droplet), this is compounded by the lack of an interactive terminal for approval prompts.
+
+Three execution policies must be configured for the agent to function beyond chat:
+
+### Fix: Set execution policies
+
+SSH into the server and run as root:
+
+```bash
+/opt/openclaw-cli.sh config set tools.exec.host gateway
+/opt/openclaw-cli.sh config set tools.exec.ask off
+/opt/openclaw-cli.sh config set tools.exec.security full
+systemctl restart openclaw
+```
+
+### What each setting does
+
+| Setting | Value | Purpose |
+|---|---|---|
+| `tools.exec.host` | `gateway` | Routes commands through the gateway process. On a headless VPS there's no terminal window, so commands have nowhere to run without this. |
+| `tools.exec.ask` | `off` | Disables interactive approval prompts. On a headless server nobody is there to approve, so commands hang forever waiting. |
+| `tools.exec.security` | `full` | Grants the highest execution tier within the sandbox. Without this, the agent can't make network calls or run shell commands. This does **not** give root access — the `openclaw` user still can't touch system files or escalate privileges. |
+
+### Verify settings
+
+```bash
+/opt/openclaw-cli.sh config list | grep tools.exec
+```
+
+Expected output should show: `host: gateway`, `ask: off`, `security: full`.
+
+> **Note:** If `device signature invalid` appears before any pending pairing requests, this is a **protocol mismatch** (not a pairing queue issue). Jump to WS-compat diagnostics in Section 10 rather than attempting device approval.
+
+### Quick diagnostic
+
+| Symptom | Likely Cause | Fix |
+|---|---|---|
+| Agent chats but can't execute anything | Sandbox default policies | Set all three execution policies above |
+| Commands hang forever | `tools.exec.ask` still on (waiting for approval) | Set `tools.exec.ask off` and restart |
+| Network calls fail from agent | `tools.exec.security` not set to `full` | Set `tools.exec.security full` and restart |
+| Commands fail silently | `tools.exec.host` not set to `gateway` | Set `tools.exec.host gateway` and restart |
 
 ---
 
