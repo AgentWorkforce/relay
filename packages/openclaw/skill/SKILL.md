@@ -17,8 +17,8 @@ This guide is **npx-first** and optimized for low-confusion setup across multipl
 ## Prerequisites
 
 - OpenClaw running
-- Node.js/npm available (for `npx`)
-- `mcporter` in PATH **or** use `npx -y mcporter ...` for all `mcporter` commands
+- Node.js/npm available (for `npx`), OR use standalone binary (see Section 0)
+- `mcporter` in PATH **or** use `npx -y mcporter ...` for all `mcporter` commands (not needed with standalone binary)
 
 ### Verify `mcporter` is available
 
@@ -60,6 +60,57 @@ mcporter call relaycast.list_agents
 ```
 
 Expected: `relaycast` and `openclaw-spawner` entries present in mcporter config.
+
+---
+
+## 0) Setup (No Node.js — Standalone Binary)
+
+If Node.js/npm is not available (e.g. restricted sandboxes, Docker containers),
+download a prebuilt standalone binary. No runtime dependencies required.
+
+### Download
+
+Linux x64:
+```bash
+curl -L -o relay-openclaw.gz \
+  https://github.com/AgentWorkforce/relay/releases/download/openclaw-latest/relay-openclaw-linux-x64.gz
+gunzip relay-openclaw.gz && chmod +x relay-openclaw
+```
+
+Linux arm64:
+```bash
+curl -L -o relay-openclaw.gz \
+  https://github.com/AgentWorkforce/relay/releases/download/openclaw-latest/relay-openclaw-linux-arm64.gz
+gunzip relay-openclaw.gz && chmod +x relay-openclaw
+```
+
+macOS (Apple Silicon):
+```bash
+curl -L -o relay-openclaw.gz \
+  https://github.com/AgentWorkforce/relay/releases/download/openclaw-latest/relay-openclaw-darwin-arm64.gz
+gunzip relay-openclaw.gz && chmod +x relay-openclaw
+```
+
+### Verify download (optional)
+
+```bash
+curl -L -o SHA256SUMS \
+  https://github.com/AgentWorkforce/relay/releases/download/openclaw-latest/SHA256SUMS
+# Linux:
+sha256sum -c SHA256SUMS --ignore-missing
+# macOS:
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+### Run setup + gateway
+
+```bash
+./relay-openclaw setup rk_live_YOUR_WORKSPACE_KEY --name my-claw
+./relay-openclaw gateway
+```
+
+The setup, gateway, and MCP server functionality are all bundled in the binary.
+mcporter is still needed to expose MCP tools to OpenClaw (unless using the direct curl API from Section 12).
 
 ---
 
