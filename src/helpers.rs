@@ -224,6 +224,27 @@ pub(crate) fn detect_cli_ready(cli: &str, output: &str, total_bytes: usize) -> b
         return true;
     }
 
+    // Claude Code: stricter detection to avoid false positives from onboarding
+    // UI elements (theme picker: "❯ 1. Dark mode", bypass permissions: "❯ 1. No, exit").
+    // Require the welcome banner AND a bare prompt on its own line.
+    if lower_cli.contains("claude") {
+        let check_region = if clean.len() > 2000 {
+            let start = floor_char_boundary(&clean, clean.len() - 2000);
+            &clean[start..]
+        } else {
+            &clean
+        };
+        let has_welcome =
+            check_region.contains("Welcome back") || check_region.contains("Welcome to ");
+        if has_welcome {
+            return check_region.lines().rev().take(10).any(|line| {
+                let trimmed = line.trim();
+                matches!(trimmed, "❯" | ">")
+            });
+        }
+        return false;
+    }
+
     // Prompt patterns (from relay-pty parser.rs)
     // ›  = U+203A (single right-pointing angle quotation mark)
     // ❯  = U+276F (heavy right-pointing angle quotation mark, Claude Code v2.1.52+)
@@ -1065,20 +1086,73 @@ mod tests {
 
     #[test]
     fn detect_cli_ready_prompt_patterns() {
-        assert!(detect_cli_ready("claude", "Welcome to Claude\n> ", 100));
+        // Claude requires welcome banner + bare prompt
+        assert!(detect_cli_ready("claude", "Welcome back Khaliq!\n❯\n", 100));
+        assert!(detect_cli_ready("claude", "Welcome to Opus 4.5\n>\n", 100));
+        // Non-claude CLIs use generic prompt detection
         assert!(detect_cli_ready("codex", "Ready\ncodex> ", 100));
-        assert!(detect_cli_ready("claude", "some output $ ", 100));
+        assert!(detect_cli_ready("aider", "some output $ ", 100));
     }
 
     #[test]
     fn detect_cli_ready_byte_fallback() {
+        // Byte fallback does NOT apply to claude — only to other CLIs
         assert!(!detect_cli_ready("claude", "loading...", 200));
-        assert!(detect_cli_ready("claude", "loading...", 600));
+        assert!(!detect_cli_ready("claude", "loading...", 600));
+        // But works for non-claude CLIs
+        assert!(!detect_cli_ready("aider", "loading...", 200));
+        assert!(detect_cli_ready("aider", "loading...", 600));
     }
 
     #[test]
     fn detect_cli_ready_explicit_signal() {
         assert!(detect_cli_ready("claude", "->pty:ready", 0));
+    }
+
+    #[test]
+    fn detect_cli_ready_claude_onboarding_not_ready() {
+        // Theme picker with ❯ in menu item — NOT ready
+        let onboarding = "Welcome to Claude Code v2.1.19\n\
+            Choose the text style\n\
+            ❯ 1. Dark mode ✔\n\
+            2. Light mode\n";
+        assert!(!detect_cli_ready("claude", onboarding, 500));
+    }
+
+    #[test]
+    fn detect_cli_ready_claude_bypass_permissions_not_ready() {
+        // Bypass permissions dialog — NOT ready
+        let bypass = "Welcome to Claude Code v2.1.19\n\
+            WARNING: Claude Code running in Bypass Permissions mode\n\
+            ❯ 1. No, exit\n\
+            2. Yes, I accept\n";
+        assert!(!detect_cli_ready("claude", bypass, 500));
+    }
+
+    #[test]
+    fn detect_cli_ready_claude_login_screen_not_ready() {
+        // Login method selection — NOT ready
+        let login = "Welcome to Claude Code v2.1.19\n\
+            Select login method:\n\
+            ❯ 1  Claude account with subscription\n\
+            2  Anthropic Console account\n";
+        assert!(!detect_cli_ready("claude", login, 500));
+    }
+
+    #[test]
+    fn detect_cli_ready_claude_welcome_back_ready() {
+        // Welcome banner with bare prompt — ready
+        let ready = "Welcome back Khaliq!\n\
+            Opus 4.5 · Claude Max\n\
+            /home/daytona\n\n\
+            ❯\n";
+        assert!(detect_cli_ready("claude", ready, 100));
+    }
+
+    #[test]
+    fn detect_cli_ready_claude_no_welcome_not_ready() {
+        // Bare prompt without welcome banner — not ready (could be UI noise)
+        assert!(!detect_cli_ready("claude", "some startup output\n❯\n", 100));
     }
 
     #[test]
@@ -1210,8 +1284,14 @@ mod tests {
 
     #[test]
     fn detect_cli_ready_ansi_in_prompt() {
-        // Prompt with ANSI codes should still be detected after stripping
-        assert!(detect_cli_ready("claude", "\x1b[32m> \x1b[0m", 100));
+        // Prompt with ANSI codes should still be detected after stripping (non-claude)
+        assert!(detect_cli_ready("aider", "\x1b[32m> \x1b[0m", 100));
+        // Claude with ANSI + welcome banner
+        assert!(detect_cli_ready(
+            "claude",
+            "Welcome back Khaliq!\n\x1b[32m❯\x1b[0m\n",
+            100
+        ));
     }
 
     #[test]
@@ -1221,20 +1301,18 @@ mod tests {
 
     #[test]
     fn detect_cli_ready_exact_500_bytes() {
-        // At exactly 500 bytes, should NOT trigger byte fallback (> 500 required)
-        assert!(!detect_cli_ready("claude", "loading...", 500));
-        // At 501 bytes, should trigger
-        assert!(detect_cli_ready("claude", "loading...", 501));
+        // Byte fallback for non-claude CLIs
+        assert!(!detect_cli_ready("aider", "loading...", 500));
+        assert!(detect_cli_ready("aider", "loading...", 501));
+        // Byte fallback never triggers for claude
+        assert!(!detect_cli_ready("claude", "loading...", 501));
     }
 
     #[test]
     fn detect_cli_ready_prompt_in_early_output_ignored() {
-        // If output is >500 chars, only last 500 chars are checked
-        let mut long_output = "x".repeat(600);
-        long_output.push_str("no prompt here");
-        // The "> " is at the start, outside the last 500 chars check region
+        // For non-claude: if output is >500 chars, only last 500 chars are checked
         let output_with_early_prompt = format!("> {}", "x".repeat(600));
-        assert!(!detect_cli_ready("claude", &output_with_early_prompt, 100));
+        assert!(!detect_cli_ready("aider", &output_with_early_prompt, 100));
     }
 
     #[test]
