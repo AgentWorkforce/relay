@@ -69,10 +69,14 @@ jobs:
             echo "Built ${output}.gz ($(du -h "${output}.gz" | cut -f1))"
           done
 
+      - name: Verify binaries exist
+        run: ls -lh .release/relay-openclaw-*.gz
+
       - uses: actions/upload-artifact@v4
         with:
           name: relay-openclaw-${{ matrix.suffix }}
           path: .release/relay-openclaw-*.gz
+          if-no-files-found: error
 
   release:
     name: Upload to Release
@@ -91,6 +95,9 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: ls -lhR artifacts/
 
       - name: Generate SHA256SUMS
         run: |
