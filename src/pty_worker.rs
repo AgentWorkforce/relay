@@ -950,8 +950,18 @@ mod tests {
 
     #[test]
     fn startup_gate_uses_generic_ready_detection_without_boot_requirement() {
+        // Claude requires welcome banner + bare prompt
         assert!(startup_gate_ready(
             "claude",
+            "Welcome back Khaliq!\n>\n",
+            20,
+            false,
+            false,
+            "",
+        ));
+        // Non-claude CLIs use generic detection
+        assert!(startup_gate_ready(
+            "aider",
             "Ready\n> ",
             20,
             false,

@@ -88,6 +88,29 @@ export interface WorkflowRunnerOptions {
   relay?: AgentRelayOptions;
   cwd?: string;
   summaryDir?: string;
+  executor?: StepExecutor;
+}
+
+// ── Step executor interface ──────────────────────────────────────────────────
+
+/**
+ * Extension point for delegating step execution to an external backend
+ * (e.g. Daytona sandboxes) while keeping the runner's DAG/retry/verification
+ * machinery intact.
+ */
+export interface StepExecutor {
+  executeAgentStep(
+    step: WorkflowStep,
+    agentDef: AgentDefinition,
+    resolvedTask: string,
+    timeoutMs?: number
+  ): Promise<string>;
+
+  executeDeterministicStep?(
+    step: WorkflowStep,
+    resolvedCommand: string,
+    cwd: string
+  ): Promise<{ output: string; exitCode: number }>;
 }
 
 // ── Variable context for template resolution ────────────────────────────────
@@ -136,6 +159,7 @@ export class WorkflowRunner {
   private readonly relayOptions: AgentRelayOptions;
   private readonly cwd: string;
   private readonly summaryDir: string;
+  private readonly executor?: StepExecutor;
 
   /** @internal exposed for CLI signal-handler shutdown only */
   relay?: AgentRelay;
@@ -186,6 +210,7 @@ export class WorkflowRunner {
     this.cwd = options.cwd ?? process.cwd();
     this.summaryDir = options.summaryDir ?? path.join(this.cwd, '.relay', 'summaries');
     this.workersPath = path.join(this.cwd, '.agent-relay', 'team', 'workers.json');
+    this.executor = options.executor;
   }
 
   // ── Progress logging ────────────────────────────────────────────────────
@@ -1137,133 +1162,136 @@ export class WorkflowRunner {
         config.swarm.channel = channel;
         await this.db.updateRun(runId, { config });
       }
-      this.log('Resolving Relaycast API key...');
-      await this.ensureRelaycastApiKey(channel);
-      this.log('API key resolved');
-      if (this.relayApiKeyAutoCreated && this.relayApiKey) {
-        this.log(`Workspace created — follow this run in Relaycast:`);
-        this.log(`  Observer: https://observer.relaycast.dev/?key=${this.relayApiKey}`);
-        this.log(`  Channel: ${channel}`);
-      }
-
-      this.log('Starting broker...');
-      // Include a short run ID suffix in the broker name so each workflow execution
-      // registers a unique identity in Relaycast. Without this, re-running in the same
-      // workspace hits a 409 conflict because the previous run's agent is still registered.
-      const brokerBaseName = path.basename(this.cwd) || 'workflow';
-      const brokerName = `${brokerBaseName}-${runId.slice(0, 8)}`;
-      this.relay = new AgentRelay({
-        ...this.relayOptions,
-        brokerName,
-        channels: [channel],
-        env: this.getRelayEnv(),
-        // Workflows spawn agents across multiple waves; each spawn requires a PTY +
-        // Relaycast registration. 60s is too tight when the broker is saturated with
-        // long-running PTY processes from earlier steps. 120s gives room to breathe.
-        requestTimeoutMs: this.relayOptions.requestTimeoutMs ?? 120_000,
-      });
-
-      // Wire PTY output dispatcher — routes chunks to per-agent listeners + activity logging
-      this.relay.onWorkerOutput = ({ name, chunk }) => {
-        const listener = this.ptyListeners.get(name);
-        if (listener) listener(chunk);
-
-        // Parse PTY output for high-signal activity
-        const stripped = WorkflowRunner.stripAnsi(chunk);
-        const shortName = name.replace(/-[a-f0-9]{6,}$/, '');
-        let activity: string | undefined;
-        if (/Read\(/.test(stripped)) {
-          // Extract filename — path may be truncated at chunk boundary so require
-          // at least a dir separator or 8+ chars to trust the basename.
-          const m = stripped.match(/Read\(\s*~?([^\s)"']{8,})/);
-          if (m) {
-            const base = path.basename(m[1]);
-            activity = base.length >= 3 ? `Reading ${base}` : 'Reading file...';
-          } else {
-            activity = 'Reading file...';
-          }
-        } else if (/Edit\(/.test(stripped)) {
-          const m = stripped.match(/Edit\(\s*~?([^\s)"']{8,})/);
-          if (m) {
-            const base = path.basename(m[1]);
-            activity = base.length >= 3 ? `Editing ${base}` : 'Editing file...';
-          } else {
-            activity = 'Editing file...';
-          }
-        } else if (/Bash\(/.test(stripped)) {
-          // Extract a short preview of the command
-          const m = stripped.match(/Bash\(\s*(.{1,40})/);
-          activity = m ? `Running: ${m[1].trim()}...` : 'Running command...';
-        } else if (/Explore\(/.test(stripped)) {
-          const m = stripped.match(/Explore\(\s*(.{1,50})/);
-          activity = m ? `Exploring: ${m[1].replace(/\).*/, '').trim()}` : 'Exploring codebase...';
-        } else if (/Task\(/.test(stripped)) {
-          activity = 'Running sub-agent...';
-        } else if (/Sublimating|Thinking|Coalescing|Cultivating/.test(stripped)) {
-          const m = stripped.match(/(\d+)s/);
-          activity = m ? `Thinking... (${m[1]}s)` : 'Thinking...';
+      // Skip broker/relay init when an external executor handles agent spawning
+      if (!this.executor) {
+        this.log('Resolving Relaycast API key...');
+        await this.ensureRelaycastApiKey(channel);
+        this.log('API key resolved');
+        if (this.relayApiKeyAutoCreated && this.relayApiKey) {
+          this.log(`Workspace created — follow this run in Relaycast:`);
+          this.log(`  Observer: https://observer.relaycast.dev/?key=${this.relayApiKey}`);
+          this.log(`  Channel: ${channel}`);
         }
-        if (activity && this.lastActivity.get(name) !== activity) {
-          this.lastActivity.set(name, activity);
-          this.log(`[${shortName}] ${activity}`);
-        }
-      };
 
-      // Wire relay event hooks for rich console logging
-      this.relay.onMessageReceived = (msg) => {
-        const body = msg.text.length > 120 ? msg.text.slice(0, 117) + '...' : msg.text;
-        const fromShort = msg.from.replace(/-[a-f0-9]{6,}$/, '');
-        const toShort = msg.to.replace(/-[a-f0-9]{6,}$/, '');
-        this.log(`[msg] ${fromShort} → ${toShort}: ${body}`);
-      };
+        this.log('Starting broker...');
+        // Include a short run ID suffix in the broker name so each workflow execution
+        // registers a unique identity in Relaycast. Without this, re-running in the same
+        // workspace hits a 409 conflict because the previous run's agent is still registered.
+        const brokerBaseName = path.basename(this.cwd) || 'workflow';
+        const brokerName = `${brokerBaseName}-${runId.slice(0, 8)}`;
+        this.relay = new AgentRelay({
+          ...this.relayOptions,
+          brokerName,
+          channels: [channel],
+          env: this.getRelayEnv(),
+          // Workflows spawn agents across multiple waves; each spawn requires a PTY +
+          // Relaycast registration. 60s is too tight when the broker is saturated with
+          // long-running PTY processes from earlier steps. 120s gives room to breathe.
+          requestTimeoutMs: this.relayOptions.requestTimeoutMs ?? 120_000,
+        });
 
-      this.relay.onAgentSpawned = (agent) => {
-        // Skip agents already managed by step execution
-        if (!this.activeAgentHandles.has(agent.name)) {
-          this.log(`[spawned] ${agent.name} (${agent.runtime})`);
-        }
-      };
+        // Wire PTY output dispatcher — routes chunks to per-agent listeners + activity logging
+        this.relay.onWorkerOutput = ({ name, chunk }) => {
+          const listener = this.ptyListeners.get(name);
+          if (listener) listener(chunk);
 
-      this.relay.onAgentExited = (agent) => {
-        this.lastActivity.delete(agent.name);
-        this.lastIdleLog.delete(agent.name);
-        if (!this.activeAgentHandles.has(agent.name)) {
-          this.log(`[exited] ${agent.name} (code: ${agent.exitCode ?? '?'})`);
-        }
-      };
-
-      this.relay.onAgentIdle = ({ name, idleSecs }) => {
-        // Only log at 30s multiples to avoid watchdog spam
-        const bucket = Math.floor(idleSecs / 30) * 30;
-        if (bucket >= 30 && this.lastIdleLog.get(name) !== bucket) {
-          this.lastIdleLog.set(name, bucket);
+          // Parse PTY output for high-signal activity
+          const stripped = WorkflowRunner.stripAnsi(chunk);
           const shortName = name.replace(/-[a-f0-9]{6,}$/, '');
-          this.log(`[idle] ${shortName} silent for ${bucket}s`);
+          let activity: string | undefined;
+          if (/Read\(/.test(stripped)) {
+            // Extract filename — path may be truncated at chunk boundary so require
+            // at least a dir separator or 8+ chars to trust the basename.
+            const m = stripped.match(/Read\(\s*~?([^\s)"']{8,})/);
+            if (m) {
+              const base = path.basename(m[1]);
+              activity = base.length >= 3 ? `Reading ${base}` : 'Reading file...';
+            } else {
+              activity = 'Reading file...';
+            }
+          } else if (/Edit\(/.test(stripped)) {
+            const m = stripped.match(/Edit\(\s*~?([^\s)"']{8,})/);
+            if (m) {
+              const base = path.basename(m[1]);
+              activity = base.length >= 3 ? `Editing ${base}` : 'Editing file...';
+            } else {
+              activity = 'Editing file...';
+            }
+          } else if (/Bash\(/.test(stripped)) {
+            // Extract a short preview of the command
+            const m = stripped.match(/Bash\(\s*(.{1,40})/);
+            activity = m ? `Running: ${m[1].trim()}...` : 'Running command...';
+          } else if (/Explore\(/.test(stripped)) {
+            const m = stripped.match(/Explore\(\s*(.{1,50})/);
+            activity = m ? `Exploring: ${m[1].replace(/\).*/, '').trim()}` : 'Exploring codebase...';
+          } else if (/Task\(/.test(stripped)) {
+            activity = 'Running sub-agent...';
+          } else if (/Sublimating|Thinking|Coalescing|Cultivating/.test(stripped)) {
+            const m = stripped.match(/(\d+)s/);
+            activity = m ? `Thinking... (${m[1]}s)` : 'Thinking...';
+          }
+          if (activity && this.lastActivity.get(name) !== activity) {
+            this.lastActivity.set(name, activity);
+            this.log(`[${shortName}] ${activity}`);
+          }
+        };
+
+        // Wire relay event hooks for rich console logging
+        this.relay.onMessageReceived = (msg) => {
+          const body = msg.text.length > 120 ? msg.text.slice(0, 117) + '...' : msg.text;
+          const fromShort = msg.from.replace(/-[a-f0-9]{6,}$/, '');
+          const toShort = msg.to.replace(/-[a-f0-9]{6,}$/, '');
+          this.log(`[msg] ${fromShort} → ${toShort}: ${body}`);
+        };
+
+        this.relay.onAgentSpawned = (agent) => {
+          // Skip agents already managed by step execution
+          if (!this.activeAgentHandles.has(agent.name)) {
+            this.log(`[spawned] ${agent.name} (${agent.runtime})`);
+          }
+        };
+
+        this.relay.onAgentExited = (agent) => {
+          this.lastActivity.delete(agent.name);
+          this.lastIdleLog.delete(agent.name);
+          if (!this.activeAgentHandles.has(agent.name)) {
+            this.log(`[exited] ${agent.name} (code: ${agent.exitCode ?? '?'})`);
+          }
+        };
+
+        this.relay.onAgentIdle = ({ name, idleSecs }) => {
+          // Only log at 30s multiples to avoid watchdog spam
+          const bucket = Math.floor(idleSecs / 30) * 30;
+          if (bucket >= 30 && this.lastIdleLog.get(name) !== bucket) {
+            this.lastIdleLog.set(name, bucket);
+            const shortName = name.replace(/-[a-f0-9]{6,}$/, '');
+            this.log(`[idle] ${shortName} silent for ${bucket}s`);
+          }
+        };
+
+        this.relaycast = undefined;
+        this.relaycastAgent = undefined;
+
+        // Wire broker stderr to console for observability
+        this.unsubBrokerStderr = this.relay.onBrokerStderr((line: string) => {
+          console.log(`[broker] ${line}`);
+        });
+
+        this.log(`Creating channel: ${channel}...`);
+        if (isResume) {
+          await this.createAndJoinRelaycastChannel(channel);
+        } else {
+          await this.createAndJoinRelaycastChannel(channel, workflow.description);
         }
-      };
+        this.log('Channel ready');
 
-      this.relaycast = undefined;
-      this.relaycastAgent = undefined;
-
-      // Wire broker stderr to console for observability
-      this.unsubBrokerStderr = this.relay.onBrokerStderr((line: string) => {
-        console.log(`[broker] ${line}`);
-      });
-
-      this.log(`Creating channel: ${channel}...`);
-      if (isResume) {
-        await this.createAndJoinRelaycastChannel(channel);
-      } else {
-        await this.createAndJoinRelaycastChannel(channel, workflow.description);
-      }
-      this.log('Channel ready');
-
-      if (isResume) {
-        this.postToChannel(`Workflow **${workflow.name}** resumed — ${pendingCount} pending steps`);
-      } else {
-        this.postToChannel(
-          `Workflow **${workflow.name}** started — ${workflow.steps.length} steps, pattern: ${config.swarm.pattern}`
-        );
+        if (isResume) {
+          this.postToChannel(`Workflow **${workflow.name}** resumed — ${pendingCount} pending steps`);
+        } else {
+          this.postToChannel(
+            `Workflow **${workflow.name}** started — ${workflow.steps.length} steps, pattern: ${config.swarm.pattern}`
+          );
+        }
       }
 
       const agentMap = new Map<string, AgentDefinition>();
@@ -1703,6 +1731,30 @@ export class WorkflowRunner {
     });
 
     try {
+      // Delegate to executor if present
+      if (this.executor?.executeDeterministicStep) {
+        const result = await this.executor.executeDeterministicStep(step, resolvedCommand, this.cwd);
+        const failOnError = step.failOnError !== false;
+        if (failOnError && result.exitCode !== 0) {
+          throw new Error(`Command failed with exit code ${result.exitCode}: ${result.output.slice(0, 500)}`);
+        }
+        const output = step.captureOutput !== false ? result.output : `Command completed (exit code ${result.exitCode})`;
+
+        // Mark completed
+        state.row.status = 'completed';
+        state.row.output = output;
+        state.row.completedAt = new Date().toISOString();
+        await this.db.updateStep(state.row.id, {
+          status: 'completed',
+          output,
+          completedAt: state.row.completedAt,
+          updatedAt: new Date().toISOString(),
+        });
+        await this.persistStepOutput(runId, step.name, output);
+        this.emit({ type: 'step:completed', runId, stepName: step.name, output });
+        return;
+      }
+
       const output = await new Promise<string>((resolve, reject) => {
         const child = cpSpawn('sh', ['-c', resolvedCommand], {
           stdio: 'pipe',
@@ -2070,7 +2122,9 @@ export class WorkflowRunner {
         // Spawn agent via AgentRelay
         this.log(`[${step.name}] Spawning agent "${agentDef.name}" (cli: ${agentDef.cli})`);
         const resolvedStep = { ...step, task: resolvedTask };
-        const output = await this.spawnAndWait(agentDef, resolvedStep, timeoutMs);
+        const output = this.executor
+          ? await this.executor.executeAgentStep(resolvedStep, agentDef, resolvedTask, timeoutMs)
+          : await this.spawnAndWait(agentDef, resolvedStep, timeoutMs);
         this.log(`[${step.name}] Agent "${agentDef.name}" exited`);
 
         // Run verification if configured
