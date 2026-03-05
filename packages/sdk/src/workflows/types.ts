@@ -12,6 +12,11 @@ export interface RelayYamlConfig {
   version: string;
   name: string;
   description?: string;
+  /** Named paths to external directories used by this workflow.
+   *  The primary working directory defaults to cwd and does not need to be declared.
+   *  Use this to declare additional directories so the runner can validate them
+   *  in preflight and agents can reference them via `workdir`. */
+  paths?: PathDefinition[];
   swarm: SwarmConfig;
   agents: AgentDefinition[];
   workflows?: WorkflowDefinition[];
@@ -19,6 +24,22 @@ export interface RelayYamlConfig {
   state?: StateConfig;
   errorHandling?: ErrorHandlingConfig;
   trajectories?: TrajectoryConfig | false;
+}
+
+// ── Path definitions ────────────────────────────────────────────────────────
+
+/** A named path to an external directory for cross-repo workflows.
+ *  Only needed for directories outside the default working directory. */
+export interface PathDefinition {
+  /** Unique name used to reference this path (e.g. "relaycast"). */
+  name: string;
+  /** Directory path, resolved relative to the YAML file.
+   *  Supports environment variables: "$HOME/.openclaw", "$RELAY_ROOT/packages/sdk". */
+  path: string;
+  /** Human-readable description of this path's role in the workflow. */
+  description?: string;
+  /** Whether this path is required. If true (default), preflight fails if it doesn't exist. */
+  required?: boolean;
 }
 
 // ── Trajectory configuration ─────────────────────────────────────────────────
@@ -102,6 +123,9 @@ export interface AgentDefinition {
   interactive?: boolean;
   /** Working directory for this agent, resolved relative to the YAML file. */
   cwd?: string;
+  /** Sets this agent's working directory to a named entry from the top-level `paths` array.
+   *  Mutually exclusive with `cwd`. */
+  workdir?: string;
   /** Additional paths the agent needs read/write access to. */
   additionalPaths?: string[];
   /**
@@ -234,6 +258,8 @@ export interface WorkflowStep {
   // ── Deterministic step fields ──────────────────────────────────────────────
   /** Shell command to execute (required for deterministic steps). */
   command?: string;
+  /** Sets this step's working directory to a named entry from the top-level `paths` array. */
+  workdir?: string;
   /** Fail if command exit code is non-zero. Default: true. */
   failOnError?: boolean;
   /** Capture stdout as step output for downstream steps. Default: true. */

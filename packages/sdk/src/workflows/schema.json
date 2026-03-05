@@ -19,6 +19,13 @@
       "type": "string",
       "description": "Optional description of the configuration"
     },
+    "paths": {
+      "type": "array",
+      "description": "Named paths to external directories. The primary working directory defaults to cwd. Use this to declare additional directories so the runner can validate them in preflight and agents can reference them via workdir.",
+      "items": {
+        "$ref": "#/definitions/PathDefinition"
+      }
+    },
     "swarm": {
       "$ref": "#/definitions/SwarmConfig"
     },
@@ -57,6 +64,30 @@
     }
   },
   "definitions": {
+    "PathDefinition": {
+      "type": "object",
+      "required": ["name", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique name used to reference this project (e.g. 'relaycast', 'relay')"
+        },
+        "path": {
+          "type": "string",
+          "description": "Path to the project root, resolved relative to the YAML file. Supports env vars: $HOME/.openclaw"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of this project's role in the workflow"
+        },
+        "required": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether this project is required. If true (default), preflight fails if path doesn't exist."
+        }
+      }
+    },
     "SwarmConfig": {
       "type": "object",
       "required": ["pattern"],
@@ -166,6 +197,19 @@
           "type": "boolean",
           "default": true,
           "description": "When false, the agent runs as a non-interactive subprocess (no PTY, no relay messaging). It receives its task as a CLI prompt argument and returns stdout as output. Default: true."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory for this agent, resolved relative to the YAML file."
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Sets this agent's working directory to a named entry from the top-level paths array. Mutually exclusive with cwd."
+        },
+        "additionalPaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Additional paths the agent needs read/write access to."
         },
         "preset": {
           "type": "string",
