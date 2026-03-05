@@ -659,9 +659,9 @@ export class OpenClawGatewayClient {
 
     // Handle connect response
     if (msg.type === 'res' && msg.id === 'connect-1') {
-      this.clearConnectTimeout();
       this.fallbackInProgress = false; // Clear on any connect response
       if (msg.ok) {
+        this.clearConnectTimeout();
         const versionUsed = this.payloadVersionOverride
           ?? (resolveAuthProfile().name === 'clawdbot-v1' ? 'v2' : 'v3');
         console.log(`[openclaw-ws] Authenticated successfully (payload=${versionUsed}${this.fallbackAttempted ? ', via fallback' : ''})`);
@@ -676,6 +676,7 @@ export class OpenClawGatewayClient {
         const isSignatureInvalid = /signature.invalid|device.signature|invalid.signature/i.test(errStr);
 
         if (isPairing) {
+          this.clearConnectTimeout();
           const errObj = msg.error as Record<string, unknown> | undefined;
           const requestId = errObj?.requestId ?? errObj?.request_id ?? '';
           console.error('[openclaw-ws] Pairing rejected — device is not paired with the OpenClaw gateway.');
@@ -690,7 +691,7 @@ export class OpenClawGatewayClient {
           this.pairingRejected = true;
         } else if (isSignatureInvalid && !this.fallbackAttempted) {
           // Signature rejected — try the alternate payload version once.
-          // If we were using v2 (clawdbot-v1 profile), try v3. If v3 (default), try v2.
+          // Do NOT clear connect timeout — it protects the fallback attempt too.
           this.authRejectCount++;
           this.authFallbackCount++;
           const profile = resolveAuthProfile();
@@ -711,6 +712,7 @@ export class OpenClawGatewayClient {
           setTimeout(() => this.doConnect(), 0);
           return; // Don't reject the connect promise yet — fallback attempt in progress
         } else {
+          this.clearConnectTimeout();
           this.authRejectCount++;
           console.warn(`[openclaw-ws] Auth rejected (rejects=${this.authRejectCount}): ${errStr}`);
         }
