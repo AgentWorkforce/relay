@@ -372,6 +372,78 @@ describe('OpenClawGatewayClient', () => {
     await client.disconnect();
   });
 
+  it('should fallback to alternate payload version on signature rejection', async () => {
+    let connectAttempts = 0;
+    server = new MockOpenClawServer({ sendChallenge: false });
+    const origWss = (server as unknown as { wss: WebSocketServer }).wss;
+    origWss.removeAllListeners('connection');
+    origWss.on('connection', (ws) => {
+      connectAttempts++;
+      // Send challenge
+      ws.send(JSON.stringify({
+        type: 'event',
+        event: 'connect.challenge',
+        payload: { nonce: `nonce-fallback-${connectAttempts}`, ts: Date.now() },
+      }));
+      ws.on('message', (data) => {
+        const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (msg.method === 'connect') {
+          if (connectAttempts === 1) {
+            // First attempt: reject with signature invalid
+            ws.send(JSON.stringify({
+              type: 'res',
+              id: 'connect-1',
+              ok: false,
+              error: { code: 'auth_failed', message: 'device signature invalid' },
+            }));
+          } else {
+            // Second attempt (fallback): accept
+            ws.send(JSON.stringify({ type: 'res', id: 'connect-1', ok: true }));
+          }
+        }
+      });
+    });
+
+    const client = new OpenClawGatewayClient('test-token', server.port);
+    await client.connect();
+    // Should have connected on the fallback attempt
+    expect(connectAttempts).toBe(2);
+    await client.disconnect();
+  });
+
+  it('should not retry fallback more than once', async () => {
+    let connectAttempts = 0;
+    server = new MockOpenClawServer({ sendChallenge: false });
+    const origWss = (server as unknown as { wss: WebSocketServer }).wss;
+    origWss.removeAllListeners('connection');
+    origWss.on('connection', (ws) => {
+      connectAttempts++;
+      ws.send(JSON.stringify({
+        type: 'event',
+        event: 'connect.challenge',
+        payload: { nonce: `nonce-nofallback-${connectAttempts}`, ts: Date.now() },
+      }));
+      ws.on('message', (data) => {
+        const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (msg.method === 'connect') {
+          // Always reject with signature invalid
+          ws.send(JSON.stringify({
+            type: 'res',
+            id: 'connect-1',
+            ok: false,
+            error: { code: 'auth_failed', message: 'device signature invalid' },
+          }));
+        }
+      });
+    });
+
+    const client = new OpenClawGatewayClient('test-token', server.port);
+    await expect(client.connect()).rejects.toThrow(/auth failed|signature invalid|closed before/i);
+    // Should have tried exactly 2 times: primary + one fallback
+    expect(connectAttempts).toBe(2);
+    await client.disconnect();
+  });
+
   it('should silently ignore unrecognized event messages', async () => {
     server = new MockOpenClawServer();
     const origWss = (server as unknown as { wss: WebSocketServer }).wss;
