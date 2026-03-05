@@ -96,10 +96,11 @@ gunzip relay-openclaw.gz && chmod +x relay-openclaw
 ```bash
 curl -L -o SHA256SUMS \
   https://github.com/AgentWorkforce/relay/releases/download/openclaw-latest/SHA256SUMS
+# Compare hash (downloaded file is renamed, so check manually):
 # Linux:
-sha256sum -c SHA256SUMS --ignore-missing
+sha256sum relay-openclaw.gz | awk '{print $1}' | grep -qf - SHA256SUMS && echo OK || echo MISMATCH
 # macOS:
-shasum -a 256 -c SHA256SUMS --ignore-missing
+shasum -a 256 relay-openclaw.gz | awk '{print $1}' | grep -qf - SHA256SUMS && echo OK || echo MISMATCH
 ```
 
 ### Run setup + gateway
