@@ -16,7 +16,7 @@ import type {
 } from '@relaycast/sdk';
 import WebSocket from 'ws';
 
-import { openclawHome } from './config.js';
+import { openclawHome, detectOpenClaw } from './config.js';
 import { DEFAULT_OPENCLAW_GATEWAY_PORT, type GatewayConfig, type InboundMessage, type DeliveryResult } from './types.js';
 import { SpawnManager } from './spawn/manager.js';
 import type { SpawnOptions } from './spawn/types.js';
@@ -93,9 +93,12 @@ function resolveAuthProfile(): AuthProfile {
     return AUTH_PROFILES[envVal];
   }
 
-  // 2. Variant detection via config path
-  const home = process.env.OPENCLAW_HOME || process.env.OPENCLAW_CONFIG_PATH || '';
-  if (home.includes('.clawdbot') || home.includes('clawdbot')) {
+  // 2. Variant detection via filesystem probing — delegates to openclawHome()
+  //    which checks valid parseable config files, not just directory existence.
+  //    Strict suffix check avoids false positives from substring matching.
+  const home = openclawHome();
+  const homeSuffix = home.replace(/[/\\]+$/, '').split(/[/\\]/).pop();
+  if (homeSuffix === '.clawdbot') {
     return AUTH_PROFILES['clawdbot-v1'];
   }
 
