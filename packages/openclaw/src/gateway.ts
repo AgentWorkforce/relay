@@ -97,8 +97,8 @@ function resolveAuthProfile(): AuthProfile {
   //    which checks valid parseable config files, not just directory existence.
   //    Strict suffix check avoids false positives from substring matching.
   const home = openclawHome();
-  const homeSuffix = home.replace(/[/\\]+$/, '').split(/[/\\]/).pop();
-  if (homeSuffix === '.clawdbot') {
+  const homeSuffix = home.replace(/[/\\]+$/, '').split(/[/\\]/).pop() ?? '';
+  if (homeSuffix === '.clawdbot' || homeSuffix === 'clawdbot') {
     return AUTH_PROFILES['clawdbot-v1'];
   }
 
