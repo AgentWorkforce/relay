@@ -411,6 +411,20 @@ Confirm what appears auto-injected in your UI stream:
 - Prefer explicit env exports in hosted/sandbox deployments.
 - If available in your deployment, use a lockfile/PID strategy for relay gateway singleton enforcement.
 
+### WS auth version-compat matrix
+
+The relay gateway automatically selects the right device auth payload version based on the detected environment. If the selected version is rejected, it falls back to the alternate version once before giving up.
+
+| Environment | Auth Profile | Primary Payload | Fallback | Notes |
+|---|---|---|---|---|
+| `~/.openclaw/` (standard) | `default` | v3 (with platform/deviceFamily) | v2 | Current OpenClaw server supports v3 natively |
+| `~/.clawdbot/` (marketplace image) | `clawdbot-v1` | v2 (no platform/deviceFamily) | v3 | Older gateway only supports v2; v3↔v2 fallback handles upgrades |
+| `OPENCLAW_WS_AUTH_COMPAT=clawdbot` | `clawdbot-v1` | v2 | v3 | Manual override for non-standard installations |
+
+**When upgrading a Clawdbot marketplace image** to a newer OpenClaw server that supports v3, the fallback mechanism handles the transition automatically — v2 is tried first, and if the new server rejects it (unlikely, since servers accept both), v3 is tried as fallback.
+
+**Debug logging**: Set `OPENCLAW_WS_DEBUG=1` to see the full canonicalization matrix, field hashes, and self-verification output during auth.
+
 ---
 
 ## 11b) Advanced Troubleshooting: Execution Policy Lockdown

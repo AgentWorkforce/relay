@@ -318,6 +318,9 @@ function buildCanonicalVariants(
   ];
 }
 
+/** Payload version override for v3↔v2 fallback. */
+type PayloadVersionOverride = 'v2' | 'v3' | null;
+
 function signConnectPayload(
   device: DeviceIdentity,
   params: {
@@ -331,46 +334,51 @@ function signConnectPayload(
     token: string;
     nonce: string;
   },
+  versionOverride?: PayloadVersionOverride,
 ): string {
   const profile = resolveAuthProfile();
 
   // Build canonicalization variants for diagnostics
   const variants = buildCanonicalVariants(device, params);
 
-  // Select primary payload: clawdbot-v1 uses v2 format (no platform/deviceFamily)
-  // because the Clawdbot marketplace image may run an older gateway that only
-  // supports v2 payloads. The current server (openclaw/openclaw) tries v3 first
-  // then v2, but older versions may only have v2.
-  const primaryName = profile.name === 'clawdbot-v1' ? 'v2-default-ms' : 'v3-default-ms';
+  // Select primary payload version:
+  // 1. If versionOverride is set (from fallback), use that directly
+  // 2. clawdbot-v1 defaults to v2 (older gateway compat)
+  // 3. default profile uses v3
+  let primaryName: string;
+  if (versionOverride === 'v2') {
+    primaryName = 'v2-default-ms';
+  } else if (versionOverride === 'v3') {
+    primaryName = 'v3-default-ms';
+  } else {
+    primaryName = profile.name === 'clawdbot-v1' ? 'v2-default-ms' : 'v3-default-ms';
+  }
   const primary = variants.find(v => v.name === primaryName) ?? variants[0];
 
   const payloadBytes = Buffer.from(primary.payload, 'utf-8');
 
-  // Diagnostic logging: selected profile + pre-auth fingerprint (no secrets).
-  console.log(`[ws-auth] profile=${profile.name} deviceId=${device.deviceId.slice(0, 16)}... keyFormat=${profile.publicKeyFormat} sigEncoding=${profile.signatureEncoding}`);
-  console.log(`[ws-auth] signedAt=${params.signedAt} (ms) signedAtSec=${Math.floor(params.signedAt / 1000)} nonce=${shortHash(params.nonce)}`);
+  const isDebug = process.env.RELAY_LOG_LEVEL === 'DEBUG' || process.env.OPENCLAW_WS_DEBUG === '1';
 
-  // Log per-field hashes for debugging canonicalization mismatches
-  if (process.env.RELAY_LOG_LEVEL === 'DEBUG' || process.env.OPENCLAW_WS_DEBUG === '1') {
+  // Concise production log — one line with essential info
+  console.log(`[ws-auth] profile=${profile.name} payload=${primary.name} device=${device.deviceId.slice(0, 12)}...${versionOverride ? ` override=${versionOverride}` : ''}`);
+
+  // Verbose debug logging — field hashes and canonicalization matrix
+  if (isDebug) {
+    console.log(`[ws-auth-debug] signedAt=${params.signedAt}ms nonce=${shortHash(params.nonce)} keyFormat=${profile.publicKeyFormat} sigEncoding=${profile.signatureEncoding}`);
     console.log(`[ws-auth-debug] field hashes: deviceId=${shortHash(device.deviceId)} clientId=${shortHash(params.clientId)} role=${shortHash(params.role)} scopes=${shortHash(params.scopes.join(','))} token=${shortHash(params.token || '')} nonce=${shortHash(params.nonce)}`);
-
-    // Log all canonicalization variant hashes
     console.log('[ws-auth-debug] canonicalization matrix:');
     for (const v of variants) {
       console.log(`  ${v.name}: hash=${shortHash(v.payload)}`);
     }
+    console.log(`[ws-auth-debug] payloadHash=${shortHash(primary.payload)}`);
   }
-
-  // Primary payload hash always logged
-  console.log(`[ws-auth] primaryPayload=${primary.name} payloadHash=${shortHash(primary.payload)}`);
 
   // Ed25519 sign — no hash algorithm needed (null), it's built into Ed25519
   const signature = sign(null, payloadBytes, device.privateKeyObj);
   const encoded = Buffer.from(signature).toString(profile.signatureEncoding);
 
-  // Self-verification: replicate what the server does to confirm our signature
-  // is valid before sending. If this fails, the key/payload are mismatched locally.
-  if (process.env.RELAY_LOG_LEVEL === 'DEBUG' || process.env.OPENCLAW_WS_DEBUG === '1') {
+  // Self-verification (debug only): confirm our signature is valid locally.
+  if (isDebug) {
     try {
       // Derive public key from private key (same as server would use from our publicKey field)
       const pubKey = createPublicKey(device.privateKeyObj);
@@ -424,6 +432,15 @@ export class OpenClawGatewayClient {
   private connectTimeout: ReturnType<typeof setTimeout> | null = null;
   private pairingRejected = false;
   private consecutiveFailures = 0;
+  /** Payload version override for v3↔v2 fallback (null = use profile default). */
+  private payloadVersionOverride: PayloadVersionOverride = null;
+  /** Whether a fallback attempt has already been tried this connection cycle. */
+  private fallbackAttempted = false;
+  /** Auth rejection counters for observability. */
+  private authRejectCount = 0;
+  private authFallbackCount = 0;
+  /** True while a fallback reconnect is in progress — suppresses close handler rejection. */
+  private fallbackInProgress = false;
 
   /** Default timeout for initial connection (30 seconds). */
   private static readonly CONNECT_TIMEOUT_MS = 30_000;
@@ -456,6 +473,10 @@ export class OpenClawGatewayClient {
     // Explicit connect() clears pairing rejection so users can retry after fixing their token
     this.pairingRejected = false;
     this.stopped = false;
+    // Reset fallback state for fresh connection attempts
+    this.payloadVersionOverride = null;
+    this.fallbackAttempted = false;
+    this.fallbackInProgress = false;
 
     // Cancel any pending reconnect timer to prevent orphaned WebSocket connections
     if (this.reconnectTimer) {
@@ -530,14 +551,15 @@ export class OpenClawGatewayClient {
         this.pendingRpcs.delete(id);
       }
       // If we weren't authenticated yet, reject the connect promise
-      if (!wasAuthenticated && this.connectReject) {
+      // (unless a fallback reconnect is in progress — let it proceed)
+      if (!wasAuthenticated && this.connectReject && !this.fallbackInProgress) {
         this.clearConnectTimeout();
         const err = new Error(`WebSocket closed before authentication (code=${code})`);
         this.connectReject(err);
         this.connectReject = null;
         this.connectResolve = null;
       }
-      if (!this.stopped) {
+      if (!this.stopped && !this.fallbackInProgress) {
         this.scheduleReconnect();
       }
     });
@@ -589,7 +611,7 @@ export class OpenClawGatewayClient {
         signedAt,
         token: this.token,
         nonce: payload.nonce,
-      });
+      }, this.payloadVersionOverride);
 
       // Select public key format based on resolved auth profile.
       const profile = resolveAuthProfile();
@@ -638,8 +660,11 @@ export class OpenClawGatewayClient {
     // Handle connect response
     if (msg.type === 'res' && msg.id === 'connect-1') {
       this.clearConnectTimeout();
+      this.fallbackInProgress = false; // Clear on any connect response
       if (msg.ok) {
-        console.log('[openclaw-ws] Authenticated successfully');
+        const versionUsed = this.payloadVersionOverride
+          ?? (resolveAuthProfile().name === 'clawdbot-v1' ? 'v2' : 'v3');
+        console.log(`[openclaw-ws] Authenticated successfully (payload=${versionUsed}${this.fallbackAttempted ? ', via fallback' : ''})`);
         this.authenticated = true;
         this.consecutiveFailures = 0;
         this.connectResolve?.();
@@ -648,6 +673,7 @@ export class OpenClawGatewayClient {
       } else {
         const errStr = msg.error ? JSON.stringify(msg.error) : 'Authentication rejected';
         const isPairing = /pairing.required|not.paired/i.test(errStr);
+        const isSignatureInvalid = /signature.invalid|device.signature|invalid.signature/i.test(errStr);
 
         if (isPairing) {
           const errObj = msg.error as Record<string, unknown> | undefined;
@@ -662,8 +688,31 @@ export class OpenClawGatewayClient {
             : '~/.openclaw/openclaw.json';
           console.error(`[openclaw-ws] Ensure OPENCLAW_GATEWAY_TOKEN matches ${configHint} gateway.auth.token`);
           this.pairingRejected = true;
+        } else if (isSignatureInvalid && !this.fallbackAttempted) {
+          // Signature rejected — try the alternate payload version once.
+          // If we were using v2 (clawdbot-v1 profile), try v3. If v3 (default), try v2.
+          this.authRejectCount++;
+          this.authFallbackCount++;
+          const profile = resolveAuthProfile();
+          const currentVersion = this.payloadVersionOverride
+            ?? (profile.name === 'clawdbot-v1' ? 'v2' : 'v3');
+          const fallbackVersion: PayloadVersionOverride = currentVersion === 'v2' ? 'v3' : 'v2';
+
+          console.warn(`[ws-auth] Signature rejected with ${currentVersion} payload — retrying with ${fallbackVersion} fallback (rejects=${this.authRejectCount} fallbacks=${this.authFallbackCount})`);
+          this.payloadVersionOverride = fallbackVersion;
+          this.fallbackAttempted = true;
+          this.fallbackInProgress = true;
+
+          // Close current WS and reconnect with the alternate payload.
+          // fallbackInProgress stays true until the next auth response arrives,
+          // suppressing close-handler rejection from the old connection.
+          try { this.ws?.close(); } catch {}
+          this.ws = null;
+          setTimeout(() => this.doConnect(), 0);
+          return; // Don't reject the connect promise yet — fallback attempt in progress
         } else {
-          console.warn(`[openclaw-ws] Auth rejected: ${errStr}`);
+          this.authRejectCount++;
+          console.warn(`[openclaw-ws] Auth rejected (rejects=${this.authRejectCount}): ${errStr}`);
         }
 
         this.connectReject?.(new Error(`OpenClaw gateway auth failed: ${errStr}`));
