@@ -7,7 +7,13 @@ import { startMcpServer } from './mcp/server.js';
 import { runtimeSetup } from './runtime/setup.js';
 
 const require = createRequire(import.meta.url);
-const { version } = require('../package.json') as { version: string };
+const version = process.env.RELAY_OPENCLAW_VERSION ?? (() => {
+  try {
+    return (require('../package.json') as { version: string }).version;
+  } catch {
+    return 'unknown';
+  }
+})();
 
 function printUsage(): void {
   console.log(`

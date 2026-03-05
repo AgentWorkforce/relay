@@ -1,0 +1,199 @@
+name: Build OpenClaw Binary
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/openclaw/**'
+      - '.github/workflows/build-openclaw-binary.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. openclaw-v3.1.7)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            bun_target: bun-linux-x64
+          - os: ubuntu-latest
+            target: linux-arm64
+            bun_target: bun-linux-arm64
+          - os: macos-latest
+            target: darwin-x64
+            bun_target: bun-darwin-x64
+          - os: macos-latest
+            target: darwin-arm64
+            bun_target: bun-darwin-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build all packages
+        run: npm run build:packages
+
+      - name: Read version
+        id: version
+        run: echo "version=$(node -p "require('./packages/openclaw/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Compile binary
+        shell: bash
+        env:
+          PKG_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          output="relay-openclaw-${{ matrix.target }}"
+
+          bun build \
+            --compile \
+            --minify \
+            --target="${{ matrix.bun_target }}" \
+            --define="process.env.RELAY_OPENCLAW_VERSION=\"${PKG_VERSION}\"" \
+            --external dockerode \
+            packages/openclaw/dist/cli.js \
+            --outfile "${output}"
+
+          test -f "${output}" || { echo "::error::Binary not produced: ${output}"; exit 1; }
+          echo "Uncompressed: $(du -h "${output}" | cut -f1)"
+
+          gzip -9 -k "${output}"
+          test -f "${output}.gz" || { echo "::error::Gzip failed: ${output}.gz"; exit 1; }
+          echo "Compressed: $(du -h "${output}.gz" | cut -f1)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relay-openclaw-${{ matrix.target }}
+          path: relay-openclaw-${{ matrix.target }}.gz
+          if-no-files-found: error
+
+  release:
+    name: Upload to Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: echo "version=$(node -p "require('./packages/openclaw/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Validate artifacts
+        run: |
+          set -euo pipefail
+          echo "=== Downloaded artifacts ==="
+          ls -lhR artifacts/
+
+          expected=(
+            relay-openclaw-linux-x64.gz
+            relay-openclaw-linux-arm64.gz
+            relay-openclaw-darwin-x64.gz
+            relay-openclaw-darwin-arm64.gz
+          )
+          missing=0
+          for f in "${expected[@]}"; do
+            if [ ! -f "artifacts/${f}" ]; then
+              echo "::error::Missing artifact: ${f}"
+              missing=1
+            else
+              echo "✓ ${f} ($(du -h "artifacts/${f}" | cut -f1))"
+            fi
+          done
+          if [ "$missing" -eq 1 ]; then
+            exit 1
+          fi
+          echo "All 4 platform binaries present."
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd artifacts
+          sha256sum relay-openclaw-*.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Determine tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          PKG_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=openclaw-v$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create versioned release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: relay-openclaw ${{ steps.tag.outputs.tag }}
+          body: |
+            Standalone `relay-openclaw` binaries (no Node.js required).
+            Built from commit ${{ github.sha }}.
+
+            ## Install
+            ```bash
+            curl -L -o relay-openclaw.gz \
+              https://github.com/AgentWorkforce/relay/releases/download/${{ steps.tag.outputs.tag }}/relay-openclaw-linux-x64.gz
+            gunzip relay-openclaw.gz && chmod +x relay-openclaw
+            ./relay-openclaw --version
+            ```
+          files: |
+            artifacts/relay-openclaw-*.gz
+            artifacts/SHA256SUMS
+          prerelease: false
+          make_latest: false
+
+      - name: Delete existing openclaw-latest release
+        run: gh release delete openclaw-latest --yes --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update floating openclaw-latest tag
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: openclaw-latest
+          name: relay-openclaw (latest)
+          body: |
+            Latest standalone `relay-openclaw` binaries (no Node.js required).
+            Version: ${{ steps.version.outputs.version }}
+            Built from commit ${{ github.sha }}.
+
+            ## Install
+            ```bash
+            curl -L -o relay-openclaw.gz \
+              https://github.com/AgentWorkforce/relay/releases/download/openclaw-latest/relay-openclaw-linux-x64.gz
+            gunzip relay-openclaw.gz && chmod +x relay-openclaw
+            ./relay-openclaw --version
+            ```
+          files: |
+            artifacts/relay-openclaw-*.gz
+            artifacts/SHA256SUMS
+          prerelease: true
+          make_latest: false

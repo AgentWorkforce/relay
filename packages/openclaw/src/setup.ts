@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawn as spawnProcess, execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 
 import { RelayCast } from '@relaycast/sdk';
 
@@ -23,6 +24,23 @@ function extractNestedValue(obj: unknown, path: string): unknown {
     current = (current as Record<string, unknown>)[key];
   }
   return current;
+}
+
+/**
+ * Set a deeply nested value in an object by dot-separated path, creating
+ * intermediate objects as needed.
+ */
+function setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): void {
+  const keys = path.split('.');
+  let current: Record<string, unknown> = obj;
+  for (let i = 0; i < keys.length - 1; i++) {
+    const key = keys[i];
+    if (current[key] == null || typeof current[key] !== 'object') {
+      current[key] = {};
+    }
+    current = current[key] as Record<string, unknown>;
+  }
+  current[keys[keys.length - 1]] = value;
 }
 
 /**
@@ -98,14 +116,18 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   const baseUrl = options.baseUrl ?? 'https://api.relaycast.dev';
   const channels = options.channels ?? ['general'];
 
+  // CLI name for restart reminder messages (based on detected variant)
+  const cliName = detection.variant === 'clawdbot' ? 'clawdbot' : 'openclaw';
+  const serviceName = detection.variant === 'clawdbot' ? 'clawdbot' : 'openclaw';
+
   if (!detection.installed) {
     // Auto-create ~/.openclaw/ if OpenClaw binary is available but the config dir
     // doesn't exist yet (common in Docker images before onboarding).
     try {
       await mkdir(detection.homeDir, { recursive: true });
       await mkdir(join(detection.homeDir, 'workspace'), { recursive: true });
-      // Write a minimal openclaw.json so MCP servers can be registered
-      const configPath = join(detection.homeDir, 'openclaw.json');
+      // Write a minimal config file so MCP servers can be registered
+      const configPath = join(detection.homeDir, detection.configFilename);
       if (!existsSync(configPath)) {
         await writeFile(configPath, JSON.stringify({ mcpServers: {} }, null, 2) + '\n', 'utf-8');
       }
@@ -126,14 +148,48 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
 
   // Enable the OpenResponses HTTP API so the inbound gateway can inject
   // messages via POST /v1/responses on the local OpenClaw gateway.
-  try {
-    execFileSync('openclaw', [
+  // Try CLI names in order: openclaw, clawdbot, clawdbot-cli.sh.
+  // If all CLI calls fail, mutate the config JSON directly.
+  let configMutated = false;
+  {
+    const httpEndpointArgs = [
       'config', 'set',
       'gateway.http.endpoints.responses.enabled', 'true',
-    ], { stdio: 'pipe' });
-  } catch {
-    console.warn('Could not enable OpenResponses API (non-fatal). Enable manually:');
-    console.warn('  openclaw config set gateway.http.endpoints.responses.enabled true');
+    ];
+    const cliCandidates = ['openclaw', 'clawdbot', 'clawdbot-cli.sh'];
+    let cliSuccess = false;
+
+    for (const cli of cliCandidates) {
+      try {
+        execFileSync(cli, httpEndpointArgs, { stdio: 'pipe' });
+        cliSuccess = true;
+        break;
+      } catch {
+        // Try next candidate
+      }
+    }
+
+    if (!cliSuccess) {
+      // Fall back to direct JSON config file mutation
+      if (detection.configFile) {
+        try {
+          const raw = await readFile(detection.configFile, 'utf-8');
+          const cfg = JSON.parse(raw) as Record<string, unknown>;
+          setNestedValue(cfg, 'gateway.http.endpoints.responses.enabled', true);
+          await writeFile(detection.configFile, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
+          // Reload config in detection
+          detection.config = cfg;
+          configMutated = true;
+          console.log('[setup] Enabled gateway.http.endpoints.responses.enabled via config file.');
+        } catch (writeErr) {
+          console.warn('Could not enable OpenResponses API (non-fatal). Enable manually:');
+          console.warn(`  ${cliName} config set gateway.http.endpoints.responses.enabled true`);
+        }
+      } else {
+        console.warn('Could not enable OpenResponses API (non-fatal). Enable manually:');
+        console.warn(`  ${cliName} config set gateway.http.endpoints.responses.enabled true`);
+      }
+    }
   }
 
   // Resolve API key: use provided key or create a new workspace
@@ -220,19 +276,63 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     );
   }
 
-  // Extract gateway auth from openclaw.json (if available)
-  const openclawGatewayToken =
+  // Extract gateway auth from config (if available). Auto-generate if missing.
+  let openclawGatewayToken: string | undefined =
     process.env.OPENCLAW_GATEWAY_TOKEN ??
     (extractNestedValue(detection.config, 'gateway.auth.token') as string | undefined);
+
   const openclawGatewayPortRaw =
     process.env.OPENCLAW_GATEWAY_PORT ??
     (extractNestedValue(detection.config, 'gateway.port') as number | string | undefined);
   const openclawGatewayPort = openclawGatewayPortRaw ? Number(openclawGatewayPortRaw) : undefined;
 
   if (!openclawGatewayToken) {
-    console.warn('[setup] No gateway token found in openclaw.json or OPENCLAW_GATEWAY_TOKEN env.');
-    console.warn('[setup] Inbound gateway may fail to pair. Set it manually:');
-    console.warn('[setup]   export OPENCLAW_GATEWAY_TOKEN=$(cat ~/.openclaw/openclaw.json | jq -r .gateway.auth.token)');
+    // Generate a random token and persist it to the config file
+    const generated = randomBytes(16).toString('hex');
+    openclawGatewayToken = generated;
+    console.log('[setup] No gateway token found — generating one and writing to config file.');
+
+    if (detection.configFile) {
+      try {
+        const raw = await readFile(detection.configFile, 'utf-8');
+        const cfg = JSON.parse(raw) as Record<string, unknown>;
+        setNestedValue(cfg, 'gateway.auth.token', generated);
+        await writeFile(detection.configFile, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
+        detection.config = cfg;
+        configMutated = true;
+      } catch (writeErr) {
+        console.warn(`[setup] Could not write generated token to config file: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
+      }
+    } else {
+      console.warn('[setup] No config file available to persist generated token. Set manually:');
+      console.warn(`[setup]   export OPENCLAW_GATEWAY_TOKEN=${generated}`);
+    }
+  }
+
+  // Print restart reminder if any config mutations were made
+  if (configMutated) {
+    console.log('');
+    console.log('Config changes detected. Restart the gateway to apply:');
+    console.log(`  systemctl restart ${serviceName}`);
+    if (serviceName !== 'openclaw') {
+      console.log(`  # or: systemctl restart openclaw`);
+    }
+    console.log(`  # or restart manually if not using systemd`);
+    console.log('');
+  }
+
+  // Exec policy preflight warning — warn when security is missing OR not 'full'
+  {
+    const execSecurity = extractNestedValue(detection.config, 'tools.exec.security') as string | undefined;
+    if (execSecurity !== 'full') {
+      console.warn('');
+      console.warn('Warning: Execution policies may be locked down. If the agent can only chat:');
+      console.warn(`  ${cliName} config set tools.exec.host gateway`);
+      console.warn(`  ${cliName} config set tools.exec.ask off`);
+      console.warn(`  ${cliName} config set tools.exec.security full`);
+      console.warn(`  systemctl restart ${serviceName}`);
+      console.warn('');
+    }
   }
 
   // Save gateway config (.env)
