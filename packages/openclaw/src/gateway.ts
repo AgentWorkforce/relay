@@ -439,8 +439,6 @@ export class OpenClawGatewayClient {
   /** Auth rejection counters for observability. */
   private authRejectCount = 0;
   private authFallbackCount = 0;
-  /** True while a fallback reconnect is in progress — suppresses close handler rejection. */
-  private fallbackInProgress = false;
 
   /** Default timeout for initial connection (30 seconds). */
   private static readonly CONNECT_TIMEOUT_MS = 30_000;
@@ -476,7 +474,6 @@ export class OpenClawGatewayClient {
     // Reset fallback state for fresh connection attempts
     this.payloadVersionOverride = null;
     this.fallbackAttempted = false;
-    this.fallbackInProgress = false;
 
     // Cancel any pending reconnect timer to prevent orphaned WebSocket connections
     if (this.reconnectTimer) {
@@ -514,23 +511,29 @@ export class OpenClawGatewayClient {
   private doConnect(): void {
     if (this.stopped) return;
 
+    let ws: WebSocket;
     try {
-      this.ws = new WebSocket(`ws://127.0.0.1:${this.port}`);
+      ws = new WebSocket(`ws://127.0.0.1:${this.port}`);
     } catch (err) {
       console.warn(`[openclaw-ws] Connection failed: ${err instanceof Error ? err.message : String(err)}`);
       this.scheduleReconnect();
       return;
     }
+    this.ws = ws;
 
-    this.ws.on('open', () => {
+    ws.on('open', () => {
       console.log('[openclaw-ws] Connected to OpenClaw gateway');
     });
 
-    this.ws.on('message', (data) => {
+    ws.on('message', (data) => {
       this.handleMessage(data.toString());
     });
 
-    this.ws.on('close', (code, reason) => {
+    ws.on('close', (code, reason) => {
+      // Guard: ignore close events from superseded WebSocket instances.
+      // During v3↔v2 fallback, the old WS is replaced before its close fires.
+      if (this.ws !== ws) return;
+
       const reasonStr = reason.toString();
       console.warn(`[openclaw-ws] Disconnected: ${code} ${reasonStr}`);
       const wasAuthenticated = this.authenticated;
@@ -551,20 +554,22 @@ export class OpenClawGatewayClient {
         this.pendingRpcs.delete(id);
       }
       // If we weren't authenticated yet, reject the connect promise
-      // (unless a fallback reconnect is in progress — let it proceed)
-      if (!wasAuthenticated && this.connectReject && !this.fallbackInProgress) {
+      if (!wasAuthenticated && this.connectReject) {
         this.clearConnectTimeout();
         const err = new Error(`WebSocket closed before authentication (code=${code})`);
         this.connectReject(err);
         this.connectReject = null;
         this.connectResolve = null;
       }
-      if (!this.stopped && !this.fallbackInProgress) {
+      if (!this.stopped) {
         this.scheduleReconnect();
       }
     });
 
-    this.ws.on('error', (err) => {
+    ws.on('error', (err) => {
+      // Guard: ignore error events from superseded WebSocket instances.
+      if (this.ws !== ws) return;
+
       console.warn(`[openclaw-ws] Error: ${err.message}`);
       // If we weren't authenticated yet, reject the connect promise
       if (!this.authenticated && this.connectReject) {
@@ -659,7 +664,6 @@ export class OpenClawGatewayClient {
 
     // Handle connect response
     if (msg.type === 'res' && msg.id === 'connect-1') {
-      this.fallbackInProgress = false; // Clear on any connect response
       if (msg.ok) {
         this.clearConnectTimeout();
         const versionUsed = this.payloadVersionOverride
@@ -702,11 +706,10 @@ export class OpenClawGatewayClient {
           console.warn(`[ws-auth] Signature rejected with ${currentVersion} payload — retrying with ${fallbackVersion} fallback (rejects=${this.authRejectCount} fallbacks=${this.authFallbackCount})`);
           this.payloadVersionOverride = fallbackVersion;
           this.fallbackAttempted = true;
-          this.fallbackInProgress = true;
 
           // Close current WS and reconnect with the alternate payload.
-          // fallbackInProgress stays true until the next auth response arrives,
-          // suppressing close-handler rejection from the old connection.
+          // Setting this.ws = null ensures the old WS's close/error handlers
+          // no-op via the `this.ws !== ws` guard in doConnect().
           try { this.ws?.close(); } catch {}
           this.ws = null;
           setTimeout(() => this.doConnect(), 0);
@@ -750,6 +753,7 @@ export class OpenClawGatewayClient {
 
   /** Send a chat.send RPC. Returns true if accepted. */
   async sendChatMessage(text: string, idempotencyKey?: string): Promise<boolean> {
+    if (this.stopped) return false;
     if (!this.authenticated || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
       // Try to reconnect
       try {
