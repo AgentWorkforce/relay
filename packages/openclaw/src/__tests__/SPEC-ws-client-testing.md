@@ -144,11 +144,11 @@ Separate from the WS unit tests, create integration tests following the broker h
 
 ```
 1. Create ephemeral Relaycast workspace (RelayCast.createWorkspace)
-2. Register two agents: "sender" and "viewer-test-claw"
+2. Register two agents: "sender" and "test-claw"
 3. Start InboundGateway with the workspace key
 4. Post a message to #general via sender agent
 5. Assert the gateway's relaySender.sendMessage was called with correct format
-6. Post a DM from sender to viewer-test-claw
+6. Post a DM from sender to test-claw
 7. Assert DM delivery with [relaycast:dm] format
 8. Add a reaction via sender
 9. Assert reaction soft notification delivery

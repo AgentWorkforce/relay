@@ -723,6 +723,7 @@ function detectPlatformSuffix(): string | null {
   const platformMap: Record<string, Record<string, string>> = {
     darwin: { arm64: 'darwin-arm64', x64: 'darwin-x64' },
     linux: { arm64: 'linux-arm64', x64: 'linux-x64' },
+    win32: { x64: 'win32-x64' },
   };
   return platformMap[process.platform]?.[process.arch] ?? null;
 }
@@ -816,20 +817,17 @@ function resolveDefaultBinaryPath(): string {
     return workspaceRelease;
   }
 
-  // 2. Check for bundled broker binary in SDK package (npm install)
-  //    Try platform-specific name first (CI publishes per-platform binaries),
-  //    then fall back to the generic name (local dev / postinstall copy).
+  // 2. Check for bundled platform-specific broker binary in SDK package (npm install).
+  //    Only use binaries that match the current platform to avoid running
+  //    e.g. a macOS binary on Linux (or vice-versa).
   const binDir = path.resolve(moduleDir, '..', 'bin');
   const suffix = detectPlatformSuffix();
   if (suffix) {
-    const platformBinary = path.join(binDir, `agent-relay-broker-${suffix}`);
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    const platformBinary = path.join(binDir, `agent-relay-broker-${suffix}${ext}`);
     if (fs.existsSync(platformBinary)) {
       return platformBinary;
     }
-  }
-  const bundled = path.join(binDir, brokerExe);
-  if (fs.existsSync(bundled)) {
-    return bundled;
   }
 
   // 3. Check for standalone broker binary in ~/.agent-relay/bin/ (install.sh)

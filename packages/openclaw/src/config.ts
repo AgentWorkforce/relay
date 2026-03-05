@@ -18,9 +18,9 @@ export interface OpenClawDetection {
   config: Record<string, unknown> | null;
 }
 
-/** Default OpenClaw config directory. */
-function openclawHome(): string {
-  return join(homedir(), '.openclaw');
+/** Default OpenClaw config directory. Prefers OPENCLAW_HOME env var. */
+export function openclawHome(): string {
+  return process.env.OPENCLAW_HOME || join(homedir(), '.openclaw');
 }
 
 /**
@@ -111,14 +111,27 @@ export async function saveGatewayConfig(config: GatewayConfig): Promise<void> {
 
   await mkdir(relaycastDir, { recursive: true });
 
-  const env = [
+  const lines = [
     '# Relaycast configuration for this OpenClaw skill',
     `RELAY_API_KEY=${config.apiKey}`,
     `RELAY_CLAW_NAME=${config.clawName}`,
     `RELAY_BASE_URL=${config.baseUrl}`,
     `RELAY_CHANNELS=${config.channels.join(',')}`,
-    '',
-  ].join('\n');
+  ];
+
+  if (config.openclawGatewayToken) {
+    lines.push(`OPENCLAW_GATEWAY_TOKEN=${config.openclawGatewayToken}`);
+    const masked = config.openclawGatewayToken.length > 12
+      ? config.openclawGatewayToken.slice(0, 8) + '...'
+      : '***';
+    console.log(`[config] Persisting OPENCLAW_GATEWAY_TOKEN (${masked})`);
+  }
+  if (config.openclawGatewayPort) {
+    lines.push(`OPENCLAW_GATEWAY_PORT=${config.openclawGatewayPort}`);
+  }
+
+  lines.push('');
+  const env = lines.join('\n');
 
   await writeFile(join(relaycastDir, '.env'), env, 'utf-8');
 }

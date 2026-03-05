@@ -9,7 +9,17 @@ const repoRoot = path.resolve(packageRoot, "..", "..");
 const isWindows = process.platform === "win32";
 const binaryName = isWindows ? "agent-relay-broker.exe" : "agent-relay-broker";
 const outDir = path.resolve(packageRoot, "bin");
-const outPath = path.resolve(outDir, binaryName);
+
+// Use platform-specific name so the SDK only picks up binaries matching the
+// current OS/arch.  This prevents e.g. a macOS binary from being used on Linux.
+const platformSuffixes = {
+  darwin: { arm64: "darwin-arm64", x64: "darwin-x64" },
+  linux: { arm64: "linux-arm64", x64: "linux-x64" },
+  win32: { x64: "win32-x64" },
+};
+const suffix = platformSuffixes[process.platform]?.[process.arch];
+const outName = suffix ? `agent-relay-broker-${suffix}${isWindows ? '.exe' : ''}` : binaryName;
+const outPath = path.resolve(outDir, outName);
 
 function buildReleaseBinary() {
   const result = spawnSync("cargo", ["build", "--release", "--bin", "agent-relay-broker"], {
