@@ -312,15 +312,19 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   // Print restart reminder if any config mutations were made
   if (configMutated) {
     console.log('');
-    console.log('Config changes detected. Restart required:');
-    console.log(`  systemctl restart ${serviceName}   # (or equivalent for your system)`);
+    console.log('Config changes detected. Restart the gateway to apply:');
+    console.log(`  systemctl restart ${serviceName}`);
+    if (serviceName !== 'openclaw') {
+      console.log(`  # or: systemctl restart openclaw`);
+    }
+    console.log(`  # or restart manually if not using systemd`);
     console.log('');
   }
 
-  // Exec policy preflight warning
+  // Exec policy preflight warning — warn when security is missing OR not 'full'
   {
     const execSecurity = extractNestedValue(detection.config, 'tools.exec.security') as string | undefined;
-    if (execSecurity !== undefined && execSecurity !== 'full') {
+    if (execSecurity !== 'full') {
       console.warn('');
       console.warn('Warning: Execution policies may be locked down. If the agent can only chat:');
       console.warn(`  ${cliName} config set tools.exec.host gateway`);

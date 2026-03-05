@@ -49,17 +49,65 @@ function normalizeChannelName(channel: string): string {
 // Ed25519 device identity for OpenClaw gateway WebSocket auth
 // ---------------------------------------------------------------------------
 
-/**
- * WS auth compatibility mode.
- * - `undefined` (default): use base64url encoding for public keys and signatures.
- * - `'clawdbot'`: use PEM-formatted keys and standard base64 signatures.
- */
-type WsAuthCompat = 'clawdbot' | undefined;
+// ---------------------------------------------------------------------------
+// Auth profile system — deterministic profile selection for WS auth across
+// OpenClaw/Clawdbot versions. Profiles define key encoding, signature format,
+// and payload canonicalization for the device auth handshake.
+// ---------------------------------------------------------------------------
 
+interface AuthProfile {
+  /** Human-readable profile name (logged on each auth attempt). */
+  name: string;
+  /** Encoding for the public key sent in the connect message. */
+  publicKeyFormat: 'raw-base64url' | 'spki-pem';
+  /** Encoding for the Ed25519 signature. */
+  signatureEncoding: 'base64url' | 'base64';
+}
+
+const AUTH_PROFILES: Record<string, AuthProfile> = {
+  default: {
+    name: 'default',
+    publicKeyFormat: 'raw-base64url',
+    signatureEncoding: 'base64url',
+  },
+  'clawdbot-v1': {
+    name: 'clawdbot-v1',
+    publicKeyFormat: 'spki-pem',
+    signatureEncoding: 'base64',
+  },
+};
+
+/**
+ * Resolve the auth profile to use. Selection priority:
+ * 1. Explicit env var `OPENCLAW_WS_AUTH_COMPAT` (manual override, highest priority)
+ * 2. Variant detection: `~/.clawdbot/` detected → clawdbot-v1
+ * 3. Default profile (standard OpenClaw, unchanged)
+ */
+function resolveAuthProfile(): AuthProfile {
+  // 1. Manual override (highest priority)
+  const envVal = process.env.OPENCLAW_WS_AUTH_COMPAT;
+  if (envVal === 'clawdbot' || envVal === 'clawdbot-v1') {
+    return AUTH_PROFILES['clawdbot-v1'];
+  }
+  if (envVal && AUTH_PROFILES[envVal]) {
+    return AUTH_PROFILES[envVal];
+  }
+
+  // 2. Variant detection via config path
+  const home = process.env.OPENCLAW_HOME || process.env.OPENCLAW_CONFIG_PATH || '';
+  if (home.includes('.clawdbot') || home.includes('clawdbot')) {
+    return AUTH_PROFILES['clawdbot-v1'];
+  }
+
+  // 3. Default
+  return AUTH_PROFILES['default'];
+}
+
+/** Backward-compat helper — returns 'clawdbot' when using clawdbot profile. */
+type WsAuthCompat = 'clawdbot' | undefined;
 function getWsAuthCompat(): WsAuthCompat {
-  const val = process.env.OPENCLAW_WS_AUTH_COMPAT;
-  if (val === 'clawdbot') return 'clawdbot';
-  return undefined;
+  const profile = resolveAuthProfile();
+  return profile.name === 'clawdbot-v1' ? 'clawdbot' : undefined;
 }
 
 interface DeviceIdentity {
@@ -201,7 +249,7 @@ function signConnectPayload(
     nonce: string;
   },
 ): string {
-  const compat = getWsAuthCompat();
+  const profile = resolveAuthProfile();
 
   // v3 payload format: v3|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce|platform|deviceFamily
   const payload = [
@@ -220,21 +268,14 @@ function signConnectPayload(
 
   const payloadBytes = Buffer.from(payload, 'utf-8');
 
-  // Diagnostic logging: log pre-auth fingerprint (no secrets — only a truncated
-  // payload hash so this is safe to emit at info level).
-  const keyFormat = compat === 'clawdbot' ? 'pem' : 'base64url';
+  // Diagnostic logging: selected profile + pre-auth fingerprint (no secrets).
   const payloadHash = createHash('sha256').update(payloadBytes).digest('hex').slice(0, 16);
-  console.log(`[ws-auth] compat=${compat ?? 'default'} deviceId=${device.deviceId.slice(0, 16)}... keyFormat=${keyFormat} payloadHash=${payloadHash}`);
+  console.log(`[ws-auth] profile=${profile.name} deviceId=${device.deviceId.slice(0, 16)}... keyFormat=${profile.publicKeyFormat} sigEncoding=${profile.signatureEncoding} payloadHash=${payloadHash}`);
 
   // Ed25519 sign — no hash algorithm needed (null), it's built into Ed25519
   const signature = sign(null, payloadBytes, device.privateKeyObj);
 
-  // In clawdbot compat mode, return standard base64 (with +/= chars) instead of base64url
-  if (compat === 'clawdbot') {
-    return Buffer.from(signature).toString('base64');
-  }
-
-  return Buffer.from(signature).toString('base64url');
+  return Buffer.from(signature).toString(profile.signatureEncoding);
 }
 
 
@@ -427,10 +468,9 @@ export class OpenClawGatewayClient {
         nonce: payload.nonce,
       });
 
-      // In clawdbot compat mode, send the PEM-formatted public key if available;
-      // otherwise fall back to the standard base64url raw key.
-      const compat = getWsAuthCompat();
-      const publicKeyField = compat === 'clawdbot' && this.device.publicKeyPem
+      // Select public key format based on resolved auth profile.
+      const profile = resolveAuthProfile();
+      const publicKeyField = profile.publicKeyFormat === 'spki-pem' && this.device.publicKeyPem
         ? this.device.publicKeyPem
         : this.device.publicKeyB64;
 
