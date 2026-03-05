@@ -300,6 +300,21 @@ function buildCanonicalVariants(
       name: 'v3-no-token-sec',
       payload: ['v3', device.deviceId, params.clientId, params.clientMode, params.role, scopesCsv, signedAtSec, params.nonce, params.platform, params.deviceFamily].join('|'),
     },
+    // V6: v2 format (no platform/deviceFamily) — used by older gateway versions
+    {
+      name: 'v2-default-ms',
+      payload: ['v2', device.deviceId, params.clientId, params.clientMode, params.role, scopesCsv, signedAtMs, params.token || '', params.nonce].join('|'),
+    },
+    // V7: v2 with signedAt in seconds
+    {
+      name: 'v2-default-sec',
+      payload: ['v2', device.deviceId, params.clientId, params.clientMode, params.role, scopesCsv, signedAtSec, params.token || '', params.nonce].join('|'),
+    },
+    // V8: v2 without token
+    {
+      name: 'v2-no-token-ms',
+      payload: ['v2', device.deviceId, params.clientId, params.clientMode, params.role, scopesCsv, signedAtMs, params.nonce].join('|'),
+    },
   ];
 }
 
@@ -321,7 +336,13 @@ function signConnectPayload(
 
   // Build canonicalization variants for diagnostics
   const variants = buildCanonicalVariants(device, params);
-  const primary = variants[0]; // v3-default-ms is the primary
+
+  // Select primary payload: clawdbot-v1 uses v2 format (no platform/deviceFamily)
+  // because the Clawdbot marketplace image may run an older gateway that only
+  // supports v2 payloads. The current server (openclaw/openclaw) tries v3 first
+  // then v2, but older versions may only have v2.
+  const primaryName = profile.name === 'clawdbot-v1' ? 'v2-default-ms' : 'v3-default-ms';
+  const primary = variants.find(v => v.name === primaryName) ?? variants[0];
 
   const payloadBytes = Buffer.from(primary.payload, 'utf-8');
 
