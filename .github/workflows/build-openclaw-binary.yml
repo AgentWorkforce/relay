@@ -168,7 +168,7 @@ jobs:
             artifacts/relay-openclaw-*.gz
             artifacts/SHA256SUMS
           prerelease: false
-          make_latest: false
+          make_latest: "false"
 
       - name: Delete existing openclaw-latest release
         run: gh release delete openclaw-latest --yes --cleanup-tag || true
@@ -196,4 +196,4 @@ jobs:
             artifacts/relay-openclaw-*.gz
             artifacts/SHA256SUMS
           prerelease: true
-          make_latest: false
+          make_latest: "false"
