@@ -238,6 +238,68 @@ async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
   return identity;
 }
 
+/** Hash helper for diagnostics (no secrets leaked — just truncated SHA-256). */
+function shortHash(data: string | Buffer): string {
+  const buf = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data;
+  return createHash('sha256').update(buf).digest('hex').slice(0, 16);
+}
+
+/**
+ * Canonicalization variants to try for debugging. Each produces a different
+ * pipe-delimited payload string. The server should match exactly one.
+ */
+function buildCanonicalVariants(
+  device: DeviceIdentity,
+  params: {
+    clientId: string;
+    clientMode: string;
+    platform: string;
+    deviceFamily: string;
+    role: string;
+    scopes: string[];
+    signedAt: number;
+    token: string;
+    nonce: string;
+  },
+): Array<{ name: string; payload: string }> {
+  const signedAtMs = String(params.signedAt);
+  const signedAtSec = String(Math.floor(params.signedAt / 1000));
+  const scopesCsv = params.scopes.join(',');
+
+  return [
+    // V0: current default order (v3|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce|platform|deviceFamily)
+    {
+      name: 'v3-default-ms',
+      payload: ['v3', device.deviceId, params.clientId, params.clientMode, params.role, scopesCsv, signedAtMs, params.token || '', params.nonce, params.platform, params.deviceFamily].join('|'),
+    },
+    // V1: signedAt in seconds instead of milliseconds
+    {
+      name: 'v3-default-sec',
+      payload: ['v3', device.deviceId, params.clientId, params.clientMode, params.role, scopesCsv, signedAtSec, params.token || '', params.nonce, params.platform, params.deviceFamily].join('|'),
+    },
+    // V2: no token in payload (token omitted entirely)
+    {
+      name: 'v3-no-token-ms',
+      payload: ['v3', device.deviceId, params.clientId, params.clientMode, params.role, scopesCsv, signedAtMs, params.nonce, params.platform, params.deviceFamily].join('|'),
+    },
+    // V3: nonce before token (swapped positions)
+    {
+      name: 'v3-nonce-first-ms',
+      payload: ['v3', device.deviceId, params.clientId, params.clientMode, params.role, scopesCsv, signedAtMs, params.nonce, params.token || '', params.platform, params.deviceFamily].join('|'),
+    },
+    // V4: fewer fields — just core identity + nonce + signedAt (minimal)
+    {
+      name: 'v3-minimal',
+      payload: ['v3', device.deviceId, signedAtMs, params.nonce].join('|'),
+    },
+    // V5: signedAt seconds + no token
+    {
+      name: 'v3-no-token-sec',
+      payload: ['v3', device.deviceId, params.clientId, params.clientMode, params.role, scopesCsv, signedAtSec, params.nonce, params.platform, params.deviceFamily].join('|'),
+    },
+  ];
+}
+
 function signConnectPayload(
   device: DeviceIdentity,
   params: {
@@ -254,26 +316,29 @@ function signConnectPayload(
 ): string {
   const profile = resolveAuthProfile();
 
-  // v3 payload format: v3|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce|platform|deviceFamily
-  const payload = [
-    'v3',
-    device.deviceId,
-    params.clientId,
-    params.clientMode,
-    params.role,
-    params.scopes.join(','),
-    String(params.signedAt),
-    params.token || '',
-    params.nonce,
-    params.platform,
-    params.deviceFamily,
-  ].join('|');
+  // Build canonicalization variants for diagnostics
+  const variants = buildCanonicalVariants(device, params);
+  const primary = variants[0]; // v3-default-ms is the primary
 
-  const payloadBytes = Buffer.from(payload, 'utf-8');
+  const payloadBytes = Buffer.from(primary.payload, 'utf-8');
 
   // Diagnostic logging: selected profile + pre-auth fingerprint (no secrets).
-  const payloadHash = createHash('sha256').update(payloadBytes).digest('hex').slice(0, 16);
-  console.log(`[ws-auth] profile=${profile.name} deviceId=${device.deviceId.slice(0, 16)}... keyFormat=${profile.publicKeyFormat} sigEncoding=${profile.signatureEncoding} payloadHash=${payloadHash}`);
+  console.log(`[ws-auth] profile=${profile.name} deviceId=${device.deviceId.slice(0, 16)}... keyFormat=${profile.publicKeyFormat} sigEncoding=${profile.signatureEncoding}`);
+  console.log(`[ws-auth] signedAt=${params.signedAt} (ms) signedAtSec=${Math.floor(params.signedAt / 1000)} nonce=${shortHash(params.nonce)}`);
+
+  // Log per-field hashes for debugging canonicalization mismatches
+  if (process.env.RELAY_LOG_LEVEL === 'DEBUG' || process.env.OPENCLAW_WS_DEBUG === '1') {
+    console.log(`[ws-auth-debug] field hashes: deviceId=${shortHash(device.deviceId)} clientId=${shortHash(params.clientId)} role=${shortHash(params.role)} scopes=${shortHash(params.scopes.join(','))} token=${shortHash(params.token || '')} nonce=${shortHash(params.nonce)}`);
+
+    // Log all canonicalization variant hashes
+    console.log('[ws-auth-debug] canonicalization matrix:');
+    for (const v of variants) {
+      console.log(`  ${v.name}: hash=${shortHash(v.payload)}`);
+    }
+  }
+
+  // Primary payload hash always logged
+  console.log(`[ws-auth] primaryPayload=${primary.name} payloadHash=${shortHash(primary.payload)}`);
 
   // Ed25519 sign — no hash algorithm needed (null), it's built into Ed25519
   const signature = sign(null, payloadBytes, device.privateKeyObj);
@@ -450,6 +515,10 @@ export class OpenClawGatewayClient {
     if (msg.type === 'event' && msg.event === 'connect.challenge') {
       const payload = msg.payload as { nonce: string; ts: number };
       console.log('[openclaw-ws] Received connect.challenge, signing...');
+      // Log raw challenge payload for debugging canonicalization issues
+      if (process.env.RELAY_LOG_LEVEL === 'DEBUG' || process.env.OPENCLAW_WS_DEBUG === '1') {
+        console.log(`[ws-auth-debug] challenge payload: ${JSON.stringify(payload)}`);
+      }
 
       const signedAt = Date.now();
       const clientId = 'cli';
