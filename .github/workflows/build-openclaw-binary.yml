@@ -16,18 +16,24 @@ on:
 
 jobs:
   build:
-    name: Build (${{ matrix.suffix }})
+    name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            targets: "linux-x64 linux-arm64"
-            suffix: linux
+            target: linux-x64
+            bun_target: bun-linux-x64
+          - os: ubuntu-latest
+            target: linux-arm64
+            bun_target: bun-linux-arm64
           - os: macos-latest
-            targets: "darwin-x64 darwin-arm64"
-            suffix: macos
+            target: darwin-x64
+            bun_target: bun-darwin-x64
+          - os: macos-latest
+            target: darwin-arm64
+            bun_target: bun-darwin-arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -50,29 +56,35 @@ jobs:
         id: version
         run: echo "version=$(node -p "require('./packages/openclaw/package.json').version")" >> "$GITHUB_OUTPUT"
 
-      - name: Compile binaries
+      - name: Compile binary
+        shell: bash
+        env:
+          PKG_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          mkdir -p .release
-          for target_suffix in ${{ matrix.targets }}; do
-            bun_target="bun-${target_suffix}"
-            output=".release/relay-openclaw-${target_suffix}"
-            echo "Building for ${bun_target}..."
-            bun build \
-              --compile \
-              --minify \
-              --target="${bun_target}" \
-              --define="process.env.RELAY_OPENCLAW_VERSION=\"${{ steps.version.outputs.version }}\"" \
-              --external dockerode \
-              packages/openclaw/dist/cli.js \
-              --outfile "${output}"
-            gzip -9 -k "${output}"
-            echo "Built ${output}.gz ($(du -h "${output}.gz" | cut -f1))"
-          done
+          set -euo pipefail
+          output="relay-openclaw-${{ matrix.target }}"
+
+          bun build \
+            --compile \
+            --minify \
+            --target="${{ matrix.bun_target }}" \
+            --define="process.env.RELAY_OPENCLAW_VERSION=\"${PKG_VERSION}\"" \
+            --external dockerode \
+            packages/openclaw/dist/cli.js \
+            --outfile "${output}"
+
+          test -f "${output}" || { echo "::error::Binary not produced: ${output}"; exit 1; }
+          echo "Uncompressed: $(du -h "${output}" | cut -f1)"
+
+          gzip -9 -k "${output}"
+          test -f "${output}.gz" || { echo "::error::Gzip failed: ${output}.gz"; exit 1; }
+          echo "Compressed: $(du -h "${output}.gz" | cut -f1)"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: relay-openclaw-${{ matrix.suffix }}
-          path: .release/relay-openclaw-*.gz
+          name: relay-openclaw-${{ matrix.target }}
+          path: relay-openclaw-${{ matrix.target }}.gz
+          if-no-files-found: error
 
   release:
     name: Upload to Release
@@ -91,6 +103,32 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      - name: Validate artifacts
+        run: |
+          set -euo pipefail
+          echo "=== Downloaded artifacts ==="
+          ls -lhR artifacts/
+
+          expected=(
+            relay-openclaw-linux-x64.gz
+            relay-openclaw-linux-arm64.gz
+            relay-openclaw-darwin-x64.gz
+            relay-openclaw-darwin-arm64.gz
+          )
+          missing=0
+          for f in "${expected[@]}"; do
+            if [ ! -f "artifacts/${f}" ]; then
+              echo "::error::Missing artifact: ${f}"
+              missing=1
+            else
+              echo "✓ ${f} ($(du -h "artifacts/${f}" | cut -f1))"
+            fi
+          done
+          if [ "$missing" -eq 1 ]; then
+            exit 1
+          fi
+          echo "All 4 platform binaries present."
 
       - name: Generate SHA256SUMS
         run: |
