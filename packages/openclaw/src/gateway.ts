@@ -206,6 +206,8 @@ export class OpenClawGatewayClient {
   private static readonly MAX_CONSECUTIVE_FAILURES = 5;
   private static readonly BASE_RECONNECT_MS = 3_000;
   private static readonly MAX_RECONNECT_MS = 30_000;
+  /** Slow retry interval after pairing rejection or max failures (60s). */
+  private static readonly PAIRING_RETRY_MS = 60_000;
 
   constructor(token: string, port: number, device?: DeviceIdentity) {
     this.token = token;
@@ -292,7 +294,8 @@ export class OpenClawGatewayClient {
       // Detect pairing rejection: code 1008 (Policy Violation) with pairing reason
       if (code === 1008 && /pairing|not.paired/i.test(reasonStr)) {
         console.error('[openclaw-ws] Connection closed due to pairing policy. Device is not paired.');
-        console.error('[openclaw-ws] Ensure OPENCLAW_GATEWAY_TOKEN matches ~/.openclaw/openclaw.json gateway.auth.token');
+        console.error(`[openclaw-ws] Device ID: ${this.device.deviceId.slice(0, 16)}...`);
+        console.error('[openclaw-ws] Run: openclaw devices approve <requestId> (check gateway logs for requestId)');
         this.pairingRejected = true;
       }
 
@@ -310,7 +313,7 @@ export class OpenClawGatewayClient {
         this.connectReject = null;
         this.connectResolve = null;
       }
-      if (!this.stopped && !this.pairingRejected) {
+      if (!this.stopped) {
         this.scheduleReconnect();
       }
     });
@@ -413,7 +416,13 @@ export class OpenClawGatewayClient {
         const isPairing = /pairing.required|not.paired/i.test(errStr);
 
         if (isPairing) {
+          const errObj = msg.error as Record<string, unknown> | undefined;
+          const requestId = errObj?.requestId ?? errObj?.request_id ?? '';
           console.error('[openclaw-ws] Pairing rejected — device is not paired with the OpenClaw gateway.');
+          if (requestId) {
+            console.error(`[openclaw-ws] Approve this device:  openclaw devices approve ${requestId}`);
+          }
+          console.error(`[openclaw-ws] Device ID: ${this.device.deviceId.slice(0, 16)}...`);
           console.error('[openclaw-ws] Ensure OPENCLAW_GATEWAY_TOKEN matches ~/.openclaw/openclaw.json gateway.auth.token');
           this.pairingRejected = true;
         } else {
@@ -494,15 +503,26 @@ export class OpenClawGatewayClient {
   }
 
   private scheduleReconnect(): void {
-    if (this.stopped || this.pairingRejected || this.reconnectTimer) return;
+    if (this.stopped || this.reconnectTimer) return;
 
-    this.consecutiveFailures++;
-
-    if (this.consecutiveFailures >= OpenClawGatewayClient.MAX_CONSECUTIVE_FAILURES) {
-      console.warn(`[openclaw-ws] ${this.consecutiveFailures} consecutive connection failures — stopping reconnect.`);
-      console.warn('[openclaw-ws] Check that the OpenClaw gateway is running and OPENCLAW_GATEWAY_TOKEN is correct.');
+    // After pairing rejection or max failures, switch to slow periodic retry
+    // so the gateway can self-heal once pairing is approved externally.
+    if (this.pairingRejected || this.consecutiveFailures >= OpenClawGatewayClient.MAX_CONSECUTIVE_FAILURES) {
+      if (this.consecutiveFailures === OpenClawGatewayClient.MAX_CONSECUTIVE_FAILURES) {
+        console.warn(`[openclaw-ws] ${this.consecutiveFailures} consecutive failures — switching to slow retry (every 60s).`);
+        console.warn('[openclaw-ws] Check that the OpenClaw gateway is running and OPENCLAW_GATEWAY_TOKEN is correct.');
+      }
+      this.consecutiveFailures++;
+      console.log(`[openclaw-ws] Slow retry in ${OpenClawGatewayClient.PAIRING_RETRY_MS / 1000}s...`);
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        this.pairingRejected = false; // Clear flag so connect attempt proceeds
+        this.doConnect();
+      }, OpenClawGatewayClient.PAIRING_RETRY_MS);
       return;
     }
+
+    this.consecutiveFailures++;
 
     const delay = Math.min(
       OpenClawGatewayClient.BASE_RECONNECT_MS * Math.pow(2, this.consecutiveFailures - 1),
