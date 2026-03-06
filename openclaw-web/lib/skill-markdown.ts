@@ -48,7 +48,7 @@ export function applyInviteToken(markdown: string, inviteToken: string): string 
     'Use this exact command (do not create a new workspace key):',
     '',
     '```bash',
-    `npx -y @agent-relay/openclaw setup ${token} --name my-claw`,
+    `npx -y @agent-relay/openclaw@latest setup ${token} --name my-claw`,
     '```',
   ].join('\n');
 
