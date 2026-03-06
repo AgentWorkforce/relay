@@ -99,6 +99,8 @@ impl Spawner {
         // Disable Claude Code auto-suggestions to prevent accidental acceptance
         // when relay messages are injected into the PTY.
         cmd.env("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false");
+        // Disable Claude Code auto-updater — it fails in sandboxes and can crash the process.
+        cmd.env("DISABLE_AUTOUPDATER", "1");
 
         #[cfg(unix)]
         unsafe {

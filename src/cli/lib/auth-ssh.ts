@@ -3,7 +3,8 @@ import path from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { spawn as spawnProcess } from 'node:child_process';
 import { createServer } from 'node:net';
-import { CLI_AUTH_CONFIG, stripAnsiCodes, findMatchingError } from '@agent-relay/config/cli-auth-config';
+import { CLI_AUTH_CONFIG } from '@agent-relay/config/cli-auth-config';
+import { runInteractiveSession } from './ssh-interactive.js';
 
 export type AuthCommandOptions = {
   workspace?: string;
@@ -132,21 +133,6 @@ function normalizeProvider(providerArg: string): string {
   return providerMap[providerInput] || providerInput;
 }
 
-function getSshErrorMessage(host: string, port: number, err: Error): string {
-  if (err.message.includes('Authentication')) {
-    return 'SSH authentication failed.';
-  }
-  if (err.message.includes('ECONNREFUSED')) {
-    return `Cannot connect to SSH server at ${host}:${port}. Is the workspace running and SSH enabled?`;
-  }
-  if (err.message.includes('ENOTFOUND') || err.message.includes('getaddrinfo')) {
-    return `Cannot resolve hostname: ${host}. Check network connectivity.`;
-  }
-  if (err.message.includes('ETIMEDOUT')) {
-    return `Connection timed out to ${host}:${port}. Is the workspace running?`;
-  }
-  return `SSH error: ${err.message}`;
-}
 
 export async function runAuthCommand(
   providerArg: string,
@@ -313,289 +299,34 @@ export async function runAuthCommand(
   io.log('');
 
   const tunnelPort = 1455;
-  const ssh2 = await runtime.loadSSH2();
-  const tunnelTarget = useAuthBroker ? 'auth-broker' : 'workspace';
 
   io.log(color.yellow('Connecting via SSH...'));
-  io.log(color.dim(`  Tunnel: localhost:${tunnelPort} → ${tunnelTarget}:${tunnelPort}`));
+  io.log(color.dim(`  Tunnel: localhost:${tunnelPort} → ${useAuthBroker ? 'auth-broker' : 'workspace'}:${tunnelPort}`));
   io.log(color.dim(`  Running: ${remoteCommand}`));
   io.log('');
 
   const successPatterns = providerConfig.successPatterns || [];
   const errorPatterns = providerConfig.errorPatterns || [];
 
-  let execResult: { exitCode: number | null; exitSignal: string | null; authDetected: boolean } | null = null;
-  let execError: Error | null = null;
-
-  if (ssh2) {
-    const { Client } = ssh2;
-    const sshClient = new Client();
-    let sshReady = false;
-    const tunnel: { server: ReturnType<typeof createServer> | null } = { server: null };
-
-    const sshReadyPromise = new Promise<void>((resolve, reject) => {
-      sshClient.on('ready', () => {
-        sshReady = true;
-
-        tunnel.server = runtime.createServer((localSocket) => {
-          sshClient.forwardOut('127.0.0.1', tunnelPort, 'localhost', tunnelPort, (err, stream) => {
-            if (err) {
-              localSocket.end();
-              return;
-            }
-            localSocket.pipe(stream).pipe(localSocket);
-          });
-        });
-
-        tunnel.server.on('error', (err: NodeJS.ErrnoException) => {
-          if (err.code === 'EADDRINUSE') {
-            io.log(color.dim(`Note: Port ${tunnelPort} in use, OAuth callbacks may not work.`));
-          }
-          resolve();
-        });
-
-        tunnel.server.listen(tunnelPort, '127.0.0.1', () => {
-          resolve();
-        });
-      });
-
-      sshClient.on('error', (err) => {
-        reject(new Error(getSshErrorMessage(start.ssh.host, sshPort, err)));
-      });
-
-      sshClient.on('close', () => {
-        if (!sshReady) {
-          reject(new Error(`SSH connection to ${start.ssh.host}:${sshPort} closed unexpectedly.`));
-        }
-      });
-    });
-
-    try {
-      sshClient.connect({
-        host: start.ssh.host,
-        port: sshPort,
-        username: start.ssh.user,
-        password: start.ssh.password,
-        readyTimeout: 10000,
-        hostVerifier: () => true,
-      });
-
-      await Promise.race([
-        sshReadyPromise,
-        new Promise<void>((_, reject) => runtime.setTimeout(() => reject(new Error('SSH connection timeout')), 15000)),
-      ]);
-    } catch (err) {
-      io.error(color.red(`Failed to connect via SSH: ${err instanceof Error ? err.message : String(err)}`));
-      if (tunnel.server) tunnel.server.close();
-      sshClient.end();
-      io.exit(1);
-    }
-
-    const execInteractive = async (command: string, commandTimeoutMs: number) =>
-      await new Promise<{ exitCode: number | null; exitSignal: string | null; authDetected: boolean }>((resolve, reject) => {
-        const cols = process.stdout.columns || 80;
-        const rows = process.stdout.rows || 24;
-        const term = process.env.TERM || 'xterm-256color';
-
-        sshClient.exec(command, { pty: { term, cols, rows } }, (err, stream) => {
-          if (err) return reject(err);
-
-          let exitCode: number | null = null;
-          let exitSignal: string | null = null;
-          let authDetected = false;
-          let outputBuffer = '';
-
-          const stdin = process.stdin;
-          const stdout = process.stdout;
-          const stderr = process.stderr;
-
-          const wasRaw = (stdin as unknown as { isRaw?: boolean }).isRaw ?? false;
-          try {
-            stdin.setRawMode?.(true);
-          } catch {
-            // ignore
-          }
-          stdin.resume();
-
-          const onStdinData = (data: Buffer) => {
-            if (authDetected && (data[0] === 0x1b || data[0] === 0x03)) {
-              cleanup();
-              clearTimeout(timer);
-              try {
-                stream.close();
-              } catch {
-                // ignore
-              }
-              return;
-            }
-            stream.write(data);
-          };
-          stdin.on('data', onStdinData);
-
-          const cleanup = () => {
-            stdin.off('data', onStdinData);
-            stdout.off('resize', onResize);
-            try {
-              stdin.setRawMode?.(wasRaw);
-            } catch {
-              // ignore
-            }
-            stdin.pause();
-          };
-
-          const closeOnAuthSuccess = () => {
-            authDetected = true;
-            stdout.write('\n');
-            stdout.write(color.green('  ✓ Authentication successful!') + '\n');
-            stdout.write(color.dim('  Press Escape or Ctrl+C to exit.') + '\n');
-            stdout.write('\n');
-          };
-
-          stream.on('data', (data: Buffer) => {
-            stdout.write(data);
-
-            outputBuffer += data.toString();
-            if (outputBuffer.length > 8192) {
-              outputBuffer = outputBuffer.slice(-8192);
-            }
-
-            if (!authDetected && successPatterns.length > 0) {
-              const clean = stripAnsiCodes(outputBuffer);
-              for (const pattern of successPatterns) {
-                if (pattern.test(clean)) {
-                  closeOnAuthSuccess();
-                  break;
-                }
-              }
-            }
-
-            if (!authDetected && errorPatterns.length > 0) {
-              const matched = findMatchingError(outputBuffer, errorPatterns);
-              if (matched) {
-                clearTimeout(timer);
-                cleanup();
-                try {
-                  stream.close();
-                } catch {
-                  // ignore
-                }
-                reject(new Error(matched.message + (matched.hint ? ` ${matched.hint}` : '')));
-              }
-            }
-          });
-
-          stream.stderr.on('data', (data: Buffer) => {
-            stderr.write(data);
-          });
-
-          const onResize = () => {
-            try {
-              stream.setWindow(stdout.rows || 24, stdout.columns || 80, 0, 0);
-            } catch {
-              // ignore
-            }
-          };
-          stdout.on('resize', onResize);
-
-          const timer = runtime.setTimeout(() => {
-            cleanup();
-            try {
-              stream.close();
-            } catch {
-              // ignore
-            }
-            reject(new Error(`Authentication timed out after ${Math.floor(commandTimeoutMs / 1000)}s`));
-          }, commandTimeoutMs);
-
-          stream.on('exit', (code: unknown, signal?: unknown) => {
-            if (typeof code === 'number') exitCode = code;
-            if (typeof signal === 'string') exitSignal = signal;
-          });
-
-          stream.on('close', () => {
-            clearTimeout(timer);
-            cleanup();
-            resolve({ exitCode, exitSignal, authDetected });
-          });
-
-          stream.on('error', (streamErr: unknown) => {
-            clearTimeout(timer);
-            cleanup();
-            reject(streamErr instanceof Error ? streamErr : new Error(String(streamErr)));
-          });
-        });
-      });
-
-    try {
-      io.log(color.yellow('Starting interactive authentication...'));
-      io.log(color.dim('Follow the prompts below. The session will close automatically when auth completes.'));
-      io.log('');
-      execResult = await execInteractive(remoteCommand, timeoutMs);
-    } catch (err) {
-      execError = err instanceof Error ? err : new Error(String(err));
-      io.log('');
-      io.error(color.red(`Remote auth command failed: ${execError.message}`));
-    } finally {
-      if (tunnel.server) tunnel.server.close();
-      sshClient.end();
-    }
-  } else {
-    const askpassPath = runtime.createAskpassScript(start.ssh.password);
-    try {
-      const sshArgs = runtime.buildSystemSshArgs({
-        host: start.ssh.host,
-        port: sshPort,
-        username: start.ssh.user,
-        localPort: tunnelPort,
-        remotePort: tunnelPort,
-      });
-      sshArgs.push('-tt');
-      sshArgs.push(`${start.ssh.user}@${start.ssh.host}`);
-      sshArgs.push(remoteCommand);
-
-      io.log(color.yellow('Starting interactive authentication...'));
-      io.log(color.dim('Follow the prompts below.'));
-      io.log('');
-
-      const child = runtime.spawnProcess('ssh', sshArgs, {
-        stdio: 'inherit',
-        env: {
-          ...process.env,
-          SSH_ASKPASS: askpassPath,
-          SSH_ASKPASS_REQUIRE: 'force',
-          DISPLAY: process.env.DISPLAY || ':0',
-        },
-      });
-
-      execResult = await new Promise((resolve) => {
-        child.on('exit', (code, signal) => {
-          resolve({
-            exitCode: code,
-            exitSignal: signal ? String(signal) : null,
-            authDetected: code === 0,
-          });
-        });
-        child.on('error', (err) => {
-          io.error(color.red(`Failed to launch ssh: ${err.message}`));
-          resolve({ exitCode: 1, exitSignal: null, authDetected: false });
-        });
-      });
-    } catch (err) {
-      execError = err instanceof Error ? err : new Error(String(err));
-      io.log('');
-      io.error(color.red(`SSH error: ${execError.message}`));
-    } finally {
-      try {
-        fs.unlinkSync(askpassPath);
-      } catch {
-        // ignore
-      }
-    }
-  }
+  const sessionResult = await runInteractiveSession({
+    ssh: {
+      host: start.ssh.host,
+      port: sshPort,
+      user: start.ssh.user,
+      password: start.ssh.password,
+    },
+    remoteCommand,
+    successPatterns,
+    errorPatterns,
+    timeoutMs,
+    io,
+    tunnelPort,
+    runtime,
+  });
 
   io.log('');
   io.log('Finalizing authentication with cloud...');
-  const success = execError === null && (execResult?.authDetected === true || execResult?.exitCode === 0);
+  const success = sessionResult.authDetected;
 
   const providerForComplete =
     typeof start.provider === 'string' && start.provider.trim().length > 0
@@ -641,13 +372,13 @@ export async function runAuthCommand(
   }
 
   if (!success) {
-    const exitCode = execResult?.exitCode;
+    const exitCode = sessionResult.exitCode;
     if (typeof exitCode === 'number' && exitCode !== 0) {
       io.log('');
       io.error(color.red(`Remote auth command exited with code ${exitCode}.`));
     }
 
-    if (execResult?.exitCode === 127) {
+    if (sessionResult.exitCode === 127) {
       io.log('');
       if (useAuthBroker) {
         io.log(color.yellow(`The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on the auth broker.`));
