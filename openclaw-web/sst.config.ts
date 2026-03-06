@@ -1,8 +1,5 @@
-let isProductionStage = false;
-
 export default $config({
   app(input) {
-    isProductionStage = input.stage === 'production';
     return {
       name: 'relay-openclaw-page',
       home: 'aws',
@@ -12,7 +9,7 @@ export default $config({
   run() {
     new sst.aws.Nextjs('OpenClawWeb', {
       path: '.',
-      domain: isProductionStage
+      domain: $app.stage === 'production'
         ? {
             name: 'agentrelay.net',
             dns: sst.cloudflare.dns({ proxy: true }),
