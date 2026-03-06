@@ -9,25 +9,15 @@ export default $config({
       removal: input?.stage === 'production' ? 'retain' : 'remove',
     };
   },
-  async run() {
-    const router = new sst.aws.Router(
-      'OpenClawRouter',
-      isProductionStage
-        ? {
-            domain: {
-              name: 'agentrelay.net',
-              dns: sst.cloudflare.dns({ proxy: true }),
-            },
-          }
-        : {}
-    );
-
+  run() {
     new sst.aws.Nextjs('OpenClawWeb', {
       path: '.',
-      router: {
-        instance: router,
-        path: '/',
-      },
+      domain: isProductionStage
+        ? {
+            name: 'agentrelay.net',
+            dns: sst.cloudflare.dns({ proxy: true }),
+          }
+        : undefined,
     });
   },
 });
