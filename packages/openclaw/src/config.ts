@@ -83,6 +83,15 @@ export function openclawHome(): string {
   return openclawHomePath;
 }
 
+/** Return the config filename for the resolved OpenClaw home (clawdbot.json or openclaw.json). */
+export function openclawConfigFilename(home?: string): string {
+  const dir = home ?? openclawHome();
+  if (hasValidConfig(dir, 'clawdbot.json')) return 'clawdbot.json';
+  if (hasValidConfig(dir, 'openclaw.json')) return 'openclaw.json';
+  // No existing config — infer from directory name
+  return dir.endsWith('.clawdbot') ? 'clawdbot.json' : 'openclaw.json';
+}
+
 /**
  * Detect whether OpenClaw is installed and return paths/config.
  */

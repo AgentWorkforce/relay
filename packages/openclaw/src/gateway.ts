@@ -131,6 +131,15 @@ function hasControlCharacters(value: string): boolean {
   return false;
 }
 
+function stripControlChars(value: string): string {
+  let out = '';
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    out += code <= 31 || code === 127 ? ' ' : char;
+  }
+  return out;
+}
+
 function sanitizeOpaqueStateValue(value: unknown, maxLength: number): string | null {
   if (typeof value !== 'string') return null;
   if (value.trim().length === 0 || value.length > maxLength) return null;
@@ -762,6 +771,8 @@ export class OpenClawGatewayClient {
     });
 
     ws.on('message', (data) => {
+      // Guard: ignore messages from superseded WebSocket instances.
+      if (this.ws !== ws) return;
       this.handleMessage(data.toString());
     });
 
@@ -770,7 +781,8 @@ export class OpenClawGatewayClient {
       // During v3↔v2 fallback, the old WS is replaced before its close fires.
       if (this.ws !== ws) return;
 
-      const reasonStr = reason.toString();
+      // Sanitize reason to prevent log injection (newlines, control chars)
+      const reasonStr = stripControlChars(reason.toString()).slice(0, 200);
       console.warn(`[openclaw-ws] Disconnected: ${code} ${reasonStr}`);
       const wasAuthenticated = this.authenticated;
       this.authenticated = false;
@@ -1069,6 +1081,9 @@ export class OpenClawGatewayClient {
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null;
         this.pairingRejected = false; // Clear flag so connect attempt proceeds
+        // Reset fallback state so reconnect tries primary payload version first
+        this.payloadVersionOverride = null;
+        this.fallbackAttempted = false;
         this.doConnect();
       }, OpenClawGatewayClient.PAIRING_RETRY_MS);
       return;
@@ -1083,6 +1098,9 @@ export class OpenClawGatewayClient {
     console.log(`[openclaw-ws] Reconnecting in ${delay / 1000}s (attempt ${this.consecutiveFailures})...`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
+      // Reset fallback state so reconnect tries primary payload version first
+      this.payloadVersionOverride = null;
+      this.fallbackAttempted = false;
       this.doConnect();
     }, delay);
   }
