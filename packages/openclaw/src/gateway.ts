@@ -131,6 +131,15 @@ function hasControlCharacters(value: string): boolean {
   return false;
 }
 
+function stripControlChars(value: string): string {
+  let out = '';
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    out += code <= 31 || code === 127 ? ' ' : char;
+  }
+  return out;
+}
+
 function sanitizeOpaqueStateValue(value: unknown, maxLength: number): string | null {
   if (typeof value !== 'string') return null;
   if (value.trim().length === 0 || value.length > maxLength) return null;
@@ -773,7 +782,7 @@ export class OpenClawGatewayClient {
       if (this.ws !== ws) return;
 
       // Sanitize reason to prevent log injection (newlines, control chars)
-      const reasonStr = reason.toString().replace(/[\r\n\x00-\x1f]/g, ' ').slice(0, 200);
+      const reasonStr = stripControlChars(reason.toString()).slice(0, 200);
       console.warn(`[openclaw-ws] Disconnected: ${code} ${reasonStr}`);
       const wasAuthenticated = this.authenticated;
       this.authenticated = false;

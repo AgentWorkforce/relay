@@ -8,6 +8,8 @@ export interface OpenClawConfigOptions {
   openclawHome?: string;
   /** Default workspace path (default: ~/.openclaw/workspace). */
   workspacePath?: string;
+  /** Config filename override (e.g. 'clawdbot.json'). Defaults to 'openclaw.json'. */
+  configFilename?: string;
   /** MCP servers to include. Keys are server names, values are MCP server configs. */
   mcpServers?: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
 }
@@ -20,7 +22,7 @@ export async function writeOpenClawConfig(options: OpenClawConfigOptions): Promi
   const home = options.openclawHome ?? join(process.env.HOME ?? '/home/node', '.openclaw');
   await mkdir(home, { recursive: true });
 
-  const configPath = join(home, 'openclaw.json');
+  const configPath = join(home, options.configFilename ?? 'openclaw.json');
   let config: Record<string, unknown> = {};
 
   try {
