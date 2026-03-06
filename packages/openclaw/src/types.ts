@@ -1,6 +1,35 @@
 /** Default port for the local OpenClaw gateway WebSocket API. */
 export const DEFAULT_OPENCLAW_GATEWAY_PORT = 18789;
 
+export interface GatewayPollFallbackProbeConfig {
+  /** Whether background WS recovery probes should run while polling. */
+  enabled?: boolean;
+  /** How often to attempt WS recovery probes. */
+  intervalMs?: number;
+  /** How long WS must stay healthy before promotion back to WS. */
+  stableGraceMs?: number;
+}
+
+export interface GatewayPollFallbackConfig {
+  /** Enable HTTP long-poll fallback when Relaycast WS is unhealthy. */
+  enabled?: boolean;
+  /** Consecutive WS failures before switching to poll mode. */
+  wsFailureThreshold?: number;
+  /** Long-poll wait time in seconds. */
+  timeoutSeconds?: number;
+  /** Maximum events to request per poll. */
+  limit?: number;
+  /** Initial cursor used when no persisted cursor exists yet. */
+  initialCursor?: string;
+  /** Background WS recovery probe settings. */
+  probeWs?: GatewayPollFallbackProbeConfig;
+}
+
+export interface GatewayTransportConfig {
+  /** WS -> HTTP long-poll fallback settings for inbound Relaycast events. */
+  pollFallback?: GatewayPollFallbackConfig;
+}
+
 export interface GatewayConfig {
   /** Relaycast workspace API key (rk_live_*). */
   apiKey: string;
@@ -14,6 +43,8 @@ export interface GatewayConfig {
   openclawGatewayToken?: string;
   /** OpenClaw gateway port (default: 18789). */
   openclawGatewayPort?: number;
+  /** Optional inbound transport tuning. */
+  transport?: GatewayTransportConfig;
 }
 
 export interface InboundMessage {

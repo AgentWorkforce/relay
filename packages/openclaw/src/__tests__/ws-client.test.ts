@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { WebSocketServer, type WebSocket as WsType } from 'ws';
 
 // Mock spawn/manager and relaycast SDK to prevent side-effects from gateway.ts module load
@@ -42,6 +42,8 @@ vi.mock('node:fs/promises', () => ({
   readFile: vi.fn().mockResolvedValue('{"spawns":[]}'),
   writeFile: vi.fn().mockResolvedValue(undefined),
   mkdir: vi.fn().mockResolvedValue(undefined),
+  rename: vi.fn().mockResolvedValue(undefined),
+  chmod: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('node:fs', () => ({
@@ -114,12 +116,14 @@ class MockOpenClawServer {
           if (this.acceptAuth) {
             ws.send(JSON.stringify({ type: 'res', id: 'connect-1', ok: true }));
           } else {
-            ws.send(JSON.stringify({
-              type: 'res',
-              id: 'connect-1',
-              ok: false,
-              error: { code: 'auth_failed', message: 'Invalid token' },
-            }));
+            ws.send(
+              JSON.stringify({
+                type: 'res',
+                id: 'connect-1',
+                ok: false,
+                error: { code: 'auth_failed', message: 'Invalid token' },
+              })
+            );
           }
           return;
         }
@@ -128,19 +132,23 @@ class MockOpenClawServer {
         if (msg.method === 'chat.send') {
           const respond = () => {
             if (this.chatOk) {
-              ws.send(JSON.stringify({
-                type: 'res',
-                id: msg.id,
-                ok: true,
-                payload: { runId: 'run-1', status: 'accepted' },
-              }));
+              ws.send(
+                JSON.stringify({
+                  type: 'res',
+                  id: msg.id,
+                  ok: true,
+                  payload: { runId: 'run-1', status: 'accepted' },
+                })
+              );
             } else {
-              ws.send(JSON.stringify({
-                type: 'res',
-                id: msg.id,
-                ok: false,
-                error: { code: 'rate_limited', message: 'Too many requests' },
-              }));
+              ws.send(
+                JSON.stringify({
+                  type: 'res',
+                  id: msg.id,
+                  ok: false,
+                  error: { code: 'rate_limited', message: 'Too many requests' },
+                })
+              );
             }
           };
 
@@ -308,11 +316,13 @@ describe('OpenClawGatewayClient', () => {
     origWss.removeAllListeners('connection');
     origWss.on('connection', (ws) => {
       // Send challenge
-      ws.send(JSON.stringify({
-        type: 'event',
-        event: 'connect.challenge',
-        payload: { nonce: 'nonce-1', ts: Date.now() },
-      }));
+      ws.send(
+        JSON.stringify({
+          type: 'event',
+          event: 'connect.challenge',
+          payload: { nonce: 'nonce-1', ts: Date.now() },
+        })
+      );
       ws.on('message', (data) => {
         const msg = JSON.parse(data.toString()) as Record<string, unknown>;
         if (msg.method === 'connect') {
@@ -354,11 +364,13 @@ describe('OpenClawGatewayClient', () => {
     origWss.on('connection', (ws) => {
       // Send garbage first, then a proper challenge
       ws.send('not json at all');
-      ws.send(JSON.stringify({
-        type: 'event',
-        event: 'connect.challenge',
-        payload: { nonce: 'nonce-2', ts: Date.now() },
-      }));
+      ws.send(
+        JSON.stringify({
+          type: 'event',
+          event: 'connect.challenge',
+          payload: { nonce: 'nonce-2', ts: Date.now() },
+        })
+      );
       ws.on('message', (data) => {
         const msg = JSON.parse(data.toString()) as Record<string, unknown>;
         if (msg.method === 'connect') {
@@ -380,22 +392,26 @@ describe('OpenClawGatewayClient', () => {
     origWss.on('connection', (ws) => {
       connectAttempts++;
       // Send challenge
-      ws.send(JSON.stringify({
-        type: 'event',
-        event: 'connect.challenge',
-        payload: { nonce: `nonce-fallback-${connectAttempts}`, ts: Date.now() },
-      }));
+      ws.send(
+        JSON.stringify({
+          type: 'event',
+          event: 'connect.challenge',
+          payload: { nonce: `nonce-fallback-${connectAttempts}`, ts: Date.now() },
+        })
+      );
       ws.on('message', (data) => {
         const msg = JSON.parse(data.toString()) as Record<string, unknown>;
         if (msg.method === 'connect') {
           if (connectAttempts === 1) {
             // First attempt: reject with signature invalid
-            ws.send(JSON.stringify({
-              type: 'res',
-              id: 'connect-1',
-              ok: false,
-              error: { code: 'auth_failed', message: 'device signature invalid' },
-            }));
+            ws.send(
+              JSON.stringify({
+                type: 'res',
+                id: 'connect-1',
+                ok: false,
+                error: { code: 'auth_failed', message: 'device signature invalid' },
+              })
+            );
           } else {
             // Second attempt (fallback): accept
             ws.send(JSON.stringify({ type: 'res', id: 'connect-1', ok: true }));
@@ -418,21 +434,25 @@ describe('OpenClawGatewayClient', () => {
     origWss.removeAllListeners('connection');
     origWss.on('connection', (ws) => {
       connectAttempts++;
-      ws.send(JSON.stringify({
-        type: 'event',
-        event: 'connect.challenge',
-        payload: { nonce: `nonce-nofallback-${connectAttempts}`, ts: Date.now() },
-      }));
+      ws.send(
+        JSON.stringify({
+          type: 'event',
+          event: 'connect.challenge',
+          payload: { nonce: `nonce-nofallback-${connectAttempts}`, ts: Date.now() },
+        })
+      );
       ws.on('message', (data) => {
         const msg = JSON.parse(data.toString()) as Record<string, unknown>;
         if (msg.method === 'connect') {
           // Always reject with signature invalid
-          ws.send(JSON.stringify({
-            type: 'res',
-            id: 'connect-1',
-            ok: false,
-            error: { code: 'auth_failed', message: 'device signature invalid' },
-          }));
+          ws.send(
+            JSON.stringify({
+              type: 'res',
+              id: 'connect-1',
+              ok: false,
+              error: { code: 'auth_failed', message: 'device signature invalid' },
+            })
+          );
         }
       });
     });
