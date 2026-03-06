@@ -1,0 +1,53 @@
+{
+  "id": "traj_mbwl96x2sdwx",
+  "version": 1,
+  "task": {
+    "title": "Fix OpenClaw SEO canonical domain and improve metadata/crawl signals"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-06T23:49:21.133Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-03-06T23:49:28.577Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_zyhtfgwfz7k9",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-06T23:49:28.577Z",
+      "events": [
+        {
+          "ts": 1772840968578,
+          "type": "decision",
+          "content": "Set the canonical domain and crawler metadata to agentrelay.dev: Set the canonical domain and crawler metadata to agentrelay.dev",
+          "raw": {
+            "question": "Set the canonical domain and crawler metadata to agentrelay.dev",
+            "chosen": "Set the canonical domain and crawler metadata to agentrelay.dev",
+            "alternatives": [],
+            "reasoning": "The app had no metadata base and production deployment config still pointed at agentrelay.net, which could split ranking signals and generate incorrect canonicals. Route-level metadata plus sitemap/robots gives search engines a single preferred hostname and crawl path."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-06T23:49:28.585Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "a5accda770d5204ec2e5c98d38238744ec45349d",
+    "endRef": "a5accda770d5204ec2e5c98d38238744ec45349d"
+  },
+  "completedAt": "2026-03-06T23:49:28.585Z",
+  "retrospective": {
+    "summary": "Updated OpenClaw SEO to use agentrelay.dev as the canonical host, added route metadata/open graph/twitter tags, generated sitemap and robots endpoints, improved the hosted skill page intro, and noindexed tokenized invite URLs; verified with a successful Next.js build.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  }
+}
