@@ -188,6 +188,7 @@ export async function loadGatewayConfig(): Promise<GatewayConfig | null> {
 
     const apiKey = envValue(vars, 'RELAY_API_KEY');
     const clawName = envValue(vars, 'RELAY_CLAW_NAME');
+    const relayChannels = envValue(vars, 'RELAY_CHANNELS');
 
     if (!apiKey || !clawName) {
       return null;
@@ -244,11 +245,7 @@ export async function loadGatewayConfig(): Promise<GatewayConfig | null> {
       apiKey,
       clawName,
       baseUrl: envValue(vars, 'RELAY_BASE_URL') || 'https://api.relaycast.dev',
-      channels: envValue(vars, 'RELAY_CHANNELS')
-        ? envValue(vars, 'RELAY_CHANNELS')!
-            .split(',')
-            .map((c) => c.trim())
-        : ['general'],
+      channels: relayChannels ? relayChannels.split(',').map((c) => c.trim()) : ['general'],
       openclawGatewayToken: envValue(vars, 'OPENCLAW_GATEWAY_TOKEN'),
       openclawGatewayPort: Number.isFinite(port) ? port : undefined,
       transport,
