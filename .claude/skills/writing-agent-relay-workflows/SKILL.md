@@ -344,6 +344,87 @@ Even if a wave has 10 ready steps, the runner will only start 5 at a time and pi
 | 5–10                   | 5                |
 | 10+                    | 6–8 max          |
 
+## Scrub Steps: Taming Interactive Lead Output
+
+Interactive agents (PTY mode) produce massive output — TUI chrome, progress indicators, tool call
+traces, and verbose reasoning. A single interactive lead step can produce 100KB–10MB of captured
+output. When this gets chained via `{{steps.lead-step.output}}` into downstream steps, it:
+
+1. **Overwhelms downstream agents** — they get a 240KB prompt and spiral
+2. **Causes timeouts** — the next lead step tries to process megabytes of PTY noise
+3. **Breaks verification** — the token exists somewhere in 10MB of output but the agent never exits
+
+### The fix: deterministic scrub steps
+
+After every interactive lead step that produces structured output, add a **deterministic scrub step**
+that extracts the clean artifact. Have the lead write its output to a file, then the scrub step
+reads that file. Downstream steps chain from the scrub step, not the lead.
+
+```yaml
+# Lead writes structured output to a file
+- name: propose-boundary
+  type: agent
+  agent: lead
+  dependsOn: [analyze]
+  task: |
+    Write your boundary proposal to packages/BOUNDARY.md with this structure:
+    # Package Boundary
+    ## Package A owns
+    - ...
+    ## Package B owns
+    - ...
+    When done, run: echo "BOUNDARY_PROPOSED"
+  verification:
+    type: output_contains
+    value: BOUNDARY_PROPOSED
+
+# Deterministic step reads the clean file — no PTY noise
+- name: scrub-proposal
+  type: deterministic
+  dependsOn: [propose-boundary]
+  command: |
+    if [ -f packages/BOUNDARY.md ]; then
+      cat packages/BOUNDARY.md
+    else
+      echo "File not found"
+    fi
+  captureOutput: true
+
+# Downstream steps chain from the scrub, not the lead
+- name: review
+  agent: reviewer
+  dependsOn: [scrub-proposal]
+  task: |
+    Review this boundary:
+    {{steps.scrub-proposal.output}}
+```
+
+### Rules
+
+- **Every interactive lead step should write its deliverable to a file** (markdown, JSON, etc.)
+- **Add a scrub step after each lead step** that `cat`s the file
+- **Downstream steps depend on the scrub step**, never directly on the lead step's output
+- **Keep lead tasks focused**: one deliverable per step, 10–15 line prompts
+- **Non-interactive agents don't need scrub steps** — their stdout is already clean
+
+### When NOT to scrub
+
+- Non-interactive agents (`interactive: false`, presets `worker`/`reviewer`/`analyst`) produce clean
+  stdout. Their output is safe to chain directly.
+- If the lead's output is only consumed by a non-interactive worker (which will read a file anyway),
+  you can skip the scrub and have the worker read the file directly in its task.
+
+## Verification: Interactive vs Non-Interactive
+
+| Agent type | Verification | Rationale |
+|---|---|---|
+| Non-interactive (codex workers, `interactive: false`) | None needed | They exit when done — exit code 0 = success |
+| Interactive lead (claude PTY) | `output_contains` with `echo "TOKEN"` | Must signal completion explicitly since they stay alive |
+
+Non-interactive agents just die when their task is finished. The runner already treats a clean
+exit as success. Adding `output_contains` verification to non-interactive agents triggers the
+double-occurrence rule and causes spurious failures. Only use verification on interactive agents.
+
 ## Common Mistakes
 
 | Mistake                                                     | Fix                                                               |
@@ -361,6 +442,8 @@ Even if a wave has 10 ready steps, the runner will only start 5 at a time and pi
 | Workers depending on the lead step (deadlock)               | Workers and lead both depend on a shared context step             |
 | Omitting `agents` field for deterministic-only workflows    | Field is now optional — pure shell pipelines work without it      |
 | Verification token buried at end of long codex task         | Use `REQUIRED: The very last line you print must be exactly: TOKEN` |
+| Chaining interactive lead output to downstream steps        | Add a scrub step that reads the lead's file output (see above)    |
+| Adding `output_contains` to non-interactive agents          | Don't — they exit when done, no verification needed               |
 
 ## Verification Tokens with Non-Interactive Workers
 

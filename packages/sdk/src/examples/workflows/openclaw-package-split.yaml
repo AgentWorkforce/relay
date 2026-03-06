@@ -1,0 +1,377 @@
+version: "1.0"
+name: openclaw-package-split
+description: >
+  Multi-agent workflow to split OpenClaw integration into two packages with clear
+  boundaries: @relaycast/openclaw (SDK/bridge layer) and @agent-relay/openclaw
+  (orchestration layer). Uses reflection and consensus to validate the split design.
+paths:
+  - name: relaycast
+    path: ../relaycast
+    description: "@relaycast/openclaw — SDK/bridge layer (config, types, bridge)"
+swarm:
+  pattern: dag
+  maxConcurrency: 4
+  timeoutMs: 5400000
+  channel: wf-openclaw-split
+  idleNudge:
+    nudgeAfterMs: 120000
+    escalateAfterMs: 120000
+    maxNudges: 1
+agents:
+  - name: lead
+    cli: claude
+    role: "Owns the split design, sequences work, and resolves conflicts between reviewers"
+  - name: relaycast-analyst
+    cli: codex
+    workdir: relaycast
+    role: "Analyzes @relaycast/openclaw — what it owns today and what it should own"
+    interactive: false
+  - name: relay-analyst
+    cli: codex
+    role: "Analyzes @agent-relay/openclaw — identifies what should stay vs migrate to @relaycast/openclaw"
+    interactive: false
+  - name: boundary-reviewer
+    cli: codex
+    role: "Reviews proposed API boundary for leaky abstractions, circular deps, and breaking changes"
+    additionalPaths: ["../relaycast"]
+    interactive: false
+  - name: migration-planner
+    cli: codex
+    role: "Produces concrete file-level migration plan with dependency graph"
+    additionalPaths: ["../relaycast"]
+    interactive: false
+workflows:
+  - name: package-split-design
+    description: "Analyze both packages, design boundary, review with reflection, produce migration plan"
+    onError: retry
+    preflight:
+      - command: test -d packages/openclaw/src && echo "relay openclaw found" || echo "MISSING"
+        description: "Verify @agent-relay/openclaw exists (project: relay)"
+      - command: test -d packages/openclaw/src && echo "relaycast openclaw found" || echo "MISSING"
+        description: "Verify @relaycast/openclaw exists (project: relaycast)"
+    steps:
+      # ── Wave 1: Deterministic context capture ──────────────────────────
+
+      - name: capture-relay-openclaw
+        type: deterministic
+        command: |
+          echo "=== @agent-relay/openclaw package.json ==="
+          cat packages/openclaw/package.json
+          echo ""
+          echo "=== Source files ==="
+          find packages/openclaw/src -name '*.ts' -not -path '*/node_modules/*' -not -path '*/__tests__/*' | sort
+          echo ""
+          echo "=== Exports (index.ts) ==="
+          cat packages/openclaw/src/index.ts
+          echo ""
+          echo "=== Types ==="
+          cat packages/openclaw/src/types.ts
+          echo ""
+          echo "=== Config ==="
+          cat packages/openclaw/src/config.ts
+          echo ""
+          echo "=== LOC per file ==="
+          wc -l packages/openclaw/src/*.ts
+        captureOutput: true
+
+      - name: capture-relaycast-openclaw
+        type: deterministic
+        workdir: relaycast
+        command: |
+          echo "=== @relaycast/openclaw package.json ==="
+          cat packages/openclaw/package.json
+          echo ""
+          echo "=== Source files ==="
+          find packages/openclaw/src -name '*.ts' -not -path '*/node_modules/*' -not -path '*/__tests__/*' | sort
+          echo ""
+          echo "=== Exports (index.ts) ==="
+          cat packages/openclaw/src/index.ts
+          echo ""
+          echo "=== Config ==="
+          cat packages/openclaw/src/config.ts
+          echo ""
+          echo "=== Bridge ==="
+          cat packages/openclaw/src/bridge.ts
+          echo ""
+          echo "=== LOC per file ==="
+          wc -l packages/openclaw/src/*.ts
+        captureOutput: true
+
+      - name: capture-shared-imports
+        type: deterministic
+        command: |
+          echo "=== @agent-relay/openclaw imports from @relaycast/* ==="
+          grep -r '@relaycast/' packages/openclaw/src/ --include='*.ts' || echo "none"
+          echo ""
+          echo "=== @relaycast/openclaw imports from @agent-relay/* ==="
+          grep -r '@agent-relay/' ../relaycast/packages/openclaw/src/ --include='*.ts' || echo "none"
+          echo ""
+          echo "=== Duplicate function names across both ==="
+          grep -roh 'export.*function [a-zA-Z]*' packages/openclaw/src/ --include='*.ts' | sed 's/.*function //' | sort -u > /tmp/relay-fns.txt
+          grep -roh 'export.*function [a-zA-Z]*' ../relaycast/packages/openclaw/src/ --include='*.ts' | sed 's/.*function //' | sort -u > /tmp/relaycast-fns.txt
+          comm -12 /tmp/relay-fns.txt /tmp/relaycast-fns.txt || echo "none"
+          echo ""
+          echo "=== Duplicate interface/type names across both ==="
+          grep -roh 'export \(interface\|type\) [a-zA-Z]*' packages/openclaw/src/ --include='*.ts' | sed 's/.*\(interface\|type\) //' | sort -u > /tmp/relay-types.txt
+          grep -roh 'export \(interface\|type\) [a-zA-Z]*' ../relaycast/packages/openclaw/src/ --include='*.ts' | sed 's/.*\(interface\|type\) //' | sort -u > /tmp/relaycast-types.txt
+          comm -12 /tmp/relay-types.txt /tmp/relaycast-types.txt || echo "none"
+          rm -f /tmp/relay-fns.txt /tmp/relaycast-fns.txt /tmp/relay-types.txt /tmp/relaycast-types.txt
+        captureOutput: true
+
+      # ── Wave 2: Parallel analysis ──────────────────────────────────────
+
+      - name: analyze-relaycast
+        type: agent
+        agent: relaycast-analyst
+        dependsOn: [capture-relaycast-openclaw, capture-shared-imports]
+        task: |
+          Analyze the @relaycast/openclaw package and determine what it should own
+          from a separation-of-concerns perspective.
+
+          @relaycast/openclaw should be the SDK/bridge layer:
+          - Config detection (openclawHome, detectOpenClaw)
+          - .env read/write for relaycast settings
+          - Basic OpenClaw bridge (lightweight, no orchestration)
+          - Shared types (GatewayConfig, OpenClawDetection)
+
+          Current package contents:
+          {{steps.capture-relaycast-openclaw.output}}
+
+          Cross-package imports and duplicates:
+          {{steps.capture-shared-imports.output}}
+
+          Produce:
+          1. What @relaycast/openclaw currently does well
+          2. What's missing that @agent-relay/openclaw duplicates
+          3. Proposed public API surface (exported functions, types, interfaces)
+          4. Breaking changes required in the current @relaycast/openclaw API
+
+      - name: analyze-relay
+        type: agent
+        agent: relay-analyst
+        dependsOn: [capture-relay-openclaw, capture-shared-imports]
+        task: |
+          Analyze the @agent-relay/openclaw package and determine what should stay
+          vs what should migrate to @relaycast/openclaw.
+
+          @agent-relay/openclaw should be the orchestration layer:
+          - Gateway WS client with device identity persistence and pairing
+          - Spawn manager (Docker, process lifecycle)
+          - MCP server (spawn/list/release tools)
+          - Control API (HTTP server for spawn commands)
+          - Setup flow that imports config primitives from @relaycast/openclaw
+
+          Current package contents:
+          {{steps.capture-relay-openclaw.output}}
+
+          Cross-package imports and duplicates:
+          {{steps.capture-shared-imports.output}}
+
+          Produce:
+          1. Files/functions that should STAY in @agent-relay/openclaw
+          2. Files/functions that should MIGRATE to @relaycast/openclaw
+          3. New imports @agent-relay/openclaw would need from @relaycast/openclaw
+          4. Risk assessment: what breaks during migration
+
+      # ── Wave 3: Lead proposes ownership boundary ─────────────────────
+      #    Focused task: just assign modules to packages. No migration plan yet.
+
+      - name: propose-boundary
+        type: agent
+        agent: lead
+        dependsOn: [analyze-relaycast, analyze-relay]
+        task: |
+          Based on both analyses, assign each module/function/type to a package.
+
+          @relaycast/openclaw analysis:
+          {{steps.analyze-relaycast.output}}
+
+          @agent-relay/openclaw analysis:
+          {{steps.analyze-relay.output}}
+
+          Constraints:
+          - @relaycast/openclaw = SDK/bridge layer (npm-published, used by relaycast.dev)
+          - @agent-relay/openclaw = orchestration layer (depends on @relaycast/openclaw)
+          - No circular deps. Shared types/config live in @relaycast/openclaw.
+
+          Write a file packages/openclaw/BOUNDARY.md with exactly this structure:
+
+          # Package Boundary
+
+          ## @relaycast/openclaw owns
+          - [module/function/type per line]
+
+          ## @agent-relay/openclaw owns
+          - [module/function/type per line]
+
+          ## @agent-relay/openclaw imports from @relaycast/openclaw
+          - [specific import per line]
+
+          ## Breaking changes
+          - [change per line, or "none"]
+
+          Do NOT produce a migration plan. Just the boundary assignment.
+          When done, run: echo "BOUNDARY_PROPOSED"
+        verification:
+          type: output_contains
+          value: BOUNDARY_PROPOSED
+
+      # ── Wave 3b: Scrub lead PTY output for downstream chaining ───────
+
+      - name: scrub-proposal
+        type: deterministic
+        dependsOn: [propose-boundary]
+        command: |
+          if [ -f packages/openclaw/BOUNDARY.md ]; then
+            cat packages/openclaw/BOUNDARY.md
+          else
+            echo "ERROR: BOUNDARY.md not found. The propose-boundary step must write this file."
+            exit 1
+          fi
+        captureOutput: true
+
+      # ── Wave 4: Independent boundary review ──────────────────────────
+
+      - name: review-boundary
+        type: agent
+        agent: boundary-reviewer
+        dependsOn: [scrub-proposal]
+        task: |
+          Review this package boundary proposal for:
+          - Leaky abstractions (does @relaycast/openclaw expose orchestration details?)
+          - Circular dependency risk
+          - Breaking change impact on existing consumers
+          - Missing edge cases (Docker environments, OPENCLAW_HOME overrides, device identity)
+          - Whether the split actually simplifies both packages or just moves complexity
+
+          Boundary proposal:
+          {{steps.scrub-proposal.output}}
+
+          For each concern found, classify as:
+          - BLOCKER: must fix before migration
+          - WARNING: should fix but can defer
+          - NOTE: observation for future consideration
+
+          If the boundary is sound, state what makes it solid.
+          If it has problems, propose specific fixes.
+
+      # ── Wave 5: Lead resolves review feedback ────────────────────────
+      #    Small task: just address blockers/warnings against the clean boundary doc.
+
+      - name: resolve-feedback
+        type: agent
+        agent: lead
+        dependsOn: [review-boundary, scrub-proposal]
+        task: |
+          Address the review feedback and update the boundary document.
+
+          Current boundary (from BOUNDARY.md):
+          {{steps.scrub-proposal.output}}
+
+          Review feedback:
+          {{steps.review-boundary.output}}
+
+          For each BLOCKER: fix the boundary or explain why it's correct.
+          For each WARNING: acknowledge and note for migration.
+
+          Update packages/openclaw/BOUNDARY.md with the resolved version.
+          Keep the same structure. Do not add a migration plan.
+
+          When done, run: echo "BOUNDARY_FINALIZED"
+        verification:
+          type: output_contains
+          value: BOUNDARY_FINALIZED
+
+      # ── Wave 5b: Scrub resolved boundary for downstream ─────────────
+
+      - name: scrub-resolved
+        type: deterministic
+        dependsOn: [resolve-feedback]
+        command: |
+          if [ -f packages/openclaw/BOUNDARY.md ]; then
+            cat packages/openclaw/BOUNDARY.md
+          else
+            echo "ERROR: BOUNDARY.md not found. The resolve-feedback step must update this file."
+            exit 1
+          fi
+        captureOutput: true
+
+      # ── Wave 6: Concrete migration plan ──────────────────────────────
+
+      - name: migration-plan
+        type: agent
+        agent: migration-planner
+        dependsOn: [scrub-resolved]
+        task: |
+          Produce a concrete, file-level migration plan based on this finalized
+          package boundary:
+
+          {{steps.scrub-resolved.output}}
+
+          The plan must include:
+
+          1. **Phase 1: Prepare @relaycast/openclaw** (no breaking changes yet)
+             - New files to create
+             - Functions/types to add or modify
+             - Version bump strategy
+
+          2. **Phase 2: Update @agent-relay/openclaw** (switch imports)
+             - Files that get deleted (moved to @relaycast/openclaw)
+             - Import statements that change
+             - package.json dependency addition
+             - Test updates
+
+          3. **Phase 3: Verify** (no new code)
+             - Type-check commands for both packages
+             - Test commands for both packages
+             - Manual verification steps
+
+          4. **Dependency graph** showing migration order
+
+          For each file change, show the exact path and what happens to it
+          (create/move/delete/modify).
+
+      # ── Wave 7: Lead writes final summary ───────────────────────────
+      #    Small task: read BOUNDARY.md, combine with migration plan, write summary file.
+
+      - name: handoff
+        type: agent
+        agent: lead
+        dependsOn: [migration-plan, scrub-resolved]
+        task: |
+          You have two tasks:
+          1. Read packages/openclaw/BOUNDARY.md (already exists on disk)
+          2. Write packages/openclaw/PACKAGE_SPLIT_PLAN.md with this structure:
+
+          # Package Split Plan
+          ## Overview (one paragraph)
+          ## Package Ownership (bullet points for each package)
+          ## Migration Phases (Phase 1/2/3 with S/M/L complexity)
+          ## Risks and Mitigations
+          ## Recommended First PR
+
+          Use the boundary doc and this migration context:
+          {{steps.migration-plan.output}}
+
+          IMPORTANT: You MUST create the file packages/openclaw/PACKAGE_SPLIT_PLAN.md.
+          After writing the file, run this exact command: echo "HANDOFF_DONE"
+        verification:
+          type: output_contains
+          value: HANDOFF_DONE
+coordination:
+  barriers:
+    - name: analyses-complete
+      waitFor: [analyze-relaycast, analyze-relay]
+      timeoutMs: 600000
+    - name: boundary-finalized
+      waitFor: [resolve-feedback]
+      timeoutMs: 900000
+state:
+  backend: memory
+  ttlMs: 86400000
+  namespace: openclaw-split
+errorHandling:
+  strategy: retry
+  maxRetries: 2
+  retryDelayMs: 10000
+  notifyChannel: wf-openclaw-split
