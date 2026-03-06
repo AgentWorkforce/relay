@@ -195,10 +195,11 @@ if command -v curl &> /dev/null; then
 
     if [[ $CURL_EXIT -ne 0 ]] || [[ -z "$LIVE_RESULT" ]]; then
         echo -e "${YELLOW}[SKIP]${NC} Could not reach GitHub API (network issue or rate limited)"
-    elif [[ "$LIVE_RESULT" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+    elif [[ "$LIVE_RESULT" =~ v?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+        # Accept versions with optional prefix (e.g., "openclaw-v3.1.10", "v3.1.10", "3.1.10")
         pass "Live API returned valid version: $LIVE_RESULT"
     else
-        fail "Live API returned unexpected format" "v*.*.* pattern" "$LIVE_RESULT"
+        fail "Live API returned unexpected format" "version pattern (e.g., v1.2.3 or prefix-v1.2.3)" "$LIVE_RESULT"
     fi
 else
     echo -e "${YELLOW}[SKIP]${NC} curl not available for live test"
