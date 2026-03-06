@@ -195,7 +195,7 @@ if command -v curl &> /dev/null; then
 
     if [[ $CURL_EXIT -ne 0 ]] || [[ -z "$LIVE_RESULT" ]]; then
         echo -e "${YELLOW}[SKIP]${NC} Could not reach GitHub API (network issue or rate limited)"
-    elif [[ "$LIVE_RESULT" =~ v?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+    elif [[ "$LIVE_RESULT" =~ ^([a-z]+-)?v?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
         # Accept versions with optional prefix (e.g., "openclaw-v3.1.10", "v3.1.10", "3.1.10")
         pass "Live API returned valid version: $LIVE_RESULT"
     else
