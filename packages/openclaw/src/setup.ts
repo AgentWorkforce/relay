@@ -30,8 +30,15 @@ function extractNestedValue(obj: unknown, path: string): unknown {
  * Set a deeply nested value in an object by dot-separated path, creating
  * intermediate objects as needed.
  */
+const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
 function setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): void {
   const keys = path.split('.');
+  for (const key of keys) {
+    if (DANGEROUS_KEYS.has(key)) {
+      throw new Error(`Refusing to set dangerous key "${key}" in path "${path}"`);
+    }
+  }
   let current: Record<string, unknown> = obj;
   for (let i = 0; i < keys.length - 1; i++) {
     const key = keys[i];
