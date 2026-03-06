@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { unlink } from 'node:fs/promises';
+import { readdir, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 
 import { normalizeModelRef } from '../identity/model.js';
@@ -11,6 +11,7 @@ import {
   generateIdentityMd,
   ensureWorkspace,
 } from '../identity/files.js';
+import { openclawHome as resolveOpenclawHome } from '../config.js';
 
 export interface RuntimeSetupOptions {
   /** Raw model string (e.g. "gpt-5.3-codex"). Defaults to env OPENCLAW_MODEL. */
@@ -38,6 +39,9 @@ export async function runtimeSetup(options: RuntimeSetupOptions = {}): Promise<{
   agentName: string;
   workspaceId: string;
 }> {
+  // Resolve OpenClaw home using canonical precedence (OPENCLAW_CONFIG_PATH > OPENCLAW_HOME > probe)
+  // Only fall back to homeDir option for non-OpenClaw paths (dist dir, etc.)
+  const ocHome = resolveOpenclawHome();
   const home = options.homeDir ?? process.env.HOME ?? '/home/node';
   const model = options.model ?? process.env.OPENCLAW_MODEL ?? 'openai-codex/gpt-5.3-codex';
   const name = options.name ?? process.env.OPENCLAW_NAME ?? process.env.AGENT_NAME ?? 'agent';
@@ -60,11 +64,11 @@ export async function runtimeSetup(options: RuntimeSetupOptions = {}): Promise<{
   // 2. Write openclaw.json config
   await writeOpenClawConfig({
     modelRef,
-    openclawHome: join(home, '.openclaw'),
+    openclawHome: ocHome,
   });
 
   // 3. Write identity files in workspace
-  const wsDir = join(home, '.openclaw', 'workspace');
+  const wsDir = join(ocHome, 'workspace');
   await ensureWorkspace({
     workspacePath: wsDir,
     workspaceId,
@@ -79,11 +83,52 @@ export async function runtimeSetup(options: RuntimeSetupOptions = {}): Promise<{
     await unlink(bootstrapPath);
   }
 
-  // 4. Patch OpenClaw dist
+  // 4. Remove stale session lock files from previous runs
+  await clearStaleLocks(ocHome);
+
+  // 5. Patch OpenClaw dist
   await patchOpenClawDist(distDir, modelRef);
 
-  // 5. Clear JIT cache
+  // 6. Clear JIT cache
   await clearJitCache();
 
   return { modelRef, agentName: name, workspaceId };
+}
+
+/**
+ * Remove stale .lock files from OpenClaw session directories.
+ *
+ * OpenClaw creates per-session lock files at ~/.openclaw/agents/<name>/sessions/<uuid>.jsonl.lock.
+ * If the process dies uncleanly, stale locks prevent new sessions from starting
+ * ("session file locked (timeout 10000ms)"). Since runtime-setup runs before the
+ * gateway starts, no legitimate locks should exist — all locks are stale.
+ */
+async function clearStaleLocks(openclawHome: string): Promise<void> {
+  const agentsDir = join(openclawHome, 'agents');
+  if (!existsSync(agentsDir)) return;
+
+  try {
+    const agentNames = await readdir(agentsDir, { withFileTypes: true });
+    let cleared = 0;
+
+    for (const agent of agentNames) {
+      if (!agent.isDirectory()) continue;
+      const sessionsDir = join(agentsDir, agent.name, 'sessions');
+      if (!existsSync(sessionsDir)) continue;
+
+      const files = await readdir(sessionsDir);
+      for (const file of files) {
+        if (file.endsWith('.lock')) {
+          await unlink(join(sessionsDir, file)).catch(() => {});
+          cleared++;
+        }
+      }
+    }
+
+    if (cleared > 0) {
+      process.stderr.write(`[runtime-setup] Cleared ${cleared} stale session lock(s)\n`);
+    }
+  } catch {
+    // Non-fatal — session lock cleanup is best-effort
+  }
 }
