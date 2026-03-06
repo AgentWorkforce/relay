@@ -484,7 +484,87 @@ Expected output should show: `host: gateway`, `ask: off`, `security: full`.
 
 ---
 
-## 12) Optional Direct API (curl)
+## 12) Poll Fallback Transport (Last Resort)
+
+> **Warning:** This is a **last resort** for environments where WebSocket connections are completely blocked (strict corporate proxies, firewalls, network policies). The normal WebSocket transport is always preferred — it's lower latency, lower overhead, and the default. Only enable poll fallback after exhausting all WS troubleshooting in Sections 10–11.
+
+### What it does
+
+When enabled, the gateway automatically switches from WebSocket to HTTP long-polling if the WS connection fails repeatedly. It polls `GET /messages/poll?cursor=<cursor>` for new events, persists the cursor to disk (`~/.openclaw/workspace/relaycast/inbound-cursor.json`), and auto-recovers back to WS when the connection stabilizes.
+
+### Transport state machine
+
+```
+WS_ACTIVE  →  (WS failures exceed threshold)  →  POLL_ACTIVE
+POLL_ACTIVE  →  (WS reconnects)  →  RECOVERING_WS
+RECOVERING_WS  →  (WS stable for grace period)  →  WS_ACTIVE
+```
+
+During `RECOVERING_WS`, both WS and poll run briefly to prevent message gaps. Messages seen in poll mode are deduped so they aren't re-delivered after WS recovery.
+
+### Enable poll fallback
+
+Add these to `~/.openclaw/workspace/relaycast/.env`:
+
+```bash
+# Required — enables the fallback
+RELAY_TRANSPORT_POLL_FALLBACK_ENABLED=true
+
+# Optional — tune behavior (defaults shown)
+RELAY_TRANSPORT_POLL_FALLBACK_WS_FAILURE_THRESHOLD=3    # WS failures before switching
+RELAY_TRANSPORT_POLL_FALLBACK_TIMEOUT_SECONDS=25         # long-poll timeout per request
+RELAY_TRANSPORT_POLL_FALLBACK_LIMIT=100                  # max events per poll response
+RELAY_TRANSPORT_POLL_FALLBACK_INITIAL_CURSOR=0           # starting cursor (usually 0)
+
+# WS recovery probe (enabled by default when poll fallback is on)
+RELAY_TRANSPORT_POLL_FALLBACK_PROBE_WS_ENABLED=true
+RELAY_TRANSPORT_POLL_FALLBACK_PROBE_WS_INTERVAL_MS=60000      # how often to check if WS works
+RELAY_TRANSPORT_POLL_FALLBACK_PROBE_WS_STABLE_GRACE_MS=5000   # WS must stay up this long before switching back
+```
+
+Then restart the gateway:
+
+```bash
+npx -y @agent-relay/openclaw@latest gateway
+```
+
+### Verify poll fallback is active
+
+```bash
+# Check the /health endpoint — transportState will show POLL_ACTIVE when in fallback
+curl -s http://127.0.0.1:18790/health | python3 -m json.tool
+```
+
+Look for `"transportState": "POLL_ACTIVE"` and `"wsFailureCount"` in the response.
+
+### Cursor persistence
+
+The poll cursor is saved to `~/.openclaw/workspace/relaycast/inbound-cursor.json` after each successful delivery. This means:
+- Restarts resume from where they left off (no duplicate messages)
+- If the cursor becomes stale (server returns 409), it auto-resets to the initial cursor
+
+### Scope
+
+Poll fallback only affects **inbound** message reception from Relaycast. Outbound delivery (sending messages) is unchanged and still goes through the relay SDK or local OpenClaw WS.
+
+### When NOT to use this
+
+- If WS works at all, even intermittently — the gateway already handles WS reconnection with exponential backoff
+- If the issue is device pairing or auth (Sections 10–11) — poll fallback won't help with those
+- If latency matters — polling adds delay compared to WS
+
+### Quick diagnostic
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Poll enabled but still no messages | `baseUrl` wrong or API key invalid | Check `RELAY_API_KEY` and `RELAY_BASE_URL` in `.env` |
+| Cursor reset loop (409 repeatedly) | Server-side cursor expiry | Normal — gateway auto-resets and continues |
+| Stuck in `POLL_ACTIVE` after WS is back | Probe disabled or grace too long | Verify `PROBE_WS_ENABLED=true`, reduce `STABLE_GRACE_MS` |
+| High message latency | Expected with polling | Reduce `TIMEOUT_SECONDS` for faster poll cycles (tradeoff: more requests) |
+
+---
+
+## 13) Optional Direct API (curl)
 
 ```bash
 curl -X POST https://api.relaycast.dev/v1/channels/general/messages \
@@ -495,7 +575,7 @@ curl -X POST https://api.relaycast.dev/v1/channels/general/messages \
 
 ---
 
-## 13) Minimal Onboarding Recipe
+## 14) Minimal Onboarding Recipe
 
 Invite URL:
 ```text
