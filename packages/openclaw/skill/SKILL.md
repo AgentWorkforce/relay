@@ -542,7 +542,7 @@ RELAY_TRANSPORT_POLL_FALLBACK_INITIAL_CURSOR=0           # starting cursor (usua
 # WS recovery probe (enabled by default when poll fallback is on)
 RELAY_TRANSPORT_POLL_FALLBACK_PROBE_WS_ENABLED=true
 RELAY_TRANSPORT_POLL_FALLBACK_PROBE_WS_INTERVAL_MS=60000      # how often to check if WS works
-RELAY_TRANSPORT_POLL_FALLBACK_PROBE_WS_STABLE_GRACE_MS=5000   # WS must stay up this long before switching back
+RELAY_TRANSPORT_POLL_FALLBACK_PROBE_WS_STABLE_GRACE_MS=10000  # WS must stay up this long before switching back
 ```
 
 Then restart the gateway:
@@ -554,15 +554,16 @@ npx -y @agent-relay/openclaw@latest gateway
 ### Verify poll fallback is active
 
 ```bash
-# Check the /health endpoint — transportState will show POLL_ACTIVE when in fallback
+# Check the /health endpoint — transport.state will show POLL_ACTIVE when in fallback
 curl -s http://127.0.0.1:18790/health | python3 -m json.tool
 ```
 
-Look for `"transportState": "POLL_ACTIVE"` and `"wsFailureCount"` in the response.
+Look for `"transport": { "state": "POLL_ACTIVE", ... }` and `"wsFailureCount"` in the response.
 
 ### Cursor persistence
 
 The poll cursor is saved to `~/.openclaw/workspace/relaycast/inbound-cursor.json` after each successful delivery. This means:
+
 - Restarts resume from where they left off (no duplicate messages)
 - If the cursor becomes stale (server returns 409), it auto-resets to the initial cursor
 
@@ -578,12 +579,12 @@ Poll fallback only affects **inbound** message reception from Relaycast. Outboun
 
 ### Quick diagnostic
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| Poll enabled but still no messages | `baseUrl` wrong or API key invalid | Check `RELAY_API_KEY` and `RELAY_BASE_URL` in `.env` |
-| Cursor reset loop (409 repeatedly) | Server-side cursor expiry | Normal — gateway auto-resets and continues |
-| Stuck in `POLL_ACTIVE` after WS is back | Probe disabled or grace too long | Verify `PROBE_WS_ENABLED=true`, reduce `STABLE_GRACE_MS` |
-| High message latency | Expected with polling | Reduce `TIMEOUT_SECONDS` for faster poll cycles (tradeoff: more requests) |
+| Symptom                                 | Cause                              | Fix                                                                       |
+| --------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------- |
+| Poll enabled but still no messages      | `baseUrl` wrong or API key invalid | Check `RELAY_API_KEY` and `RELAY_BASE_URL` in `.env`                      |
+| Cursor reset loop (409 repeatedly)      | Server-side cursor expiry          | Normal — gateway auto-resets and continues                                |
+| Stuck in `POLL_ACTIVE` after WS is back | Probe disabled or grace too long   | Verify `PROBE_WS_ENABLED=true`, reduce `STABLE_GRACE_MS`                  |
+| High message latency                    | Expected with polling              | Reduce `TIMEOUT_SECONDS` for faster poll cycles (tradeoff: more requests) |
 
 ---
 

@@ -120,7 +120,19 @@ function pendingFetch(init?: RequestInit): Promise<never> {
   });
 }
 
-function createGateway() {
+function createGateway(
+  pollFallbackOverrides: {
+    wsFailureThreshold?: number;
+    timeoutSeconds?: number;
+    limit?: number;
+    initialCursor?: string;
+    probeWs?: {
+      enabled?: boolean;
+      intervalMs?: number;
+      stableGraceMs?: number;
+    };
+  } = {}
+) {
   const sendMessage = vi.fn().mockResolvedValue({ event_id: 'evt_out_1' });
   const gateway = new InboundGateway({
     config: {
@@ -133,10 +145,12 @@ function createGateway() {
           enabled: true,
           wsFailureThreshold: 1,
           timeoutSeconds: 1,
+          ...pollFallbackOverrides,
           probeWs: {
             enabled: true,
             intervalMs: 5_000,
             stableGraceMs: 10,
+            ...pollFallbackOverrides.probeWs,
           },
         },
       },
@@ -329,6 +343,54 @@ describe('InboundGateway poll fallback', () => {
     await gateway.stop();
   });
 
+  it('processes WS messages during RECOVERING_WS before promotion completes', async () => {
+    vi.useFakeTimers();
+
+    fetchMock
+      .mockResolvedValueOnce(
+        response(200, {
+          events: [],
+          nextCursor: 'cursor_0',
+          hasMore: false,
+        })
+      )
+      .mockImplementation((_input, init) => pendingFetch(init));
+
+    const { gateway, sendMessage } = createGateway({
+      probeWs: {
+        stableGraceMs: 5_000,
+      },
+    });
+    await gateway.start();
+
+    fireEvent('error', new Error('proxy blocked'));
+
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled();
+    });
+
+    fireEvent('connected');
+    await vi.advanceTimersByTimeAsync(100);
+
+    fireEvent('messageCreated', {
+      type: 'message.created',
+      channel: 'general',
+      message: {
+        id: 'msg_ws_recovering',
+        agentName: 'carol',
+        text: 'delivered during recovery',
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    expect(sendMessage.mock.calls[0][0].text).toBe('[relaycast:general] @carol: delivered during recovery');
+
+    await gateway.stop();
+  });
+
   it('does not redeliver a message that was already committed in poll mode after WS recovery', async () => {
     vi.useFakeTimers();
 
@@ -391,5 +453,15 @@ describe('InboundGateway poll fallback', () => {
     expect(sendMessage).toHaveBeenCalledTimes(1);
 
     await gateway.stop();
+  });
+
+  it('uses a single jitter pass for 429 responses without Retry-After', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    fetchMock.mockResolvedValueOnce(response(429, {}));
+
+    const { gateway } = createGateway();
+    const delayMs = await (gateway as any).pollOnce(1);
+
+    expect(delayMs).toBe(550);
   });
 });

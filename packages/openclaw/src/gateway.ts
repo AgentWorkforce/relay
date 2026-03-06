@@ -103,6 +103,9 @@ const MAX_POLL_LIMIT = 500;
 const DEFAULT_WS_PROBE_INTERVAL_MS = 60_000;
 const DEFAULT_WS_STABLE_GRACE_MS = 10_000;
 const POLL_CURSOR_RECENT_EVENT_LIMIT = 256;
+const MAX_POLL_CURSOR_LENGTH = 4_096;
+const MAX_EVENT_ID_LENGTH = 512;
+const MAX_LOG_VALUE_LENGTH = 256;
 const BACKOFF_BASE_MS = 500;
 const BACKOFF_CAP_MS = 30_000;
 
@@ -117,6 +120,40 @@ function sleep(ms: number): Promise<void> {
 function applyJitter(ms: number): number {
   const factor = 1.1 + Math.random() * 0.1;
   return Math.max(0, Math.floor(ms * factor));
+}
+
+function stripControlCharacters(value: string): string {
+  let cleaned = '';
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    if ((code >= 0 && code <= 31) || code === 127) {
+      continue;
+    }
+    cleaned += char;
+  }
+  return cleaned;
+}
+
+function hasControlCharacters(value: string): boolean {
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    if ((code >= 0 && code <= 31) || code === 127) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function sanitizeForLog(value: unknown, maxLength = MAX_LOG_VALUE_LENGTH): string {
+  const text = stripControlCharacters(String(value).replace(/[\r\n\t]+/g, ' '));
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function sanitizeOpaqueStateValue(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null;
+  if (value.trim().length === 0 || value.length > maxLength) return null;
+  if (hasControlCharacters(value)) return null;
+  return value;
 }
 
 function computeBackoffMs(attempt: number): number {
@@ -976,7 +1013,7 @@ export class OpenClawGatewayClient {
       } else {
         const result = msg.payload as Record<string, unknown> | undefined;
         console.log(
-          `[openclaw-ws] RPC ${id} ok: runId=${result?.runId ?? 'n/a'} status=${result?.status ?? 'n/a'}`
+          `[openclaw-ws] RPC ${sanitizeForLog(id)} ok: runId=${sanitizeForLog(result?.runId ?? 'n/a')} status=${sanitizeForLog(result?.status ?? 'n/a')}`
         );
         pending.resolve(true);
       }
@@ -1389,7 +1426,11 @@ export class InboundGateway {
   }
 
   private shouldProcessWsInbound(): boolean {
-    return !this.isPollFallbackEnabled() || this.transportState === 'WS_ACTIVE';
+    return (
+      !this.isPollFallbackEnabled() ||
+      this.transportState === 'WS_ACTIVE' ||
+      this.transportState === 'RECOVERING_WS'
+    );
   }
 
   private async handleWsFailure(reason: string): Promise<void> {
@@ -1502,15 +1543,17 @@ export class InboundGateway {
     try {
       const raw = await readFile(pollCursorStatePath(), 'utf-8');
       const parsed = JSON.parse(raw) as Partial<PersistedPollCursorState>;
-      if (typeof parsed.cursor === 'string' && parsed.cursor.trim()) {
-        this.pollCursor = parsed.cursor;
+      const persistedCursor = sanitizeOpaqueStateValue(parsed.cursor, MAX_POLL_CURSOR_LENGTH);
+      if (persistedCursor) {
+        this.pollCursor = persistedCursor;
       }
       if (Number.isFinite(parsed.lastSequence)) {
         this.pollLastSequence = Math.max(0, Math.floor(parsed.lastSequence ?? 0));
       }
       if (Array.isArray(parsed.recentEventIds)) {
         this.pollRecentEventIds = parsed.recentEventIds
-          .filter((value): value is string => typeof value === 'string' && value.length > 0)
+          .map((value) => sanitizeOpaqueStateValue(value, MAX_EVENT_ID_LENGTH))
+          .filter((value): value is string => value !== null)
           .slice(-POLL_CURSOR_RECENT_EVENT_LIMIT);
         const now = Date.now();
         for (const eventId of this.pollRecentEventIds) {
@@ -1527,10 +1570,19 @@ export class InboundGateway {
   }
 
   private async persistPollCursorState(): Promise<void> {
+    const cursor =
+      sanitizeOpaqueStateValue(this.pollCursor, MAX_POLL_CURSOR_LENGTH) ?? this.pollInitialCursor();
+    const recentEventIds = this.pollRecentEventIds
+      .map((eventId) => sanitizeOpaqueStateValue(eventId, MAX_EVENT_ID_LENGTH))
+      .filter((eventId): eventId is string => eventId !== null)
+      .slice(-POLL_CURSOR_RECENT_EVENT_LIMIT);
+    this.pollCursor = cursor;
+    this.pollRecentEventIds = recentEventIds;
+
     const state: PersistedPollCursorState = {
-      cursor: this.pollCursor,
+      cursor,
       lastSequence: this.pollLastSequence,
-      recentEventIds: this.pollRecentEventIds.slice(-POLL_CURSOR_RECENT_EVENT_LIMIT),
+      recentEventIds,
       updatedAt: new Date().toISOString(),
     };
 
@@ -1542,9 +1594,12 @@ export class InboundGateway {
   }
 
   private rememberPollEventId(eventId: string): void {
-    this.pollRecentEventIds = [...this.pollRecentEventIds.filter((id) => id !== eventId), eventId].slice(
-      -POLL_CURSOR_RECENT_EVENT_LIMIT
-    );
+    const sanitizedEventId = sanitizeOpaqueStateValue(eventId, MAX_EVENT_ID_LENGTH);
+    if (!sanitizedEventId) return;
+    this.pollRecentEventIds = [
+      ...this.pollRecentEventIds.filter((id) => id !== sanitizedEventId),
+      sanitizedEventId,
+    ].slice(-POLL_CURSOR_RECENT_EVENT_LIMIT);
   }
 
   private hasRecentPollEventId(eventId: string): boolean {
@@ -1552,7 +1607,10 @@ export class InboundGateway {
   }
 
   private async commitPollCursorState(nextCursor: string, lastSequence: number): Promise<void> {
-    this.pollCursor = nextCursor;
+    const sanitizedCursor = sanitizeOpaqueStateValue(nextCursor, MAX_POLL_CURSOR_LENGTH);
+    if (sanitizedCursor) {
+      this.pollCursor = sanitizedCursor;
+    }
     this.pollLastSequence = Math.max(this.pollLastSequence, lastSequence);
     await this.persistPollCursorState();
   }
@@ -1654,9 +1712,8 @@ export class InboundGateway {
 
       if (response.status === 429) {
         this.pollFailureCount += 1;
-        const retryAfterMs =
-          parseRetryAfterMs(response.headers.get('Retry-After')) ?? computeBackoffMs(this.pollFailureCount);
-        return applyJitter(retryAfterMs);
+        const retryAfterMs = parseRetryAfterMs(response.headers.get('Retry-After'));
+        return retryAfterMs !== null ? applyJitter(retryAfterMs) : computeBackoffMs(this.pollFailureCount);
       }
 
       if (response.status >= 500) {
@@ -1721,8 +1778,7 @@ export class InboundGateway {
       this.rememberPollEventId(event.id);
     }
 
-    const nextCursor =
-      typeof body.nextCursor === 'string' && body.nextCursor.length > 0 ? body.nextCursor : this.pollCursor;
+    const nextCursor = sanitizeOpaqueStateValue(body.nextCursor, MAX_POLL_CURSOR_LENGTH) ?? this.pollCursor;
     await this.commitPollCursorState(nextCursor, lastSequence);
     return true;
   }
