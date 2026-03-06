@@ -105,7 +105,6 @@ const DEFAULT_WS_STABLE_GRACE_MS = 10_000;
 const POLL_CURSOR_RECENT_EVENT_LIMIT = 256;
 const MAX_POLL_CURSOR_LENGTH = 4_096;
 const MAX_EVENT_ID_LENGTH = 512;
-const MAX_LOG_VALUE_LENGTH = 256;
 const BACKOFF_BASE_MS = 500;
 const BACKOFF_CAP_MS = 30_000;
 
@@ -122,18 +121,6 @@ function applyJitter(ms: number): number {
   return Math.max(0, Math.floor(ms * factor));
 }
 
-function stripControlCharacters(value: string): string {
-  let cleaned = '';
-  for (const char of value) {
-    const code = char.charCodeAt(0);
-    if ((code >= 0 && code <= 31) || code === 127) {
-      continue;
-    }
-    cleaned += char;
-  }
-  return cleaned;
-}
-
 function hasControlCharacters(value: string): boolean {
   for (const char of value) {
     const code = char.charCodeAt(0);
@@ -142,11 +129,6 @@ function hasControlCharacters(value: string): boolean {
     }
   }
   return false;
-}
-
-function sanitizeForLog(value: unknown, maxLength = MAX_LOG_VALUE_LENGTH): string {
-  const text = stripControlCharacters(String(value).replace(/[\r\n\t]+/g, ' '));
-  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
 }
 
 function sanitizeOpaqueStateValue(value: unknown, maxLength: number): string | null {
@@ -1008,13 +990,10 @@ export class OpenClawGatewayClient {
       this.pendingRpcs.delete(id);
 
       if (msg.ok === false || msg.error) {
-        console.warn(`[openclaw-ws] RPC ${id} error: ${JSON.stringify(msg.error ?? msg)}`);
+        console.warn('[openclaw-ws] RPC error response received');
         pending.resolve(false);
       } else {
-        const result = msg.payload as Record<string, unknown> | undefined;
-        console.log(
-          `[openclaw-ws] RPC ${sanitizeForLog(id)} ok: runId=${sanitizeForLog(result?.runId ?? 'n/a')} status=${sanitizeForLog(result?.status ?? 'n/a')}`
-        );
+        console.log('[openclaw-ws] RPC succeeded');
         pending.resolve(true);
       }
       return;
