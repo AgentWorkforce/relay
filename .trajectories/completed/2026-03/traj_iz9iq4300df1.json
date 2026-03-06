@@ -1,0 +1,53 @@
+{
+  "id": "traj_iz9iq4300df1",
+  "version": 1,
+  "task": {
+    "title": "Record Next.js SKILL sync decision"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-04T22:49:57.413Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-03-04T22:50:02.231Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_6tcpf4252wg5",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-04T22:50:02.231Z",
+      "events": [
+        {
+          "ts": 1772664602232,
+          "type": "decision",
+          "content": "Sync canonical packages/openclaw/skill/SKILL.md into openclaw-web/content at dev/build time: Sync canonical packages/openclaw/skill/SKILL.md into openclaw-web/content at dev/build time",
+          "raw": {
+            "question": "Sync canonical packages/openclaw/skill/SKILL.md into openclaw-web/content at dev/build time",
+            "chosen": "Sync canonical packages/openclaw/skill/SKILL.md into openclaw-web/content at dev/build time",
+            "alternatives": [],
+            "reasoning": "Keeps one source of truth for instructions while avoiding cross-package runtime file dependency issues in Next deployment"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-04T22:50:06.474Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "d0add7ceb4abf44bf80792a504542e3c33cc2b5e",
+    "endRef": "d0add7ceb4abf44bf80792a504542e3c33cc2b5e"
+  },
+  "completedAt": "2026-03-04T22:50:06.474Z",
+  "retrospective": {
+    "summary": "Recorded SKILL markdown sync decision for Next app.",
+    "approach": "Standard approach",
+    "confidence": 0.99
+  }
+}
