@@ -1,0 +1,53 @@
+{
+  "id": "traj_1b88m050m7vd",
+  "version": 1,
+  "task": {
+    "title": "Make invite_token instructions explicit with exact workspace key usage"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-04T22:17:05.410Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-03-04T22:17:46.007Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_02qdwoksqmt5",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-04T22:17:46.007Z",
+      "events": [
+        {
+          "ts": 1772662666008,
+          "type": "decision",
+          "content": "Remove invite-token visual badge from page: Remove invite-token visual badge from page",
+          "raw": {
+            "question": "Remove invite-token visual badge from page",
+            "chosen": "Remove invite-token visual badge from page",
+            "alternatives": [],
+            "reasoning": "User requested a clean page without badge chrome; explicit token instructions remain inside the markdown content"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-04T22:17:46.018Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "88e921a8ab6ea9c602cb36fca0931662da9b9d96",
+    "endRef": "88e921a8ab6ea9c602cb36fca0931662da9b9d96"
+  },
+  "completedAt": "2026-03-04T22:17:46.018Z",
+  "retrospective": {
+    "summary": "Made invite-token instructions explicit with exact key/command and removed invite_token badge from the page UI.",
+    "approach": "Standard approach",
+    "confidence": 0.99
+  }
+}

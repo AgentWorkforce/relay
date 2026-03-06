@@ -258,7 +258,7 @@ export class AgentRelay {
   /** Observer URL for the auto-created workspace (available after first spawn). */
   get observerUrl(): string | undefined {
     if (!this.relayApiKey) return undefined;
-    return `https://observer.relaycast.dev/?key=${this.relayApiKey}`;
+    return `https://agentrelay.dev/observer?key=${this.relayApiKey}`;
   }
 
   // Shorthand spawners

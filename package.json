@@ -69,7 +69,8 @@
     "agent-relay": "dist/src/cli/bootstrap.js"
   },
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "openclaw-web"
   ],
   "bundledDependencies": [
     "@agent-relay/sdk",
@@ -139,7 +140,8 @@
     "update:cli-versions": "node scripts/check-cli-versions.mjs --update && npm run codegen:models",
     "codegen:models:ts": "node packages/shared/codegen-ts.mjs",
     "codegen:models:py": "node packages/shared/codegen-py.mjs",
-    "prepare": "node scripts/prepare-husky.cjs"
+    "prepare": "node scripts/prepare-husky.cjs",
+    "dev:web": "cd openclaw-web && ../node_modules/.bin/sst dev"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
@@ -222,6 +224,7 @@
     "jsdom": "^25.0.1",
     "knip": "^5.84.1",
     "prettier": "^3.6.2",
+    "sst": "^4.1.10",
     "syncpack": "^14.0.0",
     "turbo": "^2.8.10",
     "typescript": "^5.9.3",

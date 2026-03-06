@@ -133,7 +133,8 @@ get_latest_version() {
             error "Failed to fetch latest version"
         fi
     fi
-    # Remove 'v' prefix if present
+    # Remove tag prefix (e.g., "openclaw-v3.1.10" -> "3.1.10", "v3.1.10" -> "3.1.10")
+    VERSION="${VERSION#openclaw-}"
     VERSION="${VERSION#v}"
     info "Installing version: $VERSION"
 }
