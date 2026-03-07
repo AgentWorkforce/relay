@@ -5174,13 +5174,45 @@ fn ensure_ephemeral_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths>
                             pid: pid_path,
                             _lock: lock_file,
                         });
+                    } else {
+                        anyhow::bail!(
+                            "another broker instance is already running in this directory (pid: {}, {})",
+                            old_pid,
+                            root.display()
+                        );
                     }
                 }
             }
-            anyhow::bail!(
-                "another broker instance is already running in this directory ({})",
-                root.display()
+            // PID file missing or unreadable while lock is held — treat as stale.
+            // This happens when the user deletes the runtime dir while an old broker
+            // is still alive, or during the shutdown race (PID deleted before flock
+            // released).
+            tracing::warn!(
+                "ephemeral broker lock held but no valid PID file found, treating as stale and recovering"
             );
+            drop(lock_file);
+            let lock_file = std::fs::File::create(&lock_path).with_context(|| {
+                format!(
+                    "failed to re-create lock file after stale recovery {}",
+                    lock_path.display()
+                )
+            })?;
+            let fd = lock_file.as_raw_fd();
+            let rc = unsafe { nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
+            if rc != 0 {
+                anyhow::bail!(
+                    "another broker instance is already running in this directory ({})",
+                    root.display()
+                );
+            }
+            write_pid_file(&pid_path)?;
+            return Ok(RuntimePaths {
+                persist: false,
+                state: root.join("state.json"),
+                pending: root.join("pending.json"),
+                pid: pid_path,
+                _lock: lock_file,
+            });
         }
     }
 
@@ -5261,13 +5293,45 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
                             pid: pid_path,
                             _lock: lock_file,
                         });
+                    } else {
+                        anyhow::bail!(
+                            "another broker instance is already running in this directory (pid: {}, {})",
+                            old_pid,
+                            root.display()
+                        );
                     }
                 }
             }
-            anyhow::bail!(
-                "another broker instance is already running in this directory ({})",
-                root.display()
+            // PID file missing or unreadable while lock is held — treat as stale.
+            // This happens when the user deletes .agent-relay/ while an old broker
+            // is still alive, or during the shutdown race (PID deleted before flock
+            // released).
+            tracing::warn!(
+                "broker lock held but no valid PID file found, treating as stale and recovering"
             );
+            drop(lock_file);
+            let lock_file = std::fs::File::create(&lock_path).with_context(|| {
+                format!(
+                    "failed to re-create lock file after stale recovery {}",
+                    lock_path.display()
+                )
+            })?;
+            let fd = lock_file.as_raw_fd();
+            let rc = unsafe { nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
+            if rc != 0 {
+                anyhow::bail!(
+                    "another broker instance is already running in this directory ({})",
+                    root.display()
+                );
+            }
+            write_pid_file(&pid_path)?;
+            return Ok(RuntimePaths {
+                persist: true,
+                state: root.join(format!("state-{safe_name}.json")),
+                pending: root.join(format!("pending-{safe_name}.json")),
+                pid: pid_path,
+                _lock: lock_file,
+            });
         }
     }
 
