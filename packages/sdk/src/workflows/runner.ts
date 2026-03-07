@@ -2259,8 +2259,19 @@ export class WorkflowRunner {
         [...WorkflowRunner.HUB_ROLES].some((r) => roleLC.includes(r))
       );
     };
-
-    const dedicatedOwner = candidates.find((d) => d.name !== specialistDef.name && ownerish(d));
+    const ownerPriority = (def: AgentDefinition): number => {
+      const roleLC = def.role?.toLowerCase() ?? '';
+      const nameLC = def.name.toLowerCase();
+      if (roleLC.includes('lead') || nameLC.includes('lead')) return 6;
+      if (roleLC.includes('coordinator') || nameLC.includes('coordinator')) return 5;
+      if (roleLC.includes('supervisor') || nameLC.includes('supervisor')) return 4;
+      if (roleLC.includes('orchestrator') || nameLC.includes('orchestrator')) return 3;
+      if (roleLC.includes('hub') || nameLC.includes('hub')) return 2;
+      return ownerish(def) ? 1 : 0;
+    };
+    const dedicatedOwner = candidates
+      .filter((d) => d.name !== specialistDef.name && ownerish(d))
+      .sort((a, b) => ownerPriority(b) - ownerPriority(a) || a.name.localeCompare(b.name))[0];
     if (dedicatedOwner) return dedicatedOwner;
     if (ownerish(specialistDef)) return specialistDef;
     return specialistDef;
@@ -2280,8 +2291,18 @@ export class WorkflowRunner {
         nameLC.includes('review')
       );
     };
-
-    const dedicated = allDefs.find((d) => d.name !== ownerDef.name && isReviewer(d));
+    const reviewerPriority = (def: AgentDefinition): number => {
+      if (def.preset === 'reviewer') return 5;
+      const roleLC = def.role?.toLowerCase() ?? '';
+      const nameLC = def.name.toLowerCase();
+      if (roleLC.includes('review') || nameLC.includes('review')) return 4;
+      if (roleLC.includes('verifier') || roleLC.includes('qa')) return 3;
+      if (roleLC.includes('critic')) return 2;
+      return isReviewer(def) ? 1 : 0;
+    };
+    const dedicated = allDefs
+      .filter((d) => d.name !== ownerDef.name && isReviewer(d))
+      .sort((a, b) => reviewerPriority(b) - reviewerPriority(a) || a.name.localeCompare(b.name))[0];
     if (dedicated) return dedicated;
 
     const alternate = allDefs.find((d) => d.name !== ownerDef.name);
@@ -2319,10 +2340,16 @@ export class WorkflowRunner {
     timeoutMs?: number
   ): Promise<string> {
     const reviewSnippetMax = 12_000;
-    const snippet =
-      ownerOutput.length > reviewSnippetMax
-        ? `${ownerOutput.slice(0, reviewSnippetMax)}\n...[truncated for review]`
-        : ownerOutput;
+    let snippet = ownerOutput;
+    if (ownerOutput.length > reviewSnippetMax) {
+      const head = Math.floor(reviewSnippetMax / 2);
+      const tail = reviewSnippetMax - head;
+      const omitted = ownerOutput.length - head - tail;
+      snippet =
+        `${ownerOutput.slice(0, head)}\n` +
+        `...[truncated ${omitted} chars for review]...\n` +
+        `${ownerOutput.slice(ownerOutput.length - tail)}`;
+    }
 
     const reviewTask =
       `Review workflow step "${step.name}" for completion and safe handoff.\n` +
@@ -2334,7 +2361,13 @@ export class WorkflowRunner {
       `REVIEW_REASON: <one sentence>\n` +
       `Then output /exit.`;
 
-    const reviewTimeoutMs = timeoutMs ? Math.min(Math.max(Math.floor(timeoutMs / 3), 60_000), 600_000) : 180_000;
+    let reviewTimeoutMs = 180_000;
+    if (timeoutMs) {
+      const proportional = Math.floor(timeoutMs / 3);
+      const lowerBound = Math.min(60_000, timeoutMs);
+      const upperBound = Math.min(600_000, timeoutMs);
+      reviewTimeoutMs = Math.min(Math.max(proportional, lowerBound), upperBound);
+    }
     const reviewStep: WorkflowStep = {
       name: `${step.name}-review`,
       type: 'agent',

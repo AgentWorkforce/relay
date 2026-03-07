@@ -385,6 +385,32 @@ agents:
       expect(reviewCompleted).toHaveLength(2);
     });
 
+    it('should prioritize lead owner when multiple hub-role candidates exist', async () => {
+      const ownerAssignments: string[] = [];
+      runner.on((event) => {
+        if (event.type === 'step:owner-assigned') ownerAssignments.push(event.ownerName);
+      });
+
+      const config = makeConfig({
+        agents: [
+          { name: 'specialist', cli: 'claude', role: 'engineer' },
+          { name: 'coord-1', cli: 'claude', role: 'coordinator' },
+          { name: 'lead-1', cli: 'claude', role: 'lead' },
+          { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
+        ],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'specialist', task: 'Do step 1' }],
+          },
+        ],
+      });
+
+      const run = await runner.execute(config, 'default');
+      expect(run.status).toBe('completed');
+      expect(ownerAssignments).toEqual(['lead-1']);
+    }, 15000);
+
     it('should resolve variables during execution', async () => {
       const config = makeConfig();
       config.workflows![0].steps[0].task = 'Build {{feature}}';
@@ -442,6 +468,24 @@ agents:
       expect(run.status).toBe('failed');
       expect(run.error).toContain('timed out');
       expect(events).toContainEqual({ type: 'step:owner-timeout', stepName: 'step-1' });
+    });
+
+    it('should not allocate review timeout longer than parent step timeout', async () => {
+      const config = makeConfig({
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 30_000 }],
+          },
+        ],
+      });
+      const run = await runner.execute(config, 'default');
+
+      expect(run.status).toBe('completed');
+      const waitCalls = (waitForExitFn as any).mock?.calls ?? [];
+      expect(waitCalls.length).toBeGreaterThanOrEqual(2);
+      // first call: owner timeout; second call: review timeout
+      expect(waitCalls[1][0]).toBeLessThanOrEqual(30_000);
     });
   });
 
