@@ -308,21 +308,27 @@ export async function runAuthCommand(
   const successPatterns = providerConfig.successPatterns || [];
   const errorPatterns = providerConfig.errorPatterns || [];
 
-  const sessionResult = await runInteractiveSession({
-    ssh: {
-      host: start.ssh.host,
-      port: sshPort,
-      user: start.ssh.user,
-      password: start.ssh.password,
-    },
-    remoteCommand,
-    successPatterns,
-    errorPatterns,
-    timeoutMs,
-    io,
-    tunnelPort,
-    runtime,
-  });
+  let sessionResult;
+  try {
+    sessionResult = await runInteractiveSession({
+      ssh: {
+        host: start.ssh.host,
+        port: sshPort,
+        user: start.ssh.user,
+        password: start.ssh.password,
+      },
+      remoteCommand,
+      successPatterns,
+      errorPatterns,
+      timeoutMs,
+      io,
+      tunnelPort,
+      runtime,
+    });
+  } catch (err) {
+    io.error(color.red(`Failed to connect via SSH: ${err instanceof Error ? err.message : String(err)}`));
+    io.exit(1);
+  }
 
   io.log('');
   io.log('Finalizing authentication with cloud...');
