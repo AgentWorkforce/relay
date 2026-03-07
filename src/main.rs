@@ -1896,7 +1896,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         ListenApiRequest::Threads { reply } => {
                             let mut messages: Vec<Value> =
                                 recent_thread_messages.iter().cloned().collect();
-                            match relaycast_http.get_dms(&self_name, 200).await {
+                            match relaycast_http.get_all_dms(200).await {
                                 Ok(dm_messages) => messages.extend(dm_messages),
                                 Err(error) => {
                                     tracing::debug!(
@@ -4876,6 +4876,21 @@ fn derive_thread_name(message: &Value, thread_id: &str, self_names: &HashSet<Str
         return thread_id.to_string();
     }
 
+    // Use participants array (from workspace-level DM data) to build a combined name
+    // like "WorkerA ↔ WorkerB" for DMs between non-broker agents.
+    if let Some(participants) = message.get("participants").and_then(|v| v.as_array()) {
+        let names: Vec<&str> = participants
+            .iter()
+            .filter_map(|p| p.as_str())
+            .filter(|name| !is_self_identity(name, self_names))
+            .collect();
+        if names.len() >= 2 {
+            return format!("{} ↔ {}", names[0], names[1]);
+        } else if names.len() == 1 {
+            return names[0].to_string();
+        }
+    }
+
     if let Some(sender) = message_sender(message) {
         if !is_self_identity(&sender, self_names) {
             return sender.trim().trim_start_matches('@').to_string();
@@ -5751,6 +5766,90 @@ mod tests {
         assert_eq!(threads[0].thread_id, "conv_123");
         assert_eq!(threads[0].name, "Planner");
         assert_eq!(threads[0].unread_count, 1);
+    }
+
+    #[test]
+    fn build_thread_infos_shows_dms_between_non_broker_agents() {
+        let messages = vec![
+            json!({
+                "from": "WorkerA",
+                "conversation_id": "dm_456",
+                "participants": ["WorkerA", "WorkerB"],
+                "text": "hello WorkerB",
+                "timestamp": "2026-02-23T10:00:00Z",
+            }),
+            json!({
+                "from": "WorkerB",
+                "conversation_id": "dm_456",
+                "participants": ["WorkerA", "WorkerB"],
+                "text": "hi WorkerA",
+                "timestamp": "2026-02-23T10:01:00Z",
+            }),
+        ];
+        let self_names = HashSet::from(["broker".to_string()]);
+        let threads = build_thread_infos(&messages, &self_names);
+
+        assert_eq!(threads.len(), 1, "should group into one conversation");
+        assert_eq!(threads[0].thread_id, "dm_456");
+        assert_eq!(threads[0].name, "WorkerA ↔ WorkerB");
+        assert_eq!(threads[0].unread_count, 2, "both messages unread (neither from broker)");
+        assert_eq!(threads[0].last_message.as_deref(), Some("hi WorkerA"));
+    }
+
+    #[test]
+    fn build_thread_infos_dm_with_participants_filters_broker() {
+        let messages = vec![json!({
+            "from": "WorkerA",
+            "conversation_id": "dm_789",
+            "participants": ["broker", "WorkerA"],
+            "text": "hello broker",
+            "timestamp": "2026-02-23T10:00:00Z",
+        })];
+        let self_names = HashSet::from(["broker".to_string()]);
+        let threads = build_thread_infos(&messages, &self_names);
+
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].name, "WorkerA", "should filter out broker from participants");
+    }
+
+    #[test]
+    fn build_thread_infos_multiple_independent_dm_conversations() {
+        let messages = vec![
+            json!({
+                "from": "Alice",
+                "conversation_id": "dm_aaa",
+                "participants": ["Alice", "Bob"],
+                "text": "hi Bob",
+                "timestamp": "2026-02-23T10:00:00Z",
+            }),
+            json!({
+                "from": "Charlie",
+                "conversation_id": "dm_bbb",
+                "participants": ["Charlie", "Diana"],
+                "text": "hi Diana",
+                "timestamp": "2026-02-23T10:01:00Z",
+            }),
+            json!({
+                "from": "broker",
+                "conversation_id": "dm_ccc",
+                "participants": ["broker", "Eve"],
+                "text": "hi Eve",
+                "timestamp": "2026-02-23T10:02:00Z",
+            }),
+        ];
+        let self_names = HashSet::from(["broker".to_string()]);
+        let threads = build_thread_infos(&messages, &self_names);
+
+        assert_eq!(threads.len(), 3, "should have three separate DM conversations");
+
+        let thread_aaa = threads.iter().find(|t| t.thread_id == "dm_aaa").unwrap();
+        assert_eq!(thread_aaa.name, "Alice ↔ Bob");
+
+        let thread_bbb = threads.iter().find(|t| t.thread_id == "dm_bbb").unwrap();
+        assert_eq!(thread_bbb.name, "Charlie ↔ Diana");
+
+        let thread_ccc = threads.iter().find(|t| t.thread_id == "dm_ccc").unwrap();
+        assert_eq!(thread_ccc.name, "Eve", "broker filtered from participants");
     }
 
     #[test]
