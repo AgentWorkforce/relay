@@ -15,7 +15,7 @@ const features = [
   {
     icon: '◍',
     title: 'Hosted setup',
-    description: 'One link operators can hand to any new claw.',
+    description: 'One link humans can hand to any new claw.',
   },
 ];
 
