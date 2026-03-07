@@ -220,7 +220,7 @@ describe('InboundGateway poll fallback', () => {
       expect(sendMessage).toHaveBeenCalledTimes(1);
     });
 
-    expect(sendMessage.mock.calls[0][0].text).toBe('[relaycast:general] @alice: hello from poll');
+    expect(sendMessage.mock.calls[0][0].text).toBe('[relaycast:general] @alice: hello from poll\n(reply with: post_message channel="general" or reply_to_thread message_id="msg_1")');
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/messages/poll');
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain('cursor=0');
     expect(writeFile).toHaveBeenCalledWith(
@@ -281,7 +281,7 @@ describe('InboundGateway poll fallback', () => {
       expect(sendMessage).toHaveBeenCalledTimes(1);
     });
 
-    expect(sendMessage.mock.calls[0][0].text).toBe('[relaycast:general] @alice: resumed after reset');
+    expect(sendMessage.mock.calls[0][0].text).toBe('[relaycast:general] @alice: resumed after reset\n(reply with: post_message channel="general" or reply_to_thread message_id="msg_42")');
     expect(writeFile).toHaveBeenCalledWith(
       expect.stringContaining('inbound-cursor.json.tmp'),
       expect.stringContaining('"cursor": "cursor_42"'),
@@ -338,7 +338,7 @@ describe('InboundGateway poll fallback', () => {
       expect(sendMessage).toHaveBeenCalledTimes(1);
     });
 
-    expect(sendMessage.mock.calls[0][0].text).toBe('[relaycast:general] @bob: back on ws');
+    expect(sendMessage.mock.calls[0][0].text).toBe('[relaycast:general] @bob: back on ws\n(reply with: post_message channel="general" or reply_to_thread message_id="msg_ws_1")');
 
     await gateway.stop();
   });
@@ -386,7 +386,7 @@ describe('InboundGateway poll fallback', () => {
       expect(sendMessage).toHaveBeenCalledTimes(1);
     });
 
-    expect(sendMessage.mock.calls[0][0].text).toBe('[relaycast:general] @carol: delivered during recovery');
+    expect(sendMessage.mock.calls[0][0].text).toBe('[relaycast:general] @carol: delivered during recovery\n(reply with: post_message channel="general" or reply_to_thread message_id="msg_ws_recovering")');
 
     await gateway.stop();
   });
