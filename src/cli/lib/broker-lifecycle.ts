@@ -216,7 +216,7 @@ async function killOrphanedBrokerProcesses(projectRoot: string, deps: CoreDepend
   try {
     const shellQuote = (s: string): string => "'" + s.replace(/'/g, "'\\''") + "'";
     const { stdout } = await deps.execCommand(
-      `ps aux | grep '[a]gent-relay-broker' | grep ${shellQuote(projectRoot)}`
+      `ps aux | grep '[a]gent-relay-broker' | grep -F ${shellQuote(projectRoot)}`
     );
     const lines = stdout.trim().split('\n').filter(Boolean);
     for (const line of lines) {

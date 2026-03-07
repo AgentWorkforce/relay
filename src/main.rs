@@ -5174,6 +5174,12 @@ fn ensure_ephemeral_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths>
                             pid: pid_path,
                             _lock: lock_file,
                         });
+                    } else {
+                        anyhow::bail!(
+                            "another broker instance is already running in this directory (pid: {}, {})",
+                            old_pid,
+                            root.display()
+                        );
                     }
                 }
             }
@@ -5287,6 +5293,12 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
                             pid: pid_path,
                             _lock: lock_file,
                         });
+                    } else {
+                        anyhow::bail!(
+                            "another broker instance is already running in this directory (pid: {}, {})",
+                            old_pid,
+                            root.display()
+                        );
                     }
                 }
             }
