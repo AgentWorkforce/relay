@@ -89,6 +89,9 @@ async function startBrokerWithPortFallback(
       break;
     } catch (error: unknown) {
       await candidate.shutdown().catch(() => undefined);
+      // Brief delay to ensure OS-level cleanup (process table, flock release)
+      // is complete before the next attempt.
+      await new Promise((resolve) => setTimeout(resolve, 200));
       const message = toErrorMessage(error);
       const shouldRetryApiPort =
         wantsDashboard &&
@@ -206,6 +209,33 @@ function isProcessRunning(pid: number, deps: CoreDependencies): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function killOrphanedBrokerProcesses(projectRoot: string, deps: CoreDependencies): Promise<void> {
+  try {
+    const { stdout } = await deps.execCommand(
+      `ps aux | grep '[a]gent-relay-broker' | grep ${JSON.stringify(projectRoot)}`
+    );
+    const lines = stdout.trim().split('\n').filter(Boolean);
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      const pid = Number.parseInt(parts[1], 10);
+      if (!Number.isNaN(pid) && pid > 0 && pid !== deps.pid) {
+        deps.warn(`Killing orphaned broker process (pid: ${pid})`);
+        try {
+          deps.killProcess(pid, 'SIGTERM');
+        } catch {
+          // Process may have already exited.
+        }
+      }
+    }
+    // Give killed processes a moment to exit.
+    if (lines.length > 0) {
+      await deps.sleep(300);
+    }
+  } catch {
+    // grep returns exit code 1 when no matches found — this is expected.
   }
 }
 
@@ -860,6 +890,10 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       safeUnlink(brokerPidPath, deps);
       existingPid = null;
     }
+
+    // Kill any orphaned broker processes for this project that lost their PID
+    // files (e.g. user deleted .agent-relay/ while broker was running).
+    await killOrphanedBrokerProcesses(paths.projectRoot, deps);
 
     const started = await startBrokerWithPortFallback(
       paths,
