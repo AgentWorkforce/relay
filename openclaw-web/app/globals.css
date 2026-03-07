@@ -37,6 +37,26 @@ body {
   margin: 0 0 12px;
 }
 
+.skill-page__header {
+  margin-bottom: 18px;
+}
+
+.skill-page__eyebrow {
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #9a3412;
+}
+
+.skill-page__lead {
+  margin: 0;
+  max-width: 70ch;
+  line-height: 1.6;
+  color: #4b5563;
+}
+
 .skill-page pre {
   margin: 0;
   white-space: pre-wrap;
