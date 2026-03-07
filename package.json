@@ -1,6 +1,6 @@
 {
   "name": "agent-relay",
-  "version": "3.1.10",
+  "version": "3.1.11",
   "description": "Real-time agent-to-agent communication system",
   "type": "module",
   "main": "dist/index.cjs",
@@ -69,7 +69,8 @@
     "agent-relay": "dist/src/cli/bootstrap.js"
   },
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "openclaw-web"
   ],
   "bundledDependencies": [
     "@agent-relay/sdk",
@@ -139,7 +140,8 @@
     "update:cli-versions": "node scripts/check-cli-versions.mjs --update && npm run codegen:models",
     "codegen:models:ts": "node packages/shared/codegen-ts.mjs",
     "codegen:models:py": "node packages/shared/codegen-py.mjs",
-    "prepare": "node scripts/prepare-husky.cjs"
+    "prepare": "node scripts/prepare-husky.cjs",
+    "dev:web": "cd openclaw-web && ../node_modules/.bin/sst dev"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
@@ -174,13 +176,13 @@
   },
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "dependencies": {
-    "@agent-relay/config": "3.1.10",
-    "@agent-relay/hooks": "3.1.10",
-    "@agent-relay/sdk": "3.1.10",
-    "@agent-relay/telemetry": "3.1.10",
-    "@agent-relay/trajectory": "3.1.10",
-    "@agent-relay/user-directory": "3.1.10",
-    "@agent-relay/utils": "3.1.10",
+    "@agent-relay/config": "3.1.11",
+    "@agent-relay/hooks": "3.1.11",
+    "@agent-relay/sdk": "3.1.11",
+    "@agent-relay/telemetry": "3.1.11",
+    "@agent-relay/trajectory": "3.1.11",
+    "@agent-relay/user-directory": "3.1.11",
+    "@agent-relay/utils": "3.1.11",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@relaycast/sdk": "^0.4.0",
     "chokidar": "^5.0.0",
@@ -222,6 +224,7 @@
     "jsdom": "^25.0.1",
     "knip": "^5.84.1",
     "prettier": "^3.6.2",
+    "sst": "^4.2.2",
     "syncpack": "^14.0.0",
     "turbo": "^2.8.10",
     "typescript": "^5.9.3",

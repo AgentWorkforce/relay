@@ -281,13 +281,15 @@ export class WorkflowRunner {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ apiKey }),
-    }).then((res) => {
-      if (!res.ok) {
-        console.warn(`[WorkflowRunner] dashboard key push failed: HTTP ${res.status}`);
-      }
-    }).catch(() => {
-      // Dashboard not running — silently ignore.
-    });
+    })
+      .then((res) => {
+        if (!res.ok) {
+          console.warn(`[WorkflowRunner] dashboard key push failed: HTTP ${res.status}`);
+        }
+      })
+      .catch(() => {
+        // Dashboard not running — silently ignore.
+      });
   }
 
   private getRelayEnv(): NodeJS.ProcessEnv | undefined {
@@ -1169,7 +1171,7 @@ export class WorkflowRunner {
         this.log('API key resolved');
         if (this.relayApiKeyAutoCreated && this.relayApiKey) {
           this.log(`Workspace created — follow this run in Relaycast:`);
-          this.log(`  Observer: https://observer.relaycast.dev/?key=${this.relayApiKey}`);
+          this.log(`  Observer: https://agentrelay.dev/observer?key=${this.relayApiKey}`);
           this.log(`  Channel: ${channel}`);
         }
 
@@ -1738,7 +1740,8 @@ export class WorkflowRunner {
         if (failOnError && result.exitCode !== 0) {
           throw new Error(`Command failed with exit code ${result.exitCode}: ${result.output.slice(0, 500)}`);
         }
-        const output = step.captureOutput !== false ? result.output : `Command completed (exit code ${result.exitCode})`;
+        const output =
+          step.captureOutput !== false ? result.output : `Command completed (exit code ${result.exitCode})`;
 
         // Mark completed
         state.row.status = 'completed';

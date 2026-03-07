@@ -1,0 +1,42 @@
+{
+  "id": "compact_xh7on8ch2iz4",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-03-07T01:31:38.781Z",
+  "sourceTrajectories": [
+    "traj_hyr40w6covo4"
+  ],
+  "dateRange": {
+    "start": "2026-03-05T20:47:27.100Z",
+    "end": "2026-03-05T20:50:12.096Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "security",
+      "decisions": [
+        {
+          "question": "Switched token replacement to placeholder-wide replacement + explicit Step 1 skip note",
+          "chosen": "Switched token replacement to placeholder-wide replacement + explicit Step 1 skip note",
+          "reasoning": "Removes mixed placeholder/token output and makes invite instructions unambiguous while preserving static SKILL source-of-truth",
+          "fromTrajectory": "traj_hyr40w6covo4"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    "openclaw-web/lib/skill-markdown.ts",
+    "packages/openclaw/skill/SKILL.md"
+  ],
+  "commits": [
+    "325cf953"
+  ]
+}

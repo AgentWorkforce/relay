@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import type { Server as HttpServer, IncomingMessage, ServerResponse } from 'node:http';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -70,6 +70,8 @@ vi.mock('node:fs/promises', () => ({
   readFile: vi.fn().mockResolvedValue('{"spawns":[]}'),
   writeFile: vi.fn().mockResolvedValue(undefined),
   mkdir: vi.fn().mockResolvedValue(undefined),
+  rename: vi.fn().mockResolvedValue(undefined),
+  chmod: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('node:fs', () => ({
@@ -84,7 +86,6 @@ vi.mock('node:fs', () => ({
 // Actually, we can't use port 0 because the gateway hardcodes the listen call.
 // Instead, let's mock node:http to capture the request handler, then run a real server.
 
-let capturedHandler: ((req: IncomingMessage, res: ServerResponse) => void) | null = null;
 let realServer: HttpServer | null = null;
 let controlPort = 0;
 
@@ -93,7 +94,6 @@ vi.mock('node:http', async (importOriginal) => {
   return {
     ...actual,
     createServer: vi.fn((handler: (req: IncomingMessage, res: ServerResponse) => void) => {
-      capturedHandler = handler;
       // Create a real HTTP server with the captured handler
       realServer = actual.createServer(handler);
       return {
@@ -173,7 +173,7 @@ describe('Gateway control HTTP server', () => {
   it('GET /health returns 200', async () => {
     const res = await fetchControl('GET', '/health');
     expect(res.status).toBe(200);
-    const data = await res.json() as Record<string, unknown>;
+    const data = (await res.json()) as Record<string, unknown>;
     expect(data.ok).toBe(true);
     expect(data.status).toBe('running');
     expect(typeof data.uptime).toBe('number');
@@ -193,7 +193,7 @@ describe('Gateway control HTTP server', () => {
       role: 'researcher',
     });
     expect(res.status).toBe(200);
-    const data = await res.json() as Record<string, unknown>;
+    const data = (await res.json()) as Record<string, unknown>;
     expect(data.ok).toBe(true);
     expect(data.name).toBe('worker-1');
     expect(data.agentName).toBe('claw-ws-worker-1');
@@ -203,7 +203,7 @@ describe('Gateway control HTTP server', () => {
   it('POST /spawn without name returns 400', async () => {
     const res = await fetchControl('POST', '/spawn', { role: 'worker' });
     expect(res.status).toBe(400);
-    const data = await res.json() as Record<string, unknown>;
+    const data = (await res.json()) as Record<string, unknown>;
     expect(data.ok).toBe(false);
     expect(data.error).toMatch(/name/i);
   });
@@ -213,7 +213,7 @@ describe('Gateway control HTTP server', () => {
 
     const res = await fetchControl('POST', '/spawn', { name: 'worker-1' });
     expect(res.status).toBe(500);
-    const data = await res.json() as Record<string, unknown>;
+    const data = (await res.json()) as Record<string, unknown>;
     expect(data.ok).toBe(false);
     expect(data.error).toContain('Docker unavailable');
   });
@@ -223,7 +223,7 @@ describe('Gateway control HTTP server', () => {
 
     const res = await fetchControl('GET', '/list');
     expect(res.status).toBe(200);
-    const data = await res.json() as Record<string, unknown>;
+    const data = (await res.json()) as Record<string, unknown>;
     expect(data.ok).toBe(true);
     expect(data.active).toBe(0);
     expect(data.claws).toEqual([]);
@@ -236,7 +236,7 @@ describe('Gateway control HTTP server', () => {
 
     const res = await fetchControl('GET', '/list');
     expect(res.status).toBe(200);
-    const data = await res.json() as { claws: Array<{ name: string }> };
+    const data = (await res.json()) as { claws: Array<{ name: string }> };
     expect(data.claws).toHaveLength(1);
     expect(data.claws[0].name).toBe('alpha');
   });
@@ -247,7 +247,7 @@ describe('Gateway control HTTP server', () => {
 
     const res = await fetchControl('POST', '/release', { name: 'worker-1' });
     expect(res.status).toBe(200);
-    const data = await res.json() as Record<string, unknown>;
+    const data = (await res.json()) as Record<string, unknown>;
     expect(data.ok).toBe(true);
   });
 
@@ -257,14 +257,14 @@ describe('Gateway control HTTP server', () => {
 
     const res = await fetchControl('POST', '/release', { id: 'spawn-1' });
     expect(res.status).toBe(200);
-    const data = await res.json() as Record<string, unknown>;
+    const data = (await res.json()) as Record<string, unknown>;
     expect(data.ok).toBe(true);
   });
 
   it('POST /release without name or id returns 400', async () => {
     const res = await fetchControl('POST', '/release', {});
     expect(res.status).toBe(400);
-    const data = await res.json() as Record<string, unknown>;
+    const data = (await res.json()) as Record<string, unknown>;
     expect(data.ok).toBe(false);
     expect(data.error).toMatch(/name.*id|id.*name/i);
   });
@@ -274,7 +274,7 @@ describe('Gateway control HTTP server', () => {
 
     const res = await fetchControl('POST', '/release', { id: 'spawn-1' });
     expect(res.status).toBe(500);
-    const data = await res.json() as Record<string, unknown>;
+    const data = (await res.json()) as Record<string, unknown>;
     expect(data.ok).toBe(false);
     expect(data.error).toContain('Process kill failed');
   });
@@ -282,7 +282,7 @@ describe('Gateway control HTTP server', () => {
   it('GET /unknown returns 404', async () => {
     const res = await fetchControl('GET', '/nonexistent');
     expect(res.status).toBe(404);
-    const data = await res.json() as Record<string, unknown>;
+    const data = (await res.json()) as Record<string, unknown>;
     expect(data.error).toBe('Not found');
   });
 });
