@@ -11,8 +11,37 @@ export interface ValidationIssue {
 export function validateWorkflow(config: RelayYamlConfig): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const agentMap = new Map(config.agents.map((a) => [a.name, a]));
+  const hasReviewerAgent = config.agents.some((a) => {
+    const role = a.role?.toLowerCase() ?? '';
+    const name = a.name.toLowerCase();
+    return (
+      a.preset === 'reviewer' ||
+      role.includes('review') ||
+      role.includes('critic') ||
+      role.includes('verifier') ||
+      role.includes('qa') ||
+      name.includes('review')
+    );
+  });
 
   for (const workflow of config.workflows ?? []) {
+    const hasInteractiveAgentSteps = workflow.steps.some((step) => {
+      if (step.type === 'deterministic' || step.type === 'worktree') return false;
+      if (!step.agent) return false;
+      const raw = agentMap.get(step.agent);
+      if (!raw) return false;
+      return resolveForValidation(raw).interactive !== false;
+    });
+    if (hasInteractiveAgentSteps && !hasReviewerAgent) {
+      issues.push({
+        severity: 'warning',
+        code: 'NO_REVIEW_AGENT',
+        message: `Workflow "${workflow.name}" has interactive agent steps but no obvious reviewer agent. The runner can auto-fallback, but dedicated reviewers improve step hardening.`,
+        fix: `Add an agent with role/preset like \`reviewer\`, \`critic\`, or \`verifier\`.`,
+        location: `workflow:${workflow.name}`,
+      });
+    }
+
     for (const step of workflow.steps ?? []) {
       if (step.type === 'deterministic' || step.type === 'worktree') continue;
       if (!step.agent) continue;

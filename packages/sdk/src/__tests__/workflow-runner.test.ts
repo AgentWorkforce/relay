@@ -73,15 +73,38 @@ const mockHuman = {
   sendMessage: vi.fn().mockResolvedValue(undefined),
 };
 
+const mockRelayInstance = {
+  spawnPty: vi.fn().mockImplementation(async ({ name, task }: { name: string; task?: string }) => {
+    const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
+    const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
+    const output = isReview
+      ? 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: looks good\n'
+      : stepComplete
+        ? `STEP_COMPLETE:${stepComplete}\n`
+        : 'STEP_COMPLETE:unknown\n';
+
+    // Simulate broker PTY output so runner captures non-empty step artifacts.
+    queueMicrotask(() => {
+      if (typeof mockRelayInstance.onWorkerOutput === 'function') {
+        mockRelayInstance.onWorkerOutput({ name, chunk: output });
+      }
+    });
+
+    return { ...mockAgent, name };
+  }),
+  human: vi.fn().mockReturnValue(mockHuman),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  onBrokerStderr: vi.fn().mockReturnValue(() => {}),
+  onWorkerOutput: null as ((frame: { name: string; chunk: string }) => void) | null,
+  onMessageReceived: null as any,
+  onAgentSpawned: null as any,
+  onAgentExited: null as any,
+  onAgentIdle: null as any,
+  listAgentsRaw: vi.fn().mockResolvedValue([]),
+};
+
 vi.mock('../relay.js', () => ({
-  AgentRelay: vi.fn().mockImplementation(() => ({
-    spawnPty: vi.fn().mockResolvedValue(mockAgent),
-    human: vi.fn().mockReturnValue(mockHuman),
-    shutdown: vi.fn().mockResolvedValue(undefined),
-    onBrokerStderr: vi.fn().mockReturnValue(() => {}),
-    onWorkerOutput: null,
-    listAgentsRaw: vi.fn().mockResolvedValue([]),
-  })),
+  AgentRelay: vi.fn().mockImplementation(() => mockRelayInstance),
 }));
 
 // Import after mocking
@@ -155,6 +178,7 @@ describe('WorkflowRunner', () => {
     vi.clearAllMocks();
     waitForExitFn = vi.fn().mockResolvedValue('exited');
     waitForIdleFn = vi.fn().mockImplementation(() => never());
+    mockRelayInstance.onWorkerOutput = null;
     db = makeDb();
     runner = new WorkflowRunner({ db, workspaceId: 'ws-test' });
   });
@@ -304,7 +328,7 @@ agents:
 
       expect(db.insertRun).toHaveBeenCalledTimes(1);
       expect(db.insertStep).toHaveBeenCalledTimes(2);
-      expect(run.status).toBe('completed');
+      expect(run.status, run.error).toBe('completed');
     });
 
     it('should throw when workflow not found', async () => {
@@ -344,11 +368,23 @@ agents:
       expect(startedSteps).toHaveLength(2);
     });
 
+    it('should emit owner assignment and review completion events for interactive steps', async () => {
+      const events: Array<{ type: string; stepName?: string }> = [];
+      runner.on((event) => events.push({ type: event.type, stepName: 'stepName' in event ? event.stepName : undefined }));
+
+      await runner.execute(makeConfig(), 'default');
+
+      const ownerAssigned = events.filter((e) => e.type === 'step:owner-assigned');
+      const reviewCompleted = events.filter((e) => e.type === 'step:review-completed');
+      expect(ownerAssigned).toHaveLength(2);
+      expect(reviewCompleted).toHaveLength(2);
+    });
+
     it('should resolve variables during execution', async () => {
       const config = makeConfig();
       config.workflows![0].steps[0].task = 'Build {{feature}}';
       const run = await runner.execute(config, 'default', { feature: 'auth' });
-      expect(run.status).toBe('completed');
+      expect(run.status, run.error).toBe('completed');
     });
   });
 
