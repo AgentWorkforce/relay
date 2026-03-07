@@ -2251,22 +2251,21 @@ export class WorkflowRunner {
 
     const allDefs = [...agentMap.values()].map((d) => WorkflowRunner.resolveAgentDef(d));
     const candidates = allDefs.filter((d) => d.interactive !== false);
+    const matchesHubRole = (text: string): boolean =>
+      [...WorkflowRunner.HUB_ROLES].some((r) => new RegExp(`\\b${r}\\b`, 'i').test(text));
     const ownerish = (def: AgentDefinition): boolean => {
       const nameLC = def.name.toLowerCase();
       const roleLC = def.role?.toLowerCase() ?? '';
-      return (
-        WorkflowRunner.HUB_ROLES.has(nameLC) ||
-        [...WorkflowRunner.HUB_ROLES].some((r) => roleLC.includes(r))
-      );
+      return WorkflowRunner.HUB_ROLES.has(nameLC) || matchesHubRole(roleLC);
     };
     const ownerPriority = (def: AgentDefinition): number => {
       const roleLC = def.role?.toLowerCase() ?? '';
       const nameLC = def.name.toLowerCase();
-      if (roleLC.includes('lead') || nameLC.includes('lead')) return 6;
-      if (roleLC.includes('coordinator') || nameLC.includes('coordinator')) return 5;
-      if (roleLC.includes('supervisor') || nameLC.includes('supervisor')) return 4;
-      if (roleLC.includes('orchestrator') || nameLC.includes('orchestrator')) return 3;
-      if (roleLC.includes('hub') || nameLC.includes('hub')) return 2;
+      if (/\blead\b/i.test(roleLC) || /\blead\b/i.test(nameLC)) return 6;
+      if (/\bcoordinator\b/i.test(roleLC) || /\bcoordinator\b/i.test(nameLC)) return 5;
+      if (/\bsupervisor\b/i.test(roleLC) || /\bsupervisor\b/i.test(nameLC)) return 4;
+      if (/\borchestrator\b/i.test(roleLC) || /\borchestrator\b/i.test(nameLC)) return 3;
+      if (/\bhub\b/i.test(roleLC) || /\bhub\b/i.test(nameLC)) return 2;
       return ownerish(def) ? 1 : 0;
     };
     const dedicatedOwner = candidates
@@ -2380,7 +2379,15 @@ export class WorkflowRunner {
       ? await this.executor.executeAgentStep(reviewStep, reviewerDef, reviewTask, reviewTimeoutMs)
       : await this.spawnAndWait(reviewerDef, reviewStep, reviewTimeoutMs);
 
-    const decision = reviewOutput.match(/REVIEW_DECISION:\s*(APPROVE|REJECT)/i)?.[1]?.toUpperCase();
+    // Parse REVIEW_DECISION, handling PTY echo that may include the instruction text.
+    // If output likely contains echoed prompt, use the LAST match instead of first.
+    const decisionPattern = /REVIEW_DECISION:\s*(APPROVE|REJECT)/gi;
+    const matches = [...reviewOutput.matchAll(decisionPattern)];
+    const outputLikelyContainsEchoedPrompt =
+      reviewOutput.includes('Return exactly') || reviewOutput.includes('REVIEW_DECISION: APPROVE or REJECT');
+    const matchToUse =
+      outputLikelyContainsEchoedPrompt && matches.length > 1 ? matches[matches.length - 1] : matches[0];
+    const decision = matchToUse?.[1]?.toUpperCase();
     if (!decision) {
       throw new Error(
         `Step "${step.name}" review response malformed from "${reviewerDef.name}" (missing REVIEW_DECISION)`

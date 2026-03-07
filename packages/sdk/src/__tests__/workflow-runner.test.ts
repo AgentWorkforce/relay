@@ -411,6 +411,57 @@ agents:
       expect(ownerAssignments).toEqual(['lead-1']);
     }, 15000);
 
+    it('should not elect github-role agent as owner (hub word-boundary)', async () => {
+      const ownerAssignments: Array<{ owner: string; specialist: string }> = [];
+      runner.on((event) => {
+        if (event.type === 'step:owner-assigned') {
+          ownerAssignments.push({ owner: event.ownerName, specialist: event.specialistName });
+        }
+      });
+
+      const config = makeConfig({
+        agents: [
+          { name: 'specialist', cli: 'claude', role: 'engineer' },
+          { name: 'github-bot', cli: 'claude', role: 'github integration' },
+          { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
+        ],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'specialist', task: 'Do step 1' }],
+          },
+        ],
+      });
+
+      const run = await runner.execute(config, 'default');
+      expect(run.status).toBe('completed');
+      // github-bot should NOT be elected as owner (role contains "hub" substring but not word)
+      expect(ownerAssignments[0].owner).not.toBe('github-bot');
+      // specialist should be its own owner since no hub-role agent exists
+      expect(ownerAssignments[0].owner).toBe('specialist');
+    }, 15000);
+
+    it('should parse REJECT from PTY-echoed review output', async () => {
+      const events: Array<{ type: string; decision?: string }> = [];
+      runner.on((event) => {
+        if (event.type === 'step:review-completed') {
+          events.push({ type: event.type, decision: event.decision });
+        }
+      });
+
+      // Simulate PTY output that echoes the review prompt before the actual response
+      const echoedPrompt =
+        'Return exactly:\nREVIEW_DECISION: APPROVE or REJECT\nREVIEW_REASON: <one sentence>\n';
+      const actualResponse = 'REVIEW_DECISION: REJECT\nREVIEW_REASON: code has bugs\n';
+      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', echoedPrompt + actualResponse];
+
+      const run = await runner.execute(makeConfig(), 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('review rejected');
+      // Should parse REJECT from actual response, not APPROVE from echoed instruction
+      expect(events).toContainEqual({ type: 'step:review-completed', decision: 'rejected' });
+    }, 15000);
+
     it('should resolve variables during execution', async () => {
       const config = makeConfig();
       config.workflows![0].steps[0].task = 'Build {{feature}}';
