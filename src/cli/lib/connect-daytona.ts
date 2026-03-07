@@ -183,19 +183,25 @@ export async function runConnectCommand(
   io.log(color.dim(`  Running: ${start.remoteCommand}`));
   io.log('');
 
-  const sessionResult = await runInteractiveSession({
-    ssh: {
-      host: start.ssh.host,
-      port: sshPort,
-      user: start.ssh.user,
-      password: start.ssh.password,
-    },
-    remoteCommand: start.remoteCommand,
-    successPatterns: providerConfig.successPatterns || [],
-    errorPatterns: providerConfig.errorPatterns || [],
-    timeoutMs,
-    io,
-  });
+  let sessionResult;
+  try {
+    sessionResult = await runInteractiveSession({
+      ssh: {
+        host: start.ssh.host,
+        port: sshPort,
+        user: start.ssh.user,
+        password: start.ssh.password,
+      },
+      remoteCommand: start.remoteCommand,
+      successPatterns: providerConfig.successPatterns || [],
+      errorPatterns: providerConfig.errorPatterns || [],
+      timeoutMs,
+      io,
+    });
+  } catch (err) {
+    io.error(color.red(`Failed to connect via SSH: ${err instanceof Error ? err.message : String(err)}`));
+    io.exit(1);
+  }
 
   io.log('');
 
