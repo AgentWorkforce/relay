@@ -56,6 +56,7 @@ vi.mock('@relaycast/sdk', () => ({
 
 let waitForExitFn: (ms?: number) => Promise<'exited' | 'timeout' | 'released'>;
 let waitForIdleFn: (ms?: number) => Promise<'idle' | 'timeout' | 'exited'>;
+let mockSpawnOutputs: string[] = [];
 
 const mockAgent = {
   name: 'test-agent-abc',
@@ -75,13 +76,16 @@ const mockHuman = {
 
 const mockRelayInstance = {
   spawnPty: vi.fn().mockImplementation(async ({ name, task }: { name: string; task?: string }) => {
+    const queued = mockSpawnOutputs.shift();
     const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
     const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
-    const output = isReview
-      ? 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: looks good\n'
-      : stepComplete
-        ? `STEP_COMPLETE:${stepComplete}\n`
-        : 'STEP_COMPLETE:unknown\n';
+    const output =
+      queued ??
+      (isReview
+        ? 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: looks good\n'
+        : stepComplete
+          ? `STEP_COMPLETE:${stepComplete}\n`
+          : 'STEP_COMPLETE:unknown\n');
 
     // Simulate broker PTY output so runner captures non-empty step artifacts.
     queueMicrotask(() => {
@@ -178,6 +182,7 @@ describe('WorkflowRunner', () => {
     vi.clearAllMocks();
     waitForExitFn = vi.fn().mockResolvedValue('exited');
     waitForIdleFn = vi.fn().mockImplementation(() => never());
+    mockSpawnOutputs = [];
     mockRelayInstance.onWorkerOutput = null;
     db = makeDb();
     runner = new WorkflowRunner({ db, workspaceId: 'ws-test' });
@@ -385,6 +390,20 @@ agents:
       config.workflows![0].steps[0].task = 'Build {{feature}}';
       const run = await runner.execute(config, 'default', { feature: 'auth' });
       expect(run.status, run.error).toBe('completed');
+    });
+
+    it('should fail when owner response does not include completion marker', async () => {
+      mockSpawnOutputs = ['Owner completed work but forgot sentinel\n'];
+      const run = await runner.execute(makeConfig(), 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('owner completion marker');
+    });
+
+    it('should fail closed when review response is malformed', async () => {
+      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'REVIEW_REASON: looks fine\n'];
+      const run = await runner.execute(makeConfig(), 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('review response malformed');
     });
   });
 

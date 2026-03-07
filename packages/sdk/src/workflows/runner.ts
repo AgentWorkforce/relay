@@ -2160,6 +2160,9 @@ export class WorkflowRunner {
           ? await this.executor.executeAgentStep(resolvedStep, ownerDef, resolvedTask, timeoutMs)
           : await this.spawnAndWait(ownerDef, resolvedStep, timeoutMs);
         this.log(`[${step.name}] Owner "${ownerDef.name}" exited`);
+        if (usesOwnerFlow) {
+          this.assertOwnerCompletionMarker(step, output, resolvedTask);
+        }
 
         // Run verification if configured
         if (step.verification) {
@@ -2287,6 +2290,26 @@ export class WorkflowRunner {
     return ownerDef;
   }
 
+  private assertOwnerCompletionMarker(step: WorkflowStep, output: string, injectedTaskText: string): void {
+    const marker = `STEP_COMPLETE:${step.name}`;
+    const taskHasMarker = injectedTaskText.includes(marker);
+    const first = output.indexOf(marker);
+    if (first === -1) {
+      throw new Error(`Step "${step.name}" owner completion marker missing: "${marker}"`);
+    }
+    // PTY output includes injected task text, so require a second marker occurrence
+    // when the marker was present in the injected prompt.
+    const outputLikelyContainsInjectedPrompt = output.includes('STEP OWNER CONTRACT');
+    if (taskHasMarker && outputLikelyContainsInjectedPrompt) {
+      const hasSecond = output.includes(marker, first + marker.length);
+      if (!hasSecond) {
+        throw new Error(
+          `Step "${step.name}" owner completion marker missing in agent response: "${marker}"`
+        );
+      }
+    }
+  }
+
   private async runStepReviewGate(
     step: WorkflowStep,
     resolvedTask: string,
@@ -2325,6 +2348,11 @@ export class WorkflowRunner {
       : await this.spawnAndWait(reviewerDef, reviewStep, reviewTimeoutMs);
 
     const decision = reviewOutput.match(/REVIEW_DECISION:\s*(APPROVE|REJECT)/i)?.[1]?.toUpperCase();
+    if (!decision) {
+      throw new Error(
+        `Step "${step.name}" review response malformed from "${reviewerDef.name}" (missing REVIEW_DECISION)`
+      );
+    }
     if (decision === 'REJECT') {
       this.emit({
         type: 'step:review-completed',
