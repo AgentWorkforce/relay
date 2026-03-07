@@ -5192,9 +5192,7 @@ fn ensure_ephemeral_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths>
                 )
             })?;
             let fd = lock_file.as_raw_fd();
-            let rc = unsafe {
-                nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB)
-            };
+            let rc = unsafe { nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
             if rc != 0 {
                 anyhow::bail!(
                     "another broker instance is already running in this directory ({})",
@@ -5307,9 +5305,7 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
                 )
             })?;
             let fd = lock_file.as_raw_fd();
-            let rc = unsafe {
-                nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB)
-            };
+            let rc = unsafe { nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
             if rc != 0 {
                 anyhow::bail!(
                     "another broker instance is already running in this directory ({})",
