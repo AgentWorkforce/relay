@@ -1243,20 +1243,25 @@ export class InboundGateway {
     }
   }
 
-  /** Format delivery text with channel, sender, and optional thread prefix. */
+  /** Format delivery text with channel, sender, and response hint. */
   private formatDeliveryText(message: InboundMessage): string {
-    // Pre-formatted kinds (command, reaction) already have the full text.
-    if (message.kind === 'command' || message.kind === 'reaction') {
+    // Pre-formatted kinds (reaction) already have the full text with hints.
+    if (message.kind === 'reaction') {
       return message.text;
     }
+    if (message.kind === 'command') {
+      return `${message.text}\n(command invocation — respond with: post_message channel="${message.channel}")`;
+    }
     if (message.kind === 'dm') {
-      return `[relaycast:dm] @${message.from}: ${message.text}`;
+      return `[relaycast:dm] @${message.from}: ${message.text}\n(reply with: send_dm to="${message.from}")`;
     }
     if (message.kind === 'groupdm') {
-      return `[relaycast:groupdm] @${message.from}: ${message.text}`;
+      return `[relaycast:groupdm] @${message.from}: ${message.text}\n(reply with: send_dm to="${message.from}")`;
     }
-    const threadPrefix = message.threadParentId ? '[thread] ' : '';
-    return `${threadPrefix}[relaycast:${message.channel}] @${message.from}: ${message.text}`;
+    if (message.threadParentId) {
+      return `[thread] [relaycast:${message.channel}] @${message.from}: ${message.text}\n(reply with: reply_to_thread message_id="${message.threadParentId}")`;
+    }
+    return `[relaycast:${message.channel}] @${message.from}: ${message.text}\n(reply with: post_message channel="${message.channel}" or reply_to_thread message_id="${message.id}")`;
   }
 
   /** Handle an inbound Relaycast message. */
