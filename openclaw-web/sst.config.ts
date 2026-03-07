@@ -9,6 +9,7 @@ export default $config({
   run() {
     new sst.aws.Nextjs('OpenClawWeb', {
       path: '.',
+      openNextVersion: '3.6.2',
       domain:
         $app.stage === 'production'
           ? {
