@@ -405,6 +405,44 @@ agents:
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review response malformed');
     });
+
+    it('should fail when review explicitly rejects step output', async () => {
+      const events: Array<{ type: string; decision?: string }> = [];
+      runner.on((event) => {
+        if (event.type === 'step:review-completed') {
+          events.push({
+            type: event.type,
+            decision: event.decision,
+          });
+        }
+      });
+
+      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'REVIEW_DECISION: REJECT\nREVIEW_REASON: missing checks\n'];
+      const run = await runner.execute(makeConfig(), 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('review rejected');
+      expect(events).toContainEqual({ type: 'step:review-completed', decision: 'rejected' });
+    });
+
+    it('should emit owner-timeout when owner times out', async () => {
+      const events: Array<{ type: string; stepName?: string }> = [];
+      runner.on((event) => {
+        if (event.type === 'step:owner-timeout') {
+          events.push({
+            type: event.type,
+            stepName: event.stepName,
+          });
+        }
+      });
+
+      waitForExitFn = vi.fn().mockResolvedValue('timeout');
+      waitForIdleFn = vi.fn().mockResolvedValue('timeout');
+
+      const run = await runner.execute(makeConfig(), 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('timed out');
+      expect(events).toContainEqual({ type: 'step:owner-timeout', stepName: 'step-1' });
+    });
   });
 
   // ── Event subscription ─────────────────────────────────────────────────
