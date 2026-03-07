@@ -6,12 +6,8 @@ import { normalizeModelRef } from '../identity/model.js';
 import { convertCodexAuth } from '../auth/converter.js';
 import { writeOpenClawConfig } from './openclaw-config.js';
 import { patchOpenClawDist, clearJitCache } from './patch.js';
-import {
-  generateSoulMd,
-  generateIdentityMd,
-  ensureWorkspace,
-} from '../identity/files.js';
-import { openclawHome as resolveOpenclawHome } from '../config.js';
+import { ensureWorkspace } from '../identity/files.js';
+import { openclawHome as resolveOpenclawHome, openclawConfigFilename } from '../config.js';
 
 export interface RuntimeSetupOptions {
   /** Raw model string (e.g. "gpt-5.3-codex"). Defaults to env OPENCLAW_MODEL. */
@@ -24,8 +20,6 @@ export interface RuntimeSetupOptions {
   role?: string;
   /** OpenClaw dist directory for patching. Defaults to /usr/lib/node_modules/openclaw/dist. */
   openclawDistDir?: string;
-  /** Home directory. Defaults to $HOME. */
-  homeDir?: string;
 }
 
 /**
@@ -40,9 +34,7 @@ export async function runtimeSetup(options: RuntimeSetupOptions = {}): Promise<{
   workspaceId: string;
 }> {
   // Resolve OpenClaw home using canonical precedence (OPENCLAW_CONFIG_PATH > OPENCLAW_HOME > probe)
-  // Only fall back to homeDir option for non-OpenClaw paths (dist dir, etc.)
   const ocHome = resolveOpenclawHome();
-  const home = options.homeDir ?? process.env.HOME ?? '/home/node';
   const model = options.model ?? process.env.OPENCLAW_MODEL ?? 'openai-codex/gpt-5.3-codex';
   const name = options.name ?? process.env.OPENCLAW_NAME ?? process.env.AGENT_NAME ?? 'agent';
   const workspaceId = options.workspaceId ?? process.env.OPENCLAW_WORKSPACE_ID ?? 'unknown';
@@ -51,8 +43,8 @@ export async function runtimeSetup(options: RuntimeSetupOptions = {}): Promise<{
   const distDirCandidates = options.openclawDistDir
     ? [options.openclawDistDir]
     : [
-        '/usr/lib/node_modules/openclaw/dist',    // Global npm (ClawRunner sandbox)
-        '/app/dist',                                // Vanilla Docker image
+        '/usr/lib/node_modules/openclaw/dist', // Global npm (ClawRunner sandbox)
+        '/app/dist', // Vanilla Docker image
         '/usr/local/lib/node_modules/openclaw/dist', // Global npm (macOS/other)
       ];
   const distDir = distDirCandidates.find((d) => existsSync(d)) ?? distDirCandidates[0];
@@ -61,10 +53,11 @@ export async function runtimeSetup(options: RuntimeSetupOptions = {}): Promise<{
   const { preferredProvider } = await convertCodexAuth();
   const modelRef = normalizeModelRef(model, preferredProvider);
 
-  // 2. Write openclaw.json config
+  // 2. Write config (openclaw.json or clawdbot.json depending on variant)
   await writeOpenClawConfig({
     modelRef,
     openclawHome: ocHome,
+    configFilename: openclawConfigFilename(ocHome),
   });
 
   // 3. Write identity files in workspace
@@ -119,8 +112,11 @@ async function clearStaleLocks(openclawHome: string): Promise<void> {
       const files = await readdir(sessionsDir);
       for (const file of files) {
         if (file.endsWith('.lock')) {
-          await unlink(join(sessionsDir, file)).catch(() => {});
-          cleared++;
+          await unlink(join(sessionsDir, file))
+            .then(() => {
+              cleared++;
+            })
+            .catch(() => {});
         }
       }
     }

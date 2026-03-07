@@ -60,6 +60,8 @@ export interface CLIAuthConfig {
   waitTimeout: number;
   /** Whether this provider supports device flow */
   supportsDeviceFlow?: boolean;
+  /** Command to install the CLI if not preinstalled on the sandbox */
+  installCommand?: string;
 }
 
 /**
@@ -190,6 +192,7 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
     urlPattern: /(https:\/\/[^\s]+)/,
     credentialPath: '~/.codex/auth.json',
     displayName: 'Codex',
+    installCommand: 'npm install -g @openai/codex',
     waitTimeout: 30000,
     prompts: [
       {
