@@ -5792,7 +5792,10 @@ mod tests {
         assert_eq!(threads.len(), 1, "should group into one conversation");
         assert_eq!(threads[0].thread_id, "dm_456");
         assert_eq!(threads[0].name, "WorkerA ↔ WorkerB");
-        assert_eq!(threads[0].unread_count, 2, "both messages unread (neither from broker)");
+        assert_eq!(
+            threads[0].unread_count, 2,
+            "both messages unread (neither from broker)"
+        );
         assert_eq!(threads[0].last_message.as_deref(), Some("hi WorkerA"));
     }
 
@@ -5809,7 +5812,10 @@ mod tests {
         let threads = build_thread_infos(&messages, &self_names);
 
         assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].name, "WorkerA", "should filter out broker from participants");
+        assert_eq!(
+            threads[0].name, "WorkerA",
+            "should filter out broker from participants"
+        );
     }
 
     #[test]
@@ -5840,7 +5846,11 @@ mod tests {
         let self_names = HashSet::from(["broker".to_string()]);
         let threads = build_thread_infos(&messages, &self_names);
 
-        assert_eq!(threads.len(), 3, "should have three separate DM conversations");
+        assert_eq!(
+            threads.len(),
+            3,
+            "should have three separate DM conversations"
+        );
 
         let thread_aaa = threads.iter().find(|t| t.thread_id == "dm_aaa").unwrap();
         assert_eq!(thread_aaa.name, "Alice ↔ Bob");

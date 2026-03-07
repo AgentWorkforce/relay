@@ -644,8 +644,7 @@ impl RelaycastHttpClient {
                             // Include participants so thread names can be derived
                             obj.insert(
                                 "participants".to_string(),
-                                serde_json::to_value(&convo.participants)
-                                    .unwrap_or_default(),
+                                serde_json::to_value(&convo.participants).unwrap_or_default(),
                             );
                         }
                         all_messages.push(val);
