@@ -134,6 +134,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // Disable Claude Code auto-suggestions to prevent accidental acceptance during injection.
     #[allow(deprecated)]
     std::env::set_var("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false");
+    // Disable Claude Code auto-updater — it fails in sandboxes and can crash the process.
+    #[allow(deprecated)]
+    std::env::set_var("DISABLE_AUTOUPDATER", "1");
 
     let (resolved_cli, inline_cli_args) = parse_cli_command(&cmd.cli)
         .with_context(|| format!("invalid CLI command '{}'", cmd.cli))?;

@@ -357,6 +357,9 @@ pub(crate) async fn run_wrap(
     // cannot accidentally accept a ghost suggestion via the Enter keystroke.
     #[allow(deprecated)]
     std::env::set_var("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false");
+    // Disable Claude Code auto-updater — it fails in sandboxes and can crash the process.
+    #[allow(deprecated)]
+    std::env::set_var("DISABLE_AUTOUPDATER", "1");
 
     let requested_name = std::env::var("RELAY_AGENT_NAME").unwrap_or_else(|_| resolved_cli.clone());
     let channels = std::env::var("RELAY_CHANNELS").unwrap_or_else(|_| "general".to_string());
