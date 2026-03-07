@@ -9,14 +9,6 @@ export default $config({
   run() {
     new sst.aws.Nextjs('OpenClawWeb', {
       path: '.',
-      domain:
-        $app.stage === 'production'
-          ? {
-              // This domain is proxied by agentrelay.dev; SEO canonicals are set in Next metadata.
-              name: 'agentrelay.net',
-              dns: sst.cloudflare.dns({ proxy: true }),
-            }
-          : undefined,
     });
   },
 });
