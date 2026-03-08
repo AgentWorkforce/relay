@@ -56,6 +56,7 @@ vi.mock('@relaycast/sdk', () => ({
 
 let waitForExitFn: (ms?: number) => Promise<'exited' | 'timeout' | 'released'>;
 let waitForIdleFn: (ms?: number) => Promise<'idle' | 'timeout' | 'exited'>;
+let mockSpawnOutputs: string[] = [];
 
 const mockAgent = {
   name: 'test-agent-abc',
@@ -73,15 +74,41 @@ const mockHuman = {
   sendMessage: vi.fn().mockResolvedValue(undefined),
 };
 
+const mockRelayInstance = {
+  spawnPty: vi.fn().mockImplementation(async ({ name, task }: { name: string; task?: string }) => {
+    const queued = mockSpawnOutputs.shift();
+    const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
+    const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
+    const output =
+      queued ??
+      (isReview
+        ? 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: looks good\n'
+        : stepComplete
+          ? `STEP_COMPLETE:${stepComplete}\n`
+          : 'STEP_COMPLETE:unknown\n');
+
+    // Simulate broker PTY output so runner captures non-empty step artifacts.
+    queueMicrotask(() => {
+      if (typeof mockRelayInstance.onWorkerOutput === 'function') {
+        mockRelayInstance.onWorkerOutput({ name, chunk: output });
+      }
+    });
+
+    return { ...mockAgent, name };
+  }),
+  human: vi.fn().mockReturnValue(mockHuman),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  onBrokerStderr: vi.fn().mockReturnValue(() => {}),
+  onWorkerOutput: null as ((frame: { name: string; chunk: string }) => void) | null,
+  onMessageReceived: null as any,
+  onAgentSpawned: null as any,
+  onAgentExited: null as any,
+  onAgentIdle: null as any,
+  listAgentsRaw: vi.fn().mockResolvedValue([]),
+};
+
 vi.mock('../relay.js', () => ({
-  AgentRelay: vi.fn().mockImplementation(() => ({
-    spawnPty: vi.fn().mockResolvedValue(mockAgent),
-    human: vi.fn().mockReturnValue(mockHuman),
-    shutdown: vi.fn().mockResolvedValue(undefined),
-    onBrokerStderr: vi.fn().mockReturnValue(() => {}),
-    onWorkerOutput: null,
-    listAgentsRaw: vi.fn().mockResolvedValue([]),
-  })),
+  AgentRelay: vi.fn().mockImplementation(() => mockRelayInstance),
 }));
 
 // Import after mocking
@@ -155,6 +182,8 @@ describe('WorkflowRunner', () => {
     vi.clearAllMocks();
     waitForExitFn = vi.fn().mockResolvedValue('exited');
     waitForIdleFn = vi.fn().mockImplementation(() => never());
+    mockSpawnOutputs = [];
+    mockRelayInstance.onWorkerOutput = null;
     db = makeDb();
     runner = new WorkflowRunner({ db, workspaceId: 'ws-test' });
   });
@@ -304,7 +333,7 @@ agents:
 
       expect(db.insertRun).toHaveBeenCalledTimes(1);
       expect(db.insertStep).toHaveBeenCalledTimes(2);
-      expect(run.status).toBe('completed');
+      expect(run.status, run.error).toBe('completed');
     });
 
     it('should throw when workflow not found', async () => {
@@ -344,11 +373,216 @@ agents:
       expect(startedSteps).toHaveLength(2);
     });
 
+    it('should emit owner assignment and review completion events for interactive steps', async () => {
+      const events: Array<{ type: string; stepName?: string }> = [];
+      runner.on((event) => events.push({ type: event.type, stepName: 'stepName' in event ? event.stepName : undefined }));
+
+      await runner.execute(makeConfig(), 'default');
+
+      const ownerAssigned = events.filter((e) => e.type === 'step:owner-assigned');
+      const reviewCompleted = events.filter((e) => e.type === 'step:review-completed');
+      expect(ownerAssigned).toHaveLength(2);
+      expect(reviewCompleted).toHaveLength(2);
+    });
+
+    it('should prioritize lead owner when multiple hub-role candidates exist', async () => {
+      const ownerAssignments: string[] = [];
+      runner.on((event) => {
+        if (event.type === 'step:owner-assigned') ownerAssignments.push(event.ownerName);
+      });
+
+      const config = makeConfig({
+        agents: [
+          { name: 'specialist', cli: 'claude', role: 'engineer' },
+          { name: 'coord-1', cli: 'claude', role: 'coordinator' },
+          { name: 'lead-1', cli: 'claude', role: 'lead' },
+          { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
+        ],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'specialist', task: 'Do step 1' }],
+          },
+        ],
+      });
+
+      const run = await runner.execute(config, 'default');
+      expect(run.status).toBe('completed');
+      expect(ownerAssignments).toEqual(['lead-1']);
+    }, 15000);
+
+    it('should not treat github role text as hub owner signal', async () => {
+      const ownerAssignments: string[] = [];
+      runner.on((event) => {
+        if (event.type === 'step:owner-assigned') ownerAssignments.push(event.ownerName);
+      });
+
+      const config = makeConfig({
+        agents: [
+          { name: 'specialist', cli: 'claude', role: 'engineer' },
+          { name: 'github-agent', cli: 'claude', role: 'github actions agent' },
+          { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
+        ],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'specialist', task: 'Do step 1' }],
+          },
+        ],
+      });
+
+      const run = await runner.execute(config, 'default');
+      expect(run.status).toBe('completed');
+      expect(ownerAssignments).toEqual(['specialist']);
+    });
+
+    it('should not elect github-role agent as owner (hub word-boundary)', async () => {
+      const ownerAssignments: Array<{ owner: string; specialist: string }> = [];
+      runner.on((event) => {
+        if (event.type === 'step:owner-assigned') {
+          ownerAssignments.push({ owner: event.ownerName, specialist: event.specialistName });
+        }
+      });
+
+      const config = makeConfig({
+        agents: [
+          { name: 'specialist', cli: 'claude', role: 'engineer' },
+          { name: 'github-bot', cli: 'claude', role: 'github integration' },
+          { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
+        ],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'specialist', task: 'Do step 1' }],
+          },
+        ],
+      });
+
+      const run = await runner.execute(config, 'default');
+      expect(run.status).toBe('completed');
+      // github-bot should NOT be elected as owner (role contains "hub" substring but not word)
+      expect(ownerAssignments[0].owner).not.toBe('github-bot');
+      // specialist should be its own owner since no hub-role agent exists
+      expect(ownerAssignments[0].owner).toBe('specialist');
+    }, 15000);
+
+    it('should parse REJECT from PTY-echoed review output', async () => {
+      const events: Array<{ type: string; decision?: string }> = [];
+      runner.on((event) => {
+        if (event.type === 'step:review-completed') {
+          events.push({ type: event.type, decision: event.decision });
+        }
+      });
+
+      // Simulate PTY output that echoes the review prompt before the actual response
+      const echoedPrompt =
+        'Return exactly:\nREVIEW_DECISION: APPROVE or REJECT\nREVIEW_REASON: <one sentence>\n';
+      const actualResponse = 'REVIEW_DECISION: REJECT\nREVIEW_REASON: code has bugs\n';
+      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', echoedPrompt + actualResponse];
+
+      const run = await runner.execute(makeConfig(), 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('review rejected');
+      // Should parse REJECT from actual response, not APPROVE from echoed instruction
+      expect(events).toContainEqual({ type: 'step:review-completed', decision: 'rejected' });
+    }, 15000);
+
     it('should resolve variables during execution', async () => {
       const config = makeConfig();
       config.workflows![0].steps[0].task = 'Build {{feature}}';
       const run = await runner.execute(config, 'default', { feature: 'auth' });
+      expect(run.status, run.error).toBe('completed');
+    });
+
+    it('should fail when owner response does not include completion marker', async () => {
+      mockSpawnOutputs = ['Owner completed work but forgot sentinel\n'];
+      const run = await runner.execute(makeConfig(), 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('owner completion marker');
+    });
+
+    it('should fail closed when review response is malformed', async () => {
+      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'REVIEW_REASON: looks fine\n'];
+      const run = await runner.execute(makeConfig(), 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('review response malformed');
+    });
+
+    it('should fail when review explicitly rejects step output', async () => {
+      const events: Array<{ type: string; decision?: string }> = [];
+      runner.on((event) => {
+        if (event.type === 'step:review-completed') {
+          events.push({
+            type: event.type,
+            decision: event.decision,
+          });
+        }
+      });
+
+      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'REVIEW_DECISION: REJECT\nREVIEW_REASON: missing checks\n'];
+      const run = await runner.execute(makeConfig(), 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('review rejected');
+      expect(events).toContainEqual({ type: 'step:review-completed', decision: 'rejected' });
+    });
+
+    it('should parse final review decision when PTY output echoes review instructions', async () => {
+      const events: Array<{ type: string; decision?: string }> = [];
+      runner.on((event) => {
+        if (event.type === 'step:review-completed') {
+          events.push({
+            type: event.type,
+            decision: event.decision,
+          });
+        }
+      });
+
+      mockSpawnOutputs = [
+        'STEP_COMPLETE:step-1\n',
+        'Return exactly:\nREVIEW_DECISION: APPROVE or REJECT\nREVIEW_REASON: <one sentence>\nREVIEW_DECISION: REJECT\nREVIEW_REASON: insufficient evidence\n',
+      ];
+      const run = await runner.execute(makeConfig(), 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('review rejected');
+      expect(events).toContainEqual({ type: 'step:review-completed', decision: 'rejected' });
+    });
+
+    it('should emit owner-timeout when owner times out', async () => {
+      const events: Array<{ type: string; stepName?: string }> = [];
+      runner.on((event) => {
+        if (event.type === 'step:owner-timeout') {
+          events.push({
+            type: event.type,
+            stepName: event.stepName,
+          });
+        }
+      });
+
+      waitForExitFn = vi.fn().mockResolvedValue('timeout');
+      waitForIdleFn = vi.fn().mockResolvedValue('timeout');
+
+      const run = await runner.execute(makeConfig(), 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('timed out');
+      expect(events).toContainEqual({ type: 'step:owner-timeout', stepName: 'step-1' });
+    });
+
+    it('should not allocate review timeout longer than parent step timeout', async () => {
+      const config = makeConfig({
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 30_000 }],
+          },
+        ],
+      });
+      const run = await runner.execute(config, 'default');
+
       expect(run.status).toBe('completed');
+      const waitCalls = (waitForExitFn as any).mock?.calls ?? [];
+      expect(waitCalls.length).toBeGreaterThanOrEqual(2);
+      // first call: owner timeout; second call: review timeout
+      expect(waitCalls[1][0]).toBeLessThanOrEqual(30_000);
     });
   });
 

@@ -640,6 +640,17 @@ The runner emits two new events for idle nudging:
 | `step:nudged` | Fired when a nudge message is sent to an idle agent |
 | `step:force-released` | Fired when an agent is force-released after exhausting nudges |
 
+## Automatic Step Owner and Review
+
+For interactive agent steps, the runner now hardens handoffs automatically:
+
+1. Elects a step owner (prefers lead/coordinator-style agents, falls back to the step agent)
+2. Requires the owner to provide an explicit completion signal (`STEP_COMPLETE:<step-name>`)
+3. Runs a review pass before marking the step complete (prefers reviewer-style agents when present)
+4. Stores primary output plus review output in the step artifact
+
+Deterministic and worktree steps are unchanged and do not require owner/review delegation.
+
 ## Schema Validation
 
 A JSON Schema is available at `packages/sdk/src/workflows/schema.json` for editor autocompletion and validation of `relay.yaml` files.
