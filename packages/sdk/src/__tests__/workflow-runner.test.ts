@@ -411,6 +411,31 @@ agents:
       expect(ownerAssignments).toEqual(['lead-1']);
     }, 15000);
 
+    it('should not treat github role text as hub owner signal', async () => {
+      const ownerAssignments: string[] = [];
+      runner.on((event) => {
+        if (event.type === 'step:owner-assigned') ownerAssignments.push(event.ownerName);
+      });
+
+      const config = makeConfig({
+        agents: [
+          { name: 'specialist', cli: 'claude', role: 'engineer' },
+          { name: 'github-agent', cli: 'claude', role: 'github actions agent' },
+          { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
+        ],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'specialist', task: 'Do step 1' }],
+          },
+        ],
+      });
+
+      const run = await runner.execute(config, 'default');
+      expect(run.status).toBe('completed');
+      expect(ownerAssignments).toEqual(['specialist']);
+    });
+
     it('should not elect github-role agent as owner (hub word-boundary)', async () => {
       const ownerAssignments: Array<{ owner: string; specialist: string }> = [];
       runner.on((event) => {
@@ -495,6 +520,27 @@ agents:
       });
 
       mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'REVIEW_DECISION: REJECT\nREVIEW_REASON: missing checks\n'];
+      const run = await runner.execute(makeConfig(), 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('review rejected');
+      expect(events).toContainEqual({ type: 'step:review-completed', decision: 'rejected' });
+    });
+
+    it('should parse final review decision when PTY output echoes review instructions', async () => {
+      const events: Array<{ type: string; decision?: string }> = [];
+      runner.on((event) => {
+        if (event.type === 'step:review-completed') {
+          events.push({
+            type: event.type,
+            decision: event.decision,
+          });
+        }
+      });
+
+      mockSpawnOutputs = [
+        'STEP_COMPLETE:step-1\n',
+        'Return exactly:\nREVIEW_DECISION: APPROVE or REJECT\nREVIEW_REASON: <one sentence>\nREVIEW_DECISION: REJECT\nREVIEW_REASON: insufficient evidence\n',
+      ];
       const run = await runner.execute(makeConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review rejected');
