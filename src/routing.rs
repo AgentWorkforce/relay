@@ -72,8 +72,7 @@ pub(crate) fn resolve_delivery_targets(
     let ws_id = Some(event.workspace_id.as_str());
 
     if event.target.starts_with('#') {
-        let targets =
-            worker_names_for_channel_delivery(workers, &event.target, &event.from, ws_id);
+        let targets = worker_names_for_channel_delivery(workers, &event.target, &event.from, ws_id);
         tracing::debug!(
             target = "broker::routing",
             from = %event.from,
@@ -98,8 +97,7 @@ pub(crate) fn resolve_delivery_targets(
         let targets: Vec<String> = workers
             .iter()
             .filter(|w| {
-                !w.name.eq_ignore_ascii_case(&event.from)
-                    && worker_matches_workspace(w, ws_id)
+                !w.name.eq_ignore_ascii_case(&event.from) && worker_matches_workspace(w, ws_id)
             })
             .map(|w| w.name.to_string())
             .collect();
@@ -118,8 +116,7 @@ pub(crate) fn resolve_delivery_targets(
         };
     }
 
-    let direct_targets =
-        worker_names_for_direct_target(workers, &event.target, &event.from, ws_id);
+    let direct_targets = worker_names_for_direct_target(workers, &event.target, &event.from, ws_id);
     let needs_dm_resolution = direct_targets.is_empty()
         && matches!(
             event.kind,
@@ -411,7 +408,8 @@ mod tests {
         let routing_workers = routing_workers(&workers);
         let participants = vec!["bravo".to_string(), "alpha".to_string()];
 
-        let targets = worker_names_for_dm_participants(&routing_workers, &participants, "ALPHA", None);
+        let targets =
+            worker_names_for_dm_participants(&routing_workers, &participants, "ALPHA", None);
 
         assert_eq!(targets, vec!["Bravo".to_string()]);
     }
