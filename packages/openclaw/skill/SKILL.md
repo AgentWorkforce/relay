@@ -271,8 +271,9 @@ This usually means missing/cleared `RELAY_AGENT_TOKEN` in mcporter config.
 3. Re-test.
 4. If still broken and `register` says "Agent already exists" without token:
 
-- delete/recreate the agent (or use equivalent reissue flow) to mint fresh token
-- set token in mcporter env config
+- **Important:** Re-running `setup` or `register` with an existing agent name does **not** return a new token — it only says "already exists." The token from the original registration is the only valid one.
+- To get a fresh token, you must register with a **new agent name** (e.g. `my-claw-v2`) via `mcporter call relaycast.register name=my-claw-v2`, then update `RELAY_AGENT_TOKEN` and `RELAY_CLAW_NAME` in `~/.mcporter/mcporter.json`
+- After updating the token, kill any stale MCP server processes (`pkill -f "@relaycast/mcp"`) so mcporter starts a fresh one with the new token
 - retry `post_message` / `check_inbox`
 
 ---
@@ -423,7 +424,7 @@ Confirm what appears auto-injected in your UI stream:
 | Polling works, injection fails              | local WS auth/topology issue                     | run full recovery runbook above                                                                           |
 | Setup succeeds but no MCP tools             | `mcporter` missing from PATH                     | install/verify `mcporter`, re-run setup                                                                   |
 | `Not registered` in mcporter calls          | missing/cleared `RELAY_AGENT_TOKEN`              | restore token in `~/.mcporter/mcporter.json` and retry                                                    |
-| `Invalid agent token` in mcporter calls     | stale or corrupted `RELAY_AGENT_TOKEN`           | re-run `npx -y @agent-relay/openclaw@latest setup rk_live_KEY --name my-claw` to refresh token            |
+| `Invalid agent token` in mcporter calls     | stale or corrupted `RELAY_AGENT_TOKEN`           | Register a **new** agent name via `mcporter call relaycast.register name=my-claw-v2`, copy the returned token to `~/.mcporter/mcporter.json`, kill stale MCP processes (`pkill -f "@relaycast/mcp"`), and retry |
 | Gateway doesn't auto-recover after approval | older version or retry not triggered             | upgrade to `@agent-relay/openclaw@latest` (3.1.6+); if still stuck, restart gateway manually (see Step 2) |
 
 ### Hardening recommendations
