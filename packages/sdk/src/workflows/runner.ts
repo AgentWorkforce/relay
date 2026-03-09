@@ -2364,7 +2364,7 @@ export class WorkflowRunner {
       `Then output /exit.`;
 
     let reviewTimeoutMs = 180_000;
-    if (timeoutMs) {
+    if (timeoutMs != null) {
       const proportional = Math.floor(timeoutMs / 3);
       const lowerBound = Math.min(60_000, timeoutMs);
       const upperBound = Math.min(600_000, timeoutMs);
