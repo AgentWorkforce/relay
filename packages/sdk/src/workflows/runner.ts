@@ -2156,9 +2156,11 @@ export class WorkflowRunner {
         // Spawn agent via AgentRelay
         this.log(`[${step.name}] Spawning owner "${ownerDef.name}" (cli: ${ownerDef.cli})`);
         const resolvedStep = { ...step, task: resolvedTask };
+        const ownerStartTime = Date.now();
         const output = this.executor
           ? await this.executor.executeAgentStep(resolvedStep, ownerDef, resolvedTask, timeoutMs)
           : await this.spawnAndWait(ownerDef, resolvedStep, timeoutMs);
+        const ownerElapsed = Date.now() - ownerStartTime;
         this.log(`[${step.name}] Owner "${ownerDef.name}" exited`);
         if (usesOwnerFlow) {
           this.assertOwnerCompletionMarker(step, output, resolvedTask);
@@ -2172,7 +2174,8 @@ export class WorkflowRunner {
         // Every interactive step gets a review pass; pick a dedicated reviewer when available.
         let combinedOutput = output;
         if (usesOwnerFlow && reviewDef) {
-          const reviewOutput = await this.runStepReviewGate(step, resolvedTask, output, ownerDef, reviewDef, timeoutMs);
+          const remainingMs = timeoutMs ? Math.max(0, timeoutMs - ownerElapsed) : undefined;
+          const reviewOutput = await this.runStepReviewGate(step, resolvedTask, output, ownerDef, reviewDef, remainingMs);
           combinedOutput = this.combineStepAndReviewOutput(output, reviewOutput);
         }
 
@@ -2195,7 +2198,7 @@ export class WorkflowRunner {
         return;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
-        if (/\btimed out\b/i.test(lastError)) {
+        if (/\btimed out\b/i.test(lastError) && !lastError.includes(`${step.name}-review`)) {
           this.emit({ type: 'step:owner-timeout', runId, stepName: step.name, ownerName: ownerDef.name });
         }
       }
@@ -2256,7 +2259,7 @@ export class WorkflowRunner {
     const ownerish = (def: AgentDefinition): boolean => {
       const nameLC = def.name.toLowerCase();
       const roleLC = def.role?.toLowerCase() ?? '';
-      return WorkflowRunner.HUB_ROLES.has(nameLC) || matchesHubRole(roleLC);
+      return matchesHubRole(nameLC) || matchesHubRole(roleLC);
     };
     const ownerPriority = (def: AgentDefinition): number => {
       const roleLC = def.role?.toLowerCase() ?? '';
