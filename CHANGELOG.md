@@ -29,6 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.1.13] - 2026-03-09
+
+### Product Perspective
+#### User-Impacting Fixes
+- Bind relay event handlers after WS connect (#513) (#513)
+- Expose all workspace DM conversations in dashboard (#510) (#510)
+
+### Technical Perspective
+#### Releases
+- v3.1.13
+
+---
+
 ## [3.1.12] - 2026-03-07
 
 ### Technical Perspective
