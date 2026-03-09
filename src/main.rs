@@ -5128,10 +5128,7 @@ fn continuity_dir(state_path: &Path) -> PathBuf {
 fn ensure_ephemeral_paths(_cwd: &Path, _broker_name: &str) -> Result<RuntimePaths> {
     // Use a random temp subdir so concurrent ephemeral brokers don't collide
     // on state files.
-    let root = std::env::temp_dir().join(format!(
-        "agent-relay-ephemeral-{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("agent-relay-ephemeral-{}", std::process::id()));
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create ephemeral temp dir {}", root.display()))?;
 
