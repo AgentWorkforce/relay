@@ -1407,7 +1407,13 @@ export class InboundGateway {
     }
     this.relayAgentToken = agentToken;
     this.relayAgentClient = this.relaycast.as(agentToken);
-    await this.connectRelayAgentClient();
+    // SDK's onEvent() throws if the WS object doesn't exist yet.
+    // connect() synchronously creates the WS and initiates the connection,
+    // so we call it before binding handlers. This ensures:
+    // 1. The WS object exists when onEvent() is called (no throw)
+    // 2. Handlers are bound before the connection fully opens (no missed events)
+    // 3. The SDK's double-connect guard (if ws exists, no-op) makes this safe
+    this.relayAgentClient.connect();
     this.bindRelayAgentHandlers();
   }
 
