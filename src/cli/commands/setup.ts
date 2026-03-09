@@ -4,6 +4,7 @@ import readline from 'node:readline';
 import { execFileSync, spawn as spawnProcess } from 'node:child_process';
 import { Command } from 'commander';
 import { getProjectPaths } from '@agent-relay/config';
+import { brokerPidFilename } from '../lib/broker-lifecycle.js';
 import { enableTelemetry, disableTelemetry, getStatus, isDisabledByEnv } from '@agent-relay/telemetry';
 import { runWorkflow } from '@agent-relay/sdk/workflows';
 import type { WorkflowEvent } from '@agent-relay/sdk/workflows';
@@ -146,16 +147,21 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
   io.log('  ℹ  Detected: Local environment');
   io.log('');
   const paths = getProjectPaths();
-  const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  const brokerPidPath = path.join(paths.dataDir, brokerPidFilename(paths.projectRoot));
+  const legacyBrokerPidPath = path.join(paths.dataDir, 'broker.pid');
   let brokerRunning = false;
-  if (fs.existsSync(brokerPidPath)) {
-    const brokerPid = Number(fs.readFileSync(brokerPidPath, 'utf-8').trim());
+  for (const pidPath of [brokerPidPath, legacyBrokerPidPath]) {
+    if (!fs.existsSync(pidPath)) {
+      continue;
+    }
+    const brokerPid = Number(fs.readFileSync(pidPath, 'utf-8').trim());
     try {
       process.kill(brokerPid, 0);
       brokerRunning = true;
+      break;
     } catch {
       try {
-        fs.unlinkSync(brokerPidPath);
+        fs.unlinkSync(pidPath);
       } catch {
         // ignore
       }

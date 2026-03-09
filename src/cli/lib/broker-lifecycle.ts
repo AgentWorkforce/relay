@@ -24,13 +24,22 @@ const MAX_DASHBOARD_PORT_ATTEMPTS = 25;
 const MAX_PORT = 65535;
 
 /**
+ * Sanitise a broker name the same way the Rust broker does: keep alphanumeric
+ * characters (including Unicode) and hyphens, replace everything else with `-`.
+ * Rust uses `char::is_alphanumeric()` which includes Unicode letters/digits,
+ * so we use the equivalent `\p{L}` (letters) and `\p{N}` (numbers) classes.
+ */
+function sanitizeBrokerName(name: string): string {
+  return name.replace(/[^\p{L}\p{N}-]/gu, '-');
+}
+
+/**
  * Derive the broker-name-specific PID filename, matching the Rust broker's
  * per-broker-name convention (`broker-{safe_name}.pid`).
  */
-function brokerPidFilename(projectRoot: string): string {
+export function brokerPidFilename(projectRoot: string): string {
   const brokerName = path.basename(projectRoot) || 'project';
-  const safeName = brokerName.replace(/[^a-zA-Z0-9-]/g, '-');
-  return `broker-${safeName}.pid`;
+  return `broker-${sanitizeBrokerName(brokerName)}.pid`;
 }
 
 function toErrorMessage(err: unknown): string {
