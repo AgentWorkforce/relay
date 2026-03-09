@@ -216,8 +216,8 @@ export async function runUninstallCommand(
       } catch {
         // Ignore dead processes.
       }
+      break;
     }
-    break;
   }
 
   const isDryRun = options.dryRun === true;
