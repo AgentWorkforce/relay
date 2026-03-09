@@ -998,8 +998,7 @@ pub(crate) async fn run_wrap(
                         );
                     } else {
                         tokio::time::sleep(Duration::from_millis(50)).await;
-                        let _ = pty.write_all(b"
-        ");
+                        let _ = pty.write_all(b"\r");
                         tracing::debug!(
                             delivery_id = %pv.delivery_id,
                             event_id = %pv.event_id,
