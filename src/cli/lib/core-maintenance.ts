@@ -226,12 +226,13 @@ export async function runUninstallCommand(
   if (isDryRun) {
     if (options.keepData) {
       deps.log(`[dry-run] Would remove: ${brokerPidPath}`);
+      deps.log(`[dry-run] Would remove: ${legacyBrokerPidPath}`);
       deps.log(`[dry-run] Would remove: ${runtimePath}`);
     } else {
       deps.log(`[dry-run] Would remove directory: ${paths.dataDir}`);
     }
   } else if (options.keepData) {
-    for (const filePath of [brokerPidPath, runtimePath]) {
+    for (const filePath of [brokerPidPath, legacyBrokerPidPath, runtimePath]) {
       if (!deps.fs.existsSync(filePath)) {
         continue;
       }

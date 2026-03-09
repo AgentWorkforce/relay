@@ -792,7 +792,11 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   if (existingPid === null) {
     const legacyPidPath = path.join(paths.dataDir, 'broker.pid');
     existingPid = readPidFile(legacyPidPath, deps);
-    if (existingPid !== null) {
+    if (existingPid !== null && !isProcessRunning(existingPid, deps)) {
+      safeUnlink(legacyPidPath, deps);
+    } else if (existingPid !== null) {
+      // Migrate legacy PID to new per-broker-name path so down/status can find it
+      writeBrokerPid(brokerPidPath, existingPid, deps);
       safeUnlink(legacyPidPath, deps);
     }
   }
