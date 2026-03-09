@@ -1407,8 +1407,8 @@ export class InboundGateway {
     }
     this.relayAgentToken = agentToken;
     this.relayAgentClient = this.relaycast.as(agentToken);
-    this.bindRelayAgentHandlers();
     await this.connectRelayAgentClient();
+    this.bindRelayAgentHandlers();
   }
 
   private async refreshRelayAgentRegistration(): Promise<void> {
