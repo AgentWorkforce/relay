@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
     process::Stdio,
     time::{Duration, Instant},
@@ -197,9 +196,9 @@ struct RuntimePaths {
     state: PathBuf,
     pending: PathBuf,
     pid: PathBuf,
-    /// Held for process lifetime to prevent concurrent broker instances.
+    /// Held for process lifetime to prevent concurrent broker instances (persist mode only).
     #[allow(dead_code)]
-    _lock: std::fs::File,
+    _lock: Option<std::fs::File>,
 }
 
 /// Shared Relaycast connection state used by run_init and run_wrap.
@@ -5121,124 +5120,24 @@ fn continuity_dir(state_path: &Path) -> PathBuf {
 /// The temp directory is NOT removed on exit — the OS cleans it up on reboot.
 /// State and pending-delivery files are still written there so they don't
 /// interfere with the project tree; they're just ephemeral.
-fn ensure_ephemeral_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
-    let safe_name: String = broker_name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-
-    let canonical_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    let mut hasher = DefaultHasher::new();
-    canonical_cwd.to_string_lossy().hash(&mut hasher);
-    safe_name.hash(&mut hasher);
-    let suffix = format!("{:016x}", hasher.finish());
-
-    // Use a deterministic temp subdir so duplicate brokers (same cwd + name)
-    // contend on a shared lock, even in ephemeral mode.
-    let root = std::env::temp_dir().join(format!("agent-relay-ephemeral-{suffix}"));
+/// Ephemeral mode: no lock file, no PID file, no temp directory.
+/// The broker lifecycle is tied to the parent process via stdin — when the
+/// parent (SDK client) exits, stdin gets EOF and the broker shuts down.
+/// Single-instance enforcement is unnecessary here because each SDK client
+/// manages its own child process.
+fn ensure_ephemeral_paths(_cwd: &Path, _broker_name: &str) -> Result<RuntimePaths> {
+    // Use a random temp subdir so concurrent ephemeral brokers don't collide
+    // on state files.
+    let root = std::env::temp_dir().join(format!("agent-relay-ephemeral-{}", std::process::id()));
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create ephemeral temp dir {}", root.display()))?;
-
-    let lock_path = root.join("broker.lock");
-    let pid_path = root.join("broker.pid");
-    let lock_file = std::fs::File::create(&lock_path)
-        .with_context(|| format!("failed to create lock file {}", lock_path.display()))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::AsRawFd;
-        let fd = lock_file.as_raw_fd();
-        let rc = unsafe { nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
-        if rc != 0 {
-            if let Ok(contents) = std::fs::read_to_string(&pid_path) {
-                if let Ok(old_pid) = contents.trim().parse::<u32>() {
-                    if !is_pid_alive(old_pid) {
-                        tracing::warn!(
-                            old_pid = old_pid,
-                            "stale ephemeral broker lock detected (PID {} is dead), recovering",
-                            old_pid
-                        );
-                        drop(lock_file);
-                        let lock_file = std::fs::File::create(&lock_path).with_context(|| {
-                            format!(
-                                "failed to re-create lock file after stale recovery {}",
-                                lock_path.display()
-                            )
-                        })?;
-                        let fd = lock_file.as_raw_fd();
-                        let rc = unsafe {
-                            nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB)
-                        };
-                        if rc != 0 {
-                            anyhow::bail!(
-                                "another broker instance is already running in this directory ({})",
-                                root.display()
-                            );
-                        }
-                        write_pid_file(&pid_path)?;
-                        return Ok(RuntimePaths {
-                            persist: false,
-                            state: root.join("state.json"),
-                            pending: root.join("pending.json"),
-                            pid: pid_path,
-                            _lock: lock_file,
-                        });
-                    } else {
-                        anyhow::bail!(
-                            "another broker instance is already running in this directory (pid: {}, {})",
-                            old_pid,
-                            root.display()
-                        );
-                    }
-                }
-            }
-            // PID file missing or unreadable while lock is held — treat as stale.
-            // This happens when the user deletes the runtime dir while an old broker
-            // is still alive, or during the shutdown race (PID deleted before flock
-            // released).
-            tracing::warn!(
-                "ephemeral broker lock held but no valid PID file found, treating as stale and recovering"
-            );
-            drop(lock_file);
-            let lock_file = std::fs::File::create(&lock_path).with_context(|| {
-                format!(
-                    "failed to re-create lock file after stale recovery {}",
-                    lock_path.display()
-                )
-            })?;
-            let fd = lock_file.as_raw_fd();
-            let rc = unsafe { nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
-            if rc != 0 {
-                anyhow::bail!(
-                    "another broker instance is already running in this directory ({})",
-                    root.display()
-                );
-            }
-            write_pid_file(&pid_path)?;
-            return Ok(RuntimePaths {
-                persist: false,
-                state: root.join("state.json"),
-                pending: root.join("pending.json"),
-                pid: pid_path,
-                _lock: lock_file,
-            });
-        }
-    }
-
-    write_pid_file(&pid_path)?;
 
     Ok(RuntimePaths {
         persist: false,
         state: root.join("state.json"),
         pending: root.join("pending.json"),
-        pid: pid_path,
-        _lock: lock_file,
+        pid: PathBuf::new(),
+        _lock: None,
     })
 }
 
@@ -5306,7 +5205,7 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
                             state: root.join(format!("state-{safe_name}.json")),
                             pending: root.join(format!("pending-{safe_name}.json")),
                             pid: pid_path,
-                            _lock: lock_file,
+                            _lock: Some(lock_file),
                         });
                     } else {
                         anyhow::bail!(
@@ -5345,7 +5244,7 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
                 state: root.join(format!("state-{safe_name}.json")),
                 pending: root.join(format!("pending-{safe_name}.json")),
                 pid: pid_path,
-                _lock: lock_file,
+                _lock: Some(lock_file),
             });
         }
     }
@@ -5358,7 +5257,7 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
         state: root.join(format!("state-{safe_name}.json")),
         pending: root.join(format!("pending-{safe_name}.json")),
         pid: pid_path,
-        _lock: lock_file,
+        _lock: Some(lock_file),
     })
 }
 
