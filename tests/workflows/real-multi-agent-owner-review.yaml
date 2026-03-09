@@ -1,0 +1,224 @@
+version: '1.0'
+name: real-multi-agent-owner-review
+description: |
+  Complex real-world E2E test for PR #511. Multiple agents with DAG dependencies,
+  auto step owner assignment, review gating, and parallel execution.
+  Inspired by build-plan patterns. Uses real CLI agents.
+
+swarm:
+  pattern: dag
+  channel: multi-agent-review
+  maxConcurrency: 4
+  timeoutMs: 900000 # 15 min global
+
+agents:
+  # Lead — hub-role, should get auto-assigned as owner
+  - name: lead
+    cli: claude
+    preset: lead
+    channels: [multi-agent-review, coordination]
+    role: 'Lead coordinator. Plans architecture, delegates tasks, reviews progress.'
+    constraints:
+      model: sonnet
+      timeoutMs: 180000
+
+  # Two workers — parallel implementation
+  - name: worker-a
+    cli: claude
+    preset: worker
+    role: 'Backend worker. Implements server-side utilities.'
+    constraints:
+      model: sonnet
+      timeoutMs: 180000
+
+  - name: worker-b
+    cli: codex
+    preset: worker
+    role: 'Frontend worker. Implements client-side utilities.'
+    constraints:
+      timeoutMs: 180000
+
+  # Reviewer — dedicated review agent for gating
+  - name: reviewer
+    cli: claude
+    preset: reviewer
+    role: 'Quality reviewer. Reviews code for correctness, style, and edge cases.'
+    constraints:
+      model: sonnet
+      timeoutMs: 120000
+
+  # Agent with "hub" substring in name — must NOT be matched as hub-role
+  - name: github-bot
+    cli: claude
+    preset: worker
+    role: 'GitHub integration bot. Handles PR comments and status checks.'
+    constraints:
+      model: sonnet
+      timeoutMs: 120000
+
+workflows:
+  - name: multi-utility-build
+    description: |
+      Build two related utility functions in parallel, then integrate.
+      Tests: auto-owner, review gating, parallel execution, output chaining,
+      hub-role word-boundary matching (github-bot should NOT match as hub).
+    onError: continue
+    steps:
+      # ── Phase 1: Setup + Planning ──────────────────────────────────────
+      - name: setup
+        type: deterministic
+        command: |
+          WORKDIR=$(mktemp -d /tmp/relay-multi-e2e-XXXXXX)
+          mkdir -p "$WORKDIR/src" "$WORKDIR/tests"
+          echo "WORKDIR=$WORKDIR"
+          echo "Created project structure in $WORKDIR"
+        captureOutput: true
+        failOnError: true
+
+      # Lead creates the architecture plan
+      # Auto step owner should assign 'lead' here
+      - name: architecture
+        type: agent
+        agent: lead
+        dependsOn: [setup]
+        task: |
+          Context: {{steps.setup.output}}
+
+          Create an architecture plan for two small TypeScript utility modules:
+          1. `string-utils.ts` — functions: slugify(str), truncate(str, maxLen), capitalize(str)
+          2. `array-utils.ts` — functions: chunk(arr, size), unique(arr), flatten(arr)
+
+          For each module, specify:
+          - Function signatures with types
+          - Key implementation notes
+          - Edge cases to handle
+
+          Output a clear plan. End with: ARCHITECTURE_PLAN_DONE
+        verification:
+          type: output_contains
+          value: ARCHITECTURE_PLAN_DONE
+        timeoutMs: 180000
+
+      # ── Phase 2: Parallel Implementation ───────────────────────────────
+
+      # Worker A implements string-utils (claude)
+      - name: string-utils
+        type: agent
+        agent: worker-a
+        dependsOn: [architecture]
+        task: |
+          Context: {{steps.setup.output}}
+          Plan: {{steps.architecture.output}}
+
+          Implement `string-utils.ts` based on the architecture plan.
+          Write the file to the src/ directory in the working directory.
+          Include: slugify, truncate, capitalize functions.
+          Each function should handle edge cases (empty input, etc).
+
+          After writing the file, output: STRING_UTILS_DONE
+        verification:
+          type: output_contains
+          value: STRING_UTILS_DONE
+        timeoutMs: 180000
+
+      # Worker B implements array-utils (codex) — runs in parallel with string-utils
+      - name: array-utils
+        type: agent
+        agent: worker-b
+        dependsOn: [architecture]
+        task: |
+          Context: {{steps.setup.output}}
+          Plan: {{steps.architecture.output}}
+
+          Implement `array-utils.ts` based on the architecture plan.
+          Write the file to the src/ directory in the working directory.
+          Include: chunk, unique, flatten functions.
+          Each function should handle edge cases (empty arrays, etc).
+
+          After writing the file, output: ARRAY_UTILS_DONE
+        verification:
+          type: output_contains
+          value: ARRAY_UTILS_DONE
+        timeoutMs: 180000
+
+      # github-bot does a simple task — tests word-boundary matching
+      # This agent should NOT be auto-assigned as hub-role owner
+      - name: github-status
+        type: agent
+        agent: github-bot
+        dependsOn: [setup]
+        task: |
+          You are github-bot. List 3 common GitHub PR status check names.
+          Format as a bullet list. Then output: GITHUB_STATUS_DONE
+        verification:
+          type: output_contains
+          value: GITHUB_STATUS_DONE
+        timeoutMs: 120000
+
+      # ── Phase 3: Integration ───────────────────────────────────────────
+
+      # Lead integrates results from both workers
+      - name: integration
+        type: agent
+        agent: lead
+        dependsOn: [string-utils, array-utils]
+        task: |
+          Context: {{steps.setup.output}}
+
+          Both utility modules have been implemented:
+          - string-utils: {{steps.string-utils.output}}
+          - array-utils: {{steps.array-utils.output}}
+
+          Create an `index.ts` barrel file in the src/ directory that
+          re-exports all functions from both modules. Also create a brief
+          README.md in the working directory describing the utility library.
+
+          After creating both files, output: INTEGRATION_DONE
+        verification:
+          type: output_contains
+          value: INTEGRATION_DONE
+        timeoutMs: 180000
+
+      # ── Phase 4: Final Verification ────────────────────────────────────
+
+      - name: final-check
+        type: deterministic
+        dependsOn:
+          - architecture
+          - string-utils
+          - array-utils
+          - github-status
+          - integration
+        command: |
+          echo "=== Multi-Agent Owner/Review E2E Results ==="
+          echo ""
+          echo "Phase 1 — Architecture:"
+          echo "{{steps.architecture.output}}" | grep -q "ARCHITECTURE_PLAN_DONE" && echo "  PASS: architecture" || echo "  FAIL: architecture"
+          echo ""
+          echo "Phase 2 — Parallel Implementation:"
+          echo "{{steps.string-utils.output}}" | grep -q "STRING_UTILS_DONE" && echo "  PASS: string-utils (worker-a/claude)" || echo "  FAIL: string-utils"
+          echo "{{steps.array-utils.output}}" | grep -q "ARRAY_UTILS_DONE" && echo "  PASS: array-utils (worker-b/codex)" || echo "  FAIL: array-utils"
+          echo "{{steps.github-status.output}}" | grep -q "GITHUB_STATUS_DONE" && echo "  PASS: github-status (word-boundary test)" || echo "  FAIL: github-status"
+          echo ""
+          echo "Phase 3 — Integration:"
+          echo "{{steps.integration.output}}" | grep -q "INTEGRATION_DONE" && echo "  PASS: integration" || echo "  FAIL: integration"
+          echo ""
+          echo "MULTI_AGENT_TEST_COMPLETE"
+        captureOutput: true
+        failOnError: false
+
+coordination:
+  barriers:
+    - name: all-done
+      waitFor:
+        - architecture
+        - string-utils
+        - array-utils
+        - github-status
+        - integration
+      timeoutMs: 600000
+
+state:
+  backend: memory
+  ttlMs: 3600000
+  namespace: multi-agent-review
