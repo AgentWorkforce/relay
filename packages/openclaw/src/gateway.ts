@@ -1413,6 +1413,11 @@ export class InboundGateway {
     // 1. The WS object exists when onEvent() is called (no throw)
     // 2. Handlers are bound before the connection fully opens (no missed events)
     // 3. The SDK's double-connect guard (if ws exists, no-op) makes this safe
+    // connect() is synchronous: it creates the WS object and calls ws.connect().
+    // It does NOT return a Promise — async errors (network failures, disconnects)
+    // arrive via the 'error' and 'disconnected' event handlers bound below.
+    // We must bind handlers after connect() (so the WS object exists for onEvent())
+    // but before the connection fully opens (so no events are missed).
     try {
       this.relayAgentClient.connect();
     } catch (err) {
