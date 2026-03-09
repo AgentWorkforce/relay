@@ -74,7 +74,6 @@ pub(crate) fn normalize_cli_name(cli: &str) -> String {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DeliveryOutcome {
     Success,
-    #[allow(dead_code)]
     Failed,
 }
 

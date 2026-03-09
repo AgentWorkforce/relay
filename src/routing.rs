@@ -8,6 +8,7 @@ use crate::normalize_channel;
 pub(crate) struct RoutingWorker<'a> {
     pub(crate) name: &'a str,
     pub(crate) channels: &'a [String],
+    pub(crate) workspace_id: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,16 +55,30 @@ pub(crate) fn is_self_echo(
     true
 }
 
+/// Returns true if a worker is eligible to receive events from the given workspace.
+/// A worker with no workspace_id (legacy/SDK-spawned) matches all workspaces.
+/// A worker with a workspace_id only matches events from that same workspace.
+fn worker_matches_workspace(worker: &RoutingWorker<'_>, event_workspace_id: Option<&str>) -> bool {
+    match (worker.workspace_id, event_workspace_id) {
+        (Some(worker_ws), Some(event_ws)) => worker_ws == event_ws,
+        _ => true,
+    }
+}
+
 pub(crate) fn resolve_delivery_targets(
     event: &InboundRelayEvent,
     workers: &[RoutingWorker<'_>],
 ) -> DeliveryPlan {
+    let ws_id = Some(event.workspace_id.as_str());
+
     if event.target.starts_with('#') {
-        let targets = worker_names_for_channel_delivery(workers, &event.target, &event.from);
+        let targets =
+            worker_names_for_channel_delivery(workers, &event.target, &event.from, ws_id);
         tracing::debug!(
             target = "broker::routing",
             from = %event.from,
             channel = %event.target,
+            workspace_id = %event.workspace_id,
             recipients = ?targets,
             "resolved channel delivery"
         );
@@ -76,17 +91,22 @@ pub(crate) fn resolve_delivery_targets(
     }
 
     // Thread replies without a channel target are broadcast to all workers
-    // (except the sender). The WS only delivers thread.reply to channel
-    // subscribers so every local worker is a valid recipient.
+    // (except the sender) that belong to the same workspace. The WS only
+    // delivers thread.reply to channel subscribers so every matching local
+    // worker is a valid recipient.
     if matches!(event.kind, InboundKind::ThreadReply) && event.target == "thread" {
         let targets: Vec<String> = workers
             .iter()
-            .filter(|w| !w.name.eq_ignore_ascii_case(&event.from))
+            .filter(|w| {
+                !w.name.eq_ignore_ascii_case(&event.from)
+                    && worker_matches_workspace(w, ws_id)
+            })
             .map(|w| w.name.to_string())
             .collect();
         tracing::debug!(
             target = "broker::routing",
             from = %event.from,
+            workspace_id = %event.workspace_id,
             recipients = ?targets,
             "resolved thread reply broadcast"
         );
@@ -98,7 +118,8 @@ pub(crate) fn resolve_delivery_targets(
         };
     }
 
-    let direct_targets = worker_names_for_direct_target(workers, &event.target, &event.from);
+    let direct_targets =
+        worker_names_for_direct_target(workers, &event.target, &event.from, ws_id);
     let needs_dm_resolution = direct_targets.is_empty()
         && matches!(
             event.kind,
@@ -110,6 +131,7 @@ pub(crate) fn resolve_delivery_targets(
         from = %event.from,
         to = %event.target,
         kind = ?event.kind,
+        workspace_id = %event.workspace_id,
         recipients = ?direct_targets,
         needs_dm_resolution = needs_dm_resolution,
         "resolved direct/DM delivery"
@@ -127,12 +149,16 @@ pub(crate) fn worker_names_for_channel_delivery(
     workers: &[RoutingWorker<'_>],
     channel: &str,
     from: &str,
+    workspace_id: Option<&str>,
 ) -> Vec<String> {
     let normalized = normalize_channel(channel);
     workers
         .iter()
         .filter_map(|worker| {
             if worker.name.eq_ignore_ascii_case(from) {
+                return None;
+            }
+            if !worker_matches_workspace(worker, workspace_id) {
                 return None;
             }
             let joined: HashSet<String> = worker
@@ -153,12 +179,16 @@ pub(crate) fn worker_names_for_direct_target(
     workers: &[RoutingWorker<'_>],
     target: &str,
     from: &str,
+    workspace_id: Option<&str>,
 ) -> Vec<String> {
     let trimmed = target.trim();
     workers
         .iter()
         .filter_map(|worker| {
             if worker.name.eq_ignore_ascii_case(from) {
+                return None;
+            }
+            if !worker_matches_workspace(worker, workspace_id) {
                 return None;
             }
             if trimmed.eq_ignore_ascii_case(worker.name)
@@ -176,11 +206,15 @@ pub(crate) fn worker_names_for_dm_participants(
     workers: &[RoutingWorker<'_>],
     participants: &[String],
     from: &str,
+    workspace_id: Option<&str>,
 ) -> Vec<String> {
     workers
         .iter()
         .filter_map(|worker| {
             if worker.name.eq_ignore_ascii_case(from) {
+                return None;
+            }
+            if !worker_matches_workspace(worker, workspace_id) {
                 return None;
             }
             if participants
@@ -242,6 +276,7 @@ mod tests {
             .map(|worker| RoutingWorker {
                 name: &worker.name,
                 channels: &worker.channels,
+                workspace_id: None,
             })
             .collect()
     }
@@ -376,7 +411,7 @@ mod tests {
         let routing_workers = routing_workers(&workers);
         let participants = vec!["bravo".to_string(), "alpha".to_string()];
 
-        let targets = worker_names_for_dm_participants(&routing_workers, &participants, "ALPHA");
+        let targets = worker_names_for_dm_participants(&routing_workers, &participants, "ALPHA", None);
 
         assert_eq!(targets, vec!["Bravo".to_string()]);
     }
@@ -402,5 +437,69 @@ mod tests {
             display_target_for_dashboard("Lead", &self_names, "my-project"),
             "Lead".to_string()
         );
+    }
+
+    #[test]
+    fn channel_delivery_filters_by_workspace_id() {
+        let workers = vec![
+            WorkerFixture::new("Alpha", &["general"]),
+            WorkerFixture::new("Bravo", &["general"]),
+        ];
+        // Alpha belongs to ws_a, Bravo belongs to ws_b
+        let routing_workers: Vec<RoutingWorker<'_>> = vec![
+            RoutingWorker {
+                name: &workers[0].name,
+                channels: &workers[0].channels,
+                workspace_id: Some("ws_a"),
+            },
+            RoutingWorker {
+                name: &workers[1].name,
+                channels: &workers[1].channels,
+                workspace_id: Some("ws_b"),
+            },
+        ];
+
+        // Event from ws_a should only reach Alpha (but Alpha is the sender, so no targets)
+        let mut event = inbound_event(InboundKind::MessageCreated, "External", "#general");
+        event.workspace_id = "ws_a".to_string();
+        let plan = resolve_delivery_targets(&event, &routing_workers);
+        assert_eq!(plan.targets, vec!["Alpha".to_string()]);
+
+        // Event from ws_b should only reach Bravo
+        event.workspace_id = "ws_b".to_string();
+        let plan = resolve_delivery_targets(&event, &routing_workers);
+        assert_eq!(plan.targets, vec!["Bravo".to_string()]);
+    }
+
+    #[test]
+    fn legacy_workers_without_workspace_match_all() {
+        let workers = vec![
+            WorkerFixture::new("Alpha", &["general"]),
+            WorkerFixture::new("Bravo", &["general"]),
+        ];
+        // Alpha has no workspace (legacy), Bravo belongs to ws_b
+        let routing_workers: Vec<RoutingWorker<'_>> = vec![
+            RoutingWorker {
+                name: &workers[0].name,
+                channels: &workers[0].channels,
+                workspace_id: None,
+            },
+            RoutingWorker {
+                name: &workers[1].name,
+                channels: &workers[1].channels,
+                workspace_id: Some("ws_b"),
+            },
+        ];
+
+        // Event from ws_a: Alpha matches (no ws filter), Bravo doesn't (ws_b != ws_a)
+        let mut event = inbound_event(InboundKind::MessageCreated, "External", "#general");
+        event.workspace_id = "ws_a".to_string();
+        let plan = resolve_delivery_targets(&event, &routing_workers);
+        assert_eq!(plan.targets, vec!["Alpha".to_string()]);
+
+        // Event from ws_b: both match
+        event.workspace_id = "ws_b".to_string();
+        let plan = resolve_delivery_targets(&event, &routing_workers);
+        assert_eq!(plan.targets, vec!["Alpha".to_string(), "Bravo".to_string()]);
     }
 }

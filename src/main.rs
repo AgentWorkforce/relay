@@ -435,6 +435,7 @@ timestamp='{}'
 struct WorkerHandle {
     spec: AgentSpec,
     parent: Option<String>,
+    workspace_id: Option<String>,
     child: Child,
     stdin: ChildStdin,
     spawned_at: Instant,
@@ -715,6 +716,7 @@ impl WorkerRegistry {
         parent: Option<String>,
         idle_threshold_secs: Option<u64>,
         worker_relay_api_key: Option<String>,
+        workspace_id: Option<String>,
     ) -> Result<()> {
         if self.workers.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' already exists", spec.name);
@@ -884,6 +886,7 @@ impl WorkerRegistry {
         let handle = WorkerHandle {
             spec: spec.clone(),
             parent,
+            workspace_id,
             child,
             stdin,
             spawned_at: Instant::now(),
@@ -1086,18 +1089,29 @@ impl WorkerRegistry {
             .map(|(name, handle)| routing::RoutingWorker {
                 name,
                 channels: &handle.spec.channels,
+                workspace_id: handle.workspace_id.as_deref(),
             })
             .collect()
     }
 
-    fn worker_names_for_channel_delivery(&self, channel: &str, from: &str) -> Vec<String> {
+    fn worker_names_for_channel_delivery(
+        &self,
+        channel: &str,
+        from: &str,
+        workspace_id: Option<&str>,
+    ) -> Vec<String> {
         let workers = self.routing_workers();
-        routing::worker_names_for_channel_delivery(&workers, channel, from)
+        routing::worker_names_for_channel_delivery(&workers, channel, from, workspace_id)
     }
 
-    fn worker_names_for_direct_target(&self, target: &str, from: &str) -> Vec<String> {
+    fn worker_names_for_direct_target(
+        &self,
+        target: &str,
+        from: &str,
+        workspace_id: Option<&str>,
+    ) -> Vec<String> {
         let workers = self.routing_workers();
-        routing::worker_names_for_direct_target(&workers, target, from)
+        routing::worker_names_for_direct_target(&workers, target, from, workspace_id)
     }
 
     fn has_any_worker(&self) -> bool {
@@ -1617,6 +1631,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 Some("Dashboard".to_string()),
                                 None,
                                 worker_relay_key.clone(),
+                                None,
                             ).await {
                                 Ok(()) => {
                                     if let Some(ref task_text) = effective_task {
@@ -1820,9 +1835,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             );
 
                             let targets = if normalized_to.starts_with('#') {
-                                workers.worker_names_for_channel_delivery(&normalized_to, &delivery_from)
+                                workers.worker_names_for_channel_delivery(&normalized_to, &delivery_from, Some(&selected_workspace_id))
                             } else {
-                                workers.worker_names_for_direct_target(&normalized_to, &delivery_from)
+                                workers.worker_names_for_direct_target(&normalized_to, &delivery_from, Some(&selected_workspace_id))
                             };
 
                             tracing::info!(
@@ -2144,7 +2159,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 workers.metrics.on_release(&name);
                                 match workers.release(&name).await {
                                     Ok(()) => {
-                                        if let Err(error) = relaycast_http.mark_agent_offline(&name).await {
+                                        if let Err(error) = workspace_http.mark_agent_offline(&name).await {
                                             tracing::warn!(
                                                 worker = %name,
                                                 error = %error,
@@ -2174,7 +2189,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             json!({"kind":"agent_released","name":name}),
                                         ).await;
                                         publish_agent_state_transition(
-                                            &ws_control_tx,
+                                            &workspace_state.ws_control_tx,
                                             &name,
                                             "exited",
                                             Some("relaycast_release"),
@@ -2226,7 +2241,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
                                 // Pre-register with retry
                                 let worker_relay_key = match retry_agent_registration(
-                                    &relaycast_http, &name, Some(&cli),
+                                    &workspace_http, &name, Some(&cli),
                                 ).await {
                                     Ok(token) => Some(token),
                                     Err(RegRetryOutcome::RetryableExhausted(error)) => {
@@ -2248,6 +2263,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     Some("Relaycast".to_string()),
                                     None,
                                     worker_relay_key.clone(),
+                                    Some(workspace_id.clone()),
                                 ).await {
                                     Ok(()) => {
                                         if let Some(ref task_text) = effective_task {
@@ -2291,7 +2307,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             }),
                                         ).await;
                                         publish_agent_state_transition(
-                                            &ws_control_tx,
+                                            &workspace_state.ws_control_tx,
                                             &name,
                                             "spawned",
                                             Some("relaycast_spawn"),
@@ -2341,7 +2357,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         }
                         let has_local_target = if mapped.target.starts_with('#') {
                             !workers
-                                .worker_names_for_channel_delivery(&mapped.target, &mapped.from)
+                                .worker_names_for_channel_delivery(&mapped.target, &mapped.from, Some(&workspace_id))
                                 .is_empty()
                         } else if matches!(mapped.kind, InboundKind::ThreadReply) && mapped.target == "thread" {
                             // Thread replies target "thread" (synthetic), not a specific worker.
@@ -2434,6 +2450,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 &worker_view,
                                 &participants,
                                 &mapped.from,
+                                Some(&workspace_id),
                             );
                             tracing::info!(dm_targets = ?delivery_plan.targets, "DM participant-based routing targets");
                         }
@@ -3206,6 +3223,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 rst.parent.clone(),
                                 None,
                                 Some(worker_relay_key),
+                                None,
                             )
                             .await
                         {
@@ -3609,6 +3627,7 @@ async fn handle_sdk_frame(
                     None,
                     payload.idle_threshold_secs,
                     worker_relay_key.clone(),
+                    None,
                 )
                 .await?;
             if let Some(task) = effective_task.clone() {
