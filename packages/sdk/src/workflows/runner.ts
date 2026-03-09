@@ -2261,18 +2261,17 @@ export class WorkflowRunner {
     const ownerPriority = (def: AgentDefinition): number => {
       const roleLC = def.role?.toLowerCase() ?? '';
       const nameLC = def.name.toLowerCase();
-      if (/\blead\b/i.test(roleLC) || /\blead\b/i.test(nameLC)) return 6;
-      if (/\bcoordinator\b/i.test(roleLC) || /\bcoordinator\b/i.test(nameLC)) return 5;
-      if (/\bsupervisor\b/i.test(roleLC) || /\bsupervisor\b/i.test(nameLC)) return 4;
-      if (/\borchestrator\b/i.test(roleLC) || /\borchestrator\b/i.test(nameLC)) return 3;
-      if (/\bhub\b/i.test(roleLC) || /\bhub\b/i.test(nameLC)) return 2;
+      if (/\blead\b/.test(roleLC) || /\blead\b/.test(nameLC)) return 6;
+      if (/\bcoordinator\b/.test(roleLC) || /\bcoordinator\b/.test(nameLC)) return 5;
+      if (/\bsupervisor\b/.test(roleLC) || /\bsupervisor\b/.test(nameLC)) return 4;
+      if (/\borchestrator\b/.test(roleLC) || /\borchestrator\b/.test(nameLC)) return 3;
+      if (/\bhub\b/.test(roleLC) || /\bhub\b/.test(nameLC)) return 2;
       return ownerish(def) ? 1 : 0;
     };
     const dedicatedOwner = candidates
       .filter((d) => d.name !== specialistDef.name && ownerish(d))
       .sort((a, b) => ownerPriority(b) - ownerPriority(a) || a.name.localeCompare(b.name))[0];
     if (dedicatedOwner) return dedicatedOwner;
-    if (ownerish(specialistDef)) return specialistDef;
     return specialistDef;
   }
 
@@ -2304,9 +2303,10 @@ export class WorkflowRunner {
       .sort((a, b) => reviewerPriority(b) - reviewerPriority(a) || a.name.localeCompare(b.name))[0];
     if (dedicated) return dedicated;
 
-    const alternate = allDefs.find((d) => d.name !== ownerDef.name);
+    const alternate = allDefs.find((d) => d.name !== ownerDef.name && d.interactive !== false);
     if (alternate) return alternate;
 
+    // Self-review fallback — log a warning since owner reviewing itself is weak.
     return ownerDef;
   }
 
@@ -2716,7 +2716,7 @@ export class WorkflowRunner {
     const role = agentDef.role?.toLowerCase() ?? '';
     const nameLC = agentDef.name.toLowerCase();
     const isHub =
-      WorkflowRunner.HUB_ROLES.has(nameLC) || [...WorkflowRunner.HUB_ROLES].some((r) => role.includes(r));
+      WorkflowRunner.HUB_ROLES.has(nameLC) || [...WorkflowRunner.HUB_ROLES].some((r) => new RegExp(`\\b${r}\\b`).test(role));
     const pattern = this.currentConfig?.swarm.pattern;
     const isHubPattern = pattern && WorkflowRunner.HUB_PATTERNS.has(pattern);
     const delegationGuidance =
@@ -3075,7 +3075,7 @@ export class WorkflowRunner {
 
       if (
         WorkflowRunner.HUB_ROLES.has(nameLC) ||
-        [...WorkflowRunner.HUB_ROLES].some((r) => role.includes(r))
+        [...WorkflowRunner.HUB_ROLES].some((r) => new RegExp(`\\b${r}\\b`).test(role))
       ) {
         // Found a hub candidate — check if we have a live handle
         const handle = this.activeAgentHandles.get(agentDef.name);
