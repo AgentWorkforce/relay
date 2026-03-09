@@ -147,8 +147,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
         apiKey: '',
         clawName,
         skillDir: '',
-        message:
-          'OpenClaw not found. Please install OpenClaw first (expected ~/.openclaw/ directory).',
+        message: 'OpenClaw not found. Please install OpenClaw first (expected ~/.openclaw/ directory).',
       };
     }
   }
@@ -159,10 +158,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   // If all CLI calls fail, mutate the config JSON directly.
   let configMutated = false;
   {
-    const httpEndpointArgs = [
-      'config', 'set',
-      'gateway.http.endpoints.responses.enabled', 'true',
-    ];
+    const httpEndpointArgs = ['config', 'set', 'gateway.http.endpoints.responses.enabled', 'true'];
     const cliCandidates = ['openclaw', 'clawdbot', 'clawdbot-cli.sh'];
     let cliSuccess = false;
 
@@ -212,13 +208,17 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
 
       if (res.status === 409) {
         // Workspace already exists — look up its API key
-        const lookupRes = await fetch(`${baseUrl}/v1/workspaces/by-name/${encodeURIComponent(`${clawName}-workspace`)}`, {
-          headers: { 'Content-Type': 'application/json' },
-        });
+        const lookupRes = await fetch(
+          `${baseUrl}/v1/workspaces/by-name/${encodeURIComponent(`${clawName}-workspace`)}`,
+          {
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
         if (lookupRes.ok) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const lookupBody = (await lookupRes.json()) as any;
-          apiKey = lookupBody.apiKey ?? lookupBody.api_key ?? lookupBody.data?.apiKey ?? lookupBody.data?.api_key;
+          apiKey =
+            lookupBody.apiKey ?? lookupBody.api_key ?? lookupBody.data?.apiKey ?? lookupBody.data?.api_key;
         }
         if (!apiKey) {
           return {
@@ -241,7 +241,8 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
       } else {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const successBody = (await res.json()) as any;
-        apiKey = successBody.apiKey ?? successBody.api_key ?? successBody.data?.apiKey ?? successBody.data?.api_key;
+        apiKey =
+          successBody.apiKey ?? successBody.api_key ?? successBody.data?.apiKey ?? successBody.data?.api_key;
       }
 
       if (!apiKey) {
@@ -276,11 +277,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     await copyFile(skillSrc, join(skillDir, 'SKILL.md'));
   } else {
     // Write a minimal SKILL.md inline if the bundled one isn't found
-    await writeFile(
-      join(skillDir, 'SKILL.md'),
-      FALLBACK_SKILL_MD,
-      'utf-8',
-    );
+    await writeFile(join(skillDir, 'SKILL.md'), FALLBACK_SKILL_MD, 'utf-8');
   }
 
   // Extract gateway auth from config (if available). Auto-generate if missing.
@@ -308,7 +305,9 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
         detection.config = cfg;
         configMutated = true;
       } catch (writeErr) {
-        console.warn(`[setup] Could not write generated token to config file: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
+        console.warn(
+          `[setup] Could not write generated token to config file: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`
+        );
       }
     } else {
       console.warn('[setup] No config file available to persist generated token. Set manually:');
@@ -357,10 +356,9 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   let mcpConfigured = false;
   {
     const envArgs = [
-      '--env', `RELAY_API_KEY=${apiKey}`,
-      ...(baseUrl !== 'https://api.relaycast.dev'
-        ? ['--env', `RELAY_BASE_URL=${baseUrl}`]
-        : []),
+      '--env',
+      `RELAY_API_KEY=${apiKey}`,
+      ...(baseUrl !== 'https://api.relaycast.dev' ? ['--env', `RELAY_BASE_URL=${baseUrl}`] : []),
     ];
 
     let mcp: { cmd: string; prefix: string[] } | null = null;
@@ -376,27 +374,48 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     if (mcp) {
       try {
         // Register relaycast messaging MCP server
-        execFileSync(mcp.cmd, [
-          ...mcp.prefix,
-          'config', 'add', 'relaycast',
-          '--command', 'npx',
-          '--arg', '@relaycast/mcp',
-          ...envArgs,
-          '--scope', 'home',
-          '--description', 'Relaycast messaging MCP server',
-        ], { stdio: 'pipe' });
+        execFileSync(
+          mcp.cmd,
+          [
+            ...mcp.prefix,
+            'config',
+            'add',
+            'relaycast',
+            '--command',
+            'npx',
+            '--arg',
+            '@relaycast/mcp',
+            ...envArgs,
+            '--scope',
+            'home',
+            '--description',
+            'Relaycast messaging MCP server',
+          ],
+          { stdio: 'pipe' }
+        );
 
         // Register openclaw-spawner MCP server
-        execFileSync(mcp.cmd, [
-          ...mcp.prefix,
-          'config', 'add', 'openclaw-spawner',
-          '--command', 'npx',
-          '--arg', '@agent-relay/openclaw',
-          '--arg', 'mcp-server',
-          ...envArgs,
-          '--scope', 'home',
-          '--description', 'OpenClaw spawner MCP server',
-        ], { stdio: 'pipe' });
+        execFileSync(
+          mcp.cmd,
+          [
+            ...mcp.prefix,
+            'config',
+            'add',
+            'openclaw-spawner',
+            '--command',
+            'npx',
+            '--arg',
+            '@agent-relay/openclaw',
+            '--arg',
+            'mcp-server',
+            ...envArgs,
+            '--scope',
+            'home',
+            '--description',
+            'OpenClaw spawner MCP server',
+          ],
+          { stdio: 'pipe' }
+        );
 
         mcpConfigured = true;
 
@@ -414,25 +433,40 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
             // Reconfigure mcporter with the agent token so subsequent calls are authenticated
             try {
               execFileSync(mcp.cmd, [...mcp.prefix, 'config', 'remove', 'relaycast'], { stdio: 'pipe' });
-            } catch { /* may not exist */ }
+            } catch {
+              /* may not exist */
+            }
 
-            execFileSync(mcp.cmd, [
-              ...mcp.prefix,
-              'config', 'add', 'relaycast',
-              '--command', 'npx',
-              '--arg', '@relaycast/mcp',
-              ...envArgs,
-              '--env', `RELAY_AGENT_TOKEN=${agentToken}`,
-              '--scope', 'home',
-              '--description', 'Relaycast messaging MCP server',
-            ], { stdio: 'pipe' });
+            execFileSync(
+              mcp.cmd,
+              [
+                ...mcp.prefix,
+                'config',
+                'add',
+                'relaycast',
+                '--command',
+                'npx',
+                '--arg',
+                '@relaycast/mcp',
+                ...envArgs,
+                '--env',
+                `RELAY_AGENT_TOKEN=${agentToken}`,
+                '--scope',
+                'home',
+                '--description',
+                'Relaycast messaging MCP server',
+              ],
+              { stdio: 'pipe' }
+            );
 
             console.log(`Agent "${clawName}" registered with token.`);
           } else {
             console.warn('Agent registered but no token found in response.');
           }
         } catch (regErr) {
-          console.warn(`Agent registration failed (non-fatal): ${regErr instanceof Error ? regErr.message : String(regErr)}`);
+          console.warn(
+            `Agent registration failed (non-fatal): ${regErr instanceof Error ? regErr.message : String(regErr)}`
+          );
         }
       } catch (err) {
         console.warn(`mcporter configuration failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -454,7 +488,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   } else {
     try {
       const gatewayEnv: Record<string, string> = {
-        ...process.env as Record<string, string>,
+        ...(process.env as Record<string, string>),
         RELAY_API_KEY: apiKey,
         RELAY_CLAW_NAME: clawName,
         RELAY_BASE_URL: baseUrl,
@@ -479,7 +513,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
 
   const parts = [
     `Relaycast bridge installed at ${skillDir}`,
-    mcpConfigured ? 'MCP server configured in openclaw.json.' : '',
+    mcpConfigured ? 'MCP servers configured in mcporter (~/.mcporter/mcporter.json).' : '',
     `Claw name: ${clawName}`,
     `Channels: ${channels.join(', ')}`,
     gatewayStarted
