@@ -1414,15 +1414,7 @@ export class InboundGateway {
     // 2. Handlers are bound before the connection fully opens (no missed events)
     // 3. The SDK's double-connect guard (if ws exists, no-op) makes this safe
     try {
-      const maybePromise = this.relayAgentClient.connect();
-      if (maybePromise && typeof (maybePromise as Promise<void>).catch === 'function') {
-        (maybePromise as Promise<void>).catch((err: unknown) => {
-          console.warn(
-            `[gateway] Relaycast WS connect failed: ${err instanceof Error ? err.message : String(err)}`
-          );
-          void this.handleWsFailure('connect_failed');
-        });
-      }
+      this.relayAgentClient.connect();
     } catch (err) {
       console.warn(
         `[gateway] Relaycast WS connect failed: ${err instanceof Error ? err.message : String(err)}`
