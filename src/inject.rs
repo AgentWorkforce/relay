@@ -97,6 +97,8 @@ mod tests {
     async fn status_sequence_on_success() {
         let injector = Injector::new(2, 1, EventEmitter::new(false));
         let req = crate::types::InjectRequest {
+            workspace_id: "ws_test".into(),
+            workspace_alias: Some("test".into()),
             id: "1".into(),
             from: "alice".into(),
             target: "#general".into(),
@@ -120,6 +122,8 @@ mod tests {
     async fn retries_respect_config() {
         let injector = Injector::new(2, 1, EventEmitter::new(false));
         let req = crate::types::InjectRequest {
+            workspace_id: "ws_test".into(),
+            workspace_alias: Some("test".into()),
             id: "2".into(),
             from: "alice".into(),
             target: "#general".into(),

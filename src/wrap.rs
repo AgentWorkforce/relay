@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use crate::helpers::{
-    check_echo_in_output, floor_char_boundary, ActivityDetector, DeliveryOutcome, PendingActivity,
-    PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
-    ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+    check_echo_in_output, floor_char_boundary, format_injection_with_workspace, ActivityDetector,
+    DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
+    ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+    MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
 };
 
 // PTY auto-response constants (shared by wrap and pty workers)
@@ -22,6 +23,8 @@ const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
 pub(crate) struct PendingWrapInjection {
     pub(crate) from: String,
     pub(crate) event_id: String,
+    pub(crate) workspace_id: Option<String>,
+    pub(crate) workspace_alias: Option<String>,
     pub(crate) body: String,
     pub(crate) target: String,
     pub(crate) queued_at: Instant,
@@ -392,25 +395,38 @@ pub(crate) async fn run_wrap(
 
     let RelaySession {
         http_base,
-        relay_workspace_key,
-        self_name: _,
-        self_agent_id,
-        self_token: _,
-        self_names,
-        self_agent_ids,
+        default_workspace_id,
+        workspaces,
         mut ws_inbound_rx,
-        ws_control_tx,
     } = relay;
-
-    // Values for child agent env vars
-    let child_api_key = relay_workspace_key.clone();
+    let workspace_lookup: std::collections::HashMap<String, RelayWorkspace> = workspaces
+        .iter()
+        .cloned()
+        .map(|workspace| (workspace.workspace_id.clone(), workspace))
+        .collect();
+    let default_workspace = if let Some(default_workspace_id) = default_workspace_id.as_deref() {
+        workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == default_workspace_id)
+            .or_else(|| workspaces.first())
+    } else {
+        workspaces.first()
+    }
+    .cloned()
+    .context("no relay workspace available for wrap mode")?;
     let child_base_url = http_base.clone();
-
-    // HTTP client for pre-registering child agents before spawn.
-    // This ensures the child MCP server starts with a valid agent token
-    // (same as the main broker does for directly-spawned PTY agents).
-    let child_http =
-        RelaycastHttpClient::new(&http_base, &relay_workspace_key, &requested_name, "wrap");
+    let child_workspaces_json = serde_json::to_string(
+        &workspaces
+            .iter()
+            .map(|workspace| {
+                serde_json::json!({
+                    "workspace_id": workspace.workspace_id,
+                    "workspace_alias": workspace.workspace_alias,
+                    "api_key": workspace.relay_workspace_key,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )?;
 
     // Spawner for child agents
     let mut spawner = Spawner::new();
@@ -640,13 +656,29 @@ pub(crate) async fn run_wrap(
             // Relay messages from WS → intercept broker commands or queue for PTY injection
             ws_msg = ws_inbound_rx.recv() => {
                 if let Some(ws_msg) = ws_msg {
+                    let workspace_id = ws_msg.workspace_id.clone();
+                    let workspace_alias = ws_msg.workspace_alias.clone();
+                    let ws_value = ws_msg.value;
+                    let workspace_state = workspace_lookup
+                        .get(&workspace_id)
+                        .cloned()
+                        .unwrap_or_else(|| default_workspace.clone());
+                    let workspace_self_agent_id = workspace_state.self_agent_id.clone();
+                    let workspace_self_names = workspace_state.self_names.clone();
+                    let workspace_self_agent_ids = workspace_state.self_agent_ids.clone();
+                    let workspace_child_api_key = workspace_state.relay_workspace_key.clone();
+                    let workspace_child_http = workspace_state.http_client.clone();
                     // Check for command.invoked event first (spawn/release)
-                    if let Some(cmd_event) = map_ws_broker_command(&ws_msg) {
-                        if !command_targets_self(&cmd_event, &self_agent_id) {
+                    if let Some(cmd_event) = map_ws_broker_command(
+                        &ws_value,
+                        &workspace_id,
+                        workspace_alias.as_deref(),
+                    ) {
+                        if !command_targets_self(&cmd_event, &workspace_self_agent_id) {
                             tracing::debug!(
                                 command = %cmd_event.command,
                                 handler_agent_id = ?cmd_event.handler_agent_id,
-                                self_agent_id = %self_agent_id,
+                                self_agent_id = %workspace_self_agent_id,
                                 "ignoring command event for a different handler"
                             );
                             continue;
@@ -659,16 +691,18 @@ pub(crate) async fn run_wrap(
                                 }
                                 let env_vars = spawn_env_vars(
                                     &params.name,
-                                    &child_api_key,
+                                    &workspace_child_api_key,
                                     &child_base_url,
                                     &channels,
+                                    Some(&child_workspaces_json),
+                                    default_workspace_id.as_deref(),
                                 );
                                 // Pre-register the child agent so its MCP server
                                 // starts with a valid token (avoiding "Not registered"
                                 // errors when non-claude CLIs like codex try to use
                                 // relay tools before calling register() themselves).
                                 let child_token = match retry_agent_registration(
-                                    &child_http,
+                                    &workspace_child_http,
                                     &params.name,
                                     Some(&params.cli),
                                 ).await {
@@ -777,16 +811,21 @@ pub(crate) async fn run_wrap(
                     }
 
                     // Regular relay message: map and queue for PTY injection
-                    if let Some(mapped) = map_ws_event(&ws_msg) {
-                        if !dedup.insert_if_new(&mapped.event_id, Instant::now()) {
-                            tracing::debug!("dedup: skipping {}", mapped.event_id);
+                    if let Some(mapped) = map_ws_event(
+                        &ws_value,
+                        &workspace_id,
+                        workspace_alias.as_deref(),
+                    ) {
+                        let dedup_key = format!("{}:{}", mapped.workspace_id, mapped.event_id);
+                        if !dedup.insert_if_new(&dedup_key, Instant::now()) {
+                            tracing::debug!(event_id = %mapped.event_id, workspace_id = %mapped.workspace_id, "dedup: skipping relay event");
                             continue;
                         }
-                        if self_names.contains(&mapped.from)
+                        if workspace_self_names.contains(&mapped.from)
                             || mapped
                                 .sender_agent_id
                                 .as_ref()
-                                .is_some_and(|id| self_agent_ids.contains(id))
+                                .is_some_and(|id| workspace_self_agent_ids.contains(id))
                         {
                             tracing::debug!(
                                 from = %mapped.from,
@@ -806,6 +845,8 @@ pub(crate) async fn run_wrap(
                         pending_wrap_injections.push_back(PendingWrapInjection {
                             from: mapped.from,
                             event_id: mapped.event_id,
+                            workspace_id: Some(mapped.workspace_id),
+                            workspace_alias: mapped.workspace_alias,
                             body: mapped.text,
                             target: mapped.target,
                             queued_at: Instant::now(),
@@ -813,7 +854,7 @@ pub(crate) async fn run_wrap(
                     } else {
                         tracing::debug!(
                             "ws event not mapped: {}",
-                            serde_json::to_string(&ws_msg).unwrap_or_default()
+                            serde_json::to_string(&ws_value).unwrap_or_default()
                         );
                     }
                 }
@@ -842,11 +883,13 @@ pub(crate) async fn run_wrap(
                         pty_auto.auto_suggestion_visible = false;
                     }
                     tracing::debug!("relay from {} → {}", pending.from, pending.target);
-                    let injection = format_injection(
+                    let injection = format_injection_with_workspace(
                         &pending.from,
                         &pending.event_id,
                         &pending.body,
                         &pending.target,
+                        pending.workspace_id.as_deref(),
+                        pending.workspace_alias.as_deref(),
                     );
                     if let Err(e) = pty.write_all(injection.as_bytes()) {
                         tracing::warn!(
@@ -857,6 +900,8 @@ pub(crate) async fn run_wrap(
                         pending_wrap_injections.push_front(PendingWrapInjection {
                             from: pending.from,
                             event_id: pending.event_id,
+                            workspace_id: pending.workspace_id,
+                            workspace_alias: pending.workspace_alias,
                             body: pending.body,
                             target: pending.target,
                             queued_at: pending.queued_at,
@@ -885,6 +930,8 @@ pub(crate) async fn run_wrap(
                         attempts: 1,
                         max_attempts: MAX_VERIFICATION_ATTEMPTS,
                         request_id: None,
+                        workspace_id: pending.workspace_id,
+                        workspace_alias: pending.workspace_alias,
                         from: pending.from,
                         body: pending.body,
                         target: pending.target,
@@ -935,23 +982,31 @@ pub(crate) async fn run_wrap(
                 // Re-inject retries
                 for mut pv in retry_queue {
                     tokio::time::sleep(throttle.delay()).await;
-                    let injection = format_injection(&pv.from, &pv.event_id, &pv.body, &pv.target);
-                if let Err(e) = pty.write_all(injection.as_bytes()) {
-                    tracing::warn!(
-                        event_id = %pv.event_id,
-                        error = %e,
-                        "wrap: retry PTY injection write failed"
-                        );
-                } else {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    let _ = pty.write_all(b"\r");
-                    tracing::debug!(
-                        delivery_id = %pv.delivery_id,
-                        event_id = %pv.event_id,
-                        "wrap: delivery re-injected (retry)"
+                    let injection = format_injection_with_workspace(
+                        &pv.from,
+                        &pv.event_id,
+                        &pv.body,
+                        &pv.target,
+                        pv.workspace_id.as_deref(),
+                        pv.workspace_alias.as_deref(),
                     );
-                }
-                pv.expected_echo = injection;
+                    if let Err(error) = pty.write_all(injection.as_bytes()) {
+                        tracing::warn!(
+                            event_id = %pv.event_id,
+                            error = %error,
+                            "wrap: retry PTY injection write failed"
+                        );
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        let _ = pty.write_all(b"
+        ");
+                        tracing::debug!(
+                            delivery_id = %pv.delivery_id,
+                            event_id = %pv.event_id,
+                            "wrap: delivery re-injected (retry)"
+                        );
+                    }
+                    pv.expected_echo = injection;
                     pv.injected_at = Instant::now();
                     pending_verifications.push_back(pv);
                 }
@@ -998,8 +1053,14 @@ pub(crate) async fn run_wrap(
     // Terminate all child agents
     spawner.shutdown_all(Duration::from_secs(2)).await;
 
-    if let Err(e) = ws_control_tx.send(WsControl::Shutdown).await {
-        tracing::warn!(error = %e, "failed to send WS shutdown in wrap cleanup");
+    for workspace in &workspaces {
+        if let Err(error) = workspace.ws_control_tx.send(WsControl::Shutdown).await {
+            tracing::warn!(
+                workspace_id = %workspace.workspace_id,
+                error = %error,
+                "failed to send WS shutdown in wrap cleanup"
+            );
+        }
     }
 
     // Restore terminal
