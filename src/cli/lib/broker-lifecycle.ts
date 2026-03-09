@@ -1,5 +1,4 @@
 import path from 'node:path';
-import net from 'node:net';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
 
@@ -46,34 +45,26 @@ function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function parseApiPortFromLog(line: string): number | null {
-  const match = line.match(/failed to bind API on port (\d+)/i);
-  if (!match?.[1]) {
-    return null;
-  }
-  const parsed = Number.parseInt(match[1], 10);
-  return Number.isNaN(parsed) ? null : parsed;
-}
-
-function isAddressInUseError(message: string): boolean {
-  return /Address already in use/i.test(message) || /EADDRINUSE/i.test(message);
-}
-
-function isApiPortBindingError(
-  message: string,
-  attemptedApiPort: number,
-  detectedApiPort: number | null
-): boolean {
-  if (detectedApiPort === attemptedApiPort) {
-    return true;
+async function resolveApiPortWithFallback(
+  startApiPort: number,
+  maxAttempts: number,
+  deps: CoreDependencies
+): Promise<number> {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const candidatePort = startApiPort + attempt;
+    if (candidatePort > MAX_PORT) {
+      break;
+    }
+    const inUse = await deps.isPortInUse(candidatePort);
+    if (!inUse) {
+      if (attempt > 0) {
+        deps.warn(`API port ${startApiPort} is already in use; trying ${candidatePort}`);
+      }
+      return candidatePort;
+    }
   }
 
-  const extracted = parseApiPortFromLog(message);
-  if (extracted !== null) {
-    return extracted === attemptedApiPort;
-  }
-
-  return isAddressInUseError(message);
+  throw new Error(`Failed to find an available API port near ${startApiPort}.`);
 }
 
 async function startBrokerWithPortFallback(
@@ -83,97 +74,23 @@ async function startBrokerWithPortFallback(
   deps: CoreDependencies,
   verbose: boolean
 ): Promise<{ relay: CoreRelay; apiPort: number }> {
+  // Resolve a free API port BEFORE spawning the broker.  This avoids
+  // spawning (and flocking) multiple --persist brokers during retry,
+  // which caused stale-flock "already running" errors.
   const startApiPort = wantsDashboard ? dashboardPort + 1 : 0;
-  let apiPort = startApiPort;
-  let relay: CoreRelay | null = null;
-  let flockRetries = 0;
-  const MAX_FLOCK_RETRIES = 3;
+  const apiPort = wantsDashboard
+    ? await resolveApiPortWithFallback(startApiPort, MAX_API_PORT_ATTEMPTS, deps)
+    : startApiPort;
 
-  const attempts = wantsDashboard ? Math.max(1, MAX_API_PORT_ATTEMPTS) : 1;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const currentApiPort = startApiPort + attempt;
-    let detectedBindPort: number | null = null;
-    const candidate = deps.createRelay(paths.projectRoot, currentApiPort);
-    candidate.onBrokerStderr?.((line: string) => {
-      const parsedPort = parseApiPortFromLog(line);
-      if (parsedPort !== null) {
-        detectedBindPort = parsedPort;
-      }
-      if (verbose) {
-        deps.error(`[broker] ${line}`);
-      }
-    });
-
-    try {
-      await candidate.getStatus();
-      relay = candidate;
-      break;
-    } catch (error: unknown) {
-      await candidate.shutdown().catch(() => undefined);
-      // Clean up lock and PID files left by the failed broker attempt so
-      // the next retry gets a fresh flock instead of hitting "already running".
-      // The Rust broker acquires a flock on broker-<name>.lock and writes
-      // broker-<name>.pid; if the process exits but the OS hasn't fully
-      // released the flock yet, the next spawn will fail on the stale lock.
-      const brokerName = path.basename(paths.projectRoot) || 'project';
-      const safeName = sanitizeBrokerName(brokerName);
-      safeUnlink(path.join(paths.dataDir, `broker-${safeName}.lock`), deps);
-      safeUnlink(path.join(paths.dataDir, `broker-${safeName}.pid`), deps);
-      // Brief delay to ensure OS-level cleanup (process table, flock release)
-      // is complete before the next attempt.
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const message = toErrorMessage(error);
-      const isStaleFlockError = isBrokerAlreadyRunningError(message);
-
-      if (isStaleFlockError && flockRetries < MAX_FLOCK_RETRIES) {
-        // Flock conflict from a previous attempt — retry the same port
-        // since the port itself wasn't the problem.
-        flockRetries += 1;
-        attempt -= 1; // stay on the same port
-        deps.warn('Broker lock conflict detected (stale lock from previous attempt); retrying...');
-        continue;
-      }
-
-      const shouldRetryApiPort =
-        wantsDashboard &&
-        currentApiPort > 0 &&
-        currentApiPort < MAX_PORT &&
-        attempt + 1 < attempts &&
-        isApiPortBindingError(message, currentApiPort, detectedBindPort);
-
-      if (!shouldRetryApiPort) {
-        throw error;
-      }
-
-      apiPort = currentApiPort + 1;
-      deps.warn(`API port ${currentApiPort} is already in use; trying ${apiPort}`);
+  const candidate = deps.createRelay(paths.projectRoot, apiPort);
+  candidate.onBrokerStderr?.((line: string) => {
+    if (verbose) {
+      deps.error(`[broker] ${line}`);
     }
-  }
-
-  if (!relay) {
-    throw new Error('Failed to start broker on an available API port.');
-  }
-
-  return { relay, apiPort };
-}
-
-function isPortInUse(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once('error', (error: NodeJS.ErrnoException) => {
-      if (error.code === 'EADDRINUSE' || error.code === 'EACCES') {
-        resolve(true);
-        return;
-      }
-      resolve(false);
-    });
-    server.once('listening', () => {
-      server.close(() => {
-        resolve(false);
-      });
-    });
-    server.listen(port);
   });
+
+  await candidate.getStatus();
+  return { relay: candidate, apiPort };
 }
 
 async function resolveDashboardPortWithFallback(
@@ -183,7 +100,7 @@ async function resolveDashboardPortWithFallback(
 ): Promise<number> {
   for (let attempt = 0; attempt < dashboardPortCandidates; attempt += 1) {
     const candidatePort = dashboardPort + attempt;
-    const inUse = await isPortInUse(candidatePort);
+    const inUse = await deps.isPortInUse(candidatePort);
     if (!inUse) {
       if (attempt > 0) {
         deps.warn(`Dashboard port ${dashboardPort} is already in use; trying ${candidatePort}`);
