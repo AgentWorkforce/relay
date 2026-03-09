@@ -13,7 +13,11 @@ use crate::types::{
 /// Map a Relaycast ServerEvent (received over WebSocket) to an InboundRelayEvent.
 ///
 /// Supports both current top-level events and older payload-wrapped events.
-pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
+pub fn map_ws_event(
+    value: &Value,
+    workspace_id: &str,
+    workspace_alias: Option<&str>,
+) -> Option<InboundRelayEvent> {
     let accessor = EventAccessor::new(value);
     let event_type = match accessor
         .field(EventNesting::Top, "type")
@@ -80,6 +84,8 @@ pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
         let event_id = format!("presence-{event_type}-{from}");
         return Some(InboundRelayEvent {
             event_id,
+            workspace_id: workspace_id.to_string(),
+            workspace_alias: workspace_alias.map(str::to_string),
             kind,
             from,
             sender_agent_id: None,
@@ -125,6 +131,8 @@ pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
         );
         return Some(InboundRelayEvent {
             event_id,
+            workspace_id: workspace_id.to_string(),
+            workspace_alias: workspace_alias.map(str::to_string),
             kind,
             from,
             sender_agent_id: None,
@@ -164,6 +172,8 @@ pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
 
     Some(InboundRelayEvent {
         event_id,
+        workspace_id: workspace_id.to_string(),
+        workspace_alias: workspace_alias.map(str::to_string),
         kind,
         from,
         sender_agent_id,
@@ -179,7 +189,11 @@ pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
 ///
 /// Relaycast emits these when an agent invokes a registered slash command
 /// (e.g. `/spawn`, `/release`). The `parameters` field carries structured data.
-pub fn map_ws_broker_command(value: &Value) -> Option<BrokerCommandEvent> {
+pub fn map_ws_broker_command(
+    value: &Value,
+    workspace_id: &str,
+    workspace_alias: Option<&str>,
+) -> Option<BrokerCommandEvent> {
     let event_type = value.get("type")?.as_str()?;
     if event_type != "command.invoked" {
         return None;
@@ -219,6 +233,8 @@ pub fn map_ws_broker_command(value: &Value) -> Option<BrokerCommandEvent> {
 
     Some(BrokerCommandEvent {
         command: command.to_string(),
+        workspace_id: workspace_id.to_string(),
+        workspace_alias: workspace_alias.map(str::to_string),
         channel,
         invoked_by,
         handler_agent_id,
@@ -742,6 +758,8 @@ pub fn to_inject_request(event: InboundRelayEvent) -> Option<InjectRequest> {
 
     Some(InjectRequest {
         id: event.event_id,
+        workspace_id: event.workspace_id,
+        workspace_alias: event.workspace_alias,
         from: event.from,
         target: event.target,
         body: event.text,
@@ -756,10 +774,15 @@ mod tests {
 
     use crate::types::InboundKind;
 
-    use super::{
-        map_ws_broker_command, map_ws_event, to_inject_request, EventAccessor, EventNesting,
-    };
+    use super::{to_inject_request, EventAccessor, EventNesting};
 
+    fn map_event(value: &Value) -> Option<crate::types::InboundRelayEvent> {
+        super::map_ws_event(value, "ws_test", Some("test"))
+    }
+
+    fn map_command(value: &Value) -> Option<crate::types::BrokerCommandEvent> {
+        super::map_ws_broker_command(value, "ws_test", Some("test"))
+    }
     fn accessor_fixture() -> Value {
         json!({
             "event_id": "evt_top",
@@ -833,7 +856,7 @@ mod tests {
 
     #[test]
     fn maps_message_created_top_level() {
-        let event = map_ws_event(&json!({
+        let event = map_event(&json!({
             "type": "message.created",
             "channel": "general",
             "message": {
@@ -875,7 +898,7 @@ mod tests {
                 .and_then(Value::as_str)
                 .expect("identity normalization case must include normalized");
 
-            let event = map_ws_event(&json!({
+            let event = map_event(&json!({
                 "type": "message.created",
                 "channel": "general",
                 "message": {
@@ -898,7 +921,7 @@ mod tests {
 
     #[test]
     fn maps_dm_received_top_level() {
-        let event = map_ws_event(&json!({
+        let event = map_event(&json!({
             "type": "dm.received",
             "conversation_id": "conv_1",
             "message": {
@@ -918,7 +941,7 @@ mod tests {
 
     #[test]
     fn maps_message_created_conversation_shape_as_dm_received() {
-        let event = map_ws_event(&json!({
+        let event = map_event(&json!({
             "type": "message.created",
             "conversation_id": "conv_9",
             "message": {
@@ -941,7 +964,7 @@ mod tests {
 
     #[test]
     fn dm_target_prefers_explicit_recipient_over_conversation_id() {
-        let event = map_ws_event(&json!({
+        let event = map_event(&json!({
             "type": "dm.received",
             "conversation_id": "conv_1",
             "target": "Lead",
@@ -959,7 +982,7 @@ mod tests {
 
     #[test]
     fn maps_thread_reply_top_level() {
-        let event = map_ws_event(&json!({
+        let event = map_event(&json!({
             "type": "thread.reply",
             "parent_id": "msg_parent",
             "message": {
@@ -978,7 +1001,7 @@ mod tests {
 
     #[test]
     fn maps_thread_reply_with_channel() {
-        let event = map_ws_event(&json!({
+        let event = map_event(&json!({
             "type": "thread.reply",
             "channel": "general",
             "parent_id": "msg_parent",
@@ -998,7 +1021,7 @@ mod tests {
 
     #[test]
     fn maps_group_dm_top_level() {
-        let event = map_ws_event(&json!({
+        let event = map_event(&json!({
             "type": "group_dm.received",
             "conversation_id": "conv_group",
             "message": {
@@ -1015,7 +1038,7 @@ mod tests {
 
     #[test]
     fn maps_presence_top_level() {
-        let event = map_ws_event(&json!({
+        let event = map_event(&json!({
             "type": "agent.online",
             "agent": { "name": "alice" }
         }))
@@ -1029,7 +1052,7 @@ mod tests {
 
     #[test]
     fn maps_payload_wrapped_shape() {
-        let event = map_ws_event(&json!({
+        let event = map_event(&json!({
             "type": "message.received",
             "payload": {
                 "id": "evt-7",
@@ -1052,7 +1075,7 @@ mod tests {
 
     #[test]
     fn sender_kind_from_nested_sender_object_payload() {
-        let event = map_ws_event(&json!({
+        let event = map_event(&json!({
             "type": "dm.received",
             "payload": {
                 "event_id": "d3",
@@ -1072,7 +1095,7 @@ mod tests {
 
     #[test]
     fn maps_reaction_added() {
-        let event = map_ws_event(&json!({
+        let event = map_event(&json!({
             "type": "reaction.added",
             "message_id": "msg_42",
             "emoji": "thumbsup",
@@ -1093,7 +1116,7 @@ mod tests {
 
     #[test]
     fn maps_reaction_removed() {
-        let event = map_ws_event(&json!({
+        let event = map_event(&json!({
             "type": "reaction.removed",
             "message_id": "msg_42",
             "emoji": "thumbsup",
@@ -1111,7 +1134,7 @@ mod tests {
     fn drops_reaction_without_channel() {
         // Reactions without a channel (e.g. DM reactions) are dropped from PTY
         // injection — they're surfaced via the inbox API / piggyback instead.
-        assert!(map_ws_event(&json!({
+        assert!(map_event(&json!({
             "type": "reaction.added",
             "message_id": "msg_99",
             "emoji": "rocket",
@@ -1122,16 +1145,16 @@ mod tests {
 
     #[test]
     fn ignores_unsupported_events_safely() {
-        assert!(map_ws_event(&json!({"type":"unknown"})).is_none());
-        assert!(map_ws_event(&json!({"type":"channel.created","channel":{"name":"x"}})).is_none());
-        assert!(map_ws_event(&json!({"type":"connected","client_id":"abc"})).is_none());
+        assert!(map_event(&json!({"type":"unknown"})).is_none());
+        assert!(map_event(&json!({"type":"channel.created","channel":{"name":"x"}})).is_none());
+        assert!(map_event(&json!({"type":"connected","client_id":"abc"})).is_none());
     }
 
     #[test]
     fn ignores_malformed_events() {
-        assert!(map_ws_event(&json!({"type":"message.created","channel":"general"})).is_none());
+        assert!(map_event(&json!({"type":"message.created","channel":"general"})).is_none());
 
-        let mapped = map_ws_event(&json!({
+        let mapped = map_event(&json!({
             "type":"message.created",
             "channel":"general",
             "message": {"agent_name":"alice","text":"hello"}
@@ -1145,7 +1168,7 @@ mod tests {
 
     #[test]
     fn maps_command_invoked_spawn() {
-        let cmd = map_ws_broker_command(&json!({
+        let cmd = map_command(&json!({
             "type": "command.invoked",
             "command": "/spawn",
             "channel": "general",
@@ -1175,7 +1198,7 @@ mod tests {
 
     #[test]
     fn maps_command_invoked_release() {
-        let cmd = map_ws_broker_command(&json!({
+        let cmd = map_command(&json!({
             "type": "command.invoked",
             "command": "/release",
             "channel": "general",
@@ -1197,7 +1220,7 @@ mod tests {
 
     #[test]
     fn maps_command_invoked_spawn_with_suffix() {
-        let cmd = map_ws_broker_command(&json!({
+        let cmd = map_command(&json!({
             "type": "command.invoked",
             "command": "/spawn-19c4c7f8150",
             "channel": "general",
@@ -1222,7 +1245,7 @@ mod tests {
 
     #[test]
     fn maps_command_invoked_release_with_suffix() {
-        let cmd = map_ws_broker_command(&json!({
+        let cmd = map_command(&json!({
             "type": "command.invoked",
             "command": "/release-19c4c7f8150",
             "channel": "general",
@@ -1243,7 +1266,7 @@ mod tests {
 
     #[test]
     fn maps_command_invoked_handler_agent_id() {
-        let cmd = map_ws_broker_command(&json!({
+        let cmd = map_command(&json!({
             "type": "command.invoked",
             "command": "/spawn",
             "channel": "general",
@@ -1261,7 +1284,7 @@ mod tests {
 
     #[test]
     fn command_invoked_ignores_non_command_types() {
-        assert!(map_ws_broker_command(&json!({
+        assert!(map_command(&json!({
             "type": "dm.received",
             "command": "/spawn",
             "channel": "general",
@@ -1273,7 +1296,7 @@ mod tests {
 
     #[test]
     fn command_invoked_ignores_similar_command_without_delimiter() {
-        assert!(map_ws_broker_command(&json!({
+        assert!(map_command(&json!({
             "type": "command.invoked",
             "command": "/spawnx",
             "channel": "general",
@@ -1285,7 +1308,7 @@ mod tests {
 
     #[test]
     fn command_invoked_ignores_unknown_commands() {
-        assert!(map_ws_broker_command(&json!({
+        assert!(map_command(&json!({
             "type": "command.invoked",
             "command": "/unknown",
             "channel": "general",
@@ -1297,7 +1320,7 @@ mod tests {
 
     #[test]
     fn command_invoked_ignores_missing_parameters() {
-        assert!(map_ws_broker_command(&json!({
+        assert!(map_command(&json!({
             "type": "command.invoked",
             "command": "/spawn",
             "channel": "general",
@@ -1307,8 +1330,8 @@ mod tests {
     }
 
     #[test]
-    fn command_invoked_not_picked_up_by_map_ws_event() {
-        assert!(map_ws_event(&json!({
+    fn command_invoked_not_picked_up_by_map_event() {
+        assert!(map_event(&json!({
             "type": "command.invoked",
             "command": "/spawn",
             "channel": "general",

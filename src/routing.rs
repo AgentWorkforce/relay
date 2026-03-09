@@ -12,6 +12,7 @@ pub(crate) struct RoutingWorker<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeliveryPlan {
+    pub(crate) workspace_id: String,
     pub(crate) targets: Vec<String>,
     pub(crate) display_target: String,
     pub(crate) needs_dm_resolution: bool,
@@ -67,6 +68,7 @@ pub(crate) fn resolve_delivery_targets(
             "resolved channel delivery"
         );
         return DeliveryPlan {
+            workspace_id: event.workspace_id.clone(),
             targets,
             display_target: event.target.clone(),
             needs_dm_resolution: false,
@@ -89,6 +91,7 @@ pub(crate) fn resolve_delivery_targets(
             "resolved thread reply broadcast"
         );
         return DeliveryPlan {
+            workspace_id: event.workspace_id.clone(),
             targets,
             display_target: "thread".to_string(),
             needs_dm_resolution: false,
@@ -113,6 +116,7 @@ pub(crate) fn resolve_delivery_targets(
     );
 
     DeliveryPlan {
+        workspace_id: event.workspace_id.clone(),
         targets: direct_targets,
         display_target: event.target.clone(),
         needs_dm_resolution,
@@ -251,6 +255,8 @@ mod tests {
 
         InboundRelayEvent {
             event_id: "evt_1".to_string(),
+            workspace_id: "ws_test".to_string(),
+            workspace_alias: Some("test".to_string()),
             kind,
             from: from.to_string(),
             sender_agent_id: None,
