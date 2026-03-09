@@ -75,7 +75,7 @@ function createHarness(options?: {
   const projectRoot = '/tmp/project';
   const dataDir = '/tmp/project/.agent-relay';
   const relaySockPath = '/tmp/project/.agent-relay/relay.sock';
-  const brokerPidPath = '/tmp/project/.agent-relay/broker.pid';
+  const brokerPidPath = '/tmp/project/.agent-relay/broker-project.pid';
   const runtimePath = '/tmp/project/.agent-relay/runtime.json';
 
   const fs = options?.fs ?? createFsMock();
@@ -212,7 +212,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('up exits early when broker pid file points to a running process', async () => {
-    const brokerPidPath = '/tmp/project/.agent-relay/broker.pid';
+    const brokerPidPath = '/tmp/project/.agent-relay/broker-project.pid';
     const fs = createFsMock({ [brokerPidPath]: '3030' });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (pid === 3030 && signal === 0) {
@@ -483,7 +483,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('down stops broker and cleans stale files', async () => {
-    const brokerPidPath = '/tmp/project/.agent-relay/broker.pid';
+    const brokerPidPath = '/tmp/project/.agent-relay/broker-project.pid';
     const relaySockPath = '/tmp/project/.agent-relay/relay.sock';
     const runtimePath = '/tmp/project/.agent-relay/runtime.json';
 
@@ -529,7 +529,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('status checks broker status and prints metrics', async () => {
-    const brokerPidPath = '/tmp/project/.agent-relay/broker.pid';
+    const brokerPidPath = '/tmp/project/.agent-relay/broker-project.pid';
     const fs = createFsMock({ [brokerPidPath]: '4242' });
     const relay = createRelayMock({
       getStatus: vi.fn(async () => ({ agent_count: 4, pending_delivery_count: 2 })),
@@ -546,7 +546,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('status cleans stale pid file when broker is not running', async () => {
-    const brokerPidPath = '/tmp/project/.agent-relay/broker.pid';
+    const brokerPidPath = '/tmp/project/.agent-relay/broker-project.pid';
     const fs = createFsMock({ [brokerPidPath]: '9999' });
     const killImpl = vi.fn(() => {
       const err = new Error('gone') as Error & { code?: string };

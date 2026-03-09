@@ -23,6 +23,16 @@ const MAX_API_PORT_ATTEMPTS = 25;
 const MAX_DASHBOARD_PORT_ATTEMPTS = 25;
 const MAX_PORT = 65535;
 
+/**
+ * Derive the broker-name-specific PID filename, matching the Rust broker's
+ * per-broker-name convention (`broker-{safe_name}.pid`).
+ */
+function brokerPidFilename(projectRoot: string): string {
+  const brokerName = path.basename(projectRoot) || 'project';
+  const safeName = brokerName.replace(/[^a-zA-Z0-9-]/g, '-');
+  return `broker-${safeName}.pid`;
+}
+
 function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -267,16 +277,23 @@ async function waitForProcessExit(pid: number, timeoutMs: number, deps: CoreDepe
 }
 
 function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): void {
-  const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  const brokerPidPath = path.join(paths.dataDir, brokerPidFilename(paths.projectRoot));
+  const legacyBrokerPidPath = path.join(paths.dataDir, 'broker.pid');
   const runtimePath = path.join(paths.dataDir, 'runtime.json');
   const relaySockPath = path.join(paths.dataDir, 'relay.sock');
 
   safeUnlink(brokerPidPath, deps);
+  safeUnlink(legacyBrokerPidPath, deps);
   safeUnlink(relaySockPath, deps);
   safeUnlink(runtimePath, deps);
 
+  // Clean up per-broker-name lock and pid files
   try {
     for (const file of deps.fs.readdirSync(paths.dataDir)) {
+      if (file.startsWith('broker-') && (file.endsWith('.lock') || file.endsWith('.pid'))) {
+        safeUnlink(path.join(paths.dataDir, file), deps);
+        continue;
+      }
       if (!file.startsWith('mcp-identity-')) {
         continue;
       }
@@ -747,7 +764,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   }
 
   const paths = deps.getProjectPaths();
-  const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  const brokerPidPath = path.join(paths.dataDir, brokerPidFilename(paths.projectRoot));
   const wantsDashboard = options.dashboard !== false;
   const requestedDashboardPort = Number.parseInt(options.port ?? '3888', 10) || 3888;
   const shouldReuseExistingBroker = options.reuseExistingBroker === true;
@@ -761,7 +778,15 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   }
 
   deps.fs.mkdirSync(paths.dataDir, { recursive: true });
+  // Check per-broker-name PID first, fall back to legacy broker.pid
   let existingPid = readPidFile(brokerPidPath, deps);
+  if (existingPid === null) {
+    const legacyPidPath = path.join(paths.dataDir, 'broker.pid');
+    existingPid = readPidFile(legacyPidPath, deps);
+    if (existingPid !== null) {
+      safeUnlink(legacyPidPath, deps);
+    }
+  }
   let ownsBroker = true;
 
   let relay: CoreRelay | null = null;
@@ -1019,7 +1044,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 // eslint-disable-next-line complexity, max-depth
 export async function runDownCommand(options: DownOptions, deps: CoreDependencies): Promise<void> {
   const paths = deps.getProjectPaths();
-  const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  const brokerPidPath = path.join(paths.dataDir, brokerPidFilename(paths.projectRoot));
   const timeout = Number.parseInt(options.timeout ?? '5000', 10) || 5000;
 
   if (options.all) {
@@ -1071,7 +1096,14 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
     return;
   }
 
-  if (!deps.fs.existsSync(brokerPidPath)) {
+  // Check per-broker-name PID file first, then fall back to legacy broker.pid
+  const legacyBrokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  let activePidPath = brokerPidPath;
+  if (!deps.fs.existsSync(brokerPidPath) && deps.fs.existsSync(legacyBrokerPidPath)) {
+    activePidPath = legacyBrokerPidPath;
+  }
+
+  if (!deps.fs.existsSync(activePidPath)) {
     if (options.force) {
       cleanupBrokerFiles(paths, deps);
       deps.log('Cleaned up (was not running)');
@@ -1081,7 +1113,7 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
     return;
   }
 
-  const pidRaw = deps.fs.readFileSync(brokerPidPath, 'utf-8').trim();
+  const pidRaw = deps.fs.readFileSync(activePidPath, 'utf-8').trim();
   const pid = Number.parseInt(pidRaw, 10);
   if (Number.isNaN(pid) || pid <= 0) {
     cleanupBrokerFiles(paths, deps);
@@ -1132,22 +1164,33 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
 
 export async function runStatusCommand(deps: CoreDependencies): Promise<void> {
   const paths = deps.getProjectPaths();
-  const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  const brokerPidPath = path.join(paths.dataDir, brokerPidFilename(paths.projectRoot));
 
   let running = false;
   let brokerPid: number | undefined;
 
-  if (deps.fs.existsSync(brokerPidPath)) {
-    const pidRaw = deps.fs.readFileSync(brokerPidPath, 'utf-8').trim();
+  // Check the per-broker-name PID file first, then fall back to legacy broker.pid
+  const legacyBrokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  const pidPaths = [brokerPidPath];
+  if (legacyBrokerPidPath !== brokerPidPath) {
+    pidPaths.push(legacyBrokerPidPath);
+  }
+
+  for (const candidatePidPath of pidPaths) {
+    if (!deps.fs.existsSync(candidatePidPath)) {
+      continue;
+    }
+    const pidRaw = deps.fs.readFileSync(candidatePidPath, 'utf-8').trim();
     const pid = Number.parseInt(pidRaw, 10);
     if (!Number.isNaN(pid) && pid > 0) {
-      brokerPid = pid;
-      running = isProcessRunning(pid, deps);
-      if (!running) {
-        safeUnlink(brokerPidPath, deps);
+      if (isProcessRunning(pid, deps)) {
+        brokerPid = pid;
+        running = true;
+        break;
       }
+      safeUnlink(candidatePidPath, deps);
     } else {
-      safeUnlink(brokerPidPath, deps);
+      safeUnlink(candidatePidPath, deps);
     }
   }
 
