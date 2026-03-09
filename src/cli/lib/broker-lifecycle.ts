@@ -86,6 +86,8 @@ async function startBrokerWithPortFallback(
   const startApiPort = wantsDashboard ? dashboardPort + 1 : 0;
   let apiPort = startApiPort;
   let relay: CoreRelay | null = null;
+  let flockRetries = 0;
+  const MAX_FLOCK_RETRIES = 3;
 
   const attempts = wantsDashboard ? Math.max(1, MAX_API_PORT_ATTEMPTS) : 1;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -108,10 +110,30 @@ async function startBrokerWithPortFallback(
       break;
     } catch (error: unknown) {
       await candidate.shutdown().catch(() => undefined);
+      // Clean up lock and PID files left by the failed broker attempt so
+      // the next retry gets a fresh flock instead of hitting "already running".
+      // The Rust broker acquires a flock on broker-<name>.lock and writes
+      // broker-<name>.pid; if the process exits but the OS hasn't fully
+      // released the flock yet, the next spawn will fail on the stale lock.
+      const brokerName = path.basename(paths.projectRoot) || 'project';
+      const safeName = sanitizeBrokerName(brokerName);
+      safeUnlink(path.join(paths.dataDir, `broker-${safeName}.lock`), deps);
+      safeUnlink(path.join(paths.dataDir, `broker-${safeName}.pid`), deps);
       // Brief delay to ensure OS-level cleanup (process table, flock release)
       // is complete before the next attempt.
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await new Promise((resolve) => setTimeout(resolve, 500));
       const message = toErrorMessage(error);
+      const isStaleFlockError = isBrokerAlreadyRunningError(message);
+
+      if (isStaleFlockError && flockRetries < MAX_FLOCK_RETRIES) {
+        // Flock conflict from a previous attempt — retry the same port
+        // since the port itself wasn't the problem.
+        flockRetries += 1;
+        attempt -= 1; // stay on the same port
+        deps.warn('Broker lock conflict detected (stale lock from previous attempt); retrying...');
+        continue;
+      }
+
       const shouldRetryApiPort =
         wantsDashboard &&
         currentApiPort > 0 &&
@@ -1118,6 +1140,8 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
 
   if (!deps.fs.existsSync(activePidPath)) {
     if (options.force) {
+      // Also kill any orphaned broker processes that lost their PID files
+      await killOrphanedBrokerProcesses(paths.projectRoot, deps);
       cleanupBrokerFiles(paths, deps);
       deps.log('Cleaned up (was not running)');
     } else {
