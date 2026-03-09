@@ -1419,7 +1419,7 @@ export class InboundGateway {
       console.warn(
         `[gateway] Relaycast WS connect failed: ${err instanceof Error ? err.message : String(err)}`
       );
-      void this.handleWsFailure('connect_failed');
+      await this.handleWsFailure('connect_failed');
     }
     this.bindRelayAgentHandlers();
   }
