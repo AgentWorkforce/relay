@@ -5221,7 +5221,6 @@ fn relaycast_ws_control_dedup_key(
 ) -> Option<String> {
     let identity = if ws_type == "agent.spawn_requested" {
         relaycast_ws_spawn_token(value)
-            .or_else(|| first_string(value, &["/agent/name", "/payload/agent/name", "/name"]))
             .or_else(|| {
                 first_string(
                     value,
@@ -5238,6 +5237,7 @@ fn relaycast_ws_control_dedup_key(
                     ],
                 )
             })
+            .or_else(|| first_string(value, &["/agent/name", "/payload/agent/name", "/name"]))
     } else {
         first_string(
             value,
@@ -6154,7 +6154,6 @@ mod tests {
     fn relaycast_control_dedup_key_falls_back_to_agent_name_for_spawn_requests() {
         let value = json!({
             "type": "agent.spawn_requested",
-            "event_id": "evt_123",
             "agent": {
                 "name": "worker-a",
                 "cli": "claude",
