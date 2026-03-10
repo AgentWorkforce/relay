@@ -558,8 +558,14 @@ pub(crate) async fn run_wrap(
                                 mcp_response_buffer = mcp_response_buffer[start..].to_string();
                             }
                             for msg_id in extract_mcp_message_ids(&mcp_response_buffer) {
-                                if dedup.insert_if_new(&msg_id, Instant::now()) {
-                                    tracing::debug!("pre-seeded dedup with outbound message id: {}", msg_id);
+                                for workspace in &workspaces {
+                                    let scoped_key = format!("{}:{}", workspace.workspace_id, msg_id);
+                                    if dedup.insert_if_new(&scoped_key, Instant::now()) {
+                                        tracing::debug!(
+                                            workspace_id = %workspace.workspace_id,
+                                            "pre-seeded dedup with outbound message id: {}", msg_id
+                                        );
+                                    }
                                 }
                             }
                         }
