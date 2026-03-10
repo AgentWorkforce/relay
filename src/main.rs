@@ -16,6 +16,7 @@ mod wrap;
 
 use helpers::{
     detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
+    detect_gemini_trust_prompt,
     floor_char_boundary, is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode,
     normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
@@ -757,6 +758,7 @@ impl WorkerRegistry {
                 let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
                 let is_codex = cli_lower == "codex";
 
+                let is_gemini = cli_lower == "gemini";
                 let bypass_flag: Option<&str> = if is_claude
                     && !effective_args
                         .iter()
@@ -769,6 +771,10 @@ impl WorkerRegistry {
                         .any(|a| a.contains("dangerously-bypass") || a.contains("full-auto"))
                 {
                     Some("--dangerously-bypass-approvals-and-sandbox")
+                } else if is_gemini
+                    && !effective_args.iter().any(|a| a == "--yolo" || a == "-y")
+                {
+                    Some("--yolo")
                 } else {
                     None
                 };
@@ -1586,19 +1592,37 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             result = async { api_rx.as_mut().unwrap().recv().await }, if api_rx.is_some() => {
                 if let Some(req) = result {
                     match req {
-                        ListenApiRequest::Spawn { name, cli, model, args, task, reply } => {
+                        ListenApiRequest::Spawn {
+                            name,
+                            cli,
+                            model,
+                            args,
+                            task,
+                            channels,
+                            cwd,
+                            team,
+                            shadow_of,
+                            shadow_mode,
+                            continue_from,
+                            reply,
+                        } => {
+                            let effective_channels = if channels.is_empty() {
+                                default_spawn_channels()
+                            } else {
+                                channels.clone()
+                            };
                             let spec = AgentSpec {
                                 name: name.clone(),
                                 runtime: AgentRuntime::Pty,
                                 provider: None,
                                 cli: Some(cli.clone()),
                                 model: model.clone(),
-                                cwd: None,
-                                team: None,
-                                shadow_of: None,
-                                shadow_mode: None,
+                                cwd,
+                                team,
+                                shadow_of,
+                                shadow_mode,
                                 args,
-                                channels: default_spawn_channels(),
+                                channels: effective_channels.clone(),
                                 restart_policy: None,
                             };
                             let spec_for_state = spec.clone();
@@ -1624,7 +1648,95 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 }
                             };
 
-                            let effective_task = normalize_initial_task(task);
+                            let mut effective_task = normalize_initial_task(task);
+                            if let Some(ref continue_from) = continue_from {
+                                let continuity_dir = continuity_dir(&paths.state);
+                                let continuity_file = continuity_dir.join(format!("{}.json", continue_from));
+                                if continuity_file.exists() {
+                                    match std::fs::read_to_string(&continuity_file) {
+                                        Ok(contents) => {
+                                            if let Ok(ctx) = serde_json::from_str::<Value>(&contents) {
+                                                let prev_task = ctx
+                                                    .get("initial_task")
+                                                    .and_then(Value::as_str)
+                                                    .unwrap_or("unknown");
+                                                let summary = ctx
+                                                    .get("summary")
+                                                    .and_then(Value::as_str)
+                                                    .unwrap_or("no summary available");
+                                                let messages = ctx
+                                                    .get("message_history")
+                                                    .and_then(Value::as_array)
+                                                    .map(|msgs| {
+                                                        msgs.iter()
+                                                            .filter_map(|m| {
+                                                                let from = m
+                                                                    .get("from")
+                                                                    .and_then(Value::as_str)
+                                                                    .unwrap_or("?");
+                                                                let text = m
+                                                                    .get("text")
+                                                                    .and_then(Value::as_str)
+                                                                    .unwrap_or("");
+                                                                if text.is_empty() {
+                                                                    None
+                                                                } else {
+                                                                    Some(format!("  {}: {}", from, text))
+                                                                }
+                                                            })
+                                                            .collect::<Vec<_>>()
+                                                            .join("\n")
+                                                    })
+                                                    .unwrap_or_default();
+
+                                                let continuity_block = format!(
+                                                    "## Continuity Context (from previous session as '{}')\n\
+                                                     Previous task: {}\n\
+                                                     Session summary: {}\n{}",
+                                                    continue_from,
+                                                    prev_task,
+                                                    summary,
+                                                    if messages.is_empty() {
+                                                        String::new()
+                                                    } else {
+                                                        format!("Recent messages:\n{}\n", messages)
+                                                    }
+                                                );
+
+                                                effective_task = Some(match effective_task {
+                                                    Some(new_task) => {
+                                                        format!(
+                                                            "{}\n\n## Current Task\n{}",
+                                                            continuity_block, new_task
+                                                        )
+                                                    }
+                                                    None => continuity_block,
+                                                });
+                                                tracing::info!(
+                                                    agent = %name,
+                                                    continue_from = %continue_from,
+                                                    "injected continuity context from previous session for HTTP API spawn"
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                agent = %name,
+                                                continue_from = %continue_from,
+                                                error = %e,
+                                                "failed to read continuity file for HTTP API spawn"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    tracing::warn!(
+                                        agent = %name,
+                                        continue_from = %continue_from,
+                                        "no continuity file found at {}",
+                                        continuity_file.display()
+                                    );
+                                }
+                            }
 
                             match workers.spawn(
                                 spec,
@@ -1648,7 +1760,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         PersistedAgent {
                                             runtime: AgentRuntime::Pty,
                                             parent: Some("Dashboard".to_string()),
-                                            channels: default_spawn_channels(),
+                                            channels: spec_for_state.channels.clone(),
                                             pid: workers.worker_pid(&name),
                                             started_at: Some(
                                                 std::time::SystemTime::now()
@@ -1662,6 +1774,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         },
                                     );
                                     if paths.persist { let _ = state.save(&paths.state); }
+                                    note_local_spawn_control_dedup(
+                                        &mut dedup,
+                                        default_workspace_id
+                                            .as_deref()
+                                            .or_else(|| workspaces.first().map(|workspace| workspace.workspace_id.as_str())),
+                                        &name,
+                                        worker_relay_key.as_deref(),
+                                    );
                                     let _ = send_event(
                                         &sdk_out_tx,
                                         json!({
@@ -1694,6 +1814,52 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 Err(e) => {
                                     eprintln!("[agent-relay] HTTP API: failed to spawn '{}': {}", name, e);
                                     let _ = reply.send(Err(e.to_string()));
+                                }
+                            }
+                        }
+                        ListenApiRequest::SetModel { name, model, timeout_ms, reply } => {
+                            let Some(handle) = workers.workers.get_mut(&name) else {
+                                let _ = reply.send(Err(format!("unknown worker '{}'", name)));
+                                continue;
+                            };
+
+                            let model_command = format!("/model {}\n", model);
+                            let result = async {
+                                handle
+                                    .stdin
+                                    .write_all(model_command.as_bytes())
+                                    .await
+                                    .with_context(|| {
+                                        format!("failed writing model command to worker '{}'", name)
+                                    })?;
+                                handle
+                                    .stdin
+                                    .flush()
+                                    .await
+                                    .with_context(|| {
+                                        format!("failed flushing worker '{}' stdin", name)
+                                    })?;
+                                if let Some(timeout_ms) = timeout_ms {
+                                    tracing::info!(
+                                        name = %name,
+                                        timeout_ms,
+                                        "HTTP API set_model timeout_ms is currently advisory only"
+                                    );
+                                }
+                                Ok::<(), anyhow::Error>(())
+                            }
+                            .await;
+
+                            match result {
+                                Ok(()) => {
+                                    let _ = reply.send(Ok(json!({
+                                        "name": name,
+                                        "model": model,
+                                        "success": true,
+                                    })));
+                                }
+                                Err(error) => {
+                                    let _ = reply.send(Err(error.to_string()));
                                 }
                             }
                         }
@@ -1734,8 +1900,22 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     let _ = reply.send(Ok(json!({ "success": true, "name": name })));
                                 }
                                 Err(e) => {
-                                    eprintln!("[agent-relay] HTTP API: failed to release '{}': {}", name, e);
-                                    let _ = reply.send(Err(e.to_string()));
+                                    let message = e.to_string();
+                                    if is_unknown_worker_error_message(&message) {
+                                        relaycast_http.forget_agent_registration(&name);
+                                        state.agents.remove(&name);
+                                        if paths.persist {
+                                            let _ = state.save(&paths.state);
+                                        }
+                                        tracing::debug!(
+                                            worker = %name,
+                                            "ignoring duplicate HTTP API release for already exited worker"
+                                        );
+                                        let _ = reply.send(Ok(json!({ "success": true, "name": name })));
+                                    } else {
+                                        eprintln!("[agent-relay] HTTP API: failed to release '{}': {}", name, e);
+                                        let _ = reply.send(Err(message));
+                                    }
                                 }
                             }
                         }
@@ -2097,6 +2277,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 &mut state,
                                 &paths.state,
                                 &mut pending_deliveries,
+                                &mut dedup,
                                 &telemetry,
                                 &mut agent_spawn_count,
                                 Some(&relaycast_http),
@@ -2151,21 +2332,42 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         "received relaycast ws event"
                     );
 
+                    if matches!(ws_type, "agent.spawn_requested" | "agent.release_requested") {
+                        if let Some(control_dedup_key) =
+                            relaycast_ws_control_dedup_key(&workspace_id, ws_type, &ws_value)
+                        {
+                            if !dedup.insert_if_new(&control_dedup_key, Instant::now()) {
+                                tracing::info!(
+                                    ws_type = %ws_type,
+                                    workspace_id = %workspace_id,
+                                    "dropping duplicate relaycast control event"
+                                );
+                                continue;
+                            }
+                        }
+                    }
+
                     if let Ok(ws_event) = serde_json::from_value::<WsEvent>(ws_value.clone()) {
                         match ws_event {
                             WsEvent::AgentReleaseRequested(event) => {
                                 let name = event.agent.name;
+                                if is_relaycast_self_control_target(
+                                    &name,
+                                    &workspace_self_name,
+                                    &workspace_self_names,
+                                ) {
+                                    workspace_http.forget_agent_registration(&name);
+                                    tracing::debug!(
+                                        worker = %name,
+                                        "ignoring relaycast release request for broker self"
+                                    );
+                                    continue;
+                                }
                                 workers.supervisor.unregister(&name);
                                 workers.metrics.on_release(&name);
                                 match workers.release(&name).await {
                                     Ok(()) => {
-                                        if let Err(error) = workspace_http.mark_agent_offline(&name).await {
-                                            tracing::warn!(
-                                                worker = %name,
-                                                error = %error,
-                                                "failed to mark released worker offline in relaycast"
-                                            );
-                                        }
+                                        workspace_http.forget_agent_registration(&name);
                                         let dropped = drop_pending_for_worker(&mut pending_deliveries, &name);
                                         if dropped > 0 {
                                             let _ = send_event(
@@ -2199,14 +2401,54 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         eprintln!("[agent-relay] released worker '{}' via relaycast", name);
                                     }
                                     Err(error) => {
-                                        tracing::error!(child = %name, error = %error, "failed to release worker via relaycast");
-                                        eprintln!("[agent-relay] failed to release '{}': {}", name, error);
+                                        let message = error.to_string();
+                                        if is_unknown_worker_error_message(&message) {
+                                            workspace_http.forget_agent_registration(&name);
+                                            state.agents.remove(&name);
+                                            if paths.persist {
+                                                if let Err(save_error) = state.save(&paths.state) {
+                                                    tracing::warn!(
+                                                        path = %paths.state.display(),
+                                                        error = %save_error,
+                                                        "failed to persist broker state"
+                                                    );
+                                                }
+                                            }
+                                            tracing::debug!(
+                                                child = %name,
+                                                "ignoring duplicate relaycast release for already exited worker"
+                                            );
+                                        } else {
+                                            tracing::error!(child = %name, error = %error, "failed to release worker via relaycast");
+                                            eprintln!("[agent-relay] failed to release '{}': {}", name, error);
+                                        }
                                     }
                                 }
                                 continue;
                             }
                             WsEvent::AgentSpawnRequested(event) => {
                                 let name = event.agent.name;
+                                if is_relaycast_self_control_target(
+                                    &name,
+                                    &workspace_self_name,
+                                    &workspace_self_names,
+                                ) {
+                                    tracing::debug!(
+                                        worker = %name,
+                                        "ignoring relaycast spawn request for broker self"
+                                    );
+                                    continue;
+                                }
+                                let local_spawn_echo_key =
+                                    format!("control:{workspace_id}:agent.spawn_requested:{name}");
+                                if !dedup.insert_if_new(&local_spawn_echo_key, Instant::now()) {
+                                    tracing::info!(
+                                        worker = %name,
+                                        workspace_id = %workspace_id,
+                                        "dropping duplicate/local relaycast spawn request"
+                                    );
+                                    continue;
+                                }
                                 let cli = event.agent.cli;
                                 let task = Some(event.agent.task).filter(|value| !value.trim().is_empty());
                                 let channel = event.agent.channel;
@@ -2239,24 +2481,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 let spec_for_state = spec.clone();
                                 let effective_task = normalize_initial_task(task.clone());
 
-                                // Pre-register with retry
-                                let worker_relay_key = match retry_agent_registration(
-                                    &workspace_http, &name, Some(&cli),
-                                ).await {
-                                    Ok(token) => Some(token),
-                                    Err(RegRetryOutcome::RetryableExhausted(error)) => {
-                                        tracing::warn!(
-                                            worker = %name,
-                                            error = %error,
-                                            "continuing spawn without pre-registration after retries exhausted"
-                                        );
-                                        None
-                                    }
-                                    Err(RegRetryOutcome::Fatal(error)) => {
-                                        tracing::error!(worker = %name, error = %error, "non-retryable pre-registration error, skipping spawn");
-                                        continue;
-                                    }
-                                };
+                                let worker_relay_key = relaycast_ws_spawn_token(&ws_value);
+                                if worker_relay_key.is_none() {
+                                    tracing::debug!(
+                                        worker = %name,
+                                        "relaycast WS spawn request did not include agent token; spawning without pre-registration"
+                                    );
+                                }
 
                                 match workers.spawn(
                                     spec,
@@ -3416,6 +3647,7 @@ async fn handle_sdk_frame(
     state: &mut BrokerState,
     state_path: &Path,
     pending_deliveries: &mut HashMap<String, PendingDelivery>,
+    dedup: &mut DedupCache,
     telemetry: &TelemetryClient,
     agent_spawn_count: &mut u32,
     relaycast_http: Option<&RelaycastHttpClient>,
@@ -3630,6 +3862,13 @@ async fn handle_sdk_frame(
                     None,
                 )
                 .await?;
+            note_local_spawn_control_dedup(
+                dedup,
+                default_workspace_id
+                    .or_else(|| workspaces.first().map(|workspace| workspace.workspace_id.as_str())),
+                &name,
+                worker_relay_key.as_deref(),
+            );
             if let Some(task) = effective_task.clone() {
                 workers.initial_tasks.insert(name.clone(), task);
             }
@@ -4065,6 +4304,11 @@ async fn handle_sdk_frame(
                         .await?;
                     return Ok(false);
                 }
+                if let Some(http) = relaycast_http {
+                    http.forget_agent_registration(&payload.name);
+                }
+                state.agents.remove(&payload.name);
+                state.save(state_path)?;
                 send_error(
                     out_tx,
                     frame.request_id,
@@ -4938,6 +5182,92 @@ fn first_i64(value: &Value, pointers: &[&str]) -> Option<i64> {
         .find_map(|pointer| value.pointer(pointer).and_then(Value::as_i64))
 }
 
+fn relaycast_ws_control_dedup_key(workspace_id: &str, ws_type: &str, value: &Value) -> Option<String> {
+    let identity = if ws_type == "agent.spawn_requested" {
+        relaycast_ws_spawn_token(value)
+            .or_else(|| first_string(value, &["/agent/name", "/payload/agent/name", "/name"]))
+            .or_else(|| {
+                first_string(
+                    value,
+                    &[
+                        "/event_id",
+                        "/id",
+                        "/payload/id",
+                        "/payload/event_id",
+                        "/agent/id",
+                        "/agent/event_id",
+                        "/message/id",
+                        "/message/event_id",
+                        "/message_id",
+                    ],
+                )
+            })
+    } else {
+        first_string(
+            value,
+            &[
+                "/event_id",
+                "/id",
+                "/payload/id",
+                "/payload/event_id",
+                "/agent/id",
+                "/agent/event_id",
+                "/message/id",
+                "/message/event_id",
+                "/message_id",
+            ],
+        )
+    }
+    .or_else(|| serde_json::to_string(value).ok())?;
+    Some(format!("control:{workspace_id}:{ws_type}:{identity}"))
+}
+
+fn relaycast_ws_spawn_token(value: &Value) -> Option<String> {
+    first_string(
+        value,
+        &[
+            "/agent/token",
+            "/agent/relay_key",
+            "/agent/api_key",
+            "/token",
+        ],
+    )
+}
+
+fn note_local_spawn_control_dedup(
+    dedup: &mut DedupCache,
+    workspace_id: Option<&str>,
+    agent_name: &str,
+    relay_key: Option<&str>,
+) {
+    let Some(workspace_id) = workspace_id else {
+        return;
+    };
+    let agent_name = agent_name.trim();
+    if !agent_name.is_empty() {
+        let key = format!("control:{workspace_id}:agent.spawn_requested:{agent_name}");
+        dedup.insert_if_new(&key, Instant::now());
+    }
+    if let Some(relay_key) = relay_key.map(str::trim).filter(|value| !value.is_empty()) {
+        let key = format!("control:{workspace_id}:agent.spawn_requested:{relay_key}");
+        dedup.insert_if_new(&key, Instant::now());
+    }
+}
+
+fn is_unknown_worker_error_message(message: &str) -> bool {
+    message.contains("unknown worker '")
+}
+
+fn is_relaycast_self_control_target(
+    name: &str,
+    workspace_self_name: &str,
+    workspace_self_names: &HashSet<String>,
+) -> bool {
+    let normalized = normalize_identity_for_thread(name);
+    normalized == normalize_identity_for_thread(workspace_self_name)
+        || workspace_self_names.contains(&normalized)
+}
+
 fn message_sender(value: &Value) -> Option<String> {
     first_string(
         value,
@@ -5663,9 +5993,11 @@ mod tests {
         display_target_for_dashboard, drop_pending_for_worker, extract_mcp_message_ids,
         http_api_event_emit_timeout, http_api_local_delivery_timeout,
         http_api_relaycast_send_timeout, is_auto_suggestion, is_bypass_selection_menu,
-        is_in_editor_mode, normalize_channel, normalize_initial_task, normalize_sender,
-        sender_is_dashboard_label, should_clear_pending_delivery_for_event, strip_ansi,
-        PendingDelivery, TerminalQueryParser,
+        is_in_editor_mode, is_relaycast_self_control_target, is_unknown_worker_error_message,
+        normalize_channel, normalize_initial_task, normalize_sender,
+        relaycast_ws_control_dedup_key, relaycast_ws_spawn_token, sender_is_dashboard_label,
+        should_clear_pending_delivery_for_event, strip_ansi, PendingDelivery,
+        TerminalQueryParser,
     };
     use crate::helpers::floor_char_boundary;
     use relay_broker::relaycast_ws::{
@@ -5748,6 +6080,119 @@ mod tests {
             derive_ws_base_url_from_http("http://localhost:8787"),
             "ws://localhost:8787"
         );
+    }
+
+    #[test]
+    fn relaycast_control_dedup_key_prefers_event_id() {
+        let value = json!({
+            "type": "agent.spawn_requested",
+            "event_id": "evt_123",
+            "agent": { "name": "worker-a", "cli": "claude", "task": "Ship it" }
+        });
+
+        assert_eq!(
+            relaycast_ws_control_dedup_key("ws_1", "agent.spawn_requested", &value),
+            Some("control:ws_1:agent.spawn_requested:evt_123".to_string())
+        );
+    }
+
+    #[test]
+    fn relaycast_control_dedup_key_prefers_spawn_token_for_spawn_requests() {
+        let value = json!({
+            "type": "agent.spawn_requested",
+            "event_id": "evt_123",
+            "agent": {
+                "name": "worker-a",
+                "cli": "claude",
+                "task": "Ship it",
+                "token": "at_live_worker"
+            }
+        });
+
+        assert_eq!(
+            relaycast_ws_control_dedup_key("ws_1", "agent.spawn_requested", &value),
+            Some("control:ws_1:agent.spawn_requested:at_live_worker".to_string())
+        );
+    }
+
+    #[test]
+    fn relaycast_control_dedup_key_falls_back_to_agent_name_for_spawn_requests() {
+        let value = json!({
+            "type": "agent.spawn_requested",
+            "event_id": "evt_123",
+            "agent": {
+                "name": "worker-a",
+                "cli": "claude",
+                "task": "Ship it"
+            }
+        });
+
+        assert_eq!(
+            relaycast_ws_control_dedup_key("ws_1", "agent.spawn_requested", &value),
+            Some("control:ws_1:agent.spawn_requested:worker-a".to_string())
+        );
+    }
+
+    #[test]
+    fn relaycast_control_dedup_key_falls_back_to_serialized_payload() {
+        let value = json!({
+            "type": "agent.release_requested",
+            "agent": { "name": "worker-a" }
+        });
+
+        let key = relaycast_ws_control_dedup_key("ws_1", "agent.release_requested", &value)
+            .expect("fallback dedup key");
+        assert!(key.starts_with("control:ws_1:agent.release_requested:{"));
+        assert!(key.contains("\"worker-a\""));
+    }
+
+    #[test]
+    fn relaycast_ws_spawn_token_extracts_agent_token() {
+        let value = json!({
+            "type": "agent.spawn_requested",
+            "agent": {
+                "name": "worker-a",
+                "token": "at_live_worker"
+            }
+        });
+
+        assert_eq!(
+            relaycast_ws_spawn_token(&value),
+            Some("at_live_worker".to_string())
+        );
+    }
+
+    #[test]
+    fn unknown_worker_error_message_matches_release_failures() {
+        assert!(is_unknown_worker_error_message("unknown worker 'worker-a'"));
+        assert!(is_unknown_worker_error_message(
+            "failed to release 'worker-a': unknown worker 'worker-a'"
+        ));
+        assert!(!is_unknown_worker_error_message("failed to bind api port"));
+    }
+
+    #[test]
+    fn relaycast_self_control_target_matches_aliases_case_insensitively() {
+        let self_names = HashSet::from([
+            "relay-broker".to_string(),
+            "relay-broker@workspace".to_string(),
+        ]);
+
+        assert!(is_relaycast_self_control_target(
+            "Relay-Broker",
+            "relay-broker",
+            &self_names
+        ));
+        assert!(is_relaycast_self_control_target(
+            "@relay-broker@workspace",
+            "relay-broker",
+            &self_names
+        ));
+        assert!(!is_relaycast_self_control_target(
+            "worker-a",
+            "relay-broker",
+            &self_names
+        ));
     }
 
     #[tokio::test]
@@ -6627,6 +7072,10 @@ mod tests {
                 .any(|a| a.contains("dangerously-bypass") || a.contains("full-auto"))
         {
             Some("--dangerously-bypass-approvals-and-sandbox")
+        } else if cli_lower == "gemini"
+            && !existing_args.iter().any(|a| a == "--yolo" || a == "-y")
+        {
+            Some("--yolo")
         } else {
             None
         }
@@ -6665,8 +7114,28 @@ mod tests {
     }
 
     #[test]
-    fn bypass_flag_gemini_gets_none() {
-        assert_eq!(compute_bypass_flag("gemini", &[]), None);
+    fn bypass_flag_gemini_gets_yolo() {
+        assert_eq!(compute_bypass_flag("gemini", &[]), Some("--yolo"));
+    }
+
+    #[test]
+    fn bypass_flag_gemini_dedup_when_yolo_present() {
+        let args = vec!["--yolo".to_string()];
+        assert_eq!(
+            compute_bypass_flag("gemini", &args),
+            None,
+            "should not duplicate --yolo flag"
+        );
+    }
+
+    #[test]
+    fn bypass_flag_gemini_dedup_when_y_present() {
+        let args = vec!["-y".to_string()];
+        assert_eq!(
+            compute_bypass_flag("gemini", &args),
+            None,
+            "should not duplicate when -y shorthand present"
+        );
     }
 
     #[test]

@@ -95,7 +95,7 @@ test('workflow-patterns: fan-out pattern executes diamond workflow', { timeout: 
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const result = await harness.runWorkflow(makeConfig(), undefined, { cwd });
@@ -117,7 +117,7 @@ test('workflow-patterns: dag pattern with verification gate', { timeout: 120_000
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const config = makeConfig({
@@ -168,7 +168,7 @@ test('workflow-patterns: pipeline pattern executes sequentially', { timeout: 120
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const config = makeConfig({
@@ -210,7 +210,7 @@ test('workflow-patterns: hub-spoke pattern fans to workers', { timeout: 120_000 
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const config = makeConfig({
@@ -262,7 +262,7 @@ test('workflow-patterns: review-loop pattern with verification', { timeout: 120_
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const config = makeConfig({
@@ -304,7 +304,7 @@ test('workflow-patterns: error handling fail-fast skips downstream', { timeout: 
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const config = makeConfig({
@@ -357,7 +357,7 @@ test(
 
     const cwd = createWorkdir();
     const harness = new WorkflowRunnerHarness();
-    await harness.start();
+    await harness.start({ useRelaycast: false });
 
     try {
       const config = makeConfig({
@@ -415,7 +415,7 @@ test('workflow-patterns: builder-generated config executes correctly', { timeout
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const built = workflow('builder-pattern')
@@ -452,7 +452,7 @@ test('workflow-patterns: fan-out supports maxConcurrency config', { timeout: 120
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const result = await harness.runWorkflow(

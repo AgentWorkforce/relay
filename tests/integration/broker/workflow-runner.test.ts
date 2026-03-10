@@ -73,7 +73,7 @@ test('workflow-runner: single step completes', { timeout: 120_000 }, async (t) =
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const result = await harness.runWorkflow(makeConfig(), undefined, { cwd });
@@ -97,7 +97,7 @@ test('workflow-runner: failed run transitions to failed status', { timeout: 120_
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const result = await harness.runWorkflow(
@@ -139,7 +139,7 @@ test('workflow-runner: serial dag executes steps in dependency order', { timeout
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const result = await harness.runWorkflow(
@@ -176,7 +176,7 @@ test('workflow-runner: parallel fan-out steps converge into fan-in step', { time
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const result = await harness.runWorkflow(
@@ -231,7 +231,7 @@ test('workflow-runner: deterministic step retries on transient failure', { timeo
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const marker = path.join(cwd, 'retry-marker.txt');
@@ -275,7 +275,7 @@ test(
 
     const cwd = createWorkdir();
     const harness = new WorkflowRunnerHarness();
-    await harness.start();
+    await harness.start({ useRelaycast: false });
 
     try {
       const result = await harness.runWorkflow(
@@ -323,7 +323,7 @@ test('workflow-runner: runs only the selected workflow by name', { timeout: 120_
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const result = await harness.runWorkflow(

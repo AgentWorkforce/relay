@@ -29,7 +29,7 @@ import test from 'node:test';
 
 /**
  * Resolve the agent-relay CLI binary for subprocess invocation.
- * Returns [executable, ...prefixArgs] (e.g. ["node", "/path/to/bootstrap.js"])
+ * Returns [executable, ...prefixArgs] (e.g. ["node", "/path/to/index.js"])
  * or null if the CLI cannot be found.
  */
 function resolveCliBin(): string[] | null {
@@ -38,11 +38,11 @@ function resolveCliBin(): string[] | null {
     return [process.env.AGENT_RELAY_CLI_BIN];
   }
 
-  // 2. Compiled dist/src/cli/bootstrap.js relative to repo root
+  // 2. Compiled dist/src/cli/index.js relative to repo root
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
-  const bootstrap = path.join(repoRoot, 'dist', 'src', 'cli', 'bootstrap.js');
-  if (fs.existsSync(bootstrap)) {
-    return [process.execPath, bootstrap];
+  const cliEntrypoint = path.join(repoRoot, 'dist', 'src', 'cli', 'index.js');
+  if (fs.existsSync(cliEntrypoint)) {
+    return [process.execPath, cliEntrypoint];
   }
 
   // 3. PATH fallback

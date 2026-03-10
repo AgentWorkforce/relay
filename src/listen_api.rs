@@ -26,6 +26,18 @@ pub enum ListenApiRequest {
         model: Option<String>,
         args: Vec<String>,
         task: Option<String>,
+        channels: Vec<String>,
+        cwd: Option<String>,
+        team: Option<String>,
+        shadow_of: Option<String>,
+        shadow_mode: Option<String>,
+        continue_from: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    SetModel {
+        name: String,
+        model: String,
+        timeout_ms: Option<u64>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     Release {
@@ -135,6 +147,7 @@ fn listen_api_router_with_auth(
     let protected = Router::new()
         .route("/api/spawn", routing::post(listen_api_spawn))
         .route("/api/spawned", routing::get(listen_api_list))
+        .route("/api/spawned/{name}/model", routing::post(listen_api_set_model))
         .route("/api/threads", routing::get(listen_api_threads))
         .route("/api/events/replay", routing::get(listen_api_replay))
         .route("/api/spawned/{name}", routing::delete(listen_api_release))
@@ -313,6 +326,33 @@ async fn listen_api_spawn(
         })
         .unwrap_or_default();
     let task = body.get("task").and_then(Value::as_str).map(String::from);
+    let channels: Vec<String> = body
+        .get("channels")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    let cwd = body.get("cwd").and_then(Value::as_str).map(String::from);
+    let team = body.get("team").and_then(Value::as_str).map(String::from);
+    let shadow_of = body
+        .get("shadow_of")
+        .or_else(|| body.get("shadowOf"))
+        .and_then(Value::as_str)
+        .map(String::from);
+    let shadow_mode = body
+        .get("shadow_mode")
+        .or_else(|| body.get("shadowMode"))
+        .and_then(Value::as_str)
+        .map(String::from);
+    let continue_from = body
+        .get("continue_from")
+        .or_else(|| body.get("continueFrom"))
+        .and_then(Value::as_str)
+        .map(String::from);
 
     if name.is_empty() {
         return (
@@ -330,6 +370,12 @@ async fn listen_api_spawn(
             model,
             args,
             task,
+            channels,
+            cwd,
+            team,
+            shadow_of,
+            shadow_mode,
+            continue_from,
             reply: reply_tx,
         })
         .await
@@ -369,6 +415,57 @@ async fn listen_api_list(
     match reply_rx.await {
         Ok(Ok(val)) => axum::Json(val),
         _ => axum::Json(json!({ "success": false, "agents": [] })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ListenApiSetModelPayload {
+    model: String,
+    #[serde(default, alias = "timeoutMs")]
+    timeout_ms: Option<u64>,
+}
+
+async fn listen_api_set_model(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<ListenApiSetModelPayload>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let model = body.model.trim().to_string();
+    if model.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "success": false, "error": "Missing required field: model" })),
+        );
+    }
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::SetModel {
+            name: name.clone(),
+            model: model.clone(),
+            timeout_ms: body.timeout_ms,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal channel closed" })),
+        );
+    }
+
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "name": name, "error": err })),
+        ),
+        Err(_) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
+        ),
     }
 }
 
@@ -1021,6 +1118,130 @@ mod auth_tests {
         assert_eq!(body["agents"][0]["name"], "worker-a");
 
         list_replier.await.expect("list replier should complete");
+    }
+
+    #[tokio::test]
+    async fn spawn_route_forwards_extended_fields() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let spawn_replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::Spawn {
+                    name,
+                    cli,
+                    model,
+                    args,
+                    task,
+                    channels,
+                    cwd,
+                    team,
+                    shadow_of,
+                    shadow_mode,
+                    continue_from,
+                    reply,
+                }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(cli, "codex");
+                    assert_eq!(model.as_deref(), Some("o3"));
+                    assert_eq!(args, vec!["--fast".to_string()]);
+                    assert_eq!(task.as_deref(), Some("Ship it"));
+                    assert_eq!(channels, vec!["general".to_string(), "engineering".to_string()]);
+                    assert_eq!(cwd.as_deref(), Some("/tmp/project"));
+                    assert_eq!(team.as_deref(), Some("core"));
+                    assert_eq!(shadow_of.as_deref(), Some("Lead"));
+                    assert_eq!(shadow_mode.as_deref(), Some("subagent"));
+                    assert_eq!(continue_from.as_deref(), Some("worker-prev"));
+                    let _ = reply.send(Ok(json!({ "success": true, "name": "worker-a", "pid": 42 })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawn")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "name": "worker-a",
+                            "cli": "codex",
+                            "model": "o3",
+                            "args": ["--fast"],
+                            "task": "Ship it",
+                            "channels": ["general", "engineering"],
+                            "cwd": "/tmp/project",
+                            "team": "core",
+                            "shadowOf": "Lead",
+                            "shadowMode": "subagent",
+                            "continueFrom": "worker-prev",
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["success"], json!(true));
+
+        spawn_replier.await.expect("spawn replier should complete");
+    }
+
+    #[tokio::test]
+    async fn set_model_route_forwards_request() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let set_model_replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::SetModel {
+                    name,
+                    model,
+                    timeout_ms,
+                    reply,
+                }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(model, "sonnet");
+                    assert_eq!(timeout_ms, Some(4500));
+                    let _ = reply.send(Ok(json!({
+                        "success": true,
+                        "name": "worker-a",
+                        "model": "sonnet",
+                    })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/model")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "model": "sonnet",
+                            "timeoutMs": 4500,
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["success"], json!(true));
+        assert_eq!(body["model"], json!("sonnet"));
+
+        set_model_replier
+            .await
+            .expect("set model replier should complete");
     }
 
     #[tokio::test]

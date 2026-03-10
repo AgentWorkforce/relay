@@ -69,6 +69,8 @@ function formatEvent(event: WorkflowEvent): string {
       return `[step] ${event.stepName} nudged (nudge #${event.nudgeCount})`;
     case 'step:force-released':
       return `[step] ${event.stepName} force-released`;
+    case 'broker:event':
+      return `[broker] ${event.event.kind}`;
     default: {
       const _exhaustive: never = event;
       return `[unknown event] ${(_exhaustive as WorkflowEvent).type}`;

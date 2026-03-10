@@ -61,7 +61,7 @@ test('workflow-lifecycle: run completes successfully', { timeout: 120_000 }, asy
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const result = await harness.runWorkflow(makeConfig(), undefined, { cwd });
@@ -84,7 +84,7 @@ test('workflow-lifecycle: failed run emits failed events', { timeout: 120_000 },
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   const failingVerification: VerificationCheck = {
     type: 'output_contains',
@@ -127,7 +127,7 @@ test('workflow-lifecycle: abort cancels a running workflow', { timeout: 120_000 
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const runPromise = harness.runWorkflow(

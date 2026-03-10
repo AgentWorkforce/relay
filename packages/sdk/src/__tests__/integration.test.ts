@@ -203,3 +203,52 @@ test('sdk includes broker stderr details when startup fails', async (t) => {
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test('sdk writes broker lifecycle logs to stderr so stdout stays machine-readable', async (t) => {
+  const binaryPath = resolveBinaryPath();
+  if (!fs.existsSync(binaryPath)) {
+    t.skip(`agent-relay-broker binary not found at ${binaryPath}`);
+    return;
+  }
+
+  const loggedStdout: string[] = [];
+  const loggedStderr: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (...args: unknown[]) => {
+    loggedStdout.push(args.map((arg) => String(arg)).join(' '));
+  };
+  console.error = (...args: unknown[]) => {
+    loggedStderr.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  let client: AgentRelayClient | undefined;
+  try {
+    client = await AgentRelayClient.start({
+      binaryPath,
+      requestTimeoutMs: 8_000,
+      shutdownTimeoutMs: 2_000,
+      env: process.env,
+    });
+
+    await client.listAgents();
+
+    assert.equal(
+      loggedStdout.some((line) => line.includes('[broker] Starting:') || line.includes('[broker] Broker ready')),
+      false,
+      `broker lifecycle logs should not be written to stdout: ${loggedStdout.join('\n')}`
+    );
+    assert.ok(
+      loggedStderr.some((line) => line.includes('[broker] Starting:')),
+      `expected broker start log on stderr, got: ${loggedStderr.join('\n')}`
+    );
+    assert.ok(
+      loggedStderr.some((line) => line.includes('[broker] Broker ready')),
+      `expected broker ready log on stderr, got: ${loggedStderr.join('\n')}`
+    );
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    await client?.shutdown();
+  }
+});

@@ -774,10 +774,21 @@ export class AgentRelay {
       this.unsubEvent();
       this.unsubEvent = undefined;
     }
-    if (this.client) {
-      await this.client.shutdown();
-      this.client = undefined;
+    let client = this.client;
+    if (!client && this.startPromise) {
+      try {
+        client = await this.startPromise;
+      } catch {
+        client = undefined;
+      }
     }
+    if (client) {
+      await client.shutdown();
+      if (this.client === client) {
+        this.client = undefined;
+      }
+    }
+    this.startPromise = undefined;
     this.knownAgents.clear();
     this.readyAgents.clear();
     this.messageReadyAgents.clear();
@@ -1067,6 +1078,19 @@ export class AgentRelay {
           name,
           reason: releaseOptions.reason,
         };
+        if (!relay.knownAgents.has(name)) {
+          await relay.invokeLifecycleHook(
+            releaseOptions.onStart,
+            releaseContext,
+            `release("${name}") onStart`
+          );
+          await relay.invokeLifecycleHook(
+            releaseOptions.onSuccess,
+            releaseContext,
+            `release("${name}") onSuccess`
+          );
+          return;
+        }
         const client = await relay.ensureStarted();
         await relay.invokeLifecycleHook(releaseOptions.onStart, releaseContext, `release("${name}") onStart`);
         try {
@@ -1077,6 +1101,24 @@ export class AgentRelay {
             `release("${name}") onSuccess`
           );
         } catch (error) {
+          if (error instanceof AgentRelayProtocolError && error.code === 'agent_not_found') {
+            relay.exitedAgents.add(name);
+            relay.readyAgents.delete(name);
+            relay.messageReadyAgents.delete(name);
+            relay.idleAgents.delete(name);
+            relay.knownAgents.delete(name);
+            relay.outputListeners.delete(name);
+            relay.exitResolvers.get(name)?.resolve('released');
+            relay.exitResolvers.delete(name);
+            relay.idleResolvers.get(name)?.resolve('exited');
+            relay.idleResolvers.delete(name);
+            await relay.invokeLifecycleHook(
+              releaseOptions.onSuccess,
+              releaseContext,
+              `release("${name}") onSuccess`
+            );
+            return;
+          }
           await relay.invokeLifecycleHook(
             releaseOptions.onError,
             {

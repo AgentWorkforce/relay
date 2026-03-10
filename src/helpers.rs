@@ -834,6 +834,15 @@ pub(crate) fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) 
     (has_header, has_allow_option)
 }
 
+/// Detect Gemini "Modify Trust Level" folder trust prompt in output.
+/// Returns (has_header, has_trust_option).
+pub(crate) fn detect_gemini_trust_prompt(clean_output: &str) -> (bool, bool) {
+    let has_header = clean_output.contains("Modify Trust Level");
+    let has_trust_option =
+        clean_output.contains("Trust this folder") || clean_output.contains("Trust parent folder");
+    (has_header, has_trust_option)
+}
+
 /// Continuity actions that an agent can request via PTY output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ContinuityAction {
@@ -1355,6 +1364,40 @@ mod tests {
         let (has_header, has_allow) = detect_gemini_action_required(output);
         assert!(!has_header, "lowercase should not match");
         assert!(has_allow, "Allow once should still match");
+    }
+
+    // ==================== detect_gemini_trust_prompt tests ====================
+
+    #[test]
+    fn gemini_trust_prompt_trust_this_folder() {
+        let output = "Modify Trust Level\nFolder: /Users/test/project\nCurrent Level: DO_NOT_TRUST\n1. Trust this folder (project)\n2. Trust parent folder\n3. Don't trust";
+        let (has_header, has_trust) = detect_gemini_trust_prompt(output);
+        assert!(has_header);
+        assert!(has_trust);
+    }
+
+    #[test]
+    fn gemini_trust_prompt_trust_parent() {
+        let output = "Modify Trust Level\n2. Trust parent folder (Projects)";
+        let (has_header, has_trust) = detect_gemini_trust_prompt(output);
+        assert!(has_header);
+        assert!(has_trust);
+    }
+
+    #[test]
+    fn gemini_trust_prompt_no_match() {
+        let output = "Some other prompt\nNothing to see here";
+        let (has_header, has_trust) = detect_gemini_trust_prompt(output);
+        assert!(!has_header);
+        assert!(!has_trust);
+    }
+
+    #[test]
+    fn gemini_trust_prompt_header_only() {
+        let output = "Modify Trust Level\nNo options yet";
+        let (has_header, has_trust) = detect_gemini_trust_prompt(output);
+        assert!(has_header);
+        assert!(!has_trust);
     }
 
     // ==================== detect_cli_ready edge cases ====================

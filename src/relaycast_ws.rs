@@ -365,6 +365,10 @@ impl RelaycastHttpClient {
         }
     }
 
+    pub fn forget_agent_registration(&self, agent_name: &str) {
+        self.invalidate_cached_registration(agent_name);
+    }
+
     /// Register an agent via Relaycast spawn endpoint and cache its token.
     ///
     /// This is used for both broker self-registration and worker pre-registration.

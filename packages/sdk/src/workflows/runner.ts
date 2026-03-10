@@ -13,6 +13,7 @@ import path from 'node:path';
 
 import { parse as parseYaml } from 'yaml';
 import { stripAnsi as stripAnsiFn } from '../pty.js';
+import type { BrokerEvent } from '../protocol.js';
 
 import {
   loadCustomSteps,
@@ -71,6 +72,7 @@ export type WorkflowEvent =
   | { type: 'run:completed'; runId: string }
   | { type: 'run:failed'; runId: string; error: string }
   | { type: 'run:cancelled'; runId: string }
+  | { type: 'broker:event'; runId: string; event: BrokerEvent }
   | { type: 'step:started'; runId: string; stepName: string }
   | {
       type: 'step:owner-assigned';
@@ -1336,15 +1338,22 @@ export class WorkflowRunner {
         config.swarm.channel = channel;
         await this.db.updateRun(runId, { config });
       }
+      const relaycastDisabled =
+        this.relayOptions.env?.AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST === '1';
+      const requiresBroker =
+        !this.executor &&
+        workflow.steps.some((step) => step.type !== 'deterministic' && step.type !== 'worktree');
       // Skip broker/relay init when an external executor handles agent spawning
-      if (!this.executor) {
-        this.log('Resolving Relaycast API key...');
-        await this.ensureRelaycastApiKey(channel);
-        this.log('API key resolved');
-        if (this.relayApiKeyAutoCreated && this.relayApiKey) {
-          this.log(`Workspace created — follow this run in Relaycast:`);
-          this.log(`  Observer: https://agentrelay.dev/observer?key=${this.relayApiKey}`);
-          this.log(`  Channel: ${channel}`);
+      if (requiresBroker) {
+        if (!relaycastDisabled) {
+          this.log('Resolving Relaycast API key...');
+          await this.ensureRelaycastApiKey(channel);
+          this.log('API key resolved');
+          if (this.relayApiKeyAutoCreated && this.relayApiKey) {
+            this.log(`Workspace created — follow this run in Relaycast:`);
+            this.log(`  Observer: https://agentrelay.dev/observer?key=${this.relayApiKey}`);
+            this.log(`  Channel: ${channel}`);
+          }
         }
 
         this.log('Starting broker...');
@@ -1412,6 +1421,18 @@ export class WorkflowRunner {
 
         // Wire relay event hooks for rich console logging
         this.relay.onMessageReceived = (msg) => {
+          this.emit({
+            type: 'broker:event',
+            runId,
+            event: {
+              kind: 'relay_inbound',
+              event_id: msg.eventId,
+              from: msg.from,
+              target: msg.to,
+              body: msg.text,
+              thread_id: msg.threadId,
+            } as BrokerEvent,
+          });
           const body = msg.text.length > 120 ? msg.text.slice(0, 117) + '...' : msg.text;
           const fromShort = msg.from.replace(/-[a-f0-9]{6,}$/, '');
           const toShort = msg.to.replace(/-[a-f0-9]{6,}$/, '');
@@ -1429,13 +1450,43 @@ export class WorkflowRunner {
         };
 
         this.relay.onAgentSpawned = (agent) => {
+          this.emit({
+            type: 'broker:event',
+            runId,
+            event: {
+              kind: 'agent_spawned',
+              name: agent.name,
+              runtime: agent.runtime,
+            } as BrokerEvent,
+          });
           // Skip agents already managed by step execution
           if (!this.activeAgentHandles.has(agent.name)) {
             this.log(`[spawned] ${agent.name} (${agent.runtime})`);
           }
         };
 
+        this.relay.onAgentReleased = (agent) => {
+          this.emit({
+            type: 'broker:event',
+            runId,
+            event: {
+              kind: 'agent_released',
+              name: agent.name,
+            } as BrokerEvent,
+          });
+        };
+
         this.relay.onAgentExited = (agent) => {
+          this.emit({
+            type: 'broker:event',
+            runId,
+            event: {
+              kind: 'agent_exited',
+              name: agent.name,
+              code: agent.exitCode,
+              signal: agent.exitSignal,
+            } as BrokerEvent,
+          });
           this.lastActivity.delete(agent.name);
           this.lastIdleLog.delete(agent.name);
           if (!this.activeAgentHandles.has(agent.name)) {
@@ -1443,7 +1494,20 @@ export class WorkflowRunner {
           }
         };
 
+        this.relay.onDeliveryUpdate = (event) => {
+          this.emit({ type: 'broker:event', runId, event });
+        };
+
         this.relay.onAgentIdle = ({ name, idleSecs }) => {
+          this.emit({
+            type: 'broker:event',
+            runId,
+            event: {
+              kind: 'agent_idle',
+              name,
+              idle_secs: idleSecs,
+            } as BrokerEvent,
+          });
           // Only log at 30s multiples to avoid watchdog spam
           const bucket = Math.floor(idleSecs / 30) * 30;
           if (bucket >= 30 && this.lastIdleLog.get(name) !== bucket) {
@@ -1461,20 +1525,22 @@ export class WorkflowRunner {
           console.log(`[broker] ${line}`);
         });
 
-        this.log(`Creating channel: ${channel}...`);
-        if (isResume) {
-          await this.createAndJoinRelaycastChannel(channel);
-        } else {
-          await this.createAndJoinRelaycastChannel(channel, workflow.description);
-        }
-        this.log('Channel ready');
+        if (!relaycastDisabled) {
+          this.log(`Creating channel: ${channel}...`);
+          if (isResume) {
+            await this.createAndJoinRelaycastChannel(channel);
+          } else {
+            await this.createAndJoinRelaycastChannel(channel, workflow.description);
+          }
+          this.log('Channel ready');
 
-        if (isResume) {
-          this.postToChannel(`Workflow **${workflow.name}** resumed — ${pendingCount} pending steps`);
-        } else {
-          this.postToChannel(
-            `Workflow **${workflow.name}** started — ${workflow.steps.length} steps, pattern: ${config.swarm.pattern}`
-          );
+          if (isResume) {
+            this.postToChannel(`Workflow **${workflow.name}** resumed — ${pendingCount} pending steps`);
+          } else {
+            this.postToChannel(
+              `Workflow **${workflow.name}** started — ${workflow.steps.length} steps, pattern: ${config.swarm.pattern}`
+            );
+          }
         }
       }
 
@@ -1517,9 +1583,18 @@ export class WorkflowRunner {
         this.emit({ type: 'run:failed', runId, error: errorMsg });
 
         const outcomes = this.collectOutcomes(stepStates, workflow.steps);
+        const summary = this.trajectory.buildRunSummary(outcomes);
+        const confidence = this.trajectory.computeConfidence(outcomes);
+        const learnings = this.trajectory.extractLearnings(outcomes);
+        const challenges = this.trajectory.extractChallenges(outcomes);
         this.postFailureReport(workflow.name, outcomes, errorMsg);
         this.logRunSummary(workflow.name, outcomes, runId);
-        await this.trajectory.abandon(errorMsg);
+        await this.trajectory.abandon(errorMsg, {
+          summary,
+          confidence,
+          learnings,
+          challenges,
+        });
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -1534,7 +1609,13 @@ export class WorkflowRunner {
       } else {
         this.emit({ type: 'run:failed', runId, error: errorMsg });
         this.postToChannel(`Workflow failed: ${errorMsg}`);
-        await this.trajectory.abandon(errorMsg);
+        const outcomes = this.collectOutcomes(stepStates, workflow.steps);
+        await this.trajectory.abandon(errorMsg, {
+          summary: this.trajectory.buildRunSummary(outcomes),
+          confidence: this.trajectory.computeConfidence(outcomes),
+          learnings: this.trajectory.extractLearnings(outcomes),
+          challenges: this.trajectory.extractChallenges(outcomes),
+        });
       }
     } finally {
       for (const stream of this.ptyLogStreams.values()) stream.end();
@@ -1549,9 +1630,11 @@ export class WorkflowRunner {
       if (this.relay) {
         this.relay.onMessageReceived = null;
         this.relay.onAgentSpawned = null;
+        this.relay.onAgentReleased = null;
         this.relay.onAgentExited = null;
         this.relay.onAgentIdle = null;
         this.relay.onWorkerOutput = null;
+        this.relay.onDeliveryUpdate = null;
       }
       this.lastIdleLog.clear();
       this.lastActivity.clear();
@@ -1867,7 +1950,7 @@ export class WorkflowRunner {
   ): Promise<void> {
     // Branch: deterministic steps execute shell commands
     if (this.isDeterministicStep(step)) {
-      return this.executeDeterministicStep(step, stepStates, runId);
+      return this.executeDeterministicStep(step, stepStates, runId, errorHandling);
     }
 
     // Branch: worktree steps set up git worktrees
@@ -1886,48 +1969,173 @@ export class WorkflowRunner {
   private async executeDeterministicStep(
     step: WorkflowStep,
     stepStates: Map<string, StepState>,
-    runId: string
+    runId: string,
+    errorHandling: ErrorHandlingConfig | undefined
   ): Promise<void> {
     const state = stepStates.get(step.name);
     if (!state) throw new Error(`Step state not found: ${step.name}`);
 
-    this.checkAborted();
+    const maxRetries = step.retries ?? errorHandling?.maxRetries ?? 0;
+    const retryDelay = errorHandling?.retryDelayMs ?? 1000;
+    let lastError: string | undefined;
 
-    // Mark step as running
-    state.row.status = 'running';
-    state.row.startedAt = new Date().toISOString();
-    await this.db.updateStep(state.row.id, {
-      status: 'running',
-      startedAt: state.row.startedAt,
-      updatedAt: new Date().toISOString(),
-    });
-    this.emit({ type: 'step:started', runId, stepName: step.name });
-    this.postToChannel(`**[${step.name}]** Started (deterministic)`);
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      this.checkAborted();
 
-    // Resolve variables in the command (e.g., {{steps.plan.output}}, {{branch-name}})
-    const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
-    let resolvedCommand = this.interpolateStepTask(step.command ?? '', stepOutputContext);
+      if (attempt > 0) {
+        this.emit({ type: 'step:retrying', runId, stepName: step.name, attempt });
+        this.postToChannel(`**[${step.name}]** Retrying (attempt ${attempt + 1}/${maxRetries + 1})`);
+        state.row.retryCount = attempt;
+        await this.db.updateStep(state.row.id, {
+          retryCount: attempt,
+          updatedAt: new Date().toISOString(),
+        });
+        await this.delay(retryDelay);
+      }
 
-    // Also resolve simple {{variable}} placeholders (already resolved in top-level config but safe to re-run)
-    resolvedCommand = resolvedCommand.replace(/\{\{([\w][\w.\-]*)\}\}/g, (_match, key: string) => {
-      if (key.startsWith('steps.')) return _match; // Already handled above
-      const value = this.resolveDotPath(key, stepOutputContext);
-      return value !== undefined ? String(value) : _match;
-    });
+      // Mark step as running
+      state.row.status = 'running';
+      state.row.startedAt = new Date().toISOString();
+      await this.db.updateStep(state.row.id, {
+        status: 'running',
+        startedAt: state.row.startedAt,
+        updatedAt: new Date().toISOString(),
+      });
+      this.emit({ type: 'step:started', runId, stepName: step.name });
+      this.postToChannel(`**[${step.name}]** Started (deterministic)`);
 
-    // Resolve step workdir (named path reference) for deterministic steps
-    const stepCwd = this.resolveStepWorkdir(step) ?? this.cwd;
+      // Resolve variables in the command (e.g., {{steps.plan.output}}, {{branch-name}})
+      const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
+      let resolvedCommand = this.interpolateStepTask(step.command ?? '', stepOutputContext);
 
-    try {
-      // Delegate to executor if present
-      if (this.executor?.executeDeterministicStep) {
-        const result = await this.executor.executeDeterministicStep(step, resolvedCommand, stepCwd);
-        const failOnError = step.failOnError !== false;
-        if (failOnError && result.exitCode !== 0) {
-          throw new Error(`Command failed with exit code ${result.exitCode}: ${result.output.slice(0, 500)}`);
+      // Also resolve simple {{variable}} placeholders (already resolved in top-level config but safe to re-run)
+      resolvedCommand = resolvedCommand.replace(/\{\{([\w][\w.\-]*)\}\}/g, (_match, key: string) => {
+        if (key.startsWith('steps.')) return _match; // Already handled above
+        const value = this.resolveDotPath(key, stepOutputContext);
+        return value !== undefined ? String(value) : _match;
+      });
+
+      // Resolve step workdir (named path reference) for deterministic steps
+      const stepCwd = this.resolveStepWorkdir(step) ?? this.cwd;
+
+      try {
+        // Delegate to executor if present
+        if (this.executor?.executeDeterministicStep) {
+          const result = await this.executor.executeDeterministicStep(step, resolvedCommand, stepCwd);
+          const failOnError = step.failOnError !== false;
+          if (failOnError && result.exitCode !== 0) {
+            throw new Error(
+              `Command failed with exit code ${result.exitCode}: ${result.output.slice(0, 500)}`
+            );
+          }
+          const output =
+            step.captureOutput !== false ? result.output : `Command completed (exit code ${result.exitCode})`;
+          if (step.verification) {
+            this.runVerification(step.verification, output, step.name);
+          }
+
+          // Mark completed
+          state.row.status = 'completed';
+          state.row.output = output;
+          state.row.completedAt = new Date().toISOString();
+          await this.db.updateStep(state.row.id, {
+            status: 'completed',
+            output,
+            completedAt: state.row.completedAt,
+            updatedAt: new Date().toISOString(),
+          });
+          await this.persistStepOutput(runId, step.name, output);
+          this.emit({ type: 'step:completed', runId, stepName: step.name, output });
+          return;
         }
-        const output =
-          step.captureOutput !== false ? result.output : `Command completed (exit code ${result.exitCode})`;
+
+        const output = await new Promise<string>((resolve, reject) => {
+          const child = cpSpawn('sh', ['-c', resolvedCommand], {
+            stdio: 'pipe',
+            cwd: stepCwd,
+            env: { ...process.env },
+          });
+
+          const stdoutChunks: string[] = [];
+          const stderrChunks: string[] = [];
+
+          // Wire abort signal
+          const abortSignal = this.abortController?.signal;
+          let abortHandler: (() => void) | undefined;
+          if (abortSignal && !abortSignal.aborted) {
+            abortHandler = () => {
+              child.kill('SIGTERM');
+              setTimeout(() => child.kill('SIGKILL'), 5000);
+            };
+            abortSignal.addEventListener('abort', abortHandler, { once: true });
+          }
+
+          // Handle timeout
+          let timedOut = false;
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          if (step.timeoutMs) {
+            timer = setTimeout(() => {
+              timedOut = true;
+              child.kill('SIGTERM');
+              setTimeout(() => child.kill('SIGKILL'), 5000);
+            }, step.timeoutMs);
+          }
+
+          child.stdout?.on('data', (chunk: Buffer) => {
+            stdoutChunks.push(chunk.toString());
+          });
+
+          child.stderr?.on('data', (chunk: Buffer) => {
+            stderrChunks.push(chunk.toString());
+          });
+
+          child.on('close', (code) => {
+            if (timer) clearTimeout(timer);
+            if (abortHandler && abortSignal) {
+              abortSignal.removeEventListener('abort', abortHandler);
+            }
+
+            if (abortSignal?.aborted) {
+              reject(new Error(`Step "${step.name}" aborted`));
+              return;
+            }
+
+            if (timedOut) {
+              reject(
+                new Error(`Step "${step.name}" timed out (no step timeout set, check global swarm.timeoutMs)`)
+              );
+              return;
+            }
+
+            const stdout = stdoutChunks.join('');
+            const stderr = stderrChunks.join('');
+
+            // Check exit code unless failOnError is explicitly false
+            const failOnError = step.failOnError !== false;
+            if (failOnError && code !== 0 && code !== null) {
+              reject(
+                new Error(
+                  `Command failed with exit code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`
+                )
+              );
+              return;
+            }
+
+            resolve(step.captureOutput !== false ? stdout : `Command completed (exit code ${code ?? 0})`);
+          });
+
+          child.on('error', (err) => {
+            if (timer) clearTimeout(timer);
+            if (abortHandler && abortSignal) {
+              abortSignal.removeEventListener('abort', abortHandler);
+            }
+            reject(new Error(`Failed to execute command: ${err.message}`));
+          });
+        });
+
+        if (step.verification) {
+          this.runVerification(step.verification, output, step.name);
+        }
 
         // Mark completed
         state.row.status = 'completed';
@@ -1939,114 +2147,21 @@ export class WorkflowRunner {
           completedAt: state.row.completedAt,
           updatedAt: new Date().toISOString(),
         });
+
+        // Persist step output
         await this.persistStepOutput(runId, step.name, output);
+
         this.emit({ type: 'step:completed', runId, stepName: step.name, output });
         return;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
       }
-
-      const output = await new Promise<string>((resolve, reject) => {
-        const child = cpSpawn('sh', ['-c', resolvedCommand], {
-          stdio: 'pipe',
-          cwd: stepCwd,
-          env: { ...process.env },
-        });
-
-        const stdoutChunks: string[] = [];
-        const stderrChunks: string[] = [];
-
-        // Wire abort signal
-        const abortSignal = this.abortController?.signal;
-        let abortHandler: (() => void) | undefined;
-        if (abortSignal && !abortSignal.aborted) {
-          abortHandler = () => {
-            child.kill('SIGTERM');
-            setTimeout(() => child.kill('SIGKILL'), 5000);
-          };
-          abortSignal.addEventListener('abort', abortHandler, { once: true });
-        }
-
-        // Handle timeout
-        let timedOut = false;
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        if (step.timeoutMs) {
-          timer = setTimeout(() => {
-            timedOut = true;
-            child.kill('SIGTERM');
-            setTimeout(() => child.kill('SIGKILL'), 5000);
-          }, step.timeoutMs);
-        }
-
-        child.stdout?.on('data', (chunk: Buffer) => {
-          stdoutChunks.push(chunk.toString());
-        });
-
-        child.stderr?.on('data', (chunk: Buffer) => {
-          stderrChunks.push(chunk.toString());
-        });
-
-        child.on('close', (code) => {
-          if (timer) clearTimeout(timer);
-          if (abortHandler && abortSignal) {
-            abortSignal.removeEventListener('abort', abortHandler);
-          }
-
-          if (abortSignal?.aborted) {
-            reject(new Error(`Step "${step.name}" aborted`));
-            return;
-          }
-
-          if (timedOut) {
-            reject(
-              new Error(`Step "${step.name}" timed out (no step timeout set, check global swarm.timeoutMs)`)
-            );
-            return;
-          }
-
-          const stdout = stdoutChunks.join('');
-          const stderr = stderrChunks.join('');
-
-          // Check exit code unless failOnError is explicitly false
-          const failOnError = step.failOnError !== false;
-          if (failOnError && code !== 0 && code !== null) {
-            reject(
-              new Error(`Command failed with exit code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`)
-            );
-            return;
-          }
-
-          resolve(step.captureOutput !== false ? stdout : `Command completed (exit code ${code ?? 0})`);
-        });
-
-        child.on('error', (err) => {
-          if (timer) clearTimeout(timer);
-          if (abortHandler && abortSignal) {
-            abortSignal.removeEventListener('abort', abortHandler);
-          }
-          reject(new Error(`Failed to execute command: ${err.message}`));
-        });
-      });
-
-      // Mark completed
-      state.row.status = 'completed';
-      state.row.output = output;
-      state.row.completedAt = new Date().toISOString();
-      await this.db.updateStep(state.row.id, {
-        status: 'completed',
-        output,
-        completedAt: state.row.completedAt,
-        updatedAt: new Date().toISOString(),
-      });
-
-      // Persist step output
-      await this.persistStepOutput(runId, step.name, output);
-
-      this.emit({ type: 'step:completed', runId, stepName: step.name, output });
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      this.postToChannel(`**[${step.name}]** Failed: ${errorMsg}`);
-      await this.markStepFailed(state, errorMsg, runId);
-      throw new Error(`Step "${step.name}" failed: ${errorMsg}`);
     }
+
+    const errorMsg = lastError ?? 'Unknown error';
+    this.postToChannel(`**[${step.name}]** Failed: ${errorMsg}`);
+    await this.markStepFailed(state, errorMsg, runId);
+    throw new Error(`Step "${step.name}" failed: ${errorMsg}`);
   }
 
   /**
@@ -2392,7 +2507,12 @@ export class WorkflowRunner {
 
         // Run verification if configured
         if (step.verification) {
-          this.runVerification(step.verification, specialistOutput, step.name, resolvedTask);
+          this.runVerification(
+            step.verification,
+            specialistOutput,
+            step.name,
+            effectiveOwner.interactive === false ? undefined : resolvedTask
+          );
         }
 
         // Every interactive step gets a review pass; pick a dedicated reviewer when available.

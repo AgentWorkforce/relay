@@ -50,6 +50,7 @@ function createHarness(options?: {
     getProjectRoot: vi.fn(() => projectRoot),
     getDataDir: vi.fn(() => dataDir),
     createClient: vi.fn(() => client),
+    createAutostartClient: vi.fn(() => client),
     readTaskFromStdin: vi.fn(async () => stdinTask),
     fileExists: vi.fn((filePath: string) => files.has(filePath)),
     readFile: vi.fn((filePath: string) => files.get(filePath) ?? ''),
@@ -108,7 +109,7 @@ describe('registerAgentManagementCommands', () => {
     const exitCode = await runCommand(program, ['spawn', 'WorkerA', 'codex', 'Ship tests']);
 
     expect(exitCode).toBe(0);
-    expect(deps.createClient).toHaveBeenCalledWith('/tmp/project');
+    expect(deps.createAutostartClient).toHaveBeenCalledWith('/tmp/project');
     expect(client.spawnPty).toHaveBeenCalledWith({
       name: 'WorkerA',
       cli: 'codex',
@@ -149,6 +150,7 @@ describe('registerAgentManagementCommands', () => {
     expect(exitCode).toBe(1);
     expect(deps.error).toHaveBeenCalledWith('Error: Task description required (as argument or via stdin)');
     expect(deps.createClient).not.toHaveBeenCalled();
+    expect(deps.createAutostartClient).not.toHaveBeenCalled();
   });
 
   it('releases an agent via AgentRelayClient', async () => {

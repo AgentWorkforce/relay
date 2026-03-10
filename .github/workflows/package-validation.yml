@@ -185,16 +185,28 @@ jobs:
         run: |
           mkdir -p release-binaries
           VERSION="$(node -p "require('./package.json').version")"
+          ARCH="$(uname -m)"
+          if [ "$ARCH" = "arm64" ]; then
+            TARGET="bun-darwin-arm64"
+            OUTPUT="agent-relay-darwin-arm64"
+          elif [ "$ARCH" = "x86_64" ]; then
+            TARGET="bun-darwin-x64"
+            OUTPUT="agent-relay-darwin-x64"
+          else
+            echo "Unsupported macOS runner architecture: $ARCH"
+            exit 1
+          fi
           bun build \
             --compile \
             --minify \
-            --target=bun-darwin-arm64 \
+            --target="$TARGET" \
             --external=better-sqlite3 \
             --external=ssh2 \
             --define="process.env.AGENT_RELAY_VERSION=\"${VERSION}\"" \
             ./dist/src/cli/index.js \
-            --outfile release-binaries/agent-relay-darwin-arm64
-          chmod +x release-binaries/agent-relay-darwin-arm64
+            --outfile "release-binaries/${OUTPUT}"
+          chmod +x "release-binaries/${OUTPUT}"
+          echo "STANDALONE_CLI=$PWD/release-binaries/${OUTPUT}" >> "$GITHUB_ENV"
 
       - name: Smoke standalone lifecycle
-        run: bash scripts/ci-standalone-smoke.sh "$PWD/release-binaries/agent-relay-darwin-arm64" "$PWD/target/release/agent-relay-broker"
+        run: bash scripts/ci-standalone-smoke.sh "$STANDALONE_CLI" "$PWD/target/release/agent-relay-broker"

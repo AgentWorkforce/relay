@@ -152,7 +152,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut terminal_query_parser = TerminalQueryParser::default();
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(1024);
-    tokio::spawn(async move {
+    let writer_task = tokio::spawn(async move {
         while let Some(frame) = out_rx.recv().await {
             if let Ok(line) = serde_json::to_string(&frame) {
                 use std::io::Write;
@@ -166,6 +166,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut running = true;
+    let mut child_exit_detected = false;
 
     let mut pty_auto = PtyAutoState::new();
 
@@ -452,6 +453,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.handle_bypass_permissions(&text, &pty).await;
                         pty_auto.handle_codex_model_prompt(&text, &pty).await;
                         pty_auto.handle_gemini_action(&text, &pty).await;
+                        pty_auto.handle_gemini_trust(&text, &pty).await;
 
                         // Accumulate echo buffer for verification matching
                         echo_buffer.push_str(&text);
@@ -634,6 +636,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             exit_payload["last_output"] = json!(trimmed);
                         }
                         let _ = send_frame(&out_tx, "agent_exit", None, exit_payload).await;
+                        child_exit_detected = true;
                         running = false;
                     }
                 }
@@ -869,6 +872,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         exit_payload["last_output"] = json!(trimmed);
                     }
                     let _ = send_frame(&out_tx, "agent_exit", None, exit_payload).await;
+                    child_exit_detected = true;
                     running = false;
                 } else {
                     // If no PTY output for a long time, the agent is likely
@@ -894,14 +898,27 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
         }
     }
 
+    if child_exit_detected {
+        let _ = send_frame(
+            &out_tx,
+            "worker_exited",
+            None,
+            json!({"code": Value::Null, "signal": Value::Null}),
+        )
+        .await;
+    }
     let _ = pty.shutdown();
-    let _ = send_frame(
-        &out_tx,
-        "worker_exited",
-        None,
-        json!({"code": Value::Null, "signal": Value::Null}),
-    )
-    .await;
+    if !child_exit_detected {
+        let _ = send_frame(
+            &out_tx,
+            "worker_exited",
+            None,
+            json!({"code": Value::Null, "signal": Value::Null}),
+        )
+        .await;
+    }
+    drop(out_tx);
+    let _ = writer_task.await;
 
     Ok(())
 }
