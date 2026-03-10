@@ -42,6 +42,7 @@ pub enum ListenApiRequest {
     },
     Release {
         name: String,
+        reason: Option<String>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     List {
@@ -493,12 +494,16 @@ async fn listen_api_threads(
 async fn listen_api_release(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
+    body: Option<axum::Json<Value>>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let reason = body
+        .and_then(|b| b.get("reason").and_then(|v| v.as_str()).map(String::from));
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
         .tx
         .send(ListenApiRequest::Release {
             name: name.clone(),
+            reason,
             reply: reply_tx,
         })
         .await

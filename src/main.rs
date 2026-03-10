@@ -1879,7 +1879,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 }
                             }
                         }
-                        ListenApiRequest::Release { name, reply } => {
+                        ListenApiRequest::Release { name, reason, reply } => {
+                            if let Some(ref r) = reason {
+                                tracing::info!(worker = %name, reason = %r, "releasing agent via HTTP API");
+                            }
                             // Unregister from supervisor before release to prevent
                             // auto-restart of intentionally released agents.
                             workers.supervisor.unregister(&name);
