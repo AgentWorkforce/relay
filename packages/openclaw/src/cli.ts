@@ -260,8 +260,8 @@ async function runAddWorkspace(
 
   const config = await addWorkspace({
     api_key: apiKey,
-    workspace_alias: flags['alias'],
-    workspace_id: flags['workspace-id'],
+    ...(flags['alias'] ? { workspace_alias: flags['alias'] } : {}),
+    ...(flags['workspace-id'] ? { workspace_id: flags['workspace-id'] } : {}),
     ...(flags['default'] !== undefined ? { is_default: flags['default'] === 'true' } : {}),
   });
 
