@@ -7,7 +7,7 @@ export interface SpawnOptions {
   channels?: string[];
   /** Agent role description. */
   role?: string;
-  /** Model reference (e.g. "openai-codex/gpt-5.3-codex"). */
+  /** Model reference (e.g. "openai-codex/gpt-5.4"). */
   model?: string;
   /** System prompt / task description. */
   systemPrompt?: string;

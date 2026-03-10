@@ -2,7 +2,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export interface OpenClawConfigOptions {
-  /** Fully-qualified model ref, e.g. "openai-codex/gpt-5.3-codex". */
+  /** Fully-qualified model ref, e.g. "openai-codex/gpt-5.4". */
   modelRef: string;
   /** Path to ~/.openclaw/ (default: $HOME/.openclaw). */
   openclawHome?: string;

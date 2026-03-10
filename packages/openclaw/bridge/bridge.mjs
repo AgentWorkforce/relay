@@ -43,7 +43,7 @@ const RECONNECT_DELAY_MS = 2000;
 const MAX_RECONNECT_ATTEMPTS = 15;
 const OPENCLAW_NAME = process.env.OPENCLAW_NAME ?? process.env.AGENT_NAME ?? 'agent';
 const OPENCLAW_WORKSPACE_ID = process.env.OPENCLAW_WORKSPACE_ID ?? 'unknown';
-const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL ?? 'openai-codex/gpt-5.3-codex';
+const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL ?? 'openai-codex/gpt-5.4';
 
 let ws = null;
 let connected = false; // gateway handshake complete

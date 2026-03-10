@@ -1,13 +1,13 @@
-const DEFAULT_MODEL = 'openai-codex/gpt-5.3-codex';
+const DEFAULT_MODEL = 'openai-codex/gpt-5.4';
 
 /**
  * Normalize a raw model string into a fully-qualified "provider/model" reference.
  *
  * Examples:
- *   normalizeModelRef('gpt-5.3-codex', 'openai-codex') → 'openai-codex/gpt-5.3-codex'
+ *   normalizeModelRef('gpt-5.4', 'openai-codex') → 'openai-codex/gpt-5.4'
  *   normalizeModelRef('claude-opus-4-6')                → 'anthropic/claude-opus-4-6'
- *   normalizeModelRef('openai-codex/gpt-5.3-codex')     → 'openai-codex/gpt-5.3-codex'
- *   normalizeModelRef(undefined)                         → 'openai-codex/gpt-5.3-codex'
+ *   normalizeModelRef('openai-codex/gpt-5.4')           → 'openai-codex/gpt-5.4'
+ *   normalizeModelRef(undefined)                         → 'openai-codex/gpt-5.4'
  */
 export function normalizeModelRef(rawModel?: string, providerHint?: string): string {
   const model = (rawModel ?? '').trim().toLowerCase();

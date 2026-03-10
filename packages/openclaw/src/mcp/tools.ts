@@ -31,7 +31,7 @@ export function getToolDefinitions(): McpToolDefinition[] {
           },
           model: {
             type: 'string',
-            description: 'Model reference (e.g. "openai-codex/gpt-5.3-codex"). Defaults to parent model.',
+            description: 'Model reference (e.g. "openai-codex/gpt-5.4"). Defaults to parent model.',
           },
           channels: {
             type: 'array',

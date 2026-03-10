@@ -13,7 +13,7 @@ import {
 } from '../identity/files.js';
 
 export interface RuntimeSetupOptions {
-  /** Raw model string (e.g. "gpt-5.3-codex"). Defaults to env OPENCLAW_MODEL. */
+  /** Raw model string (e.g. "gpt-5.4"). Defaults to env OPENCLAW_MODEL. */
   model?: string;
   /** Agent name. Defaults to env OPENCLAW_NAME or AGENT_NAME. */
   name?: string;
@@ -39,7 +39,7 @@ export async function runtimeSetup(options: RuntimeSetupOptions = {}): Promise<{
   workspaceId: string;
 }> {
   const home = options.homeDir ?? process.env.HOME ?? '/home/node';
-  const model = options.model ?? process.env.OPENCLAW_MODEL ?? 'openai-codex/gpt-5.3-codex';
+  const model = options.model ?? process.env.OPENCLAW_MODEL ?? 'openai-codex/gpt-5.4';
   const name = options.name ?? process.env.OPENCLAW_NAME ?? process.env.AGENT_NAME ?? 'agent';
   const workspaceId = options.workspaceId ?? process.env.OPENCLAW_WORKSPACE_ID ?? 'unknown';
   const role = options.role ?? process.env.OPENCLAW_ROLE ?? 'general';

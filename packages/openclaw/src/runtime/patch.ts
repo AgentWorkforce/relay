@@ -17,7 +17,7 @@ import { existsSync } from 'node:fs';
  *   - "Claude Code" branding
  *
  * @param distDir - Path to OpenClaw's dist directory (e.g. /usr/lib/node_modules/openclaw/dist)
- * @param modelRef - Full model reference (e.g. "openai-codex/gpt-5.3-codex")
+ * @param modelRef - Full model reference (e.g. "openai-codex/gpt-5.4")
  * @returns Number of files patched, or 0 if dist not found or patching skipped
  */
 export async function patchOpenClawDist(distDir: string, modelRef: string): Promise<number> {
@@ -26,7 +26,7 @@ export async function patchOpenClawDist(distDir: string, modelRef: string): Prom
     return 0;
   }
 
-  // Extract bare model ID (e.g. "gpt-5.3-codex" from "openai-codex/gpt-5.3-codex")
+  // Extract bare model ID (e.g. "gpt-5.4" from "openai-codex/gpt-5.4")
   const modelId = modelRef.includes('/') ? modelRef.split('/').pop()! : modelRef;
 
   // Order matters: replace fully-qualified patterns before bare model IDs,
