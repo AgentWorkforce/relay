@@ -440,10 +440,14 @@ export class AgentRelayClient {
     const child = this.child;
     const wait = this.exitPromise ?? Promise.resolve();
     const waitForExit = async (timeoutMs: number): Promise<boolean> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const result = await Promise.race([
         wait.then(() => true),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), timeoutMs);
+        }),
       ]);
+      if (timer !== undefined) clearTimeout(timer);
       return result;
     };
 
