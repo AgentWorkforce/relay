@@ -3448,6 +3448,12 @@ export class WorkflowRunner {
           throw new Error(`Step "${step.name}" timed out after ${timeoutMs ?? 'unknown'}ms`);
         }
       }
+
+      if (exitResult === 'released') {
+        throw new Error(
+          `Step "${step.name}" failed — agent was force-released after idle timeout without completing`
+        );
+      }
     } finally {
       // Snapshot PTY chunks before cleanup — we need them for output reading below
       ptyChunks = this.ptyOutputBuffers.get(agentName) ?? [];
@@ -3476,9 +3482,7 @@ export class WorkflowRunner {
         ? await readFile(summaryPath, 'utf-8')
         : exitResult === 'timeout'
           ? 'Agent completed (released after idle timeout)'
-          : exitResult === 'released'
-            ? 'Agent completed (force-released after idle nudging)'
-            : `Agent exited (${exitResult})`;
+          : `Agent exited (${exitResult})`;
     }
 
     return output;
