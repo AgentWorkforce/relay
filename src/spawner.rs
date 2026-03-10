@@ -38,7 +38,7 @@ impl Spawner {
         child_name: &str,
         cli: &str,
         extra_args: &[String],
-        env_vars: &[(&str, &str)],
+        env_vars: &[(String, String)],
         parent: Option<&str>,
         agent_token: Option<&str>,
     ) -> Result<u32> {
@@ -59,12 +59,12 @@ impl Spawner {
         // Inject MCP config for CLIs that support dynamic MCP configuration.
         let api_key = env_vars
             .iter()
-            .find(|(k, _)| *k == "RELAY_API_KEY")
-            .map(|(_, v)| *v);
+            .find(|(k, _)| k == "RELAY_API_KEY")
+            .map(|(_, v)| v.as_str());
         let base_url = env_vars
             .iter()
-            .find(|(k, _)| *k == "RELAY_BASE_URL")
-            .map(|(_, v)| *v);
+            .find(|(k, _)| k == "RELAY_BASE_URL")
+            .map(|(_, v)| v.as_str());
         let cwd = std::env::current_dir().unwrap_or_default();
         let mcp_args = configure_relaycast_mcp_with_token(
             &resolved_cli,
@@ -99,6 +99,8 @@ impl Spawner {
         // Disable Claude Code auto-suggestions to prevent accidental acceptance
         // when relay messages are injected into the PTY.
         cmd.env("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false");
+        // Disable Claude Code auto-updater — it fails in sandboxes and can crash the process.
+        cmd.env("DISABLE_AUTOUPDATER", "1");
 
         #[cfg(unix)]
         unsafe {
@@ -200,19 +202,44 @@ pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> R
     Ok(())
 }
 
-pub fn spawn_env_vars<'a>(
-    name: &'a str,
-    api_key: &'a str,
-    base_url: &'a str,
-    channels: &'a str,
-) -> [(&'a str, &'a str); 5] {
-    [
-        ("RELAY_AGENT_NAME", name),
-        ("RELAY_API_KEY", api_key),
-        ("RELAY_BASE_URL", base_url),
-        ("RELAY_CHANNELS", channels),
-        ("RELAY_STRICT_AGENT_NAME", "1"),
-    ]
+pub fn spawn_env_vars(
+    name: &str,
+    api_key: &str,
+    base_url: &str,
+    channels: &str,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut env = vec![
+        ("RELAY_AGENT_NAME".to_string(), name.to_string()),
+        ("RELAY_API_KEY".to_string(), api_key.to_string()),
+        ("RELAY_BASE_URL".to_string(), base_url.to_string()),
+        ("RELAY_CHANNELS".to_string(), channels.to_string()),
+        ("RELAY_STRICT_AGENT_NAME".to_string(), "1".to_string()),
+    ];
+    if let Some(workspaces_json) = workspaces_json
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        env.push((
+            "RELAY_WORKSPACES_JSON".to_string(),
+            workspaces_json.to_string(),
+        ));
+    }
+    if let Some(default_workspace) = default_workspace
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        env.push((
+            "RELAY_DEFAULT_WORKSPACE".to_string(),
+            default_workspace.to_string(),
+        ));
+        env.push((
+            "RELAY_WORKSPACE_ID".to_string(),
+            default_workspace.to_string(),
+        ));
+    }
+    env
 }
 
 #[cfg(test)]
@@ -255,7 +282,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_wrap_creates_child_and_tracks_owner() {
         let mut spawner = Spawner::new();
-        let env_vars = [("RELAY_AGENT_NAME", "TestChild")];
+        let env_vars = vec![("RELAY_AGENT_NAME".to_string(), "TestChild".to_string())];
         let pid = spawner
             .spawn_wrap_with_token(
                 "TestChild",
@@ -279,7 +306,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_wrap_rejects_duplicate_name() {
         let mut spawner = Spawner::new();
-        let env_vars = [("RELAY_AGENT_NAME", "Dup")];
+        let env_vars = vec![("RELAY_AGENT_NAME".to_string(), "Dup".to_string())];
         spawner
             .spawn_wrap_with_token("Dup", "sleep", &["30".to_string()], &env_vars, None, None)
             .await
@@ -295,7 +322,7 @@ mod tests {
     #[cfg(unix)]
     async fn spawn_wrap_workers_are_session_leaders() {
         let mut spawner = Spawner::new();
-        let env_vars = [("RELAY_AGENT_NAME", "ReattachWorker")];
+        let env_vars = vec![("RELAY_AGENT_NAME".to_string(), "ReattachWorker".to_string())];
         let pid = spawner
             .spawn_wrap_with_token(
                 "ReattachWorker",

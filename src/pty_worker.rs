@@ -2,8 +2,8 @@ use super::*;
 use crate::helpers::{
     check_echo_in_output, current_timestamp_ms, delivery_injected_event_payload,
     delivery_queued_event_payload, detect_cli_ready, floor_char_boundary,
-    format_injection_for_worker, parse_cli_command, parse_continuity_command, ActivityDetector,
-    DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
+    format_injection_for_worker_with_workspace, parse_cli_command, parse_continuity_command,
+    ActivityDetector, DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
     ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
 };
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
@@ -134,6 +134,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // Disable Claude Code auto-suggestions to prevent accidental acceptance during injection.
     #[allow(deprecated)]
     std::env::set_var("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false");
+    // Disable Claude Code auto-updater — it fails in sandboxes and can crash the process.
+    #[allow(deprecated)]
+    std::env::set_var("DISABLE_AUTOUPDATER", "1");
 
     let (resolved_cli, inline_cli_args) = parse_cli_command(&cmd.cli)
         .with_context(|| format!("invalid CLI command '{}'", cmd.cli))?;
@@ -665,7 +668,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             .map(|timestamp| timestamp.elapsed() >= MCP_REMINDER_COOLDOWN)
                             .unwrap_or(true)
                     };
-                    let injection = format_injection_for_worker(
+                    let injection = format_injection_for_worker_with_workspace(
                         &pending.delivery.from,
                         &pending.delivery.event_id,
                         &pending.delivery.body,
@@ -673,6 +676,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         include_mcp_reminder,
                         worker_pre_registered,
                         assigned_worker_name.as_deref(),
+                        pending.delivery.workspace_id.as_deref(),
+                        pending.delivery.workspace_alias.as_deref(),
                     );
                     if include_mcp_reminder {
                         last_mcp_reminder_at = Some(Instant::now());
@@ -712,6 +717,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         attempts: 1,
                         max_attempts: 1,
                         request_id: pending.request_id,
+                        workspace_id: pending.delivery.workspace_id.clone(),
+                        workspace_alias: pending.delivery.workspace_alias.clone(),
                         from: pending.delivery.from,
                         body: pending.delivery.body,
                         target: pending.delivery.target,

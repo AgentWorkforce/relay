@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { CoreDependencies, CoreFileSystem } from '../commands/core.js';
+import { brokerPidFilename } from './broker-lifecycle.js';
 
 const SNIPPET_MARKER_START_PREFIX = '<!-- prpm:snippet:start @agent-relay/agent-relay-snippet@';
 const SNIPPET_MARKER_END_PREFIX = '<!-- prpm:snippet:end @agent-relay/agent-relay-snippet@';
@@ -198,11 +199,16 @@ export async function runUninstallCommand(
   deps: CoreDependencies
 ): Promise<void> {
   const paths = deps.getProjectPaths();
-  const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  const brokerPidPath = path.join(paths.dataDir, brokerPidFilename(paths.projectRoot));
+  const legacyBrokerPidPath = path.join(paths.dataDir, 'broker.pid');
   const runtimePath = path.join(paths.dataDir, 'runtime.json');
 
-  if (deps.fs.existsSync(brokerPidPath)) {
-    const pidRaw = deps.fs.readFileSync(brokerPidPath, 'utf-8').trim();
+  // Check per-broker-name PID first, fall back to legacy broker.pid
+  for (const pidPath of [brokerPidPath, legacyBrokerPidPath]) {
+    if (!deps.fs.existsSync(pidPath)) {
+      continue;
+    }
+    const pidRaw = deps.fs.readFileSync(pidPath, 'utf-8').trim();
     const pid = Number.parseInt(pidRaw, 10);
     if (!Number.isNaN(pid) && pid > 0) {
       try {
@@ -210,6 +216,7 @@ export async function runUninstallCommand(
       } catch {
         // Ignore dead processes.
       }
+      break;
     }
   }
 
@@ -219,12 +226,13 @@ export async function runUninstallCommand(
   if (isDryRun) {
     if (options.keepData) {
       deps.log(`[dry-run] Would remove: ${brokerPidPath}`);
+      deps.log(`[dry-run] Would remove: ${legacyBrokerPidPath}`);
       deps.log(`[dry-run] Would remove: ${runtimePath}`);
     } else {
       deps.log(`[dry-run] Would remove directory: ${paths.dataDir}`);
     }
   } else if (options.keepData) {
-    for (const filePath of [brokerPidPath, runtimePath]) {
+    for (const filePath of [brokerPidPath, legacyBrokerPidPath, runtimePath]) {
       if (!deps.fs.existsSync(filePath)) {
         continue;
       }
@@ -258,6 +266,56 @@ export async function runUninstallCommand(
   if (options.zed) {
     const serverName = options.zedName || DEFAULT_ZED_SERVER_NAME;
     removeZedConfig(serverName, deps.fs, isDryRun, deps.log);
+  }
+
+  // --- Binary removal (standalone binaries + npm packages) ---
+  const homeDir = os.homedir();
+  const standaloneBinDir = path.join(homeDir, '.local', 'bin');
+  const installBinDir = path.join(homeDir, '.agent-relay', 'bin');
+
+  // Remove standalone binaries from ~/.local/bin
+  for (const binaryName of ['agent-relay', 'relay-dashboard-server', 'relay-acp']) {
+    const binPath = path.join(standaloneBinDir, binaryName);
+    if (deps.fs.existsSync(binPath)) {
+      if (isDryRun) {
+        deps.log(`[dry-run] Would remove binary: ${binPath}`);
+      } else {
+        try {
+          deps.fs.unlinkSync(binPath);
+          deps.log(`Removed ${binPath}`);
+        } catch {
+          // Best-effort.
+        }
+      }
+    }
+  }
+
+  // Remove broker binary from ~/.agent-relay/bin/ (not the parent dir which stores global data)
+  if (deps.fs.existsSync(installBinDir)) {
+    if (isDryRun) {
+      deps.log(`[dry-run] Would remove directory: ${installBinDir}`);
+    } else {
+      try {
+        deps.fs.rmSync(installBinDir, { recursive: true, force: true });
+        deps.log(`Removed ${installBinDir}`);
+      } catch {
+        // Best-effort.
+      }
+    }
+  }
+
+  // Remove npm-installed packages
+  if (!isDryRun) {
+    for (const pkg of ['agent-relay', '@agent-relay/dashboard-server', '@agent-relay/acp-bridge']) {
+      try {
+        await deps.execCommand(`npm uninstall -g ${pkg}`);
+        deps.log(`Uninstalled npm package: ${pkg}`);
+      } catch {
+        // Package may not be installed via npm — that's fine.
+      }
+    }
+  } else {
+    deps.log('[dry-run] Would run: npm uninstall -g agent-relay @agent-relay/dashboard-server @agent-relay/acp-bridge');
   }
 
   // --- Snippet cleanup (CLAUDE.md, GEMINI.md, AGENTS.md) ---

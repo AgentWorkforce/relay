@@ -125,6 +125,8 @@ mod tests {
 
     fn req(id: &str, from: &str, target: &str, body: &str) -> InjectRequest {
         InjectRequest {
+            workspace_id: "ws_test".into(),
+            workspace_alias: Some("test".into()),
             id: id.into(),
             from: from.into(),
             target: target.into(),

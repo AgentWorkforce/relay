@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use relay_broker::replay_buffer::ReplayBuffer;
+use relay_broker::{multi_workspace::WorkspaceMembershipSummary, replay_buffer::ReplayBuffer};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc};
@@ -43,6 +43,8 @@ pub enum ListenApiRequest {
         text: String,
         from: Option<String>,
         thread_id: Option<String>,
+        workspace_id: Option<String>,
+        workspace_alias: Option<String>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
 }
@@ -57,6 +59,8 @@ struct ListenApiState {
     /// endpoint so the dashboard can bootstrap Relaycast calls without a
     /// relaycast.json or env var.
     workspace_key: Option<String>,
+    memberships: Vec<WorkspaceMembershipSummary>,
+    default_workspace_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -82,6 +86,8 @@ pub fn listen_api_router(
     events_tx: broadcast::Sender<String>,
     replay_buffer: ReplayBuffer,
     workspace_key: Option<String>,
+    memberships: Vec<WorkspaceMembershipSummary>,
+    default_workspace_id: Option<String>,
 ) -> axum::Router {
     listen_api_router_with_auth(
         tx,
@@ -89,6 +95,8 @@ pub fn listen_api_router(
         configured_broker_api_key(),
         replay_buffer,
         workspace_key,
+        memberships,
+        default_workspace_id,
     )
 }
 
@@ -105,6 +113,8 @@ fn listen_api_router_with_auth(
     broker_api_key: Option<String>,
     replay_buffer: ReplayBuffer,
     workspace_key: Option<String>,
+    memberships: Vec<WorkspaceMembershipSummary>,
+    default_workspace_id: Option<String>,
 ) -> axum::Router {
     use axum::{middleware, routing, Router};
 
@@ -118,6 +128,8 @@ fn listen_api_router_with_auth(
         workspace_key: workspace_key
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
+        memberships,
+        default_workspace_id,
     };
 
     let protected = Router::new()
@@ -150,27 +162,44 @@ fn listen_api_router_with_auth(
 // Endpoints
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn listen_api_health() -> axum::Json<Value> {
+pub(crate) fn listen_api_health_payload(
+    default_workspace_id: Option<String>,
+    memberships: Vec<WorkspaceMembershipSummary>,
+) -> Value {
     let startup_error_code = std::env::var("AGENT_RELAY_STARTUP_ERROR_CODE").ok();
     let status = startup_health_status(startup_error_code.as_deref());
+    let workspace_id = default_workspace_id
+        .clone()
+        .or_else(|| {
+            memberships
+                .first()
+                .map(|membership| membership.workspace_id.clone())
+        })
+        .unwrap_or_else(|| "ws_unknown".to_string());
 
-    axum::Json(json!({
+    json!({
         "status": status,
         "service": "agent-relay-listen",
         "version": env!("CARGO_PKG_VERSION"),
         "uptimeMs": 0,
-        "workspaceId": std::env::var("RELAY_WORKSPACE_ID")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .filter(|value| value.starts_with("ws_"))
-            .unwrap_or_else(|| "ws_unknown".to_string()),
+        "workspaceId": workspace_id,
+        "defaultWorkspaceId": default_workspace_id,
+        "memberships": memberships,
         "agentCount": 0,
         "pendingDeliveryCount": 0,
         "wsConnections": 0,
         "memoryMb": 0,
         "relaycastConnected": startup_error_code.is_none(),
-    }))
+    })
+}
+
+async fn listen_api_health(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> axum::Json<Value> {
+    axum::Json(listen_api_health_payload(
+        state.default_workspace_id,
+        state.memberships,
+    ))
 }
 
 /// Authenticated endpoint that returns broker configuration, including the
@@ -181,6 +210,8 @@ async fn listen_api_config(
 ) -> axum::Json<Value> {
     axum::Json(json!({
         "workspaceKey": state.workspace_key,
+        "defaultWorkspaceId": state.default_workspace_id,
+        "memberships": state.memberships,
     }))
 }
 
@@ -433,12 +464,28 @@ async fn listen_api_send(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let workspace_id = body
+        .get("workspaceId")
+        .or_else(|| body.get("workspace_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let workspace_alias = body
+        .get("workspaceAlias")
+        .or_else(|| body.get("workspace_alias"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     tracing::info!(
         target = "relay_broker::http_api",
         request_id = %request_id,
         to = %to,
         from = ?from,
         thread_id = ?thread_id,
+        workspace_id = ?workspace_id,
+        workspace_alias = ?workspace_alias,
         "received HTTP API send request"
     );
 
@@ -465,6 +512,8 @@ async fn listen_api_send(
             text,
             from,
             thread_id,
+            workspace_id,
+            workspace_alias,
             reply: reply_tx,
         })
         .await
@@ -494,12 +543,21 @@ async fn listen_api_send(
             (axum::http::StatusCode::OK, axum::Json(val))
         }
         Ok(Ok(Err(err))) => {
-            let error = err.to_string();
-            let status = if error.contains("Agent \"") && error.contains("not found") {
+            let raw_error = err.to_string();
+            let status = if raw_error.starts_with("ambiguous_workspace:")
+                || raw_error.starts_with("workspace_not_found:")
+            {
+                axum::http::StatusCode::BAD_REQUEST
+            } else if raw_error.contains("Agent \"") && raw_error.contains("not found") {
                 axum::http::StatusCode::NOT_FOUND
             } else {
                 axum::http::StatusCode::BAD_GATEWAY
             };
+            let error = raw_error
+                .strip_prefix("ambiguous_workspace:")
+                .or_else(|| raw_error.strip_prefix("workspace_not_found:"))
+                .unwrap_or(&raw_error)
+                .to_string();
             tracing::warn!(
                 target = "relay_broker::http_api",
                 request_id = %request_id,
@@ -876,6 +934,8 @@ mod auth_tests {
                 events_tx,
                 broker_api_key.map(ToString::to_string),
                 replay_buffer,
+                None,
+                vec![],
                 None,
             ),
             rx,

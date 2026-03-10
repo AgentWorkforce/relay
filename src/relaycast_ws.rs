@@ -601,6 +601,68 @@ impl RelaycastHttpClient {
         }
     }
 
+    /// Fetch ALL DM messages across all conversations in the workspace.
+    /// Uses the workspace-level relay client to see all DM conversations,
+    /// not just those involving the broker agent.
+    pub async fn get_all_dms(&self, limit_per_conversation: usize) -> Result<Vec<Value>> {
+        let relay = match (*self.relay).as_ref() {
+            Some(relay) => relay,
+            None => {
+                tracing::debug!("no relay client available, falling back to agent-level get_dms");
+                return self.get_dms(&self.agent_name, limit_per_conversation).await;
+            }
+        };
+
+        let conversations = match relay.all_dm_conversations().await {
+            Ok(convos) => convos,
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to fetch all DM conversations");
+                return Ok(vec![]);
+            }
+        };
+
+        let mut all_messages = Vec::new();
+        let opts = MessageListQuery {
+            limit: Some(limit_per_conversation as i32),
+            ..Default::default()
+        };
+
+        for convo in conversations {
+            match relay.dm_messages(&convo.id, Some(opts.clone())).await {
+                Ok(messages) => {
+                    for msg in messages {
+                        // Add conversation_id so build_thread_infos can group them
+                        let mut val = match serde_json::to_value(&msg) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        if let Some(obj) = val.as_object_mut() {
+                            obj.insert(
+                                "conversation_id".to_string(),
+                                serde_json::Value::String(convo.id.clone()),
+                            );
+                            // Include participants so thread names can be derived
+                            obj.insert(
+                                "participants".to_string(),
+                                serde_json::to_value(&convo.participants).unwrap_or_default(),
+                            );
+                        }
+                        all_messages.push(val);
+                    }
+                }
+                Err(error) => {
+                    tracing::debug!(
+                        conversation_id = %convo.id,
+                        error = %error,
+                        "failed to fetch DM messages for conversation"
+                    );
+                }
+            }
+        }
+
+        Ok(all_messages)
+    }
+
     /// Resolve participant names for a DM conversation ID.
     pub async fn get_dm_participants(&self, conversation_id: &str) -> Result<Vec<String>> {
         let participants = if let Some(relay) = (*self.relay).as_ref() {

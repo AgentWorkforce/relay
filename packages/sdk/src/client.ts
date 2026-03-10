@@ -84,6 +84,8 @@ export interface SendMessageInput {
   text: string;
   from?: string;
   threadId?: string;
+  workspaceId?: string;
+  workspaceAlias?: string;
   priority?: number;
   data?: Record<string, unknown>;
 }
@@ -220,6 +222,10 @@ export class AgentRelayClient {
     return () => {
       this.stderrListeners.delete(listener);
     };
+  }
+
+  get brokerPid(): number | undefined {
+    return this.child?.pid;
   }
 
   async start(): Promise<void> {
@@ -385,6 +391,8 @@ export class AgentRelayClient {
         text: input.text,
         from: input.from,
         thread_id: input.threadId,
+        workspace_id: input.workspaceId,
+        workspace_alias: input.workspaceAlias,
         priority: input.priority,
         data: input.data,
       });
@@ -496,7 +504,12 @@ export class AgentRelayClient {
     });
 
     this.exitPromise = new Promise<void>((resolve) => {
-      child.once('exit', (code, signal) => {
+      // Use 'close' instead of 'exit' so that all buffered stderr/stdout
+      // data has been consumed before we build the error message.  The
+      // 'exit' event fires when the process terminates, but stdio streams
+      // may still have unread data; 'close' fires after both the process
+      // exits AND all stdio streams have ended.
+      child.once('close', (code, signal) => {
         const detail = this.lastStderrLine ? `: ${this.lastStderrLine}` : '';
         const error = new AgentRelayProcessError(
           `broker exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})${detail}`
@@ -734,8 +747,10 @@ function getLatestVersionSync(): string | null {
       timeout: 15_000,
       stdio: ['pipe', 'pipe', 'pipe'],
     }).toString();
-    const match = result.match(/"tag_name"\s*:\s*"v?([^"]+)"/);
-    return match?.[1] ?? null;
+    const match = result.match(/"tag_name"\s*:\s*"([^"]+)"/);
+    if (!match?.[1]) return null;
+    // Strip tag prefixes: "openclaw-v3.1.18" -> "3.1.18", "v3.1.18" -> "3.1.18"
+    return match[1].replace(/^openclaw-/, '').replace(/^v/, '');
   } catch {
     return null;
   }
@@ -775,8 +790,16 @@ function installBrokerBinary(): string {
     });
     fs.chmodSync(targetPath, 0o755);
 
-    // macOS: re-sign to avoid Gatekeeper issues
+    // macOS: strip quarantine attribute and re-sign to avoid Gatekeeper issues
     if (process.platform === 'darwin') {
+      try {
+        execSync(`xattr -d com.apple.quarantine "${targetPath}" 2>/dev/null || true`, {
+          timeout: 10_000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      } catch {
+        // Non-fatal
+      }
       try {
         execSync(`codesign --force --sign - "${targetPath}"`, {
           timeout: 10_000,

@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto';
 
 import { RelayCast } from '@relaycast/sdk';
 
-import { detectOpenClaw, saveGatewayConfig } from './config.js';
+import { detectOpenClaw, saveGatewayConfig, addWorkspace, loadWorkspacesConfig, buildWorkspacesJson } from './config.js';
 import { InboundGateway } from './gateway.js';
 import { DEFAULT_OPENCLAW_GATEWAY_PORT, type GatewayConfig } from './types.js';
 
@@ -353,13 +353,30 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   };
   await saveGatewayConfig(gatewayConfig);
 
+  // Register this workspace in the multi-workspace config
+  await addWorkspace({
+    api_key: apiKey,
+    workspace_alias: clawName,
+    is_default: true,
+  });
+
   // Register MCP servers via mcporter (global binary or npx fallback)
   let mcpConfigured = false;
   {
+    // Build env args for mcporter, including multi-workspace JSON if available
+    const wsConfig = await loadWorkspacesConfig();
+    const workspacesJson = wsConfig ? buildWorkspacesJson(wsConfig) : null;
+
     const envArgs = [
       '--env', `RELAY_API_KEY=${apiKey}`,
       ...(baseUrl !== 'https://api.relaycast.dev'
         ? ['--env', `RELAY_BASE_URL=${baseUrl}`]
+        : []),
+      ...(workspacesJson
+        ? ['--env', `RELAY_WORKSPACES_JSON=${workspacesJson}`]
+        : []),
+      ...(wsConfig?.default_workspace
+        ? ['--env', `RELAY_DEFAULT_WORKSPACE=${wsConfig.default_workspace}`]
         : []),
     ];
 
@@ -400,11 +417,18 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
 
         mcpConfigured = true;
 
-        // Register this claw via the Relaycast SDK. registerOrRotate handles
-        // the 409 "already exists" case by rotating the token automatically.
+        // Register this claw via the Relaycast SDK and fetch the current
+        // usable agent token for the named claw.
+        //
+        // IMPORTANT: use registerOrGet here, not registerOrRotate.
+        // Re-running setup is a common, user-facing recovery step. Rotating the
+        // token during setup can invalidate an already-running MCP server or any
+        // other local process that still has the previous token, producing the
+        // confusing partial-failure mode where list/read works (workspace key)
+        // but post/send fails with "Invalid agent token".
         try {
           const relaycast = new RelayCast({ apiKey, baseUrl });
-          const registered = await relaycast.agents.registerOrRotate({
+          const registered = await relaycast.agents.registerOrGet({
             name: clawName,
             type: 'agent',
           });
@@ -530,6 +554,14 @@ Once installed, use the Relaycast MCP tools:
 - \`send_dm\` — Direct message another agent
 - \`reply_to_thread\` — Reply in a thread
 - \`check_inbox\` — See unread messages
+
+## Multi-Workspace
+
+\`\`\`bash
+relay-openclaw add-workspace <key> --alias <name>   # Add a workspace
+relay-openclaw list-workspaces                       # List all workspaces
+relay-openclaw switch-workspace <alias>              # Switch default workspace
+\`\`\`
 
 ## Commands
 

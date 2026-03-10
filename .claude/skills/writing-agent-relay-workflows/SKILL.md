@@ -344,86 +344,108 @@ Even if a wave has 10 ready steps, the runner will only start 5 at a time and pi
 | 5–10                   | 5                |
 | 10+                    | 6–8 max          |
 
-## Scrub Steps: Taming Interactive Lead Output
+## Phase Count: Keep Workflows Compact
 
-Interactive agents (PTY mode) produce massive output — TUI chrome, progress indicators, tool call
-traces, and verbose reasoning. A single interactive lead step can produce 100KB–10MB of captured
-output. When this gets chained via `{{steps.lead-step.output}}` into downstream steps, it:
+**Limit workflows to 3–4 phases.** Each phase is a sequential barrier — the next phase can't start until the previous one finishes. More phases means more serialization, more wall-clock time, and more chances for context drift between agents.
 
-1. **Overwhelms downstream agents** — they get a 240KB prompt and spiral
-2. **Causes timeouts** — the next lead step tries to process megabytes of PTY noise
-3. **Breaks verification** — the token exists somewhere in 10MB of output but the agent never exits
+| Phases | Verdict  | Notes                                                       |
+| ------ | -------- | ----------------------------------------------------------- |
+| 2–3    | Ideal    | Tight feedback loops, agents see recent context              |
+| 4      | Okay     | Acceptable for large projects with clear module boundaries   |
+| 5+     | Too many | Agents lose context, reviews find "FILE NOT FOUND" errors    |
+| 8+     | Never    | Each agent works blind — integration issues multiply         |
 
-### The fix: deterministic scrub steps
+**Why fewer phases work better:**
 
-After every interactive lead step that produces structured output, add a **deterministic scrub step**
-that extracts the clean artifact. Have the lead write its output to a file, then the scrub step
-reads that file. Downstream steps chain from the scrub step, not the lead.
+- Non-interactive agents can't see each other's output. Each phase boundary is a hard wall.
+- Reflection/review steps only add value if the files actually exist on disk. With many phases, early agents write files that later agents can't find (wrong cwd, wrong paths).
+- Consolidating related work into one phase lets parallel workers share a lead who can coordinate and verify.
+
+**How to consolidate:**
+
+Instead of Phase 1 (auth) → Phase 2 (volumes) → Phase 3 (storage) → Phase 4 (executor), group by integration surface:
 
 ```yaml
-# Lead writes structured output to a file
-- name: propose-boundary
-  type: agent
-  agent: lead
-  dependsOn: [analyze]
-  task: |
-    Write your boundary proposal to packages/BOUNDARY.md with this structure:
-    # Package Boundary
-    ## Package A owns
-    - ...
-    ## Package B owns
-    - ...
-    When done, run: echo "BOUNDARY_PROPOSED"
-  verification:
-    type: output_contains
-    value: BOUNDARY_PROPOSED
-
-# Deterministic step reads the clean file — no PTY noise
-- name: scrub-proposal
-  type: deterministic
-  dependsOn: [propose-boundary]
-  command: |
-    if [ -f packages/BOUNDARY.md ]; then
-      cat packages/BOUNDARY.md
-    else
-      echo "File not found"
-    fi
-  captureOutput: true
-
-# Downstream steps chain from the scrub, not the lead
-- name: review
-  agent: reviewer
-  dependsOn: [scrub-proposal]
-  task: |
-    Review this boundary:
-    {{steps.scrub-proposal.output}}
+# Phase 1: Foundation (auth + volumes + storage — independent modules)
+# Phase 2: Orchestration (executor + bootstrap — depend on Phase 1)
+# Phase 3: API + Integration (web routes + reporter + barrel exports)
 ```
 
-### Rules
+Within each phase, use parallel workers with a shared lead for coordination.
 
-- **Every interactive lead step should write its deliverable to a file** (markdown, JSON, etc.)
-- **Add a scrub step after each lead step** that `cat`s the file
-- **Downstream steps depend on the scrub step**, never directly on the lead step's output
-- **Keep lead tasks focused**: one deliverable per step, 10–15 line prompts
-- **Non-interactive agents don't need scrub steps** — their stdout is already clean
+## File Materialization: Verify Before Proceeding
 
-### When NOT to scrub
+**Always add a deterministic file-check step after implementation waves.** Non-interactive agents (codex, claude -p) may fail silently — the process exits 0 but files weren't written because of a wrong cwd, permission issue, or the agent output code to stdout instead of writing files.
 
-- Non-interactive agents (`interactive: false`, presets `worker`/`reviewer`/`analyst`) produce clean
-  stdout. Their output is safe to chain directly.
-- If the lead's output is only consumed by a non-interactive worker (which will read a file anyway),
-  you can skip the scrub and have the worker read the file directly in its task.
+### The pattern
 
-## Verification: Interactive vs Non-Interactive
+```yaml
+# Workers write files in parallel
+- name: impl-auth
+  agent: worker-1
+  task: |
+    Create the file src/auth/credentials.ts with the following implementation...
+    IMPORTANT: Write the file to disk using your file-writing tools.
+    Do NOT just output the code to stdout — the file must exist at src/auth/credentials.ts when you finish.
 
-| Agent type | Verification | Rationale |
-|---|---|---|
-| Non-interactive (codex workers, `interactive: false`) | None needed | They exit when done — exit code 0 = success |
-| Interactive lead (claude PTY) | `output_contains` with `echo "TOKEN"` | Must signal completion explicitly since they stay alive |
+- name: impl-storage
+  agent: worker-2
+  task: |
+    Create the file src/storage/client.ts with the following implementation...
+    IMPORTANT: Write the file to disk. The file must exist at src/storage/client.ts when you finish.
 
-Non-interactive agents just die when their task is finished. The runner already treats a clean
-exit as success. Adding `output_contains` verification to non-interactive agents triggers the
-double-occurrence rule and causes spurious failures. Only use verification on interactive agents.
+# Deterministic gate: verify all expected files exist before any review/next-phase step
+- name: verify-files
+  type: deterministic
+  dependsOn: [impl-auth, impl-storage]
+  command: |
+    missing=0
+    for f in src/auth/credentials.ts src/storage/client.ts; do
+      if [ ! -f "$f" ]; then echo "MISSING: $f"; missing=$((missing+1)); fi
+    done
+    if [ $missing -gt 0 ]; then echo "$missing files missing"; exit 1; fi
+    echo "All files present"
+  failOnError: true
+  captureOutput: true
+
+# Reviews and next-phase steps depend on verify-files, not directly on workers
+- name: review
+  agent: reviewer
+  dependsOn: [verify-files]
+  task: ...
+```
+
+### Rules for non-interactive file-writing tasks
+
+1. **Use absolute or explicit relative paths** — always include the full path from the project root in the task prompt. Don't say "implement credentials.ts", say "create the file at `src/auth/credentials.ts`".
+2. **Tell the agent to write the file, not output it** — add `IMPORTANT: Write the file to disk using your file-writing tools. Do NOT just output the code to stdout.` Non-interactive agents sometimes default to printing code instead of writing files.
+3. **Gate downstream steps on file verification** — never let a review or next-phase step run without first confirming the expected files exist via a deterministic `[ -f ]` check.
+4. **Fail fast on missing files** — set `failOnError: true` on the verification step. A missing file early is much cheaper to debug than 30 minutes of "FILE NOT FOUND" reviews.
+
+### Reading files for context injection
+
+When the next phase needs to read files produced by the current phase, use a deterministic step:
+
+```yaml
+- name: read-phase1-output
+  type: deterministic
+  dependsOn: [verify-phase1-files]
+  command: |
+    echo "=== src/auth/credentials.ts ==="
+    cat src/auth/credentials.ts
+    echo "=== src/storage/client.ts ==="
+    cat src/storage/client.ts
+  captureOutput: true
+
+- name: phase2-implement
+  agent: worker
+  dependsOn: [read-phase1-output]
+  task: |
+    Here are the files from Phase 1:
+    {{steps.read-phase1-output.output}}
+
+    Now implement the executor that uses these modules...
+```
 
 ## Common Mistakes
 
@@ -442,8 +464,6 @@ double-occurrence rule and causes spurious failures. Only use verification on in
 | Workers depending on the lead step (deadlock)               | Workers and lead both depend on a shared context step             |
 | Omitting `agents` field for deterministic-only workflows    | Field is now optional — pure shell pipelines work without it      |
 | Verification token buried at end of long codex task         | Use `REQUIRED: The very last line you print must be exactly: TOKEN` |
-| Chaining interactive lead output to downstream steps        | Add a scrub step that reads the lead's file output (see above)    |
-| Adding `output_contains` to non-interactive agents          | Don't — they exit when done, no verification needed               |
 
 ## Verification Tokens with Non-Interactive Workers
 

@@ -30,6 +30,7 @@ import type {
   DryRunWave,
   ErrorHandlingConfig,
   IdleNudgeConfig,
+  PathDefinition,
   PreflightCheck,
   RelayYamlConfig,
   SwarmPattern,
@@ -71,7 +72,22 @@ export type WorkflowEvent =
   | { type: 'run:failed'; runId: string; error: string }
   | { type: 'run:cancelled'; runId: string }
   | { type: 'step:started'; runId: string; stepName: string }
+  | {
+      type: 'step:owner-assigned';
+      runId: string;
+      stepName: string;
+      ownerName: string;
+      specialistName: string;
+    }
   | { type: 'step:completed'; runId: string; stepName: string; output?: string }
+  | {
+      type: 'step:review-completed';
+      runId: string;
+      stepName: string;
+      reviewerName: string;
+      decision: 'approved' | 'rejected';
+    }
+  | { type: 'step:owner-timeout'; runId: string; stepName: string; ownerName: string }
   | { type: 'step:failed'; runId: string; stepName: string; error: string }
   | { type: 'step:skipped'; runId: string; stepName: string }
   | { type: 'step:retrying'; runId: string; stepName: string; attempt: number }
@@ -124,6 +140,30 @@ export interface VariableContext {
 interface StepState {
   row: WorkflowStepRow;
   agent?: Agent;
+}
+
+interface SupervisedStep {
+  specialist: AgentDefinition;
+  owner: AgentDefinition;
+  reviewer?: AgentDefinition;
+}
+
+interface SpawnedAgentInfo {
+  requestedName: string;
+  actualName: string;
+  agent: Agent;
+}
+
+interface SpawnAndWaitOptions {
+  agentNameSuffix?: string;
+  onSpawned?: (info: SpawnedAgentInfo) => void | Promise<void>;
+  onChunk?: (info: { agentName: string; chunk: string }) => void;
+}
+
+interface SupervisedRuntimeAgent {
+  stepName: string;
+  role: 'owner' | 'specialist';
+  logicalName: string;
 }
 
 // ── CLI resolution ───────────────────────────────────────────────────────────
@@ -202,6 +242,10 @@ export class WorkflowRunner {
   private readonly lastIdleLog = new Map<string, number>();
   /** Tracks last logged activity type per agent to avoid duplicate status lines. */
   private readonly lastActivity = new Map<string, string>();
+  /** Runtime-name lookup for agents participating in supervised owner flows. */
+  private readonly supervisedRuntimeAgents = new Map<string, SupervisedRuntimeAgent>();
+  /** Resolved named paths from the top-level `paths` config, keyed by name → absolute directory. */
+  private resolvedPaths = new Map<string, string>();
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -211,6 +255,89 @@ export class WorkflowRunner {
     this.summaryDir = options.summaryDir ?? path.join(this.cwd, '.relay', 'summaries');
     this.workersPath = path.join(this.cwd, '.agent-relay', 'team', 'workers.json');
     this.executor = options.executor;
+  }
+
+  // ── Path resolution ─────────────────────────────────────────────────────
+
+  /** Expand environment variables like $HOME or $VAR in a path string. */
+  private static resolveEnvVars(p: string): string {
+    return p.replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, varName: string) => {
+      return process.env[varName] ?? _match;
+    });
+  }
+
+  /**
+   * Resolve and validate the top-level `paths` definitions from the config.
+   * Returns a map of name → absolute directory path.
+   * Throws if a required path does not exist.
+   */
+  private resolvePathDefinitions(
+    pathDefs: PathDefinition[] | undefined,
+    baseCwd: string
+  ): { resolved: Map<string, string>; errors: string[]; warnings: string[] } {
+    const resolved = new Map<string, string>();
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    if (!pathDefs || pathDefs.length === 0) return { resolved, errors, warnings };
+
+    const seenNames = new Set<string>();
+    for (const pd of pathDefs) {
+      if (seenNames.has(pd.name)) {
+        errors.push(`Duplicate path name "${pd.name}"`);
+        continue;
+      }
+      seenNames.add(pd.name);
+
+      const expanded = WorkflowRunner.resolveEnvVars(pd.path);
+      const abs = path.resolve(baseCwd, expanded);
+      resolved.set(pd.name, abs);
+
+      const isRequired = pd.required !== false; // default true
+      if (!existsSync(abs)) {
+        if (isRequired) {
+          errors.push(`Path "${pd.name}" resolves to "${abs}" which does not exist (required)`);
+        } else {
+          warnings.push(`Path "${pd.name}" resolves to "${abs}" which does not exist (optional)`);
+        }
+      }
+    }
+
+    return { resolved, errors, warnings };
+  }
+
+  /**
+   * Resolve an agent's effective working directory, considering `workdir` (named path reference)
+   * and `cwd` (explicit path). `workdir` takes precedence when both are set.
+   */
+  private resolveAgentCwd(agent: AgentDefinition): string {
+    if (agent.workdir) {
+      const resolved = this.resolvedPaths.get(agent.workdir);
+      if (!resolved) {
+        throw new Error(
+          `Agent "${agent.name}" references workdir "${agent.workdir}" which is not defined in paths`
+        );
+      }
+      return resolved;
+    }
+    if (agent.cwd) {
+      return path.resolve(this.cwd, agent.cwd);
+    }
+    return this.cwd;
+  }
+
+  /**
+   * Resolve a step's working directory from its `workdir` field (named path reference).
+   * Returns undefined if no workdir is set.
+   */
+  private resolveStepWorkdir(step: WorkflowStep): string | undefined {
+    if (!step.workdir) return undefined;
+    const resolved = this.resolvedPaths.get(step.workdir);
+    if (!resolved) {
+      throw new Error(
+        `Step "${step.name}" references workdir "${step.workdir}" which is not defined in paths`
+      );
+    }
+    return resolved;
   }
 
   // ── Progress logging ────────────────────────────────────────────────────
@@ -281,13 +408,15 @@ export class WorkflowRunner {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ apiKey }),
-    }).then((res) => {
-      if (!res.ok) {
-        console.warn(`[WorkflowRunner] dashboard key push failed: HTTP ${res.status}`);
-      }
-    }).catch(() => {
-      // Dashboard not running — silently ignore.
-    });
+    })
+      .then((res) => {
+        if (!res.ok) {
+          console.warn(`[WorkflowRunner] dashboard key push failed: HTTP ${res.status}`);
+        }
+      })
+      .catch(() => {
+        // Dashboard not running — silently ignore.
+      });
   }
 
   private getRelayEnv(): NodeJS.ProcessEnv | undefined {
@@ -494,6 +623,21 @@ export class WorkflowRunner {
       };
     }
 
+    // 1b. Resolve and validate named paths
+    const pathResult = this.resolvePathDefinitions(resolved.paths, this.cwd);
+    errors.push(...pathResult.errors);
+    warnings.push(...pathResult.warnings);
+    const dryRunPaths = pathResult.resolved;
+
+    // Validate workdir references on agents
+    for (const agent of resolved.agents) {
+      if (agent.workdir && !dryRunPaths.has(agent.workdir)) {
+        errors.push(
+          `Agent "${agent.name}" references workdir "${agent.workdir}" which is not defined in paths`
+        );
+      }
+    }
+
     // 2. Find target workflow
     const workflows = resolved.workflows ?? [];
     const workflow = workflowName ? workflows.find((w) => w.name === workflowName) : workflows[0];
@@ -561,6 +705,15 @@ export class WorkflowRunner {
           warnings.push(`Step "${step.name}" references unknown agent "${step.agent}"`);
         }
         stepAgentCounts.set(step.agent, (stepAgentCounts.get(step.agent) ?? 0) + 1);
+      }
+    }
+
+    // Validate workdir references on steps
+    for (const step of resolvedSteps) {
+      if (step.workdir && !dryRunPaths.has(step.workdir)) {
+        errors.push(
+          `Step "${step.name}" references workdir "${step.workdir}" which is not defined in paths`
+        );
       }
     }
 
@@ -666,7 +819,7 @@ export class WorkflowRunner {
       name: a.name,
       cli: a.cli,
       role: a.role,
-      cwd: a.cwd,
+      cwd: a.workdir ? dryRunPaths.get(a.workdir) : a.cwd,
       stepCount: stepAgentCounts.get(a.name) ?? 0,
     }));
 
@@ -990,6 +1143,19 @@ export class WorkflowRunner {
     vars?: VariableContext
   ): Promise<WorkflowRunRow> {
     const resolved = vars ? this.resolveVariables(config, vars) : config;
+
+    // Resolve and validate named paths from the top-level `paths` config
+    const pathResult = this.resolvePathDefinitions(resolved.paths, this.cwd);
+    if (pathResult.errors.length > 0) {
+      throw new Error(`Path validation failed:\n  ${pathResult.errors.join('\n  ')}`);
+    }
+    this.resolvedPaths = pathResult.resolved;
+    if (this.resolvedPaths.size > 0) {
+      for (const [name, abs] of this.resolvedPaths) {
+        console.log(`[workflow] path "${name}" → ${abs}`);
+      }
+    }
+
     const workflows = resolved.workflows ?? [];
 
     const workflow = workflowName ? workflows.find((w) => w.name === workflowName) : workflows[0];
@@ -1071,6 +1237,14 @@ export class WorkflowRunner {
     }
 
     const config = vars ? this.resolveVariables(run.config, vars) : run.config;
+
+    // Resolve path definitions (same as execute()) so workdir lookups work on resume
+    const pathResult = this.resolvePathDefinitions(config.paths, this.cwd);
+    if (pathResult.errors.length > 0) {
+      throw new Error(`Path validation failed:\n  ${pathResult.errors.join('\n  ')}`);
+    }
+    this.resolvedPaths = pathResult.resolved;
+
     const workflows = config.workflows ?? [];
     const workflow = workflows.find((w) => w.name === run.workflowName);
     if (!workflow) {
@@ -1169,7 +1343,7 @@ export class WorkflowRunner {
         this.log('API key resolved');
         if (this.relayApiKeyAutoCreated && this.relayApiKey) {
           this.log(`Workspace created — follow this run in Relaycast:`);
-          this.log(`  Observer: https://observer.relaycast.dev/?key=${this.relayApiKey}`);
+          this.log(`  Observer: https://agentrelay.dev/observer?key=${this.relayApiKey}`);
           this.log(`  Channel: ${channel}`);
         }
 
@@ -1242,6 +1416,16 @@ export class WorkflowRunner {
           const fromShort = msg.from.replace(/-[a-f0-9]{6,}$/, '');
           const toShort = msg.to.replace(/-[a-f0-9]{6,}$/, '');
           this.log(`[msg] ${fromShort} → ${toShort}: ${body}`);
+
+          const supervision = this.supervisedRuntimeAgents.get(msg.from);
+          if (supervision?.role === 'owner') {
+            void this.trajectory?.ownerMonitoringEvent(
+              supervision.stepName,
+              supervision.logicalName,
+              `Messaged ${msg.to}: ${msg.text.slice(0, 120)}`,
+              { to: msg.to, text: msg.text }
+            );
+          }
         };
 
         this.relay.onAgentSpawned = (agent) => {
@@ -1371,6 +1555,7 @@ export class WorkflowRunner {
       }
       this.lastIdleLog.clear();
       this.lastActivity.clear();
+      this.supervisedRuntimeAgents.clear();
 
       this.log('Shutting down broker...');
       await this.relay?.shutdown();
@@ -1730,15 +1915,19 @@ export class WorkflowRunner {
       return value !== undefined ? String(value) : _match;
     });
 
+    // Resolve step workdir (named path reference) for deterministic steps
+    const stepCwd = this.resolveStepWorkdir(step) ?? this.cwd;
+
     try {
       // Delegate to executor if present
       if (this.executor?.executeDeterministicStep) {
-        const result = await this.executor.executeDeterministicStep(step, resolvedCommand, this.cwd);
+        const result = await this.executor.executeDeterministicStep(step, resolvedCommand, stepCwd);
         const failOnError = step.failOnError !== false;
         if (failOnError && result.exitCode !== 0) {
           throw new Error(`Command failed with exit code ${result.exitCode}: ${result.output.slice(0, 500)}`);
         }
-        const output = step.captureOutput !== false ? result.output : `Command completed (exit code ${result.exitCode})`;
+        const output =
+          step.captureOutput !== false ? result.output : `Command completed (exit code ${result.exitCode})`;
 
         // Mark completed
         state.row.status = 'completed';
@@ -1758,7 +1947,7 @@ export class WorkflowRunner {
       const output = await new Promise<string>((resolve, reject) => {
         const child = cpSpawn('sh', ['-c', resolvedCommand], {
           stdio: 'pipe',
-          cwd: this.cwd,
+          cwd: stepCwd,
           env: { ...process.env },
         });
 
@@ -1897,6 +2086,9 @@ export class WorkflowRunner {
       : path.join('.worktrees', step.name);
     const createBranch = step.createBranch !== false;
 
+    // Resolve workdir for worktree steps (same as deterministic/agent steps)
+    const stepCwd = this.resolveStepWorkdir(step) ?? this.cwd;
+
     if (!branch) {
       const errorMsg = 'Worktree step missing required "branch" field';
       await this.markStepFailed(state, errorMsg, runId);
@@ -1906,7 +2098,7 @@ export class WorkflowRunner {
     try {
       // Build the git worktree command
       // If createBranch is true and branch doesn't exist, use -b flag
-      const absoluteWorktreePath = path.resolve(this.cwd, worktreePath);
+      const absoluteWorktreePath = path.resolve(stepCwd, worktreePath);
 
       // First, check if the branch already exists
       const checkBranchCmd = `git rev-parse --verify --quiet ${branch} 2>/dev/null`;
@@ -1915,7 +2107,7 @@ export class WorkflowRunner {
       await new Promise<void>((resolve) => {
         const checkChild = cpSpawn('sh', ['-c', checkBranchCmd], {
           stdio: 'pipe',
-          cwd: this.cwd,
+          cwd: stepCwd,
           env: { ...process.env },
         });
         checkChild.on('close', (code) => {
@@ -1943,7 +2135,7 @@ export class WorkflowRunner {
       const output = await new Promise<string>((resolve, reject) => {
         const child = cpSpawn('sh', ['-c', worktreeCmd], {
           stdio: 'pipe',
-          cwd: this.cwd,
+          cwd: stepCwd,
           env: { ...process.env },
         });
 
@@ -2069,12 +2261,29 @@ export class WorkflowRunner {
     if (!rawAgentDef) {
       throw new Error(`Agent "${agentName}" not found in config`);
     }
-    const agentDef = WorkflowRunner.resolveAgentDef(rawAgentDef);
+    const specialistDef = WorkflowRunner.resolveAgentDef(rawAgentDef);
+    const usesOwnerFlow = specialistDef.interactive !== false;
+    const ownerDef = usesOwnerFlow ? this.resolveAutoStepOwner(specialistDef, agentMap) : specialistDef;
+    const reviewDef = usesOwnerFlow ? this.resolveAutoReviewAgent(ownerDef, agentMap) : undefined;
+    const supervised: SupervisedStep = {
+      specialist: specialistDef,
+      owner: ownerDef,
+      reviewer: reviewDef,
+    };
+    const usesDedicatedOwner = usesOwnerFlow && ownerDef.name !== specialistDef.name;
 
-    const maxRetries = step.retries ?? agentDef.constraints?.retries ?? errorHandling?.maxRetries ?? 0;
+    const maxRetries =
+      step.retries ??
+      ownerDef.constraints?.retries ??
+      specialistDef.constraints?.retries ??
+      errorHandling?.maxRetries ??
+      0;
     const retryDelay = errorHandling?.retryDelayMs ?? 1000;
     const timeoutMs =
-      step.timeoutMs ?? agentDef.constraints?.timeoutMs ?? this.currentConfig?.swarm?.timeoutMs;
+      step.timeoutMs ??
+      ownerDef.constraints?.timeoutMs ??
+      specialistDef.constraints?.timeoutMs ??
+      this.currentConfig?.swarm?.timeoutMs;
 
     let lastError: string | undefined;
 
@@ -2103,8 +2312,25 @@ export class WorkflowRunner {
           updatedAt: new Date().toISOString(),
         });
         this.emit({ type: 'step:started', runId, stepName: step.name });
-        this.postToChannel(`**[${step.name}]** Started (agent: ${agentDef.name})`);
-        await this.trajectory?.stepStarted(step, agentDef.name);
+        this.postToChannel(
+          `**[${step.name}]** Started (owner: ${ownerDef.name}, specialist: ${specialistDef.name})`
+        );
+        await this.trajectory?.stepStarted(step, ownerDef.name, {
+          role: usesDedicatedOwner ? 'owner' : 'specialist',
+          owner: ownerDef.name,
+          specialist: specialistDef.name,
+          reviewer: reviewDef?.name,
+        });
+        if (usesDedicatedOwner) {
+          await this.trajectory?.stepSupervisionAssigned(step, supervised);
+        }
+        this.emit({
+          type: 'step:owner-assigned',
+          runId,
+          stepName: step.name,
+          ownerName: ownerDef.name,
+          specialistName: specialistDef.name,
+        });
 
         // Resolve step-output variables (e.g. {{steps.plan.output}}) at execution time
         const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
@@ -2112,51 +2338,110 @@ export class WorkflowRunner {
 
         // If this is an interactive agent, append awareness of non-interactive workers
         // so the lead knows not to message them and to use step output chaining instead
-        if (agentDef.interactive !== false) {
+        if (specialistDef.interactive !== false || ownerDef.interactive !== false) {
           const nonInteractiveInfo = this.buildNonInteractiveAwareness(agentMap, stepStates);
           if (nonInteractiveInfo) {
             resolvedTask += nonInteractiveInfo;
           }
         }
 
-        // Spawn agent via AgentRelay
-        this.log(`[${step.name}] Spawning agent "${agentDef.name}" (cli: ${agentDef.cli})`);
-        const resolvedStep = { ...step, task: resolvedTask };
-        const output = this.executor
-          ? await this.executor.executeAgentStep(resolvedStep, agentDef, resolvedTask, timeoutMs)
-          : await this.spawnAndWait(agentDef, resolvedStep, timeoutMs);
-        this.log(`[${step.name}] Agent "${agentDef.name}" exited`);
+        // Apply step-level workdir override to agent definitions if present
+        const applyStepWorkdir = (def: AgentDefinition): AgentDefinition => {
+          if (step.workdir) {
+            const stepWorkdir = this.resolveStepWorkdir(step);
+            if (stepWorkdir) {
+              return { ...def, cwd: stepWorkdir, workdir: undefined };
+            }
+          }
+          return def;
+        };
+        const effectiveSpecialist = applyStepWorkdir(specialistDef);
+        const effectiveOwner = applyStepWorkdir(ownerDef);
+
+        let specialistOutput: string;
+        let ownerOutput: string;
+        let ownerElapsed: number;
+
+        if (usesDedicatedOwner) {
+          const result = await this.executeSupervisedAgentStep(
+            step,
+            { specialist: effectiveSpecialist, owner: effectiveOwner, reviewer: reviewDef },
+            resolvedTask,
+            timeoutMs
+          );
+          specialistOutput = result.specialistOutput;
+          ownerOutput = result.ownerOutput;
+          ownerElapsed = result.ownerElapsed;
+        } else {
+          const ownerTask = this.injectStepOwnerContract(step, resolvedTask, effectiveOwner, effectiveSpecialist);
+
+          this.log(`[${step.name}] Spawning owner "${effectiveOwner.name}" (cli: ${effectiveOwner.cli})${step.workdir ? ` [workdir: ${step.workdir}]` : ''}`);
+          const resolvedStep = { ...step, task: ownerTask };
+          const ownerStartTime = Date.now();
+          const output = this.executor
+            ? await this.executor.executeAgentStep(resolvedStep, effectiveOwner, ownerTask, timeoutMs)
+            : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs);
+          ownerElapsed = Date.now() - ownerStartTime;
+          this.log(`[${step.name}] Owner "${effectiveOwner.name}" exited`);
+          if (usesOwnerFlow) {
+            this.assertOwnerCompletionMarker(step, output, ownerTask);
+          }
+          specialistOutput = output;
+          ownerOutput = output;
+        }
 
         // Run verification if configured
         if (step.verification) {
-          this.runVerification(step.verification, output, step.name, resolvedTask);
+          this.runVerification(step.verification, specialistOutput, step.name, resolvedTask);
+        }
+
+        // Every interactive step gets a review pass; pick a dedicated reviewer when available.
+        let combinedOutput = specialistOutput;
+        if (usesOwnerFlow && reviewDef) {
+          const remainingMs = timeoutMs ? Math.max(0, timeoutMs - ownerElapsed) : undefined;
+          const reviewOutput = await this.runStepReviewGate(
+            step,
+            resolvedTask,
+            specialistOutput,
+            ownerOutput,
+            ownerDef,
+            reviewDef,
+            remainingMs
+          );
+          combinedOutput = this.combineStepAndReviewOutput(specialistOutput, reviewOutput);
         }
 
         // Mark completed
         state.row.status = 'completed';
-        state.row.output = output;
+        state.row.output = combinedOutput;
         state.row.completedAt = new Date().toISOString();
         await this.db.updateStep(state.row.id, {
           status: 'completed',
-          output,
+          output: combinedOutput,
           completedAt: state.row.completedAt,
           updatedAt: new Date().toISOString(),
         });
 
         // Persist step output to disk so it survives restarts and is inspectable
-        await this.persistStepOutput(runId, step.name, output);
+        await this.persistStepOutput(runId, step.name, combinedOutput);
 
-        this.emit({ type: 'step:completed', runId, stepName: step.name, output });
-        await this.trajectory?.stepCompleted(step, output, attempt + 1);
+        this.emit({ type: 'step:completed', runId, stepName: step.name, output: combinedOutput });
+        await this.trajectory?.stepCompleted(step, combinedOutput, attempt + 1);
         return;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
+        const ownerTimedOut = usesDedicatedOwner
+          ? /\bowner timed out\b/i.test(lastError)
+          : /\btimed out\b/i.test(lastError) && !lastError.includes(`${step.name}-review`);
+        if (ownerTimedOut) {
+          this.emit({ type: 'step:owner-timeout', runId, stepName: step.name, ownerName: ownerDef.name });
+        }
       }
     }
 
     // All retries exhausted — record root-cause diagnosis and mark failed
     const nonInteractive =
-      agentDef.interactive === false || ['worker', 'reviewer', 'analyst'].includes(agentDef.preset ?? '');
+      ownerDef.interactive === false || ['worker', 'reviewer', 'analyst'].includes(ownerDef.preset ?? '');
     const verificationValue =
       typeof step.verification === 'object' && 'value' in step.verification
         ? String(step.verification.value)
@@ -2171,6 +2456,543 @@ export class WorkflowRunner {
     throw new Error(
       `Step "${step.name}" failed after ${maxRetries} retries: ${lastError ?? 'Unknown error'}`
     );
+  }
+
+  private injectStepOwnerContract(
+    step: WorkflowStep,
+    resolvedTask: string,
+    ownerDef: AgentDefinition,
+    specialistDef: AgentDefinition
+  ): string {
+    if (ownerDef.interactive === false) return resolvedTask;
+    const specialistNote =
+      ownerDef.name === specialistDef.name
+        ? ''
+        : `Specialist intended for this step: "${specialistDef.name}" (${specialistDef.role ?? specialistDef.cli}).`;
+    return (
+      resolvedTask +
+      '\n\n---\n' +
+      `STEP OWNER CONTRACT:\n` +
+      `- You are the accountable owner for step "${step.name}".\n` +
+      (specialistNote ? `- ${specialistNote}\n` : '') +
+      `- If you delegate, you must still verify completion yourself.\n` +
+      `- Before exiting, provide an explicit completion line: STEP_COMPLETE:${step.name}\n` +
+      `- Then self-terminate immediately with /exit.`
+    );
+  }
+
+  private buildOwnerSupervisorTask(
+    step: WorkflowStep,
+    originalTask: string,
+    supervised: SupervisedStep,
+    workerRuntimeName: string
+  ): string {
+    const verificationGuide = this.buildSupervisorVerificationGuide(step.verification);
+    const channelLine = this.channel ? `#${this.channel}` : '(workflow channel unavailable)';
+    return (
+      `You are the step owner/supervisor for step "${step.name}".\n\n` +
+      `Worker: ${supervised.specialist.name} (runtime: ${workerRuntimeName}) on ${channelLine}\n` +
+      `Task: ${originalTask}\n\n` +
+      `Your job: Monitor the worker and determine when the task is complete.\n\n` +
+      `How to verify completion:\n` +
+      `- Watch ${channelLine} for the worker's progress messages and mirrored PTY output\n` +
+      `- Check file changes: run \`git diff --stat\` or inspect expected files directly\n` +
+      `- Ask the worker directly on ${channelLine} if you need a status update\n` +
+      verificationGuide +
+      `\nWhen you're satisfied the work is done correctly:\n` +
+      `Output exactly: STEP_COMPLETE:${step.name}`
+    );
+  }
+
+  private buildSupervisorVerificationGuide(verification?: VerificationCheck): string {
+    if (!verification) return '';
+    switch (verification.type) {
+      case 'output_contains':
+        return `- Verification gate: confirm the worker output contains ${JSON.stringify(verification.value)}\n`;
+      case 'file_exists':
+        return `- Verification gate: confirm the file exists at ${JSON.stringify(verification.value)}\n`;
+      case 'exit_code':
+        return `- Verification gate: confirm the worker exits with code ${JSON.stringify(verification.value)}\n`;
+      case 'custom':
+        return `- Verification gate: apply the custom verification rule ${JSON.stringify(verification.value)}\n`;
+      default:
+        return '';
+    }
+  }
+
+  private async executeSupervisedAgentStep(
+    step: WorkflowStep,
+    supervised: SupervisedStep,
+    resolvedTask: string,
+    timeoutMs?: number
+  ): Promise<{ specialistOutput: string; ownerOutput: string; ownerElapsed: number }> {
+    if (this.executor) {
+      const supervisorTask = this.buildOwnerSupervisorTask(
+        step,
+        resolvedTask,
+        supervised,
+        supervised.specialist.name
+      );
+      const specialistStep = { ...step, task: resolvedTask };
+      const ownerStep: WorkflowStep = {
+        ...step,
+        name: `${step.name}-owner`,
+        agent: supervised.owner.name,
+        task: supervisorTask,
+      };
+
+      this.log(
+        `[${step.name}] Spawning specialist "${supervised.specialist.name}" and owner "${supervised.owner.name}"`
+      );
+      const specialistPromise = this.executor.executeAgentStep(
+        specialistStep,
+        supervised.specialist,
+        resolvedTask,
+        timeoutMs
+      );
+      // Guard against unhandled rejection if owner fails before specialist settles
+      const specialistSettled = specialistPromise.catch(() => undefined);
+
+      try {
+        const ownerStartTime = Date.now();
+        const ownerOutput = await this.executor.executeAgentStep(
+          ownerStep,
+          supervised.owner,
+          supervisorTask,
+          timeoutMs
+        );
+        const ownerElapsed = Date.now() - ownerStartTime;
+
+        this.assertOwnerCompletionMarker(step, ownerOutput, supervisorTask);
+        const specialistOutput = await specialistPromise;
+        return { specialistOutput, ownerOutput, ownerElapsed };
+      } catch (error) {
+        await specialistSettled;
+        throw error;
+      }
+    }
+
+    let workerHandle: Agent | undefined;
+    let workerRuntimeName = supervised.specialist.name;
+    let workerSpawned = false;
+    let workerReleased = false;
+    let resolveWorkerSpawn!: () => void;
+    let rejectWorkerSpawn!: (error: unknown) => void;
+    const workerReady = new Promise<void>((resolve, reject) => {
+      resolveWorkerSpawn = resolve;
+      rejectWorkerSpawn = reject;
+    });
+
+    const specialistStep = { ...step, task: resolvedTask };
+    this.log(
+      `[${step.name}] Spawning specialist "${supervised.specialist.name}" (cli: ${supervised.specialist.cli})`
+    );
+    const workerPromise = this.spawnAndWait(supervised.specialist, specialistStep, timeoutMs, {
+      agentNameSuffix: 'worker',
+      onSpawned: ({ actualName, agent }) => {
+        workerHandle = agent;
+        workerRuntimeName = actualName;
+        this.supervisedRuntimeAgents.set(actualName, {
+          stepName: step.name,
+          role: 'specialist',
+          logicalName: supervised.specialist.name,
+        });
+        if (!workerSpawned) {
+          workerSpawned = true;
+          resolveWorkerSpawn();
+        }
+      },
+      onChunk: ({ agentName, chunk }) => {
+        this.forwardAgentChunkToChannel(step.name, 'Worker', agentName, chunk);
+      },
+    }).catch((error) => {
+      if (!workerSpawned) {
+        workerSpawned = true;
+        rejectWorkerSpawn(error);
+      }
+      throw error;
+    });
+
+    const workerSettled = workerPromise.catch(() => undefined);
+    workerPromise
+      .then((output) => {
+        workerReleased = true;
+        this.postToChannel(`**[${step.name}]** Worker \`${workerRuntimeName}\` exited`);
+        if (step.verification?.type === 'output_contains' && output.includes(step.verification.value)) {
+          this.postToChannel(
+            `**[${step.name}]** Verification gate observed: output contains ${JSON.stringify(step.verification.value)}`
+          );
+        }
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.postToChannel(
+          `**[${step.name}]** Worker \`${workerRuntimeName}\` exited with error: ${message}`
+        );
+      });
+
+    await workerReady;
+
+    const supervisorTask = this.buildOwnerSupervisorTask(step, resolvedTask, supervised, workerRuntimeName);
+    const ownerStep: WorkflowStep = {
+      ...step,
+      name: `${step.name}-owner`,
+      agent: supervised.owner.name,
+      task: supervisorTask,
+    };
+
+    this.log(`[${step.name}] Spawning owner "${supervised.owner.name}" (cli: ${supervised.owner.cli})`);
+    const ownerStartTime = Date.now();
+
+    try {
+      const ownerOutput = await this.spawnAndWait(supervised.owner, ownerStep, timeoutMs, {
+        agentNameSuffix: 'owner',
+        onSpawned: ({ actualName }) => {
+          this.supervisedRuntimeAgents.set(actualName, {
+            stepName: step.name,
+            role: 'owner',
+            logicalName: supervised.owner.name,
+          });
+        },
+        onChunk: ({ chunk }) => {
+          void this.recordOwnerMonitoringChunk(step, supervised.owner, chunk);
+        },
+      });
+      const ownerElapsed = Date.now() - ownerStartTime;
+      this.log(`[${step.name}] Owner "${supervised.owner.name}" exited`);
+      this.assertOwnerCompletionMarker(step, ownerOutput, supervisorTask);
+
+      const specialistOutput = await workerPromise;
+      return { specialistOutput, ownerOutput, ownerElapsed };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!workerReleased && workerHandle) {
+        await workerHandle.release().catch(() => undefined);
+      }
+      await workerSettled;
+      if (/\btimed out\b/i.test(message)) {
+        throw new Error(`Step "${step.name}" owner timed out after ${timeoutMs ?? 'unknown'}ms`);
+      }
+      throw error;
+    }
+  }
+
+  private forwardAgentChunkToChannel(
+    stepName: string,
+    roleLabel: string,
+    agentName: string,
+    chunk: string
+  ): void {
+    const lines = WorkflowRunner.stripAnsi(chunk)
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, 3);
+    for (const line of lines) {
+      this.postToChannel(`**[${stepName}]** ${roleLabel} \`${agentName}\`: ${line.slice(0, 280)}`);
+    }
+  }
+
+  private async recordOwnerMonitoringChunk(
+    step: WorkflowStep,
+    ownerDef: AgentDefinition,
+    chunk: string
+  ): Promise<void> {
+    const stripped = WorkflowRunner.stripAnsi(chunk);
+    const details: string[] = [];
+    if (/git diff --stat/i.test(stripped)) details.push('Checked git diff stats');
+    if (/\bls -la\b/i.test(stripped)) details.push('Listed files for verification');
+    if (/status update\?/i.test(stripped)) details.push('Asked the worker for a status update');
+    if (/STEP_COMPLETE:/i.test(stripped)) details.push('Declared the step complete');
+
+    for (const detail of details) {
+      await this.trajectory?.ownerMonitoringEvent(step.name, ownerDef.name, detail, {
+        output: stripped.slice(0, 240),
+      });
+    }
+  }
+
+  private resolveAutoStepOwner(
+    specialistDef: AgentDefinition,
+    agentMap: Map<string, AgentDefinition>
+  ): AgentDefinition {
+    if (specialistDef.interactive === false) return specialistDef;
+
+    const allDefs = [...agentMap.values()].map((d) => WorkflowRunner.resolveAgentDef(d));
+    const candidates = allDefs.filter((d) => d.interactive !== false);
+    const matchesHubRole = (text: string): boolean =>
+      [...WorkflowRunner.HUB_ROLES].some((r) => new RegExp(`\\b${r}\\b`, 'i').test(text));
+    const ownerish = (def: AgentDefinition): boolean => {
+      const nameLC = def.name.toLowerCase();
+      const roleLC = def.role?.toLowerCase() ?? '';
+      return matchesHubRole(nameLC) || matchesHubRole(roleLC);
+    };
+    const ownerPriority = (def: AgentDefinition): number => {
+      const roleLC = def.role?.toLowerCase() ?? '';
+      const nameLC = def.name.toLowerCase();
+      if (/\blead\b/.test(roleLC) || /\blead\b/.test(nameLC)) return 6;
+      if (/\bcoordinator\b/.test(roleLC) || /\bcoordinator\b/.test(nameLC)) return 5;
+      if (/\bsupervisor\b/.test(roleLC) || /\bsupervisor\b/.test(nameLC)) return 4;
+      if (/\borchestrator\b/.test(roleLC) || /\borchestrator\b/.test(nameLC)) return 3;
+      if (/\bhub\b/.test(roleLC) || /\bhub\b/.test(nameLC)) return 2;
+      return ownerish(def) ? 1 : 0;
+    };
+    const dedicatedOwner = candidates
+      .filter((d) => d.name !== specialistDef.name && ownerish(d))
+      .sort((a, b) => ownerPriority(b) - ownerPriority(a) || a.name.localeCompare(b.name))[0];
+    if (dedicatedOwner) return dedicatedOwner;
+    return specialistDef;
+  }
+
+  private resolveAutoReviewAgent(
+    ownerDef: AgentDefinition,
+    agentMap: Map<string, AgentDefinition>
+  ): AgentDefinition {
+    const allDefs = [...agentMap.values()].map((d) => WorkflowRunner.resolveAgentDef(d));
+    const isReviewer = (def: AgentDefinition): boolean => {
+      const roleLC = def.role?.toLowerCase() ?? '';
+      const nameLC = def.name.toLowerCase();
+      return (
+        def.preset === 'reviewer' ||
+        roleLC.includes('review') ||
+        roleLC.includes('critic') ||
+        roleLC.includes('verifier') ||
+        roleLC.includes('qa') ||
+        nameLC.includes('review')
+      );
+    };
+    const reviewerPriority = (def: AgentDefinition): number => {
+      if (def.preset === 'reviewer') return 5;
+      const roleLC = def.role?.toLowerCase() ?? '';
+      const nameLC = def.name.toLowerCase();
+      if (roleLC.includes('review') || nameLC.includes('review')) return 4;
+      if (roleLC.includes('verifier') || roleLC.includes('qa')) return 3;
+      if (roleLC.includes('critic')) return 2;
+      return isReviewer(def) ? 1 : 0;
+    };
+    const dedicated = allDefs
+      .filter((d) => d.name !== ownerDef.name && isReviewer(d))
+      .sort((a, b) => reviewerPriority(b) - reviewerPriority(a) || a.name.localeCompare(b.name))[0];
+    if (dedicated) return dedicated;
+
+    const alternate = allDefs.find((d) => d.name !== ownerDef.name && d.interactive !== false);
+    if (alternate) return alternate;
+
+    // Self-review fallback — log a warning since owner reviewing itself is weak.
+    return ownerDef;
+  }
+
+  private assertOwnerCompletionMarker(step: WorkflowStep, output: string, injectedTaskText: string): void {
+    const marker = `STEP_COMPLETE:${step.name}`;
+    const taskHasMarker = injectedTaskText.includes(marker);
+    const first = output.indexOf(marker);
+    if (first === -1) {
+      throw new Error(`Step "${step.name}" owner completion marker missing: "${marker}"`);
+    }
+    // PTY output includes injected task text, so require a second marker occurrence
+    // when the marker was present in the injected prompt (either owner contract or supervisor prompt).
+    const outputLikelyContainsInjectedPrompt =
+      output.includes('STEP OWNER CONTRACT') || output.includes('Output exactly: STEP_COMPLETE:');
+    if (taskHasMarker && outputLikelyContainsInjectedPrompt) {
+      const hasSecond = output.includes(marker, first + marker.length);
+      if (!hasSecond) {
+        throw new Error(`Step "${step.name}" owner completion marker missing in agent response: "${marker}"`);
+      }
+    }
+  }
+
+  private async runStepReviewGate(
+    step: WorkflowStep,
+    resolvedTask: string,
+    specialistOutput: string,
+    ownerOutput: string,
+    ownerDef: AgentDefinition,
+    reviewerDef: AgentDefinition,
+    timeoutMs?: number
+  ): Promise<string> {
+    const reviewSnippetMax = 12_000;
+    let specialistSnippet = specialistOutput;
+    if (specialistOutput.length > reviewSnippetMax) {
+      const head = Math.floor(reviewSnippetMax / 2);
+      const tail = reviewSnippetMax - head;
+      const omitted = specialistOutput.length - head - tail;
+      specialistSnippet =
+        `${specialistOutput.slice(0, head)}\n` +
+        `...[truncated ${omitted} chars for review]...\n` +
+        `${specialistOutput.slice(specialistOutput.length - tail)}`;
+    }
+
+    let ownerSnippet = ownerOutput;
+    if (ownerOutput.length > reviewSnippetMax) {
+      const head = Math.floor(reviewSnippetMax / 2);
+      const tail = reviewSnippetMax - head;
+      const omitted = ownerOutput.length - head - tail;
+      ownerSnippet =
+        `${ownerOutput.slice(0, head)}\n` +
+        `...[truncated ${omitted} chars for review]...\n` +
+        `${ownerOutput.slice(ownerOutput.length - tail)}`;
+    }
+
+    const reviewTask =
+      `Review workflow step "${step.name}" for completion and safe handoff.\n` +
+      `Step owner: ${ownerDef.name}\n` +
+      `Original objective:\n${resolvedTask}\n\n` +
+      `Specialist output:\n${specialistSnippet}\n\n` +
+      `Owner verification notes:\n${ownerSnippet}\n\n` +
+      `Return exactly:\n` +
+      `REVIEW_DECISION: APPROVE or REJECT\n` +
+      `REVIEW_REASON: <one sentence>\n` +
+      `Then output /exit.`;
+
+    const safetyTimeoutMs = timeoutMs ?? 600_000;
+    const reviewStep: WorkflowStep = {
+      name: `${step.name}-review`,
+      type: 'agent',
+      agent: reviewerDef.name,
+      task: reviewTask,
+    };
+
+    await this.trajectory?.registerAgent(reviewerDef.name, 'reviewer');
+    this.postToChannel(`**[${step.name}]** Review started (reviewer: ${reviewerDef.name})`);
+    const emitReviewCompleted = async (decision: 'approved' | 'rejected', reason?: string) => {
+      await this.trajectory?.reviewCompleted(step.name, reviewerDef.name, decision, reason);
+      this.emit({
+        type: 'step:review-completed',
+        runId: this.currentRunId ?? '',
+        stepName: step.name,
+        reviewerName: reviewerDef.name,
+        decision,
+      });
+    };
+
+    if (this.executor) {
+      const reviewOutput = await this.executor.executeAgentStep(
+        reviewStep,
+        reviewerDef,
+        reviewTask,
+        safetyTimeoutMs
+      );
+      const parsed = this.parseReviewDecision(reviewOutput);
+      if (!parsed) {
+        throw new Error(
+          `Step "${step.name}" review response malformed from "${reviewerDef.name}" (missing REVIEW_DECISION)`
+        );
+      }
+      await emitReviewCompleted(parsed.decision, parsed.reason);
+      if (parsed.decision === 'rejected') {
+        throw new Error(`Step "${step.name}" review rejected by "${reviewerDef.name}"`);
+      }
+      this.postToChannel(`**[${step.name}]** Review approved by \`${reviewerDef.name}\``);
+      return reviewOutput;
+    }
+
+    let reviewerHandle: Agent | undefined;
+    let reviewerReleased = false;
+    let reviewOutput = '';
+    let completedReview:
+      | { decision: 'approved' | 'rejected'; reason?: string }
+      | undefined;
+    let reviewCompletionPromise: Promise<void> | undefined;
+    const reviewCompletionStarted = { value: false };
+
+    const startReviewCompletion = (parsed: { decision: 'approved' | 'rejected'; reason?: string }) => {
+      if (reviewCompletionStarted.value) return;
+      reviewCompletionStarted.value = true;
+      completedReview = parsed;
+      reviewCompletionPromise = (async () => {
+        await emitReviewCompleted(parsed.decision, parsed.reason);
+        if (reviewerHandle && !reviewerReleased) {
+          reviewerReleased = true;
+          await reviewerHandle.release().catch(() => undefined);
+        }
+      })();
+    };
+
+    try {
+      reviewOutput = await this.spawnAndWait(reviewerDef, reviewStep, safetyTimeoutMs, {
+        onSpawned: ({ agent }) => {
+          reviewerHandle = agent;
+        },
+        onChunk: ({ chunk }) => {
+          const nextOutput = reviewOutput + WorkflowRunner.stripAnsi(chunk);
+          reviewOutput = nextOutput;
+          const parsed = this.parseReviewDecision(nextOutput);
+          if (parsed) {
+            startReviewCompletion(parsed);
+          }
+        },
+      });
+      await reviewCompletionPromise;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/\btimed out\b/i.test(message)) {
+        this.log(`[${step.name}] Review safety backstop timeout fired after ${safetyTimeoutMs}ms`);
+        throw new Error(
+          `Step "${step.name}" review safety backstop timed out after ${safetyTimeoutMs}ms`
+        );
+      }
+      throw error;
+    }
+
+    if (!completedReview) {
+      const parsed = this.parseReviewDecision(reviewOutput);
+      if (!parsed) {
+        throw new Error(
+          `Step "${step.name}" review response malformed from "${reviewerDef.name}" (missing REVIEW_DECISION)`
+        );
+      }
+      completedReview = parsed;
+      await emitReviewCompleted(parsed.decision, parsed.reason);
+    }
+
+    if (completedReview.decision === 'rejected') {
+      throw new Error(`Step "${step.name}" review rejected by "${reviewerDef.name}"`);
+    }
+
+    this.postToChannel(`**[${step.name}]** Review approved by \`${reviewerDef.name}\``);
+    return reviewOutput;
+  }
+
+  private parseReviewDecision(
+    reviewOutput: string
+  ): { decision: 'approved' | 'rejected'; reason?: string } | null {
+    const decisionPattern = /REVIEW_DECISION:\s*(APPROVE|REJECT)/gi;
+    const decisionMatches = [...reviewOutput.matchAll(decisionPattern)];
+    if (decisionMatches.length === 0) {
+      return null;
+    }
+
+    const outputLikelyContainsEchoedPrompt =
+      reviewOutput.includes('Return exactly') || reviewOutput.includes('REVIEW_DECISION: APPROVE or REJECT');
+    const decisionMatch =
+      outputLikelyContainsEchoedPrompt && decisionMatches.length > 1
+        ? decisionMatches[decisionMatches.length - 1]
+        : decisionMatches[0];
+    const decision = decisionMatch?.[1]?.toUpperCase();
+    if (decision !== 'APPROVE' && decision !== 'REJECT') {
+      return null;
+    }
+
+    const reasonPattern = /REVIEW_REASON:\s*(.+)/gi;
+    const reasonMatches = [...reviewOutput.matchAll(reasonPattern)];
+    const reasonMatch =
+      outputLikelyContainsEchoedPrompt && reasonMatches.length > 1
+        ? reasonMatches[reasonMatches.length - 1]
+        : reasonMatches[0];
+    const reason = reasonMatch?.[1]?.trim();
+
+    return {
+      decision: decision === 'APPROVE' ? 'approved' : 'rejected',
+      reason: reason && reason !== '<one sentence>' ? reason : undefined,
+    };
+  }
+
+  private combineStepAndReviewOutput(stepOutput: string, reviewOutput: string): string {
+    const primary = stepOutput.trimEnd();
+    const review = reviewOutput.trim();
+    if (!review) return primary;
+    if (!primary) return `REVIEW_OUTPUT\n${review}\n`;
+    return `${primary}\n\n---\nREVIEW_OUTPUT\n${review}\n`;
   }
 
   /**
@@ -2333,7 +3155,7 @@ export class WorkflowRunner {
       const output = await new Promise<string>((resolve, reject) => {
         const child = cpSpawn(cmd, args, {
           stdio: ['ignore', 'pipe', 'pipe'],
-          cwd: agentDef.cwd ? path.resolve(this.cwd, agentDef.cwd) : this.cwd,
+          cwd: this.resolveAgentCwd(agentDef),
           env: this.getRelayEnv() ?? { ...process.env },
         });
 
@@ -2447,7 +3269,8 @@ export class WorkflowRunner {
   private async spawnAndWait(
     agentDef: AgentDefinition,
     step: WorkflowStep,
-    timeoutMs?: number
+    timeoutMs?: number,
+    options: SpawnAndWaitOptions = {}
   ): Promise<string> {
     // Branch: non-interactive agents run as simple subprocesses
     if (agentDef.interactive === false) {
@@ -2458,15 +3281,17 @@ export class WorkflowRunner {
       throw new Error('AgentRelay not initialized');
     }
 
-    // Deterministic name: step name + first 8 chars of run ID.
-    let agentName = `${step.name}-${(this.currentRunId ?? this.generateShortId()).slice(0, 8)}`;
+    // Deterministic name: step name + optional role suffix + first 8 chars of run ID.
+    const requestedName = `${step.name}${options.agentNameSuffix ? `-${options.agentNameSuffix}` : ''}-${(this.currentRunId ?? this.generateShortId()).slice(0, 8)}`;
+    let agentName = requestedName;
 
     // Only inject delegation guidance for lead/coordinator agents, not spokes/workers.
     // In non-hub patterns (pipeline, dag, etc.) every agent is autonomous so they all get it.
     const role = agentDef.role?.toLowerCase() ?? '';
     const nameLC = agentDef.name.toLowerCase();
     const isHub =
-      WorkflowRunner.HUB_ROLES.has(nameLC) || [...WorkflowRunner.HUB_ROLES].some((r) => role.includes(r));
+      WorkflowRunner.HUB_ROLES.has(nameLC) ||
+      [...WorkflowRunner.HUB_ROLES].some((r) => new RegExp(`\\b${r}\\b`).test(role));
     const pattern = this.currentConfig?.swarm.pattern;
     const isHubPattern = pattern && WorkflowRunner.HUB_PATTERNS.has(pattern);
     const delegationGuidance =
@@ -2502,6 +3327,7 @@ export class WorkflowRunner {
       // Write raw output (with ANSI codes) to log file so dashboard's
       // XTermLogViewer can render colors/formatting natively via xterm.js
       logStream.write(chunk);
+      options.onChunk?.({ agentName, chunk });
     });
 
     const agentChannels = this.channel ? [this.channel] : agentDef.channels;
@@ -2512,6 +3338,7 @@ export class WorkflowRunner {
     let ptyChunks: string[] = [];
 
     try {
+      const agentCwd = this.resolveAgentCwd(agentDef);
       agent = await this.relay.spawnPty({
         name: agentName,
         cli: agentDef.cli,
@@ -2520,7 +3347,7 @@ export class WorkflowRunner {
         channels: agentChannels,
         task: taskWithExit,
         idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
-        cwd: agentDef.cwd ? path.resolve(this.cwd, agentDef.cwd) : undefined,
+        cwd: agentCwd !== this.cwd ? agentCwd : undefined,
       });
 
       // Re-key PTY maps if broker assigned a different name than requested
@@ -2555,11 +3382,14 @@ export class WorkflowRunner {
             const stripped = WorkflowRunner.stripAnsi(chunk);
             this.ptyOutputBuffers.get(agent.name)?.push(stripped);
             newLogStream.write(chunk);
+            options.onChunk?.({ agentName: agent.name, chunk });
           });
         }
 
         agentName = agent.name;
       }
+
+      await options.onSpawned?.({ requestedName, actualName: agent.name, agent });
 
       // Register in workers.json so `agents:kill` can find this agent
       let workerPid: number | undefined;
@@ -2641,6 +3471,7 @@ export class WorkflowRunner {
         this.ptyLogStreams.delete(agentName);
       }
       this.unregisterWorker(agentName);
+      this.supervisedRuntimeAgents.delete(agentName);
     }
 
     let output: string;
@@ -2825,7 +3656,7 @@ export class WorkflowRunner {
 
       if (
         WorkflowRunner.HUB_ROLES.has(nameLC) ||
-        [...WorkflowRunner.HUB_ROLES].some((r) => role.includes(r))
+        [...WorkflowRunner.HUB_ROLES].some((r) => new RegExp(`\\b${r}\\b`).test(role))
       ) {
         // Found a hub candidate — check if we have a live handle
         const handle = this.activeAgentHandles.get(agentDef.name);

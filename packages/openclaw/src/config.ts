@@ -3,7 +3,29 @@ import { join, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 
-import type { GatewayConfig } from './types.js';
+import type { GatewayConfig, WorkspaceEntry, WorkspacesConfig } from './types.js';
+
+function envValue(vars: Record<string, string>, key: string): string | undefined {
+  const processValue = process.env[key]?.trim();
+  if (processValue) return processValue;
+  const fileValue = vars[key]?.trim();
+  return fileValue ? fileValue : undefined;
+}
+
+function parseBooleanEnv(vars: Record<string, string>, key: string): boolean | undefined {
+  const value = envValue(vars, key);
+  if (!value) return undefined;
+  if (['1', 'true', 'yes', 'on'].includes(value.toLowerCase())) return true;
+  if (['0', 'false', 'no', 'off'].includes(value.toLowerCase())) return false;
+  return undefined;
+}
+
+function parseNumberEnv(vars: Record<string, string>, key: string): number | undefined {
+  const value = envValue(vars, key);
+  if (!value) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
 
 export interface OpenClawDetection {
   /** Whether OpenClaw is installed. */
@@ -59,6 +81,15 @@ export function openclawHome(): string {
   // Both valid or neither valid — prefer clawdbot if its dir exists (marketplace image)
   if (existsSync(clawdbotHome)) return clawdbotHome;
   return openclawHomePath;
+}
+
+/** Return the config filename for the resolved OpenClaw home (clawdbot.json or openclaw.json). */
+export function openclawConfigFilename(home?: string): string {
+  const dir = home ?? openclawHome();
+  if (hasValidConfig(dir, 'clawdbot.json')) return 'clawdbot.json';
+  if (hasValidConfig(dir, 'openclaw.json')) return 'openclaw.json';
+  // No existing config — infer from directory name
+  return dir.endsWith('.clawdbot') ? 'clawdbot.json' : 'openclaw.json';
 }
 
 /**
@@ -138,6 +169,7 @@ export async function detectOpenClaw(): Promise<OpenClawDetection> {
  * Load the gateway config from ~/.openclaw/workspace/relaycast/.env.
  * Returns null if the file doesn't exist or can't be parsed.
  */
+// eslint-disable-next-line complexity
 export async function loadGatewayConfig(): Promise<GatewayConfig | null> {
   const detection = await detectOpenClaw();
   const envPath = join(detection.workspaceDir, 'relaycast', '.env');
@@ -163,25 +195,69 @@ export async function loadGatewayConfig(): Promise<GatewayConfig | null> {
       vars[trimmed.slice(0, eqIdx)] = value;
     }
 
-    const apiKey = vars['RELAY_API_KEY'];
-    const clawName = vars['RELAY_CLAW_NAME'];
+    const apiKey = envValue(vars, 'RELAY_API_KEY');
+    const clawName = envValue(vars, 'RELAY_CLAW_NAME');
+    const relayChannels = envValue(vars, 'RELAY_CHANNELS');
 
     if (!apiKey || !clawName) {
       return null;
     }
 
-    const portStr = vars['OPENCLAW_GATEWAY_PORT'];
-    const port = portStr ? Number(portStr) : undefined;
+    const port = parseNumberEnv(vars, 'OPENCLAW_GATEWAY_PORT');
+    const pollFallbackEnabled = parseBooleanEnv(vars, 'RELAY_TRANSPORT_POLL_FALLBACK_ENABLED');
+    const pollFallbackProbeWsEnabled = parseBooleanEnv(
+      vars,
+      'RELAY_TRANSPORT_POLL_FALLBACK_PROBE_WS_ENABLED'
+    );
+    const pollFallbackWsFailureThreshold = parseNumberEnv(
+      vars,
+      'RELAY_TRANSPORT_POLL_FALLBACK_WS_FAILURE_THRESHOLD'
+    );
+    const pollFallbackTimeoutSeconds = parseNumberEnv(vars, 'RELAY_TRANSPORT_POLL_FALLBACK_TIMEOUT_SECONDS');
+    const pollFallbackLimit = parseNumberEnv(vars, 'RELAY_TRANSPORT_POLL_FALLBACK_LIMIT');
+    const pollFallbackProbeWsIntervalMs = parseNumberEnv(
+      vars,
+      'RELAY_TRANSPORT_POLL_FALLBACK_PROBE_WS_INTERVAL_MS'
+    );
+    const pollFallbackProbeWsStableGraceMs = parseNumberEnv(
+      vars,
+      'RELAY_TRANSPORT_POLL_FALLBACK_PROBE_WS_STABLE_GRACE_MS'
+    );
+    const pollFallbackInitialCursor = envValue(vars, 'RELAY_TRANSPORT_POLL_FALLBACK_INITIAL_CURSOR');
+
+    const transport =
+      pollFallbackEnabled !== undefined ||
+      pollFallbackProbeWsEnabled !== undefined ||
+      pollFallbackWsFailureThreshold !== undefined ||
+      pollFallbackTimeoutSeconds !== undefined ||
+      pollFallbackLimit !== undefined ||
+      pollFallbackProbeWsIntervalMs !== undefined ||
+      pollFallbackProbeWsStableGraceMs !== undefined ||
+      pollFallbackInitialCursor !== undefined
+        ? {
+            pollFallback: {
+              enabled: pollFallbackEnabled,
+              wsFailureThreshold: pollFallbackWsFailureThreshold,
+              timeoutSeconds: pollFallbackTimeoutSeconds,
+              limit: pollFallbackLimit,
+              initialCursor: pollFallbackInitialCursor,
+              probeWs: {
+                enabled: pollFallbackProbeWsEnabled,
+                intervalMs: pollFallbackProbeWsIntervalMs,
+                stableGraceMs: pollFallbackProbeWsStableGraceMs,
+              },
+            },
+          }
+        : undefined;
 
     return {
       apiKey,
       clawName,
-      baseUrl: vars['RELAY_BASE_URL'] || 'https://api.relaycast.dev',
-      channels: vars['RELAY_CHANNELS']
-        ? vars['RELAY_CHANNELS'].split(',').map((c) => c.trim())
-        : ['general'],
-      openclawGatewayToken: vars['OPENCLAW_GATEWAY_TOKEN'] || process.env.OPENCLAW_GATEWAY_TOKEN,
+      baseUrl: envValue(vars, 'RELAY_BASE_URL') || 'https://api.relaycast.dev',
+      channels: relayChannels ? relayChannels.split(',').map((c) => c.trim()) : ['general'],
+      openclawGatewayToken: envValue(vars, 'OPENCLAW_GATEWAY_TOKEN'),
       openclawGatewayPort: Number.isFinite(port) ? port : undefined,
+      transport,
     };
   } catch {
     return null;
@@ -207,17 +283,214 @@ export async function saveGatewayConfig(config: GatewayConfig): Promise<void> {
 
   if (config.openclawGatewayToken) {
     lines.push(`OPENCLAW_GATEWAY_TOKEN=${config.openclawGatewayToken}`);
-    const masked = config.openclawGatewayToken.length > 12
-      ? config.openclawGatewayToken.slice(0, 8) + '...'
-      : '***';
+    const masked =
+      config.openclawGatewayToken.length > 12 ? config.openclawGatewayToken.slice(0, 8) + '...' : '***';
     console.log(`[config] Persisting OPENCLAW_GATEWAY_TOKEN (${masked})`);
   }
   if (config.openclawGatewayPort) {
     lines.push(`OPENCLAW_GATEWAY_PORT=${config.openclawGatewayPort}`);
+  }
+  if (config.transport?.pollFallback?.enabled !== undefined) {
+    lines.push(`RELAY_TRANSPORT_POLL_FALLBACK_ENABLED=${config.transport.pollFallback.enabled}`);
+  }
+  if (config.transport?.pollFallback?.wsFailureThreshold !== undefined) {
+    lines.push(
+      `RELAY_TRANSPORT_POLL_FALLBACK_WS_FAILURE_THRESHOLD=${config.transport.pollFallback.wsFailureThreshold}`
+    );
+  }
+  if (config.transport?.pollFallback?.timeoutSeconds !== undefined) {
+    lines.push(
+      `RELAY_TRANSPORT_POLL_FALLBACK_TIMEOUT_SECONDS=${config.transport.pollFallback.timeoutSeconds}`
+    );
+  }
+  if (config.transport?.pollFallback?.limit !== undefined) {
+    lines.push(`RELAY_TRANSPORT_POLL_FALLBACK_LIMIT=${config.transport.pollFallback.limit}`);
+  }
+  if (config.transport?.pollFallback?.initialCursor) {
+    lines.push(`RELAY_TRANSPORT_POLL_FALLBACK_INITIAL_CURSOR=${config.transport.pollFallback.initialCursor}`);
+  }
+  if (config.transport?.pollFallback?.probeWs?.enabled !== undefined) {
+    lines.push(
+      `RELAY_TRANSPORT_POLL_FALLBACK_PROBE_WS_ENABLED=${config.transport.pollFallback.probeWs.enabled}`
+    );
+  }
+  if (config.transport?.pollFallback?.probeWs?.intervalMs !== undefined) {
+    lines.push(
+      `RELAY_TRANSPORT_POLL_FALLBACK_PROBE_WS_INTERVAL_MS=${config.transport.pollFallback.probeWs.intervalMs}`
+    );
+  }
+  if (config.transport?.pollFallback?.probeWs?.stableGraceMs !== undefined) {
+    lines.push(
+      `RELAY_TRANSPORT_POLL_FALLBACK_PROBE_WS_STABLE_GRACE_MS=${config.transport.pollFallback.probeWs.stableGraceMs}`
+    );
   }
 
   lines.push('');
   const env = lines.join('\n');
 
   await writeFile(join(relaycastDir, '.env'), env, 'utf-8');
+}
+
+// ---------------------------------------------------------------------------
+// Multi-workspace config: ~/.openclaw/workspace/relaycast/workspaces.json
+// ---------------------------------------------------------------------------
+
+/**
+ * Path to the workspaces.json file.
+ */
+async function workspacesConfigPath(): Promise<string> {
+  const detection = await detectOpenClaw();
+  return join(detection.workspaceDir, 'relaycast', 'workspaces.json');
+}
+
+/**
+ * Load multi-workspace config. Returns null if the file doesn't exist.
+ */
+export async function loadWorkspacesConfig(): Promise<WorkspacesConfig | null> {
+  const configPath = await workspacesConfigPath();
+  if (!existsSync(configPath)) return null;
+
+  try {
+    const raw = await readFile(configPath, 'utf-8');
+    return JSON.parse(raw) as WorkspacesConfig;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`Warning: failed to parse ${configPath}: ${message}`);
+    console.warn('The file may be corrupted. Existing workspace config will not be modified.');
+    return { workspaces: [], default_workspace: undefined };
+  }
+}
+
+/**
+ * Save multi-workspace config to disk.
+ */
+export async function saveWorkspacesConfig(config: WorkspacesConfig): Promise<void> {
+  const configPath = await workspacesConfigPath();
+  await mkdir(dirname(configPath), { recursive: true });
+  await writeFile(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+}
+
+/**
+ * Add a workspace entry. If an entry with the same api_key already exists,
+ * it is updated in place. The first workspace added becomes the default.
+ */
+export async function addWorkspace(entry: WorkspaceEntry): Promise<WorkspacesConfig> {
+  let config = await loadWorkspacesConfig();
+
+  if (!config) {
+    // Bootstrap from existing single-workspace .env if available
+    const gateway = await loadGatewayConfig();
+    if (gateway) {
+      config = {
+        workspaces: [{
+          api_key: gateway.apiKey,
+          workspace_alias: gateway.clawName,
+          is_default: true,
+        }],
+        default_workspace: gateway.clawName,
+      };
+    } else {
+      config = { workspaces: [], default_workspace: undefined };
+    }
+  }
+
+  const normalizeWorkspaceLabel = (workspace: WorkspaceEntry): string => {
+    return workspace.workspace_alias ?? workspace.workspace_id ?? workspace.api_key;
+  };
+
+  // Check for existing entry with same api_key
+  const hasExplicitDefault = entry.is_default !== undefined;
+  const existingIdx = config.workspaces.findIndex((w) => w.api_key === entry.api_key);
+  if (existingIdx >= 0) {
+    const existingEntry = config.workspaces[existingIdx];
+    config.workspaces[existingIdx] = { ...existingEntry, ...entry };
+    if (!hasExplicitDefault) {
+      config.workspaces[existingIdx].is_default = existingEntry.is_default;
+    }
+    const updatedEntry = config.workspaces[existingIdx];
+    if (updatedEntry.is_default) {
+      config.default_workspace = normalizeWorkspaceLabel(updatedEntry);
+    }
+  } else {
+    config.workspaces.push(entry);
+  }
+
+  const targetWorkspace = config.workspaces.find((w) => w.api_key === entry.api_key);
+  if (!targetWorkspace) {
+    throw new Error(`Failed to locate workspace entry for ${entry.api_key}`);
+  }
+
+  // If this is explicitly default, or this is the first workspace without an existing default,
+  // set it as default.
+  if (
+    entry.is_default === true ||
+    (config.default_workspace === undefined && config.workspaces.length === 1)
+  ) {
+    config.default_workspace = normalizeWorkspaceLabel(targetWorkspace);
+    for (const w of config.workspaces) {
+      w.is_default = w.api_key === targetWorkspace.api_key;
+    }
+  }
+
+  await saveWorkspacesConfig(config);
+  return config;
+}
+
+/**
+ * List all configured workspaces.
+ */
+export async function listWorkspaces(): Promise<WorkspaceEntry[]> {
+  const config = await loadWorkspacesConfig();
+  return config?.workspaces ?? [];
+}
+
+/**
+ * Switch the default workspace by alias or workspace_id.
+ * Returns the updated config, or null if the identifier was not found.
+ */
+export async function switchWorkspace(identifier: string): Promise<WorkspacesConfig | null> {
+  const config = await loadWorkspacesConfig();
+  if (!config) return null;
+
+  const target = config.workspaces.find(
+    (w) => w.workspace_alias === identifier || w.workspace_id === identifier
+  );
+  if (!target) return null;
+
+  config.default_workspace = target.workspace_alias ?? target.workspace_id ?? target.api_key;
+  for (const w of config.workspaces) {
+    w.is_default = w.api_key === target.api_key;
+  }
+
+  // Also update the single-workspace .env to match the new default
+  const gateway = await loadGatewayConfig();
+  if (gateway) {
+    gateway.apiKey = target.api_key;
+    gateway.clawName = target.workspace_alias ?? target.workspace_id ?? target.api_key;
+    await saveGatewayConfig(gateway);
+  }
+
+  await saveWorkspacesConfig(config);
+  return config;
+}
+
+/**
+ * Build RELAY_WORKSPACES_JSON value for the broker from stored workspaces.
+ * Returns null if there are fewer than 2 workspaces (single-workspace mode).
+ */
+export function buildWorkspacesJson(config: WorkspacesConfig): string | null {
+  if (config.workspaces.length < 2) return null;
+
+  const memberships = config.workspaces.map((w) => ({
+    api_key: w.api_key,
+    ...(w.workspace_id ? { workspace_id: w.workspace_id } : {}),
+    ...(w.workspace_alias ? { workspace_alias: w.workspace_alias } : {}),
+  }));
+
+  const payload: Record<string, unknown> = { memberships };
+  if (config.default_workspace) {
+    payload.default_workspace_id = config.default_workspace;
+  }
+
+  return JSON.stringify(payload);
 }

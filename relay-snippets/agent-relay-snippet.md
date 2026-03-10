@@ -108,6 +108,18 @@ relay_send(to: "Lead", message: "ACK: Starting on the task.")
 | Local (same project)   | `relay_send(to: "Lead", ...)`              | `relay_send(to: "project:lead", ...)` |
 | Bridge (cross-project) | `relay_send(to: "frontend:Designer", ...)` | N/A                                   |
 
+## Multi-Workspace
+
+When connected to multiple workspaces, messages include workspace context:
+
+```
+Relay message from Alice [my-team / abc123]: Hello!
+```
+
+- Messages are scoped to the originating workspace
+- Reply within the same workspace context shown in the message header
+- Use `relay_status()` to see which workspaces are connected
+
 ## Checking Status
 
 ```

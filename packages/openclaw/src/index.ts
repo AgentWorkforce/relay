@@ -1,5 +1,5 @@
 // ── Types ──────────────────────────────────────────────────────────────
-export type { GatewayConfig, InboundMessage, DeliveryResult } from './types.js';
+export type { GatewayConfig, InboundMessage, DeliveryResult, WorkspaceEntry, WorkspacesConfig } from './types.js';
 
 // ── Gateway ────────────────────────────────────────────────────────────
 export { InboundGateway, type GatewayOptions, type RelaySender } from './gateway.js';
@@ -9,6 +9,12 @@ export {
   detectOpenClaw,
   loadGatewayConfig,
   saveGatewayConfig,
+  loadWorkspacesConfig,
+  saveWorkspacesConfig,
+  addWorkspace,
+  listWorkspaces,
+  switchWorkspace,
+  buildWorkspacesJson,
   type OpenClawDetection,
 } from './config.js';
 

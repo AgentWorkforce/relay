@@ -1,0 +1,53 @@
+{
+  "id": "traj_l2lriwaf3e9f",
+  "version": 1,
+  "task": {
+    "title": "Switch OpenClaw Lambda to import SKILL.md instead of embedding copied content"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-04T21:58:59.462Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-03-04T21:59:06.718Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_n1m1m5vs3pki",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-04T21:59:06.718Z",
+      "events": [
+        {
+          "ts": 1772661546719,
+          "type": "decision",
+          "content": "Use SST/esbuild .md text loader instead of adding a markdown-import package: Use SST/esbuild .md text loader instead of adding a markdown-import package",
+          "raw": {
+            "question": "Use SST/esbuild .md text loader instead of adding a markdown-import package",
+            "chosen": "Use SST/esbuild .md text loader instead of adding a markdown-import package",
+            "alternatives": [],
+            "reasoning": "Keeps dependencies minimal and bundles markdown content directly at build time"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-04T21:59:09.426Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "88e921a8ab6ea9c602cb36fca0931662da9b9d96",
+    "endRef": "88e921a8ab6ea9c602cb36fca0931662da9b9d96"
+  },
+  "completedAt": "2026-03-04T21:59:09.426Z",
+  "retrospective": {
+    "summary": "Replaced embedded markdown blob with direct import from packages/openclaw/skill/SKILL.md; configured SST Function .md text loader and added TypeScript module declaration.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  }
+}

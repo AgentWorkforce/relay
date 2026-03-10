@@ -43,6 +43,13 @@ interface TrajectoryAgent {
   joinedAt: string;
 }
 
+interface StepParticipants {
+  role?: string;
+  owner?: string;
+  specialist?: string;
+  reviewer?: string;
+}
+
 interface TrajectoryFile {
   id: string;
   version: number;
@@ -230,16 +237,18 @@ export class WorkflowTrajectory {
   // ── Step events ────────────────────────────────────────────────────────────
 
   /** Record step started — captures intent, not just assignment. */
-  async stepStarted(step: WorkflowStep, agent: string): Promise<void> {
+  async stepStarted(step: WorkflowStep, agent: string, participants?: StepParticipants): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
 
-    // Register agent if not seen
-    if (!this.trajectory.agents.some((a) => a.name === agent)) {
-      this.trajectory.agents.push({
-        name: agent,
-        role: step.agent ?? 'deterministic',
-        joinedAt: new Date().toISOString(),
-      });
+    await this.registerAgent(agent, participants?.role ?? step.agent ?? 'deterministic');
+    if (participants?.owner && participants.owner !== agent) {
+      await this.registerAgent(participants.owner, 'owner');
+    }
+    if (participants?.specialist) {
+      await this.registerAgent(participants.specialist, 'specialist');
+    }
+    if (participants?.reviewer) {
+      await this.registerAgent(participants.reviewer, 'reviewer');
     }
 
     // Capture the step's purpose: first non-empty sentence of the task
@@ -252,6 +261,78 @@ export class WorkflowTrajectory {
       : `${step.type ?? 'deterministic'} step`;
 
     this.addEvent('note', `"${step.name}": ${intent}`, undefined, { agent });
+    await this.flush();
+  }
+
+  async registerAgent(name: string, role: string): Promise<void> {
+    if (!this.enabled || !this.trajectory) return;
+    if (!this.trajectory.agents.some((a) => a.name === name)) {
+      this.trajectory.agents.push({
+        name,
+        role,
+        joinedAt: new Date().toISOString(),
+      });
+      await this.flush();
+    }
+  }
+
+  async stepSupervisionAssigned(
+    step: WorkflowStep,
+    supervised: { owner: { name: string }; specialist: { name: string }; reviewer?: { name: string } }
+  ): Promise<void> {
+    if (!this.enabled || !this.trajectory) return;
+
+    await this.registerAgent(supervised.owner.name, 'owner');
+    await this.registerAgent(supervised.specialist.name, 'specialist');
+    if (supervised.reviewer?.name) {
+      await this.registerAgent(supervised.reviewer.name, 'reviewer');
+    }
+
+    const reviewerNote = supervised.reviewer?.name ? `, reviewer=${supervised.reviewer.name}` : '';
+    this.addEvent(
+      'decision',
+      `"${step.name}" supervision assigned → owner=${supervised.owner.name}, specialist=${supervised.specialist.name}${reviewerNote}`,
+      'medium',
+      {
+        owner: supervised.owner.name,
+        specialist: supervised.specialist.name,
+        reviewer: supervised.reviewer?.name,
+      }
+    );
+    await this.flush();
+  }
+
+  async ownerMonitoringEvent(
+    stepName: string,
+    owner: string,
+    detail: string,
+    raw?: Record<string, unknown>
+  ): Promise<void> {
+    if (!this.enabled || !this.trajectory) return;
+
+    this.addEvent(
+      'note',
+      `"${stepName}" owner ${owner}: ${detail}`,
+      'medium',
+      raw ? { owner, ...raw } : { owner }
+    );
+    await this.flush();
+  }
+
+  async reviewCompleted(
+    stepName: string,
+    reviewerName: string,
+    decision: 'approved' | 'rejected',
+    reason?: string
+  ): Promise<void> {
+    if (!this.enabled || !this.trajectory) return;
+
+    this.addEvent('review-completed', `"${stepName}" review ${decision} by ${reviewerName}`, 'medium', {
+      stepName,
+      reviewer: reviewerName,
+      decision,
+      reason,
+    });
     await this.flush();
   }
 

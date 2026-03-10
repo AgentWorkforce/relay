@@ -4,15 +4,15 @@
  * Run:
  *   npm run build && node --test dist/__tests__/unit.test.js
  */
-import assert from "node:assert/strict";
-import { join, sep } from "node:path";
-import { appendFile, mkdtemp, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { setTimeout as sleep } from "node:timers/promises";
-import test from "node:test";
+import assert from 'node:assert/strict';
+import { join, sep } from 'node:path';
+import { appendFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { setTimeout as sleep } from 'node:timers/promises';
+import test from 'node:test';
 
-import { AgentRelay, type Agent } from "../relay.js";
-import { followLogs, getLogs, listLoggedAgents, type LogFollowEvent } from "../logs.js";
+import { AgentRelay, type Agent } from '../relay.js';
+import { followLogs, getLogs, listLoggedAgents, type LogFollowEvent } from '../logs.js';
 
 // ── waitForAny ──────────────────────────────────────────────────────────────
 
@@ -22,99 +22,85 @@ interface FakeAgentControls {
   triggerIdle: () => void;
 }
 
-function makeFakeAgent(
-  name: string,
-  exitAfterMs?: number,
-): Agent {
+function makeFakeAgent(name: string, exitAfterMs?: number): Agent {
   return makeFakeAgentWithControls(name, exitAfterMs).agent;
 }
 
-function makeFakeAgentWithControls(
-  name: string,
-  exitAfterMs?: number,
-): FakeAgentControls {
-  let resolveExit: ((reason: "exited" | "released") => void) | undefined;
-  const exitPromise = new Promise<"exited" | "released">((resolve) => {
+function makeFakeAgentWithControls(name: string, exitAfterMs?: number): FakeAgentControls {
+  let resolveExit: ((reason: 'exited' | 'released') => void) | undefined;
+  const exitPromise = new Promise<'exited' | 'released'>((resolve) => {
     resolveExit = resolve;
   });
 
-  let resolveIdle: ((reason: "idle" | "timeout" | "exited") => void) | undefined;
-  let idlePromise: Promise<"idle" | "timeout" | "exited"> | undefined;
+  let resolveIdle: ((reason: 'idle' | 'timeout' | 'exited') => void) | undefined;
+  let idlePromise: Promise<'idle' | 'timeout' | 'exited'> | undefined;
 
   function makeIdlePromise() {
-    idlePromise = new Promise<"idle" | "timeout" | "exited">((resolve) => {
+    idlePromise = new Promise<'idle' | 'timeout' | 'exited'>((resolve) => {
       resolveIdle = resolve;
     });
   }
 
   if (exitAfterMs !== undefined) {
-    setTimeout(() => resolveExit?.("exited"), exitAfterMs);
+    setTimeout(() => resolveExit?.('exited'), exitAfterMs);
   }
 
   const agent: Agent = {
     name,
-    runtime: "pty",
-    channels: ["general"],
-    status: "ready",
+    runtime: 'pty',
+    channels: ['general'],
+    status: 'ready',
     exitCode: undefined,
     exitSignal: undefined,
     async release() {
-      resolveExit?.("released");
+      resolveExit?.('released');
     },
     waitForReady(timeoutMs?: number) {
       if (timeoutMs === 0) {
-        return Promise.reject(
-          new Error(`Timed out waiting for worker_ready for '${name}' after 0ms`),
-        );
+        return Promise.reject(new Error(`Timed out waiting for worker_ready for '${name}' after 0ms`));
       }
       return Promise.resolve();
     },
     waitForExit(timeoutMs?: number) {
-      if (timeoutMs === 0) return Promise.resolve("timeout" as const);
+      if (timeoutMs === 0) return Promise.resolve('timeout' as const);
       if (timeoutMs !== undefined) {
         return Promise.race([
           exitPromise,
-          new Promise<"timeout">((resolve) =>
-            setTimeout(() => resolve("timeout"), timeoutMs),
-          ),
+          new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), timeoutMs)),
         ]);
       }
       return exitPromise;
     },
     waitForIdle(timeoutMs?: number) {
       makeIdlePromise();
-      if (timeoutMs === 0) return Promise.resolve("timeout" as const);
+      if (timeoutMs === 0) return Promise.resolve('timeout' as const);
       if (timeoutMs !== undefined) {
         return Promise.race([
           idlePromise!,
-          new Promise<"timeout">((resolve) =>
-            setTimeout(() => resolve("timeout"), timeoutMs),
-          ),
+          new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), timeoutMs)),
         ]);
       }
       return idlePromise!;
     },
     async sendMessage() {
-      return { eventId: "fake", from: name, to: "", text: "" };
+      return { eventId: 'fake', from: name, to: '', text: '' };
     },
-    onOutput(
-      _callback: ((chunk: string) => void) | ((data: { stream: string; chunk: string }) => void),
-    ) {
+    onOutput(_callback: ((chunk: string) => void) | ((data: { stream: string; chunk: string }) => void)) {
       return () => {};
     },
   };
 
   return {
     agent,
-    triggerExit: () => resolveExit?.("exited"),
-    triggerIdle: () => resolveIdle?.("idle"),
+    triggerExit: () => resolveExit?.('exited'),
+    triggerIdle: () => resolveIdle?.('idle'),
   };
 }
 
 async function waitForLogEvent(
   events: LogFollowEvent[],
   predicate: (event: LogFollowEvent) => boolean,
-  timeoutMs = 2_000,
+  timeoutMs = 2_000
 ): Promise<LogFollowEvent> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
@@ -124,118 +110,117 @@ async function waitForLogEvent(
     }
     await sleep(20);
   }
-  throw new Error("Timed out waiting for log follow event");
+  throw new Error('Timed out waiting for log follow event');
 }
 
-test("waitForAny: returns first agent to exit", async () => {
-  const fast = makeFakeAgent("fast", 50);
-  const slow = makeFakeAgent("slow", 5_000);
+test('waitForAny: returns first agent to exit', async () => {
+  const fast = makeFakeAgent('fast', 50);
+  const slow = makeFakeAgent('slow', 5_000);
 
   const { agent, result } = await AgentRelay.waitForAny([fast, slow], 3_000);
-  assert.equal(agent.name, "fast");
-  assert.equal(result, "exited");
+  assert.equal(agent.name, 'fast');
+  assert.equal(result, 'exited');
 });
 
-test("waitForAny: returns timeout when no agent exits", async () => {
-  const a = makeFakeAgent("a");
-  const b = makeFakeAgent("b");
+test('waitForAny: returns timeout when no agent exits', async () => {
+  const a = makeFakeAgent('a');
+  const b = makeFakeAgent('b');
 
   const { result } = await AgentRelay.waitForAny([a, b], 100);
-  assert.equal(result, "timeout");
+  assert.equal(result, 'timeout');
 });
 
-test("waitForAny: handles released agent", async () => {
-  const agent = makeFakeAgent("releasable");
+test('waitForAny: handles released agent', async () => {
+  const agent = makeFakeAgent('releasable');
 
   // Release after 50ms
   setTimeout(() => agent.release(), 50);
 
   const { agent: resolved, result } = await AgentRelay.waitForAny([agent], 3_000);
-  assert.equal(resolved.name, "releasable");
-  assert.equal(result, "released");
+  assert.equal(resolved.name, 'releasable');
+  assert.equal(result, 'released');
 });
 
-test("waitForAny: throws on empty agents array", async () => {
-  await assert.rejects(
-    () => AgentRelay.waitForAny([]),
-    { message: "waitForAny requires at least one agent" },
-  );
+test('waitForAny: throws on empty agents array', async () => {
+  await assert.rejects(() => AgentRelay.waitForAny([]), {
+    message: 'waitForAny requires at least one agent',
+  });
 });
 
 // ── getLogs ──────────────────────────────────────────────────────────────────
 
-test("getLogs: rejects path traversal", async () => {
-  const result = await getLogs("../../etc/passwd", {
-    logsDir: "/tmp/test-logs",
+test('getLogs: rejects path traversal', async () => {
+  const result = await getLogs('../../etc/passwd', {
+    logsDir: '/tmp/test-logs',
   });
   assert.equal(result.found, false);
-  assert.equal(result.content, "");
+  assert.equal(result.content, '');
 });
 
-test("getLogs: returns not found for missing agent", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "relay-test-logs-"));
+test('getLogs: returns not found for missing agent', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'relay-test-logs-'));
 
   try {
-    const result = await getLogs("nonexistent", { logsDir: dir });
+    const result = await getLogs('nonexistent', { logsDir: dir });
     assert.equal(result.found, false);
-    assert.equal(result.content, "");
+    assert.equal(result.content, '');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("getLogs: reads content from log file", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "relay-test-logs-"));
+test('getLogs: reads content from log file', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'relay-test-logs-'));
 
   try {
-    const logContent = "line1\nline2\nline3\n";
-    await writeFile(join(dir, "TestAgent.log"), logContent);
+    const logContent = 'line1\nline2\nline3\n';
+    await writeFile(join(dir, 'TestAgent.log'), logContent);
 
-    const result = await getLogs("TestAgent", { logsDir: dir, lines: 2 });
+    const result = await getLogs('TestAgent', { logsDir: dir, lines: 2 });
     assert.equal(result.found, true);
-    assert.equal(result.content, "line2\nline3");
+    assert.equal(result.content, 'line2\nline3');
     assert.equal(result.lineCount, 2);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("listLoggedAgents: lists agent names from log files", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "relay-test-logs-"));
+test('listLoggedAgents: lists agent names from log files', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'relay-test-logs-'));
 
   try {
-    await writeFile(join(dir, "Alice.log"), "hello\n");
-    await writeFile(join(dir, "Bob.log"), "world\n");
-    await writeFile(join(dir, "not-a-log.txt"), "skip\n");
+    await writeFile(join(dir, 'Alice.log'), 'hello\n');
+    await writeFile(join(dir, 'Bob.log'), 'world\n');
+    await writeFile(join(dir, 'not-a-log.txt'), 'skip\n');
 
     const agents = await listLoggedAgents(dir);
-    assert.ok(agents.includes("Alice"));
-    assert.ok(agents.includes("Bob"));
-    assert.ok(!agents.includes("not-a-log"));
+    assert.ok(agents.includes('Alice'));
+    assert.ok(agents.includes('Bob'));
+    assert.ok(!agents.includes('not-a-log'));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("listLoggedAgents: returns empty for missing directory", async () => {
-  const agents = await listLoggedAgents("/tmp/definitely-nonexistent-dir");
+test('listLoggedAgents: returns empty for missing directory', async () => {
+  const agents = await listLoggedAgents('/tmp/definitely-nonexistent-dir');
   assert.deepEqual(agents, []);
 });
 
-test("followLogs: emits error for missing logs by default", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "relay-test-follow-"));
+test('followLogs: emits error for missing logs by default', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'relay-test-follow-'));
   const events: LogFollowEvent[] = [];
 
   try {
-    const handle = followLogs("MissingAgent", {
+    const handle = followLogs('MissingAgent', {
       logsDir: dir,
       pollMs: 50,
       onEvent: (event) => events.push(event),
     });
 
-    const event = await waitForLogEvent(events, (item) => item.type === "error");
-    assert.equal(event.type, "error");
-    if (event.type === "error") {
+    const event = await waitForLogEvent(events, (item) => item.type === 'error');
+    assert.equal(event.type, 'error');
+    if (event.type === 'error') {
       assert.match(event.error, /No local logs/);
       assert.ok(Array.isArray(event.availableAgents));
     }
@@ -246,75 +231,75 @@ test("followLogs: emits error for missing logs by default", async () => {
   }
 });
 
-test("followLogs: emits history then incremental log content", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "relay-test-follow-"));
-  const logFile = join(dir, "Worker.log");
+test('followLogs: emits history then incremental log content', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'relay-test-follow-'));
+  const logFile = join(dir, 'Worker.log');
   const events: LogFollowEvent[] = [];
 
   try {
-    await writeFile(logFile, "line1\nline2\n");
+    await writeFile(logFile, 'line1\nline2\n');
 
-    const handle = followLogs("Worker", {
+    const handle = followLogs('Worker', {
       logsDir: dir,
       historyLines: 1,
       pollMs: 50,
       onEvent: (event) => events.push(event),
     });
 
-    const historyEvent = await waitForLogEvent(events, (item) => item.type === "history");
-    assert.equal(historyEvent.type, "history");
-    if (historyEvent.type === "history") {
-      assert.deepEqual(historyEvent.lines, ["line2"]);
+    const historyEvent = await waitForLogEvent(events, (item) => item.type === 'history');
+    assert.equal(historyEvent.type, 'history');
+    if (historyEvent.type === 'history') {
+      assert.deepEqual(historyEvent.lines, ['line2']);
     }
 
-    await appendFile(logFile, "line3\nline4\n");
+    await appendFile(logFile, 'line3\nline4\n');
     const deltaEvent = await waitForLogEvent(
       events,
-      (item) => item.type === "log" && item.content.includes("line3"),
+      (item) => item.type === 'log' && item.content.includes('line3')
     );
-    assert.equal(deltaEvent.type, "log");
-    if (deltaEvent.type === "log") {
+    assert.equal(deltaEvent.type, 'log');
+    if (deltaEvent.type === 'log') {
       assert.match(deltaEvent.content, /line3/);
       assert.match(deltaEvent.content, /line4/);
     }
 
-    const logEventsBeforeStop = events.filter((item) => item.type === "log").length;
+    const logEventsBeforeStop = events.filter((item) => item.type === 'log').length;
     handle.unsubscribe();
-    await appendFile(logFile, "line5\n");
+    await appendFile(logFile, 'line5\n');
     await sleep(120);
-    const logEventsAfterStop = events.filter((item) => item.type === "log").length;
+    const logEventsAfterStop = events.filter((item) => item.type === 'log').length;
     assert.equal(logEventsAfterStop, logEventsBeforeStop);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("followLogs: allowMissing keeps stream open until file appears", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "relay-test-follow-"));
-  const logFile = join(dir, "LateWorker.log");
+test('followLogs: allowMissing keeps stream open until file appears', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'relay-test-follow-'));
+  const logFile = join(dir, 'LateWorker.log');
   const events: LogFollowEvent[] = [];
 
   try {
-    const handle = followLogs("LateWorker", {
+    const handle = followLogs('LateWorker', {
       logsDir: dir,
       allowMissing: true,
       pollMs: 50,
       onEvent: (event) => events.push(event),
     });
 
-    const historyEvent = await waitForLogEvent(events, (item) => item.type === "history");
-    assert.equal(historyEvent.type, "history");
-    if (historyEvent.type === "history") {
+    const historyEvent = await waitForLogEvent(events, (item) => item.type === 'history');
+    assert.equal(historyEvent.type, 'history');
+    if (historyEvent.type === 'history') {
       assert.deepEqual(historyEvent.lines, []);
     }
 
-    await writeFile(logFile, "boot\n");
+    await writeFile(logFile, 'boot\n');
     const deltaEvent = await waitForLogEvent(
       events,
-      (item) => item.type === "log" && item.content.includes("boot"),
+      (item) => item.type === 'log' && item.content.includes('boot')
     );
-    assert.equal(deltaEvent.type, "log");
-    if (deltaEvent.type === "log") {
+    assert.equal(deltaEvent.type, 'log');
+    if (deltaEvent.type === 'log') {
       assert.match(deltaEvent.content, /boot/);
     }
 
@@ -326,22 +311,22 @@ test("followLogs: allowMissing keeps stream open until file appears", async () =
 
 // ── waitForIdle ────────────────────────────────────────────────────────────
 
-test("waitForIdle: resolves with idle when agent goes idle", async () => {
-  const { agent, triggerIdle } = makeFakeAgentWithControls("worker");
+test('waitForIdle: resolves with idle when agent goes idle', async () => {
+  const { agent, triggerIdle } = makeFakeAgentWithControls('worker');
   const promise = agent.waitForIdle(5_000);
   setTimeout(() => triggerIdle(), 20);
   const result = await promise;
-  assert.equal(result, "idle");
+  assert.equal(result, 'idle');
 });
 
-test("waitForIdle: resolves with timeout when time elapses", async () => {
-  const { agent } = makeFakeAgentWithControls("worker");
+test('waitForIdle: resolves with timeout when time elapses', async () => {
+  const { agent } = makeFakeAgentWithControls('worker');
   const result = await agent.waitForIdle(50);
-  assert.equal(result, "timeout");
+  assert.equal(result, 'timeout');
 });
 
-test("waitForIdle: resolves with exited when agent exits before idle", async () => {
-  const { agent, triggerExit } = makeFakeAgentWithControls("worker");
+test('waitForIdle: resolves with exited when agent exits before idle', async () => {
+  const { agent, triggerExit } = makeFakeAgentWithControls('worker');
   const idlePromise = agent.waitForIdle(5_000);
 
   // Simulate exit resolving the idle promise (as relay.ts wireEvents does)
@@ -356,80 +341,80 @@ test("waitForIdle: resolves with exited when agent exits before idle", async () 
   // wireEvents handler resolves idle resolvers on exit.
   // For the mock, we can test the timeout path instead.
   const result = await agent.waitForIdle(100);
-  assert.equal(result, "timeout");
+  assert.equal(result, 'timeout');
 });
 
-test("waitForIdle: returns timeout immediately with timeoutMs=0", async () => {
-  const { agent } = makeFakeAgentWithControls("worker");
+test('waitForIdle: returns timeout immediately with timeoutMs=0', async () => {
+  const { agent } = makeFakeAgentWithControls('worker');
   const result = await agent.waitForIdle(0);
-  assert.equal(result, "timeout");
+  assert.equal(result, 'timeout');
 });
 
-test("waitForIdle: idle resolves before timeout", async () => {
-  const { agent, triggerIdle } = makeFakeAgentWithControls("worker");
+test('waitForIdle: idle resolves before timeout', async () => {
+  const { agent, triggerIdle } = makeFakeAgentWithControls('worker');
   // Trigger idle almost immediately, with a long timeout
   const promise = agent.waitForIdle(5_000);
   setTimeout(() => triggerIdle(), 10);
   const result = await promise;
-  assert.equal(result, "idle");
+  assert.equal(result, 'idle');
 });
 // ── agent.status ────────────────────────────────────────────────────────────
 
-test("agent.status: mock agent has ready status", () => {
-  const { agent } = makeFakeAgentWithControls("worker");
-  assert.equal(agent.status, "ready");
+test('agent.status: mock agent has ready status', () => {
+  const { agent } = makeFakeAgentWithControls('worker');
+  assert.equal(agent.status, 'ready');
 });
 
 // ── agent.onOutput ──────────────────────────────────────────────────────────
 
-test("agent.onOutput: mock returns unsubscribe function", () => {
-  const { agent } = makeFakeAgentWithControls("worker");
+test('agent.onOutput: mock returns unsubscribe function', () => {
+  const { agent } = makeFakeAgentWithControls('worker');
   const chunks: string[] = [];
   const unsub = agent.onOutput(({ chunk }: { stream: string; chunk: string }) => chunks.push(chunk));
-  assert.equal(typeof unsub, "function");
+  assert.equal(typeof unsub, 'function');
   unsub();
 });
 
 // ── AgentRelay.workspaceKey / observerUrl ────────────────────────────────────
 // These tests verify the getter logic without a running broker.
 
-test("workspaceKey: undefined before relay starts", () => {
-  const relay = new AgentRelay({ channels: ["general"] });
+test('workspaceKey: undefined before relay starts', () => {
+  const relay = new AgentRelay({ channels: ['general'] });
   assert.equal(relay.workspaceKey, undefined);
 });
 
-test("observerUrl: undefined before relay starts", () => {
-  const relay = new AgentRelay({ channels: ["general"] });
+test('observerUrl: undefined before relay starts', () => {
+  const relay = new AgentRelay({ channels: ['general'] });
   assert.equal(relay.observerUrl, undefined);
 });
 
-test("observerUrl: returns correct URL format when workspaceKey is set", () => {
-  const relay = new AgentRelay({ channels: ["general"] });
+test('observerUrl: returns correct URL format when workspaceKey is set', () => {
+  const relay = new AgentRelay({ channels: ['general'] });
   // Simulate the relayApiKey being set (as ensureStarted() does after hello_ack).
-  (relay as unknown as { relayApiKey: string }).relayApiKey = "rk_live_test123";
+  (relay as unknown as { relayApiKey: string }).relayApiKey = 'rk_live_test123';
   const url = relay.observerUrl;
-  assert.ok(url, "observerUrl should be defined after key is set");
+  assert.ok(url, 'observerUrl should be defined after key is set');
   assert.ok(
-    url!.startsWith("https://observer.relaycast.dev/?key="),
-    `observerUrl should start with observer base URL, got: ${url}`,
+    url!.startsWith('https://agentrelay.dev/observer?key='),
+    `observerUrl should start with observer base URL, got: ${url}`
   );
-  assert.ok(url!.includes("rk_live_test123"), "observerUrl should include the workspace key");
-  assert.equal(relay.workspaceKey, "rk_live_test123");
+  assert.ok(url!.includes('rk_live_test123'), 'observerUrl should include the workspace key');
+  assert.equal(relay.workspaceKey, 'rk_live_test123');
 });
 
-test("ensureRelaycastApiKey: env key propagates to clientOptions.env", () => {
+test('ensureRelaycastApiKey: env key propagates to clientOptions.env', () => {
   // When RELAY_API_KEY is in options.env, it must be preserved and passed
   // to the broker subprocess. Previously, if clientOptions.env was set via
   // the constructor, it would be used as-is without adding process.env
   // (which is correct). If clientOptions.env was undefined, we must populate
   // it so the broker gets the key AND PATH etc.
   const relay = new AgentRelay({
-    channels: ["general"],
-    env: { RELAY_API_KEY: "rk_live_from_options", PATH: "/usr/bin" },
+    channels: ['general'],
+    env: { RELAY_API_KEY: 'rk_live_from_options', PATH: '/usr/bin' },
   });
   // The key should be accessible via getter immediately (read from options.env).
   // Note: workspaceKey is only set after ensureStarted() runs, but we can
   // verify the env is configured correctly via the private field.
   const opts = (relay as unknown as { clientOptions: { env?: Record<string, string> } }).clientOptions;
-  assert.equal(opts.env?.RELAY_API_KEY, "rk_live_from_options");
+  assert.equal(opts.env?.RELAY_API_KEY, 'rk_live_from_options');
 });

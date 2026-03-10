@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exec, spawn as spawnProcess } from 'node:child_process';
@@ -75,6 +76,8 @@ export interface CoreRelay {
   onBrokerStderr?: (listener: (line: string) => void) => () => void;
   /** Relaycast workspace API key, available after the hello handshake. */
   workspaceKey?: string;
+  /** PID of the underlying broker process, when available. */
+  brokerPid?: number;
 }
 
 export interface CoreFileSystem {
@@ -122,6 +125,7 @@ export interface CoreDependencies {
   onSignal: (signal: NodeJS.Signals, handler: () => void | Promise<void>) => void;
   holdOpen: () => Promise<void>;
   resolveTemplatesDir: () => string;
+  isPortInUse: (port: number) => Promise<boolean>;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
@@ -257,6 +261,7 @@ function createDefaultRelay(cwd: string, apiPort = 0): CoreRelay {
     shutdown: () => client.shutdown(),
     onBrokerStderr: (listener: (line: string) => void) => client.onBrokerStderr(listener),
     get workspaceKey() { return client.workspaceKey; },
+    get brokerPid() { return client.brokerPid; },
   };
   return relay;
 }
@@ -308,6 +313,22 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     execPath: process.execPath,
     cliScript: process.argv[1] || 'dist/src/cli/bootstrap.js',
     pid: process.pid,
+    isPortInUse: (port: number) =>
+      new Promise((resolve) => {
+        // Use a connect probe instead of a bind probe.  On macOS,
+        // net.createServer().listen() sets SO_REUSEADDR which can succeed
+        // even when another process is already listening on the port.
+        // A connect() call reliably detects whether something is listening.
+        const socket = net.createConnection({ port, host: '127.0.0.1' });
+        socket.once('connect', () => {
+          socket.destroy();
+          resolve(true); // something is listening → port is in use
+        });
+        socket.once('error', () => {
+          socket.destroy();
+          resolve(false); // nothing listening → port is free
+        });
+      }),
     now: () => Date.now(),
     sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
     onSignal: (signal: NodeJS.Signals, handler: () => void | Promise<void>) => {

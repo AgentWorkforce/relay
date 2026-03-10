@@ -80,6 +80,8 @@ vi.mock('node:fs/promises', () => ({
   readFile: vi.fn().mockResolvedValue('{"spawns":[]}'),
   writeFile: vi.fn().mockResolvedValue(undefined),
   mkdir: vi.fn().mockResolvedValue(undefined),
+  rename: vi.fn().mockResolvedValue(undefined),
+  chmod: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('node:fs', () => ({
@@ -109,10 +111,7 @@ import { InboundGateway } from '../gateway.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
-function createGateway(overrides?: {
-  clawName?: string;
-  channels?: string[];
-}) {
+function createGateway(overrides?: { clawName?: string; channels?: string[] }) {
   const sendMessage = vi.fn().mockResolvedValue({ event_id: 'evt_1' });
   const gateway = new InboundGateway({
     config: {
@@ -163,7 +162,7 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe('[relaycast:general] @alice: hello world');
+      expect(call.text).toBe('[relaycast:general] @alice: hello world\n(reply with: post_message channel="general" or reply_to_thread message_id="msg_1")');
       expect(call.text).not.toContain('[thread]');
 
       await gateway.stop();
@@ -189,7 +188,7 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe('[thread] [relaycast:general] @bob: replying in thread');
+      expect(call.text).toBe('[thread] [relaycast:general] @bob: replying in thread\n(reply with: reply_to_thread message_id="msg_parent_1")');
 
       await gateway.stop();
     });
@@ -330,10 +329,10 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const firstCall = sendMessage.mock.calls[0][0];
-      expect(firstCall.text).toBe('[relaycast:general] @frank: original message');
+      expect(firstCall.text).toBe('[relaycast:general] @frank: original message\n(reply with: post_message channel="general" or reply_to_thread message_id="msg_600")');
 
       const secondCall = sendMessage.mock.calls[1][0];
-      expect(secondCall.text).toBe('[thread] [relaycast:general] @grace: reply to frank');
+      expect(secondCall.text).toBe('[thread] [relaycast:general] @grace: reply to frank\n(reply with: reply_to_thread message_id="msg_600")');
 
       await gateway.stop();
     });
@@ -386,7 +385,7 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe('[relaycast:dm] @alice: hey there');
+      expect(call.text).toBe('[relaycast:dm] @alice: hey there\n(reply with: send_dm to="alice")');
 
       await gateway.stop();
     });
@@ -459,7 +458,7 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe('[relaycast:groupdm] @carol: group message');
+      expect(call.text).toBe('[relaycast:groupdm] @carol: group message\n(reply with: send_dm to="carol")');
 
       await gateway.stop();
     });
@@ -485,7 +484,7 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe('[relaycast:command:general] @dave /deploy production --force');
+      expect(call.text).toBe('[relaycast:command:general] @dave /deploy production --force\n(command invocation \u2014 respond with: post_message channel="general")');
 
       await gateway.stop();
     });
@@ -509,7 +508,7 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe('[relaycast:command:general] @eve /status');
+      expect(call.text).toBe('[relaycast:command:general] @eve /status\n(command invocation \u2014 respond with: post_message channel="general")');
 
       await gateway.stop();
     });
@@ -552,7 +551,9 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe('[relaycast:reaction] @eve reacted thumbsup to message msg_800 (soft notification, no action required)');
+      expect(call.text).toBe(
+        '[relaycast:reaction] @eve reacted thumbsup to message msg_800 (soft notification, no action required)'
+      );
 
       await gateway.stop();
     });
@@ -573,7 +574,9 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe('[relaycast:reaction] @frank removed rocket from message msg_900 (soft notification, no action required)');
+      expect(call.text).toBe(
+        '[relaycast:reaction] @frank removed rocket from message msg_900 (soft notification, no action required)'
+      );
 
       await gateway.stop();
     });
@@ -785,7 +788,7 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe('[relaycast:dm] @alice: dm format test');
+      expect(call.text).toBe('[relaycast:dm] @alice: dm format test\n(reply with: send_dm to="alice")');
 
       await gateway.stop();
     });
@@ -809,7 +812,7 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe('[relaycast:groupdm] @bob: group dm format test');
+      expect(call.text).toBe('[relaycast:groupdm] @bob: group dm format test\n(reply with: send_dm to="bob")');
 
       await gateway.stop();
     });
@@ -833,7 +836,7 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe('[relaycast:command:general] @carol /build --prod');
+      expect(call.text).toBe('[relaycast:command:general] @carol /build --prod\n(command invocation \u2014 respond with: post_message channel="general")');
 
       await gateway.stop();
     });
@@ -854,7 +857,9 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe('[relaycast:reaction] @dave reacted fire to message msg_fmt_react (soft notification, no action required)');
+      expect(call.text).toBe(
+        '[relaycast:reaction] @dave reacted fire to message msg_fmt_react (soft notification, no action required)'
+      );
 
       await gateway.stop();
     });
@@ -879,7 +884,7 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe('[thread] [relaycast:general] @eve: thread format test');
+      expect(call.text).toBe('[thread] [relaycast:general] @eve: thread format test\n(reply with: reply_to_thread message_id="msg_fmt_parent")');
 
       await gateway.stop();
     });
@@ -904,7 +909,7 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe('[relaycast:general] @frank: channel format test');
+      expect(call.text).toBe('[relaycast:general] @frank: channel format test\n(reply with: post_message channel="general" or reply_to_thread message_id="msg_fmt_chan")');
 
       await gateway.stop();
     });
@@ -914,8 +919,11 @@ describe('InboundGateway — thread reply injection', () => {
     it('should skip messages already being processed', async () => {
       // Use a slow sendMessage to simulate a message still being processed
       let resolveFirst: (() => void) | null = null;
-      const firstCallPromise = new Promise<void>((r) => { resolveFirst = r; });
-      const sendMessage = vi.fn()
+      const firstCallPromise = new Promise<void>((r) => {
+        resolveFirst = r;
+      });
+      const sendMessage = vi
+        .fn()
         .mockImplementationOnce(async () => {
           // Block until we manually resolve
           await firstCallPromise;
@@ -968,6 +976,48 @@ describe('InboundGateway — thread reply injection', () => {
       await new Promise((r) => setTimeout(r, 50));
       // Should only have been called once since the second was deduped
       expect(sendMessage).toHaveBeenCalledTimes(1);
+
+      await gateway.stop();
+    });
+
+    it('should retry a replayed message after a failed delivery', async () => {
+      const sendMessage = vi
+        .fn()
+        .mockResolvedValueOnce({ event_id: 'unsupported_operation' })
+        .mockResolvedValueOnce({ event_id: 'evt_retry_ok' });
+
+      const gateway = new InboundGateway({
+        config: {
+          apiKey: 'rk_live_test',
+          clawName: 'test-claw',
+          baseUrl: 'https://api.relaycast.dev',
+          channels: ['general'],
+        },
+        relaySender: { sendMessage },
+      });
+      await gateway.start();
+
+      const event = {
+        type: 'message.created',
+        channel: 'general',
+        message: {
+          id: 'msg_retry_1',
+          agentName: 'alice',
+          text: 'retry me',
+          attachments: [],
+        },
+      };
+
+      fireEvent('messageCreated', event);
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalledTimes(1);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      fireEvent('messageCreated', event);
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalledTimes(2);
+      });
 
       await gateway.stop();
     });
@@ -1101,7 +1151,7 @@ describe('InboundGateway — thread reply injection', () => {
       });
 
       const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe('[relaycast:general] @alice: normalization test');
+      expect(call.text).toBe('[relaycast:general] @alice: normalization test\n(reply with: post_message channel="general" or reply_to_thread message_id="msg_norm_1")');
 
       await gateway.stop();
     });
