@@ -6,6 +6,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { WorkflowDb } from '../workflows/runner.js';
 import type { RelayYamlConfig, WorkflowRunRow, WorkflowStepRow } from '../workflows/types.js';
 
@@ -170,6 +173,31 @@ function makeConfig(overrides: Partial<RelayYamlConfig> = {}): RelayYamlConfig {
 
 function never<T>(): Promise<T> {
   return new Promise(() => {});
+}
+
+type WorkflowStepOverride = Partial<NonNullable<RelayYamlConfig['workflows']>[number]['steps'][number]>;
+
+function makeSupervisedConfig(stepOverrides: WorkflowStepOverride = {}): RelayYamlConfig {
+  return makeConfig({
+    agents: [
+      { name: 'specialist', cli: 'claude', role: 'engineer' },
+      { name: 'team-lead', cli: 'claude', role: 'lead coordinator' },
+      { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
+    ],
+    workflows: [
+      {
+        name: 'default',
+        steps: [
+          {
+            name: 'step-1',
+            agent: 'specialist',
+            task: 'Implement the requested change',
+            ...stepOverrides,
+          },
+        ],
+      },
+    ],
+  });
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -375,7 +403,9 @@ agents:
 
     it('should emit owner assignment and review completion events for interactive steps', async () => {
       const events: Array<{ type: string; stepName?: string }> = [];
-      runner.on((event) => events.push({ type: event.type, stepName: 'stepName' in event ? event.stepName : undefined }));
+      runner.on((event) =>
+        events.push({ type: event.type, stepName: 'stepName' in event ? event.stepName : undefined })
+      );
 
       await runner.execute(makeConfig(), 'default');
 
@@ -501,6 +531,71 @@ agents:
       expect(run.error).toContain('owner completion marker');
     });
 
+    it('should run specialist work in a separate process and mirror worker output to the channel', async () => {
+      mockSpawnOutputs = [
+        'worker progress update\nworker finished\n',
+        'Observed worker progress on the channel\nSTEP_COMPLETE:step-1\n',
+        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: looks good\n',
+      ];
+
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
+
+      expect(run.status).toBe('completed');
+      const spawnCalls = (mockRelayInstance.spawnPty as any).mock.calls;
+      expect(spawnCalls[0][0].name).toContain('step-1-worker');
+      expect(spawnCalls[1][0].name).toContain('step-1-owner');
+      expect(spawnCalls[0][0].task).not.toContain('STEP_COMPLETE:step-1');
+      expect(spawnCalls[1][0].task).toContain('You are the step owner/supervisor for step "step-1".');
+      expect(spawnCalls[1][0].task).toContain('runtime: step-1-worker');
+
+      const channelMessages = (mockRelaycastAgent.send as any).mock.calls.map(
+        ([, text]: [string, string]) => text
+      );
+      expect(channelMessages.some((text: string) => text.includes('Worker `step-1-worker'))).toBe(true);
+      expect(channelMessages.some((text: string) => text.includes('worker finished'))).toBe(true);
+    });
+
+    it('should let the owner complete after checking file-based artifacts', async () => {
+      const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'relay-owner-file-'));
+      const artifact = path.join(tmpDir, 'artifact.txt');
+      writeFileSync(artifact, 'done\n', 'utf-8');
+      runner = new WorkflowRunner({ db, workspaceId: 'ws-test', cwd: tmpDir });
+
+      try {
+        mockSpawnOutputs = [
+          'worker wrote artifact\n',
+          'Bash(git diff --stat)\nSTEP_COMPLETE:step-1\n',
+          'REVIEW_DECISION: APPROVE\nREVIEW_REASON: artifact verified\n',
+        ];
+
+        const run = await runner.execute(
+          makeSupervisedConfig({ verification: { type: 'file_exists', value: 'artifact.txt' } }),
+          'default'
+        );
+
+        expect(run.status).toBe('completed');
+        const ownerTask = (mockRelayInstance.spawnPty as any).mock.calls[1][0].task as string;
+        expect(ownerTask).toContain('Verification gate: confirm the file exists at "artifact.txt"');
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should keep specialist output for chaining even when the owner signals later', async () => {
+      mockSpawnOutputs = [
+        'specialist deliverable\n',
+        'Worker already exited; artifacts look correct\nSTEP_COMPLETE:step-1\n',
+        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: handoff is safe\n',
+      ];
+
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
+      expect(run.status).toBe('completed');
+
+      const stepRows = await db.getStepsByRunId(run.id);
+      expect(stepRows[0].output).toContain('specialist deliverable');
+      expect(stepRows[0].output).not.toContain('Worker already exited; artifacts look correct');
+    });
+
     it('should fail closed when review response is malformed', async () => {
       mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'REVIEW_REASON: looks fine\n'];
       const run = await runner.execute(makeConfig(), 'default');
@@ -519,7 +614,10 @@ agents:
         }
       });
 
-      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'REVIEW_DECISION: REJECT\nREVIEW_REASON: missing checks\n'];
+      mockSpawnOutputs = [
+        'STEP_COMPLETE:step-1\n',
+        'REVIEW_DECISION: REJECT\nREVIEW_REASON: missing checks\n',
+      ];
       const run = await runner.execute(makeConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review rejected');
@@ -565,6 +663,49 @@ agents:
       expect(run.status).toBe('failed');
       expect(run.error).toContain('timed out');
       expect(events).toContainEqual({ type: 'step:owner-timeout', stepName: 'step-1' });
+    });
+
+    it('should emit owner-timeout for a dedicated supervisor when the worker is stuck', async () => {
+      const events: Array<{ type: string; stepName?: string }> = [];
+      runner.on((event) => {
+        if (event.type === 'step:owner-timeout') {
+          events.push({ type: event.type, stepName: event.stepName });
+        }
+      });
+
+      waitForExitFn = vi.fn().mockResolvedValue('timeout');
+      waitForIdleFn = vi.fn().mockResolvedValue('timeout');
+
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('owner timed out');
+      expect(events).toContainEqual({ type: 'step:owner-timeout', stepName: 'step-1' });
+    });
+
+    it('should preserve self-completion when no dedicated owner is available', async () => {
+      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: looks good\n'];
+
+      const config = makeConfig({
+        agents: [
+          { name: 'specialist', cli: 'claude', role: 'engineer' },
+          { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
+        ],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'specialist', task: 'Do step 1' }],
+          },
+        ],
+      });
+
+      const run = await runner.execute(config, 'default');
+
+      expect(run.status).toBe('completed');
+      const spawnCalls = (mockRelayInstance.spawnPty as any).mock.calls;
+      expect(spawnCalls[0][0].name).toContain('step-1-');
+      expect(spawnCalls[0][0].name).not.toContain('worker');
+      expect(spawnCalls[0][0].task).toContain('STEP OWNER CONTRACT');
+      expect(spawnCalls[0][0].task).toContain('STEP_COMPLETE:step-1');
     });
 
     it('should not allocate review timeout longer than parent step timeout', async () => {

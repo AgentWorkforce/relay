@@ -68,8 +68,12 @@ let mockSpawnOutputs: string[] = [];
 
 const mockAgent = {
   name: 'test-agent-abc',
-  get waitForExit() { return waitForExitFn; },
-  get waitForIdle() { return waitForIdleFn; },
+  get waitForExit() {
+    return waitForExitFn;
+  },
+  get waitForIdle() {
+    return waitForIdleFn;
+  },
   release: vi.fn().mockResolvedValue(undefined),
 };
 
@@ -123,7 +127,9 @@ function makeDb(): WorkflowDb {
   const runs = new Map<string, WorkflowRunRow>();
   const steps = new Map<string, WorkflowStepRow>();
   return {
-    insertRun: vi.fn(async (run: WorkflowRunRow) => { runs.set(run.id, { ...run }); }),
+    insertRun: vi.fn(async (run: WorkflowRunRow) => {
+      runs.set(run.id, { ...run });
+    }),
     updateRun: vi.fn(async (id: string, patch: Partial<WorkflowRunRow>) => {
       const existing = runs.get(id);
       if (existing) runs.set(id, { ...existing, ...patch });
@@ -132,7 +138,9 @@ function makeDb(): WorkflowDb {
       const run = runs.get(id);
       return run ? { ...run } : null;
     }),
-    insertStep: vi.fn(async (step: WorkflowStepRow) => { steps.set(step.id, { ...step }); }),
+    insertStep: vi.fn(async (step: WorkflowStepRow) => {
+      steps.set(step.id, { ...step });
+    }),
     updateStep: vi.fn(async (id: string, patch: Partial<WorkflowStepRow>) => {
       const existing = steps.get(id);
       if (existing) steps.set(id, { ...existing, ...patch });
@@ -170,6 +178,26 @@ function never<T>(): Promise<T> {
   return new Promise(() => {});
 }
 
+type WorkflowStepOverride = Partial<NonNullable<RelayYamlConfig['workflows']>[number]['steps'][number]>;
+
+function makeSupervisedConfig(stepOverrides: WorkflowStepOverride = {}): RelayYamlConfig {
+  return makeConfig({
+    agents: [
+      { name: 'specialist', cli: 'claude', role: 'engineer' },
+      { name: 'team-lead', cli: 'claude', role: 'Lead coordinator for the workflow' },
+      { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
+    ],
+    workflows: [
+      {
+        name: 'default',
+        steps: [
+          { name: 'step-1', agent: 'specialist', task: 'Implement the requested change', ...stepOverrides },
+        ],
+      },
+    ],
+  });
+}
+
 // ── E2E Scenarios ───────────────────────────────────────────────────────────
 
 describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
@@ -203,10 +231,12 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
           { name: 'team-lead', cli: 'claude', role: 'Lead coordinator for the workflow' },
           { name: 'quality-reviewer', cli: 'claude', role: 'reviewer' },
         ],
-        workflows: [{
-          name: 'default',
-          steps: [{ name: 'hub-owner-test', agent: 'impl-worker', task: 'List 3 benefits' }],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'hub-owner-test', agent: 'impl-worker', task: 'List 3 benefits' }],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');
@@ -229,15 +259,34 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
           { name: 'lead-bot', cli: 'claude', role: 'lead' },
           { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
         ],
-        workflows: [{
-          name: 'default',
-          steps: [{ name: 'step-1', agent: 'specialist', task: 'Do work' }],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'specialist', task: 'Do work' }],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');
       expect(run.status).toBe('completed');
       expect(ownerAssignments[0]).toBe('lead-bot');
+    }, 15000);
+
+    it('should spawn a separate worker and supervisor for dedicated owner steps', async () => {
+      mockSpawnOutputs = [
+        'worker finished\n',
+        'Observed progress on channel\nSTEP_COMPLETE:step-1\n',
+        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: looks good\n',
+      ];
+
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
+      expect(run.status).toBe('completed');
+
+      const spawnCalls = (mockRelayInstance.spawnPty as any).mock.calls;
+      expect(spawnCalls[0][0].name).toContain('step-1-worker');
+      expect(spawnCalls[1][0].name).toContain('step-1-owner');
+      expect(spawnCalls[0][0].task).not.toContain('STEP_COMPLETE:step-1');
+      expect(spawnCalls[1][0].task).toContain('You are the step owner/supervisor for step "step-1".');
     }, 15000);
   });
 
@@ -258,10 +307,12 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
           { name: 'github-integration', cli: 'claude', role: 'GitHub integration agent' },
           { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
         ],
-        workflows: [{
-          name: 'default',
-          steps: [{ name: 'github-no-hub', agent: 'specialist', task: 'Test word boundary' }],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'github-no-hub', agent: 'specialist', task: 'Test word boundary' }],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');
@@ -284,10 +335,12 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
           { name: 'github-bot', cli: 'claude', role: 'github integration' },
           { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
         ],
-        workflows: [{
-          name: 'default',
-          steps: [{ name: 'step-1', agent: 'specialist', task: 'Do work' }],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'specialist', task: 'Do work' }],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');
@@ -328,6 +381,26 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
       const completedIdx = stepEvents.indexOf('step:completed');
       expect(reviewIdx).toBeLessThan(completedIdx);
     }, 15000);
+
+    it('should mirror worker output to the channel for owner observation', async () => {
+      mockSpawnOutputs = [
+        'worker progress update\n',
+        'STEP_COMPLETE:step-1\n',
+        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: looks good\n',
+      ];
+
+      const run = await runner.execute(
+        makeSupervisedConfig({ verification: { type: 'output_contains', value: 'worker progress update' } }),
+        'default'
+      );
+      expect(run.status).toBe('completed');
+
+      const channelMessages = (mockRelaycastAgent.send as any).mock.calls.map(
+        ([, text]: [string, string]) => text
+      );
+      expect(channelMessages.some((text: string) => text.includes('worker progress update'))).toBe(true);
+      expect(channelMessages.some((text: string) => text.includes('Verification gate observed'))).toBe(true);
+    }, 15000);
   });
 
   // ── Scenario 4: Review gating — rejection flow ─────────────────────────
@@ -353,10 +426,7 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
     }, 15000);
 
     it('should fail closed when review output is malformed (no REVIEW_DECISION)', async () => {
-      mockSpawnOutputs = [
-        'STEP_COMPLETE:step-1\n',
-        'REVIEW_REASON: this is missing the decision line\n',
-      ];
+      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'REVIEW_REASON: this is missing the decision line\n'];
 
       const run = await runner.execute(makeConfig(), 'default');
       expect(run.status).toBe('failed');
@@ -387,10 +457,12 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
   describe('Scenario 5: Review timeout budgeting', () => {
     it('should not allocate review timeout longer than parent step timeout', async () => {
       const config = makeConfig({
-        workflows: [{
-          name: 'default',
-          steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 30_000 }],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 30_000 }],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');
@@ -404,10 +476,12 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
 
     it('should use proportional timeout (1/3) for longer step timeouts', async () => {
       const config = makeConfig({
-        workflows: [{
-          name: 'default',
-          steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 900_000 }],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 900_000 }],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');
@@ -423,10 +497,12 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
 
     it('should cap review timeout at 600s upper bound', async () => {
       const config = makeConfig({
-        workflows: [{
-          name: 'default',
-          steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 3_600_000 }],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 3_600_000 }],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');
@@ -496,14 +572,21 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
           { name: 'worker-2', cli: 'claude', role: 'implementer' },
           { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
         ],
-        workflows: [{
-          name: 'default',
-          steps: [
-            { name: 'work-1', agent: 'worker-1', task: 'Do task A' },
-            { name: 'work-2', agent: 'worker-2', task: 'Do task B' },
-            { name: 'lead-coord', agent: 'team-lead', task: 'Coordinate workers', dependsOn: ['work-1', 'work-2'] },
-          ],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [
+              { name: 'work-1', agent: 'worker-1', task: 'Do task A' },
+              { name: 'work-2', agent: 'worker-2', task: 'Do task B' },
+              {
+                name: 'lead-coord',
+                agent: 'team-lead',
+                task: 'Coordinate workers',
+                dependsOn: ['work-1', 'work-2'],
+              },
+            ],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');
