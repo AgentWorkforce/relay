@@ -71,6 +71,18 @@ interface SpawnResult {
   exitSignal?: string;
 }
 
+/** Error carrying exit code/signal from a failed subprocess spawn. */
+class SpawnExitError extends Error {
+  exitCode?: number;
+  exitSignal?: string;
+  constructor(message: string, exitCode?: number, exitSignal?: string | null) {
+    super(message);
+    this.name = 'SpawnExitError';
+    this.exitCode = exitCode;
+    this.exitSignal = exitSignal ?? undefined;
+  }
+}
+
 // ── Events ──────────────────────────────────────────────────────────────────
 
 export type WorkflowEvent =
@@ -2299,6 +2311,10 @@ export class WorkflowRunner {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       this.checkAborted();
 
+      // Reset per-attempt exit info so stale values don't leak across retries
+      lastExitCode = undefined;
+      lastExitSignal = undefined;
+
       if (attempt > 0) {
         this.emit({ type: 'step:retrying', runId, stepName: step.name, attempt });
         this.postToChannel(`**[${step.name}]** Retrying (attempt ${attempt + 1}/${maxRetries + 1})`);
@@ -2442,6 +2458,10 @@ export class WorkflowRunner {
         return;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
+        if (err instanceof SpawnExitError) {
+          lastExitCode = err.exitCode;
+          lastExitSignal = err.exitSignal;
+        }
         const ownerTimedOut = usesDedicatedOwner
           ? /\bowner timed out\b/i.test(lastError)
           : /\btimed out\b/i.test(lastError) && !lastError.includes(`${step.name}-review`);
@@ -3246,8 +3266,10 @@ export class WorkflowRunner {
           if (code !== 0 && code !== null) {
             const stderr = stderrChunks.join('');
             reject(
-              new Error(
-                `Step "${step.name}" exited with code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`
+              new SpawnExitError(
+                `Step "${step.name}" exited with code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`,
+                code,
+                signal
               )
             );
             return;
