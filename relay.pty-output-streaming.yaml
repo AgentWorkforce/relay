@@ -246,7 +246,9 @@ workflows:
         type: deterministic
         dependsOn: [run-tests]
         command: >
-          git checkout -b feature/390-pty-output-streaming 2>/dev/null || true &&
+          git rev-parse --verify feature/390-pty-output-streaming >/dev/null 2>&1 &&
+          git checkout feature/390-pty-output-streaming ||
+          git checkout -b feature/390-pty-output-streaming &&
           echo "BRANCH_READY"
         captureOutput: true
         failOnError: true
