@@ -319,6 +319,23 @@ export class WorkflowTrajectory {
     await this.flush();
   }
 
+  async reviewCompleted(
+    stepName: string,
+    reviewerName: string,
+    decision: 'approved' | 'rejected',
+    reason?: string
+  ): Promise<void> {
+    if (!this.enabled || !this.trajectory) return;
+
+    this.addEvent('review-completed', `"${stepName}" review ${decision} by ${reviewerName}`, 'medium', {
+      stepName,
+      reviewer: reviewerName,
+      decision,
+      reason,
+    });
+    await this.flush();
+  }
+
   /** Record step completed — captures what was accomplished. */
   async stepCompleted(step: WorkflowStep, output: string, attempt: number): Promise<void> {
     if (!this.enabled || !this.trajectory) return;

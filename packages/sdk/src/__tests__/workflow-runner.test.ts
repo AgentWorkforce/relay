@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { WorkflowDb } from '../workflows/runner.js';
@@ -77,28 +77,35 @@ const mockHuman = {
   sendMessage: vi.fn().mockResolvedValue(undefined),
 };
 
+const defaultSpawnPtyImplementation = async ({
+  name,
+  task,
+}: {
+  name: string;
+  task?: string;
+}) => {
+  const queued = mockSpawnOutputs.shift();
+  const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
+  const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
+  const output =
+    queued ??
+    (isReview
+      ? 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: looks good\n'
+      : stepComplete
+        ? `STEP_COMPLETE:${stepComplete}\n`
+        : 'STEP_COMPLETE:unknown\n');
+
+  queueMicrotask(() => {
+    if (typeof mockRelayInstance.onWorkerOutput === 'function') {
+      mockRelayInstance.onWorkerOutput({ name, chunk: output });
+    }
+  });
+
+  return { ...mockAgent, name };
+};
+
 const mockRelayInstance = {
-  spawnPty: vi.fn().mockImplementation(async ({ name, task }: { name: string; task?: string }) => {
-    const queued = mockSpawnOutputs.shift();
-    const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
-    const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
-    const output =
-      queued ??
-      (isReview
-        ? 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: looks good\n'
-        : stepComplete
-          ? `STEP_COMPLETE:${stepComplete}\n`
-          : 'STEP_COMPLETE:unknown\n');
-
-    // Simulate broker PTY output so runner captures non-empty step artifacts.
-    queueMicrotask(() => {
-      if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-        mockRelayInstance.onWorkerOutput({ name, chunk: output });
-      }
-    });
-
-    return { ...mockAgent, name };
-  }),
+  spawnPty: vi.fn().mockImplementation(defaultSpawnPtyImplementation),
   human: vi.fn().mockReturnValue(mockHuman),
   shutdown: vi.fn().mockResolvedValue(undefined),
   onBrokerStderr: vi.fn().mockReturnValue(() => {}),
@@ -200,6 +207,16 @@ function makeSupervisedConfig(stepOverrides: WorkflowStepOverride = {}): RelayYa
   });
 }
 
+function readCompletedTrajectoryFile(dir: string): any {
+  const completedDir = path.join(dir, '.trajectories', 'completed');
+  if (!existsSync(completedDir)) return null;
+
+  const jsonFile = readdirSync(completedDir).find((file) => file.endsWith('.json'));
+  if (!jsonFile) return null;
+
+  return JSON.parse(readFileSync(path.join(completedDir, jsonFile), 'utf-8'));
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('WorkflowRunner', () => {
@@ -211,6 +228,8 @@ describe('WorkflowRunner', () => {
     waitForExitFn = vi.fn().mockResolvedValue('exited');
     waitForIdleFn = vi.fn().mockImplementation(() => never());
     mockSpawnOutputs = [];
+    mockAgent.release.mockResolvedValue(undefined);
+    mockRelayInstance.spawnPty.mockImplementation(defaultSpawnPtyImplementation);
     mockRelayInstance.onWorkerOutput = null;
     db = makeDb();
     runner = new WorkflowRunner({ db, workspaceId: 'ws-test' });
@@ -645,6 +664,86 @@ agents:
       expect(events).toContainEqual({ type: 'step:review-completed', decision: 'rejected' });
     });
 
+    it('should record review completion in trajectory with decision and reason', async () => {
+      const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'relay-review-traj-'));
+      runner = new WorkflowRunner({ db, workspaceId: 'ws-test', cwd: tmpDir });
+
+      try {
+        mockSpawnOutputs = [
+          'STEP_COMPLETE:step-1\n',
+          'REVIEW_DECISION: APPROVE\nREVIEW_REASON: durable review record\n',
+        ];
+
+        const run = await runner.execute(makeConfig({ trajectories: {} }), 'default');
+        expect(run.status).toBe('completed');
+
+        const trajectory = readCompletedTrajectoryFile(tmpDir);
+        const events = trajectory.chapters.flatMap((chapter: any) => chapter.events);
+        const reviewEvent = events.find((event: any) => event.type === 'review-completed');
+
+        expect(reviewEvent).toBeTruthy();
+        expect(reviewEvent.raw).toMatchObject({
+          stepName: 'step-1',
+          reviewer: 'agent-b',
+          decision: 'approved',
+          reason: 'durable review record',
+        });
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should not double release the worker when the owner fails after worker completion', async () => {
+      const workerRelease = vi.fn().mockResolvedValue(undefined);
+      const ownerRelease = vi.fn().mockResolvedValue(undefined);
+
+      mockRelayInstance.spawnPty.mockImplementation(async ({
+        name,
+        task,
+      }: {
+        name: string;
+        task?: string;
+      }) => {
+        const isOwner = name.includes('-owner-');
+        const output = isOwner ? 'owner checking\n' : 'worker finished\n';
+
+        queueMicrotask(() => {
+          if (typeof mockRelayInstance.onWorkerOutput === 'function') {
+            mockRelayInstance.onWorkerOutput({ name, chunk: output });
+          }
+        });
+
+        if (isOwner) {
+          return {
+            name,
+            waitForExit: vi.fn().mockImplementation(async () => {
+              await Promise.resolve();
+              return 'timeout';
+            }),
+            waitForIdle: vi.fn().mockResolvedValue('timeout'),
+            release: ownerRelease,
+          };
+        }
+
+        return {
+          name,
+          waitForExit: vi.fn().mockImplementation(async () => {
+            await workerRelease();
+            return 'released';
+          }),
+          waitForIdle: vi.fn().mockImplementation(() => never()),
+          release: workerRelease,
+        };
+      });
+
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
+
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('owner timed out');
+      expect(workerRelease).toHaveBeenCalledTimes(1);
+      expect(ownerRelease).toHaveBeenCalledTimes(1);
+    });
+
     it('should emit owner-timeout when owner times out', async () => {
       const events: Array<{ type: string; stepName?: string }> = [];
       runner.on((event) => {
@@ -708,12 +807,12 @@ agents:
       expect(spawnCalls[0][0].task).toContain('STEP_COMPLETE:step-1');
     });
 
-    it('should not allocate review timeout longer than parent step timeout', async () => {
+    it('should use the full remaining timeout as the review safety backstop', async () => {
       const config = makeConfig({
         workflows: [
           {
             name: 'default',
-            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 30_000 }],
+            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 90_000 }],
           },
         ],
       });
@@ -723,7 +822,8 @@ agents:
       const waitCalls = (waitForExitFn as any).mock?.calls ?? [];
       expect(waitCalls.length).toBeGreaterThanOrEqual(2);
       // first call: owner timeout; second call: review timeout
-      expect(waitCalls[1][0]).toBeLessThanOrEqual(30_000);
+      expect(waitCalls[1][0]).toBeGreaterThan(60_000);
+      expect(waitCalls[1][0]).toBeLessThanOrEqual(90_000);
     });
   });
 

@@ -2412,6 +2412,7 @@ export class WorkflowRunner {
     let workerHandle: Agent | undefined;
     let workerRuntimeName = supervised.specialist.name;
     let workerSpawned = false;
+    let workerReleased = false;
     let resolveWorkerSpawn!: () => void;
     let rejectWorkerSpawn!: (error: unknown) => void;
     const workerReady = new Promise<void>((resolve, reject) => {
@@ -2452,6 +2453,7 @@ export class WorkflowRunner {
     const workerSettled = workerPromise.catch(() => undefined);
     workerPromise
       .then((output) => {
+        workerReleased = true;
         this.postToChannel(`**[${step.name}]** Worker \`${workerRuntimeName}\` exited`);
         if (step.verification?.type === 'output_contains' && output.includes(step.verification.value)) {
           this.postToChannel(
@@ -2501,7 +2503,9 @@ export class WorkflowRunner {
       return { specialistOutput, ownerOutput, ownerElapsed };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await workerHandle?.release().catch(() => undefined);
+      if (!workerReleased && workerHandle) {
+        await workerHandle.release().catch(() => undefined);
+      }
       await workerSettled;
       if (/\btimed out\b/i.test(message)) {
         throw new Error(`Step "${step.name}" owner timed out after ${timeoutMs ?? 'unknown'}ms`);
@@ -2676,13 +2680,7 @@ export class WorkflowRunner {
       `REVIEW_REASON: <one sentence>\n` +
       `Then output /exit.`;
 
-    let reviewTimeoutMs = 180_000;
-    if (timeoutMs != null) {
-      const proportional = Math.floor(timeoutMs / 3);
-      const lowerBound = Math.min(60_000, timeoutMs);
-      const upperBound = Math.min(600_000, timeoutMs);
-      reviewTimeoutMs = Math.min(Math.max(proportional, lowerBound), upperBound);
-    }
+    const safetyTimeoutMs = timeoutMs ?? 600_000;
     const reviewStep: WorkflowStep = {
       name: `${step.name}-review`,
       type: 'agent',
@@ -2692,44 +2690,137 @@ export class WorkflowRunner {
 
     await this.trajectory?.registerAgent(reviewerDef.name, 'reviewer');
     this.postToChannel(`**[${step.name}]** Review started (reviewer: ${reviewerDef.name})`);
-    const reviewOutput = this.executor
-      ? await this.executor.executeAgentStep(reviewStep, reviewerDef, reviewTask, reviewTimeoutMs)
-      : await this.spawnAndWait(reviewerDef, reviewStep, reviewTimeoutMs);
-
-    // Parse REVIEW_DECISION, handling PTY echo that may include the instruction text.
-    // If output likely contains echoed prompt, use the LAST match instead of first.
-    const decisionPattern = /REVIEW_DECISION:\s*(APPROVE|REJECT)/gi;
-    const matches = [...reviewOutput.matchAll(decisionPattern)];
-    const outputLikelyContainsEchoedPrompt =
-      reviewOutput.includes('Return exactly') || reviewOutput.includes('REVIEW_DECISION: APPROVE or REJECT');
-    const matchToUse =
-      outputLikelyContainsEchoedPrompt && matches.length > 1 ? matches[matches.length - 1] : matches[0];
-    const decision = matchToUse?.[1]?.toUpperCase();
-    if (!decision) {
-      throw new Error(
-        `Step "${step.name}" review response malformed from "${reviewerDef.name}" (missing REVIEW_DECISION)`
-      );
-    }
-    if (decision === 'REJECT') {
+    const emitReviewCompleted = async (decision: 'approved' | 'rejected', reason?: string) => {
+      await this.trajectory?.reviewCompleted(step.name, reviewerDef.name, decision, reason);
       this.emit({
         type: 'step:review-completed',
         runId: this.currentRunId ?? '',
         stepName: step.name,
         reviewerName: reviewerDef.name,
-        decision: 'rejected',
+        decision,
       });
+    };
+
+    if (this.executor) {
+      const reviewOutput = await this.executor.executeAgentStep(
+        reviewStep,
+        reviewerDef,
+        reviewTask,
+        safetyTimeoutMs
+      );
+      const parsed = this.parseReviewDecision(reviewOutput);
+      if (!parsed) {
+        throw new Error(
+          `Step "${step.name}" review response malformed from "${reviewerDef.name}" (missing REVIEW_DECISION)`
+        );
+      }
+      await emitReviewCompleted(parsed.decision, parsed.reason);
+      if (parsed.decision === 'rejected') {
+        throw new Error(`Step "${step.name}" review rejected by "${reviewerDef.name}"`);
+      }
+      this.postToChannel(`**[${step.name}]** Review approved by \`${reviewerDef.name}\``);
+      return reviewOutput;
+    }
+
+    let reviewerHandle: Agent | undefined;
+    let reviewerReleased = false;
+    let reviewOutput = '';
+    let completedReview:
+      | { decision: 'approved' | 'rejected'; reason?: string }
+      | undefined;
+    let reviewCompletionPromise: Promise<void> | undefined;
+    const reviewCompletionStarted = { value: false };
+
+    const startReviewCompletion = (parsed: { decision: 'approved' | 'rejected'; reason?: string }) => {
+      if (reviewCompletionStarted.value) return;
+      reviewCompletionStarted.value = true;
+      completedReview = parsed;
+      reviewCompletionPromise = (async () => {
+        await emitReviewCompleted(parsed.decision, parsed.reason);
+        if (reviewerHandle && !reviewerReleased) {
+          reviewerReleased = true;
+          await reviewerHandle.release().catch(() => undefined);
+        }
+      })();
+    };
+
+    try {
+      reviewOutput = await this.spawnAndWait(reviewerDef, reviewStep, safetyTimeoutMs, {
+        onSpawned: ({ agent }) => {
+          reviewerHandle = agent;
+        },
+        onChunk: ({ chunk }) => {
+          const nextOutput = reviewOutput + WorkflowRunner.stripAnsi(chunk);
+          reviewOutput = nextOutput;
+          const parsed = this.parseReviewDecision(nextOutput);
+          if (parsed) {
+            startReviewCompletion(parsed);
+          }
+        },
+      });
+      await reviewCompletionPromise;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/\btimed out\b/i.test(message)) {
+        this.log(`[${step.name}] Review safety backstop timeout fired after ${safetyTimeoutMs}ms`);
+        throw new Error(
+          `Step "${step.name}" review safety backstop timed out after ${safetyTimeoutMs}ms`
+        );
+      }
+      throw error;
+    }
+
+    if (!completedReview) {
+      const parsed = this.parseReviewDecision(reviewOutput);
+      if (!parsed) {
+        throw new Error(
+          `Step "${step.name}" review response malformed from "${reviewerDef.name}" (missing REVIEW_DECISION)`
+        );
+      }
+      completedReview = parsed;
+      await emitReviewCompleted(parsed.decision, parsed.reason);
+    }
+
+    if (completedReview.decision === 'rejected') {
       throw new Error(`Step "${step.name}" review rejected by "${reviewerDef.name}"`);
     }
 
-    this.emit({
-      type: 'step:review-completed',
-      runId: this.currentRunId ?? '',
-      stepName: step.name,
-      reviewerName: reviewerDef.name,
-      decision: 'approved',
-    });
     this.postToChannel(`**[${step.name}]** Review approved by \`${reviewerDef.name}\``);
     return reviewOutput;
+  }
+
+  private parseReviewDecision(
+    reviewOutput: string
+  ): { decision: 'approved' | 'rejected'; reason?: string } | null {
+    const decisionPattern = /REVIEW_DECISION:\s*(APPROVE|REJECT)/gi;
+    const decisionMatches = [...reviewOutput.matchAll(decisionPattern)];
+    if (decisionMatches.length === 0) {
+      return null;
+    }
+
+    const outputLikelyContainsEchoedPrompt =
+      reviewOutput.includes('Return exactly') || reviewOutput.includes('REVIEW_DECISION: APPROVE or REJECT');
+    const decisionMatch =
+      outputLikelyContainsEchoedPrompt && decisionMatches.length > 1
+        ? decisionMatches[decisionMatches.length - 1]
+        : decisionMatches[0];
+    const decision = decisionMatch?.[1]?.toUpperCase();
+    if (decision !== 'APPROVE' && decision !== 'REJECT') {
+      return null;
+    }
+
+    const reasonPattern = /REVIEW_REASON:\s*(.+)/gi;
+    const reasonMatches = [...reviewOutput.matchAll(reasonPattern)];
+    const reasonMatch =
+      outputLikelyContainsEchoedPrompt && reasonMatches.length > 1
+        ? reasonMatches[reasonMatches.length - 1]
+        : reasonMatches[0];
+    const reason = reasonMatch?.[1]?.trim();
+
+    return {
+      decision: decision === 'APPROVE' ? 'approved' : 'rejected',
+      reason: reason && reason !== '<one sentence>' ? reason : undefined,
+    };
   }
 
   private combineStepAndReviewOutput(stepOutput: string, reviewOutput: string): string {

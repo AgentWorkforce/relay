@@ -82,27 +82,35 @@ const mockHuman = {
   sendMessage: vi.fn().mockResolvedValue(undefined),
 };
 
+const defaultSpawnPtyImplementation = async ({
+  name,
+  task,
+}: {
+  name: string;
+  task?: string;
+}) => {
+  const queued = mockSpawnOutputs.shift();
+  const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
+  const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
+  const output =
+    queued ??
+    (isReview
+      ? 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: looks good\n'
+      : stepComplete
+        ? `STEP_COMPLETE:${stepComplete}\n`
+        : 'STEP_COMPLETE:unknown\n');
+
+  queueMicrotask(() => {
+    if (typeof mockRelayInstance.onWorkerOutput === 'function') {
+      mockRelayInstance.onWorkerOutput({ name, chunk: output });
+    }
+  });
+
+  return { ...mockAgent, name };
+};
+
 const mockRelayInstance = {
-  spawnPty: vi.fn().mockImplementation(async ({ name, task }: { name: string; task?: string }) => {
-    const queued = mockSpawnOutputs.shift();
-    const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
-    const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
-    const output =
-      queued ??
-      (isReview
-        ? 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: looks good\n'
-        : stepComplete
-          ? `STEP_COMPLETE:${stepComplete}\n`
-          : 'STEP_COMPLETE:unknown\n');
-
-    queueMicrotask(() => {
-      if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-        mockRelayInstance.onWorkerOutput({ name, chunk: output });
-      }
-    });
-
-    return { ...mockAgent, name };
-  }),
+  spawnPty: vi.fn().mockImplementation(defaultSpawnPtyImplementation),
   human: vi.fn().mockReturnValue(mockHuman),
   shutdown: vi.fn().mockResolvedValue(undefined),
   onBrokerStderr: vi.fn().mockReturnValue(() => {}),
@@ -209,6 +217,8 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
     waitForExitFn = vi.fn().mockResolvedValue('exited');
     waitForIdleFn = vi.fn().mockImplementation(() => never());
     mockSpawnOutputs = [];
+    mockAgent.release.mockResolvedValue(undefined);
+    mockRelayInstance.spawnPty.mockImplementation(defaultSpawnPtyImplementation);
     mockRelayInstance.onWorkerOutput = null;
     db = makeDb();
     runner = new WorkflowRunner({ db, workspaceId: 'ws-test' });
@@ -382,6 +392,73 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
       expect(reviewIdx).toBeLessThan(completedIdx);
     }, 15000);
 
+    it('should complete review from streamed REVIEW_DECISION before normal exit', async () => {
+      mockRelayInstance.spawnPty.mockImplementation(async ({
+        name,
+        task,
+      }: {
+        name: string;
+        task?: string;
+      }) => {
+        const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
+        const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
+        const output = isReview
+          ? 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: streamed completion\n'
+          : stepComplete
+            ? `STEP_COMPLETE:${stepComplete}\n`
+            : 'STEP_COMPLETE:unknown\n';
+
+        queueMicrotask(() => {
+          if (typeof mockRelayInstance.onWorkerOutput === 'function') {
+            mockRelayInstance.onWorkerOutput({ name, chunk: output });
+          }
+        });
+
+        if (!isReview) {
+          return { ...mockAgent, name };
+        }
+
+        let released = false;
+        let resolveExit: ((result: 'released') => void) | undefined;
+        const waitForExit = vi.fn().mockImplementation(() => {
+          if (released) {
+            return Promise.resolve<'released'>('released');
+          }
+          return new Promise<'released'>((resolve) => {
+            resolveExit = resolve;
+          });
+        });
+        const release = vi.fn().mockImplementation(async () => {
+          released = true;
+          resolveExit?.('released');
+        });
+
+        return {
+          name,
+          waitForExit,
+          waitForIdle: vi.fn().mockImplementation(() => never()),
+          release,
+        };
+      });
+
+      const run = await runner.execute(
+        makeConfig({
+          workflows: [
+            {
+              name: 'default',
+              steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1' }],
+            },
+          ],
+        }),
+        'default'
+      );
+
+      expect(run.status).toBe('completed');
+      const reviewAgent = await (mockRelayInstance.spawnPty as any).mock.results[1].value;
+      expect(reviewAgent.name).toContain('step-1-review');
+      expect(reviewAgent.release).toHaveBeenCalledTimes(1);
+    }, 15000);
+
     it('should mirror worker output to the channel for owner observation', async () => {
       mockSpawnOutputs = [
         'worker progress update\n',
@@ -455,64 +532,95 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
   // ── Scenario 5: Review timeout budgeting ───────────────────────────────
 
   describe('Scenario 5: Review timeout budgeting', () => {
-    it('should not allocate review timeout longer than parent step timeout', async () => {
+    it('should use the full remaining step timeout as the review safety backstop', async () => {
       const config = makeConfig({
         workflows: [
           {
             name: 'default',
-            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 30_000 }],
+            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 90_000 }],
           },
         ],
       });
 
-      const run = await runner.execute(config, 'default');
-      expect(run.status).toBe('completed');
+      mockRelayInstance.spawnPty.mockImplementation(async ({
+        name,
+        task,
+      }: {
+        name: string;
+        task?: string;
+      }) => {
+        const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
+        const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
+        const output = isReview ? '' : stepComplete ? `STEP_COMPLETE:${stepComplete}\n` : 'STEP_COMPLETE:unknown\n';
 
-      const waitCalls = (waitForExitFn as any).mock?.calls ?? [];
-      expect(waitCalls.length).toBeGreaterThanOrEqual(2);
-      const reviewTimeout = waitCalls[1][0];
-      expect(reviewTimeout).toBeLessThanOrEqual(30_000);
+        if (output) {
+          queueMicrotask(() => {
+            if (typeof mockRelayInstance.onWorkerOutput === 'function') {
+              mockRelayInstance.onWorkerOutput({ name, chunk: output });
+            }
+          });
+        }
+
+        return {
+          name,
+          waitForExit: vi.fn().mockResolvedValue(isReview ? 'timeout' : 'exited'),
+          waitForIdle: vi.fn().mockImplementation(() => never()),
+          release: vi.fn().mockResolvedValue(undefined),
+        };
+      });
+
+      const run = await runner.execute(config, 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('review safety backstop timed out');
+
+      const reviewAgent = await (mockRelayInstance.spawnPty as any).mock.results[1].value;
+      const reviewTimeout = reviewAgent.waitForExit.mock.calls[0][0];
+      expect(reviewTimeout).toBeGreaterThan(60_000);
+      expect(reviewTimeout).toBeLessThanOrEqual(90_000);
     }, 15000);
 
-    it('should use proportional timeout (1/3) for longer step timeouts', async () => {
+    it('should default the review safety backstop to 10 minutes when no step timeout is set', async () => {
       const config = makeConfig({
         workflows: [
           {
             name: 'default',
-            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 900_000 }],
+            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1' }],
           },
         ],
       });
 
-      const run = await runner.execute(config, 'default');
-      expect(run.status).toBe('completed');
+      mockRelayInstance.spawnPty.mockImplementation(async ({
+        name,
+        task,
+      }: {
+        name: string;
+        task?: string;
+      }) => {
+        const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
+        const output = isReview ? '' : 'STEP_COMPLETE:step-1\n';
 
-      const waitCalls = (waitForExitFn as any).mock?.calls ?? [];
-      expect(waitCalls.length).toBeGreaterThanOrEqual(2);
-      const reviewTimeout = waitCalls[1][0];
-      // Math.floor(900_000/3) may yield 299_999 due to integer division
-      expect(reviewTimeout).toBeGreaterThanOrEqual(299_000);
-      expect(reviewTimeout).toBeLessThanOrEqual(300_000);
-    }, 15000);
+        if (output) {
+          queueMicrotask(() => {
+            if (typeof mockRelayInstance.onWorkerOutput === 'function') {
+              mockRelayInstance.onWorkerOutput({ name, chunk: output });
+            }
+          });
+        }
 
-    it('should cap review timeout at 600s upper bound', async () => {
-      const config = makeConfig({
-        workflows: [
-          {
-            name: 'default',
-            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 3_600_000 }],
-          },
-        ],
+        return {
+          name,
+          waitForExit: vi.fn().mockResolvedValue(isReview ? 'timeout' : 'exited'),
+          waitForIdle: vi.fn().mockImplementation(() => never()),
+          release: vi.fn().mockResolvedValue(undefined),
+        };
       });
 
       const run = await runner.execute(config, 'default');
-      expect(run.status).toBe('completed');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('review safety backstop timed out after 600000ms');
 
-      const waitCalls = (waitForExitFn as any).mock?.calls ?? [];
-      expect(waitCalls.length).toBeGreaterThanOrEqual(2);
-      const reviewTimeout = waitCalls[1][0];
-      expect(reviewTimeout).toBeLessThanOrEqual(600_000);
-      expect(reviewTimeout).toBeGreaterThanOrEqual(599_000);
+      const reviewAgent = await (mockRelayInstance.spawnPty as any).mock.results[1].value;
+      expect(reviewAgent.waitForExit).toHaveBeenCalledWith(600_000);
     }, 15000);
   });
 
