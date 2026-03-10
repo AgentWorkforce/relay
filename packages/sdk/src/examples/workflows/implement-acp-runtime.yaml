@@ -517,6 +517,7 @@ workflows:
         type: deterministic
         dependsOn: [verify-all-files]
         command: |
+          set -o pipefail
           cd packages/sdk
           npx tsc --noEmit 2>&1 | tail -50
           echo "TSC_EXIT_CODE: $?"
