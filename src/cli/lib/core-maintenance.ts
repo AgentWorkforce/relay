@@ -271,7 +271,7 @@ export async function runUninstallCommand(
   // --- Binary removal (standalone binaries + npm packages) ---
   const homeDir = os.homedir();
   const standaloneBinDir = path.join(homeDir, '.local', 'bin');
-  const installDir = path.join(homeDir, '.agent-relay');
+  const installBinDir = path.join(homeDir, '.agent-relay', 'bin');
 
   // Remove standalone binaries from ~/.local/bin
   for (const binaryName of ['agent-relay', 'relay-dashboard-server', 'relay-acp']) {
@@ -290,14 +290,14 @@ export async function runUninstallCommand(
     }
   }
 
-  // Remove broker binary from ~/.agent-relay/bin/
-  if (deps.fs.existsSync(installDir)) {
+  // Remove broker binary from ~/.agent-relay/bin/ (not the parent dir which stores global data)
+  if (deps.fs.existsSync(installBinDir)) {
     if (isDryRun) {
-      deps.log(`[dry-run] Would remove directory: ${installDir}`);
+      deps.log(`[dry-run] Would remove directory: ${installBinDir}`);
     } else {
       try {
-        deps.fs.rmSync(installDir, { recursive: true, force: true });
-        deps.log(`Removed ${installDir}`);
+        deps.fs.rmSync(installBinDir, { recursive: true, force: true });
+        deps.log(`Removed ${installBinDir}`);
       } catch {
         // Best-effort.
       }
