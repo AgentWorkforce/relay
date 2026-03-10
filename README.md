@@ -74,9 +74,4 @@ Apache-2.0 — Copyright 2026 Agent Workforce Incorporated
 
 ---
 
-**Links:** [Documentation](https://docs.agent-relay.com/) · [Docs (Markdown)](https://github.com/AgentWorkforce/relay/tree/main/README.md) · [Issues](https://github.com/AgentWorkforce/relay/issues) · [Discord](https://discord.gg/6E6CTxM8um)
-
-> **Plain-text docs:** All documentation is available as Markdown directly in this repository. Browse the repo on GitHub for the raw `.md` files, or fetch from your terminal:
-> ```bash
-> curl https://raw.githubusercontent.com/AgentWorkforce/relay/main/README.md
-> ```
+**Links:** [Documentation](https://docs.agent-relay.com/) · [Issues](https://github.com/AgentWorkforce/relay/issues) · [Discord](https://discord.gg/6E6CTxM8um)
