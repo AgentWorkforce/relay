@@ -475,7 +475,9 @@ workflows:
         type: deterministic
         dependsOn: [final-tests]
         command: >
-          git diff packages/sdk/src/workflows/types.ts
+          git add -N packages/sdk/src/__tests__/post-action.test.ts 2>/dev/null;
+          git diff HEAD --
+          packages/sdk/src/workflows/types.ts
           packages/sdk/src/workflows/runner.ts
           packages/sdk/src/workflows/validator.ts
           packages/sdk/src/workflows/schema.json
