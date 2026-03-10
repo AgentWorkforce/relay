@@ -149,12 +149,23 @@ test('workflow-lifecycle: abort cancels a running workflow', { timeout: 120_000 
       { cwd }
     );
 
+    // Wait for the step to actually start running before aborting
     let currentRunner = harness.getCurrentRunner();
     for (let i = 0; i < 20 && !currentRunner; i += 1) {
       await sleep(250);
       currentRunner = harness.getCurrentRunner();
     }
     assert.ok(currentRunner, 'Expected workflow runner to be available while running');
+
+    // Wait for step:started event before aborting so the step is actually in-flight
+    await new Promise<void>((resolve) => {
+      const unsub = currentRunner!.on((event) => {
+        if (event.type === 'step:started') {
+          unsub();
+          resolve();
+        }
+      });
+    });
     currentRunner.abort();
 
     const result = await runPromise;

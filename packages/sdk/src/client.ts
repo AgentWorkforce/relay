@@ -486,8 +486,7 @@ export class AgentRelayClient {
       'init',
       '--name',
       this.options.brokerName,
-      '--channels',
-      this.options.channels.join(','),
+      ...(this.options.channels.length > 0 ? ['--channels', this.options.channels.join(',')] : []),
       ...this.options.binaryArgs,
     ];
 

@@ -39,7 +39,7 @@ function makeConfig(overrides?: Partial<RelayYamlConfig>): RelayYamlConfig {
           {
             name: 'step-verify-output',
             agent: 'worker',
-            task: 'Return DONE',
+            task: 'Do one thing',
             verification: { type: 'output_contains', value: 'DONE' },
           },
         ],

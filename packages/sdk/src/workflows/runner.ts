@@ -1165,7 +1165,14 @@ export class WorkflowRunner {
     workflowName?: string,
     vars?: VariableContext
   ): Promise<WorkflowRunRow> {
+    // Set up abort controller early so callers can abort() even during setup
+    this.abortController = new AbortController();
+    this.paused = false;
+
     const resolved = vars ? this.resolveVariables(config, vars) : config;
+
+    // Validate config (catches cycles, missing deps, invalid steps, etc.)
+    this.validateConfig(resolved);
 
     // Resolve and validate named paths from the top-level `paths` config
     const pathResult = this.resolvePathDefinitions(resolved.paths, this.cwd);
@@ -1250,6 +1257,10 @@ export class WorkflowRunner {
 
   /** Resume a previously paused or partially completed run. */
   async resume(runId: string, vars?: VariableContext): Promise<WorkflowRunRow> {
+    // Set up abort controller early so callers can abort() even during setup
+    this.abortController = new AbortController();
+    this.paused = false;
+
     const run = await this.db.getRun(runId);
     if (!run) {
       throw new Error(`Run "${runId}" not found`);
@@ -1312,9 +1323,7 @@ export class WorkflowRunner {
     const { run, workflow, config, stepStates, isResume } = input;
     const runId = run.id;
 
-    // Start execution
-    this.abortController = new AbortController();
-    this.paused = false;
+    // Start execution (abortController already set by execute()/resume())
     this.currentConfig = config;
     this.currentRunId = runId;
     this.runStartTime = Date.now();
@@ -1386,7 +1395,7 @@ export class WorkflowRunner {
         this.relay = new AgentRelay({
           ...this.relayOptions,
           brokerName,
-          channels: [channel],
+          channels: relaycastDisabled ? [] : [channel],
           env: this.getRelayEnv(),
           // Workflows spawn agents across multiple waves; each spawn requires a PTY +
           // Relaycast registration. 60s is too tight when the broker is saturated with
@@ -1578,8 +1587,15 @@ export class WorkflowRunner {
       this.log(`Executing ${workflow.steps.length} steps (pattern: ${config.swarm.pattern})`);
       await this.executeSteps(workflow, stepStates, agentMap, config.errorHandling, runId);
 
+      const errorStrategy =
+        config.errorHandling?.strategy ?? workflow.onError ?? 'fail-fast';
+      const continueOnError =
+        errorStrategy === 'continue' || errorStrategy === 'skip';
       const allCompleted = [...stepStates.values()].every(
-        (s) => s.row.status === 'completed' || s.row.status === 'skipped'
+        (s) =>
+          s.row.status === 'completed' ||
+          s.row.status === 'skipped' ||
+          (continueOnError && s.row.status === 'failed')
       );
 
       if (allCompleted) {
@@ -1624,6 +1640,19 @@ export class WorkflowRunner {
       await this.updateRunStatus(runId, status, errorMsg);
 
       if (status === 'cancelled') {
+        // Mark any pending or in-progress steps as failed due to cancellation
+        for (const [stepName, state] of stepStates) {
+          if (state.row.status === 'pending' || state.row.status === 'running') {
+            state.row.status = 'failed';
+            state.row.error = 'Cancelled';
+            await this.db.updateStep(state.row.id, {
+              status: 'failed',
+              error: 'Cancelled',
+              updatedAt: new Date().toISOString(),
+            });
+            this.emit({ type: 'step:failed', runId, stepName, error: 'Cancelled' });
+          }
+        }
         this.emit({ type: 'run:cancelled', runId });
         this.postToChannel(`Workflow **${workflow.name}** cancelled`);
         await this.trajectory.abandon('Cancelled by user');
