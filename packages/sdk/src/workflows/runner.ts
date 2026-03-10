@@ -2782,8 +2782,9 @@ export class WorkflowRunner {
       throw new Error(`Step "${step.name}" owner completion marker missing: "${marker}"`);
     }
     // PTY output includes injected task text, so require a second marker occurrence
-    // when the marker was present in the injected prompt.
-    const outputLikelyContainsInjectedPrompt = output.includes('STEP OWNER CONTRACT');
+    // when the marker was present in the injected prompt (either owner contract or supervisor prompt).
+    const outputLikelyContainsInjectedPrompt =
+      output.includes('STEP OWNER CONTRACT') || output.includes('Output exactly: STEP_COMPLETE:');
     if (taskHasMarker && outputLikelyContainsInjectedPrompt) {
       const hasSecond = output.includes(marker, first + marker.length);
       if (!hasSecond) {
