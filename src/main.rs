@@ -1771,7 +1771,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 workspace_lookup
                                     .get(default_workspace_id)
                                     .cloned()
-                                    .ok_or_else(|| "ambiguous_workspace:workspaceId or workspaceAlias is required when multiple workspaces are attached".to_string())
+                                    .ok_or_else(|| format!("workspace_not_found: default workspace '{}' not found", default_workspace_id))
                             } else {
                                 Err("ambiguous_workspace:workspaceId or workspaceAlias is required when multiple workspaces are attached".to_string())
                             };
@@ -3783,8 +3783,8 @@ async fn handle_sdk_frame(
                     send_error(
                         out_tx,
                         frame.request_id,
-                        "ambiguous_workspace",
-                        "workspaceId or workspaceAlias is required when multiple workspaces are attached".to_string(),
+                        "workspace_not_found",
+                        format!("default workspace '{}' not found", default_workspace_id),
                         false,
                         None,
                     )
