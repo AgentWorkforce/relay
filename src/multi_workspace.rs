@@ -36,6 +36,7 @@ pub struct MultiWorkspaceSession {
 }
 
 impl MultiWorkspaceSession {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         http_base: impl Into<String>,
         ws_base: impl Into<String>,
