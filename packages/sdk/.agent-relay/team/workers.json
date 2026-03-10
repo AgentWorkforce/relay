@@ -1,0 +1,28 @@
+{
+  "workers": [
+    {
+      "name": "step-1-review-29a845aa",
+      "cli": "claude",
+      "task": "Review workflow step \"step-1\" for completion and safe handoff.\nStep owner: team-lead\nOriginal objective:\nImplement the requested change\n\nSpecialist output:\nspecialist deliverable\n\n\nOwner verification notes:\nWorker already exited; artifacts look correct\nSTEP_COMPLETE:step-1\n\n\nReturn exactly:\nREVIEW_DECISION: APPROVE or REJECT\nREVIEW_REASON: <one sentence>\nThen output /exit.",
+      "spawnedAt": 1773133859507,
+      "interactive": true,
+      "logFile": "/Users/khaliqgant/Projects/relay-pr511/packages/sdk/.agent-relay/team/worker-logs/step-1-review-29a845aa.log"
+    },
+    {
+      "name": "step-1-review-5b09bf99",
+      "cli": "claude",
+      "task": "Review workflow step \"step-1\" for completion and safe handoff.\nStep owner: agent-a\nOriginal objective:\nDo step 1\n\nSpecialist output:\nSTEP_COMPLETE:step-1\n\n\nOwner verification notes:\nSTEP_COMPLETE:step-1\n\n\nReturn exactly:\nREVIEW_DECISION: APPROVE or REJECT\nREVIEW_REASON: <one sentence>\nThen output /exit.",
+      "spawnedAt": 1773133859510,
+      "interactive": true,
+      "logFile": "/Users/khaliqgant/Projects/relay-pr511/packages/sdk/.agent-relay/team/worker-logs/step-1-review-5b09bf99.log"
+    },
+    {
+      "name": "step-1-review-ed3254f3",
+      "cli": "claude",
+      "task": "Review workflow step \"step-1\" for completion and safe handoff.\nStep owner: agent-a\nOriginal objective:\nDo step 1\n\nSpecialist output:\nSTEP_COMPLETE:step-1\n\n\nOwner verification notes:\nSTEP_COMPLETE:step-1\n\n\nReturn exactly:\nREVIEW_DECISION: APPROVE or REJECT\nREVIEW_REASON: <one sentence>\nThen output /exit.",
+      "spawnedAt": 1773133859526,
+      "interactive": true,
+      "logFile": "/Users/khaliqgant/Projects/relay-pr511/packages/sdk/.agent-relay/team/worker-logs/step-1-review-ed3254f3.log"
+    }
+  ]
+}

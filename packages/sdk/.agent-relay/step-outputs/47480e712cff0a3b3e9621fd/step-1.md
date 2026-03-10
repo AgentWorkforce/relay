@@ -1,0 +1,7 @@
+worker progress update
+worker finished
+
+---
+REVIEW_OUTPUT
+REVIEW_DECISION: APPROVE
+REVIEW_REASON: looks good
