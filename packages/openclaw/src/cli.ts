@@ -262,7 +262,7 @@ async function runAddWorkspace(
     api_key: apiKey,
     workspace_alias: flags['alias'],
     workspace_id: flags['workspace-id'],
-    ...(flags['default'] ? { is_default: flags['default'] === 'true' } : {}),
+    ...(flags['default'] !== undefined ? { is_default: flags['default'] === 'true' } : {}),
   });
 
   const entry = config.workspaces.find((w) => w.api_key === apiKey);
