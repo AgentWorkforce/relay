@@ -353,8 +353,11 @@ export async function loadWorkspacesConfig(): Promise<WorkspacesConfig | null> {
   try {
     const raw = await readFile(configPath, 'utf-8');
     return JSON.parse(raw) as WorkspacesConfig;
-  } catch {
-    return null;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`Warning: failed to parse ${configPath}: ${message}`);
+    console.warn('The file may be corrupted. Existing workspace config will not be modified.');
+    return { workspaces: [], default_workspace: undefined };
   }
 }
 
@@ -403,6 +406,10 @@ export async function addWorkspace(entry: WorkspaceEntry): Promise<WorkspacesCon
     config.workspaces[existingIdx] = { ...existingEntry, ...entry };
     if (!hasExplicitDefault) {
       config.workspaces[existingIdx].is_default = existingEntry.is_default;
+    }
+    const updatedEntry = config.workspaces[existingIdx];
+    if (updatedEntry.is_default) {
+      config.default_workspace = normalizeWorkspaceLabel(updatedEntry);
     }
   } else {
     config.workspaces.push(entry);
@@ -459,6 +466,7 @@ export async function switchWorkspace(identifier: string): Promise<WorkspacesCon
   const gateway = await loadGatewayConfig();
   if (gateway) {
     gateway.apiKey = target.api_key;
+    gateway.clawName = target.workspace_alias ?? target.workspace_id ?? target.api_key;
     await saveGatewayConfig(gateway);
   }
 
