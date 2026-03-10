@@ -147,7 +147,10 @@ fn listen_api_router_with_auth(
     let protected = Router::new()
         .route("/api/spawn", routing::post(listen_api_spawn))
         .route("/api/spawned", routing::get(listen_api_list))
-        .route("/api/spawned/{name}/model", routing::post(listen_api_set_model))
+        .route(
+            "/api/spawned/{name}/model",
+            routing::post(listen_api_set_model),
+        )
         .route("/api/threads", routing::get(listen_api_threads))
         .route("/api/events/replay", routing::get(listen_api_replay))
         .route("/api/spawned/{name}", routing::delete(listen_api_release))
@@ -1144,13 +1147,18 @@ mod auth_tests {
                     assert_eq!(model.as_deref(), Some("o3"));
                     assert_eq!(args, vec!["--fast".to_string()]);
                     assert_eq!(task.as_deref(), Some("Ship it"));
-                    assert_eq!(channels, vec!["general".to_string(), "engineering".to_string()]);
+                    assert_eq!(
+                        channels,
+                        vec!["general".to_string(), "engineering".to_string()]
+                    );
                     assert_eq!(cwd.as_deref(), Some("/tmp/project"));
                     assert_eq!(team.as_deref(), Some("core"));
                     assert_eq!(shadow_of.as_deref(), Some("Lead"));
                     assert_eq!(shadow_mode.as_deref(), Some("subagent"));
                     assert_eq!(continue_from.as_deref(), Some("worker-prev"));
-                    let _ = reply.send(Ok(json!({ "success": true, "name": "worker-a", "pid": 42 })));
+                    let _ = reply.send(Ok(
+                        json!({ "success": true, "name": "worker-a", "pid": 42 }),
+                    ));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
             }

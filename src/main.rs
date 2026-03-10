@@ -16,9 +16,8 @@ mod wrap;
 
 use helpers::{
     detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
-    detect_gemini_trust_prompt,
-    floor_char_boundary, is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode,
-    normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
+    detect_gemini_trust_prompt, floor_char_boundary, is_auto_suggestion, is_bypass_selection_menu,
+    is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
 use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiRequest};
 use routing::display_target_for_dashboard;
@@ -771,9 +770,7 @@ impl WorkerRegistry {
                         .any(|a| a.contains("dangerously-bypass") || a.contains("full-auto"))
                 {
                     Some("--dangerously-bypass-approvals-and-sandbox")
-                } else if is_gemini
-                    && !effective_args.iter().any(|a| a == "--yolo" || a == "-y")
-                {
+                } else if is_gemini && !effective_args.iter().any(|a| a == "--yolo" || a == "-y") {
                     Some("--yolo")
                 } else {
                     None
@@ -3864,8 +3861,11 @@ async fn handle_sdk_frame(
                 .await?;
             note_local_spawn_control_dedup(
                 dedup,
-                default_workspace_id
-                    .or_else(|| workspaces.first().map(|workspace| workspace.workspace_id.as_str())),
+                default_workspace_id.or_else(|| {
+                    workspaces
+                        .first()
+                        .map(|workspace| workspace.workspace_id.as_str())
+                }),
                 &name,
                 worker_relay_key.as_deref(),
             );
@@ -5182,7 +5182,11 @@ fn first_i64(value: &Value, pointers: &[&str]) -> Option<i64> {
         .find_map(|pointer| value.pointer(pointer).and_then(Value::as_i64))
 }
 
-fn relaycast_ws_control_dedup_key(workspace_id: &str, ws_type: &str, value: &Value) -> Option<String> {
+fn relaycast_ws_control_dedup_key(
+    workspace_id: &str,
+    ws_type: &str,
+    value: &Value,
+) -> Option<String> {
     let identity = if ws_type == "agent.spawn_requested" {
         relaycast_ws_spawn_token(value)
             .or_else(|| first_string(value, &["/agent/name", "/payload/agent/name", "/name"]))
@@ -5996,8 +6000,7 @@ mod tests {
         is_in_editor_mode, is_relaycast_self_control_target, is_unknown_worker_error_message,
         normalize_channel, normalize_initial_task, normalize_sender,
         relaycast_ws_control_dedup_key, relaycast_ws_spawn_token, sender_is_dashboard_label,
-        should_clear_pending_delivery_for_event, strip_ansi, PendingDelivery,
-        TerminalQueryParser,
+        should_clear_pending_delivery_for_event, strip_ansi, PendingDelivery, TerminalQueryParser,
     };
     use crate::helpers::floor_char_boundary;
     use relay_broker::relaycast_ws::{
@@ -7072,8 +7075,7 @@ mod tests {
                 .any(|a| a.contains("dangerously-bypass") || a.contains("full-auto"))
         {
             Some("--dangerously-bypass-approvals-and-sandbox")
-        } else if cli_lower == "gemini"
-            && !existing_args.iter().any(|a| a == "--yolo" || a == "-y")
+        } else if cli_lower == "gemini" && !existing_args.iter().any(|a| a == "--yolo" || a == "-y")
         {
             Some("--yolo")
         } else {
