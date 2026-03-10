@@ -1,6 +1,0 @@
-status: ok
-driver: better-sqlite3
-detail: better-sqlite3 rebuilt successfully
-node: v22.22.1
-platform: darwin-arm64
-timestamp: 2026-03-10T06:05:59.562Z
