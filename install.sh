@@ -328,10 +328,16 @@ has_command() {
     command -v "$1" &> /dev/null
 }
 
-# Strip macOS Gatekeeper quarantine attribute from a binary
+# Prepare a downloaded macOS binary so Gatekeeper does not kill it during
+# first execution.
 strip_quarantine() {
-    if [ "$OS" = "darwin" ] && has_command xattr; then
-        xattr -d com.apple.quarantine "$1" 2>/dev/null || true
+    if [ "$OS" = "darwin" ]; then
+        if has_command xattr; then
+            xattr -d com.apple.quarantine "$1" 2>/dev/null || true
+        fi
+        if has_command codesign; then
+            codesign --force --sign - "$1" >/dev/null 2>&1 || true
+        fi
     fi
 }
 

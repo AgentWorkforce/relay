@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-03-10T13:01:42.312Z",
+  "lastUpdated": "2026-03-10T13:50:04.591Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -792,6 +792,20 @@
       "startedAt": "2026-03-10T13:00:45.387Z",
       "completedAt": "2026-03-10T13:01:42.232Z",
       "path": "/Users/khaliqgant/Projects/relay/.worktrees/multiws/.trajectories/completed/2026-03/traj_iy436ewnxd2s.json"
+    },
+    "traj_w77ztbb5g9yf": {
+      "title": "Investigate failing agent-relay up command",
+      "status": "completed",
+      "startedAt": "2026-03-10T13:26:37.759Z",
+      "completedAt": "2026-03-10T13:43:55.554Z",
+      "path": "/Users/khaliqgant/Projects/relay/.trajectories/completed/2026-03/traj_w77ztbb5g9yf.json"
+    },
+    "traj_bakz7bn14kn8": {
+      "title": "Add macOS CI smoke test for standalone agent-relay CLI",
+      "status": "completed",
+      "startedAt": "2026-03-10T13:45:40.951Z",
+      "completedAt": "2026-03-10T13:50:04.518Z",
+      "path": "/Users/khaliqgant/Projects/relay/.trajectories/completed/2026-03/traj_bakz7bn14kn8.json"
     }
   }
 }
