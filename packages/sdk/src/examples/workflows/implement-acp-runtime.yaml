@@ -114,8 +114,8 @@ workflows:
         type: deterministic
         command: |
           # Extract buildNonInteractiveCommand + resolveAgentDef + buildPresetInjection +
-          # execNonInteractive + spawnAndWait (lines 2183-2600)
-          sed -n '2183,2600p' packages/sdk/src/workflows/runner.ts
+          # execNonInteractive + spawnAndWait (full method, ends ~2665)
+          sed -n '2183,2668p' packages/sdk/src/workflows/runner.ts
         captureOutput: true
 
       - name: read-runner-constants
@@ -124,7 +124,7 @@ workflows:
           # Extract imports (lines 1-50) and HUB_PATTERNS + HUB_ROLES (lines 2660-2700)
           sed -n '1,50p' packages/sdk/src/workflows/runner.ts
           echo "--- SECTION BREAK ---"
-          sed -n '2660,2700p' packages/sdk/src/workflows/runner.ts
+          sed -n '2668,2700p' packages/sdk/src/workflows/runner.ts
         captureOutput: true
 
       # ════════════════════════════════════════════════════════════════════════
