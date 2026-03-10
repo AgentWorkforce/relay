@@ -84,6 +84,8 @@ export interface SendMessageInput {
   text: string;
   from?: string;
   threadId?: string;
+  workspaceId?: string;
+  workspaceAlias?: string;
   priority?: number;
   data?: Record<string, unknown>;
 }
@@ -385,6 +387,8 @@ export class AgentRelayClient {
         text: input.text,
         from: input.from,
         thread_id: input.threadId,
+        workspace_id: input.workspaceId,
+        workspace_alias: input.workspaceAlias,
         priority: input.priority,
         data: input.data,
       });
