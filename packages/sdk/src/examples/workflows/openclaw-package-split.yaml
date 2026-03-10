@@ -47,7 +47,7 @@ workflows:
     preflight:
       - command: test -d packages/openclaw/src && echo "relay openclaw found" || echo "MISSING"
         description: "Verify @agent-relay/openclaw exists (project: relay)"
-      - command: test -d packages/openclaw/src && echo "relaycast openclaw found" || echo "MISSING"
+      - command: test -d ../relaycast/packages/openclaw/src && echo "relaycast openclaw found" || echo "MISSING"
         description: "Verify @relaycast/openclaw exists (project: relaycast)"
     steps:
       # ── Wave 1: Deterministic context capture ──────────────────────────
