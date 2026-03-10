@@ -1194,6 +1194,14 @@ export class WorkflowRunner {
     }
 
     const config = vars ? this.resolveVariables(run.config, vars) : run.config;
+
+    // Resolve path definitions (same as execute()) so workdir lookups work on resume
+    const pathResult = this.resolvePathDefinitions(config.paths, this.cwd);
+    if (pathResult.errors.length > 0) {
+      throw new Error(`Path validation failed:\n  ${pathResult.errors.join('\n  ')}`);
+    }
+    this.resolvedPaths = pathResult.resolved;
+
     const workflows = config.workflows ?? [];
     const workflow = workflows.find((w) => w.name === run.workflowName);
     if (!workflow) {
