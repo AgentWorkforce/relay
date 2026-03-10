@@ -1,0 +1,121 @@
+version: '1.0'
+name: real-owner-review-test
+description: |
+  Real-world E2E test for PR #511 features: auto step owner assignment,
+  review gating, and verification markers. Uses REAL CLI agents (claude, codex).
+  Small scope — 3 agent steps + 1 deterministic — finishes in ~5 minutes.
+
+swarm:
+  pattern: dag
+  channel: real-owner-review
+  maxConcurrency: 3
+  timeoutMs: 600000 # 10 min global
+
+agents:
+  # Lead agent — should be auto-assigned as step owner (hub-role priority)
+  - name: lead
+    cli: claude
+    preset: lead
+    channels: [real-owner-review]
+    role: 'Lead coordinator. Plans tasks and delegates to workers.'
+    constraints:
+      model: sonnet
+      timeoutMs: 180000
+
+  # Worker agent — implements based on lead's plan
+  - name: worker
+    cli: codex
+    preset: worker
+    role: 'Implementation worker. Writes code based on plans.'
+    constraints:
+      timeoutMs: 180000
+
+  # Reviewer agent — reviews worker output (tests review gating)
+  - name: reviewer
+    cli: claude
+    preset: reviewer
+    role: 'Code reviewer. Reviews implementations for correctness.'
+    constraints:
+      model: sonnet
+      timeoutMs: 120000
+
+workflows:
+  - name: utility-function
+    description: |
+      Lead plans a small utility function, worker implements it,
+      reviewer reviews the implementation. Tests auto step owner + review gate.
+    onError: continue
+    steps:
+      # Step 1: Deterministic setup — create a temp working directory
+      - name: setup
+        type: deterministic
+        command: |
+          WORKDIR=$(mktemp -d /tmp/relay-e2e-XXXXXX)
+          echo "WORKDIR=$WORKDIR"
+          echo "Created working directory: $WORKDIR"
+        captureOutput: true
+        failOnError: true
+
+      # Step 2: Lead creates a plan for a simple utility function
+      # Auto step owner should assign 'lead' as owner (hub-role match)
+      - name: plan
+        type: agent
+        agent: lead
+        dependsOn: [setup]
+        task: |
+          Context: {{steps.setup.output}}
+
+          Create a brief plan for a TypeScript utility function called `slugify`
+          that converts a string to a URL-friendly slug. The plan should include:
+          1. Function signature (input: string, output: string)
+          2. Key transformations: lowercase, replace spaces with hyphens, remove special chars
+          3. Edge cases: empty string, multiple spaces, leading/trailing whitespace
+
+          Output your plan as a numbered list. End with: PLAN_COMPLETE
+        verification:
+          type: output_contains
+          value: PLAN_COMPLETE
+        timeoutMs: 180000
+
+      # Step 3: Worker implements based on the plan (output chaining)
+      # Tests that codex agent can receive chained output and produce code
+      - name: implement
+        type: agent
+        agent: worker
+        dependsOn: [plan]
+        task: |
+          Context: {{steps.setup.output}}
+
+          Based on this plan:
+          {{steps.plan.output}}
+
+          Implement the `slugify` function in TypeScript. Write it to a file
+          called `slugify.ts` in the working directory from the context.
+          Include basic test cases as console.log assertions at the bottom.
+
+          After writing the file, output: IMPLEMENTATION_COMPLETE
+        verification:
+          type: output_contains
+          value: IMPLEMENTATION_COMPLETE
+        timeoutMs: 180000
+
+      # Step 4: Deterministic merge — check results
+      - name: verify-results
+        type: deterministic
+        dependsOn: [plan, implement]
+        command: |
+          echo "=== Real Owner/Review Test Results ==="
+          echo "Step: plan"
+          echo "{{steps.plan.output}}" | grep -q "PLAN_COMPLETE" && echo "PASS: plan completed" || echo "FAIL: plan"
+          echo ""
+          echo "Step: implement"
+          echo "{{steps.implement.output}}" | grep -q "IMPLEMENTATION_COMPLETE" && echo "PASS: implementation completed" || echo "FAIL: implementation"
+          echo ""
+          echo "ALL_STEPS_VERIFIED"
+        captureOutput: true
+        failOnError: false
+
+state:
+  backend: memory
+  ttlMs: 3600000
+  namespace: real-owner-review

@@ -51,8 +51,14 @@ function formatEvent(event: WorkflowEvent): string {
       return `[run] cancelled`;
     case 'step:started':
       return `[step] ${event.stepName} started`;
+    case 'step:owner-assigned':
+      return `[step] ${event.stepName} owner=${event.ownerName} specialist=${event.specialistName}`;
     case 'step:completed':
       return `[step] ${event.stepName} completed`;
+    case 'step:review-completed':
+      return `[step] ${event.stepName} review ${event.decision} by ${event.reviewerName}`;
+    case 'step:owner-timeout':
+      return `[step] ${event.stepName} owner ${event.ownerName} timed out`;
     case 'step:failed':
       return `[step] ${event.stepName} failed: ${event.error}`;
     case 'step:skipped':
@@ -63,6 +69,10 @@ function formatEvent(event: WorkflowEvent): string {
       return `[step] ${event.stepName} nudged (nudge #${event.nudgeCount})`;
     case 'step:force-released':
       return `[step] ${event.stepName} force-released`;
+    default: {
+      const _exhaustive: never = event;
+      return `[unknown event] ${(_exhaustive as WorkflowEvent).type}`;
+    }
   }
 }
 
