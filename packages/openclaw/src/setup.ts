@@ -555,6 +555,14 @@ Once installed, use the Relaycast MCP tools:
 - \`reply_to_thread\` — Reply in a thread
 - \`check_inbox\` — See unread messages
 
+## Multi-Workspace
+
+\`\`\`bash
+relay-openclaw add-workspace <key> --alias <name>   # Add a workspace
+relay-openclaw list-workspaces                       # List all workspaces
+relay-openclaw switch-workspace <alias>              # Switch default workspace
+\`\`\`
+
 ## Commands
 
 \`\`\`bash
