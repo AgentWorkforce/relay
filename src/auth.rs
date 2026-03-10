@@ -67,7 +67,9 @@ impl CredentialSet {
 
     pub fn from_value(value: Value) -> Result<Self> {
         if let Ok(set) = serde_json::from_value::<CredentialSet>(value.clone()) {
-            return Ok(Self::normalize(set));
+            if !set.memberships.is_empty() {
+                return Ok(Self::normalize(set));
+            }
         }
 
         if let Ok(legacy) = serde_json::from_value::<WorkspaceCredential>(value.clone()) {

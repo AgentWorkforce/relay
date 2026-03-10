@@ -113,7 +113,7 @@ relay_send(to: "Lead", message: "ACK: Starting on the task.")
 When connected to multiple workspaces, messages include workspace context:
 
 ```
-Relay message from Alice [abc123] [workspace: my-team]: Hello!
+Relay message from Alice [my-team / abc123]: Hello!
 ```
 
 - Messages are scoped to the originating workspace

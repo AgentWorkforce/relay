@@ -119,6 +119,7 @@ function createHarness(options?: {
     cliScript: '/tmp/agent-relay.js',
     pid: 4242,
     now: vi.fn(() => Date.now()),
+    isPortInUse: vi.fn(async () => false),
     sleep: vi.fn(async () => undefined),
     onSignal: vi.fn(() => undefined),
     holdOpen: vi.fn(async () => undefined),
@@ -398,38 +399,18 @@ describe('registerCoreCommands', () => {
     expect(deps.error).toHaveBeenCalledWith('Dashboard port 3888 is already in use.');
   });
 
-  it('up retries with next API port when first API port is taken', async () => {
-    const firstRelay = createRelayMock({
-      getStatus: vi.fn(async () => {
-        const error = new Error(
-          'Error: failed to bind API on port 3889\nCaused by:\nAddress already in use (os error 48)'
-        ) as Error & {
-          code?: string;
-        };
-        throw error;
-      }),
-    });
-
-    const secondRelay = createRelayMock();
-    const createRelay = vi
-      .fn()
-      .mockReturnValueOnce(firstRelay)
-      .mockReturnValueOnce(secondRelay) as unknown as CoreDependencies['createRelay'];
-
-    const { program, deps } = createHarness({ createRelay });
+  it('up probes for a free API port before spawning the broker', async () => {
+    const relay = createRelayMock();
+    const { program, deps } = createHarness({ relay });
 
     const exitCode = await runCommand(program, ['up', '--port', '3888']);
 
     expect(exitCode).toBeUndefined();
-    expect(createRelay).toHaveBeenCalledWith('/tmp/project', 3889);
-    expect(createRelay).toHaveBeenCalledWith('/tmp/project', 3890);
-    expect(secondRelay.getStatus).toHaveBeenCalledTimes(1);
-    expect(secondRelay.shutdown).toHaveBeenCalledTimes(0);
-    expect(deps.spawnProcess).toHaveBeenCalledWith(
-      '/usr/local/bin/relay-dashboard-server',
-      expect.arrayContaining(['--port', '3888', '--relay-url', 'http://127.0.0.1:3890']),
-      expect.any(Object)
-    );
+    // Port probing happens before createRelay — only one broker is spawned
+    expect(deps.createRelay).toHaveBeenCalledTimes(1);
+    // API port = dashboard port (3888) + 1 = 3889
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889);
+    expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 
   it('up force exits on repeated SIGINT during hung shutdown and suppresses expected dashboard signal noise', async () => {
