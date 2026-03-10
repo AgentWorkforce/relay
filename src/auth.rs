@@ -9,7 +9,11 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceCredential {
     pub workspace_id: String,
-    #[serde(default, alias = "workspaceAlias", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "workspaceAlias",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub workspace_alias: Option<String>,
     pub agent_id: String,
     pub api_key: String,
@@ -26,7 +30,11 @@ pub type CredentialCache = WorkspaceCredential;
 pub struct CredentialSet {
     #[serde(default)]
     pub memberships: Vec<WorkspaceCredential>,
-    #[serde(default, alias = "defaultWorkspaceId", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "defaultWorkspaceId",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default_workspace_id: Option<String>,
 }
 
@@ -111,7 +119,11 @@ impl CredentialSet {
     pub fn default_membership(&self) -> Option<&WorkspaceCredential> {
         if let Some(default_workspace_id) = self.default_workspace_id.as_deref() {
             self.membership_by_selector(default_workspace_id)
-                .or_else(|| self.memberships.iter().find(|m| m.workspace_id == default_workspace_id))
+                .or_else(|| {
+                    self.memberships
+                        .iter()
+                        .find(|m| m.workspace_id == default_workspace_id)
+                })
         } else if self.memberships.len() == 1 {
             self.memberships.first()
         } else {
@@ -131,7 +143,8 @@ impl CredentialSet {
     }
 
     fn normalize(mut set: Self) -> Self {
-        set.memberships.retain(|membership| !membership.api_key.trim().is_empty());
+        set.memberships
+            .retain(|membership| !membership.api_key.trim().is_empty());
         if set.default_workspace_id.is_none() && set.memberships.len() == 1 {
             set.default_workspace_id = set
                 .memberships
