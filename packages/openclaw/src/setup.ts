@@ -400,11 +400,18 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
 
         mcpConfigured = true;
 
-        // Register this claw via the Relaycast SDK. registerOrRotate handles
-        // the 409 "already exists" case by rotating the token automatically.
+        // Register this claw via the Relaycast SDK and fetch the current
+        // usable agent token for the named claw.
+        //
+        // IMPORTANT: use registerOrGet here, not registerOrRotate.
+        // Re-running setup is a common, user-facing recovery step. Rotating the
+        // token during setup can invalidate an already-running MCP server or any
+        // other local process that still has the previous token, producing the
+        // confusing partial-failure mode where list/read works (workspace key)
+        // but post/send fails with "Invalid agent token".
         try {
           const relaycast = new RelayCast({ apiKey, baseUrl });
-          const registered = await relaycast.agents.registerOrRotate({
+          const registered = await relaycast.agents.registerOrGet({
             name: clawName,
             type: 'agent',
           });
