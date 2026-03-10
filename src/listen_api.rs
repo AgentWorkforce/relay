@@ -496,8 +496,7 @@ async fn listen_api_release(
     axum::extract::Path(name): axum::extract::Path<String>,
     body: Option<axum::Json<Value>>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
-    let reason = body
-        .and_then(|b| b.get("reason").and_then(|v| v.as_str()).map(String::from));
+    let reason = body.and_then(|b| b.get("reason").and_then(|v| v.as_str()).map(String::from));
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
         .tx
