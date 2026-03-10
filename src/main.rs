@@ -447,6 +447,10 @@ struct SpawnPayload {
     /// Name of a previously released agent whose continuity context should be injected.
     #[serde(default)]
     continue_from: Option<String>,
+    /// When true, skip injecting the relay MCP configuration into the spawned agent.
+    /// Useful for minor tasks where relay messaging is not needed, saving tokens.
+    #[serde(default)]
+    skip_relay_prompt: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -638,6 +642,7 @@ impl WorkerRegistry {
         parent: Option<String>,
         idle_threshold_secs: Option<u64>,
         worker_relay_api_key: Option<String>,
+        skip_relay_prompt: bool,
     ) -> Result<()> {
         if self.workers.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' already exists", spec.name);
@@ -695,20 +700,27 @@ impl WorkerRegistry {
                 };
 
                 // Build MCP config args for CLIs that support dynamic MCP configuration.
-                let cwd = spec.cwd.as_deref().unwrap_or(".");
-                // Pass the original CLI name (e.g. "cursor") so cursor-specific
-                // MCP config logic is triggered. `resolved_cli` may differ
-                // (parse_cli_command maps "cursor" → "agent").
-                let mcp_args = configure_relaycast_mcp_with_token(
-                    cli,
-                    &spec.name,
-                    self.env_value("RELAY_API_KEY"),
-                    self.env_value("RELAY_BASE_URL"),
-                    &effective_args,
-                    Path::new(cwd),
-                    worker_relay_api_key.as_deref(),
-                )
-                .await?;
+                // When skip_relay_prompt is true, skip MCP config injection so the
+                // spawned agent does not receive relay protocol context (saves tokens
+                // for minor tasks where messaging is not needed).
+                let mcp_args = if skip_relay_prompt {
+                    vec![]
+                } else {
+                    let cwd = spec.cwd.as_deref().unwrap_or(".");
+                    // Pass the original CLI name (e.g. "cursor") so cursor-specific
+                    // MCP config logic is triggered. `resolved_cli` may differ
+                    // (parse_cli_command maps "cursor" → "agent").
+                    configure_relaycast_mcp_with_token(
+                        cli,
+                        &spec.name,
+                        self.env_value("RELAY_API_KEY"),
+                        self.env_value("RELAY_BASE_URL"),
+                        &effective_args,
+                        Path::new(cwd),
+                        worker_relay_api_key.as_deref(),
+                    )
+                    .await?
+                };
 
                 let has_extra =
                     bypass_flag.is_some() || !effective_args.is_empty() || !mcp_args.is_empty();
@@ -735,16 +747,20 @@ impl WorkerRegistry {
                 command.arg(headless_provider_cli_name(provider));
 
                 // Build MCP config for headless provider agents.
-                let mcp_args = configure_relaycast_mcp_with_token(
-                    headless_provider_cli_name(provider),
-                    &spec.name,
-                    self.env_value("RELAY_API_KEY"),
-                    self.env_value("RELAY_BASE_URL"),
-                    &spec.args,
-                    Path::new(spec.cwd.as_deref().unwrap_or(".")),
-                    worker_relay_api_key.as_deref(),
-                )
-                .await?;
+                let mcp_args = if skip_relay_prompt {
+                    vec![]
+                } else {
+                    configure_relaycast_mcp_with_token(
+                        headless_provider_cli_name(provider),
+                        &spec.name,
+                        self.env_value("RELAY_API_KEY"),
+                        self.env_value("RELAY_BASE_URL"),
+                        &spec.args,
+                        Path::new(spec.cwd.as_deref().unwrap_or(".")),
+                        worker_relay_api_key.as_deref(),
+                    )
+                    .await?
+                };
 
                 if !spec.args.is_empty() || !mcp_args.is_empty() {
                     command.arg("--");
@@ -765,15 +781,17 @@ impl WorkerRegistry {
         for (key, value) in &self.worker_env {
             command.env(key, value);
         }
-        if let Some(relay_key) = worker_relay_api_key {
-            // Keep RELAY_API_KEY as the workspace key and pass the
-            // pre-registered agent token separately for MCP servers that
-            // support session bootstrap.
-            command.env("RELAY_AGENT_TOKEN", relay_key);
+        if !skip_relay_prompt {
+            if let Some(relay_key) = worker_relay_api_key {
+                // Keep RELAY_API_KEY as the workspace key and pass the
+                // pre-registered agent token separately for MCP servers that
+                // support session bootstrap.
+                command.env("RELAY_AGENT_TOKEN", relay_key);
+            }
+            command.env("RELAY_AGENT_NAME", &spec.name);
+            command.env("RELAY_AGENT_TYPE", "agent");
+            command.env("RELAY_STRICT_AGENT_NAME", "1");
         }
-        command.env("RELAY_AGENT_NAME", &spec.name);
-        command.env("RELAY_AGENT_TYPE", "agent");
-        command.env("RELAY_STRICT_AGENT_NAME", "1");
         // Remove CLAUDECODE env var to prevent "nested session" detection
         // when spawning Claude Code agents from within a Claude Code session.
         command.env_remove("CLAUDECODE");
@@ -1505,6 +1523,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 Some("Dashboard".to_string()),
                                 None,
                                 worker_relay_key.clone(),
+                                false,
                             ).await {
                                 Ok(()) => {
                                     if let Some(ref task_text) = effective_task {
@@ -2073,6 +2092,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     Some("Relaycast".to_string()),
                                     None,
                                     worker_relay_key.clone(),
+                                    false,
                                 ).await {
                                     Ok(()) => {
                                         if let Some(ref task_text) = effective_task {
@@ -3021,6 +3041,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 rst.parent.clone(),
                                 None,
                                 Some(worker_relay_key),
+                                false,
                             )
                             .await
                         {
@@ -3422,6 +3443,7 @@ async fn handle_sdk_frame(
                     None,
                     payload.idle_threshold_secs,
                     worker_relay_key.clone(),
+                    payload.skip_relay_prompt.unwrap_or(false),
                 )
                 .await?;
             if let Some(task) = effective_task.clone() {

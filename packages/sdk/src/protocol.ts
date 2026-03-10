@@ -49,7 +49,7 @@ export type SdkToBroker =
     }
   | {
       type: 'spawn_agent';
-      payload: { agent: AgentSpec; initial_task?: string };
+      payload: { agent: AgentSpec; initial_task?: string; skip_relay_prompt?: boolean };
     }
   | {
       type: 'send_message';

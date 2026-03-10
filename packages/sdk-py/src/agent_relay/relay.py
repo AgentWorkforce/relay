@@ -51,6 +51,7 @@ class SpawnOptions:
     shadow_mode: Optional[str] = None
     idle_threshold_secs: Optional[int] = None
     restart_policy: Optional[dict[str, Any]] = None
+    skip_relay_prompt: Optional[bool] = None
     on_start: LifecycleHook = None
     on_success: LifecycleHook = None
     on_error: LifecycleHook = None
@@ -512,6 +513,7 @@ class AgentRelay:
                 shadow_mode=opts.shadow_mode,
                 idle_threshold_secs=opts.idle_threshold_secs,
                 restart_policy=opts.restart_policy,
+                skip_relay_prompt=opts.skip_relay_prompt,
             )
         except Exception as error:
             await self._invoke_lifecycle_hook(

@@ -137,6 +137,9 @@ export interface SpawnOptions extends SpawnLifecycleHooks {
   shadowMode?: string;
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
+  /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
+   *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
+  skipRelayPrompt?: boolean;
 }
 
 export interface SpawnAndWaitOptions extends SpawnOptions {
@@ -202,6 +205,9 @@ export interface SpawnerSpawnOptions extends SpawnLifecycleHooks {
   task?: string;
   model?: string;
   cwd?: string;
+  /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
+   *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
+  skipRelayPrompt?: boolean;
 }
 
 export type EventHook<T> = ((value: T) => void) | null;
@@ -369,6 +375,7 @@ export class AgentRelay {
         shadowMode: input.shadowMode,
         idleThresholdSecs: input.idleThresholdSecs,
         restartPolicy: input.restartPolicy,
+        skipRelayPrompt: input.skipRelayPrompt,
       });
     } catch (error) {
       await this.invokeLifecycleHook(
@@ -410,6 +417,7 @@ export class AgentRelay {
       shadowMode: options?.shadowMode,
       idleThresholdSecs: options?.idleThresholdSecs,
       restartPolicy: options?.restartPolicy,
+      skipRelayPrompt: options?.skipRelayPrompt,
       onStart: options?.onStart,
       onSuccess: options?.onSuccess,
       onError: options?.onError,
@@ -1225,6 +1233,7 @@ export class AgentRelay {
             task,
             model: options?.model,
             cwd: options?.cwd,
+            skipRelayPrompt: options?.skipRelayPrompt,
             onStart: options?.onStart,
             onSuccess: options?.onSuccess,
             onError: options?.onError,
