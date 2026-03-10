@@ -223,6 +223,8 @@ export class WorkflowRunner {
 
   // PTY-based output capture: accumulate terminal output per-agent
   private readonly ptyOutputBuffers = new Map<string, string[]>();
+  /** Snapshot of PTY output from the most recent failed attempt, keyed by step name. */
+  private readonly lastFailedStepOutput = new Map<string, string>();
   private readonly ptyListeners = new Map<string, (chunk: string) => void>();
   private readonly ptyLogStreams = new Map<string, WriteStream>();
   /** Path to workers.json so `agents:kill` can find workflow-spawned agents */
@@ -1540,6 +1542,7 @@ export class WorkflowRunner {
       for (const stream of this.ptyLogStreams.values()) stream.end();
       this.ptyLogStreams.clear();
       this.ptyOutputBuffers.clear();
+      this.lastFailedStepOutput.clear();
       this.ptyListeners.clear();
 
       this.unsubBrokerStderr?.();
@@ -2335,6 +2338,16 @@ export class WorkflowRunner {
         // Resolve step-output variables (e.g. {{steps.plan.output}}) at execution time
         const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
         let resolvedTask = this.interpolateStepTask(step.task ?? '', stepOutputContext);
+
+        // On retry attempts, prepend failure context so the agent knows what went wrong
+        if (attempt > 0 && lastError) {
+          const priorOutput = (this.lastFailedStepOutput.get(step.name) ?? '').slice(-2000);
+          resolvedTask =
+            `[RETRY — Attempt ${attempt + 1}/${maxRetries + 1}]\n` +
+            `Previous attempt failed: ${lastError}\n` +
+            (priorOutput ? `Previous output (last 2000 chars):\n${priorOutput}\n` : '') +
+            `---\n${resolvedTask}`;
+        }
 
         // If this is an interactive agent, append awareness of non-interactive workers
         // so the lead knows not to message them and to use step output chaining instead
@@ -3260,6 +3273,11 @@ export class WorkflowRunner {
 
       return output;
     } finally {
+      // Snapshot output so retry attempts can include failure context
+      const combinedOutput = stdoutChunks.join('') + stderrChunks.join('');
+      if (combinedOutput) {
+        this.lastFailedStepOutput.set(step.name, combinedOutput);
+      }
       stopHeartbeat?.();
       logStream.end();
       this.unregisterWorker(agentName);
@@ -3459,6 +3477,11 @@ export class WorkflowRunner {
     } finally {
       // Snapshot PTY chunks before cleanup — we need them for output reading below
       ptyChunks = this.ptyOutputBuffers.get(agentName) ?? [];
+
+      // Snapshot failed output so retry attempts can include failure context
+      if (ptyChunks.length > 0) {
+        this.lastFailedStepOutput.set(step.name, ptyChunks.join(''));
+      }
 
       // Always clean up PTY resources — prevents fd leaks if spawnPty or waitForExit throws
       stopHeartbeat?.();
