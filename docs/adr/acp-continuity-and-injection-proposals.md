@@ -113,7 +113,7 @@ Currently `continueFrom` in `SpawnPtyInput` (`client.ts:52`) tells the broker to
 
 ---
 
-## Part 2: Mid-Turn Injection — Five Proposals
+## Part 2: Mid-Turn Injection — Decision
 
 ### The Core Problem
 
@@ -121,215 +121,156 @@ ACP `session/prompt` is request-response. While Agent B processes a turn (1-10 m
 
 PTY solves this with `pty.write_all()` on a 50ms tick (`pty_worker.rs:642-709`), injecting formatted messages directly into the terminal. ACP has no equivalent.
 
-### Proposal A: Queue + Drain on Turn Boundary
+### Why No ACP Workaround Is Sufficient
 
-**Mechanism**: Broker queues inbound messages. When the current `session/prompt` completes (`stopReason: "end_turn"`), broker sends queued messages as the next prompt.
+Every approach to mid-turn injection under ACP fails at a fundamental level:
 
-```
-Agent A → Relay → Broker [queue: msg1, msg2]
-                         ... Agent B's turn completes ...
-                  Broker → ACP session/prompt("You have 2 pending messages:\n1. From Agent A: ...\n2. From Agent C: ...")
-```
+| Approach | Failure Mode |
+|---|---|
+| **Queue + drain on turn boundary** | Latency = turn duration (seconds to minutes). Not injection — just delayed delivery. |
+| **Cancel + re-prompt** | Destructive. Agent loses in-flight tool calls and thinking state. Context reconstruction is lossy. |
+| **MCP tool polling (`relay_inbox`)** | Relies on LLM choosing to call the tool. No guarantee. Not broker-controlled. |
+| **"MCP sidecar" / dual-channel** | Collapses to polling. The MCP server receives messages via WebSocket, but the LLM can only access them via tool calls *within* the ACP turn. `notifications/tools/list_changed` goes to the ACP adapter, not the LLM mid-generation. There is no second channel — just a buffer the agent might or might not read. |
+| **ACP spec extension (`session/inject`)** | Doesn't exist. Would need upstream spec change, adapter implementation across all agents, and months/years of adoption. Can't depend on it. |
 
-**Pros:**
-- Simple to implement
-- No protocol extensions
-- Works with all ACP adapters
-
-**Cons:**
-- Latency: messages wait until turn ends (seconds to minutes)
-- Breaks real-time patterns (mesh, consensus, debate)
-- Lead agent can't interrupt a stuck worker
-
-**Best for:** Lead+workers pattern where workers complete tasks before receiving the next one. This is already the dominant relay pattern.
-
-**Delivery lifecycle mapping:**
-- `delivery_queued` — message enters broker queue (immediate)
-- `delivery_injected` — becomes `delivery_prompted` when sent as next `session/prompt`
-- `delivery_ack` — ACP response received (guaranteed by protocol)
-- `delivery_verified` — same as ack (no echo verification needed)
-- `delivery_active` — inferred from `session/update` events (tool_call, thinking)
-
----
-
-### Proposal B: Cancel + Re-Prompt with Context Merge
-
-**Mechanism**: On high-priority message, broker sends `session/cancel`, waits for cancellation, then re-prompts with merged context: original task + accumulated progress + new message.
-
-```
-Agent B processing turn...
-Agent A sends urgent message →
-  Broker: session/cancel
-  Agent B: { stopReason: "cancelled", response: [partial work] }
-  Broker: session/prompt("Continue your previous task. Here's what you've done so far: {partial_response}. NEW MESSAGE from Agent A: {message}")
-```
-
-**Pros:**
-- Delivers messages within seconds
-- Works with standard ACP
-
-**Cons:**
-- Destructive: agent loses in-flight tool calls, thinking state
-- Context reconstruction is lossy — partial_response may not capture full state
-- Wastes tokens re-processing cancelled work
-- Race condition: cancel arrives while agent is mid-tool-call
-
-**Mitigation**: Only trigger for priority >= P1 messages. P2+ messages use Proposal A (queue + drain).
-
-**Priority mapping from `BoundedPriorityQueue` (`queue.rs`):**
-- P0 (critical): Cancel immediately, re-prompt
-- P1 (high): Cancel if idle for >5s, else queue
-- P2-P4: Always queue for next turn boundary
-
----
-
-### Proposal C: MCP Tool Polling (`relay_inbox` Pull Model)
-
-**Mechanism**: Agent proactively calls `relay_inbox()` during its turn to check for new messages. Broker doesn't inject — agent pulls.
-
-```
-Agent B's turn:
-  1. Think about task...
-  2. Call tool: relay_inbox()  → returns [{from: "Agent A", body: "..."}]
-  3. Process message inline
-  4. Continue task...
-```
-
-**Pros:**
-- No protocol extension needed
-- Agent decides when to check (natural breakpoints between tool calls)
-- Works today — `relay_inbox` already exists in `@relaycast/mcp`
-
-**Cons:**
-- Agent must be prompted to check inbox regularly ("Check relay_inbox every 3-5 tool calls")
-- No guarantee agent will check — LLM may ignore instruction
-- Adds latency: message waits until next inbox check
-- Consumes tool-call budget on polling
-
-**Enhancement — Inbox Hint via MCP Notification:**
-
-MCP supports server-initiated notifications. When a relay message arrives for Agent B:
-
-1. Relaycast MCP server receives the message via its own WebSocket connection
-2. Server sends MCP notification: `notifications/tools/list_changed`
-3. ACP adapter sees tool list changed, re-fetches tools
-4. A new dynamic tool appears: `relay_pending_message_1` with the message content in its description
-5. Agent sees the tool in its context and can decide to "call" it (acknowledging the message)
-
-This is a hack, but it's within spec. The real version would use MCP's proposed `notifications/message` (not yet standardized).
-
----
-
-### Proposal D: Dual-Channel Architecture (MCP Sidecar)
-
-**Mechanism**: Agent has two communication channels: ACP for prompt/response, and a persistent MCP connection for real-time relay messages.
+The "MCP sidecar" concept deserves specific debunking because it sounds plausible:
 
 ```
                     ┌─── ACP (session/prompt) ──────────────┐
 Broker ────────────►│ Agent Process                          │
                     │   ├── ACP adapter (turn-based)         │
-                    │   └── Relaycast MCP server (persistent)│◄── relay messages
+                    │   └── Relaycast MCP server (has WS)    │◄── messages arrive here
                     └────────────────────────────────────────┘
+                                                               ↑
+                                                        But the LLM can only
+                                                        see them via tool calls
+                                                        gated by ACP turns
 ```
 
-**How it works:**
+The MCP server having a WebSocket is irrelevant. The LLM interacts with MCP servers exclusively through tool calls. Tool calls happen within ACP turns. The ACP adapter mediates all tool access. There is no path from "MCP server received a WebSocket message" to "LLM is now aware of it" that doesn't go through ACP's turn-based tool-call mechanism — which means the LLM has to decide to call `relay_inbox()`, which it may not do.
 
-1. Broker spawns agent with ACP adapter
-2. `session/new` includes Relaycast MCP server in `mcpServers` config
-3. Relaycast MCP server maintains its own WebSocket to Relaycast cloud
-4. When relay message arrives, MCP server receives it via WebSocket
-5. Agent discovers message via `relay_inbox()` tool (pull) or `notifications/tools/list_changed` (push-ish)
-6. Agent processes message as part of its current turn
+### Decision: Mid-Turn Injection Requires PTY
 
-**Pros:**
-- ACP handles structured prompt/response
-- MCP handles real-time relay messaging
-- Clean separation of concerns
-- Messages available within the turn via tool calls
+**If a workflow needs mid-turn message injection, it must use PTY runtime.**
 
-**Cons:**
-- Still relies on agent choosing to call `relay_inbox()` (same as Proposal C)
-- MCP server must maintain persistent WebSocket (already does for PTY mode)
-- Two connections per agent to Relaycast cloud
+ACP's turn-based model is architecturally incompatible with injection. This is not a gap to be worked around — it is a design choice in the protocol. ACP chose structured request-response over raw I/O. That trade-off gives you typed tool calls, clean permissions, and reliable delivery, but it removes the ability to write arbitrary data into the agent's input stream at arbitrary times.
 
-**This is the most architecturally clean option.** ACP owns the conversation lifecycle. MCP owns the tool surface including relay communication. The broker orchestrates both.
+### What ACP CAN Do (Turn-Boundary Delivery)
 
----
+For workflows that don't need mid-turn injection, ACP can deliver messages at turn boundaries. This is not injection — it's queued delivery:
 
-### Proposal E: ACP Protocol Extension (`session/inject`)
+```
+Agent A → Relay → Broker [queue: msg1, msg2]
+                         ... Agent B's turn completes ...
+                  Broker → ACP session/prompt("You have 2 pending messages:
+                    1. From Agent A [evt_abc]: ...
+                    2. From Agent C [evt_def]: ...")
+```
 
-**Mechanism**: Propose a new ACP method `session/inject` that allows the client to send a message into an active turn without cancelling it.
+**Delivery lifecycle mapping (ACP mode):**
+- `delivery_queued` — message enters broker queue (immediate)
+- `delivery_prompted` — sent as next `session/prompt` (replaces `delivery_injected`)
+- `delivery_ack` — ACP response received (guaranteed by protocol, replaces echo verification)
+- `delivery_active` — inferred from `session/update` events (tool_call, thinking)
+
+This works for:
+- **Lead + workers** — workers finish turns, report DONE, get next task
+- **Pipeline** — each stage completes before the next starts
+- **Fan-out/gather** — fan-out is prompt-per-worker, gather waits for all turns to complete
+- **Hub-spoke** — hub sends tasks, spokes complete turns and respond
+
+This does NOT work for:
+- **Mesh** — agents must react to messages while working
+- **Consensus/Debate** — agents must see counterarguments mid-reasoning
+- **Interactive** — human-in-the-loop needs real-time input
+
+### Cancel + Re-Prompt as Emergency Interrupt
+
+For urgent messages (P0/P1), the broker can use `session/cancel` + re-prompt as a destructive interrupt:
+
+```
+Agent B processing turn...
+Agent A sends P0 message →
+  Broker: session/cancel
+  Agent B: { stopReason: "cancelled", response: [partial work] }
+  Broker: session/prompt("Continue your previous task.
+    Progress so far: {partial_response}.
+    URGENT MESSAGE from Agent A: {message}")
+```
+
+This should only be used for critical interrupts because:
+- Agent loses in-flight tool calls and thinking state
+- Context reconstruction from `partial_response` is lossy
+- Wastes tokens re-processing cancelled work
+- Race condition if cancel arrives during a tool call
+
+**Priority mapping from `BoundedPriorityQueue` (`queue.rs`):**
+- P0 (critical): Cancel immediately, re-prompt
+- P1 (high): Cancel if agent idle >5s, else queue
+- P2-P4: Always queue for next turn boundary
+
+### Runtime Selection Rule
+
+**ACP is the default.** PTY is the fallback for patterns that require mid-turn injection.
+
+ACP gives you structured tool calls, clean permissions via `session/request_permission`, no CLI-specific auto-approval hacks, and guaranteed delivery at turn boundaries. There is no reason to use PTY unless you specifically need to write into the agent's input stream while it's working.
+
+```
+┌─────────────────────────────────────────────────┐
+│ Does the workflow need mid-turn message injection? │
+│                                                   │
+│   NO  → runtime: "acp" (DEFAULT)                  │
+│         Structured output, typed tool calls,       │
+│         clean permissions, no auto-approval hacks, │
+│         turn-boundary delivery with queue + drain  │
+│                                                   │
+│   YES → runtime: "pty" (FALLBACK)                 │
+│         PTY injection via pty.write_all()          │
+│         50ms delivery queue tick                   │
+│         Echo verification + activity detection     │
+│         Full 5-stage delivery lifecycle            │
+│         Auto-approval handlers (fragile)           │
+└─────────────────────────────────────────────────┘
+```
+
+This maps to swarm patterns:
+
+| Pattern | Mid-Turn Injection? | Runtime |
+|---|---|---|
+| Lead + Workers | No | **`acp`** (default) |
+| Pipeline | No | **`acp`** (default) |
+| Fan-out/Gather | No | **`acp`** (default) |
+| Hub-spoke | No (P0 via cancel) | **`acp`** (default) |
+| Cascade | No | **`acp`** (default) |
+| DAG | No | **`acp`** (default) |
+| Handoff | No | **`acp`** (default) |
+| Mesh | **Yes** | `pty` (fallback) |
+| Consensus | **Yes** | `pty` (fallback) |
+| Debate | **Yes** | `pty` (fallback) |
+| Hierarchical | Depends on sub-pattern | Mixed |
+
+Most real-world swarms use lead+workers, pipeline, or fan-out — all ACP-compatible. Mesh, consensus, and debate are specialized patterns that represent a small fraction of usage.
+
+### Future: ACP `session/inject` Proposal
+
+If ACP adds a `session/inject` method, mid-turn injection becomes possible without PTY. This would be the ideal solution:
 
 ```typescript
-// New ACP method (would need spec proposal)
+// Proposed ACP extension
 interface SessionInjectParams {
   sessionId: string;
   content: ContentBlock[];
   priority?: "normal" | "urgent";
 }
-
-// Agent receives as a notification during turn processing
-interface SessionInjectedNotification {
-  sessionId: string;
-  content: ContentBlock[];
-  injectedAt: string; // ISO timestamp
-}
 ```
 
-**Pros:**
-- First-class solution: protocol-level support for exactly the PTY capability we're losing
-- Clean semantics: agent can handle injected messages at natural breakpoints
-- Compatible with existing `session/update` streaming
+The agent would receive injected content as a notification during turn processing and handle it at natural breakpoints (between tool calls). This is worth proposing as an RFD to the ACP spec, but we cannot depend on it.
 
-**Cons:**
-- Requires ACP spec change — not something we control
-- Every adapter must implement it
-- May never be accepted upstream
-- Months/years before adoption
-
-**Feasibility**: ACP is actively developed and accepting RFDs. The `session/resume` RFD shows the community is open to extensions. A `session/inject` proposal with relay/multi-agent use cases could land, but we can't depend on it.
+**Until `session/inject` exists: mid-turn injection = PTY. No exceptions.**
 
 ---
 
-### Recommendation Matrix
-
-| Pattern | Proposal A (Queue) | Proposal B (Cancel) | Proposal C (Poll) | Proposal D (Dual-Channel) | Proposal E (Extend ACP) |
-|---|---|---|---|---|---|
-| Lead + Workers | Sufficient | Unnecessary | Works | Overkill | Overkill |
-| Pipeline | Sufficient | Unnecessary | Works | Works | Best |
-| Fan-out/gather | Sufficient | Unnecessary | Works | Works | Best |
-| Mesh (real-time) | Too slow | Destructive | Unreliable | Best available | Best |
-| Consensus/Debate | Too slow | Destructive | Unreliable | Best available | Best |
-| Hub-spoke | Sufficient | For urgent only | Works | Works | Best |
-
-### Recommended Implementation Order
-
-1. **Proposal A** (Queue + Drain) — implement first, covers 80% of patterns
-2. **Proposal D** (Dual-Channel) — implement second, covers real-time patterns via MCP sidecar
-3. **Proposal B** (Cancel + Re-Prompt) — implement as P0/P1 interrupt mechanism alongside A
-4. **Proposal C** (Poll) — already works today via `relay_inbox()`, just needs prompt engineering
-5. **Proposal E** (ACP Extension) — submit RFD to ACP spec, implement if/when accepted
-
-### Hybrid Strategy
-
-Combine A + B + D:
-
-```
-message arrives for Agent B (mid-turn):
-  ├─ P0 (critical): Proposal B — cancel + re-prompt immediately
-  ├─ P1 (high):     Proposal B — cancel if idle >5s, else queue (A)
-  ├─ P2 (normal):   Proposal A — queue, deliver on next turn boundary
-  └─ P3-P4 (low):   Proposal A — queue, deliver on next turn boundary
-
-For real-time patterns (mesh, consensus, debate):
-  └─ Proposal D — MCP sidecar with relay_inbox() polling
-```
-
-The broker already has `BoundedPriorityQueue` with 5 priority levels (`queue.rs`). This maps directly.
-
----
-
-## Implementation Sketch: Proposal A (Queue + Drain)
+## Implementation Sketch: ACP Turn-Boundary Delivery
 
 ```rust
 // In acp_worker.rs (new file, parallel to pty_worker.rs)
@@ -386,48 +327,3 @@ loop {
     // Check for new messages that arrived during this turn
 }
 ```
-
-## Implementation Sketch: Proposal D (Dual-Channel MCP Sidecar)
-
-The Relaycast MCP server already maintains a WebSocket connection. The change is:
-
-1. **MCP server receives push messages** via its WebSocket (already happens for PTY mode)
-2. **MCP server buffers them** in an internal queue
-3. **`relay_inbox()` drains the buffer** (already works)
-4. **Agent prompt includes**: "Check `relay_inbox()` periodically during long tasks"
-
-No code change needed in the MCP server. The only change is in the ACP broker:
-- Pass `@relaycast/mcp` as an MCP server in `session/new`
-- Ensure the MCP server's WebSocket receives messages for this agent
-
-The gap is push notification. Today, `relay_inbox()` is pull-only. To make the agent aware of pending messages without polling:
-
-```typescript
-// In @relaycast/mcp server
-class RelaycastMcpServer {
-  private pendingMessages: RelayDelivery[] = [];
-
-  onRelayMessage(delivery: RelayDelivery) {
-    this.pendingMessages.push(delivery);
-    // Send MCP notification that tools changed
-    // Agent's next tool-list refresh will see relay_pending_count
-    this.sendNotification("notifications/tools/list_changed");
-  }
-
-  // Dynamic tool that appears only when messages are pending
-  getTools() {
-    const tools = [/* ... standard tools ... */];
-    if (this.pendingMessages.length > 0) {
-      tools.push({
-        name: "relay_inbox",
-        // Update description dynamically to hint at pending count
-        description: `Check inbox (${this.pendingMessages.length} pending message(s))`,
-        inputSchema: { type: "object", properties: {} }
-      });
-    }
-    return tools;
-  }
-}
-```
-
-This leverages MCP's `notifications/tools/list_changed` — when the agent re-fetches the tool list, it sees the updated description with pending count. This is a gentle nudge, not a guarantee.

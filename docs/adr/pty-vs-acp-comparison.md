@@ -341,11 +341,15 @@ No terminal. No escape sequences. Not needed.
 
 ## Recommendation
 
-Make ACP opt-in per agent (`runtime: "acp"` in AgentSpec), keep PTY as default:
+**ACP is the default runtime.** PTY is the fallback for workflows that require mid-turn message injection.
 
-- **Automated workers** (lead+workers pattern): ACP is strictly better — structured output, clean permissions, no CLI-specific hacks
-- **Interactive agents** (wrap mode, human-in-the-loop): PTY only
-- **Real-time collaborative** (mesh, consensus, debate): PTY required for mid-turn injection
-- **Swarm TUI**: Works with both runtimes if the data pipeline is abstracted
+Most swarm patterns (lead+workers, pipeline, fan-out, hub-spoke, DAG, cascade, handoff) do not need mid-turn injection. ACP gives these patterns structured tool calls, clean permissions, and eliminates 200+ lines of fragile CLI-specific auto-approval hacking.
+
+PTY is required only for patterns where agents must receive messages while actively working on a turn: mesh, consensus, and debate. These are specialized patterns representing a small fraction of real-world usage.
+
+- **Default** (`runtime: "acp"`): lead+workers, pipeline, fan-out, hub-spoke, DAG, cascade, handoff
+- **Fallback** (`runtime: "pty"`): mesh, consensus, debate, interactive/wrap mode
+
+See [acp-continuity-and-injection-proposals.md](./acp-continuity-and-injection-proposals.md) for the full analysis of why mid-turn injection is fundamentally incompatible with ACP's turn-based model and cannot be worked around.
 
 Relaycast remains the hosted routing layer regardless of runtime choice.
