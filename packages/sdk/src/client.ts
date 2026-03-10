@@ -222,6 +222,10 @@ export class AgentRelayClient {
     };
   }
 
+  get brokerPid(): number | undefined {
+    return this.child?.pid;
+  }
+
   async start(): Promise<void> {
     if (this.child) {
       return;

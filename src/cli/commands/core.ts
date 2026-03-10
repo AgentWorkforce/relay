@@ -76,6 +76,8 @@ export interface CoreRelay {
   onBrokerStderr?: (listener: (line: string) => void) => () => void;
   /** Relaycast workspace API key, available after the hello handshake. */
   workspaceKey?: string;
+  /** PID of the underlying broker process, when available. */
+  brokerPid?: number;
 }
 
 export interface CoreFileSystem {
@@ -259,6 +261,7 @@ function createDefaultRelay(cwd: string, apiPort = 0): CoreRelay {
     shutdown: () => client.shutdown(),
     onBrokerStderr: (listener: (line: string) => void) => client.onBrokerStderr(listener),
     get workspaceKey() { return client.workspaceKey; },
+    get brokerPid() { return client.brokerPid; },
   };
   return relay;
 }
