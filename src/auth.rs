@@ -3,11 +3,14 @@ use chrono::{DateTime, Utc};
 use relaycast::{CreateAgentRequest, RelayCast, RelayCastOptions, RelayError};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CredentialCache {
+pub struct WorkspaceCredential {
     pub workspace_id: String,
+    #[serde(default, alias = "workspaceAlias", skip_serializing_if = "Option::is_none")]
+    pub workspace_alias: Option<String>,
     pub agent_id: String,
     pub api_key: String,
     #[serde(default)]
@@ -17,10 +20,155 @@ pub struct CredentialCache {
     pub updated_at: DateTime<Utc>,
 }
 
+pub type CredentialCache = WorkspaceCredential;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CredentialSet {
+    #[serde(default)]
+    pub memberships: Vec<WorkspaceCredential>,
+    #[serde(default, alias = "defaultWorkspaceId", skip_serializing_if = "Option::is_none")]
+    pub default_workspace_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthSessionSet {
+    pub memberships: Vec<AuthSession>,
+    pub default_workspace_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AuthSession {
     pub credentials: CredentialCache,
     pub token: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WorkspaceSource {
+    #[serde(default, alias = "workspaceId")]
+    workspace_id: Option<String>,
+    #[serde(default, alias = "workspaceAlias")]
+    workspace_alias: Option<String>,
+    api_key: String,
+}
+
+impl CredentialSet {
+    pub fn from_json(raw: &str) -> Result<Self> {
+        let value: Value = serde_json::from_str(raw).context("invalid credential set JSON")?;
+        Self::from_value(value)
+    }
+
+    pub fn from_value(value: Value) -> Result<Self> {
+        if let Ok(set) = serde_json::from_value::<CredentialSet>(value.clone()) {
+            return Ok(Self::normalize(set));
+        }
+
+        if let Ok(legacy) = serde_json::from_value::<WorkspaceCredential>(value.clone()) {
+            return Ok(Self::from_legacy(legacy));
+        }
+
+        if let Ok(legacy) = serde_json::from_value::<Vec<WorkspaceCredential>>(value.clone()) {
+            return Ok(Self::from_memberships(legacy, None));
+        }
+
+        if let Ok(source) = serde_json::from_value::<WorkspaceSource>(value.clone()) {
+            return Ok(Self::from_memberships(
+                vec![WorkspaceCredential {
+                    workspace_id: source
+                        .workspace_id
+                        .unwrap_or_else(|| "ws_unknown".to_string()),
+                    workspace_alias: source.workspace_alias,
+                    agent_id: String::new(),
+                    api_key: source.api_key,
+                    agent_name: None,
+                    agent_token: None,
+                    updated_at: Utc::now(),
+                }],
+                None,
+            ));
+        }
+
+        anyhow::bail!("credential JSON was neither a credential set nor a legacy cache entry")
+    }
+
+    pub fn from_legacy(legacy: WorkspaceCredential) -> Self {
+        let default_workspace_id = Some(legacy.workspace_id.clone());
+        Self {
+            memberships: vec![legacy],
+            default_workspace_id,
+        }
+    }
+
+    pub fn from_memberships(
+        memberships: Vec<WorkspaceCredential>,
+        default_workspace_id: Option<String>,
+    ) -> Self {
+        Self::normalize(Self {
+            memberships,
+            default_workspace_id,
+        })
+    }
+
+    pub fn default_membership(&self) -> Option<&WorkspaceCredential> {
+        if let Some(default_workspace_id) = self.default_workspace_id.as_deref() {
+            self.membership_by_selector(default_workspace_id)
+                .or_else(|| self.memberships.iter().find(|m| m.workspace_id == default_workspace_id))
+        } else if self.memberships.len() == 1 {
+            self.memberships.first()
+        } else {
+            None
+        }
+    }
+
+    pub fn membership_by_selector(&self, selector: &str) -> Option<&WorkspaceCredential> {
+        let trimmed = selector.trim();
+        self.memberships.iter().find(|membership| {
+            membership.workspace_id == trimmed
+                || membership
+                    .workspace_alias
+                    .as_deref()
+                    .is_some_and(|alias| alias.eq_ignore_ascii_case(trimmed))
+        })
+    }
+
+    fn normalize(mut set: Self) -> Self {
+        set.memberships.retain(|membership| !membership.api_key.trim().is_empty());
+        if set.default_workspace_id.is_none() && set.memberships.len() == 1 {
+            set.default_workspace_id = set
+                .memberships
+                .first()
+                .map(|membership| membership.workspace_id.clone());
+        }
+        set
+    }
+}
+
+impl AuthSessionSet {
+    pub fn credential_set(&self) -> CredentialSet {
+        CredentialSet::from_memberships(
+            self.memberships
+                .iter()
+                .map(|session| session.credentials.clone())
+                .collect(),
+            self.default_workspace_id.clone(),
+        )
+    }
+
+    pub fn default_session(&self) -> Option<&AuthSession> {
+        if let Some(default_workspace_id) = self.default_workspace_id.as_deref() {
+            self.memberships.iter().find(|session| {
+                session.credentials.workspace_id == default_workspace_id
+                    || session
+                        .credentials
+                        .workspace_alias
+                        .as_deref()
+                        .is_some_and(|alias| alias.eq_ignore_ascii_case(default_workspace_id))
+            })
+        } else if self.memberships.len() == 1 {
+            self.memberships.first()
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
