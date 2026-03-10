@@ -391,19 +391,37 @@ export async function addWorkspace(entry: WorkspaceEntry): Promise<WorkspacesCon
     }
   }
 
+  const normalizeWorkspaceLabel = (workspace: WorkspaceEntry): string => {
+    return workspace.workspace_alias ?? workspace.workspace_id ?? workspace.api_key;
+  };
+
   // Check for existing entry with same api_key
+  const hasExplicitDefault = entry.is_default !== undefined;
   const existingIdx = config.workspaces.findIndex((w) => w.api_key === entry.api_key);
   if (existingIdx >= 0) {
-    config.workspaces[existingIdx] = { ...config.workspaces[existingIdx], ...entry };
+    const existingEntry = config.workspaces[existingIdx];
+    config.workspaces[existingIdx] = { ...existingEntry, ...entry };
+    if (!hasExplicitDefault) {
+      config.workspaces[existingIdx].is_default = existingEntry.is_default;
+    }
   } else {
     config.workspaces.push(entry);
   }
 
-  // If this is the first workspace or explicitly default, set it as default
-  if (entry.is_default || config.workspaces.length === 1) {
-    config.default_workspace = entry.workspace_alias ?? entry.workspace_id;
+  const targetWorkspace = config.workspaces.find((w) => w.api_key === entry.api_key);
+  if (!targetWorkspace) {
+    throw new Error(`Failed to locate workspace entry for ${entry.api_key}`);
+  }
+
+  // If this is explicitly default, or this is the first workspace without an existing default,
+  // set it as default.
+  if (
+    entry.is_default === true ||
+    (config.default_workspace === undefined && config.workspaces.length === 1)
+  ) {
+    config.default_workspace = normalizeWorkspaceLabel(targetWorkspace);
     for (const w of config.workspaces) {
-      w.is_default = w.api_key === entry.api_key;
+      w.is_default = w.api_key === targetWorkspace.api_key;
     }
   }
 
@@ -432,7 +450,7 @@ export async function switchWorkspace(identifier: string): Promise<WorkspacesCon
   );
   if (!target) return null;
 
-  config.default_workspace = target.workspace_alias ?? target.workspace_id;
+  config.default_workspace = target.workspace_alias ?? target.workspace_id ?? target.api_key;
   for (const w of config.workspaces) {
     w.is_default = w.api_key === target.api_key;
   }

@@ -112,7 +112,8 @@ async function runSetup(
 
   if (result.ok) {
     console.log(result.message);
-    console.log(`\nWorkspace key: ${result.apiKey}`);
+    const maskedApiKey = result.apiKey.slice(0, 12) + '...';
+    console.log(`\nWorkspace key: ${maskedApiKey}`);
     console.log('Share this key with other claws to join the same workspace.');
   } else {
     console.error(`Setup failed: ${result.message}`);
@@ -261,11 +262,13 @@ async function runAddWorkspace(
     api_key: apiKey,
     workspace_alias: flags['alias'],
     workspace_id: flags['workspace-id'],
-    is_default: flags['default'] === 'true',
+    ...(flags['default'] ? { is_default: flags['default'] === 'true' } : {}),
   });
 
   const entry = config.workspaces.find((w) => w.api_key === apiKey);
-  const label = entry?.workspace_alias ?? entry?.workspace_id ?? apiKey.slice(0, 16) + '...';
+  const label = entry?.workspace_alias
+    ?? entry?.workspace_id
+    ?? apiKey.slice(0, 12) + '...';
   console.log(`Workspace "${label}" added.`);
   console.log(`Total workspaces: ${config.workspaces.length}`);
   if (config.default_workspace) {
