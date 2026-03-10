@@ -900,9 +900,9 @@ export class AgentRelay {
     this.wireRelaycastBaseUrl();
   }
 
-  /** Inject relaycastBaseUrl into broker env if set and not already present. */
+  /** Inject relaycastBaseUrl into broker env. Explicit option wins over inherited env. */
   private wireRelaycastBaseUrl(): void {
-    if (this.relaycastBaseUrl && this.clientOptions.env && !this.clientOptions.env.RELAYCAST_BASE_URL) {
+    if (this.relaycastBaseUrl && this.clientOptions.env) {
       this.clientOptions.env.RELAYCAST_BASE_URL = this.relaycastBaseUrl;
     }
   }
