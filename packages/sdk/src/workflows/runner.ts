@@ -2550,18 +2550,26 @@ export class WorkflowRunner {
         resolvedTask,
         timeoutMs
       );
-      const ownerStartTime = Date.now();
-      const ownerOutput = await this.executor.executeAgentStep(
-        ownerStep,
-        supervised.owner,
-        supervisorTask,
-        timeoutMs
-      );
-      const ownerElapsed = Date.now() - ownerStartTime;
+      // Guard against unhandled rejection if owner fails before specialist settles
+      const specialistSettled = specialistPromise.catch(() => undefined);
 
-      this.assertOwnerCompletionMarker(step, ownerOutput, supervisorTask);
-      const specialistOutput = await specialistPromise;
-      return { specialistOutput, ownerOutput, ownerElapsed };
+      try {
+        const ownerStartTime = Date.now();
+        const ownerOutput = await this.executor.executeAgentStep(
+          ownerStep,
+          supervised.owner,
+          supervisorTask,
+          timeoutMs
+        );
+        const ownerElapsed = Date.now() - ownerStartTime;
+
+        this.assertOwnerCompletionMarker(step, ownerOutput, supervisorTask);
+        const specialistOutput = await specialistPromise;
+        return { specialistOutput, ownerOutput, ownerElapsed };
+      } catch (error) {
+        await specialistSettled;
+        throw error;
+      }
     }
 
     let workerHandle: Agent | undefined;
