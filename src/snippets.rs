@@ -665,21 +665,24 @@ pub async fn configure_relaycast_mcp_with_token(
             ]);
         }
         // Forward multi-workspace context to codex child agents.
+        // JSON values must have inner quotes escaped for TOML basic-string parsing.
         if let Ok(wj) = std::env::var("RELAY_WORKSPACES_JSON") {
             let wj = wj.trim();
             if !wj.is_empty() {
+                let escaped = wj.replace('\\', "\\\\").replace('"', "\\\"");
                 args.extend([
                     "--config".to_string(),
-                    format!("mcp_servers.relaycast.env.RELAY_WORKSPACES_JSON=\"{wj}\""),
+                    format!("mcp_servers.relaycast.env.RELAY_WORKSPACES_JSON=\"{escaped}\""),
                 ]);
             }
         }
         if let Ok(dw) = std::env::var("RELAY_DEFAULT_WORKSPACE") {
             let dw = dw.trim();
             if !dw.is_empty() {
+                let escaped = dw.replace('\\', "\\\\").replace('"', "\\\"");
                 args.extend([
                     "--config".to_string(),
-                    format!("mcp_servers.relaycast.env.RELAY_DEFAULT_WORKSPACE=\"{dw}\""),
+                    format!("mcp_servers.relaycast.env.RELAY_DEFAULT_WORKSPACE=\"{escaped}\""),
                 ]);
             }
         }
