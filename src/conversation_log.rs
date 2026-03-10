@@ -194,6 +194,8 @@ mod tests {
         let mut log = ConversationLog::open(&path, "Lead").expect("open");
         log.log_inbound(&InboundRelayEvent {
             event_id: "e1".into(),
+            workspace_id: "ws_test".into(),
+            workspace_alias: Some("test".into()),
             kind: InboundKind::DmReceived,
             from: "alice".into(),
             sender_agent_id: None,
@@ -205,6 +207,8 @@ mod tests {
         });
         log.log_inbound(&InboundRelayEvent {
             event_id: "e2".into(),
+            workspace_id: "ws_test".into(),
+            workspace_alias: Some("test".into()),
             kind: InboundKind::MessageCreated,
             from: "bob".into(),
             sender_agent_id: None,

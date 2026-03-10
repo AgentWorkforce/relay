@@ -29,6 +29,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.1.19] - 2026-03-10
+
+### Product Perspective
+#### User-Impacting Fixes
+- Resolve install binary verification, uninstall, and version prefix bugs (#535) (#535)
+
+### Technical Perspective
+#### Releases
+- v3.1.19
+
+---
+
+## [3.1.18] - 2026-03-10
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Multi-workspace runtime support (#519)** (#519)
+- **Harden handoffs with auto step owners + per-step reviews (#511)** (#511)
+
+#### User-Impacting Fixes
+- Rebase release commit on latest main before pushing (#533) (#533)
+- Guard specialist promise in executor supervised path (#525) (#525)
+- Avoid rotating relay agent token on setup (#520) (#520)
+
+### Technical Perspective
+#### Releases
+- v3.1.18
+
+---
+
 ## [3.1.15] - 2026-03-09
 
 ### Technical Perspective

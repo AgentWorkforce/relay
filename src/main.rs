@@ -16,8 +16,8 @@ mod wrap;
 
 use helpers::{
     detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
-    floor_char_boundary, format_injection, is_auto_suggestion, is_bypass_selection_menu,
-    is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
+    floor_char_boundary, is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode,
+    normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
 use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiRequest};
 use routing::display_target_for_dashboard;
@@ -40,6 +40,7 @@ use relay_broker::{
     control::{can_release_child, is_human_sender},
     dedup::DedupCache,
     message_bridge::{map_ws_broker_command, map_ws_event},
+    multi_workspace::{MultiWorkspaceSession, WorkspaceInboundMessage, WorkspaceMembershipSummary},
     protocol::{
         AgentRuntime, AgentSpec, HeadlessProvider as ProtocolHeadlessProvider, ProtocolEnvelope,
         RelayDelivery, PROTOCOL_VERSION,
@@ -48,7 +49,7 @@ use relay_broker::{
     relaycast_ws::{
         format_worker_preregistration_error, registration_is_retryable,
         registration_retry_after_secs, retry_agent_registration, RegRetryOutcome,
-        RelaycastHttpClient, RelaycastWsClient, WsControl,
+        RelaycastHttpClient, WsControl,
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
     snippets::{configure_relaycast_mcp_with_token, ensure_relaycast_mcp_config},
@@ -202,16 +203,93 @@ struct RuntimePaths {
 }
 
 /// Shared Relaycast connection state used by run_init and run_wrap.
-struct RelaySession {
-    http_base: String,
+#[derive(Clone)]
+struct RelayWorkspace {
+    workspace_id: String,
+    workspace_alias: Option<String>,
     relay_workspace_key: String,
     self_name: String,
     self_agent_id: String,
-    self_token: String,
     self_names: HashSet<String>,
     self_agent_ids: HashSet<String>,
-    ws_inbound_rx: mpsc::Receiver<Value>,
+    http_client: RelaycastHttpClient,
     ws_control_tx: mpsc::Sender<WsControl>,
+}
+
+struct RelaySession {
+    http_base: String,
+    default_workspace_id: Option<String>,
+    workspaces: Vec<RelayWorkspace>,
+    ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
+}
+
+#[allow(dead_code)]
+impl RelaySession {
+    fn is_multi_workspace(&self) -> bool {
+        self.workspaces.len() > 1
+    }
+
+    fn membership_summaries(&self) -> Vec<WorkspaceMembershipSummary> {
+        self.workspaces
+            .iter()
+            .map(|workspace| WorkspaceMembershipSummary {
+                workspace_id: workspace.workspace_id.clone(),
+                workspace_alias: workspace.workspace_alias.clone(),
+                is_default: self
+                    .default_workspace_id
+                    .as_deref()
+                    .is_some_and(|workspace_id| workspace_id == workspace.workspace_id),
+            })
+            .collect()
+    }
+
+    fn default_workspace(&self) -> Option<&RelayWorkspace> {
+        if let Some(default_workspace_id) = self.default_workspace_id.as_deref() {
+            self.workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id == default_workspace_id)
+        } else if self.workspaces.len() == 1 {
+            self.workspaces.first()
+        } else {
+            None
+        }
+    }
+
+    fn workspace_by_selector(
+        &self,
+        workspace_id: Option<&str>,
+        workspace_alias: Option<&str>,
+    ) -> Result<&RelayWorkspace> {
+        if let Some(workspace_id) = workspace_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return self
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id == workspace_id)
+                .with_context(|| format!("workspace '{}' is not attached", workspace_id));
+        }
+
+        if let Some(workspace_alias) = workspace_alias
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return self
+                .workspaces
+                .iter()
+                .find(|workspace| {
+                    workspace
+                        .workspace_alias
+                        .as_deref()
+                        .is_some_and(|alias| alias.eq_ignore_ascii_case(workspace_alias))
+                })
+                .with_context(|| format!("workspace alias '{}' is not attached", workspace_alias));
+        }
+
+        self.default_workspace()
+            .context("workspace selection is ambiguous; provide workspaceId or workspaceAlias")
+    }
 }
 
 /// Build the standard env-var array passed to every spawned child agent.
@@ -247,26 +325,43 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
         .unwrap_or_else(|_| derive_ws_base_url_from_http(&http_base));
 
     let auth = AuthClient::new(http_base.clone());
-    let session = auth
-        .startup_session_with_options(Some(opts.requested_name), opts.strict_name, opts.agent_type)
+    let sessions = auth
+        .startup_session_set_with_options(
+            Some(opts.requested_name),
+            opts.strict_name,
+            opts.agent_type,
+        )
         .await
         .context("failed to initialize relaycast session")?;
-    let relay_workspace_key = session.credentials.api_key.clone();
-    let self_agent_id = session.credentials.agent_id.clone();
-    let self_token = session.token.clone();
 
-    let agent_name = session
+    let default_session = sessions
+        .default_session()
+        .or_else(|| sessions.memberships.first())
+        .context("no relaycast memberships were initialized")?;
+    let relay_workspace_key = default_session.credentials.api_key.clone();
+    let self_agent_id = default_session.credentials.agent_id.clone();
+    let self_token = default_session.token.clone();
+    let agent_name = default_session
         .credentials
         .agent_name
         .clone()
         .unwrap_or_else(|| opts.requested_name.to_string());
-    // Write identity debug to a file since stderr is not captured during startup
+
     let identity_debug = format!(
-        "agent_name='{}'\nrequested='{}'\nagent_id='{}'\ntoken_prefix='{}'\ntimestamp='{}'\n",
+        "agent_name='{}'
+requested='{}'
+agent_id='{}'
+token_prefix='{}'
+default_workspace='{}'
+workspace_count='{}'
+timestamp='{}'
+",
         agent_name,
         opts.requested_name,
         self_agent_id,
         &self_token[..self_token.len().min(16)],
+        default_session.credentials.workspace_id,
+        sessions.memberships.len(),
         chrono::Utc::now().to_rfc3339()
     );
     let debug_path = opts
@@ -294,67 +389,45 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
             opts.runtime_cwd,
             Some(relay_workspace_key.as_str()),
             Some(http_base.as_str()),
-            None, // Don't hardcode agent name — each child inherits RELAY_AGENT_NAME via env
+            None,
         ) {
             tracing::warn!("failed to ensure .mcp.json: {error}");
         }
     }
 
-    let mut self_names = HashSet::new();
-    self_names.insert(agent_name.clone());
-    self_names.insert(opts.requested_name.to_string());
-    if opts.read_mcp_identity {
-        if let Ok(mcp_json) = std::fs::read_to_string(opts.runtime_cwd.join(".mcp.json")) {
-            if let Ok(parsed) = serde_json::from_str::<Value>(&mcp_json) {
-                if let Some(mcp_name) = parsed
-                    .pointer("/mcpServers/relaycast/env/RELAY_AGENT_NAME")
-                    .and_then(Value::as_str)
-                {
-                    if !mcp_name.is_empty() {
-                        self_names.insert(mcp_name.to_string());
-                    }
-                }
-            }
-        }
-    }
-    tracing::debug!(self_names = ?self_names, "echo filter identities");
-
-    let mut self_agent_ids = HashSet::new();
-    self_agent_ids.insert(self_agent_id.clone());
-
-    let (ws_inbound_tx, ws_inbound_rx) = mpsc::channel(512);
-    let (ws_control_tx, ws_control_rx) = mpsc::channel(8);
-    // Use the broker's agent token (not the workspace key) for the WS
-    // connection.  Relaycast delivers message.created events only to
-    // connections whose authenticated identity is a member of the channel.
-    // Using the workspace key means the connection has no channel membership
-    // and receives no message events.
-    let ws = RelaycastWsClient::new(
+    let mut multi = MultiWorkspaceSession::new(
+        http_base.clone(),
         ws_base,
         auth,
-        self_token.clone(),
-        session.credentials,
+        sessions,
         opts.channels,
+        opts.read_mcp_identity,
+        opts.runtime_cwd,
+        relay_broker::events::EventEmitter::new(false),
     );
-    tokio::spawn(async move {
-        ws.run(
-            ws_inbound_tx,
-            ws_control_rx,
-            relay_broker::events::EventEmitter::new(false),
-        )
-        .await;
-    });
+
+    let default_workspace_id = multi.default_workspace_id.clone();
+    let workspaces = multi
+        .handles
+        .drain(..)
+        .map(|handle| RelayWorkspace {
+            workspace_id: handle.workspace_id,
+            workspace_alias: handle.workspace_alias,
+            relay_workspace_key: handle.relay_workspace_key,
+            self_name: handle.self_name,
+            self_agent_id: handle.self_agent_id,
+            self_names: handle.self_names,
+            self_agent_ids: handle.self_agent_ids,
+            http_client: handle.http_client,
+            ws_control_tx: handle.ws_control_tx,
+        })
+        .collect();
 
     Ok(RelaySession {
         http_base,
-        relay_workspace_key,
-        self_name: agent_name,
-        self_agent_id,
-        self_token,
-        self_names,
-        self_agent_ids,
-        ws_inbound_rx,
-        ws_control_tx,
+        default_workspace_id,
+        workspaces,
+        ws_inbound_rx: multi.inbound_rx,
     })
 }
 
@@ -362,6 +435,7 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
 struct WorkerHandle {
     spec: AgentSpec,
     parent: Option<String>,
+    workspace_id: Option<String>,
     child: Child,
     stdin: ChildStdin,
     spawned_at: Instant,
@@ -468,6 +542,10 @@ struct SendMessagePayload {
     from: Option<String>,
     #[serde(default)]
     thread_id: Option<String>,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    workspace_alias: Option<String>,
     #[serde(default)]
     priority: Option<u8>,
 }
@@ -643,6 +721,7 @@ impl WorkerRegistry {
         idle_threshold_secs: Option<u64>,
         worker_relay_api_key: Option<String>,
         skip_relay_prompt: bool,
+        workspace_id: Option<String>,
     ) -> Result<()> {
         if self.workers.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' already exists", spec.name);
@@ -825,6 +904,7 @@ impl WorkerRegistry {
         let handle = WorkerHandle {
             spec: spec.clone(),
             parent,
+            workspace_id,
             child,
             stdin,
             spawned_at: Instant::now(),
@@ -1027,18 +1107,29 @@ impl WorkerRegistry {
             .map(|(name, handle)| routing::RoutingWorker {
                 name,
                 channels: &handle.spec.channels,
+                workspace_id: handle.workspace_id.as_deref(),
             })
             .collect()
     }
 
-    fn worker_names_for_channel_delivery(&self, channel: &str, from: &str) -> Vec<String> {
+    fn worker_names_for_channel_delivery(
+        &self,
+        channel: &str,
+        from: &str,
+        workspace_id: Option<&str>,
+    ) -> Vec<String> {
         let workers = self.routing_workers();
-        routing::worker_names_for_channel_delivery(&workers, channel, from)
+        routing::worker_names_for_channel_delivery(&workers, channel, from, workspace_id)
     }
 
-    fn worker_names_for_direct_target(&self, target: &str, from: &str) -> Vec<String> {
+    fn worker_names_for_direct_target(
+        &self,
+        target: &str,
+        from: &str,
+        workspace_id: Option<&str>,
+    ) -> Vec<String> {
         let workers = self.routing_workers();
-        routing::worker_names_for_direct_target(&workers, target, from)
+        routing::worker_names_for_direct_target(&workers, target, from, workspace_id)
     }
 
     fn has_any_worker(&self) -> bool {
@@ -1315,60 +1406,93 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
     let RelaySession {
         http_base,
-        relay_workspace_key,
-        self_name,
-        self_agent_id: _,
-        self_token,
-        self_names,
-        self_agent_ids,
+        default_workspace_id,
+        workspaces,
         mut ws_inbound_rx,
-        ws_control_tx,
     } = relay;
+    let workspace_lookup: HashMap<String, RelayWorkspace> = workspaces
+        .iter()
+        .cloned()
+        .map(|workspace| (workspace.workspace_id.clone(), workspace))
+        .collect();
+    let default_workspace = if let Some(default_workspace_id) = default_workspace_id.as_deref() {
+        workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == default_workspace_id)
+            .or_else(|| workspaces.first())
+    } else {
+        workspaces.first()
+    }
+    .cloned()
+    .context("no relay workspace was available after initialization")?;
+    let relay_workspace_key = default_workspace.relay_workspace_key.clone();
+    let self_names = default_workspace.self_names.clone();
+    let ws_control_tx = default_workspace.ws_control_tx.clone();
+    let relaycast_http = default_workspace.http_client.clone();
+    let workspace_memberships: Vec<WorkspaceMembershipSummary> = workspaces
+        .iter()
+        .map(|workspace| WorkspaceMembershipSummary {
+            workspace_id: workspace.workspace_id.clone(),
+            workspace_alias: workspace.workspace_alias.clone(),
+            is_default: default_workspace_id
+                .as_deref()
+                .is_some_and(|workspace_id| workspace_id == workspace.workspace_id),
+        })
+        .collect();
+    let relay_workspaces_json = serde_json::to_string(
+        &workspaces
+            .iter()
+            .map(|workspace| {
+                serde_json::json!({
+                    "workspace_id": workspace.workspace_id,
+                    "workspace_alias": workspace.workspace_alias,
+                    "api_key": workspace.relay_workspace_key,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )?;
 
-    // Build HTTP client for forwarding messages to Relaycast REST API
-    let relaycast_http = {
-        let client = RelaycastHttpClient::new(
-            &http_base,
-            &relay_workspace_key,
-            self_name.clone(),
-            "claude",
-        );
-        // Pre-seed the broker's auth token so ensure_token() never re-registers
-        // via the spawn endpoint (which could return a different identity).
-        let token_prefix = &self_token[..self_token.len().min(16)];
-        tracing::info!(
-            self_name = %self_name,
-            token_prefix = %token_prefix,
-            "pre-seeding broker token into RelaycastHttpClient"
-        );
-        client.seed_agent_token(&self_name, &self_token);
-        client
-    };
-
-    // Ensure default workspace channels exist (general, engineering).
-    if let Err(error) = relaycast_http.ensure_default_channels().await {
-        tracing::warn!(error = %error, "failed to ensure default channels");
+    for workspace in &workspaces {
+        if let Err(error) = workspace.http_client.ensure_default_channels().await {
+            tracing::warn!(workspace_id = %workspace.workspace_id, error = %error, "failed to ensure default channels");
+        }
     }
 
-    // Ensure any user-specified channels (e.g. --channels tic-tac-toe) exist.
     let extra_channels = channels_from_csv(&cmd.channels);
-    if let Err(error) = relaycast_http.ensure_extra_channels(&extra_channels).await {
-        tracing::warn!(error = %error, "failed to ensure extra channels");
+    for workspace in &workspaces {
+        if let Err(error) = workspace
+            .http_client
+            .ensure_extra_channels(&extra_channels)
+            .await
+        {
+            tracing::warn!(workspace_id = %workspace.workspace_id, error = %error, "failed to ensure extra channels");
+        }
     }
 
-    // Re-subscribe the WS connection after channels are created and joined.
-    // The WS may have subscribed before the channels existed; this ensures
-    // Relaycast delivers message.created events for the now-live channels.
     if !extra_channels.is_empty() {
-        let _ = ws_control_tx
-            .send(WsControl::Subscribe(extra_channels))
-            .await;
+        for workspace in &workspaces {
+            let _ = workspace
+                .ws_control_tx
+                .send(WsControl::Subscribe(extra_channels.clone()))
+                .await;
+        }
     }
 
-    let worker_env = vec![
+    let mut worker_env = vec![
         ("RELAY_BASE_URL".to_string(), http_base.clone()),
         ("RELAY_API_KEY".to_string(), relay_workspace_key.clone()),
+        (
+            "RELAY_WORKSPACES_JSON".to_string(),
+            relay_workspaces_json.clone(),
+        ),
     ];
+    if let Some(default_workspace_id) = default_workspace_id.clone() {
+        worker_env.push((
+            "RELAY_DEFAULT_WORKSPACE".to_string(),
+            default_workspace_id.clone(),
+        ));
+        worker_env.push(("RELAY_WORKSPACE_ID".to_string(), default_workspace_id));
+    }
 
     // Broadcast channel for streaming dashboard-relevant events to WS clients.
     // Created early so the stdout writer task can also broadcast events.
@@ -1441,6 +1565,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             events_tx.clone(),
             replay_buffer.clone(),
             Some(relay_workspace_key.clone()),
+            workspace_memberships.clone(),
+            default_workspace_id.clone(),
         );
         let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", cmd.api_port))
             .await
@@ -1524,6 +1650,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 None,
                                 worker_relay_key.clone(),
                                 false,
+                                None,
                             ).await {
                                 Ok(()) => {
                                     if let Some(ref task_text) = effective_task {
@@ -1636,15 +1763,52 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             text,
                             from,
                             thread_id,
+                            workspace_id,
+                            workspace_alias,
                             reply,
-                            ..
                         } => {
                             let normalized_to = to.trim().to_string();
+                            let selected_workspace = if let Some(workspace_id) = workspace_id.as_deref() {
+                                workspace_lookup
+                                    .get(workspace_id)
+                                    .cloned()
+                                    .ok_or_else(|| format!("workspace_not_found:workspace '{}' is not attached", workspace_id))
+                            } else if let Some(workspace_alias) = workspace_alias.as_deref() {
+                                workspaces
+                                    .iter()
+                                    .find(|workspace| {
+                                        workspace
+                                            .workspace_alias
+                                            .as_deref()
+                                            .is_some_and(|alias| alias.eq_ignore_ascii_case(workspace_alias))
+                                    })
+                                    .cloned()
+                                    .ok_or_else(|| format!("workspace_not_found:workspace alias '{}' is not attached", workspace_alias))
+                            } else if workspaces.len() == 1 {
+                                Ok(workspaces[0].clone())
+                            } else if let Some(default_workspace_id) = default_workspace_id.as_deref() {
+                                workspace_lookup
+                                    .get(default_workspace_id)
+                                    .cloned()
+                                    .ok_or_else(|| format!("workspace_not_found: default workspace '{}' not found", default_workspace_id))
+                            } else {
+                                Err("ambiguous_workspace:workspaceId or workspaceAlias is required when multiple workspaces are attached".to_string())
+                            };
+                            let selected_workspace = match selected_workspace {
+                                Ok(workspace) => workspace,
+                                Err(error) => {
+                                    let _ = reply.send(Err(error));
+                                    continue;
+                                }
+                            };
+                            let selected_workspace_id = selected_workspace.workspace_id.clone();
+                            let selected_workspace_alias = selected_workspace.workspace_alias.clone();
+                            let workspace_self_name = selected_workspace.self_name.clone();
                             let normalized_sender = normalize_sender(from.clone());
                             let from_dashboard =
-                                sender_is_dashboard_label(&normalized_sender, &self_name);
+                                sender_is_dashboard_label(&normalized_sender, &workspace_self_name);
                             let delivery_from = if from_dashboard {
-                                self_name.clone()
+                                workspace_self_name.clone()
                             } else {
                                 normalized_sender.clone()
                             };
@@ -1657,11 +1821,11 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 delivery_from = %delivery_from,
                                 to = %normalized_to,
                                 thread_id = ?thread_id,
-                                self_name = %self_name,
+                                self_name = %workspace_self_name,
                                 "HTTP API send request"
                             );
                             let ui_from = if from_dashboard {
-                                self_name.clone()
+                                workspace_self_name.clone()
                             } else {
                                 normalized_sender
                             };
@@ -1683,14 +1847,16 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     "to": normalized_to.clone(),
                                     "text": text.clone(),
                                     "thread_id": thread_id.clone(),
+                                    "workspace_id": selected_workspace_id.clone(),
+                                    "workspace_alias": selected_workspace_alias.clone(),
                                     "timestamp": chrono::Utc::now().to_rfc3339(),
                                 }),
                             );
 
                             let targets = if normalized_to.starts_with('#') {
-                                workers.worker_names_for_channel_delivery(&normalized_to, &delivery_from)
+                                workers.worker_names_for_channel_delivery(&normalized_to, &delivery_from, Some(&selected_workspace_id))
                             } else {
-                                workers.worker_names_for_direct_target(&normalized_to, &delivery_from)
+                                workers.worker_names_for_direct_target(&normalized_to, &delivery_from, Some(&selected_workspace_id))
                             };
 
                             tracing::info!(
@@ -1715,6 +1881,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         &normalized_to,
                                         &text,
                                         thread_id.clone(),
+                                        Some(selected_workspace_id.clone()),
+                                        selected_workspace_alias.clone(),
                                         priority,
                                         delivery_retry_interval,
                                     ),
@@ -1771,6 +1939,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "target": normalized_to,
                                         "body": text,
                                         "thread_id": thread_id.clone(),
+                                        "workspace_id": selected_workspace_id.clone(),
+                                        "workspace_alias": selected_workspace_alias.clone(),
                                     }),
                                     event_emit_timeout,
                                 )
@@ -1781,6 +1951,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     "event_id": event_id,
                                     "delivered": delivered,
                                     "local": true,
+                                    "workspace_id": selected_workspace_id,
+                                    "workspace_alias": selected_workspace_alias,
                                 })))
                                     .is_err()
                                 {
@@ -1804,7 +1976,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     "no local deliveries succeeded; forwarding to relaycast"
                                 );
                                 let relaycast_start = Instant::now();
-                                match timeout(relaycast_timeout, relaycast_http.send(&normalized_to, &text))
+                                match timeout(relaycast_timeout, selected_workspace.http_client.send(&normalized_to, &text))
                                     .await
                                 {
                                     Ok(Ok(())) => {
@@ -1825,6 +1997,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 "target": normalized_to,
                                                 "body": text,
                                                 "thread_id": thread_id.clone(),
+                                                "workspace_id": selected_workspace_id.clone(),
+                                                "workspace_alias": selected_workspace_alias.clone(),
                                             }),
                                             event_emit_timeout,
                                         )
@@ -1835,6 +2009,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             "event_id": event_id,
                                             "relaycast_published": true,
                                             "local": false,
+                                            "workspace_id": selected_workspace_id,
+                                            "workspace_alias": selected_workspace_alias,
                                         })))
                                             .is_err()
                                         {
@@ -1945,6 +2121,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 Some(&relaycast_http),
                                 Some(&ws_control_tx),
                                 &relay_workspace_key,
+                                &workspaces,
+                                default_workspace_id.as_deref(),
                                 &crash_insights,
                             ).await {
                             Ok(should_shutdown) => {
@@ -1969,18 +2147,30 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
             ws_msg = ws_inbound_rx.recv() => {
                 if let Some(ws_msg) = ws_msg {
-                    let ws_type = ws_msg
+                    let workspace_id = ws_msg.workspace_id.clone();
+                    let workspace_alias = ws_msg.workspace_alias.clone();
+                    let ws_value = ws_msg.value;
+                    let workspace_state = workspace_lookup
+                        .get(&workspace_id)
+                        .cloned()
+                        .unwrap_or_else(|| default_workspace.clone());
+                    let workspace_self_name = workspace_state.self_name.clone();
+                    let workspace_self_names = workspace_state.self_names.clone();
+                    let workspace_self_agent_ids = workspace_state.self_agent_ids.clone();
+                    let workspace_http = workspace_state.http_client.clone();
+                    let ws_type = ws_value
                         .get("type")
                         .and_then(Value::as_str)
                         .unwrap_or("<unknown>");
                     tracing::info!(
                         target = "agent_relay::broker",
                         ws_type = %ws_type,
-                        event = %ws_msg,
+                        workspace_id = %workspace_id,
+                        event = %ws_value,
                         "received relaycast ws event"
                     );
 
-                    if let Ok(ws_event) = serde_json::from_value::<WsEvent>(ws_msg.clone()) {
+                    if let Ok(ws_event) = serde_json::from_value::<WsEvent>(ws_value.clone()) {
                         match ws_event {
                             WsEvent::AgentReleaseRequested(event) => {
                                 let name = event.agent.name;
@@ -1988,7 +2178,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 workers.metrics.on_release(&name);
                                 match workers.release(&name).await {
                                     Ok(()) => {
-                                        if let Err(error) = relaycast_http.mark_agent_offline(&name).await {
+                                        if let Err(error) = workspace_http.mark_agent_offline(&name).await {
                                             tracing::warn!(
                                                 worker = %name,
                                                 error = %error,
@@ -2018,7 +2208,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             json!({"kind":"agent_released","name":name}),
                                         ).await;
                                         publish_agent_state_transition(
-                                            &ws_control_tx,
+                                            &workspace_state.ws_control_tx,
                                             &name,
                                             "exited",
                                             Some("relaycast_release"),
@@ -2070,7 +2260,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
                                 // Pre-register with retry
                                 let worker_relay_key = match retry_agent_registration(
-                                    &relaycast_http, &name, Some(&cli),
+                                    &workspace_http, &name, Some(&cli),
                                 ).await {
                                     Ok(token) => Some(token),
                                     Err(RegRetryOutcome::RetryableExhausted(error)) => {
@@ -2093,6 +2283,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     None,
                                     worker_relay_key.clone(),
                                     false,
+                                    Some(workspace_id.clone()),
                                 ).await {
                                     Ok(()) => {
                                         if let Some(ref task_text) = effective_task {
@@ -2136,7 +2327,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             }),
                                         ).await;
                                         publish_agent_state_transition(
-                                            &ws_control_tx,
+                                            &workspace_state.ws_control_tx,
                                             &name,
                                             "spawned",
                                             Some("relaycast_spawn"),
@@ -2165,12 +2356,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                     // The mapper may set target = "thread" (synthetic) when the SDK
                     // struct lacks a channel field; we use the raw value to fix
                     // display_target so the dashboard can route the message correctly.
-                    let raw_ws_channel = ws_msg
+                    let raw_ws_channel = ws_value
                         .get("channel")
                         .and_then(Value::as_str)
                         .map(String::from);
 
-                    if let Some(mapped) = map_ws_event(&ws_msg) {
+                    if let Some(mapped) = map_ws_event(&ws_value, &workspace_id, workspace_alias.as_deref()) {
                         tracing::info!(
                             from = %mapped.from,
                             target = %mapped.target,
@@ -2179,13 +2370,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             text_len = mapped.text.len(),
                             "mapped inbound WS event"
                         );
-                        if !dedup.insert_if_new(&mapped.event_id, Instant::now()) {
-                            tracing::info!(event_id = %mapped.event_id, "dropping duplicate event");
+                        let dedup_key = format!("{}:{}", mapped.workspace_id, mapped.event_id);
+                        if !dedup.insert_if_new(&dedup_key, Instant::now()) {
+                            tracing::info!(event_id = %mapped.event_id, workspace_id = %mapped.workspace_id, "dropping duplicate event");
                             continue;
                         }
                         let has_local_target = if mapped.target.starts_with('#') {
                             !workers
-                                .worker_names_for_channel_delivery(&mapped.target, &mapped.from)
+                                .worker_names_for_channel_delivery(&mapped.target, &mapped.from, Some(&workspace_id))
                                 .is_empty()
                         } else if matches!(mapped.kind, InboundKind::ThreadReply) && mapped.target == "thread" {
                             // Thread replies target "thread" (synthetic), not a specific worker.
@@ -2197,11 +2389,11 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         };
                         if routing::is_self_echo(
                             &mapped,
-                            &self_names,
-                            &self_agent_ids,
+                            &workspace_self_names,
+                            &workspace_self_agent_ids,
                             has_local_target,
                         ) {
-                            tracing::info!(from = %mapped.from, sender_agent_id = ?mapped.sender_agent_id, self_names = ?self_names, "skipping self-echo in broker loop");
+                            tracing::info!(from = %mapped.from, sender_agent_id = ?mapped.sender_agent_id, self_names = ?workspace_self_names, "skipping self-echo in broker loop");
                             continue;
                         }
 
@@ -2258,8 +2450,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             let conversation_id = mapped.target.clone();
                             tracing::info!(conversation_id = %conversation_id, "resolving DM participants");
                             let participants = resolve_dm_participants(
-                                &relaycast_http,
+                                &workspace_http,
                                 &mut dm_participants_cache,
+                                &workspace_id,
                                 &conversation_id,
                             )
                             .await;
@@ -2277,6 +2470,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 &worker_view,
                                 &participants,
                                 &mapped.from,
+                                Some(&workspace_id),
                             );
                             tracing::info!(dm_targets = ?delivery_plan.targets, "DM participant-based routing targets");
                         }
@@ -2294,12 +2488,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         }
 
                         let display_target =
-                            display_target_for_dashboard(&delivery_plan.display_target, &self_names, &self_name);
-                        let display_from = if self_names
+                            display_target_for_dashboard(&delivery_plan.display_target, &workspace_self_names, &workspace_self_name);
+                        let display_from = if workspace_self_names
                             .iter()
                             .any(|name| mapped.from.eq_ignore_ascii_case(name))
                         {
-                            self_name.clone()
+                            workspace_self_name.clone()
                         } else {
                             mapped.from.clone()
                         };
@@ -2318,6 +2512,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 "target": display_target.clone(),
                                 "text": mapped.text.clone(),
                                 "thread_id": mapped.thread_id.clone(),
+                                "workspace_id": mapped.workspace_id.clone(),
+                                "workspace_alias": mapped.workspace_alias.clone(),
                                 "timestamp": chrono::Utc::now().to_rfc3339(),
                             }),
                         );
@@ -2330,13 +2526,15 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 "target": display_target,
                                 "body": mapped.text,
                                 "thread_id": mapped.thread_id,
+                                "workspace_id": mapped.workspace_id,
+                                "workspace_alias": mapped.workspace_alias,
                             }),
                         ).await;
                     } else if ws_type != "broker.connection" && ws_type != "broker.channel_join" {
                         tracing::info!(
                             target = "agent_relay::broker",
                             ws_type = %ws_type,
-                            event = %ws_msg,
+                            event = %ws_value,
                             "relaycast ws event ignored by inbound mapper"
                         );
                     }
@@ -2511,6 +2709,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             &name,
                                             &task_text,
                                             None,
+                                            None,
+                                            None,
                                             2,
                                             delivery_retry_interval,
                                         ).await {
@@ -2665,6 +2865,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                                 "broker",
                                                                 &name,
                                                                 &inject_body,
+                                                                None,
+                                                                None,
                                                                 None,
                                                                 2,
                                                                 delivery_retry_interval,
@@ -3046,6 +3248,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 None,
                                 worker_relay_key,
                                 rst.skip_relay_prompt,
+                                None,
                             )
                             .await
                         {
@@ -3243,6 +3446,8 @@ async fn handle_sdk_frame(
     relaycast_http: Option<&RelaycastHttpClient>,
     ws_control_tx: Option<&mpsc::Sender<WsControl>>,
     workspace_key: &str,
+    workspaces: &[RelayWorkspace],
+    default_workspace_id: Option<&str>,
     crash_insights: &relay_broker::crash_insights::CrashInsights,
 ) -> Result<bool> {
     let frame: ProtocolEnvelope<Value> =
@@ -3453,6 +3658,7 @@ async fn handle_sdk_frame(
                     payload.idle_threshold_secs,
                     worker_relay_key.clone(),
                     payload.skip_relay_prompt,
+                    None,
                 )
                 .await?;
             if let Some(task) = effective_task.clone() {
@@ -3557,6 +3763,79 @@ async fn handle_sdk_frame(
             }
             let priority = payload.priority.unwrap_or(2);
             let event_id = format!("sdk_{}", Uuid::new_v4().simple());
+            let selected_workspace = if let Some(workspace_id) = payload.workspace_id.as_deref() {
+                let Some(workspace) = workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace_id == workspace_id)
+                    .cloned()
+                else {
+                    send_error(
+                        out_tx,
+                        frame.request_id,
+                        "workspace_not_found",
+                        format!("workspace '{}' is not attached", workspace_id),
+                        false,
+                        None,
+                    )
+                    .await?;
+                    return Ok(false);
+                };
+                workspace
+            } else if let Some(workspace_alias) = payload.workspace_alias.as_deref() {
+                let Some(workspace) = workspaces
+                    .iter()
+                    .find(|workspace| {
+                        workspace
+                            .workspace_alias
+                            .as_deref()
+                            .is_some_and(|alias| alias.eq_ignore_ascii_case(workspace_alias))
+                    })
+                    .cloned()
+                else {
+                    send_error(
+                        out_tx,
+                        frame.request_id,
+                        "workspace_not_found",
+                        format!("workspace alias '{}' is not attached", workspace_alias),
+                        false,
+                        None,
+                    )
+                    .await?;
+                    return Ok(false);
+                };
+                workspace
+            } else if workspaces.len() == 1 {
+                workspaces[0].clone()
+            } else if let Some(default_workspace_id) = default_workspace_id {
+                let Some(workspace) = workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace_id == default_workspace_id)
+                    .cloned()
+                else {
+                    send_error(
+                        out_tx,
+                        frame.request_id,
+                        "workspace_not_found",
+                        format!("default workspace '{}' not found", default_workspace_id),
+                        false,
+                        None,
+                    )
+                    .await?;
+                    return Ok(false);
+                };
+                workspace
+            } else {
+                send_error(
+                    out_tx,
+                    frame.request_id,
+                    "ambiguous_workspace",
+                    "workspaceId or workspaceAlias is required when multiple workspaces are attached".to_string(),
+                    false,
+                    None,
+                )
+                .await?;
+                return Ok(false);
+            };
 
             if workers.has_worker(&payload.to) {
                 queue_and_try_delivery_raw(
@@ -3568,6 +3847,8 @@ async fn handle_sdk_frame(
                     &payload.to,
                     &payload.text,
                     payload.thread_id,
+                    Some(selected_workspace.workspace_id.clone()),
+                    selected_workspace.workspace_alias.clone(),
                     priority,
                     delivery_retry_interval(),
                 )
@@ -3581,14 +3862,19 @@ async fn handle_sdk_frame(
                         "to": payload.to,
                         "event_id": event_id,
                         "targets": [payload.to],
+                        "workspace_id": selected_workspace.workspace_id,
+                        "workspace_alias": selected_workspace.workspace_alias,
                     }),
                 )
                 .await?;
-            } else if let Some(http) = relaycast_http {
-                // Target is not a local worker — forward via Relaycast REST API
+            } else if let Some(_http) = relaycast_http {
                 let to = payload.to.clone();
                 let eid = event_id.clone();
-                match http.send(&to, &payload.text).await {
+                match selected_workspace
+                    .http_client
+                    .send(&to, &payload.text)
+                    .await
+                {
                     Ok(()) => {
                         tracing::info!(to = %to, event_id = %eid, "relaycast publish succeeded");
                         send_ok(
@@ -3600,6 +3886,8 @@ async fn handle_sdk_frame(
                                 "to": to,
                                 "event_id": eid,
                                 "targets": [to],
+                                "workspace_id": selected_workspace.workspace_id,
+                                "workspace_alias": selected_workspace.workspace_alias,
                             }),
                         )
                         .await?;
@@ -4066,6 +4354,8 @@ async fn queue_and_try_delivery(
         &mapped.target,
         &mapped.text,
         mapped.thread_id.clone(),
+        Some(mapped.workspace_id.clone()),
+        mapped.workspace_alias.clone(),
         mapped.priority.as_u8(),
         retry_interval,
     )
@@ -4082,12 +4372,16 @@ async fn queue_and_try_delivery_raw(
     target: &str,
     body: &str,
     thread_id: Option<String>,
+    workspace_id: Option<String>,
+    workspace_alias: Option<String>,
     priority: u8,
     retry_interval: Duration,
 ) -> Result<()> {
     let delivery = RelayDelivery {
         delivery_id: format!("del_{}", Uuid::new_v4().simple()),
         event_id: event_id.to_string(),
+        workspace_id,
+        workspace_alias,
         from: from.to_string(),
         target: target.to_string(),
         body: body.to_string(),
@@ -4159,14 +4453,17 @@ async fn retry_pending_delivery(
 async fn resolve_dm_participants(
     relaycast_http: &RelaycastHttpClient,
     dm_participants_cache: &mut HashMap<String, (Instant, Vec<String>)>,
+    workspace_id: &str,
     conversation_id: &str,
 ) -> Vec<String> {
+    let workspace_id = workspace_id.trim();
     let conversation_id = conversation_id.trim();
     if conversation_id.is_empty() {
         return vec![];
     }
+    let cache_key = format!("{workspace_id}:{conversation_id}");
 
-    if let Some((fetched_at, participants)) = dm_participants_cache.get(conversation_id) {
+    if let Some((fetched_at, participants)) = dm_participants_cache.get(&cache_key) {
         if fetched_at.elapsed() < DM_PARTICIPANT_CACHE_TTL {
             return participants.clone();
         }
@@ -4177,6 +4474,7 @@ async fn resolve_dm_participants(
         .await
         .unwrap_or_else(|error| {
             tracing::debug!(
+                workspace_id = %workspace_id,
                 conversation_id = %conversation_id,
                 error = %error,
                 "failed resolving DM participants"
@@ -4184,10 +4482,7 @@ async fn resolve_dm_participants(
             vec![]
         });
 
-    dm_participants_cache.insert(
-        conversation_id.to_string(),
-        (Instant::now(), fetched.clone()),
-    );
+    dm_participants_cache.insert(cache_key, (Instant::now(), fetched.clone()));
     fetched
 }
 
@@ -5390,7 +5685,7 @@ mod tests {
         time::Instant,
     };
 
-    use crate::helpers::terminal_query_responses;
+    use crate::helpers::{format_injection, terminal_query_responses};
     use relay_broker::protocol::RelayDelivery;
     use serde_json::{json, Value};
 
@@ -5398,7 +5693,7 @@ mod tests {
         build_agent_state_transition_event, build_thread_infos, channels_from_csv, continuity_dir,
         delivery_retry_interval, derive_ws_base_url_from_http, detect_bypass_permissions_prompt,
         display_target_for_dashboard, drop_pending_for_worker, extract_mcp_message_ids,
-        format_injection, http_api_event_emit_timeout, http_api_local_delivery_timeout,
+        http_api_event_emit_timeout, http_api_local_delivery_timeout,
         http_api_relaycast_send_timeout, is_auto_suggestion, is_bypass_selection_menu,
         is_in_editor_mode, normalize_channel, normalize_initial_task, normalize_sender,
         sender_is_dashboard_label, should_clear_pending_delivery_for_event, strip_ansi,
@@ -5498,7 +5793,7 @@ mod tests {
             .and_then(Value::as_object)
             .expect("health fixture must include health_response object");
 
-        let actual = crate::listen_api::listen_api_health().await.0;
+        let actual = crate::listen_api::listen_api_health_payload(None, vec![]);
 
         for required_key in expected_shape.keys() {
             // TODO(contract-wave1-health-shape): listen-mode /health should
@@ -5529,9 +5824,7 @@ mod tests {
             .and_then(Value::as_str)
             .expect("health fixture must include startup error code");
         std::env::set_var("AGENT_RELAY_STARTUP_ERROR_CODE", startup_error_code);
-        let actual = crate::listen_api::listen_api_health()
-            .await
-            .0
+        let actual = crate::listen_api::listen_api_health_payload(None, vec![])
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("unknown")
@@ -5973,6 +6266,8 @@ mod tests {
                 delivery: RelayDelivery {
                     delivery_id: "del_1".to_string(),
                     event_id: "evt_1".to_string(),
+                    workspace_id: Some("ws_test".to_string()),
+                    workspace_alias: Some("test".to_string()),
                     from: "x".to_string(),
                     target: "#general".to_string(),
                     body: "hello".to_string(),
@@ -5990,6 +6285,8 @@ mod tests {
                 delivery: RelayDelivery {
                     delivery_id: "del_2".to_string(),
                     event_id: "evt_2".to_string(),
+                    workspace_id: Some("ws_test".to_string()),
+                    workspace_alias: Some("test".to_string()),
                     from: "y".to_string(),
                     target: "#general".to_string(),
                     body: "world".to_string(),
@@ -6014,6 +6311,8 @@ mod tests {
             delivery: RelayDelivery {
                 delivery_id: "del_1".to_string(),
                 event_id: "evt_1".to_string(),
+                workspace_id: Some("ws_test".to_string()),
+                workspace_alias: Some("test".to_string()),
                 from: "x".to_string(),
                 target: "#general".to_string(),
                 body: "hello".to_string(),
@@ -6041,6 +6340,8 @@ mod tests {
             delivery: RelayDelivery {
                 delivery_id: "del_1".to_string(),
                 event_id: "evt_1".to_string(),
+                workspace_id: Some("ws_test".to_string()),
+                workspace_alias: Some("test".to_string()),
                 from: "x".to_string(),
                 target: "#general".to_string(),
                 body: "hello".to_string(),

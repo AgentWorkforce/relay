@@ -24,6 +24,8 @@ mod tests {
             RelayPriority::P4,
         ] {
             let req = InjectRequest {
+                workspace_id: "ws_test".into(),
+                workspace_alias: Some("test".into()),
                 id: "x".into(),
                 from: "a".into(),
                 target: "b".into(),

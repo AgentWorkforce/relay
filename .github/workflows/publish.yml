@@ -1170,6 +1170,8 @@ jobs:
               git push origin HEAD:staging
             else
               git commit -m "chore(release): v${NEW_VERSION}"
+              # Rebase on latest main in case it advanced during the pipeline
+              git pull --rebase origin main
               git push origin HEAD:main
             fi
           fi

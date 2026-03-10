@@ -28,6 +28,8 @@ export interface AgentSpec {
 export interface RelayDelivery {
   delivery_id: string;
   event_id: string;
+  workspace_id?: string;
+  workspace_alias?: string;
   from: string;
   target: string;
   body: string;
@@ -58,6 +60,8 @@ export type SdkToBroker =
         text: string;
         from?: string;
         thread_id?: string;
+        workspace_id?: string;
+        workspace_alias?: string;
         priority?: number;
         data?: Record<string, unknown>;
       };

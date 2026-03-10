@@ -93,6 +93,8 @@ export interface SendMessageInput {
   text: string;
   from?: string;
   threadId?: string;
+  workspaceId?: string;
+  workspaceAlias?: string;
   priority?: number;
   data?: Record<string, unknown>;
 }
@@ -402,6 +404,8 @@ export class AgentRelayClient {
         text: input.text,
         from: input.from,
         thread_id: input.threadId,
+        workspace_id: input.workspaceId,
+        workspace_alias: input.workspaceAlias,
         priority: input.priority,
         data: input.data,
       });
@@ -756,8 +760,10 @@ function getLatestVersionSync(): string | null {
       timeout: 15_000,
       stdio: ['pipe', 'pipe', 'pipe'],
     }).toString();
-    const match = result.match(/"tag_name"\s*:\s*"v?([^"]+)"/);
-    return match?.[1] ?? null;
+    const match = result.match(/"tag_name"\s*:\s*"([^"]+)"/);
+    if (!match?.[1]) return null;
+    // Strip tag prefixes: "openclaw-v3.1.18" -> "3.1.18", "v3.1.18" -> "3.1.18"
+    return match[1].replace(/^openclaw-/, '').replace(/^v/, '');
   } catch {
     return null;
   }
@@ -797,8 +803,16 @@ function installBrokerBinary(): string {
     });
     fs.chmodSync(targetPath, 0o755);
 
-    // macOS: re-sign to avoid Gatekeeper issues
+    // macOS: strip quarantine attribute and re-sign to avoid Gatekeeper issues
     if (process.platform === 'darwin') {
+      try {
+        execSync(`xattr -d com.apple.quarantine "${targetPath}" 2>/dev/null || true`, {
+          timeout: 10_000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      } catch {
+        // Non-fatal
+      }
       try {
         execSync(`codesign --force --sign - "${targetPath}"`, {
           timeout: 10_000,
