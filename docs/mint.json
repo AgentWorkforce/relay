@@ -21,6 +21,11 @@
       "name": "GitHub",
       "icon": "github",
       "url": "https://github.com/agentworkforce/relay"
+    },
+    {
+      "name": "Markdown Docs",
+      "url": "https://github.com/agentworkforce/relay/tree/main/docs/markdown",
+      "icon": "file-lines"
     }
   ],
   "navigation": [
