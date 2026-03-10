@@ -66,6 +66,31 @@ export interface InboundMessage {
   kind?: 'channel' | 'thread' | 'dm' | 'groupdm' | 'command' | 'reaction';
 }
 
+/**
+ * A stored workspace entry for multi-workspace support.
+ * Matches the broker's WorkspaceSource schema in src/auth.rs.
+ */
+export interface WorkspaceEntry {
+  /** Workspace API key (rk_live_*). */
+  api_key: string;
+  /** Optional workspace ID (ws_*). */
+  workspace_id?: string;
+  /** Human-friendly alias for this workspace. */
+  workspace_alias?: string;
+  /** Whether this is the default/active workspace. */
+  is_default?: boolean;
+}
+
+/**
+ * Multi-workspace config stored at ~/.openclaw/workspace/relaycast/workspaces.json.
+ */
+export interface WorkspacesConfig {
+  /** All configured workspace entries. */
+  workspaces: WorkspaceEntry[];
+  /** Alias or workspace_id of the default workspace. */
+  default_workspace?: string;
+}
+
 export interface DeliveryResult {
   /** Whether delivery succeeded. */
   ok: boolean;

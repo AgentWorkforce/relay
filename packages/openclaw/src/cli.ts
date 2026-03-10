@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { setup } from './setup.js';
-import { loadGatewayConfig } from './config.js';
+import { loadGatewayConfig, addWorkspace, listWorkspaces, switchWorkspace } from './config.js';
 import { InboundGateway } from './gateway.js';
 import { listOpenClaws, releaseOpenClaw, spawnOpenClaw } from './control.js';
 import { startMcpServer } from './mcp/server.js';
@@ -27,6 +27,9 @@ Usage:
   relay-openclaw list            List OpenClaws in a workspace
   relay-openclaw release         Release an OpenClaw by agent name
   relay-openclaw mcp-server      Start MCP server (spawn/list/release tools)
+  relay-openclaw add-workspace   Add a workspace to multi-workspace config
+  relay-openclaw list-workspaces List all configured workspaces
+  relay-openclaw switch-workspace Switch the default/active workspace
   relay-openclaw runtime-setup   Run container runtime setup (auth, config, identity, patching)
   relay-openclaw help            Show this help
   relay-openclaw --version       Show version
@@ -46,6 +49,11 @@ Control API options:
   --system-prompt <txt>  Optional system prompt
   --reason <text>        Optional release reason
 
+Multi-workspace options:
+  --alias <name>         Human-friendly alias for the workspace
+  --workspace-id <id>    Workspace UUID
+  --default              Set as the default workspace
+
 Examples:
   relay-openclaw setup rk_live_abc123
   relay-openclaw setup --name my-claw --channels general,alerts
@@ -53,6 +61,10 @@ Examples:
   relay-openclaw spawn --workspace-id ws_uuid --name researcher-1
   relay-openclaw list --workspace-id ws_uuid
   relay-openclaw release --workspace-id ws_uuid --agent claw-ws_uuid-researcher-1
+  relay-openclaw add-workspace rk_live_abc123 --alias team-a
+  relay-openclaw add-workspace rk_live_def456 --alias team-b --default
+  relay-openclaw list-workspaces
+  relay-openclaw switch-workspace team-a
 `.trim());
 }
 
@@ -234,6 +246,70 @@ async function runRuntimeSetup(flags: Record<string, string>): Promise<void> {
   console.log(`  Workspace: ${result.workspaceId}`);
 }
 
+async function runAddWorkspace(
+  positional: string[],
+  flags: Record<string, string>,
+): Promise<void> {
+  const apiKey = positional[0];
+  if (!apiKey) {
+    console.error('add-workspace requires a workspace API key as the first argument.');
+    console.error('Usage: relay-openclaw add-workspace <rk_live_...> [--alias <name>] [--workspace-id <id>] [--default]');
+    process.exit(1);
+  }
+
+  const config = await addWorkspace({
+    api_key: apiKey,
+    workspace_alias: flags['alias'],
+    workspace_id: flags['workspace-id'],
+    is_default: flags['default'] === 'true',
+  });
+
+  const entry = config.workspaces.find((w) => w.api_key === apiKey);
+  const label = entry?.workspace_alias ?? entry?.workspace_id ?? apiKey.slice(0, 16) + '...';
+  console.log(`Workspace "${label}" added.`);
+  console.log(`Total workspaces: ${config.workspaces.length}`);
+  if (config.default_workspace) {
+    console.log(`Default workspace: ${config.default_workspace}`);
+  }
+}
+
+async function runListWorkspaces(): Promise<void> {
+  const workspaces = await listWorkspaces();
+  if (workspaces.length === 0) {
+    console.log('No workspaces configured.');
+    console.log('Add one with: relay-openclaw add-workspace <rk_live_...> --alias <name>');
+    return;
+  }
+
+  console.log(`Configured workspaces (${workspaces.length}):\n`);
+  for (const w of workspaces) {
+    const defaultMarker = w.is_default ? ' (default)' : '';
+    const alias = w.workspace_alias ?? '(no alias)';
+    const maskedKey = w.api_key.slice(0, 12) + '...';
+    const wsId = w.workspace_id ? ` [${w.workspace_id}]` : '';
+    console.log(`  ${alias}${wsId} — ${maskedKey}${defaultMarker}`);
+  }
+}
+
+async function runSwitchWorkspace(positional: string[]): Promise<void> {
+  const identifier = positional[0];
+  if (!identifier) {
+    console.error('switch-workspace requires a workspace alias or ID.');
+    console.error('Usage: relay-openclaw switch-workspace <alias-or-id>');
+    process.exit(1);
+  }
+
+  const result = await switchWorkspace(identifier);
+  if (!result) {
+    console.error(`Workspace "${identifier}" not found.`);
+    console.error('Run "relay-openclaw list-workspaces" to see available workspaces.');
+    process.exit(1);
+  }
+
+  console.log(`Switched default workspace to "${identifier}".`);
+  console.log('The .env config has been updated. Restart the gateway to apply.');
+}
+
 async function main(): Promise<void> {
   const { command, positional, flags } = parseArgs(process.argv);
 
@@ -255,6 +331,15 @@ async function main(): Promise<void> {
       break;
     case 'release':
       await runRelease(flags);
+      break;
+    case 'add-workspace':
+      await runAddWorkspace(positional, flags);
+      break;
+    case 'list-workspaces':
+      await runListWorkspaces();
+      break;
+    case 'switch-workspace':
+      await runSwitchWorkspace(positional);
       break;
     case 'mcp-server':
       await startMcpServer();
