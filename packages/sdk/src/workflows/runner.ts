@@ -3574,7 +3574,7 @@ export class WorkflowRunner {
       }
 
       // Agent is still running after the window expired.
-      if (remaining !== undefined && Date.now() - startTime >= remaining) {
+      if (timeoutMs !== undefined && Date.now() - startTime >= timeoutMs) {
         return 'timeout';
       }
 
