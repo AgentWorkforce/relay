@@ -165,6 +165,7 @@ download_broker_binary() {
 
     if curl -fsSL "$download_url" -o "$target_path" 2>/dev/null; then
         chmod +x "$target_path"
+        strip_quarantine "$target_path"
         # Verify binary works (Rust clap binary supports --help)
         if "$target_path" --help &>/dev/null; then
             success "Downloaded broker binary (workflow agent spawning)"
@@ -217,6 +218,7 @@ download_dashboard_binary() {
                 if gunzip -c "${temp_file}.gz" > "$target_path" 2>/dev/null; then
                     rm -f "${temp_file}.gz"
                     chmod +x "$target_path"
+                    strip_quarantine "$target_path"
 
                     if "$target_path" --version &>/dev/null; then
                         success "Downloaded standalone dashboard-server binary"
@@ -244,6 +246,7 @@ download_dashboard_binary() {
 
         if [ "$file_size" -gt 1000000 ]; then
             chmod +x "$target_path"
+            strip_quarantine "$target_path"
 
             if "$target_path" --version &>/dev/null; then
                 success "Downloaded standalone dashboard-server binary"
@@ -325,6 +328,13 @@ has_command() {
     command -v "$1" &> /dev/null
 }
 
+# Strip macOS Gatekeeper quarantine attribute from a binary
+strip_quarantine() {
+    if [ "$OS" = "darwin" ] && has_command xattr; then
+        xattr -d com.apple.quarantine "$1" 2>/dev/null || true
+    fi
+}
+
 # Download relay-acp binary for Zed editor integration
 download_relay_acp() {
     step "Downloading relay-acp binary (Zed editor integration)..."
@@ -354,6 +364,7 @@ download_relay_acp() {
                 if gunzip -c "${temp_file}.gz" > "$target_path" 2>/dev/null; then
                     rm -f "${temp_file}.gz"
                     chmod +x "$target_path"
+                    strip_quarantine "$target_path"
 
                     if "$target_path" --help &>/dev/null; then
                         success "Downloaded relay-acp binary (Zed ACP bridge)"
@@ -379,6 +390,7 @@ download_relay_acp() {
 
         if [ "$file_size" -gt 1000000 ]; then
             chmod +x "$target_path"
+            strip_quarantine "$target_path"
 
             if "$target_path" --help &>/dev/null; then
                 success "Downloaded relay-acp binary (Zed ACP bridge)"
@@ -465,6 +477,7 @@ download_standalone_binary() {
                 if gunzip -c "${temp_file}.gz" > "$target_path" 2>/dev/null; then
                     rm -f "${temp_file}.gz"
                     chmod +x "$target_path"
+                    strip_quarantine "$target_path"
 
                     # Verify the binary works
                     if "$target_path" --version &>/dev/null; then
@@ -501,6 +514,7 @@ download_standalone_binary() {
 
         if [ "$file_size" -gt 1000000 ]; then
             chmod +x "$target_path"
+            strip_quarantine "$target_path"
 
             # Verify the binary works
             if "$target_path" --version &>/dev/null; then
@@ -686,6 +700,18 @@ verify_installation() {
     if command -v agent-relay &> /dev/null; then
         local installed_version=$(agent-relay --version 2>/dev/null || echo "unknown")
         success "agent-relay $installed_version installed successfully!"
+
+        # Warn if another version shadows the one we just installed
+        local which_path=$(command -v agent-relay)
+        if [ -x "$BIN_DIR/agent-relay" ] && [ "$which_path" != "$BIN_DIR/agent-relay" ]; then
+            local other_version=$("$BIN_DIR/agent-relay" --version 2>/dev/null || echo "unknown")
+            if [ "$installed_version" != "$other_version" ]; then
+                warn "Another agent-relay ($installed_version) at $which_path shadows the newly installed $other_version at $BIN_DIR/agent-relay"
+                echo "  To fix, either:"
+                echo "    1. Uninstall the old version: npm uninstall -g agent-relay"
+                echo "    2. Or ensure $BIN_DIR is earlier in your PATH"
+            fi
+        fi
     elif [ -x "$BIN_DIR/agent-relay" ]; then
         local installed_version=$("$BIN_DIR/agent-relay" --version 2>/dev/null || echo "unknown")
         success "agent-relay $installed_version installed to $BIN_DIR"

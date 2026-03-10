@@ -268,6 +268,56 @@ export async function runUninstallCommand(
     removeZedConfig(serverName, deps.fs, isDryRun, deps.log);
   }
 
+  // --- Binary removal (standalone binaries + npm packages) ---
+  const homeDir = os.homedir();
+  const standaloneBinDir = path.join(homeDir, '.local', 'bin');
+  const installDir = path.join(homeDir, '.agent-relay');
+
+  // Remove standalone binaries from ~/.local/bin
+  for (const binaryName of ['agent-relay', 'relay-dashboard-server', 'relay-acp']) {
+    const binPath = path.join(standaloneBinDir, binaryName);
+    if (deps.fs.existsSync(binPath)) {
+      if (isDryRun) {
+        deps.log(`[dry-run] Would remove binary: ${binPath}`);
+      } else {
+        try {
+          deps.fs.unlinkSync(binPath);
+          deps.log(`Removed ${binPath}`);
+        } catch {
+          // Best-effort.
+        }
+      }
+    }
+  }
+
+  // Remove broker binary from ~/.agent-relay/bin/
+  if (deps.fs.existsSync(installDir)) {
+    if (isDryRun) {
+      deps.log(`[dry-run] Would remove directory: ${installDir}`);
+    } else {
+      try {
+        deps.fs.rmSync(installDir, { recursive: true, force: true });
+        deps.log(`Removed ${installDir}`);
+      } catch {
+        // Best-effort.
+      }
+    }
+  }
+
+  // Remove npm-installed packages
+  if (!isDryRun) {
+    for (const pkg of ['agent-relay', '@agent-relay/dashboard-server', '@agent-relay/acp-bridge']) {
+      try {
+        await deps.execCommand(`npm uninstall -g ${pkg} 2>/dev/null`);
+        deps.log(`Uninstalled npm package: ${pkg}`);
+      } catch {
+        // Package may not be installed via npm — that's fine.
+      }
+    }
+  } else {
+    deps.log('[dry-run] Would run: npm uninstall -g agent-relay @agent-relay/dashboard-server @agent-relay/acp-bridge');
+  }
+
   // --- Snippet cleanup (CLAUDE.md, GEMINI.md, AGENTS.md) ---
   if (options.snippets) {
     for (const fileName of SNIPPET_TARGET_FILES) {
