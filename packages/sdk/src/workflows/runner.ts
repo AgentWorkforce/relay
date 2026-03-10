@@ -30,6 +30,7 @@ import type {
   DryRunWave,
   ErrorHandlingConfig,
   IdleNudgeConfig,
+  PathDefinition,
   PreflightCheck,
   RelayYamlConfig,
   SwarmPattern,
@@ -202,6 +203,8 @@ export class WorkflowRunner {
   private readonly lastIdleLog = new Map<string, number>();
   /** Tracks last logged activity type per agent to avoid duplicate status lines. */
   private readonly lastActivity = new Map<string, string>();
+  /** Resolved named paths from the top-level `paths` config, keyed by name → absolute directory. */
+  private resolvedPaths = new Map<string, string>();
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -211,6 +214,89 @@ export class WorkflowRunner {
     this.summaryDir = options.summaryDir ?? path.join(this.cwd, '.relay', 'summaries');
     this.workersPath = path.join(this.cwd, '.agent-relay', 'team', 'workers.json');
     this.executor = options.executor;
+  }
+
+  // ── Path resolution ─────────────────────────────────────────────────────
+
+  /** Expand environment variables like $HOME or $VAR in a path string. */
+  private static resolveEnvVars(p: string): string {
+    return p.replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, varName: string) => {
+      return process.env[varName] ?? _match;
+    });
+  }
+
+  /**
+   * Resolve and validate the top-level `paths` definitions from the config.
+   * Returns a map of name → absolute directory path.
+   * Throws if a required path does not exist.
+   */
+  private resolvePathDefinitions(
+    pathDefs: PathDefinition[] | undefined,
+    baseCwd: string
+  ): { resolved: Map<string, string>; errors: string[]; warnings: string[] } {
+    const resolved = new Map<string, string>();
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    if (!pathDefs || pathDefs.length === 0) return { resolved, errors, warnings };
+
+    const seenNames = new Set<string>();
+    for (const pd of pathDefs) {
+      if (seenNames.has(pd.name)) {
+        errors.push(`Duplicate path name "${pd.name}"`);
+        continue;
+      }
+      seenNames.add(pd.name);
+
+      const expanded = WorkflowRunner.resolveEnvVars(pd.path);
+      const abs = path.resolve(baseCwd, expanded);
+      resolved.set(pd.name, abs);
+
+      const isRequired = pd.required !== false; // default true
+      if (!existsSync(abs)) {
+        if (isRequired) {
+          errors.push(`Path "${pd.name}" resolves to "${abs}" which does not exist (required)`);
+        } else {
+          warnings.push(`Path "${pd.name}" resolves to "${abs}" which does not exist (optional)`);
+        }
+      }
+    }
+
+    return { resolved, errors, warnings };
+  }
+
+  /**
+   * Resolve an agent's effective working directory, considering `workdir` (named path reference)
+   * and `cwd` (explicit path). `workdir` takes precedence when both are set.
+   */
+  private resolveAgentCwd(agent: AgentDefinition): string {
+    if (agent.workdir) {
+      const resolved = this.resolvedPaths.get(agent.workdir);
+      if (!resolved) {
+        throw new Error(
+          `Agent "${agent.name}" references workdir "${agent.workdir}" which is not defined in paths`
+        );
+      }
+      return resolved;
+    }
+    if (agent.cwd) {
+      return path.resolve(this.cwd, agent.cwd);
+    }
+    return this.cwd;
+  }
+
+  /**
+   * Resolve a step's working directory from its `workdir` field (named path reference).
+   * Returns undefined if no workdir is set.
+   */
+  private resolveStepWorkdir(step: WorkflowStep): string | undefined {
+    if (!step.workdir) return undefined;
+    const resolved = this.resolvedPaths.get(step.workdir);
+    if (!resolved) {
+      throw new Error(
+        `Step "${step.name}" references workdir "${step.workdir}" which is not defined in paths`
+      );
+    }
+    return resolved;
   }
 
   // ── Progress logging ────────────────────────────────────────────────────
@@ -496,6 +582,21 @@ export class WorkflowRunner {
       };
     }
 
+    // 1b. Resolve and validate named paths
+    const pathResult = this.resolvePathDefinitions(resolved.paths, this.cwd);
+    errors.push(...pathResult.errors);
+    warnings.push(...pathResult.warnings);
+    const dryRunPaths = pathResult.resolved;
+
+    // Validate workdir references on agents
+    for (const agent of resolved.agents) {
+      if (agent.workdir && !dryRunPaths.has(agent.workdir)) {
+        errors.push(
+          `Agent "${agent.name}" references workdir "${agent.workdir}" which is not defined in paths`
+        );
+      }
+    }
+
     // 2. Find target workflow
     const workflows = resolved.workflows ?? [];
     const workflow = workflowName ? workflows.find((w) => w.name === workflowName) : workflows[0];
@@ -563,6 +664,15 @@ export class WorkflowRunner {
           warnings.push(`Step "${step.name}" references unknown agent "${step.agent}"`);
         }
         stepAgentCounts.set(step.agent, (stepAgentCounts.get(step.agent) ?? 0) + 1);
+      }
+    }
+
+    // Validate workdir references on steps
+    for (const step of resolvedSteps) {
+      if (step.workdir && !dryRunPaths.has(step.workdir)) {
+        errors.push(
+          `Step "${step.name}" references workdir "${step.workdir}" which is not defined in paths`
+        );
       }
     }
 
@@ -668,7 +778,7 @@ export class WorkflowRunner {
       name: a.name,
       cli: a.cli,
       role: a.role,
-      cwd: a.cwd,
+      cwd: a.workdir ? dryRunPaths.get(a.workdir) : a.cwd,
       stepCount: stepAgentCounts.get(a.name) ?? 0,
     }));
 
@@ -992,6 +1102,19 @@ export class WorkflowRunner {
     vars?: VariableContext
   ): Promise<WorkflowRunRow> {
     const resolved = vars ? this.resolveVariables(config, vars) : config;
+
+    // Resolve and validate named paths from the top-level `paths` config
+    const pathResult = this.resolvePathDefinitions(resolved.paths, this.cwd);
+    if (pathResult.errors.length > 0) {
+      throw new Error(`Path validation failed:\n  ${pathResult.errors.join('\n  ')}`);
+    }
+    this.resolvedPaths = pathResult.resolved;
+    if (this.resolvedPaths.size > 0) {
+      for (const [name, abs] of this.resolvedPaths) {
+        console.log(`[workflow] path "${name}" → ${abs}`);
+      }
+    }
+
     const workflows = resolved.workflows ?? [];
 
     const workflow = workflowName ? workflows.find((w) => w.name === workflowName) : workflows[0];
@@ -1073,6 +1196,14 @@ export class WorkflowRunner {
     }
 
     const config = vars ? this.resolveVariables(run.config, vars) : run.config;
+
+    // Resolve path definitions (same as execute()) so workdir lookups work on resume
+    const pathResult = this.resolvePathDefinitions(config.paths, this.cwd);
+    if (pathResult.errors.length > 0) {
+      throw new Error(`Path validation failed:\n  ${pathResult.errors.join('\n  ')}`);
+    }
+    this.resolvedPaths = pathResult.resolved;
+
     const workflows = config.workflows ?? [];
     const workflow = workflows.find((w) => w.name === run.workflowName);
     if (!workflow) {
@@ -1732,10 +1863,13 @@ export class WorkflowRunner {
       return value !== undefined ? String(value) : _match;
     });
 
+    // Resolve step workdir (named path reference) for deterministic steps
+    const stepCwd = this.resolveStepWorkdir(step) ?? this.cwd;
+
     try {
       // Delegate to executor if present
       if (this.executor?.executeDeterministicStep) {
-        const result = await this.executor.executeDeterministicStep(step, resolvedCommand, this.cwd);
+        const result = await this.executor.executeDeterministicStep(step, resolvedCommand, stepCwd);
         const failOnError = step.failOnError !== false;
         if (failOnError && result.exitCode !== 0) {
           throw new Error(`Command failed with exit code ${result.exitCode}: ${result.output.slice(0, 500)}`);
@@ -1761,7 +1895,7 @@ export class WorkflowRunner {
       const output = await new Promise<string>((resolve, reject) => {
         const child = cpSpawn('sh', ['-c', resolvedCommand], {
           stdio: 'pipe',
-          cwd: this.cwd,
+          cwd: stepCwd,
           env: { ...process.env },
         });
 
@@ -1900,6 +2034,9 @@ export class WorkflowRunner {
       : path.join('.worktrees', step.name);
     const createBranch = step.createBranch !== false;
 
+    // Resolve workdir for worktree steps (same as deterministic/agent steps)
+    const stepCwd = this.resolveStepWorkdir(step) ?? this.cwd;
+
     if (!branch) {
       const errorMsg = 'Worktree step missing required "branch" field';
       await this.markStepFailed(state, errorMsg, runId);
@@ -1909,7 +2046,7 @@ export class WorkflowRunner {
     try {
       // Build the git worktree command
       // If createBranch is true and branch doesn't exist, use -b flag
-      const absoluteWorktreePath = path.resolve(this.cwd, worktreePath);
+      const absoluteWorktreePath = path.resolve(stepCwd, worktreePath);
 
       // First, check if the branch already exists
       const checkBranchCmd = `git rev-parse --verify --quiet ${branch} 2>/dev/null`;
@@ -1918,7 +2055,7 @@ export class WorkflowRunner {
       await new Promise<void>((resolve) => {
         const checkChild = cpSpawn('sh', ['-c', checkBranchCmd], {
           stdio: 'pipe',
-          cwd: this.cwd,
+          cwd: stepCwd,
           env: { ...process.env },
         });
         checkChild.on('close', (code) => {
@@ -1946,7 +2083,7 @@ export class WorkflowRunner {
       const output = await new Promise<string>((resolve, reject) => {
         const child = cpSpawn('sh', ['-c', worktreeCmd], {
           stdio: 'pipe',
-          cwd: this.cwd,
+          cwd: stepCwd,
           env: { ...process.env },
         });
 
@@ -2122,12 +2259,21 @@ export class WorkflowRunner {
           }
         }
 
+        // Apply step-level workdir override to agent definition if present
+        let effectiveAgentDef = agentDef;
+        if (step.workdir) {
+          const stepWorkdir = this.resolveStepWorkdir(step);
+          if (stepWorkdir) {
+            effectiveAgentDef = { ...agentDef, cwd: stepWorkdir, workdir: undefined };
+          }
+        }
+
         // Spawn agent via AgentRelay
-        this.log(`[${step.name}] Spawning agent "${agentDef.name}" (cli: ${agentDef.cli})`);
+        this.log(`[${step.name}] Spawning agent "${effectiveAgentDef.name}" (cli: ${effectiveAgentDef.cli})${step.workdir ? ` [workdir: ${step.workdir}]` : ''}`);
         const resolvedStep = { ...step, task: resolvedTask };
         const output = this.executor
-          ? await this.executor.executeAgentStep(resolvedStep, agentDef, resolvedTask, timeoutMs)
-          : await this.spawnAndWait(agentDef, resolvedStep, timeoutMs);
+          ? await this.executor.executeAgentStep(resolvedStep, effectiveAgentDef, resolvedTask, timeoutMs)
+          : await this.spawnAndWait(effectiveAgentDef, resolvedStep, timeoutMs);
         this.log(`[${step.name}] Agent "${agentDef.name}" exited`);
 
         // Run verification if configured
@@ -2336,7 +2482,7 @@ export class WorkflowRunner {
       const output = await new Promise<string>((resolve, reject) => {
         const child = cpSpawn(cmd, args, {
           stdio: ['ignore', 'pipe', 'pipe'],
-          cwd: agentDef.cwd ? path.resolve(this.cwd, agentDef.cwd) : this.cwd,
+          cwd: this.resolveAgentCwd(agentDef),
           env: this.getRelayEnv() ?? { ...process.env },
         });
 
@@ -2515,6 +2661,7 @@ export class WorkflowRunner {
     let ptyChunks: string[] = [];
 
     try {
+      const agentCwd = this.resolveAgentCwd(agentDef);
       agent = await this.relay.spawnPty({
         name: agentName,
         cli: agentDef.cli,
@@ -2523,7 +2670,7 @@ export class WorkflowRunner {
         channels: agentChannels,
         task: taskWithExit,
         idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
-        cwd: agentDef.cwd ? path.resolve(this.cwd, agentDef.cwd) : undefined,
+        cwd: agentCwd !== this.cwd ? agentCwd : undefined,
       });
 
       // Re-key PTY maps if broker assigned a different name than requested
