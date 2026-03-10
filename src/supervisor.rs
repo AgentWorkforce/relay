@@ -262,7 +262,14 @@ mod tests {
     #[test]
     fn register_and_unregister() {
         let mut sup = Supervisor::new();
-        sup.register("w1", test_spec("w1"), None, None, false, RestartPolicy::default());
+        sup.register(
+            "w1",
+            test_spec("w1"),
+            None,
+            None,
+            false,
+            RestartPolicy::default(),
+        );
         assert!(sup.is_supervised("w1"));
 
         sup.unregister("w1");
@@ -393,7 +400,14 @@ mod tests {
     #[test]
     fn released_agent_not_restarted() {
         let mut sup = Supervisor::new();
-        sup.register("w1", test_spec("w1"), None, None, false, RestartPolicy::default());
+        sup.register(
+            "w1",
+            test_spec("w1"),
+            None,
+            None,
+            false,
+            RestartPolicy::default(),
+        );
         sup.unregister("w1");
 
         // Should return None — not supervised
@@ -447,7 +461,14 @@ mod tests {
     #[test]
     fn restart_count_tracks_total() {
         let mut sup = Supervisor::new();
-        sup.register("w1", test_spec("w1"), None, None, false, RestartPolicy::default());
+        sup.register(
+            "w1",
+            test_spec("w1"),
+            None,
+            None,
+            false,
+            RestartPolicy::default(),
+        );
 
         assert_eq!(sup.restart_count("w1"), 0);
 
