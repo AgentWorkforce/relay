@@ -3449,9 +3449,9 @@ export class WorkflowRunner {
         }
       }
 
-      if (exitResult === 'released') {
+      if (exitResult === 'force-released') {
         throw new Error(
-          `Step "${step.name}" failed — agent was force-released after idle timeout without completing`
+          `Step "${step.name}" failed — agent was force-released after exhausting idle nudges without completing`
         );
       }
     } finally {
@@ -3482,7 +3482,9 @@ export class WorkflowRunner {
         ? await readFile(summaryPath, 'utf-8')
         : exitResult === 'timeout'
           ? 'Agent completed (released after idle timeout)'
-          : `Agent exited (${exitResult})`;
+          : exitResult === 'released'
+            ? 'Agent completed (idle — treated as done)'
+            : `Agent exited (${exitResult})`;
     }
 
     return output;
@@ -3521,7 +3523,7 @@ export class WorkflowRunner {
     agentDef: AgentDefinition,
     step: WorkflowStep,
     timeoutMs?: number
-  ): Promise<'exited' | 'timeout' | 'released'> {
+  ): Promise<'exited' | 'timeout' | 'released' | 'force-released'> {
     const nudgeConfig = this.currentConfig?.swarm.idleNudge;
     if (!nudgeConfig) {
       // Idle = done: race exit against idle. Whichever fires first completes the step.
@@ -3591,7 +3593,7 @@ export class WorkflowRunner {
       );
       this.emit({ type: 'step:force-released', runId: this.currentRunId ?? '', stepName: step.name });
       await agent.release();
-      return 'released';
+      return 'force-released';
     }
   }
 
