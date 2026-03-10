@@ -491,6 +491,8 @@ class StepCompletedEvent:
     run_id: str = ""
     step_name: str = ""
     output: str | None = None
+    exit_code: int | None = None
+    exit_signal: str | None = None
 
 
 @dataclass(frozen=True)
@@ -499,6 +501,8 @@ class StepFailedEvent:
     run_id: str = ""
     step_name: str = ""
     error: str = ""
+    exit_code: int | None = None
+    exit_signal: str | None = None
 
 
 @dataclass(frozen=True)
