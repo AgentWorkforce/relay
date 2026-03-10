@@ -177,11 +177,12 @@ export interface AgentOptions {
 }
 ```
 
-### `SpawnPtyInput` in `client.ts` → `SpawnAgentInput`
+### New `SpawnAcpInput` in `client.ts`
+
+`SpawnPtyInput` remains unchanged. A new `SpawnAcpInput` interface is added alongside it:
 
 ```typescript
-// Rename SpawnPtyInput → SpawnAgentInput (backward-compat alias kept)
-export interface SpawnAgentInput {
+export interface SpawnAcpInput {
   name: string;
   cli: string;
   args?: string[];
@@ -190,24 +191,16 @@ export interface SpawnAgentInput {
   model?: string;
   cwd?: string;
   team?: string;
-  shadowOf?: string;
-  shadowMode?: string;
-  idleThresholdSecs?: number;
-  restartPolicy?: RestartPolicy;
-  continueFrom?: string;
-
-  // --- New ---
-  /** Runtime selection. Default: 'acp'. */
-  runtime?: 'pty' | 'acp';
   /** ACP adapter command override. */
   acpAdapter?: string;
-  /** Additional MCP servers for ACP session/new. */
+  /** Additional MCP servers for the ACP session. */
   acpMcpServers?: AcpMcpServerConfig[];
+  /** Auto-restart policy. */
+  restartPolicy?: RestartPolicy;
 }
-
-/** @deprecated Use SpawnAgentInput */
-export type SpawnPtyInput = SpawnAgentInput;
 ```
+
+The client gets a new `spawnAcp()` method alongside the existing `spawnPty()` and `spawnHeadless()`. The runner calls the appropriate one based on `resolveRuntime()`.
 
 ---
 

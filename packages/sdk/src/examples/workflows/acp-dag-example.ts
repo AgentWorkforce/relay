@@ -1,10 +1,16 @@
 /**
  * ACP DAG Workflow Example
  *
- * Demonstrates ACP as the default runtime for interactive agents.
- * A claude lead coordinates ACP workers (claude + goose) and a headless
- * codex worker through a DAG with planning, parallel implementation,
- * security review, and finalization phases.
+ * Demonstrates what a DAG workflow looks like once the ACP runtime is
+ * implemented. A claude lead coordinates ACP workers (claude + goose) and a
+ * headless codex worker through planning, parallel implementation, security
+ * review, and finalization phases.
+ *
+ * NOTE: This file requires the ACP runtime changes from the spec
+ * (docs/adr/acp-runtime-spec.md) to be implemented first. Specifically,
+ * `AgentOptions` needs `runtime` and `preset` fields wired through the
+ * builder. Until then, use the YAML version (acp-dag-example.yaml) which
+ * the runner parses directly.
  *
  * Key ACP features shown:
  *  - Auto-selected ACP runtime for interactive agents (DAG pattern)
@@ -15,7 +21,7 @@
  *  - Permission handling via session/request_permission (no auto-approval hacks)
  *
  * Usage:
- *   npx tsx packages/sdk/src/examples/workflows/acp-dag-example.ts
+ *   agent-relay run packages/sdk/src/examples/workflows/acp-dag-example.yaml
  */
 
 import { workflow } from '../../workflows/builder.js';
@@ -44,19 +50,19 @@ const result = await workflow('acp-dag-example')
     // runtime: 'acp' ← omitted, auto-selected
   })
 
-  // Interactive ACP worker: explicit runtime for clarity
+  // Interactive ACP worker: will auto-select ACP once runtime changes land
+  // Post-ACP: .agent('claude-worker', { cli: 'claude', ..., runtime: 'acp' })
   .agent('claude-worker', {
     cli: 'claude',
     role: 'Implements backend changes as directed by lead.',
     model: 'sonnet',
-    runtime: 'acp',
   })
 
   // Goose: native ACP support (no adapter binary needed)
+  // Post-ACP: .agent('goose-reviewer', { cli: 'goose', ..., runtime: 'acp' })
   .agent('goose-reviewer', {
     cli: 'goose',
     role: 'Reviews implementation for security and correctness.',
-    runtime: 'acp',
   })
 
   // Headless codex: non-interactive subprocess (unchanged behavior)
@@ -105,7 +111,7 @@ const result = await workflow('acp-dag-example')
       `{{steps.plan.output}}\n\n` +
       `IMPORTANT: Write files to disk using your file-writing tools.\n` +
       `Do NOT just output code to stdout.`,
-    verification: { type: 'exit_code', value: '0' },
+    verification: { type: 'exit_code', value: '' },
   })
 
   // Phase 3: Security review (ACP goose)
