@@ -2917,7 +2917,7 @@ export class WorkflowRunner {
     };
 
     try {
-      const reviewResult = await this.spawnAndWait(reviewerDef, reviewStep, safetyTimeoutMs, {
+      await this.spawnAndWait(reviewerDef, reviewStep, safetyTimeoutMs, {
         onSpawned: ({ agent }) => {
           reviewerHandle = agent;
         },
@@ -3160,7 +3160,7 @@ export class WorkflowRunner {
     const stderrChunks: string[] = [];
 
     try {
-      const output = await new Promise<string>((resolve, reject) => {
+      const { stdout: output, exitCode, exitSignal } = await new Promise<{ stdout: string; exitCode?: number; exitSignal?: string }>((resolve, reject) => {
         const child = cpSpawn(cmd, args, {
           stdio: ['ignore', 'pipe', 'pipe'],
           cwd: this.resolveAgentCwd(agentDef),
@@ -3225,7 +3225,7 @@ export class WorkflowRunner {
           }, timeoutMs);
         }
 
-        child.on('close', (code) => {
+        child.on('close', (code, signal) => {
           clearInterval(heartbeat);
           if (timer) clearTimeout(timer);
           if (abortHandler && abortSignal) {
@@ -3253,7 +3253,11 @@ export class WorkflowRunner {
             return;
           }
 
-          resolve(stdout);
+          resolve({
+            stdout,
+            exitCode: code ?? undefined,
+            exitSignal: signal ?? undefined,
+          });
         });
 
         child.on('error', (err) => {
@@ -3266,7 +3270,7 @@ export class WorkflowRunner {
         });
       });
 
-      return { output };
+      return { output, exitCode, exitSignal };
     } finally {
       stopHeartbeat?.();
       logStream.end();
