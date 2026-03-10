@@ -330,9 +330,10 @@ function createDefaultClientFactory(
         const payload = await request('/api/spawned', { method: 'GET' });
         return Array.isArray(payload?.agents) ? (payload.agents as WorkerInfo[]) : [];
       },
-      async release(name: string) {
+      async release(name: string, reason?: string) {
         const payload = await request(`/api/spawned/${encodeURIComponent(name)}`, {
           method: 'DELETE',
+          ...(reason ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }) } : {}),
         });
         return {
           name: typeof payload?.name === 'string' ? payload.name : name,
