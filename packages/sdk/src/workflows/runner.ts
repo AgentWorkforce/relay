@@ -3513,6 +3513,12 @@ export class WorkflowRunner {
           throw new Error(`Step "${step.name}" timed out after ${timeoutMs ?? 'unknown'}ms`);
         }
       }
+
+      if (exitResult === 'force-released') {
+        throw new Error(
+          `Step "${step.name}" failed — agent was force-released after exhausting idle nudges without completing`
+        );
+      }
     } finally {
       // Snapshot PTY chunks before cleanup — we need them for output reading below
       ptyChunks = this.ptyOutputBuffers.get(agentName) ?? [];
@@ -3543,7 +3549,7 @@ export class WorkflowRunner {
         : exitResult === 'timeout'
           ? 'Agent completed (released after idle timeout)'
           : exitResult === 'released'
-            ? 'Agent completed (force-released after idle nudging)'
+            ? 'Agent completed (idle — treated as done)'
             : `Agent exited (${exitResult})`;
     }
 
@@ -3587,7 +3593,7 @@ export class WorkflowRunner {
     agentDef: AgentDefinition,
     step: WorkflowStep,
     timeoutMs?: number
-  ): Promise<'exited' | 'timeout' | 'released'> {
+  ): Promise<'exited' | 'timeout' | 'released' | 'force-released'> {
     const nudgeConfig = this.currentConfig?.swarm.idleNudge;
     if (!nudgeConfig) {
       // Idle = done: race exit against idle. Whichever fires first completes the step.
@@ -3638,7 +3644,7 @@ export class WorkflowRunner {
       }
 
       // Agent is still running after the window expired.
-      if (remaining !== undefined && Date.now() - startTime >= remaining) {
+      if (timeoutMs !== undefined && Date.now() - startTime >= timeoutMs) {
         return 'timeout';
       }
 
@@ -3657,7 +3663,7 @@ export class WorkflowRunner {
       );
       this.emit({ type: 'step:force-released', runId: this.currentRunId ?? '', stepName: step.name });
       await agent.release();
-      return 'released';
+      return 'force-released';
     }
   }
 
