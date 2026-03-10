@@ -1,14 +1,25 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "ES2022",
-    "moduleResolution": "Bundler",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "strict": true,
     "declaration": false,
     "sourceMap": true,
     "outDir": "dist",
     "types": ["node"],
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "baseUrl": "../../..",
+    "paths": {
+      "@agent-relay/sdk": ["packages/sdk/dist/index.d.ts"],
+      "@agent-relay/sdk/*": ["packages/sdk/dist/*"],
+      "@agent-relay/config": ["packages/config/dist/index.d.ts"],
+      "@agent-relay/config/*": ["packages/config/dist/*"],
+      "@agent-relay/utils": ["packages/utils/dist/index.d.ts"],
+      "@agent-relay/utils/*": ["packages/utils/dist/*"]
+    }
   },
   "include": ["**/*.ts"],
   "exclude": ["dist"]

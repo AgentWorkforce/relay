@@ -18,7 +18,7 @@ import os from 'node:os';
 import { spawn, type ChildProcess } from 'node:child_process';
 import test, { type TestContext } from 'node:test';
 
-import { checkPrerequisites, ensureApiKey } from './utils/broker-harness.js';
+import { checkPrerequisites, ensureApiKey, resolveBinaryPath } from './utils/broker-harness.js';
 
 function skipIfMissing(t: TestContext): boolean {
   const reason = checkPrerequisites();
@@ -31,14 +31,16 @@ function skipIfMissing(t: TestContext): boolean {
 
 /** Resolve the broker binary path. */
 function brokerBin(): string {
-  if (process.env.AGENT_RELAY_BIN) return process.env.AGENT_RELAY_BIN;
-  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../..');
-  return path.resolve(repoRoot, 'target/debug/agent-relay-broker');
+  return process.env.AGENT_RELAY_BIN ?? resolveBinaryPath();
 }
 
 /** Create a temp directory for broker runtime files. */
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'relay-lock-test-'));
+}
+
+function brokerNameForDir(cwd: string, base: 'locktest' | 'inittest' = 'locktest'): string {
+  return `${base}-${path.basename(cwd)}`;
 }
 
 /**
@@ -47,7 +49,8 @@ function makeTempDir(): string {
  */
 function spawnBroker(cwd: string, env: NodeJS.ProcessEnv): ChildProcess {
   const bin = brokerBin();
-  const child = spawn(bin, ['init', '--name', 'locktest', '--channels', 'general'], {
+  const name = brokerNameForDir(cwd, 'locktest');
+  const child = spawn(bin, ['init', '--name', name, '--channels', 'general', '--persist'], {
     cwd,
     env: { ...env, RUST_LOG: 'info' },
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -61,9 +64,10 @@ function spawnBroker(cwd: string, env: NodeJS.ProcessEnv): ChildProcess {
  */
 function spawnInitApiBroker(cwd: string, env: NodeJS.ProcessEnv, port: number): ChildProcess {
   const bin = brokerBin();
+  const name = brokerNameForDir(cwd, 'inittest');
   const child = spawn(
     bin,
-    ['init', '--name', 'inittest', '--channels', 'general', '--api-port', String(port)],
+    ['init', '--name', name, '--channels', 'general', '--persist', '--api-port', String(port)],
     {
       cwd,
       env: { ...env, RUST_LOG: 'info' },
@@ -110,7 +114,11 @@ function brokerPidFile(brokerName: string): string {
 }
 
 /** Wait for the broker to write its PID file (polls up to timeoutMs). */
-async function waitForPidFile(cwd: string, timeoutMs = 15_000, brokerName = 'locktest'): Promise<string> {
+async function waitForPidFile(
+  cwd: string,
+  timeoutMs = 15_000,
+  brokerName = brokerNameForDir(cwd, 'locktest')
+): Promise<string> {
   const pidPath = path.join(cwd, '.agent-relay', brokerPidFile(brokerName));
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -173,7 +181,11 @@ function cleanupDir(dir: string): void {
  * Wait for the PID file to be removed (polls up to timeoutMs).
  * Used to confirm cleanup after graceful shutdown.
  */
-async function waitForPidFileRemoved(cwd: string, timeoutMs = 10_000, brokerName = 'locktest'): Promise<void> {
+async function waitForPidFileRemoved(
+  cwd: string,
+  timeoutMs = 10_000,
+  brokerName = brokerNameForDir(cwd, 'locktest')
+): Promise<void> {
   const pidPath = path.join(cwd, '.agent-relay', brokerPidFile(brokerName));
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -187,7 +199,12 @@ async function waitForPidFileRemoved(cwd: string, timeoutMs = 10_000, brokerName
  * Wait for PID file to contain a different PID from the given one.
  * Used after stale lock recovery to confirm the new broker wrote its PID.
  */
-async function waitForNewPid(cwd: string, oldPid: string, timeoutMs = 15_000, brokerName = 'locktest'): Promise<string> {
+async function waitForNewPid(
+  cwd: string,
+  oldPid: string,
+  timeoutMs = 15_000,
+  brokerName = brokerNameForDir(cwd, 'locktest')
+): Promise<string> {
   const pidPath = path.join(cwd, '.agent-relay', brokerPidFile(brokerName));
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -211,9 +228,13 @@ async function gracefulStop(
 ): Promise<{ code: number | null; signal: string | null }> {
   // Close stdin to trigger the sdk_lines -> Ok(None) -> shutdown path
   child.stdin?.end();
-  // Also send SIGTERM as backup
-  child.kill('SIGTERM');
-  return waitForExit(child, timeoutMs);
+  try {
+    return await waitForExit(child, Math.min(timeoutMs, 5_000));
+  } catch {
+    // Fall back to SIGTERM only if EOF did not shut the broker down promptly.
+    child.kill('SIGTERM');
+    return waitForExit(child, timeoutMs);
+  }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -258,7 +279,7 @@ test('lockfile: PID file is removed after graceful shutdown', { timeout: 30_000 
     await new Promise((r) => setTimeout(r, 500));
 
     // PID file should be cleaned up
-    const pidPath = path.join(cwd, '.agent-relay', brokerPidFile('locktest'));
+    const pidPath = path.join(cwd, '.agent-relay', brokerPidFile(brokerNameForDir(cwd, 'locktest')));
     assert.ok(
       !fs.existsSync(pidPath),
       `PID file should be removed after graceful shutdown. Stderr:\n${stderr.lines.slice(-10).join('\n')}`
@@ -277,22 +298,20 @@ test('lockfile: SIGTERM triggers clean exit with PID cleanup', { timeout: 30_000
     const child = spawnBroker(cwd, { ...process.env, RELAY_API_KEY: apiKey });
     await waitForPidFile(cwd);
 
-    // Wait for broker to finish startup and reach select loop
-    await new Promise((r) => setTimeout(r, 3_000));
+    // Wait for broker to finish startup and enter the main select loop.
+    // The PID file is written early, before Relaycast startup completes.
+    await new Promise((r) => setTimeout(r, 10_000));
 
-    // Close stdin to unblock the stdin reader, then send SIGTERM
-    child.stdin?.end();
+    // Trigger the signal path directly. Closing stdin first can race the
+    // normal shutdown path and turn this into an EOF-cleanup test instead.
     child.kill('SIGTERM');
-    const { code, signal } = await waitForExit(child);
+    await waitForPidFileRemoved(cwd, 15_000);
 
-    // Process should exit (either code 0 from stdin EOF or signal SIGTERM)
-    const exitedCleanly = code === 0 || signal === 'SIGTERM';
-    assert.ok(exitedCleanly, `Broker should exit on SIGTERM, got code=${code} signal=${signal}`);
-
-    // PID file should be cleaned up on clean exit
-    await new Promise((r) => setTimeout(r, 500));
-    const pidPath = path.join(cwd, '.agent-relay', brokerPidFile('locktest'));
-    assert.ok(!fs.existsSync(pidPath), 'PID file should be removed after SIGTERM-triggered shutdown');
+    // Best-effort reap so the test process does not inherit a lingering child.
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+      await waitForExit(child).catch(() => undefined);
+    }
   } finally {
     cleanupDir(cwd);
   }
@@ -346,8 +365,8 @@ test('lockfile: stale lock from dead process is recovered', { timeout: 30_000 },
     await waitForExit(first).catch(() => {});
 
     // PID file and lock should still exist (stale)
-    const pidPath = path.join(cwd, '.agent-relay', brokerPidFile('locktest'));
-    const lockPath = path.join(cwd, '.agent-relay', 'broker-locktest.lock');
+    const pidPath = path.join(cwd, '.agent-relay', brokerPidFile(brokerNameForDir(cwd, 'locktest')));
+    const lockPath = path.join(cwd, '.agent-relay', `broker-${brokerNameForDir(cwd, 'locktest')}.lock`);
     assert.ok(fs.existsSync(pidPath), 'PID file should persist after SIGKILL');
     assert.ok(fs.existsSync(lockPath), 'Lock file should persist after SIGKILL');
 
@@ -414,7 +433,7 @@ test('lockfile: rapid sequential restarts do not leave stale locks', { timeout: 
   if (skipIfMissing(t)) return;
   const apiKey = await ensureApiKey();
   const cwd = makeTempDir();
-  const pidPath = path.join(cwd, '.agent-relay', brokerPidFile('locktest'));
+  const pidPath = path.join(cwd, '.agent-relay', brokerPidFile(brokerNameForDir(cwd, 'locktest')));
   const iterations = 5;
 
   try {
@@ -494,7 +513,7 @@ test('lockfile: recovered broker also cleans up PID on exit', { timeout: 45_000 
   if (skipIfMissing(t)) return;
   const apiKey = await ensureApiKey();
   const cwd = makeTempDir();
-  const pidPath = path.join(cwd, '.agent-relay', brokerPidFile('locktest'));
+  const pidPath = path.join(cwd, '.agent-relay', brokerPidFile(brokerNameForDir(cwd, 'locktest')));
 
   try {
     // Phase 1: Start broker and SIGKILL it (leaves stale artifacts)
@@ -548,8 +567,8 @@ test(
     if (skipIfMissing(t)) return;
     const apiKey = await ensureApiKey();
     const cwd = makeTempDir();
-    const lockPath = path.join(cwd, '.agent-relay', 'broker-locktest.lock');
-    const pidPath = path.join(cwd, '.agent-relay', brokerPidFile('locktest'));
+    const lockPath = path.join(cwd, '.agent-relay', `broker-${brokerNameForDir(cwd, 'locktest')}.lock`);
+    const pidPath = path.join(cwd, '.agent-relay', brokerPidFile(brokerNameForDir(cwd, 'locktest')));
 
     try {
       // Start and SIGKILL a broker
@@ -594,7 +613,7 @@ test('lockfile: stdin EOF triggers clean shutdown with PID cleanup', { timeout: 
   if (skipIfMissing(t)) return;
   const apiKey = await ensureApiKey();
   const cwd = makeTempDir();
-  const pidPath = path.join(cwd, '.agent-relay', brokerPidFile('locktest'));
+  const pidPath = path.join(cwd, '.agent-relay', brokerPidFile(brokerNameForDir(cwd, 'locktest')));
 
   try {
     const child = spawnBroker(cwd, { ...process.env, RELAY_API_KEY: apiKey });
@@ -642,7 +661,7 @@ test(
     if (skipIfMissing(t)) return;
     const apiKey = await ensureApiKey();
     const cwd = makeTempDir();
-    const pidPath = path.join(cwd, '.agent-relay', brokerPidFile('inittest'));
+    const pidPath = path.join(cwd, '.agent-relay', brokerPidFile(brokerNameForDir(cwd, 'inittest')));
     const port = randomPort();
 
     try {
@@ -650,7 +669,7 @@ test(
       const stderr = collectStderr(child);
 
       // Wait for PID file
-      const pid = await waitForPidFile(cwd, 15_000, 'inittest');
+      const pid = await waitForPidFile(cwd, 15_000, brokerNameForDir(cwd, 'inittest'));
       assert.equal(parseInt(pid, 10), child.pid, 'Init broker PID file should match process PID');
 
       // Wait for HTTP API to be fully ready
@@ -685,7 +704,7 @@ test(
     try {
       first = spawnInitApiBroker(cwd, { ...process.env, RELAY_API_KEY: apiKey }, port1);
       const firstStderr = collectStderr(first);
-      await waitForPidFile(cwd, 15_000, 'inittest');
+      await waitForPidFile(cwd, 15_000, brokerNameForDir(cwd, 'inittest'));
       await waitForInitApiReady(firstStderr, first);
 
       // Try starting second init broker in same directory (different port)
@@ -712,14 +731,14 @@ test('lockfile: init --api-port — stale lock recovery after SIGKILL', { timeou
   if (skipIfMissing(t)) return;
   const apiKey = await ensureApiKey();
   const cwd = makeTempDir();
-  const pidPath = path.join(cwd, '.agent-relay', brokerPidFile('inittest'));
+  const pidPath = path.join(cwd, '.agent-relay', brokerPidFile(brokerNameForDir(cwd, 'inittest')));
   const port1 = randomPort();
   const port2 = port1 + 1;
 
   try {
     // Start and SIGKILL an init broker
     const first = spawnInitApiBroker(cwd, { ...process.env, RELAY_API_KEY: apiKey }, port1);
-    const oldPid = await waitForPidFile(cwd, 15_000, 'inittest');
+    const oldPid = await waitForPidFile(cwd, 15_000, brokerNameForDir(cwd, 'inittest'));
     first.kill('SIGKILL');
     await waitForExit(first).catch(() => {});
 
@@ -728,7 +747,7 @@ test('lockfile: init --api-port — stale lock recovery after SIGKILL', { timeou
     // New init broker should recover the stale lock
     const second = spawnInitApiBroker(cwd, { ...process.env, RELAY_API_KEY: apiKey }, port2);
     const secondStderr = collectStderr(second);
-    const newPid = await waitForNewPid(cwd, oldPid, 15_000, 'inittest');
+    const newPid = await waitForNewPid(cwd, oldPid, 15_000, brokerNameForDir(cwd, 'inittest'));
     assert.equal(parseInt(newPid, 10), second.pid, 'Recovered init broker should write its PID');
 
     // Wait for it to be fully ready

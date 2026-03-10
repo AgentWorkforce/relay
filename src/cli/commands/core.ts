@@ -311,7 +311,7 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     env: process.env,
     argv: process.argv,
     execPath: process.execPath,
-    cliScript: process.argv[1] || 'dist/src/cli/bootstrap.js',
+    cliScript: process.argv[1] || 'dist/src/cli/index.js',
     pid: process.pid,
     isPortInUse: (port: number) =>
       new Promise((resolve) => {

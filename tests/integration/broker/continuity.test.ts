@@ -15,6 +15,7 @@
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test, { type TestContext } from 'node:test';
 
@@ -30,20 +31,20 @@ function skipIfMissing(t: TestContext): boolean {
 }
 
 /** Resolve the .agent-relay/continuity directory relative to cwd. */
-function continuityDir(): string {
-  return path.resolve(process.cwd(), '.agent-relay', 'continuity');
+function continuityDir(cwd: string): string {
+  return path.resolve(cwd, '.agent-relay', 'continuity');
 }
 
 /** Read a continuity JSON file for a given agent name. */
-function readContinuityFile(agentName: string): Record<string, unknown> | null {
-  const filePath = path.join(continuityDir(), `${agentName}.json`);
+function readContinuityFile(cwd: string, agentName: string): Record<string, unknown> | null {
+  const filePath = path.join(continuityDir(cwd), `${agentName}.json`);
   if (!fs.existsSync(filePath)) return null;
   return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
 }
 
 /** Remove a continuity file if it exists. */
-function cleanupContinuityFile(agentName: string): void {
-  const filePath = path.join(continuityDir(), `${agentName}.json`);
+function cleanupContinuityFile(cwd: string, agentName: string): void {
+  const filePath = path.join(continuityDir(cwd), `${agentName}.json`);
   try {
     fs.unlinkSync(filePath);
   } catch {
@@ -51,19 +52,24 @@ function cleanupContinuityFile(agentName: string): void {
   }
 }
 
+function makeTempCwd(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'relay-continuity-'));
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 test('continuity: release writes continuity JSON file', async (t) => {
   if (skipIfMissing(t)) return;
 
-  const harness = new BrokerHarness();
+  const cwd = makeTempCwd();
+  const harness = new BrokerHarness({ cwd, binaryArgs: ['--persist'] });
   await harness.start();
   const suffix = uniqueSuffix();
   const name = `continuity-write-${suffix}`;
 
   try {
     // Clean up any stale continuity file
-    cleanupContinuityFile(name);
+    cleanupContinuityFile(cwd, name);
 
     // Spawn with a task
     await harness.spawnAgent(name, 'cat', undefined, {
@@ -76,7 +82,7 @@ test('continuity: release writes continuity JSON file', async (t) => {
     await new Promise((r) => setTimeout(r, 1000));
 
     // Verify continuity file was written
-    const data = readContinuityFile(name);
+    const data = readContinuityFile(cwd, name);
     assert.ok(data, 'continuity file should exist after release');
     assert.equal(data.agent_name, name, 'agent_name should match');
     assert.equal(
@@ -88,21 +94,23 @@ test('continuity: release writes continuity JSON file', async (t) => {
     assert.ok(typeof data.lifetime_seconds === 'number', 'lifetime_seconds should be a number');
     assert.ok(Array.isArray(data.message_history), 'message_history should be an array');
   } finally {
-    cleanupContinuityFile(name);
+    cleanupContinuityFile(cwd, name);
     await harness.stop();
+    fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
 
 test('continuity: continuity file includes cli and summary', async (t) => {
   if (skipIfMissing(t)) return;
 
-  const harness = new BrokerHarness();
+  const cwd = makeTempCwd();
+  const harness = new BrokerHarness({ cwd, binaryArgs: ['--persist'] });
   await harness.start();
   const suffix = uniqueSuffix();
   const name = `continuity-fields-${suffix}`;
 
   try {
-    cleanupContinuityFile(name);
+    cleanupContinuityFile(cwd, name);
 
     await harness.spawnAgent(name, 'cat', undefined, {
       task: 'Check all fields',
@@ -112,7 +120,7 @@ test('continuity: continuity file includes cli and summary', async (t) => {
     await harness.releaseAgent(name);
     await new Promise((r) => setTimeout(r, 1000));
 
-    const data = readContinuityFile(name);
+    const data = readContinuityFile(cwd, name);
     assert.ok(data, 'continuity file should exist');
 
     // cli comes from the AgentSpec
@@ -124,22 +132,24 @@ test('continuity: continuity file includes cli and summary', async (t) => {
       'summary should be a non-empty string'
     );
   } finally {
-    cleanupContinuityFile(name);
+    cleanupContinuityFile(cwd, name);
     await harness.stop();
+    fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
 
 test('continuity: spawn with continueFrom injects context', async (t) => {
   if (skipIfMissing(t)) return;
 
-  const harness = new BrokerHarness();
+  const cwd = makeTempCwd();
+  const harness = new BrokerHarness({ cwd, binaryArgs: ['--persist'] });
   await harness.start();
   const suffix = uniqueSuffix();
   const originalName = `continuity-original-${suffix}`;
   const continuedName = `continuity-continued-${suffix}`;
 
   try {
-    cleanupContinuityFile(originalName);
+    cleanupContinuityFile(cwd, originalName);
 
     // Step 1: Spawn and release the original agent
     await harness.spawnAgent(originalName, 'cat', undefined, {
@@ -150,7 +160,7 @@ test('continuity: spawn with continueFrom injects context', async (t) => {
     await new Promise((r) => setTimeout(r, 1000));
 
     // Verify continuity file exists
-    const data = readContinuityFile(originalName);
+    const data = readContinuityFile(cwd, originalName);
     assert.ok(data, 'continuity file should exist for original agent');
 
     // Step 2: Spawn a new agent with continueFrom
@@ -168,22 +178,24 @@ test('continuity: spawn with continueFrom injects context', async (t) => {
     // Clean up
     await harness.releaseAgent(continuedName);
   } finally {
-    cleanupContinuityFile(originalName);
-    cleanupContinuityFile(continuedName);
+    cleanupContinuityFile(cwd, originalName);
+    cleanupContinuityFile(cwd, continuedName);
     await harness.stop();
+    fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
 
 test('continuity: spawn with continueFrom for same name', async (t) => {
   if (skipIfMissing(t)) return;
 
-  const harness = new BrokerHarness();
+  const cwd = makeTempCwd();
+  const harness = new BrokerHarness({ cwd, binaryArgs: ['--persist'] });
   await harness.start();
   const suffix = uniqueSuffix();
   const name = `continuity-samename-${suffix}`;
 
   try {
-    cleanupContinuityFile(name);
+    cleanupContinuityFile(cwd, name);
 
     // Spawn, release (creates continuity file)
     await harness.spawnAgent(name, 'cat', undefined, {
@@ -193,7 +205,7 @@ test('continuity: spawn with continueFrom for same name', async (t) => {
     await harness.releaseAgent(name);
     await new Promise((r) => setTimeout(r, 1000));
 
-    assert.ok(readContinuityFile(name), 'continuity file should exist');
+    assert.ok(readContinuityFile(cwd, name), 'continuity file should exist');
 
     // Re-spawn with same name using continueFrom: self
     const spawned = await harness.spawnAgent(name, 'cat', undefined, {
@@ -211,15 +223,17 @@ test('continuity: spawn with continueFrom for same name', async (t) => {
 
     await harness.releaseAgent(name);
   } finally {
-    cleanupContinuityFile(name);
+    cleanupContinuityFile(cwd, name);
     await harness.stop();
+    fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
 
 test('continuity: spawn with continueFrom for nonexistent agent still spawns', async (t) => {
   if (skipIfMissing(t)) return;
 
-  const harness = new BrokerHarness();
+  const cwd = makeTempCwd();
+  const harness = new BrokerHarness({ cwd, binaryArgs: ['--persist'] });
   await harness.start();
   const suffix = uniqueSuffix();
   const name = `continuity-nofile-${suffix}`;
@@ -234,21 +248,23 @@ test('continuity: spawn with continueFrom for nonexistent agent still spawns', a
 
     await harness.releaseAgent(name);
   } finally {
-    cleanupContinuityFile(name);
+    cleanupContinuityFile(cwd, name);
     await harness.stop();
+    fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
 
 test('continuity: re-release overwrites continuity file', async (t) => {
   if (skipIfMissing(t)) return;
 
-  const harness = new BrokerHarness();
+  const cwd = makeTempCwd();
+  const harness = new BrokerHarness({ cwd, binaryArgs: ['--persist'] });
   await harness.start();
   const suffix = uniqueSuffix();
   const name = `continuity-overwrite-${suffix}`;
 
   try {
-    cleanupContinuityFile(name);
+    cleanupContinuityFile(cwd, name);
 
     // First spawn/release cycle
     await harness.spawnAgent(name, 'cat', undefined, {
@@ -258,7 +274,7 @@ test('continuity: re-release overwrites continuity file', async (t) => {
     await harness.releaseAgent(name);
     await new Promise((r) => setTimeout(r, 1000));
 
-    const data1 = readContinuityFile(name);
+    const data1 = readContinuityFile(cwd, name);
     assert.ok(data1, 'continuity file should exist after first release');
     assert.equal(data1.initial_task, 'First task');
 
@@ -270,11 +286,12 @@ test('continuity: re-release overwrites continuity file', async (t) => {
     await harness.releaseAgent(name);
     await new Promise((r) => setTimeout(r, 1000));
 
-    const data2 = readContinuityFile(name);
+    const data2 = readContinuityFile(cwd, name);
     assert.ok(data2, 'continuity file should exist after second release');
     assert.equal(data2.initial_task, 'Second task', 'continuity file should be overwritten with latest task');
   } finally {
-    cleanupContinuityFile(name);
+    cleanupContinuityFile(cwd, name);
     await harness.stop();
+    fs.rmSync(cwd, { recursive: true, force: true });
   }
 });

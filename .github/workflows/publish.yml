@@ -690,16 +690,25 @@ jobs:
   # Verify standalone binaries on macOS
   verify-standalone-macos:
     name: Verify Standalone (macOS)
-    needs: [build-standalone]
+    needs: [build-standalone, build-broker]
     runs-on: macos-latest
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Download macOS binary
         uses: actions/download-artifact@v4
         with:
           name: agent-relay-darwin-arm64
           path: bin/
+
+      - name: Download broker binary
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-relay-broker-darwin-arm64
+          path: broker/
 
       - name: Download compressed binary
         uses: actions/download-artifact@v4
@@ -713,6 +722,11 @@ jobs:
           echo "Testing uncompressed binary..."
           ./bin/agent-relay-darwin-arm64 --version
           echo "✓ Uncompressed binary works"
+
+      - name: Smoke standalone lifecycle
+        run: |
+          chmod +x broker/agent-relay-broker-darwin-arm64
+          bash scripts/ci-standalone-smoke.sh "$PWD/bin/agent-relay-darwin-arm64" "$PWD/broker/agent-relay-broker-darwin-arm64"
 
       - name: Verify compressed binary
         run: |

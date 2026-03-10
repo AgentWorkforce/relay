@@ -413,6 +413,18 @@ describe('registerCoreCommands', () => {
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 
+  it('up without dashboard still enables the local broker API', async () => {
+    const relay = createRelayMock();
+    const { program, deps } = createHarness({ relay });
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--port', '3888']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelay).toHaveBeenCalledTimes(1);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889);
+    expect(relay.getStatus).toHaveBeenCalledTimes(1);
+  });
+
   it('up force exits on repeated SIGINT during hung shutdown and suppresses expected dashboard signal noise', async () => {
     const relay = createRelayMock({
       shutdown: vi.fn(() => new Promise(() => undefined)),

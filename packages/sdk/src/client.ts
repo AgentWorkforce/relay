@@ -433,28 +433,39 @@ export class AgentRelayClient {
       return;
     }
 
-    try {
-      await this.requestOk('shutdown', {});
-    } catch {
-      // Continue shutdown path if broker is already unhealthy.
-    }
+    void this.requestOk('shutdown', {}).catch(() => {
+      // Continue shutdown path if broker is already unhealthy or exits before replying.
+    });
 
     const child = this.child;
     const wait = this.exitPromise ?? Promise.resolve();
-    const timeout = setTimeout(() => {
-      if (!child.killed) {
-        child.kill('SIGTERM');
-      }
-    }, this.options.shutdownTimeoutMs);
+    const waitForExit = async (timeoutMs: number): Promise<boolean> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const result = await Promise.race([
+        wait.then(() => true),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), timeoutMs);
+        }),
+      ]);
+      if (timer !== undefined) clearTimeout(timer);
+      return result;
+    };
 
-    try {
-      await wait;
-    } finally {
-      clearTimeout(timeout);
-      if (this.child) {
-        this.child.kill('SIGKILL');
-      }
+    if (await waitForExit(this.options.shutdownTimeoutMs)) {
+      return;
     }
+
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGTERM');
+    }
+    if (await waitForExit(1_000)) {
+      return;
+    }
+
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+    }
+    await waitForExit(1_000);
   }
 
   async waitForExit(): Promise<void> {
@@ -475,8 +486,7 @@ export class AgentRelayClient {
       'init',
       '--name',
       this.options.brokerName,
-      '--channels',
-      this.options.channels.join(','),
+      ...(this.options.channels.length > 0 ? ['--channels', this.options.channels.join(',')] : []),
       ...this.options.binaryArgs,
     ];
 
@@ -491,7 +501,7 @@ export class AgentRelayClient {
       }
     }
 
-    console.log(`[broker] Starting: ${resolvedBinary} ${args.join(' ')}`);
+    console.error(`[broker] Starting: ${resolvedBinary} ${args.join(' ')}`);
     const child = spawn(resolvedBinary, args, {
       cwd: this.options.cwd,
       env,
@@ -539,7 +549,7 @@ export class AgentRelayClient {
     });
 
     const helloAck = await this.requestHello();
-    console.log('[broker] Broker ready (hello handshake complete)');
+    console.error('[broker] Broker ready (hello handshake complete)');
     if (helloAck.workspace_key) {
       this.workspaceKey = helloAck.workspace_key;
     }

@@ -182,7 +182,7 @@ export class WorkflowTrajectory {
       id,
       version: 1,
       task: {
-        title: `${workflowName} run #${this.runId.slice(0, 8)}`,
+        title: workflowName,
         source: { system: 'workflow-runner', id: this.runId },
       },
       status: 'active',
@@ -250,6 +250,9 @@ export class WorkflowTrajectory {
     if (participants?.reviewer) {
       await this.registerAgent(participants.reviewer, 'reviewer');
     }
+
+    this.closeCurrentChapter();
+    this.openChapter(`Execution: ${step.name}`, agent);
 
     // Capture the step's purpose: first non-empty sentence of the task
     const intent = step.task
@@ -479,12 +482,29 @@ export class WorkflowTrajectory {
   }
 
   /** Abandon the trajectory. */
-  async abandon(reason: string): Promise<void> {
+  async abandon(
+    reason: string,
+    meta?: { summary?: string; confidence?: number; learnings?: string[]; challenges?: string[] }
+  ): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
 
+    const elapsed = Date.now() - this.startTime;
+    const elapsedStr =
+      elapsed > 60_000 ? `${Math.round(elapsed / 60_000)} minutes` : `${Math.round(elapsed / 1_000)} seconds`;
+    const summary = meta?.summary ?? `Workflow abandoned: ${reason}`;
+
+    this.openRetrospective();
+    this.addEvent('reflection', `${summary} (abandoned after ${elapsedStr})`, 'high');
     this.addEvent('error', `Workflow abandoned: ${reason}`, 'high');
     this.trajectory.status = 'abandoned';
     this.trajectory.completedAt = new Date().toISOString();
+    this.trajectory.retrospective = {
+      summary,
+      approach: `${this.swarmPattern} workflow (${this.trajectory.agents.filter((a) => a.role !== 'workflow-runner').length} agents)`,
+      confidence: meta?.confidence ?? 0,
+      learnings: meta?.learnings,
+      challenges: meta?.challenges,
+    };
 
     this.closeCurrentChapter();
     await this.flush();

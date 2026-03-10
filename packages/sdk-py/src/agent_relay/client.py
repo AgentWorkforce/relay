@@ -167,8 +167,16 @@ def _install_broker_binary() -> str:
         target_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
     )
 
-    # macOS: re-sign to avoid Gatekeeper issues
+    # macOS: strip quarantine and re-sign to avoid Gatekeeper issues
     if platform.system() == "Darwin":
+        try:
+            subprocess.run(
+                ["xattr", "-d", "com.apple.quarantine", str(target_path)],
+                capture_output=True,
+                timeout=10,
+            )
+        except Exception:
+            pass  # Non-fatal — attribute may not exist
         try:
             subprocess.run(
                 ["codesign", "--force", "--sign", "-", str(target_path)],

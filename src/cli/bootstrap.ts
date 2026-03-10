@@ -115,19 +115,3 @@ export function runCli(argv: string[] = process.argv): Command {
   program.parse(argv);
   return program;
 }
-
-function isEntrypoint(): boolean {
-  const invocationPath = process.argv[1];
-  if (!invocationPath) {
-    return false;
-  }
-  try {
-    return fs.realpathSync(invocationPath) === fs.realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return path.resolve(invocationPath) === fileURLToPath(import.meta.url);
-  }
-}
-
-if (isEntrypoint()) {
-  runCli();
-}

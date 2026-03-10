@@ -2,9 +2,10 @@ import { Command } from 'commander';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn as spawnProcess } from 'node:child_process';
 import { getProjectPaths } from '@agent-relay/config';
 
-import { createAgentRelayClient } from '../lib/client-factory.js';
+import { brokerPidFilename } from '../lib/broker-lifecycle.js';
 import { runAgentsCommand, runAgentsLogsCommand, runWhoCommand } from '../lib/agent-management-listing.js';
 
 type ShadowMode = 'subagent' | 'process';
@@ -47,6 +48,7 @@ export interface AgentManagementDependencies {
   getProjectRoot: () => string;
   getDataDir: () => string;
   createClient: (cwd: string) => AgentManagementClient;
+  createAutostartClient: (cwd: string) => AgentManagementClient;
   readTaskFromStdin: () => Promise<string | undefined>;
   fileExists: (filePath: string) => boolean;
   readFile: (filePath: string, encoding?: BufferEncoding) => string;
@@ -67,6 +69,9 @@ const VALID_SHADOW_TRIGGERS: readonly ShadowTrigger[] = [
   'EXPLICIT_ASK',
   'ALL_MESSAGES',
 ] as const;
+const MAX_API_PORT_ATTEMPTS = 25;
+const LOCAL_BROKER_START_TIMEOUT_MS = 10_000;
+const LOCAL_BROKER_START_POLL_MS = 250;
 
 function defaultExit(code: number): never {
   process.exit(code);
@@ -86,28 +91,323 @@ async function readTaskFromStdin(): Promise<string | undefined> {
   return task.length > 0 ? task : undefined;
 }
 
-function resolveRequestTimeoutMsFromEnv(): number | undefined {
-  const raw = process.env.AGENT_RELAY_REQUEST_TIMEOUT_MS;
-  if (!raw) return undefined;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return parsed;
+interface LocalBrokerClientDependencies {
+  fetch: AgentManagementDependencies['fetch'];
+  fileExists: AgentManagementDependencies['fileExists'];
+  readFile: AgentManagementDependencies['readFile'];
+  killProcess: AgentManagementDependencies['killProcess'];
+  sleep: AgentManagementDependencies['sleep'];
+  spawnProcess: (
+    command: string,
+    args: string[],
+    options?: Record<string, unknown>
+  ) => { pid?: number; unref?: () => void };
+  execPath: string;
+  cliScript: string;
+  env: NodeJS.ProcessEnv;
 }
 
-function createDefaultClient(cwd: string): AgentManagementClient {
-  const requestTimeoutMs = resolveRequestTimeoutMsFromEnv();
-  return createAgentRelayClient({
-    cwd,
-    ...(requestTimeoutMs ? { requestTimeoutMs } : {}),
-  }) as unknown as AgentManagementClient;
+function resolveDefaultDashboardPort(): number {
+  const parsed = Number.parseInt(DEFAULT_DASHBOARD_PORT, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 3888;
+}
+
+function resolveDefaultApiPort(): number {
+  return resolveDefaultDashboardPort() + 1;
+}
+
+function readPidFile(
+  pidPath: string,
+  deps: Pick<LocalBrokerClientDependencies, 'fileExists' | 'readFile'>
+): number | null {
+  if (!deps.fileExists(pidPath)) {
+    return null;
+  }
+
+  const pid = Number.parseInt(deps.readFile(pidPath, 'utf-8').trim(), 10);
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return null;
+  }
+
+  return pid;
+}
+
+function isProcessRunning(pid: number, deps: Pick<LocalBrokerClientDependencies, 'killProcess'>): boolean {
+  try {
+    deps.killProcess(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function discoverBrokerApiPort(
+  preferredApiPort: number,
+  deps: Pick<LocalBrokerClientDependencies, 'fetch'>
+): Promise<number | null> {
+  for (let attempt = 0; attempt < MAX_API_PORT_ATTEMPTS; attempt += 1) {
+    const candidatePort = preferredApiPort + attempt;
+    try {
+      const response = await deps.fetch(`http://127.0.0.1:${candidatePort}/health`);
+      if (!response.ok) {
+        continue;
+      }
+
+      const payload = (await response.json().catch(() => null)) as { service?: string } | null;
+      if (payload?.service === 'agent-relay-listen') {
+        return candidatePort;
+      }
+    } catch {
+      // Keep scanning nearby ports.
+    }
+  }
+
+  return null;
+}
+
+function resolveCliLaunch(
+  deps: Pick<LocalBrokerClientDependencies, 'execPath' | 'cliScript'>
+): { command: string; prefixArgs: string[] } {
+  const cliScript = deps.cliScript?.trim();
+  const isNodeEntrypoint =
+    Boolean(cliScript) &&
+    cliScript !== deps.execPath &&
+    (cliScript.endsWith('.js') || cliScript.endsWith('.cjs') || cliScript.endsWith('.mjs') || cliScript.endsWith('.ts'));
+
+  return {
+    command: deps.execPath,
+    prefixArgs: isNodeEntrypoint && cliScript ? [cliScript] : [],
+  };
+}
+
+async function ensureBrokerApi(
+  cwd: string,
+  deps: LocalBrokerClientDependencies,
+  options: { autoStart: boolean }
+): Promise<number> {
+  const paths = getProjectPaths(cwd);
+  const brokerPidPath = path.join(paths.dataDir, brokerPidFilename(paths.projectRoot));
+  const legacyBrokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  const preferredApiPort = resolveDefaultApiPort();
+
+  let pid = readPidFile(brokerPidPath, deps);
+  if (pid === null) {
+    pid = readPidFile(legacyBrokerPidPath, deps);
+  }
+
+  if (pid !== null && isProcessRunning(pid, deps)) {
+    const discoveredPort = await discoverBrokerApiPort(preferredApiPort, deps);
+    if (discoveredPort !== null) {
+      return discoveredPort;
+    }
+    throw new Error('broker is running for this project, but its local API is unavailable');
+  }
+
+  if (!options.autoStart) {
+    throw new Error('broker is not running for this project');
+  }
+
+  const { command, prefixArgs } = resolveCliLaunch(deps);
+  const dashboardPort = resolveDefaultDashboardPort();
+  const child = deps.spawnProcess(
+    command,
+    [...prefixArgs, 'up', '--no-dashboard', '--port', String(dashboardPort)],
+    {
+      cwd: paths.projectRoot,
+      env: deps.env,
+      detached: true,
+      stdio: 'ignore',
+    }
+  );
+  child.unref?.();
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < LOCAL_BROKER_START_TIMEOUT_MS) {
+    const discoveredPort = await discoverBrokerApiPort(preferredApiPort, deps);
+    if (discoveredPort !== null) {
+      return discoveredPort;
+    }
+    await deps.sleep(LOCAL_BROKER_START_POLL_MS);
+  }
+
+  throw new Error(`broker did not become ready within ${LOCAL_BROKER_START_TIMEOUT_MS}ms`);
+}
+
+async function readJsonResponse(response: Response): Promise<any> {
+  const text = await response.text();
+  if (!text) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function extractErrorMessage(response: Response, payload: any): string {
+  if (typeof payload === 'string' && payload.trim()) {
+    return payload.trim();
+  }
+
+  const nestedError =
+    typeof payload?.error === 'string'
+      ? payload.error
+      : typeof payload?.error?.message === 'string'
+        ? payload.error.message
+        : undefined;
+  if (nestedError) {
+    return nestedError;
+  }
+
+  if (typeof payload?.message === 'string' && payload.message.trim()) {
+    return payload.message.trim();
+  }
+
+  return `${response.status} ${response.statusText}`.trim();
+}
+
+function createDefaultClientFactory(
+  deps: LocalBrokerClientDependencies,
+  options: { autoStart: boolean }
+): (cwd: string) => AgentManagementClient {
+  return (cwd: string): AgentManagementClient => {
+    let apiPortPromise: Promise<number> | undefined;
+
+    const getApiPort = (): Promise<number> => {
+      if (!apiPortPromise) {
+        apiPortPromise = ensureBrokerApi(cwd, deps, options);
+      }
+      return apiPortPromise;
+    };
+
+    const request = async (pathname: string, init?: RequestInit): Promise<any> => {
+      const apiPort = await getApiPort();
+      const headers = new Headers(init?.headers);
+      const apiKey = deps.env.RELAY_BROKER_API_KEY?.trim();
+      if (apiKey && !headers.has('x-api-key') && !headers.has('authorization')) {
+        headers.set('x-api-key', apiKey);
+      }
+
+      const response = await deps.fetch(`http://127.0.0.1:${apiPort}${pathname}`, {
+        ...init,
+        headers,
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) {
+        throw new Error(extractErrorMessage(response, payload));
+      }
+      return payload;
+    };
+
+    return {
+      async spawnPty(options) {
+        const payload = await request('/api/spawn', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name: options.name,
+            cli: options.cli,
+            model: options.model,
+            args: [],
+            task: options.task,
+            channels: options.channels,
+            cwd: options.cwd,
+            team: options.team,
+            shadowOf: options.shadowOf,
+            shadowMode: options.shadowMode,
+            continueFrom: options.continueFrom,
+          }),
+        });
+
+        return {
+          name: typeof payload?.name === 'string' ? payload.name : options.name,
+          runtime: 'pty',
+        };
+      },
+      async listAgents() {
+        const payload = await request('/api/spawned', { method: 'GET' });
+        return Array.isArray(payload?.agents) ? (payload.agents as WorkerInfo[]) : [];
+      },
+      async release(name: string, reason?: string) {
+        const payload = await request(`/api/spawned/${encodeURIComponent(name)}`, {
+          method: 'DELETE',
+          ...(reason ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }) } : {}),
+        });
+        return {
+          name: typeof payload?.name === 'string' ? payload.name : name,
+        };
+      },
+      async setModel(name: string, model: string, options: { timeoutMs: number }) {
+        const payload = await request(`/api/spawned/${encodeURIComponent(name)}/model`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            timeoutMs: options.timeoutMs,
+          }),
+        });
+
+        return {
+          success: payload?.success !== false,
+          model: typeof payload?.model === 'string' ? payload.model : model,
+        };
+      },
+      async getMetrics() {
+        return { agents: [] };
+      },
+      async shutdown() {
+        return undefined;
+      },
+    };
+  };
 }
 
 function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): AgentManagementDependencies {
+  const baseClientFactory = createDefaultClientFactory(
+    {
+      fetch: (url, init) => fetch(url, init),
+      fileExists: fs.existsSync,
+      readFile: (filePath, encoding = 'utf-8') => fs.readFileSync(filePath, encoding),
+      killProcess: process.kill,
+      sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+      spawnProcess: (command, args, options) =>
+        spawnProcess(command, args, options as Parameters<typeof spawnProcess>[2]) as {
+          pid?: number;
+          unref?: () => void;
+        },
+      execPath: process.execPath,
+      cliScript: process.argv[1] || 'dist/src/cli/index.js',
+      env: process.env,
+    },
+    { autoStart: false }
+  );
+  const autostartClientFactory = createDefaultClientFactory(
+    {
+      fetch: (url, init) => fetch(url, init),
+      fileExists: fs.existsSync,
+      readFile: (filePath, encoding = 'utf-8') => fs.readFileSync(filePath, encoding),
+      killProcess: process.kill,
+      sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+      spawnProcess: (command, args, options) =>
+        spawnProcess(command, args, options as Parameters<typeof spawnProcess>[2]) as {
+          pid?: number;
+          unref?: () => void;
+        },
+      execPath: process.execPath,
+      cliScript: process.argv[1] || 'dist/src/cli/index.js',
+      env: process.env,
+    },
+    { autoStart: true }
+  );
+
   return {
     getProjectRoot: () => getProjectPaths().projectRoot,
     getDataDir: () =>
       process.env.AGENT_RELAY_DATA_DIR || path.join(os.homedir(), '.local', 'share', 'agent-relay'),
-    createClient: createDefaultClient,
+    createClient: baseClientFactory,
+    createAutostartClient: autostartClientFactory,
     readTaskFromStdin,
     fileExists: fs.existsSync,
     readFile: (filePath, encoding = 'utf-8') => fs.readFileSync(filePath, encoding),
@@ -210,7 +510,7 @@ export function registerAgentManagementCommands(
         parseShadowTriggers(options.shadowTriggers, deps);
         parseShadowTriggers(options.shadowSpeakOn, deps);
 
-        const client = deps.createClient(options.cwd || deps.getProjectRoot());
+        const client = deps.createAutostartClient(options.cwd || deps.getProjectRoot());
         let exitCode = 0;
 
         const taskToSpawn = finalTask;

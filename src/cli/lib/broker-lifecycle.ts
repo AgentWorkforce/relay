@@ -77,10 +77,8 @@ async function startBrokerWithPortFallback(
   // Resolve a free API port BEFORE spawning the broker.  This avoids
   // spawning (and flocking) multiple --persist brokers during retry,
   // which caused stale-flock "already running" errors.
-  const startApiPort = wantsDashboard ? dashboardPort + 1 : 0;
-  const apiPort = wantsDashboard
-    ? await resolveApiPortWithFallback(startApiPort, MAX_API_PORT_ATTEMPTS, deps)
-    : startApiPort;
+  const startApiPort = dashboardPort + 1;
+  const apiPort = await resolveApiPortWithFallback(startApiPort, MAX_API_PORT_ATTEMPTS, deps);
 
   const candidate = deps.createRelay(paths.projectRoot, apiPort);
   candidate.onBrokerStderr?.((line: string) => {
@@ -759,7 +757,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   let ownsBroker = true;
 
   let relay: CoreRelay | null = null;
-  let apiPort = wantsDashboard ? dashboardPort + 1 : 0;
+  let apiPort = dashboardPort + 1;
   let dashboardProcess: SpawnedProcess | undefined;
   const dashboardVerbose = Boolean(options.verbose) || isDebugLikeLoggingEnabled(deps);
   let shuttingDown = false;

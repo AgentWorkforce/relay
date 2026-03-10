@@ -58,7 +58,7 @@ async function runWorkflowAndGetTrajectory(
   config: ReturnType<typeof makeConfig>,
   cwd: string
 ) {
-  const result = await harness.runWorkflow(config, undefined, { cwd });
+  const result = await harness.runWorkflow(config, undefined, { cwd, useRelaycast: false });
   assertRunCompleted(result);
 
   return assertTrajectoryExists(harness, cwd);
@@ -69,7 +69,7 @@ test('trajectory: file written during run', { timeout: 120_000 }, async (t) => {
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const trajectory = await runWorkflowAndGetTrajectory(harness, makeConfig(), cwd);
@@ -85,7 +85,7 @@ test('trajectory: file transitions to completed status after run', { timeout: 12
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const trajectory = await runWorkflowAndGetTrajectory(harness, makeConfig(), cwd);
@@ -115,7 +115,7 @@ test('trajectory: chapters are recorded during workflow execution', { timeout: 1
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const trajectory = await runWorkflowAndGetTrajectory(harness, makeConfig(), cwd);
@@ -140,7 +140,7 @@ test('trajectory: chapters record agent names', { timeout: 120_000 }, async (t) 
   const cwd = createWorkdir();
   const agentName = 'my-worker';
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const trajectory = await runWorkflowAndGetTrajectory(harness, makeConfig(agentName), cwd);
@@ -164,7 +164,7 @@ test('trajectory: records task metadata and participating agents', { timeout: 12
   const cwd = createWorkdir();
   const agentName = 'meta-agent';
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const trajectory = await runWorkflowAndGetTrajectory(harness, makeConfig(agentName), cwd);

@@ -29,13 +29,15 @@ let _cachedApiKey: string | undefined;
 export async function ensureApiKey(): Promise<string> {
   if (_cachedApiKey) return _cachedApiKey;
   if (process.env.RELAY_API_KEY?.trim()) {
-    _cachedApiKey = process.env.RELAY_API_KEY.trim();
-    return _cachedApiKey;
+    const apiKey = process.env.RELAY_API_KEY.trim();
+    _cachedApiKey = apiKey;
+    return apiKey;
   }
   const ws = await RelayCast.createWorkspace(`test-${Date.now().toString(36)}`);
-  _cachedApiKey = ws.apiKey;
-  process.env.RELAY_API_KEY = ws.apiKey;
-  return _cachedApiKey;
+  const apiKey = ws.apiKey;
+  _cachedApiKey = apiKey;
+  process.env.RELAY_API_KEY = apiKey;
+  return apiKey;
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -43,10 +45,14 @@ export async function ensureApiKey(): Promise<string> {
 export interface BrokerHarnessOptions {
   /** Path to the agent-relay-broker binary. Auto-resolved if not set. */
   binaryPath?: string;
+  /** Extra CLI args passed to the broker binary. */
+  binaryArgs?: string[];
   /** Unique broker name registered in Relaycast. Auto-generated if not set. */
   brokerName?: string;
   /** Channels for the broker to subscribe to. Default: ["general"] */
   channels?: string[];
+  /** Working directory for broker runtime files. Default: process.cwd() */
+  cwd?: string;
   /** Request timeout in ms. Default: 10_000 */
   requestTimeoutMs?: number;
   /** Shutdown timeout in ms. Default: 3_000 */
@@ -79,10 +85,12 @@ export class BrokerHarness {
   constructor(options: BrokerHarnessOptions = {}) {
     this.opts = {
       binaryPath: options.binaryPath ?? resolveBinaryPath(),
+      binaryArgs: options.binaryArgs ?? [],
       brokerName:
         options.brokerName ??
         `test-harness-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
       channels: options.channels ?? ['general'],
+      cwd: options.cwd ?? process.cwd(),
       requestTimeoutMs: options.requestTimeoutMs ?? 10_000,
       shutdownTimeoutMs: options.shutdownTimeoutMs ?? 3_000,
       env: options.env ?? process.env,
@@ -104,8 +112,10 @@ export class BrokerHarness {
 
     const clientOpts: AgentRelayClientOptions = {
       binaryPath: this.opts.binaryPath,
+      binaryArgs: this.opts.binaryArgs,
       brokerName: this.opts.brokerName,
       channels: this.opts.channels,
+      cwd: this.opts.cwd,
       requestTimeoutMs: this.opts.requestTimeoutMs,
       shutdownTimeoutMs: this.opts.shutdownTimeoutMs,
       env: this.opts.env,
@@ -125,8 +135,10 @@ export class BrokerHarness {
     // Create a high-level facade sharing the same binary/options
     this.relay = new AgentRelay({
       binaryPath: this.opts.binaryPath,
+      binaryArgs: this.opts.binaryArgs,
       brokerName: this.opts.brokerName,
       channels: this.opts.channels,
+      cwd: this.opts.cwd,
       requestTimeoutMs: this.opts.requestTimeoutMs,
       shutdownTimeoutMs: this.opts.shutdownTimeoutMs,
       env: this.opts.env,

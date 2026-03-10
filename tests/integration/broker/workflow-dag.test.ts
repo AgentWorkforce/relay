@@ -63,7 +63,7 @@ test('workflow-dag: executes simple chain in order', { timeout: 120_000 }, async
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const result = await harness.runWorkflow(makeConfig(), undefined, { cwd });
@@ -91,7 +91,7 @@ test(
 
     const cwd = createWorkdir();
     const harness = new WorkflowRunnerHarness();
-    await harness.start();
+    await harness.start({ useRelaycast: false });
 
     try {
       const result = await harness.runWorkflow(
@@ -141,7 +141,7 @@ test('workflow-dag: supports diamond dependencies (A→B,C→D)', { timeout: 120
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const result = await harness.runWorkflow(
@@ -190,7 +190,7 @@ test('workflow-dag: detects dependency cycle', { timeout: 120_000 }, async (t) =
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     await assert.rejects(

@@ -39,7 +39,7 @@ function makeConfig(overrides?: Partial<RelayYamlConfig>): RelayYamlConfig {
           {
             name: 'step-verify-output',
             agent: 'worker',
-            task: 'Return DONE',
+            task: 'Do one thing',
             verification: { type: 'output_contains', value: 'DONE' },
           },
         ],
@@ -65,7 +65,7 @@ test('workflow-verification: output_contains passes when text exists', { timeout
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const result = await harness.runWorkflow(makeConfig(), undefined, { cwd });
@@ -82,7 +82,7 @@ test('workflow-verification: output_contains fails when text missing', { timeout
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const result = await harness.runWorkflow(
@@ -121,7 +121,7 @@ test(
 
     const cwd = createWorkdir();
     const harness = new WorkflowRunnerHarness();
-    await harness.start();
+    await harness.start({ useRelaycast: false });
 
     try {
       const check: VerificationCheck = { type: 'exit_code', value: '0' };
@@ -160,7 +160,7 @@ test('workflow-verification: file_exists passes when file is produced', { timeou
   const cwd = createWorkdir();
   const marker = 'verify-marker.txt';
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const result = await harness.runWorkflow(
@@ -202,7 +202,7 @@ test('workflow-verification: file_exists fails when file is missing', { timeout:
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const result = await harness.runWorkflow(

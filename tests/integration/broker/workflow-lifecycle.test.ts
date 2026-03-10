@@ -61,7 +61,7 @@ test('workflow-lifecycle: run completes successfully', { timeout: 120_000 }, asy
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const result = await harness.runWorkflow(makeConfig(), undefined, { cwd });
@@ -84,7 +84,7 @@ test('workflow-lifecycle: failed run emits failed events', { timeout: 120_000 },
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   const failingVerification: VerificationCheck = {
     type: 'output_contains',
@@ -127,7 +127,7 @@ test('workflow-lifecycle: abort cancels a running workflow', { timeout: 120_000 
 
   const cwd = createWorkdir();
   const harness = new WorkflowRunnerHarness();
-  await harness.start();
+  await harness.start({ useRelaycast: false });
 
   try {
     const runPromise = harness.runWorkflow(
@@ -149,12 +149,23 @@ test('workflow-lifecycle: abort cancels a running workflow', { timeout: 120_000 
       { cwd }
     );
 
+    // Wait for the step to actually start running before aborting
     let currentRunner = harness.getCurrentRunner();
     for (let i = 0; i < 20 && !currentRunner; i += 1) {
       await sleep(250);
       currentRunner = harness.getCurrentRunner();
     }
     assert.ok(currentRunner, 'Expected workflow runner to be available while running');
+
+    // Wait for step:started event before aborting so the step is actually in-flight
+    await new Promise<void>((resolve) => {
+      const unsub = currentRunner!.on((event) => {
+        if (event.type === 'step:started') {
+          unsub();
+          resolve();
+        }
+      });
+    });
     currentRunner.abort();
 
     const result = await runPromise;

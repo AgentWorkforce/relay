@@ -228,7 +228,7 @@ test(
     // Use the fake-CLI harness which echoes FAKE_OUTPUT (default "DONE").
     // We override FAKE_OUTPUT to echo the task so we can inspect it.
     const harness = new WorkflowRunnerHarness();
-    await harness.start();
+    await harness.start({ useRelaycast: false });
 
     const workdir = createWorkdir();
     try {
