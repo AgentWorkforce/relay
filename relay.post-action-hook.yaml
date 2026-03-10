@@ -404,8 +404,9 @@ workflows:
         dependsOn: [implement-runner, update-validator, write-tests]
         command: >
           cd packages/sdk &&
-          npx tsc --noEmit 2>&1 | tail -30 &&
-          echo "TYPE_CHECK_PASSED" || echo "TYPE_CHECK_FAILED"
+          TSC_OUT=$(npx tsc --noEmit 2>&1); TSC_EXIT=$?;
+          echo "$TSC_OUT" | tail -30;
+          if [ $TSC_EXIT -eq 0 ]; then echo "TYPE_CHECK_PASSED"; else echo "TYPE_CHECK_FAILED"; fi
         captureOutput: true
         failOnError: false
 
@@ -415,7 +416,10 @@ workflows:
         type: deterministic
         dependsOn: [type-check]
         command: >-
-          cd packages/sdk && { npx vitest run 2>&1; echo "EXIT:$?"; } | tail -80
+          cd packages/sdk &&
+          TEST_OUT=$(npx vitest run 2>&1); TEST_EXIT=$?;
+          echo "$TEST_OUT" | tail -80;
+          echo "EXIT:$TEST_EXIT"
         captureOutput: true
         failOnError: false
 
@@ -458,7 +462,10 @@ workflows:
         type: deterministic
         dependsOn: [fix-if-broken]
         command: >-
-          cd packages/sdk && { npx vitest run 2>&1; echo "EXIT:$?"; } | tail -60
+          cd packages/sdk &&
+          TEST_OUT=$(npx vitest run 2>&1); TEST_EXIT=$?;
+          echo "$TEST_OUT" | tail -60;
+          echo "EXIT:$TEST_EXIT"
         captureOutput: true
         failOnError: false
 
