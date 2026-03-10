@@ -25,6 +25,12 @@ pip install agent-relay-sdk
 - **Listen for Responses** — Subscribe to incoming messages and react in real-time.
 - **Multi-Provider** — Mix Claude and Codex agents in a single workflow, each using their strengths.
 
+## LLM / Machine-Readable Docs
+
+You're reading the plain Markdown version. These docs mirror the [Mintlify site](https://docs.agent-relay.com) but are designed for LLMs, CLI tools, and programmatic access — no MDX components, no JavaScript.
+
+All markdown docs: [github.com/AgentWorkforce/relay/tree/main/docs/markdown](https://github.com/AgentWorkforce/relay/tree/main/docs/markdown)
+
 ## Next Steps
 
 - [Quickstart](quickstart.md) — Get your first agents talking to each other in minutes.
