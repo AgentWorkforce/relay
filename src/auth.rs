@@ -3,11 +3,18 @@ use chrono::{DateTime, Utc};
 use relaycast::{CreateAgentRequest, RelayCast, RelayCastOptions, RelayError};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CredentialCache {
+pub struct WorkspaceCredential {
     pub workspace_id: String,
+    #[serde(
+        default,
+        alias = "workspaceAlias",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub workspace_alias: Option<String>,
     pub agent_id: String,
     pub api_key: String,
     #[serde(default)]
@@ -17,10 +24,166 @@ pub struct CredentialCache {
     pub updated_at: DateTime<Utc>,
 }
 
+pub type CredentialCache = WorkspaceCredential;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CredentialSet {
+    #[serde(default)]
+    pub memberships: Vec<WorkspaceCredential>,
+    #[serde(
+        default,
+        alias = "defaultWorkspaceId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_workspace_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthSessionSet {
+    pub memberships: Vec<AuthSession>,
+    pub default_workspace_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AuthSession {
     pub credentials: CredentialCache,
     pub token: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WorkspaceSource {
+    #[serde(default, alias = "workspaceId")]
+    workspace_id: Option<String>,
+    #[serde(default, alias = "workspaceAlias")]
+    workspace_alias: Option<String>,
+    api_key: String,
+}
+
+impl CredentialSet {
+    pub fn from_json(raw: &str) -> Result<Self> {
+        let value: Value = serde_json::from_str(raw).context("invalid credential set JSON")?;
+        Self::from_value(value)
+    }
+
+    pub fn from_value(value: Value) -> Result<Self> {
+        if let Ok(set) = serde_json::from_value::<CredentialSet>(value.clone()) {
+            if !set.memberships.is_empty() {
+                return Ok(Self::normalize(set));
+            }
+        }
+
+        if let Ok(legacy) = serde_json::from_value::<WorkspaceCredential>(value.clone()) {
+            return Ok(Self::from_legacy(legacy));
+        }
+
+        if let Ok(legacy) = serde_json::from_value::<Vec<WorkspaceCredential>>(value.clone()) {
+            return Ok(Self::from_memberships(legacy, None));
+        }
+
+        if let Ok(source) = serde_json::from_value::<WorkspaceSource>(value.clone()) {
+            return Ok(Self::from_memberships(
+                vec![WorkspaceCredential {
+                    workspace_id: source
+                        .workspace_id
+                        .unwrap_or_else(|| "ws_unknown".to_string()),
+                    workspace_alias: source.workspace_alias,
+                    agent_id: String::new(),
+                    api_key: source.api_key,
+                    agent_name: None,
+                    agent_token: None,
+                    updated_at: Utc::now(),
+                }],
+                None,
+            ));
+        }
+
+        anyhow::bail!("credential JSON was neither a credential set nor a legacy cache entry")
+    }
+
+    pub fn from_legacy(legacy: WorkspaceCredential) -> Self {
+        let default_workspace_id = Some(legacy.workspace_id.clone());
+        Self {
+            memberships: vec![legacy],
+            default_workspace_id,
+        }
+    }
+
+    pub fn from_memberships(
+        memberships: Vec<WorkspaceCredential>,
+        default_workspace_id: Option<String>,
+    ) -> Self {
+        Self::normalize(Self {
+            memberships,
+            default_workspace_id,
+        })
+    }
+
+    pub fn default_membership(&self) -> Option<&WorkspaceCredential> {
+        if let Some(default_workspace_id) = self.default_workspace_id.as_deref() {
+            self.membership_by_selector(default_workspace_id)
+                .or_else(|| {
+                    self.memberships
+                        .iter()
+                        .find(|membership| membership.workspace_id == default_workspace_id)
+                })
+        } else if self.memberships.len() == 1 {
+            self.memberships.first()
+        } else {
+            None
+        }
+    }
+
+    pub fn membership_by_selector(&self, selector: &str) -> Option<&WorkspaceCredential> {
+        let trimmed = selector.trim();
+        self.memberships.iter().find(|membership| {
+            membership.workspace_id == trimmed
+                || membership
+                    .workspace_alias
+                    .as_deref()
+                    .is_some_and(|alias| alias.eq_ignore_ascii_case(trimmed))
+        })
+    }
+
+    fn normalize(mut set: Self) -> Self {
+        set.memberships
+            .retain(|membership| !membership.api_key.trim().is_empty());
+        if set.default_workspace_id.is_none() && set.memberships.len() == 1 {
+            set.default_workspace_id = set
+                .memberships
+                .first()
+                .map(|membership| membership.workspace_id.clone());
+        }
+        set
+    }
+}
+
+impl AuthSessionSet {
+    pub fn credential_set(&self) -> CredentialSet {
+        CredentialSet::from_memberships(
+            self.memberships
+                .iter()
+                .map(|session| session.credentials.clone())
+                .collect(),
+            self.default_workspace_id.clone(),
+        )
+    }
+
+    pub fn default_session(&self) -> Option<&AuthSession> {
+        if let Some(default_workspace_id) = self.default_workspace_id.as_deref() {
+            self.memberships.iter().find(|session| {
+                session.credentials.workspace_id == default_workspace_id
+                    || session
+                        .credentials
+                        .workspace_alias
+                        .as_deref()
+                        .is_some_and(|alias| alias.eq_ignore_ascii_case(default_workspace_id))
+            })
+        } else if self.memberships.len() == 1 {
+            self.memberships.first()
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -47,13 +210,97 @@ impl AuthClient {
             .await
     }
 
+    pub async fn startup_session_set(
+        &self,
+        requested_name: Option<&str>,
+    ) -> Result<AuthSessionSet> {
+        self.startup_session_set_with_options(requested_name, false, None)
+            .await
+    }
+
     pub async fn startup_session_with_options(
         &self,
         requested_name: Option<&str>,
         strict_name: bool,
         agent_type: Option<&str>,
     ) -> Result<AuthSession> {
-        self.startup_from_sources(requested_name, strict_name, agent_type)
+        let sessions = self
+            .startup_session_set_with_options(requested_name, strict_name, agent_type)
+            .await?;
+        sessions
+            .default_session()
+            .cloned()
+            .context("no default workspace session was available")
+    }
+
+    pub async fn startup_session_set_with_options(
+        &self,
+        requested_name: Option<&str>,
+        strict_name: bool,
+        agent_type: Option<&str>,
+    ) -> Result<AuthSessionSet> {
+        if let Some((sources, default_hint)) = self.load_workspace_sources_from_env()? {
+            let preferred_name = requested_name;
+            let mut memberships = Vec::with_capacity(sources.len());
+            let mut auth_rejections = Vec::new();
+
+            for source in sources {
+                let Some(api_key) = normalize_workspace_key(&source.api_key) else {
+                    anyhow::bail!("RELAY_WORKSPACES_JSON contained an invalid workspace key");
+                };
+                match self
+                    .register_agent_with_workspace_key(
+                        &api_key,
+                        preferred_name,
+                        strict_name,
+                        agent_type,
+                    )
+                    .await
+                {
+                    Ok(registration) => {
+                        let mut session = self.finish_session(
+                            api_key,
+                            source.workspace_id.clone(),
+                            registration,
+                        )?;
+                        session.credentials.workspace_alias = source.workspace_alias.clone();
+                        memberships.push(session);
+                    }
+                    Err(error) if is_auth_rejection(&error) => {
+                        auth_rejections
+                            .push(source.workspace_id.unwrap_or_else(|| "env".to_string()));
+                    }
+                    Err(error) if is_rate_limited(&error) => {
+                        auth_rejections.push(
+                            source
+                                .workspace_id
+                                .unwrap_or_else(|| "env_rate_limited".to_string()),
+                        );
+                    }
+                    Err(error) => {
+                        return Err(error)
+                            .context("failed registering agent for configured workspace");
+                    }
+                }
+            }
+
+            if memberships.is_empty() {
+                anyhow::bail!(
+                    "all configured multi-workspace memberships were rejected ({})",
+                    auth_rejections.join(", ")
+                );
+            }
+
+            return Ok(AuthSessionSet {
+                default_workspace_id: resolve_default_workspace_id(
+                    default_hint.as_deref(),
+                    &memberships,
+                ),
+                memberships,
+            });
+        }
+
+        self.startup_single_session_set_from_sources(requested_name, strict_name, agent_type)
             .await
     }
 
@@ -81,7 +328,10 @@ impl AuthClient {
                     .register_agent_with_workspace_key(&api_key, Some(agent_name), false, None)
                     .await
                     .context("failed to re-register after rotate-token 404")?;
-                self.finish_session(api_key, Some(cached.workspace_id.clone()), registration)
+                let mut session =
+                    self.finish_session(api_key, Some(cached.workspace_id.clone()), registration)?;
+                session.credentials.workspace_alias = cached.workspace_alias.clone();
+                Ok(session)
             }
             Err(error) => Err(error),
         }
@@ -104,6 +354,7 @@ impl AuthClient {
 
         let creds = CredentialCache {
             workspace_id: cached.workspace_id.clone(),
+            workspace_alias: cached.workspace_alias.clone(),
             agent_id: cached.agent_id.clone(),
             api_key: cached.api_key.clone(),
             agent_name: Some(agent_name.to_string()),
@@ -117,12 +368,12 @@ impl AuthClient {
         })
     }
 
-    async fn startup_from_sources(
+    async fn startup_single_session_set_from_sources(
         &self,
         requested_name: Option<&str>,
         strict_name: bool,
         agent_type: Option<&str>,
-    ) -> Result<AuthSession> {
+    ) -> Result<AuthSessionSet> {
         let env_workspace_key = std::env::var("RELAY_API_KEY")
             .ok()
             .and_then(|s| normalize_workspace_key(&s));
@@ -166,7 +417,12 @@ impl AuthClient {
                         returned_name = %registration.1,
                         "registration succeeded"
                     );
-                    return self.finish_session(key.clone(), workspace_id_hint, registration);
+                    let session =
+                        self.finish_session(key.clone(), workspace_id_hint.clone(), registration)?;
+                    return Ok(AuthSessionSet {
+                        default_workspace_id: Some(session.credentials.workspace_id.clone()),
+                        memberships: vec![session],
+                    });
                 }
                 Err(error) if is_auth_rejection(&error) => {
                     auth_rejections.push(format!("{source} key rejected"));
@@ -196,7 +452,11 @@ impl AuthClient {
                 .await
             {
                 Ok(registration) => {
-                    return self.finish_session(api_key, workspace_id_hint, registration);
+                    let session = self.finish_session(api_key, workspace_id_hint, registration)?;
+                    return Ok(AuthSessionSet {
+                        default_workspace_id: Some(session.credentials.workspace_id.clone()),
+                        memberships: vec![session],
+                    });
                 }
                 Err(error) => {
                     return Err(error).context("failed registering agent with fresh workspace key");
@@ -208,6 +468,65 @@ impl AuthClient {
             "all workspace keys were rejected ({})",
             auth_rejections.join(", ")
         );
+    }
+
+    fn load_workspace_sources_from_env(
+        &self,
+    ) -> Result<Option<(Vec<WorkspaceSource>, Option<String>)>> {
+        let Ok(raw) = std::env::var("RELAY_WORKSPACES_JSON") else {
+            return Ok(None);
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+
+        let value: Value =
+            serde_json::from_str(trimmed).context("RELAY_WORKSPACES_JSON must be valid JSON")?;
+        let default_hint = std::env::var("RELAY_DEFAULT_WORKSPACE")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                value
+                    .get("default_workspace_id")
+                    .or_else(|| value.get("defaultWorkspaceId"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            });
+
+        let membership_values = if let Some(arr) = value.as_array() {
+            arr.clone()
+        } else if let Some(arr) = value.get("memberships").and_then(Value::as_array).cloned() {
+            arr
+        } else {
+            vec![value]
+        };
+
+        let mut sources = Vec::with_capacity(membership_values.len());
+        for membership in membership_values {
+            if let Ok(source) = serde_json::from_value::<WorkspaceSource>(membership.clone()) {
+                sources.push(source);
+                continue;
+            }
+            if let Ok(credential) = serde_json::from_value::<WorkspaceCredential>(membership) {
+                sources.push(WorkspaceSource {
+                    workspace_id: Some(credential.workspace_id),
+                    workspace_alias: credential.workspace_alias,
+                    api_key: credential.api_key,
+                });
+                continue;
+            }
+            anyhow::bail!("RELAY_WORKSPACES_JSON contains an invalid membership entry");
+        }
+
+        if sources.is_empty() {
+            anyhow::bail!("RELAY_WORKSPACES_JSON must contain at least one membership");
+        }
+
+        Ok(Some((sources, default_hint)))
     }
 
     fn finish_session(
@@ -223,6 +542,7 @@ impl AuthClient {
 
         let creds = CredentialCache {
             workspace_id,
+            workspace_alias: None,
             agent_id,
             api_key: workspace_key,
             agent_name: Some(agent_name),
@@ -312,6 +632,35 @@ impl AuthClient {
             Err(RelayError::Api { status, .. }) if status == 401 || status == 403 => Ok(false),
             Err(_) => Ok(false),
         }
+    }
+}
+
+fn resolve_default_workspace_id(
+    selector: Option<&str>,
+    memberships: &[AuthSession],
+) -> Option<String> {
+    if let Some(selector) = selector.map(str::trim).filter(|value| !value.is_empty()) {
+        return memberships.iter().find_map(|session| {
+            if session.credentials.workspace_id == selector
+                || session
+                    .credentials
+                    .workspace_alias
+                    .as_deref()
+                    .is_some_and(|alias| alias.eq_ignore_ascii_case(selector))
+            {
+                Some(session.credentials.workspace_id.clone())
+            } else {
+                None
+            }
+        });
+    }
+
+    if memberships.len() == 1 {
+        memberships
+            .first()
+            .map(|session| session.credentials.workspace_id.clone())
+    } else {
+        None
     }
 }
 
@@ -599,6 +948,7 @@ mod tests {
 
         let cached = CredentialCache {
             workspace_id: "ws_cached".into(),
+            workspace_alias: None,
             agent_id: "a_old".into(),
             api_key: "rk_live_cached".into(),
             agent_name: Some("lead".into()),
@@ -639,6 +989,7 @@ mod tests {
 
         let cached = CredentialCache {
             workspace_id: "ws_cached".into(),
+            workspace_alias: None,
             agent_id: "a_old".into(),
             api_key: "rk_live_cached".into(),
             agent_name: Some("lead".into()),

@@ -8,6 +8,7 @@ pub mod events;
 pub mod inject;
 pub mod message_bridge;
 pub mod metrics;
+pub mod multi_workspace;
 pub mod priorities;
 pub mod protocol;
 pub mod pty;

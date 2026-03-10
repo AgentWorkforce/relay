@@ -44,6 +44,9 @@ pub enum SenderKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboundRelayEvent {
     pub event_id: String,
+    pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_alias: Option<String>,
     pub kind: InboundKind,
     pub from: String,
     pub sender_agent_id: Option<String>,
@@ -61,6 +64,8 @@ pub struct InboundRelayEvent {
 pub struct BrokerCommandEvent {
     /// The slash command name (e.g. "/spawn", "/release").
     pub command: String,
+    pub workspace_id: String,
+    pub workspace_alias: Option<String>,
     /// Channel the command was invoked in.
     pub channel: String,
     /// Agent ID or name of the invoker.
@@ -93,6 +98,9 @@ pub enum BrokerCommandPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InjectRequest {
     pub id: String,
+    pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_alias: Option<String>,
     pub from: String,
     pub target: String,
     pub body: String,

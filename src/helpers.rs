@@ -74,7 +74,6 @@ pub(crate) fn normalize_cli_name(cli: &str) -> String {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DeliveryOutcome {
     Success,
-    #[allow(dead_code)]
     Failed,
 }
 
@@ -202,6 +201,8 @@ pub(crate) struct PendingVerification {
     pub attempts: usize,
     pub max_attempts: usize,
     pub request_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub workspace_alias: Option<String>,
     pub from: String,
     pub body: String,
     pub target: String,
@@ -353,6 +354,22 @@ impl TerminalQueryParser {
 pub(crate) fn terminal_query_responses(chunk: &[u8]) -> Vec<&'static [u8]> {
     let mut parser = TerminalQueryParser::default();
     parser.feed(chunk)
+}
+
+fn workspace_context_label(
+    workspace_id: Option<&str>,
+    workspace_alias: Option<&str>,
+) -> Option<String> {
+    workspace_alias
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            workspace_id
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
 }
 
 fn sender_display_name(from: &str) -> &str {
@@ -510,10 +527,33 @@ fn build_mcp_short_hint(
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn format_injection(from: &str, event_id: &str, body: &str, target: &str) -> String {
     format_injection_with_reminder(from, event_id, body, target, true)
 }
 
+pub(crate) fn format_injection_with_workspace(
+    from: &str,
+    event_id: &str,
+    body: &str,
+    target: &str,
+    workspace_id: Option<&str>,
+    workspace_alias: Option<&str>,
+) -> String {
+    format_injection_for_worker_with_workspace(
+        from,
+        event_id,
+        body,
+        target,
+        true,
+        true,
+        None,
+        workspace_id,
+        workspace_alias,
+    )
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn format_injection_with_reminder(
     from: &str,
     event_id: &str,
@@ -524,6 +564,7 @@ pub(crate) fn format_injection_with_reminder(
     format_injection_for_worker(from, event_id, body, target, include_reminder, true, None)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn format_injection_for_worker(
     from: &str,
     event_id: &str,
@@ -533,18 +574,48 @@ pub(crate) fn format_injection_for_worker(
     pre_registered: bool,
     assigned_name: Option<&str>,
 ) -> String {
+    format_injection_for_worker_with_workspace(
+        from,
+        event_id,
+        body,
+        target,
+        include_reminder,
+        pre_registered,
+        assigned_name,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn format_injection_for_worker_with_workspace(
+    from: &str,
+    event_id: &str,
+    body: &str,
+    target: &str,
+    include_reminder: bool,
+    pre_registered: bool,
+    assigned_name: Option<&str>,
+    workspace_id: Option<&str>,
+    workspace_alias: Option<&str>,
+) -> String {
     let sender_name = sender_display_name(from);
+    let workspace_label = workspace_context_label(workspace_id, workspace_alias);
+    let event_context = workspace_label
+        .as_deref()
+        .map(|label| format!("{label} / {event_id}"))
+        .unwrap_or_else(|| event_id.to_string());
     let relay_line = if body.starts_with("Relay message from ") {
         body.trim().to_string()
     } else if target.starts_with('#') {
         format!(
             "Relay message from {} in {} [{}]: {}",
-            sender_name, target, event_id, body
+            sender_name, target, event_context, body
         )
     } else {
         format!(
             "Relay message from {} [{}]: {}",
-            sender_name, event_id, body
+            sender_name, event_context, body
         )
     };
 
@@ -554,7 +625,13 @@ pub(crate) fn format_injection_for_worker(
         return format!("{short_hint}\n{relay_line}");
     }
 
-    let reminder = build_mcp_reminder(from, target, &relay_line, pre_registered, assigned_name);
+    let mut reminder = build_mcp_reminder(from, target, &relay_line, pre_registered, assigned_name);
+    if let Some(label) = workspace_label {
+        reminder = reminder.replace(
+            "</system-reminder>",
+            &format!("- This message belongs to workspace \"{label}\"; keep replies scoped to that workspace.\n</system-reminder>"),
+        );
+    }
     format!("{reminder}\n{relay_line}")
 }
 
