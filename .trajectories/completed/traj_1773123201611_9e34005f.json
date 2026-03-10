@@ -1,0 +1,59 @@
+{
+  "id": "traj_1773123201611_9e34005f",
+  "version": 1,
+  "task": {
+    "title": "test run #cd590290",
+    "source": {
+      "system": "workflow-runner",
+      "id": "cd590290340c324223857873"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-03-10T06:13:21.611Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-10T06:13:21.611Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_2902721b",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-10T06:13:21.611Z",
+      "events": [
+        {
+          "ts": 1773123201611,
+          "type": "note",
+          "content": "Approach: 1-step dag workflow — Parsed 1 steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-10T06:13:25.182Z"
+    },
+    {
+      "id": "ch_3163e0ca",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-10T06:13:25.182Z",
+      "events": [
+        {
+          "ts": 1773123205182,
+          "type": "reflection",
+          "content": "All 1 steps completed in 4s. (completed in 4 seconds)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-10T06:13:25.182Z"
+    }
+  ],
+  "completedAt": "2026-03-10T06:13:25.182Z",
+  "retrospective": {
+    "summary": "All 1 steps completed in 4s.",
+    "approach": "dag workflow (0 agents)",
+    "confidence": 0.75,
+    "learnings": [],
+    "challenges": []
+  }
+}

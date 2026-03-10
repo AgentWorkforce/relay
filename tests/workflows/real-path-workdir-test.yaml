@@ -1,0 +1,42 @@
+version: "1.0"
+name: cross-repo-path-test
+description: E2E test for paths and workdir features (PR #488)
+paths:
+  - name: relaycast
+    path: /Users/khaliqgant/Projects/relaycast
+    description: Relaycast SDK repo
+  - name: relay-dashboard
+    path: /Users/khaliqgant/Projects/relay-dashboard
+    description: Dashboard UI
+swarm:
+  pattern: dag
+  maxConcurrency: 2
+  channel: path-test
+agents:
+  - name: analyzer
+    cli: claude
+    role: Code analyzer
+    preset: worker
+workflows:
+  - name: cross-repo-analysis
+    steps:
+      - name: check-relaycast
+        agent: analyzer
+        workdir: relaycast
+        task: |
+          Run `pwd` and `ls` in the current directory. Report what project this is based on the files you see.
+          At the very end of your response, output the exact string: RELAY_SDK_VERIFIED
+        verification:
+          type: output_contains
+          value: Relaycast
+      - name: check-dashboard
+        agent: analyzer
+        workdir: relay-dashboard
+        dependsOn: [check-relaycast]
+        task: |
+          Run `pwd` and `ls` in the current directory. Report what project this is.
+          Here is context from a previous step: {{steps.check-relaycast.output}}
+          At the very end of your response, output the exact string: DASH_VERIFIED
+        verification:
+          type: output_contains
+          value: dashboard
