@@ -124,7 +124,8 @@ export interface AgentDefinition {
   /** Working directory for this agent, resolved relative to the YAML file. */
   cwd?: string;
   /** Sets this agent's working directory to a named entry from the top-level `paths` array.
-   *  Mutually exclusive with `cwd`. */
+   *  Mutually exclusive with `cwd`. If omitted, the agent runs in the runner's
+   *  working directory (the directory containing the workflow YAML file). */
   workdir?: string;
   /** Additional paths the agent needs read/write access to. */
   additionalPaths?: string[];
@@ -258,7 +259,9 @@ export interface WorkflowStep {
   // ── Deterministic step fields ──────────────────────────────────────────────
   /** Shell command to execute (required for deterministic steps). */
   command?: string;
-  /** Sets this step's working directory to a named entry from the top-level `paths` array. */
+  /** Sets this step's working directory to a named entry from the top-level `paths` array.
+   *  If omitted, the step inherits the agent's workdir, or falls back to the runner's
+   *  working directory. */
   workdir?: string;
   /** Fail if command exit code is non-zero. Default: true. */
   failOnError?: boolean;
