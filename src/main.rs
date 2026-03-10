@@ -450,7 +450,7 @@ struct SpawnPayload {
     /// When true, skip injecting the relay MCP configuration into the spawned agent.
     /// Useful for minor tasks where relay messaging is not needed, saving tokens.
     #[serde(default)]
-    skip_relay_prompt: Option<bool>,
+    skip_relay_prompt: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3443,7 +3443,7 @@ async fn handle_sdk_frame(
                     None,
                     payload.idle_threshold_secs,
                     worker_relay_key.clone(),
-                    payload.skip_relay_prompt.unwrap_or(false),
+                    payload.skip_relay_prompt,
                 )
                 .await?;
             if let Some(task) = effective_task.clone() {

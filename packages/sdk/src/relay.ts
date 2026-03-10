@@ -1257,6 +1257,7 @@ export class AgentRelay {
             args,
             channels,
             task,
+            skipRelayPrompt: options?.skipRelayPrompt,
           });
         } catch (error) {
           await this.invokeLifecycleHook(
