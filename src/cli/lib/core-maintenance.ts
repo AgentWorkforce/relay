@@ -308,7 +308,7 @@ export async function runUninstallCommand(
   if (!isDryRun) {
     for (const pkg of ['agent-relay', '@agent-relay/dashboard-server', '@agent-relay/acp-bridge']) {
       try {
-        await deps.execCommand(`npm uninstall -g ${pkg} 2>/dev/null`);
+        await deps.execCommand(`npm uninstall -g ${pkg}`);
         deps.log(`Uninstalled npm package: ${pkg}`);
       } catch {
         // Package may not be installed via npm — that's fine.
