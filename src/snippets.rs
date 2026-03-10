@@ -564,7 +564,23 @@ pub async fn configure_relaycast_mcp_with_token(
         {
             args.push("--strict-mcp-config".to_string());
         }
-    } else if is_codex
+    }
+
+    // Codex: always disable interactive update prompt (independent of relaycast config).
+    // This must run even when user provides custom mcp_servers.relaycast config.
+    if is_codex
+        && !existing_args
+            .iter()
+            .any(|a| a.contains("check_for_update_on_startup"))
+    {
+        args.extend([
+            "--config".to_string(),
+            "check_for_update_on_startup=false".to_string(),
+        ]);
+    }
+
+    // Codex: auto-configure relaycast MCP (only if not already configured).
+    if is_codex
         && !existing_args
             .iter()
             .any(|a| a.contains("mcp_servers.relaycast"))
@@ -1432,6 +1448,10 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         assert!(
             args.contains(&"mcp_servers.relaycast.env.RELAY_STRICT_AGENT_NAME=\"1\"".to_string())
         );
+        assert!(
+            args.contains(&"check_for_update_on_startup=false".to_string()),
+            "expected check_for_update_on_startup=false config arg"
+        );
     }
 
     #[tokio::test]
@@ -1516,9 +1536,12 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         .await
         .expect("configure codex mcp opt-out");
 
-        assert!(
-            args.is_empty(),
-            "should return no args when user already provided mcp_servers.relaycast config"
+        // When user provides custom relaycast config, we skip relaycast MCP setup
+        // but STILL add the update suppression to prevent interactive prompts.
+        assert_eq!(
+            args,
+            vec!["--config", "check_for_update_on_startup=false"],
+            "should only return update suppression when user already provided mcp_servers.relaycast config"
         );
     }
 

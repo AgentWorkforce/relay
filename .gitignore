@@ -77,3 +77,6 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .agent-relay/
+
+.sst
+openclaw-web/sst-env.d.ts

@@ -222,6 +222,10 @@ export class AgentRelayClient {
     };
   }
 
+  get brokerPid(): number | undefined {
+    return this.child?.pid;
+  }
+
   async start(): Promise<void> {
     if (this.child) {
       return;
@@ -496,7 +500,12 @@ export class AgentRelayClient {
     });
 
     this.exitPromise = new Promise<void>((resolve) => {
-      child.once('exit', (code, signal) => {
+      // Use 'close' instead of 'exit' so that all buffered stderr/stdout
+      // data has been consumed before we build the error message.  The
+      // 'exit' event fires when the process terminates, but stdio streams
+      // may still have unread data; 'close' fires after both the process
+      // exits AND all stdio streams have ended.
+      child.once('close', (code, signal) => {
         const detail = this.lastStderrLine ? `: ${this.lastStderrLine}` : '';
         const error = new AgentRelayProcessError(
           `broker exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})${detail}`

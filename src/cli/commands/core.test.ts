@@ -75,7 +75,7 @@ function createHarness(options?: {
   const projectRoot = '/tmp/project';
   const dataDir = '/tmp/project/.agent-relay';
   const relaySockPath = '/tmp/project/.agent-relay/relay.sock';
-  const brokerPidPath = '/tmp/project/.agent-relay/broker.pid';
+  const brokerPidPath = '/tmp/project/.agent-relay/broker-project.pid';
   const runtimePath = '/tmp/project/.agent-relay/runtime.json';
 
   const fs = options?.fs ?? createFsMock();
@@ -119,6 +119,7 @@ function createHarness(options?: {
     cliScript: '/tmp/agent-relay.js',
     pid: 4242,
     now: vi.fn(() => Date.now()),
+    isPortInUse: vi.fn(async () => false),
     sleep: vi.fn(async () => undefined),
     onSignal: vi.fn(() => undefined),
     holdOpen: vi.fn(async () => undefined),
@@ -212,7 +213,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('up exits early when broker pid file points to a running process', async () => {
-    const brokerPidPath = '/tmp/project/.agent-relay/broker.pid';
+    const brokerPidPath = '/tmp/project/.agent-relay/broker-project.pid';
     const fs = createFsMock({ [brokerPidPath]: '3030' });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (pid === 3030 && signal === 0) {
@@ -398,38 +399,18 @@ describe('registerCoreCommands', () => {
     expect(deps.error).toHaveBeenCalledWith('Dashboard port 3888 is already in use.');
   });
 
-  it('up retries with next API port when first API port is taken', async () => {
-    const firstRelay = createRelayMock({
-      getStatus: vi.fn(async () => {
-        const error = new Error(
-          'Error: failed to bind API on port 3889\nCaused by:\nAddress already in use (os error 48)'
-        ) as Error & {
-          code?: string;
-        };
-        throw error;
-      }),
-    });
-
-    const secondRelay = createRelayMock();
-    const createRelay = vi
-      .fn()
-      .mockReturnValueOnce(firstRelay)
-      .mockReturnValueOnce(secondRelay) as unknown as CoreDependencies['createRelay'];
-
-    const { program, deps } = createHarness({ createRelay });
+  it('up probes for a free API port before spawning the broker', async () => {
+    const relay = createRelayMock();
+    const { program, deps } = createHarness({ relay });
 
     const exitCode = await runCommand(program, ['up', '--port', '3888']);
 
     expect(exitCode).toBeUndefined();
-    expect(createRelay).toHaveBeenCalledWith('/tmp/project', 3889);
-    expect(createRelay).toHaveBeenCalledWith('/tmp/project', 3890);
-    expect(secondRelay.getStatus).toHaveBeenCalledTimes(1);
-    expect(secondRelay.shutdown).toHaveBeenCalledTimes(0);
-    expect(deps.spawnProcess).toHaveBeenCalledWith(
-      '/usr/local/bin/relay-dashboard-server',
-      expect.arrayContaining(['--port', '3888', '--relay-url', 'http://127.0.0.1:3890']),
-      expect.any(Object)
-    );
+    // Port probing happens before createRelay — only one broker is spawned
+    expect(deps.createRelay).toHaveBeenCalledTimes(1);
+    // API port = dashboard port (3888) + 1 = 3889
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889);
+    expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 
   it('up force exits on repeated SIGINT during hung shutdown and suppresses expected dashboard signal noise', async () => {
@@ -483,7 +464,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('down stops broker and cleans stale files', async () => {
-    const brokerPidPath = '/tmp/project/.agent-relay/broker.pid';
+    const brokerPidPath = '/tmp/project/.agent-relay/broker-project.pid';
     const relaySockPath = '/tmp/project/.agent-relay/relay.sock';
     const runtimePath = '/tmp/project/.agent-relay/runtime.json';
 
@@ -529,7 +510,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('status checks broker status and prints metrics', async () => {
-    const brokerPidPath = '/tmp/project/.agent-relay/broker.pid';
+    const brokerPidPath = '/tmp/project/.agent-relay/broker-project.pid';
     const fs = createFsMock({ [brokerPidPath]: '4242' });
     const relay = createRelayMock({
       getStatus: vi.fn(async () => ({ agent_count: 4, pending_delivery_count: 2 })),
@@ -546,7 +527,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('status cleans stale pid file when broker is not running', async () => {
-    const brokerPidPath = '/tmp/project/.agent-relay/broker.pid';
+    const brokerPidPath = '/tmp/project/.agent-relay/broker-project.pid';
     const fs = createFsMock({ [brokerPidPath]: '9999' });
     const killImpl = vi.fn(() => {
       const err = new Error('gone') as Error & { code?: string };

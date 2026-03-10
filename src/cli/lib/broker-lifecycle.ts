@@ -1,5 +1,4 @@
 import path from 'node:path';
-import net from 'node:net';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
 
@@ -23,38 +22,49 @@ const MAX_API_PORT_ATTEMPTS = 25;
 const MAX_DASHBOARD_PORT_ATTEMPTS = 25;
 const MAX_PORT = 65535;
 
+/**
+ * Sanitise a broker name the same way the Rust broker does: keep alphanumeric
+ * characters (including Unicode) and hyphens, replace everything else with `-`.
+ * Rust uses `char::is_alphanumeric()` which includes Unicode letters/digits,
+ * so we use the equivalent `\p{L}` (letters) and `\p{N}` (numbers) classes.
+ */
+function sanitizeBrokerName(name: string): string {
+  return name.replace(/[^\p{L}\p{N}-]/gu, '-');
+}
+
+/**
+ * Derive the broker-name-specific PID filename, matching the Rust broker's
+ * per-broker-name convention (`broker-{safe_name}.pid`).
+ */
+export function brokerPidFilename(projectRoot: string): string {
+  const brokerName = path.basename(projectRoot) || 'project';
+  return `broker-${sanitizeBrokerName(brokerName)}.pid`;
+}
+
 function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function parseApiPortFromLog(line: string): number | null {
-  const match = line.match(/failed to bind API on port (\d+)/i);
-  if (!match?.[1]) {
-    return null;
-  }
-  const parsed = Number.parseInt(match[1], 10);
-  return Number.isNaN(parsed) ? null : parsed;
-}
-
-function isAddressInUseError(message: string): boolean {
-  return /Address already in use/i.test(message) || /EADDRINUSE/i.test(message);
-}
-
-function isApiPortBindingError(
-  message: string,
-  attemptedApiPort: number,
-  detectedApiPort: number | null
-): boolean {
-  if (detectedApiPort === attemptedApiPort) {
-    return true;
+async function resolveApiPortWithFallback(
+  startApiPort: number,
+  maxAttempts: number,
+  deps: CoreDependencies
+): Promise<number> {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const candidatePort = startApiPort + attempt;
+    if (candidatePort > MAX_PORT) {
+      break;
+    }
+    const inUse = await deps.isPortInUse(candidatePort);
+    if (!inUse) {
+      if (attempt > 0) {
+        deps.warn(`API port ${startApiPort} is already in use; trying ${candidatePort}`);
+      }
+      return candidatePort;
+    }
   }
 
-  const extracted = parseApiPortFromLog(message);
-  if (extracted !== null) {
-    return extracted === attemptedApiPort;
-  }
-
-  return isAddressInUseError(message);
+  throw new Error(`Failed to find an available API port near ${startApiPort}.`);
 }
 
 async function startBrokerWithPortFallback(
@@ -64,72 +74,23 @@ async function startBrokerWithPortFallback(
   deps: CoreDependencies,
   verbose: boolean
 ): Promise<{ relay: CoreRelay; apiPort: number }> {
+  // Resolve a free API port BEFORE spawning the broker.  This avoids
+  // spawning (and flocking) multiple --persist brokers during retry,
+  // which caused stale-flock "already running" errors.
   const startApiPort = wantsDashboard ? dashboardPort + 1 : 0;
-  let apiPort = startApiPort;
-  let relay: CoreRelay | null = null;
+  const apiPort = wantsDashboard
+    ? await resolveApiPortWithFallback(startApiPort, MAX_API_PORT_ATTEMPTS, deps)
+    : startApiPort;
 
-  const attempts = wantsDashboard ? Math.max(1, MAX_API_PORT_ATTEMPTS) : 1;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const currentApiPort = startApiPort + attempt;
-    let detectedBindPort: number | null = null;
-    const candidate = deps.createRelay(paths.projectRoot, currentApiPort);
-    candidate.onBrokerStderr?.((line: string) => {
-      const parsedPort = parseApiPortFromLog(line);
-      if (parsedPort !== null) {
-        detectedBindPort = parsedPort;
-      }
-      if (verbose) {
-        deps.error(`[broker] ${line}`);
-      }
-    });
-
-    try {
-      await candidate.getStatus();
-      relay = candidate;
-      break;
-    } catch (error: unknown) {
-      await candidate.shutdown().catch(() => undefined);
-      const message = toErrorMessage(error);
-      const shouldRetryApiPort =
-        wantsDashboard &&
-        currentApiPort > 0 &&
-        currentApiPort < MAX_PORT &&
-        attempt + 1 < attempts &&
-        isApiPortBindingError(message, currentApiPort, detectedBindPort);
-
-      if (!shouldRetryApiPort) {
-        throw error;
-      }
-
-      apiPort = currentApiPort + 1;
-      deps.warn(`API port ${currentApiPort} is already in use; trying ${apiPort}`);
+  const candidate = deps.createRelay(paths.projectRoot, apiPort);
+  candidate.onBrokerStderr?.((line: string) => {
+    if (verbose) {
+      deps.error(`[broker] ${line}`);
     }
-  }
-
-  if (!relay) {
-    throw new Error('Failed to start broker on an available API port.');
-  }
-
-  return { relay, apiPort };
-}
-
-function isPortInUse(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once('error', (error: NodeJS.ErrnoException) => {
-      if (error.code === 'EADDRINUSE' || error.code === 'EACCES') {
-        resolve(true);
-        return;
-      }
-      resolve(false);
-    });
-    server.once('listening', () => {
-      server.close(() => {
-        resolve(false);
-      });
-    });
-    server.listen(port);
   });
+
+  await candidate.getStatus();
+  return { relay: candidate, apiPort };
 }
 
 async function resolveDashboardPortWithFallback(
@@ -139,7 +100,7 @@ async function resolveDashboardPortWithFallback(
 ): Promise<number> {
   for (let attempt = 0; attempt < dashboardPortCandidates; attempt += 1) {
     const candidatePort = dashboardPort + attempt;
-    const inUse = await isPortInUse(candidatePort);
+    const inUse = await deps.isPortInUse(candidatePort);
     if (!inUse) {
       if (attempt > 0) {
         deps.warn(`Dashboard port ${dashboardPort} is already in use; trying ${candidatePort}`);
@@ -209,6 +170,51 @@ function isProcessRunning(pid: number, deps: CoreDependencies): boolean {
   }
 }
 
+async function killOrphanedBrokerProcesses(projectRoot: string, deps: CoreDependencies): Promise<void> {
+  try {
+    const shellQuote = (s: string): string => "'" + s.replace(/'/g, "'\\''") + "'";
+    const brokerName = path.basename(projectRoot) || 'project';
+    let stdout = '';
+    try {
+      const byName = await deps.execCommand(
+        `ps aux | grep '[a]gent-relay-broker' | grep -F ${shellQuote('--name ' + brokerName)}`
+      );
+      stdout = byName.stdout;
+    } catch {
+      // Name filter may not match older process invocations; try legacy path-based filter.
+    }
+    if (!stdout.trim()) {
+      try {
+        const byPath = await deps.execCommand(
+          `ps aux | grep '[a]gent-relay-broker' | grep -F ${shellQuote(projectRoot)}`
+        );
+        stdout = byPath.stdout;
+      } catch {
+        // Expected when no orphaned processes are matched by either strategy.
+      }
+    }
+    const lines = stdout.trim().split('\n').filter(Boolean);
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      const pid = Number.parseInt(parts[1], 10);
+      if (!Number.isNaN(pid) && pid > 0 && pid !== deps.pid) {
+        deps.warn(`Killing orphaned broker process (pid: ${pid})`);
+        try {
+          deps.killProcess(pid, 'SIGTERM');
+        } catch {
+          // Process may have already exited.
+        }
+      }
+    }
+    // Give killed processes a moment to exit.
+    if (lines.length > 0) {
+      await deps.sleep(300);
+    }
+  } catch {
+    // grep returns exit code 1 when no matches found — this is expected.
+  }
+}
+
 function cleanupBrokerPidIfStopped(brokerPidPath: string, deps: CoreDependencies): void {
   const pid = readPidFile(brokerPidPath, deps);
   if (pid === null || !isProcessRunning(pid, deps)) {
@@ -236,16 +242,23 @@ async function waitForProcessExit(pid: number, timeoutMs: number, deps: CoreDepe
 }
 
 function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): void {
-  const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  const brokerPidPath = path.join(paths.dataDir, brokerPidFilename(paths.projectRoot));
+  const legacyBrokerPidPath = path.join(paths.dataDir, 'broker.pid');
   const runtimePath = path.join(paths.dataDir, 'runtime.json');
   const relaySockPath = path.join(paths.dataDir, 'relay.sock');
 
   safeUnlink(brokerPidPath, deps);
+  safeUnlink(legacyBrokerPidPath, deps);
   safeUnlink(relaySockPath, deps);
   safeUnlink(runtimePath, deps);
 
+  // Clean up per-broker-name lock and pid files
   try {
     for (const file of deps.fs.readdirSync(paths.dataDir)) {
+      if (file.startsWith('broker-') && (file.endsWith('.lock') || file.endsWith('.pid'))) {
+        safeUnlink(path.join(paths.dataDir, file), deps);
+        continue;
+      }
       if (!file.startsWith('mcp-identity-')) {
         continue;
       }
@@ -716,7 +729,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   }
 
   const paths = deps.getProjectPaths();
-  const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  const brokerPidPath = path.join(paths.dataDir, brokerPidFilename(paths.projectRoot));
   const wantsDashboard = options.dashboard !== false;
   const requestedDashboardPort = Number.parseInt(options.port ?? '3888', 10) || 3888;
   const shouldReuseExistingBroker = options.reuseExistingBroker === true;
@@ -730,7 +743,19 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   }
 
   deps.fs.mkdirSync(paths.dataDir, { recursive: true });
+  // Check per-broker-name PID first, fall back to legacy broker.pid
   let existingPid = readPidFile(brokerPidPath, deps);
+  if (existingPid === null) {
+    const legacyPidPath = path.join(paths.dataDir, 'broker.pid');
+    existingPid = readPidFile(legacyPidPath, deps);
+    if (existingPid !== null && !isProcessRunning(existingPid, deps)) {
+      safeUnlink(legacyPidPath, deps);
+    } else if (existingPid !== null) {
+      // Migrate legacy PID to new per-broker-name path so down/status can find it
+      writeBrokerPid(brokerPidPath, existingPid, deps);
+      safeUnlink(legacyPidPath, deps);
+    }
+  }
   let ownsBroker = true;
 
   let relay: CoreRelay | null = null;
@@ -861,6 +886,10 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       existingPid = null;
     }
 
+    // Kill any orphaned broker processes for this project that lost their PID
+    // files (e.g. user deleted .agent-relay/ while broker was running).
+    await killOrphanedBrokerProcesses(paths.projectRoot, deps);
+
     const started = await startBrokerWithPortFallback(
       paths,
       dashboardPort,
@@ -870,7 +899,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     );
     relay = started.relay;
     apiPort = started.apiPort;
-    writeBrokerPid(brokerPidPath, deps.pid, deps);
+    writeBrokerPid(brokerPidPath, relay.brokerPid ?? deps.pid, deps);
     const dashboardRelayUrl = resolveDashboardRelayUrl(apiPort, deps);
     const expectedRelayUrl = getDefaultDashboardRelayUrl(apiPort);
     if (
@@ -984,7 +1013,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 // eslint-disable-next-line complexity, max-depth
 export async function runDownCommand(options: DownOptions, deps: CoreDependencies): Promise<void> {
   const paths = deps.getProjectPaths();
-  const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  const brokerPidPath = path.join(paths.dataDir, brokerPidFilename(paths.projectRoot));
   const timeout = Number.parseInt(options.timeout ?? '5000', 10) || 5000;
 
   if (options.all) {
@@ -1036,8 +1065,17 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
     return;
   }
 
-  if (!deps.fs.existsSync(brokerPidPath)) {
+  // Check per-broker-name PID file first, then fall back to legacy broker.pid
+  const legacyBrokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  let activePidPath = brokerPidPath;
+  if (!deps.fs.existsSync(brokerPidPath) && deps.fs.existsSync(legacyBrokerPidPath)) {
+    activePidPath = legacyBrokerPidPath;
+  }
+
+  if (!deps.fs.existsSync(activePidPath)) {
     if (options.force) {
+      // Also kill any orphaned broker processes that lost their PID files
+      await killOrphanedBrokerProcesses(paths.projectRoot, deps);
       cleanupBrokerFiles(paths, deps);
       deps.log('Cleaned up (was not running)');
     } else {
@@ -1046,7 +1084,7 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
     return;
   }
 
-  const pidRaw = deps.fs.readFileSync(brokerPidPath, 'utf-8').trim();
+  const pidRaw = deps.fs.readFileSync(activePidPath, 'utf-8').trim();
   const pid = Number.parseInt(pidRaw, 10);
   if (Number.isNaN(pid) || pid <= 0) {
     cleanupBrokerFiles(paths, deps);
@@ -1097,22 +1135,33 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
 
 export async function runStatusCommand(deps: CoreDependencies): Promise<void> {
   const paths = deps.getProjectPaths();
-  const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  const brokerPidPath = path.join(paths.dataDir, brokerPidFilename(paths.projectRoot));
 
   let running = false;
   let brokerPid: number | undefined;
 
-  if (deps.fs.existsSync(brokerPidPath)) {
-    const pidRaw = deps.fs.readFileSync(brokerPidPath, 'utf-8').trim();
+  // Check the per-broker-name PID file first, then fall back to legacy broker.pid
+  const legacyBrokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  const pidPaths = [brokerPidPath];
+  if (legacyBrokerPidPath !== brokerPidPath) {
+    pidPaths.push(legacyBrokerPidPath);
+  }
+
+  for (const candidatePidPath of pidPaths) {
+    if (!deps.fs.existsSync(candidatePidPath)) {
+      continue;
+    }
+    const pidRaw = deps.fs.readFileSync(candidatePidPath, 'utf-8').trim();
     const pid = Number.parseInt(pidRaw, 10);
     if (!Number.isNaN(pid) && pid > 0) {
-      brokerPid = pid;
-      running = isProcessRunning(pid, deps);
-      if (!running) {
-        safeUnlink(brokerPidPath, deps);
+      if (isProcessRunning(pid, deps)) {
+        brokerPid = pid;
+        running = true;
+        break;
       }
+      safeUnlink(candidatePidPath, deps);
     } else {
-      safeUnlink(brokerPidPath, deps);
+      safeUnlink(candidatePidPath, deps);
     }
   }
 

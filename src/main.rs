@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
     process::Stdio,
     time::{Duration, Instant},
@@ -197,9 +196,9 @@ struct RuntimePaths {
     state: PathBuf,
     pending: PathBuf,
     pid: PathBuf,
-    /// Held for process lifetime to prevent concurrent broker instances.
+    /// Held for process lifetime to prevent concurrent broker instances (persist mode only).
     #[allow(dead_code)]
-    _lock: std::fs::File,
+    _lock: Option<std::fs::File>,
 }
 
 /// Shared Relaycast connection state used by run_init and run_wrap.
@@ -1896,7 +1895,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         ListenApiRequest::Threads { reply } => {
                             let mut messages: Vec<Value> =
                                 recent_thread_messages.iter().cloned().collect();
-                            match relaycast_http.get_dms(&self_name, 200).await {
+                            match relaycast_http.get_all_dms(200).await {
                                 Ok(dm_messages) => messages.extend(dm_messages),
                                 Err(error) => {
                                     tracing::debug!(
@@ -4876,6 +4875,21 @@ fn derive_thread_name(message: &Value, thread_id: &str, self_names: &HashSet<Str
         return thread_id.to_string();
     }
 
+    // Use participants array (from workspace-level DM data) to build a combined name
+    // like "WorkerA ↔ WorkerB" for DMs between non-broker agents.
+    if let Some(participants) = message.get("participants").and_then(|v| v.as_array()) {
+        let names: Vec<&str> = participants
+            .iter()
+            .filter_map(|p| p.as_str())
+            .filter(|name| !is_self_identity(name, self_names))
+            .collect();
+        if names.len() >= 2 {
+            return format!("{} ↔ {}", names[0], names[1]);
+        } else if names.len() == 1 {
+            return names[0].to_string();
+        }
+    }
+
     if let Some(sender) = message_sender(message) {
         if !is_self_identity(&sender, self_names) {
             return sender.trim().trim_start_matches('@').to_string();
@@ -5106,92 +5120,24 @@ fn continuity_dir(state_path: &Path) -> PathBuf {
 /// The temp directory is NOT removed on exit — the OS cleans it up on reboot.
 /// State and pending-delivery files are still written there so they don't
 /// interfere with the project tree; they're just ephemeral.
-fn ensure_ephemeral_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
-    let safe_name: String = broker_name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-
-    let canonical_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    let mut hasher = DefaultHasher::new();
-    canonical_cwd.to_string_lossy().hash(&mut hasher);
-    safe_name.hash(&mut hasher);
-    let suffix = format!("{:016x}", hasher.finish());
-
-    // Use a deterministic temp subdir so duplicate brokers (same cwd + name)
-    // contend on a shared lock, even in ephemeral mode.
-    let root = std::env::temp_dir().join(format!("agent-relay-ephemeral-{suffix}"));
+/// Ephemeral mode: no lock file, no PID file, no temp directory.
+/// The broker lifecycle is tied to the parent process via stdin — when the
+/// parent (SDK client) exits, stdin gets EOF and the broker shuts down.
+/// Single-instance enforcement is unnecessary here because each SDK client
+/// manages its own child process.
+fn ensure_ephemeral_paths(_cwd: &Path, _broker_name: &str) -> Result<RuntimePaths> {
+    // Use a random temp subdir so concurrent ephemeral brokers don't collide
+    // on state files.
+    let root = std::env::temp_dir().join(format!("agent-relay-ephemeral-{}", std::process::id()));
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create ephemeral temp dir {}", root.display()))?;
-
-    let lock_path = root.join("broker.lock");
-    let pid_path = root.join("broker.pid");
-    let lock_file = std::fs::File::create(&lock_path)
-        .with_context(|| format!("failed to create lock file {}", lock_path.display()))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::AsRawFd;
-        let fd = lock_file.as_raw_fd();
-        let rc = unsafe { nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
-        if rc != 0 {
-            if let Ok(contents) = std::fs::read_to_string(&pid_path) {
-                if let Ok(old_pid) = contents.trim().parse::<u32>() {
-                    if !is_pid_alive(old_pid) {
-                        tracing::warn!(
-                            old_pid = old_pid,
-                            "stale ephemeral broker lock detected (PID {} is dead), recovering",
-                            old_pid
-                        );
-                        drop(lock_file);
-                        let lock_file = std::fs::File::create(&lock_path).with_context(|| {
-                            format!(
-                                "failed to re-create lock file after stale recovery {}",
-                                lock_path.display()
-                            )
-                        })?;
-                        let fd = lock_file.as_raw_fd();
-                        let rc = unsafe {
-                            nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB)
-                        };
-                        if rc != 0 {
-                            anyhow::bail!(
-                                "another broker instance is already running in this directory ({})",
-                                root.display()
-                            );
-                        }
-                        write_pid_file(&pid_path)?;
-                        return Ok(RuntimePaths {
-                            persist: false,
-                            state: root.join("state.json"),
-                            pending: root.join("pending.json"),
-                            pid: pid_path,
-                            _lock: lock_file,
-                        });
-                    }
-                }
-            }
-            anyhow::bail!(
-                "another broker instance is already running in this directory ({})",
-                root.display()
-            );
-        }
-    }
-
-    write_pid_file(&pid_path)?;
 
     Ok(RuntimePaths {
         persist: false,
         state: root.join("state.json"),
         pending: root.join("pending.json"),
-        pid: pid_path,
-        _lock: lock_file,
+        pid: PathBuf::new(),
+        _lock: None,
     })
 }
 
@@ -5259,15 +5205,47 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
                             state: root.join(format!("state-{safe_name}.json")),
                             pending: root.join(format!("pending-{safe_name}.json")),
                             pid: pid_path,
-                            _lock: lock_file,
+                            _lock: Some(lock_file),
                         });
+                    } else {
+                        anyhow::bail!(
+                            "another broker instance is already running in this directory (pid: {}, {})",
+                            old_pid,
+                            root.display()
+                        );
                     }
                 }
             }
-            anyhow::bail!(
-                "another broker instance is already running in this directory ({})",
-                root.display()
+            // PID file missing or unreadable while lock is held — treat as stale.
+            // This happens when the user deletes .agent-relay/ while an old broker
+            // is still alive, or during the shutdown race (PID deleted before flock
+            // released).
+            tracing::warn!(
+                "broker lock held but no valid PID file found, treating as stale and recovering"
             );
+            drop(lock_file);
+            let lock_file = std::fs::File::create(&lock_path).with_context(|| {
+                format!(
+                    "failed to re-create lock file after stale recovery {}",
+                    lock_path.display()
+                )
+            })?;
+            let fd = lock_file.as_raw_fd();
+            let rc = unsafe { nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
+            if rc != 0 {
+                anyhow::bail!(
+                    "another broker instance is already running in this directory ({})",
+                    root.display()
+                );
+            }
+            write_pid_file(&pid_path)?;
+            return Ok(RuntimePaths {
+                persist: true,
+                state: root.join(format!("state-{safe_name}.json")),
+                pending: root.join(format!("pending-{safe_name}.json")),
+                pid: pid_path,
+                _lock: Some(lock_file),
+            });
         }
     }
 
@@ -5279,7 +5257,7 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
         state: root.join(format!("state-{safe_name}.json")),
         pending: root.join(format!("pending-{safe_name}.json")),
         pid: pid_path,
-        _lock: lock_file,
+        _lock: Some(lock_file),
     })
 }
 
@@ -5687,6 +5665,100 @@ mod tests {
         assert_eq!(threads[0].thread_id, "conv_123");
         assert_eq!(threads[0].name, "Planner");
         assert_eq!(threads[0].unread_count, 1);
+    }
+
+    #[test]
+    fn build_thread_infos_shows_dms_between_non_broker_agents() {
+        let messages = vec![
+            json!({
+                "from": "WorkerA",
+                "conversation_id": "dm_456",
+                "participants": ["WorkerA", "WorkerB"],
+                "text": "hello WorkerB",
+                "timestamp": "2026-02-23T10:00:00Z",
+            }),
+            json!({
+                "from": "WorkerB",
+                "conversation_id": "dm_456",
+                "participants": ["WorkerA", "WorkerB"],
+                "text": "hi WorkerA",
+                "timestamp": "2026-02-23T10:01:00Z",
+            }),
+        ];
+        let self_names = HashSet::from(["broker".to_string()]);
+        let threads = build_thread_infos(&messages, &self_names);
+
+        assert_eq!(threads.len(), 1, "should group into one conversation");
+        assert_eq!(threads[0].thread_id, "dm_456");
+        assert_eq!(threads[0].name, "WorkerA ↔ WorkerB");
+        assert_eq!(
+            threads[0].unread_count, 2,
+            "both messages unread (neither from broker)"
+        );
+        assert_eq!(threads[0].last_message.as_deref(), Some("hi WorkerA"));
+    }
+
+    #[test]
+    fn build_thread_infos_dm_with_participants_filters_broker() {
+        let messages = vec![json!({
+            "from": "WorkerA",
+            "conversation_id": "dm_789",
+            "participants": ["broker", "WorkerA"],
+            "text": "hello broker",
+            "timestamp": "2026-02-23T10:00:00Z",
+        })];
+        let self_names = HashSet::from(["broker".to_string()]);
+        let threads = build_thread_infos(&messages, &self_names);
+
+        assert_eq!(threads.len(), 1);
+        assert_eq!(
+            threads[0].name, "WorkerA",
+            "should filter out broker from participants"
+        );
+    }
+
+    #[test]
+    fn build_thread_infos_multiple_independent_dm_conversations() {
+        let messages = vec![
+            json!({
+                "from": "Alice",
+                "conversation_id": "dm_aaa",
+                "participants": ["Alice", "Bob"],
+                "text": "hi Bob",
+                "timestamp": "2026-02-23T10:00:00Z",
+            }),
+            json!({
+                "from": "Charlie",
+                "conversation_id": "dm_bbb",
+                "participants": ["Charlie", "Diana"],
+                "text": "hi Diana",
+                "timestamp": "2026-02-23T10:01:00Z",
+            }),
+            json!({
+                "from": "broker",
+                "conversation_id": "dm_ccc",
+                "participants": ["broker", "Eve"],
+                "text": "hi Eve",
+                "timestamp": "2026-02-23T10:02:00Z",
+            }),
+        ];
+        let self_names = HashSet::from(["broker".to_string()]);
+        let threads = build_thread_infos(&messages, &self_names);
+
+        assert_eq!(
+            threads.len(),
+            3,
+            "should have three separate DM conversations"
+        );
+
+        let thread_aaa = threads.iter().find(|t| t.thread_id == "dm_aaa").unwrap();
+        assert_eq!(thread_aaa.name, "Alice ↔ Bob");
+
+        let thread_bbb = threads.iter().find(|t| t.thread_id == "dm_bbb").unwrap();
+        assert_eq!(thread_bbb.name, "Charlie ↔ Diana");
+
+        let thread_ccc = threads.iter().find(|t| t.thread_id == "dm_ccc").unwrap();
+        assert_eq!(thread_ccc.name, "Eve", "broker filtered from participants");
     }
 
     #[test]

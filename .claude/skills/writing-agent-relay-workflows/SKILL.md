@@ -344,6 +344,109 @@ Even if a wave has 10 ready steps, the runner will only start 5 at a time and pi
 | 5–10                   | 5                |
 | 10+                    | 6–8 max          |
 
+## Phase Count: Keep Workflows Compact
+
+**Limit workflows to 3–4 phases.** Each phase is a sequential barrier — the next phase can't start until the previous one finishes. More phases means more serialization, more wall-clock time, and more chances for context drift between agents.
+
+| Phases | Verdict  | Notes                                                       |
+| ------ | -------- | ----------------------------------------------------------- |
+| 2–3    | Ideal    | Tight feedback loops, agents see recent context              |
+| 4      | Okay     | Acceptable for large projects with clear module boundaries   |
+| 5+     | Too many | Agents lose context, reviews find "FILE NOT FOUND" errors    |
+| 8+     | Never    | Each agent works blind — integration issues multiply         |
+
+**Why fewer phases work better:**
+
+- Non-interactive agents can't see each other's output. Each phase boundary is a hard wall.
+- Reflection/review steps only add value if the files actually exist on disk. With many phases, early agents write files that later agents can't find (wrong cwd, wrong paths).
+- Consolidating related work into one phase lets parallel workers share a lead who can coordinate and verify.
+
+**How to consolidate:**
+
+Instead of Phase 1 (auth) → Phase 2 (volumes) → Phase 3 (storage) → Phase 4 (executor), group by integration surface:
+
+```yaml
+# Phase 1: Foundation (auth + volumes + storage — independent modules)
+# Phase 2: Orchestration (executor + bootstrap — depend on Phase 1)
+# Phase 3: API + Integration (web routes + reporter + barrel exports)
+```
+
+Within each phase, use parallel workers with a shared lead for coordination.
+
+## File Materialization: Verify Before Proceeding
+
+**Always add a deterministic file-check step after implementation waves.** Non-interactive agents (codex, claude -p) may fail silently — the process exits 0 but files weren't written because of a wrong cwd, permission issue, or the agent output code to stdout instead of writing files.
+
+### The pattern
+
+```yaml
+# Workers write files in parallel
+- name: impl-auth
+  agent: worker-1
+  task: |
+    Create the file src/auth/credentials.ts with the following implementation...
+    IMPORTANT: Write the file to disk using your file-writing tools.
+    Do NOT just output the code to stdout — the file must exist at src/auth/credentials.ts when you finish.
+
+- name: impl-storage
+  agent: worker-2
+  task: |
+    Create the file src/storage/client.ts with the following implementation...
+    IMPORTANT: Write the file to disk. The file must exist at src/storage/client.ts when you finish.
+
+# Deterministic gate: verify all expected files exist before any review/next-phase step
+- name: verify-files
+  type: deterministic
+  dependsOn: [impl-auth, impl-storage]
+  command: |
+    missing=0
+    for f in src/auth/credentials.ts src/storage/client.ts; do
+      if [ ! -f "$f" ]; then echo "MISSING: $f"; missing=$((missing+1)); fi
+    done
+    if [ $missing -gt 0 ]; then echo "$missing files missing"; exit 1; fi
+    echo "All files present"
+  failOnError: true
+  captureOutput: true
+
+# Reviews and next-phase steps depend on verify-files, not directly on workers
+- name: review
+  agent: reviewer
+  dependsOn: [verify-files]
+  task: ...
+```
+
+### Rules for non-interactive file-writing tasks
+
+1. **Use absolute or explicit relative paths** — always include the full path from the project root in the task prompt. Don't say "implement credentials.ts", say "create the file at `src/auth/credentials.ts`".
+2. **Tell the agent to write the file, not output it** — add `IMPORTANT: Write the file to disk using your file-writing tools. Do NOT just output the code to stdout.` Non-interactive agents sometimes default to printing code instead of writing files.
+3. **Gate downstream steps on file verification** — never let a review or next-phase step run without first confirming the expected files exist via a deterministic `[ -f ]` check.
+4. **Fail fast on missing files** — set `failOnError: true` on the verification step. A missing file early is much cheaper to debug than 30 minutes of "FILE NOT FOUND" reviews.
+
+### Reading files for context injection
+
+When the next phase needs to read files produced by the current phase, use a deterministic step:
+
+```yaml
+- name: read-phase1-output
+  type: deterministic
+  dependsOn: [verify-phase1-files]
+  command: |
+    echo "=== src/auth/credentials.ts ==="
+    cat src/auth/credentials.ts
+    echo "=== src/storage/client.ts ==="
+    cat src/storage/client.ts
+  captureOutput: true
+
+- name: phase2-implement
+  agent: worker
+  dependsOn: [read-phase1-output]
+  task: |
+    Here are the files from Phase 1:
+    {{steps.read-phase1-output.output}}
+
+    Now implement the executor that uses these modules...
+```
+
 ## Common Mistakes
 
 | Mistake                                                     | Fix                                                               |
