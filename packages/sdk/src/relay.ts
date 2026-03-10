@@ -305,7 +305,7 @@ export class AgentRelay {
     this.clientOptions = {
       binaryPath: options.binaryPath,
       binaryArgs: options.binaryArgs,
-      brokerName: options.brokerName,
+      brokerName: options.brokerName ?? options.workspaceName,
       channels: this.defaultChannels,
       cwd: options.cwd,
       env: options.env,
@@ -891,6 +891,12 @@ export class AgentRelay {
     // read from the broker's hello_ack response in ensureStarted().
     if (!this.clientOptions.env) {
       this.clientOptions.env = { ...process.env };
+    }
+
+    // Wire relaycastBaseUrl into the broker's environment so it connects
+    // to the correct Relaycast API endpoint.
+    if (this.relaycastBaseUrl && !this.clientOptions.env.RELAYCAST_BASE_URL) {
+      this.clientOptions.env.RELAYCAST_BASE_URL = this.relaycastBaseUrl;
     }
   }
 
