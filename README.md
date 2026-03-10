@@ -23,6 +23,11 @@ pip install agent-relay-sdk
 
 See the [Python SDK](./packages/sdk-py) for full documentation.
 
+## Documentation
+
+- **Web:** [docs.agent-relay.com](https://docs.agent-relay.com/)
+- **Markdown:** [docs/markdown/](docs/markdown/) — plain-text docs for LLMs and terminal use
+
 ## Usage
 
 ```typescript

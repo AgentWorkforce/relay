@@ -65,6 +65,25 @@ export interface WorkflowDb {
   getStepsByRunId(runId: string): Promise<WorkflowStepRow[]>;
 }
 
+/** Result returned by spawnAndWait / execNonInteractive with optional process exit info. */
+interface SpawnResult {
+  output: string;
+  exitCode?: number;
+  exitSignal?: string;
+}
+
+/** Error carrying exit code/signal from a failed subprocess spawn. */
+class SpawnExitError extends Error {
+  exitCode?: number;
+  exitSignal?: string;
+  constructor(message: string, exitCode?: number, exitSignal?: string | null) {
+    super(message);
+    this.name = 'SpawnExitError';
+    this.exitCode = exitCode;
+    this.exitSignal = exitSignal ?? undefined;
+  }
+}
+
 // ── Events ──────────────────────────────────────────────────────────────────
 
 export type WorkflowEvent =
@@ -81,7 +100,7 @@ export type WorkflowEvent =
       ownerName: string;
       specialistName: string;
     }
-  | { type: 'step:completed'; runId: string; stepName: string; output?: string }
+  | { type: 'step:completed'; runId: string; stepName: string; output?: string; exitCode?: number; exitSignal?: string }
   | {
       type: 'step:review-completed';
       runId: string;
@@ -90,7 +109,7 @@ export type WorkflowEvent =
       decision: 'approved' | 'rejected';
     }
   | { type: 'step:owner-timeout'; runId: string; stepName: string; ownerName: string }
-  | { type: 'step:failed'; runId: string; stepName: string; error: string }
+  | { type: 'step:failed'; runId: string; stepName: string; error: string; exitCode?: number; exitSignal?: string }
   | { type: 'step:skipped'; runId: string; stepName: string }
   | { type: 'step:retrying'; runId: string; stepName: string; attempt: number }
   | { type: 'step:nudged'; runId: string; stepName: string; nudgeCount: number }
@@ -225,6 +244,8 @@ export class WorkflowRunner {
 
   // PTY-based output capture: accumulate terminal output per-agent
   private readonly ptyOutputBuffers = new Map<string, string[]>();
+  /** Snapshot of PTY output from the most recent failed attempt, keyed by step name. */
+  private readonly lastFailedStepOutput = new Map<string, string>();
   private readonly ptyListeners = new Map<string, (chunk: string) => void>();
   private readonly ptyLogStreams = new Map<string, WriteStream>();
   /** Path to workers.json so `agents:kill` can find workflow-spawned agents */
@@ -1618,6 +1639,7 @@ export class WorkflowRunner {
         });
       }
     } finally {
+      this.lastFailedStepOutput.clear();
       for (const stream of this.ptyLogStreams.values()) stream.end();
       this.ptyLogStreams.clear();
       this.ptyOutputBuffers.clear();
@@ -2401,9 +2423,15 @@ export class WorkflowRunner {
       this.currentConfig?.swarm?.timeoutMs;
 
     let lastError: string | undefined;
+    let lastExitCode: number | undefined;
+    let lastExitSignal: string | undefined;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       this.checkAborted();
+
+      // Reset per-attempt exit info so stale values don't leak across retries
+      lastExitCode = undefined;
+      lastExitSignal = undefined;
 
       if (attempt > 0) {
         this.emit({ type: 'step:retrying', runId, stepName: step.name, attempt });
@@ -2451,6 +2479,16 @@ export class WorkflowRunner {
         const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
         let resolvedTask = this.interpolateStepTask(step.task ?? '', stepOutputContext);
 
+        // On retry attempts, prepend failure context so the agent knows what went wrong
+        if (attempt > 0 && lastError) {
+          const priorOutput = (this.lastFailedStepOutput.get(step.name) ?? '').slice(-2000);
+          resolvedTask =
+            `[RETRY — Attempt ${attempt + 1}/${maxRetries + 1}]\n` +
+            `Previous attempt failed: ${lastError}\n` +
+            (priorOutput ? `Previous output (last 2000 chars):\n${priorOutput}\n` : '') +
+            `---\n${resolvedTask}`;
+        }
+
         // If this is an interactive agent, append awareness of non-interactive workers
         // so the lead knows not to message them and to use step output chaining instead
         if (specialistDef.interactive !== false || ownerDef.interactive !== false) {
@@ -2493,9 +2531,12 @@ export class WorkflowRunner {
           this.log(`[${step.name}] Spawning owner "${effectiveOwner.name}" (cli: ${effectiveOwner.cli})${step.workdir ? ` [workdir: ${step.workdir}]` : ''}`);
           const resolvedStep = { ...step, task: ownerTask };
           const ownerStartTime = Date.now();
-          const output = this.executor
+          const spawnResult = this.executor
             ? await this.executor.executeAgentStep(resolvedStep, effectiveOwner, ownerTask, timeoutMs)
             : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs);
+          const output = typeof spawnResult === 'string' ? spawnResult : spawnResult.output;
+          lastExitCode = typeof spawnResult === 'string' ? undefined : spawnResult.exitCode;
+          lastExitSignal = typeof spawnResult === 'string' ? undefined : spawnResult.exitSignal;
           ownerElapsed = Date.now() - ownerStartTime;
           this.log(`[${step.name}] Owner "${effectiveOwner.name}" exited`);
           if (usesOwnerFlow) {
@@ -2545,11 +2586,15 @@ export class WorkflowRunner {
         // Persist step output to disk so it survives restarts and is inspectable
         await this.persistStepOutput(runId, step.name, combinedOutput);
 
-        this.emit({ type: 'step:completed', runId, stepName: step.name, output: combinedOutput });
+        this.emit({ type: 'step:completed', runId, stepName: step.name, output: combinedOutput, exitCode: lastExitCode, exitSignal: lastExitSignal });
         await this.trajectory?.stepCompleted(step, combinedOutput, attempt + 1);
         return;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
+        if (err instanceof SpawnExitError) {
+          lastExitCode = err.exitCode;
+          lastExitSignal = err.exitSignal;
+        }
         const ownerTimedOut = usesDedicatedOwner
           ? /\bowner timed out\b/i.test(lastError)
           : /\btimed out\b/i.test(lastError) && !lastError.includes(`${step.name}-review`);
@@ -2572,7 +2617,10 @@ export class WorkflowRunner {
       verificationValue,
     });
     this.postToChannel(`**[${step.name}]** Failed: ${lastError ?? 'Unknown error'}`);
-    await this.markStepFailed(state, lastError ?? 'Unknown error', runId);
+    await this.markStepFailed(state, lastError ?? 'Unknown error', runId, {
+      exitCode: lastExitCode,
+      exitSignal: lastExitSignal,
+    });
     throw new Error(
       `Step "${step.name}" failed after ${maxRetries} retries: ${lastError ?? 'Unknown error'}`
     );
@@ -2735,10 +2783,10 @@ export class WorkflowRunner {
 
     const workerSettled = workerPromise.catch(() => undefined);
     workerPromise
-      .then((output) => {
+      .then((result) => {
         workerReleased = true;
         this.postToChannel(`**[${step.name}]** Worker \`${workerRuntimeName}\` exited`);
-        if (step.verification?.type === 'output_contains' && output.includes(step.verification.value)) {
+        if (step.verification?.type === 'output_contains' && result.output.includes(step.verification.value)) {
           this.postToChannel(
             `**[${step.name}]** Verification gate observed: output contains ${JSON.stringify(step.verification.value)}`
           );
@@ -2765,7 +2813,7 @@ export class WorkflowRunner {
     const ownerStartTime = Date.now();
 
     try {
-      const ownerOutput = await this.spawnAndWait(supervised.owner, ownerStep, timeoutMs, {
+      const ownerResultObj = await this.spawnAndWait(supervised.owner, ownerStep, timeoutMs, {
         agentNameSuffix: 'owner',
         onSpawned: ({ actualName }) => {
           this.supervisedRuntimeAgents.set(actualName, {
@@ -2779,10 +2827,11 @@ export class WorkflowRunner {
         },
       });
       const ownerElapsed = Date.now() - ownerStartTime;
+      const ownerOutput = ownerResultObj.output;
       this.log(`[${step.name}] Owner "${supervised.owner.name}" exited`);
       this.assertOwnerCompletionMarker(step, ownerOutput, supervisorTask);
 
-      const specialistOutput = await workerPromise;
+      const specialistOutput = (await workerPromise).output;
       return { specialistOutput, ownerOutput, ownerElapsed };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -3029,7 +3078,7 @@ export class WorkflowRunner {
     };
 
     try {
-      reviewOutput = await this.spawnAndWait(reviewerDef, reviewStep, safetyTimeoutMs, {
+      await this.spawnAndWait(reviewerDef, reviewStep, safetyTimeoutMs, {
         onSpawned: ({ agent }) => {
           reviewerHandle = agent;
         },
@@ -3209,7 +3258,7 @@ export class WorkflowRunner {
     agentDef: AgentDefinition,
     step: WorkflowStep,
     timeoutMs?: number
-  ): Promise<string> {
+  ): Promise<SpawnResult> {
     const agentName = `${step.name}-${this.generateShortId()}`;
     const modelArgs = agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [];
 
@@ -3272,7 +3321,7 @@ export class WorkflowRunner {
     const stderrChunks: string[] = [];
 
     try {
-      const output = await new Promise<string>((resolve, reject) => {
+      const { stdout: output, exitCode, exitSignal } = await new Promise<{ stdout: string; exitCode?: number; exitSignal?: string }>((resolve, reject) => {
         const child = cpSpawn(cmd, args, {
           stdio: ['ignore', 'pipe', 'pipe'],
           cwd: this.resolveAgentCwd(agentDef),
@@ -3337,7 +3386,7 @@ export class WorkflowRunner {
           }, timeoutMs);
         }
 
-        child.on('close', (code) => {
+        child.on('close', (code, signal) => {
           clearInterval(heartbeat);
           if (timer) clearTimeout(timer);
           if (abortHandler && abortSignal) {
@@ -3358,14 +3407,20 @@ export class WorkflowRunner {
           if (code !== 0 && code !== null) {
             const stderr = stderrChunks.join('');
             reject(
-              new Error(
-                `Step "${step.name}" exited with code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`
+              new SpawnExitError(
+                `Step "${step.name}" exited with code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`,
+                code,
+                signal
               )
             );
             return;
           }
 
-          resolve(stdout);
+          resolve({
+            stdout,
+            exitCode: code ?? undefined,
+            exitSignal: signal ?? undefined,
+          });
         });
 
         child.on('error', (err) => {
@@ -3378,8 +3433,10 @@ export class WorkflowRunner {
         });
       });
 
-      return output;
+      return { output, exitCode, exitSignal };
     } finally {
+      const combinedOutput = stdoutChunks.join('') + stderrChunks.join('');
+      this.lastFailedStepOutput.set(step.name, combinedOutput);
       stopHeartbeat?.();
       logStream.end();
       this.unregisterWorker(agentName);
@@ -3391,7 +3448,7 @@ export class WorkflowRunner {
     step: WorkflowStep,
     timeoutMs?: number,
     options: SpawnAndWaitOptions = {}
-  ): Promise<string> {
+  ): Promise<SpawnResult> {
     // Branch: non-interactive agents run as simple subprocesses
     if (agentDef.interactive === false) {
       return this.execNonInteractive(agentDef, step, timeoutMs);
@@ -3576,9 +3633,16 @@ export class WorkflowRunner {
           throw new Error(`Step "${step.name}" timed out after ${timeoutMs ?? 'unknown'}ms`);
         }
       }
+
+      if (exitResult === 'force-released') {
+        throw new Error(
+          `Step "${step.name}" failed — agent was force-released after exhausting idle nudges without completing`
+        );
+      }
     } finally {
       // Snapshot PTY chunks before cleanup — we need them for output reading below
       ptyChunks = this.ptyOutputBuffers.get(agentName) ?? [];
+      this.lastFailedStepOutput.set(step.name, ptyChunks.join(''));
 
       // Always clean up PTY resources — prevents fd leaks if spawnPty or waitForExit throws
       stopHeartbeat?.();
@@ -3605,11 +3669,15 @@ export class WorkflowRunner {
         : exitResult === 'timeout'
           ? 'Agent completed (released after idle timeout)'
           : exitResult === 'released'
-            ? 'Agent completed (force-released after idle nudging)'
+            ? 'Agent completed (idle — treated as done)'
             : `Agent exited (${exitResult})`;
     }
 
-    return output;
+    return {
+      output,
+      exitCode: agent?.exitCode,
+      exitSignal: agent?.exitSignal,
+    };
   }
 
   // ── Idle nudging ────────────────────────────────────────────────────────
@@ -3645,7 +3713,7 @@ export class WorkflowRunner {
     agentDef: AgentDefinition,
     step: WorkflowStep,
     timeoutMs?: number
-  ): Promise<'exited' | 'timeout' | 'released'> {
+  ): Promise<'exited' | 'timeout' | 'released' | 'force-released'> {
     const nudgeConfig = this.currentConfig?.swarm.idleNudge;
     if (!nudgeConfig) {
       // Idle = done: race exit against idle. Whichever fires first completes the step.
@@ -3696,7 +3764,7 @@ export class WorkflowRunner {
       }
 
       // Agent is still running after the window expired.
-      if (remaining !== undefined && Date.now() - startTime >= remaining) {
+      if (timeoutMs !== undefined && Date.now() - startTime >= timeoutMs) {
         return 'timeout';
       }
 
@@ -3715,7 +3783,7 @@ export class WorkflowRunner {
       );
       this.emit({ type: 'step:force-released', runId: this.currentRunId ?? '', stepName: step.name });
       await agent.release();
-      return 'released';
+      return 'force-released';
     }
   }
 
@@ -3851,7 +3919,12 @@ export class WorkflowRunner {
     await this.db.updateRun(runId, patch);
   }
 
-  private async markStepFailed(state: StepState, error: string, runId: string): Promise<void> {
+  private async markStepFailed(
+    state: StepState,
+    error: string,
+    runId: string,
+    exitInfo?: { exitCode?: number; exitSignal?: string }
+  ): Promise<void> {
     state.row.status = 'failed';
     state.row.error = error;
     state.row.completedAt = new Date().toISOString();
@@ -3861,7 +3934,14 @@ export class WorkflowRunner {
       completedAt: state.row.completedAt,
       updatedAt: new Date().toISOString(),
     });
-    this.emit({ type: 'step:failed', runId, stepName: state.row.stepName, error });
+    this.emit({
+      type: 'step:failed',
+      runId,
+      stepName: state.row.stepName,
+      error,
+      exitCode: exitInfo?.exitCode,
+      exitSignal: exitInfo?.exitSignal,
+    });
   }
 
   private async markDownstreamSkipped(

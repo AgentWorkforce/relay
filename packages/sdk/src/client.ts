@@ -50,6 +50,9 @@ export interface SpawnPtyInput {
   restartPolicy?: RestartPolicy;
   /** Name of a previously released agent whose continuity context should be injected. */
   continueFrom?: string;
+  /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
+   *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
+  skipRelayPrompt?: boolean;
 }
 
 export interface SpawnHeadlessInput {
@@ -58,6 +61,9 @@ export interface SpawnHeadlessInput {
   args?: string[];
   channels?: string[];
   task?: string;
+  /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
+   *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
+  skipRelayPrompt?: boolean;
 }
 
 export type AgentTransport = 'pty' | 'headless';
@@ -77,6 +83,9 @@ export interface SpawnProviderInput {
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
   continueFrom?: string;
+  /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
+   *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
+  skipRelayPrompt?: boolean;
 }
 
 export interface SendMessageInput {
@@ -278,6 +287,7 @@ export class AgentRelayClient {
       ...(input.task != null ? { initial_task: input.task } : {}),
       ...(input.idleThresholdSecs != null ? { idle_threshold_secs: input.idleThresholdSecs } : {}),
       ...(input.continueFrom != null ? { continue_from: input.continueFrom } : {}),
+      ...(input.skipRelayPrompt != null ? { skip_relay_prompt: input.skipRelayPrompt } : {}),
     });
     return result;
   }
@@ -294,6 +304,7 @@ export class AgentRelayClient {
     const result = await this.requestOk<{ name: string; runtime: AgentRuntime }>('spawn_agent', {
       agent,
       ...(input.task != null ? { initial_task: input.task } : {}),
+      ...(input.skipRelayPrompt != null ? { skip_relay_prompt: input.skipRelayPrompt } : {}),
     });
     return result;
   }
@@ -312,6 +323,7 @@ export class AgentRelayClient {
         args: input.args,
         channels: input.channels,
         task: input.task,
+        skipRelayPrompt: input.skipRelayPrompt,
       });
     }
 
@@ -329,6 +341,7 @@ export class AgentRelayClient {
       idleThresholdSecs: input.idleThresholdSecs,
       restartPolicy: input.restartPolicy,
       continueFrom: input.continueFrom,
+      skipRelayPrompt: input.skipRelayPrompt,
     });
   }
 

@@ -137,6 +137,9 @@ export interface SpawnOptions extends SpawnLifecycleHooks {
   shadowMode?: string;
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
+  /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
+   *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
+  skipRelayPrompt?: boolean;
 }
 
 export interface SpawnAndWaitOptions extends SpawnOptions {
@@ -202,6 +205,9 @@ export interface SpawnerSpawnOptions extends SpawnLifecycleHooks {
   task?: string;
   model?: string;
   cwd?: string;
+  /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
+   *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
+  skipRelayPrompt?: boolean;
 }
 
 export type EventHook<T> = ((value: T) => void) | null;
@@ -299,7 +305,7 @@ export class AgentRelay {
     this.clientOptions = {
       binaryPath: options.binaryPath,
       binaryArgs: options.binaryArgs,
-      brokerName: options.brokerName,
+      brokerName: options.brokerName ?? options.workspaceName,
       channels: this.defaultChannels,
       cwd: options.cwd,
       env: options.env,
@@ -369,6 +375,7 @@ export class AgentRelay {
         shadowMode: input.shadowMode,
         idleThresholdSecs: input.idleThresholdSecs,
         restartPolicy: input.restartPolicy,
+        skipRelayPrompt: input.skipRelayPrompt,
       });
     } catch (error) {
       await this.invokeLifecycleHook(
@@ -410,6 +417,7 @@ export class AgentRelay {
       shadowMode: options?.shadowMode,
       idleThresholdSecs: options?.idleThresholdSecs,
       restartPolicy: options?.restartPolicy,
+      skipRelayPrompt: options?.skipRelayPrompt,
       onStart: options?.onStart,
       onSuccess: options?.onSuccess,
       onError: options?.onError,
@@ -870,7 +878,10 @@ export class AgentRelay {
    *   4. Auto-create a fresh workspace via the Relaycast REST API
    */
   private async ensureRelaycastApiKey(): Promise<void> {
-    if (this.relayApiKey) return;
+    if (this.relayApiKey) {
+      this.wireRelaycastBaseUrl();
+      return;
+    }
 
     const envKey = this.clientOptions.env?.RELAY_API_KEY ?? process.env.RELAY_API_KEY;
     if (envKey) {
@@ -885,6 +896,7 @@ export class AgentRelay {
       } else if (!this.clientOptions.env.RELAY_API_KEY) {
         this.clientOptions.env.RELAY_API_KEY = envKey;
       }
+      this.wireRelaycastBaseUrl();
       return;
     }
 
@@ -894,6 +906,15 @@ export class AgentRelay {
     // read from the broker's hello_ack response in ensureStarted().
     if (!this.clientOptions.env) {
       this.clientOptions.env = { ...process.env };
+    }
+
+    this.wireRelaycastBaseUrl();
+  }
+
+  /** Inject relaycastBaseUrl into broker env. Explicit option wins over inherited env. */
+  private wireRelaycastBaseUrl(): void {
+    if (this.relaycastBaseUrl && this.clientOptions.env) {
+      this.clientOptions.env.RELAYCAST_BASE_URL = this.relaycastBaseUrl;
     }
   }
 
@@ -1267,6 +1288,7 @@ export class AgentRelay {
             task,
             model: options?.model,
             cwd: options?.cwd,
+            skipRelayPrompt: options?.skipRelayPrompt,
             onStart: options?.onStart,
             onSuccess: options?.onSuccess,
             onError: options?.onError,
@@ -1290,6 +1312,7 @@ export class AgentRelay {
             args,
             channels,
             task,
+            skipRelayPrompt: options?.skipRelayPrompt,
           });
         } catch (error) {
           await this.invokeLifecycleHook(

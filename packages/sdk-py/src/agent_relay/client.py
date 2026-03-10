@@ -565,6 +565,7 @@ class AgentRelayClient:
         idle_threshold_secs: Optional[int] = None,
         restart_policy: Optional[dict[str, Any]] = None,
         continue_from: Optional[str] = None,
+        skip_relay_prompt: Optional[bool] = None,
     ) -> dict[str, Any]:
         await self.start_client()
         built_args = _build_pty_args_with_model(cli, args or [], model)
@@ -593,6 +594,8 @@ class AgentRelayClient:
             request_payload["idle_threshold_secs"] = idle_threshold_secs
         if continue_from is not None:
             request_payload["continue_from"] = continue_from
+        if skip_relay_prompt is not None:
+            request_payload["skip_relay_prompt"] = skip_relay_prompt
         return await self._request_ok("spawn_agent", request_payload)
 
     async def spawn_headless(
@@ -603,6 +606,7 @@ class AgentRelayClient:
         args: Optional[list[str]] = None,
         channels: Optional[list[str]] = None,
         task: Optional[str] = None,
+        skip_relay_prompt: Optional[bool] = None,
     ) -> dict[str, Any]:
         await self.start_client()
         agent = AgentSpec(
@@ -615,6 +619,8 @@ class AgentRelayClient:
         request_payload: dict[str, Any] = {"agent": agent.to_dict()}
         if task is not None:
             request_payload["initial_task"] = task
+        if skip_relay_prompt is not None:
+            request_payload["skip_relay_prompt"] = skip_relay_prompt
         return await self._request_ok("spawn_agent", request_payload)
 
     async def spawn_provider(
@@ -634,6 +640,7 @@ class AgentRelayClient:
         idle_threshold_secs: Optional[int] = None,
         restart_policy: Optional[dict[str, Any]] = None,
         continue_from: Optional[str] = None,
+        skip_relay_prompt: Optional[bool] = None,
     ) -> dict[str, Any]:
         resolved_transport: AgentTransport = transport or (
             "headless" if provider == "opencode" else "pty"
@@ -653,6 +660,7 @@ class AgentRelayClient:
                 args=args,
                 channels=channels,
                 task=task,
+                skip_relay_prompt=skip_relay_prompt,
             )
 
         return await self.spawn_pty(
@@ -669,6 +677,7 @@ class AgentRelayClient:
             idle_threshold_secs=idle_threshold_secs,
             restart_policy=restart_policy,
             continue_from=continue_from,
+            skip_relay_prompt=skip_relay_prompt,
         )
 
     async def spawn_claude(self, **kwargs: Any) -> dict[str, Any]:
