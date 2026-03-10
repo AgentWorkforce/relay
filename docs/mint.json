@@ -24,7 +24,8 @@
     },
     {
       "name": "Markdown Docs",
-      "url": "https://github.com/agentworkforce/relay/tree/main/docs/markdown"
+      "url": "https://github.com/agentworkforce/relay/tree/main/docs/markdown",
+      "icon": "file-lines"
     }
   ],
   "navigation": [
