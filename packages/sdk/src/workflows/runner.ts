@@ -2034,6 +2034,9 @@ export class WorkflowRunner {
       : path.join('.worktrees', step.name);
     const createBranch = step.createBranch !== false;
 
+    // Resolve workdir for worktree steps (same as deterministic/agent steps)
+    const stepCwd = this.resolveStepWorkdir(step) ?? this.cwd;
+
     if (!branch) {
       const errorMsg = 'Worktree step missing required "branch" field';
       await this.markStepFailed(state, errorMsg, runId);
@@ -2043,7 +2046,7 @@ export class WorkflowRunner {
     try {
       // Build the git worktree command
       // If createBranch is true and branch doesn't exist, use -b flag
-      const absoluteWorktreePath = path.resolve(this.cwd, worktreePath);
+      const absoluteWorktreePath = path.resolve(stepCwd, worktreePath);
 
       // First, check if the branch already exists
       const checkBranchCmd = `git rev-parse --verify --quiet ${branch} 2>/dev/null`;
@@ -2052,7 +2055,7 @@ export class WorkflowRunner {
       await new Promise<void>((resolve) => {
         const checkChild = cpSpawn('sh', ['-c', checkBranchCmd], {
           stdio: 'pipe',
-          cwd: this.cwd,
+          cwd: stepCwd,
           env: { ...process.env },
         });
         checkChild.on('close', (code) => {
@@ -2080,7 +2083,7 @@ export class WorkflowRunner {
       const output = await new Promise<string>((resolve, reject) => {
         const child = cpSpawn('sh', ['-c', worktreeCmd], {
           stdio: 'pipe',
-          cwd: this.cwd,
+          cwd: stepCwd,
           env: { ...process.env },
         });
 
