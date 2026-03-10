@@ -173,9 +173,26 @@ function isProcessRunning(pid: number, deps: CoreDependencies): boolean {
 async function killOrphanedBrokerProcesses(projectRoot: string, deps: CoreDependencies): Promise<void> {
   try {
     const shellQuote = (s: string): string => "'" + s.replace(/'/g, "'\\''") + "'";
-    const { stdout } = await deps.execCommand(
-      `ps aux | grep '[a]gent-relay-broker' | grep -F ${shellQuote(projectRoot)}`
-    );
+    const brokerName = path.basename(projectRoot) || 'project';
+    let stdout = '';
+    try {
+      const byName = await deps.execCommand(
+        `ps aux | grep '[a]gent-relay-broker' | grep -e ${shellQuote('--name ' + brokerName)}`
+      );
+      stdout = byName.stdout;
+    } catch {
+      // Name filter may not match older process invocations; try legacy path-based filter.
+    }
+    if (!stdout.trim()) {
+      try {
+        const byPath = await deps.execCommand(
+          `ps aux | grep '[a]gent-relay-broker' | grep -F ${shellQuote(projectRoot)}`
+        );
+        stdout = byPath.stdout;
+      } catch {
+        // Expected when no orphaned processes are matched by either strategy.
+      }
+    }
     const lines = stdout.trim().split('\n').filter(Boolean);
     for (const line of lines) {
       const parts = line.trim().split(/\s+/);
@@ -882,7 +899,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     );
     relay = started.relay;
     apiPort = started.apiPort;
-    writeBrokerPid(brokerPidPath, deps.pid, deps);
+    writeBrokerPid(brokerPidPath, relay.brokerPid ?? deps.pid, deps);
     const dashboardRelayUrl = resolveDashboardRelayUrl(apiPort, deps);
     const expectedRelayUrl = getDefaultDashboardRelayUrl(apiPort);
     if (
