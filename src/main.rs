@@ -3008,30 +3008,34 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             continue;
                         }
 
-                        let worker_relay_key = match relaycast_http
-                            .register_agent_token(&name, rst.spec.cli.as_deref())
-                            .await
-                        {
-                            Ok(token) => token,
-                            Err(error) => {
-                                match registration_retry_after_secs(&error) {
-                                    Some(retry_after_secs) => {
-                                        tracing::warn!(
-                                            worker = %name,
-                                            retry_after_secs,
-                                            error = %error,
-                                            "restart blocked by relaycast registration rate limit"
-                                        );
+                        let worker_relay_key = if rst.skip_relay_prompt {
+                            None
+                        } else {
+                            match relaycast_http
+                                .register_agent_token(&name, rst.spec.cli.as_deref())
+                                .await
+                            {
+                                Ok(token) => Some(token),
+                                Err(error) => {
+                                    match registration_retry_after_secs(&error) {
+                                        Some(retry_after_secs) => {
+                                            tracing::warn!(
+                                                worker = %name,
+                                                retry_after_secs,
+                                                error = %error,
+                                                "restart blocked by relaycast registration rate limit"
+                                            );
+                                        }
+                                        None => {
+                                            tracing::error!(
+                                                worker = %name,
+                                                error = %error,
+                                                "failed to pre-register worker before restart"
+                                            );
+                                        }
                                     }
-                                    None => {
-                                        tracing::error!(
-                                            worker = %name,
-                                            error = %error,
-                                            "failed to pre-register worker before restart"
-                                        );
-                                    }
+                                    continue;
                                 }
-                                continue;
                             }
                         };
 
@@ -3040,8 +3044,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 rst.spec.clone(),
                                 rst.parent.clone(),
                                 None,
-                                Some(worker_relay_key),
-                                false,
+                                worker_relay_key,
+                                rst.skip_relay_prompt,
                             )
                             .await
                         {
@@ -3483,6 +3487,7 @@ async fn handle_sdk_frame(
                 payload.agent.clone(),
                 None,
                 initial_task_for_supervisor,
+                payload.skip_relay_prompt,
                 restart_policy,
             );
             workers.metrics.on_spawn(&name);
