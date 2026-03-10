@@ -61,6 +61,8 @@ workflows:
       on the SDK side. The core worker_stream pipeline already works end-to-end.
     onError: retry
     preflight:
+      - command: '[ "$(git rev-parse --abbrev-ref HEAD)" != "main" ]'
+        description: 'Not on main branch — prevents accidental pushes to main'
       - command: test -f src/pty_worker.rs
         description: 'Rust PTY worker source exists'
       - command: test -f packages/sdk/src/relay.ts
@@ -191,6 +193,7 @@ workflows:
         type: deterministic
         dependsOn: [rust-output-buffering, sdk-stream-filtering]
         command: >
+          set -o pipefail;
           cargo build 2>&1 | tail -10 &&
           cargo clippy -- -D warnings 2>&1 | tail -10 &&
           npx tsc --noEmit 2>&1 | tail -10 &&
@@ -230,18 +233,31 @@ workflows:
         type: deterministic
         dependsOn: [fix-build-failures]
         command: >
+          set -o pipefail;
           cargo test 2>&1 | tail -20 &&
           npx vitest run packages/sdk/src/__tests__/orchestration-upgrades.test.ts 2>&1 | tail -20 &&
           echo "TESTS_PASSED" || echo "TESTS_FAILED"
         captureOutput: true
-        failOnError: false
+        failOnError: true
 
       # ── Wave 5: Commit ───────────────────────────────────────────────
 
-      - name: commit-changes
+      - name: create-branch
         type: deterministic
         dependsOn: [run-tests]
         command: >
+          git checkout -b feature/390-pty-output-streaming 2>/dev/null || true &&
+          echo "BRANCH_READY"
+        captureOutput: true
+        failOnError: true
+
+      - name: commit-changes
+        type: deterministic
+        dependsOn: [create-branch]
+        command: >
+          set -e;
+          BRANCH="$(git rev-parse --abbrev-ref HEAD)";
+          if [ "$BRANCH" = "main" ]; then echo "ERROR: refusing to commit on main" && exit 1; fi;
           git add src/pty_worker.rs packages/sdk/src/relay.ts packages/sdk/src/__tests__/orchestration-upgrades.test.ts &&
           git commit -m "feat: add 100ms output buffering and SDK stream filtering (#390)" &&
           git push -u origin HEAD 2>&1 &&
