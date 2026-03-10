@@ -10,7 +10,7 @@ description: >
   final tests -> capture diff -> review.
 
 swarm:
-  pattern: pipeline
+  pattern: dag
   maxConcurrency: 3
   timeoutMs: 2400000  # 40 min
   channel: post-action-hook
@@ -61,7 +61,7 @@ agents:
 workflows:
   - name: default
     description: 'Add postAction hook to workflow steps with shell command and webhook support.'
-    onError: continue
+    onError: skip
 
     preflight:
       - command: test -f packages/sdk/src/workflows/types.ts
@@ -82,25 +82,19 @@ workflows:
 
       - name: read-runner-spawn
         type: deterministic
-        command: >
-          awk '/private async spawnAndWait/,/^  \}$/{print NR": "$0}'
-          packages/sdk/src/workflows/runner.ts | head -120
+        command: cat packages/sdk/src/workflows/runner.ts
         captureOutput: true
         failOnError: false
 
       - name: read-runner-interpolate
         type: deterministic
-        command: >
-          awk '/private interpolateStepTask/,/^  \}$/{print NR": "$0}'
-          packages/sdk/src/workflows/runner.ts | head -60
+        command: cat packages/sdk/src/workflows/runner.ts
         captureOutput: true
         failOnError: false
 
       - name: read-runner-deterministic
         type: deterministic
-        command: >
-          grep -n "deterministic\|execSync\|child_process\|captureOutput"
-          packages/sdk/src/workflows/runner.ts | head -30
+        command: cat packages/sdk/src/workflows/runner.ts
         captureOutput: true
         failOnError: false
 
@@ -128,6 +122,7 @@ workflows:
         type: agent
         agent: types-author
         dependsOn: [read-types, read-schema]
+        timeoutMs: 300000  # 5 min
         task: |
           Add the PostAction interface and update WorkflowStep in two files.
 
@@ -189,6 +184,7 @@ workflows:
         type: agent
         agent: implementer
         dependsOn: [add-types, read-runner-spawn, read-runner-interpolate, read-runner-deterministic]
+        timeoutMs: 600000  # 10 min
         task: |
           Implement postAction execution in packages/sdk/src/workflows/runner.ts.
 
@@ -297,6 +293,12 @@ workflows:
           Make sure to import the PostAction type if needed. Use the existing import
           from './types.js' which already imports WorkflowStep.
 
+          SECURITY NOTE: Interpolated values ({{step.output}}, {{step.name}}, {{run.id}})
+          are inserted into shell commands via string replacement. Sanitize and escape
+          these values before shell execution to prevent command injection. Consider
+          using environment variables or shell-escaped strings instead of direct
+          interpolation into the command string.
+
           Only modify packages/sdk/src/workflows/runner.ts.
         verification:
           type: exit_code
@@ -307,6 +309,7 @@ workflows:
         type: agent
         agent: validator-author
         dependsOn: [add-types, read-validator]
+        timeoutMs: 300000  # 5 min
         task: |
           Update the YAML validator to accept and validate postAction fields.
 
@@ -340,6 +343,7 @@ workflows:
         type: agent
         agent: test-writer
         dependsOn: [implement-runner, update-validator, read-existing-tests]
+        timeoutMs: 300000  # 5 min
         task: |
           Write unit tests for the postAction feature. Create a NEW test file:
           packages/sdk/src/__tests__/post-action.test.ts
@@ -421,6 +425,7 @@ workflows:
         type: agent
         agent: fixer
         dependsOn: [run-tests, type-check]
+        timeoutMs: 300000  # 5 min
         task: |
           Review the type-check and test results. Fix any failures.
 
@@ -477,6 +482,7 @@ workflows:
         type: agent
         agent: reviewer
         dependsOn: [capture-diff, final-tests]
+        timeoutMs: 300000  # 5 min
         task: |
           Review the postAction hook implementation for issue #500.
 
