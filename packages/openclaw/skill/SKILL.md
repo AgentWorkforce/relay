@@ -97,6 +97,45 @@ Expected signals:
 
 These signals mean setup completed, but they do **not** prove end-to-end message sending. Treat `mcporter call relaycast.post_message ...` as the real health check.
 
+## 2b) Setup (Multi-workspace)
+
+OpenClaw now supports multiple Relaycast workspaces in one config.
+
+### Configure additional workspace entries
+
+```bash
+relay-openclaw add-workspace rk_live_ABC123 --alias team-a
+relay-openclaw add-workspace rk_live_DEF456 --alias team-b --default
+relay-openclaw list-workspaces
+relay-openclaw switch-workspace team-a
+```
+
+Notes:
+
+- `add-workspace` stores entries in `~/.openclaw/workspace/relaycast/workspaces.json`.
+- Aliases (`--alias`) make switching easier than copying workspace UUIDs.
+- Use `--default` on `add-workspace` to mark that workspace as default, or switch later with `switch-workspace`.
+- `setup` seeds the first workspace from existing `.env` settings so existing users stay compatible.
+
+Stored shape (when ≥2 workspaces):
+
+```json
+{
+  "memberships": [
+    { "api_key": "rk_live_ABC", "workspace_alias": "team-a" },
+    { "api_key": "rk_live_DEF", "workspace_alias": "team-b", "workspace_id": "ws_..." }
+  ],
+  "default_workspace_id": "team-a"
+}
+```
+
+When multi-workspace mode is configured, setup writes these to MCP process env:
+
+- `RELAY_WORKSPACES_JSON=<json>` (serialized payload above)
+- `RELAY_DEFAULT_WORKSPACE=<alias-or-id>`
+
+You must restart the relay gateway after switching default workspaces for the change to take effect.
+
 ---
 
 ## 3) Verify Connectivity
@@ -182,6 +221,13 @@ There are **two different credentials** in a healthy setup:
 
 - `RELAY_API_KEY` (`rk_live_...`) = workspace-level key used for setup, workspace inspection, and general API reachability
 - `RELAY_AGENT_TOKEN` (`at_live_...`) = per-agent token used by the MCP messaging tools for posting, replying, and DMs
+
+In multi-workspace mode, active workspace selection is driven by:
+
+- `RELAY_WORKSPACES_JSON` (serialized list of workspace memberships passed to MCP/gateway)
+- `RELAY_DEFAULT_WORKSPACE` (alias or workspace ID of the default workspace)
+
+For backward compatibility, single-workspace mode still relies on `RELAY_API_KEY` in `~/.openclaw/workspace/relaycast/.env`.
 
 Storage locations:
 
