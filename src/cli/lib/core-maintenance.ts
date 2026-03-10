@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { CoreDependencies, CoreFileSystem } from '../commands/core.js';
+import { brokerPidFilename } from './broker-lifecycle.js';
 
 const SNIPPET_MARKER_START_PREFIX = '<!-- prpm:snippet:start @agent-relay/agent-relay-snippet@';
 const SNIPPET_MARKER_END_PREFIX = '<!-- prpm:snippet:end @agent-relay/agent-relay-snippet@';
@@ -198,11 +199,16 @@ export async function runUninstallCommand(
   deps: CoreDependencies
 ): Promise<void> {
   const paths = deps.getProjectPaths();
-  const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
+  const brokerPidPath = path.join(paths.dataDir, brokerPidFilename(paths.projectRoot));
+  const legacyBrokerPidPath = path.join(paths.dataDir, 'broker.pid');
   const runtimePath = path.join(paths.dataDir, 'runtime.json');
 
-  if (deps.fs.existsSync(brokerPidPath)) {
-    const pidRaw = deps.fs.readFileSync(brokerPidPath, 'utf-8').trim();
+  // Check per-broker-name PID first, fall back to legacy broker.pid
+  for (const pidPath of [brokerPidPath, legacyBrokerPidPath]) {
+    if (!deps.fs.existsSync(pidPath)) {
+      continue;
+    }
+    const pidRaw = deps.fs.readFileSync(pidPath, 'utf-8').trim();
     const pid = Number.parseInt(pidRaw, 10);
     if (!Number.isNaN(pid) && pid > 0) {
       try {
@@ -210,6 +216,7 @@ export async function runUninstallCommand(
       } catch {
         // Ignore dead processes.
       }
+      break;
     }
   }
 
@@ -219,12 +226,13 @@ export async function runUninstallCommand(
   if (isDryRun) {
     if (options.keepData) {
       deps.log(`[dry-run] Would remove: ${brokerPidPath}`);
+      deps.log(`[dry-run] Would remove: ${legacyBrokerPidPath}`);
       deps.log(`[dry-run] Would remove: ${runtimePath}`);
     } else {
       deps.log(`[dry-run] Would remove directory: ${paths.dataDir}`);
     }
   } else if (options.keepData) {
-    for (const filePath of [brokerPidPath, runtimePath]) {
+    for (const filePath of [brokerPidPath, legacyBrokerPidPath, runtimePath]) {
       if (!deps.fs.existsSync(filePath)) {
         continue;
       }
