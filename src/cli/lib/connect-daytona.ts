@@ -260,7 +260,7 @@ export async function runConnectCommand(
   io.log(color.green('          Authentication Complete!'));
   io.log(color.green('═══════════════════════════════════════════════════'));
   io.log('');
-  io.log(`${providerConfig.displayName} credentials are now stored in the Daytona volume.`);
-  io.log(color.dim('Your sandboxes can mount the volume to access stored credentials.'));
+  io.log(`${providerConfig.displayName} credentials are now stored and encrypted.`);
+  io.log(color.dim('Your workflows will automatically use these credentials.'));
   io.log('');
 }
