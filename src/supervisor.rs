@@ -57,6 +57,7 @@ struct RestartState {
     pub spec: AgentSpec,
     pub initial_task: Option<String>,
     pub parent: Option<String>,
+    pub skip_relay_prompt: bool,
 }
 
 /// Decision returned by the supervisor after an agent exits.
@@ -72,6 +73,7 @@ pub struct PendingRestart {
     pub parent: Option<String>,
     pub initial_task: Option<String>,
     pub restart_count: u32,
+    pub skip_relay_prompt: bool,
 }
 
 /// Manages restart state for all supervised agents.
@@ -99,6 +101,7 @@ impl Supervisor {
         spec: AgentSpec,
         parent: Option<String>,
         initial_task: Option<String>,
+        skip_relay_prompt: bool,
         policy: RestartPolicy,
     ) {
         self.states.insert(
@@ -111,6 +114,7 @@ impl Supervisor {
                 spec,
                 initial_task,
                 parent,
+                skip_relay_prompt,
             },
         );
     }
@@ -187,6 +191,7 @@ impl Supervisor {
                             parent: state.parent.clone(),
                             initial_task: state.initial_task.clone(),
                             restart_count: state.total_restarts + 1,
+                            skip_relay_prompt: state.skip_relay_prompt,
                         },
                     ))
                 } else {
@@ -257,7 +262,14 @@ mod tests {
     #[test]
     fn register_and_unregister() {
         let mut sup = Supervisor::new();
-        sup.register("w1", test_spec("w1"), None, None, RestartPolicy::default());
+        sup.register(
+            "w1",
+            test_spec("w1"),
+            None,
+            None,
+            false,
+            RestartPolicy::default(),
+        );
         assert!(sup.is_supervised("w1"));
 
         sup.unregister("w1");
@@ -278,6 +290,7 @@ mod tests {
             test_spec("w1"),
             Some("lead".into()),
             Some("do stuff".into()),
+            true,
             RestartPolicy::default(),
         );
 
@@ -298,7 +311,7 @@ mod tests {
             max_consecutive_failures: 10, // high so this doesn't trigger
             ..Default::default()
         };
-        sup.register("w1", test_spec("w1"), None, None, policy);
+        sup.register("w1", test_spec("w1"), None, None, false, policy);
 
         // First crash -> restart
         assert!(matches!(
@@ -327,7 +340,7 @@ mod tests {
             max_restarts: 10, // high so this doesn't trigger
             ..Default::default()
         };
-        sup.register("w1", test_spec("w1"), None, None, policy);
+        sup.register("w1", test_spec("w1"), None, None, false, policy);
 
         // Crash 1 -> consecutive=1, restart
         assert!(matches!(
@@ -355,7 +368,7 @@ mod tests {
             max_restarts: 10,
             ..Default::default()
         };
-        sup.register("w1", test_spec("w1"), None, None, policy);
+        sup.register("w1", test_spec("w1"), None, None, false, policy);
 
         // Two crashes
         sup.on_exit("w1", Some(1), None);
@@ -378,7 +391,7 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        sup.register("w1", test_spec("w1"), None, None, policy);
+        sup.register("w1", test_spec("w1"), None, None, false, policy);
 
         let decision = sup.on_exit("w1", Some(1), None).unwrap();
         assert!(matches!(decision, RestartDecision::PermanentlyDead { .. }));
@@ -387,7 +400,14 @@ mod tests {
     #[test]
     fn released_agent_not_restarted() {
         let mut sup = Supervisor::new();
-        sup.register("w1", test_spec("w1"), None, None, RestartPolicy::default());
+        sup.register(
+            "w1",
+            test_spec("w1"),
+            None,
+            None,
+            false,
+            RestartPolicy::default(),
+        );
         sup.unregister("w1");
 
         // Should return None — not supervised
@@ -406,6 +426,7 @@ mod tests {
             test_spec("w1"),
             Some("lead".into()),
             Some("task".into()),
+            true,
             policy,
         );
 
@@ -418,6 +439,7 @@ mod tests {
         assert_eq!(pending[0].1.parent.as_deref(), Some("lead"));
         assert_eq!(pending[0].1.initial_task.as_deref(), Some("task"));
         assert_eq!(pending[0].1.restart_count, 1);
+        assert!(pending[0].1.skip_relay_prompt);
     }
 
     #[test]
@@ -427,7 +449,7 @@ mod tests {
             cooldown_ms: 60_000, // 60 seconds
             ..Default::default()
         };
-        sup.register("w1", test_spec("w1"), None, None, policy);
+        sup.register("w1", test_spec("w1"), None, None, false, policy);
 
         sup.on_exit("w1", Some(1), None);
 
@@ -439,7 +461,14 @@ mod tests {
     #[test]
     fn restart_count_tracks_total() {
         let mut sup = Supervisor::new();
-        sup.register("w1", test_spec("w1"), None, None, RestartPolicy::default());
+        sup.register(
+            "w1",
+            test_spec("w1"),
+            None,
+            None,
+            false,
+            RestartPolicy::default(),
+        );
 
         assert_eq!(sup.restart_count("w1"), 0);
 
@@ -450,6 +479,22 @@ mod tests {
         sup.on_exit("w1", Some(1), None);
         sup.on_restarted("w1");
         assert_eq!(sup.restart_count("w1"), 2);
+    }
+
+    #[test]
+    fn pending_restarts_preserve_skip_relay_prompt() {
+        let mut sup = Supervisor::new();
+        let policy = RestartPolicy {
+            cooldown_ms: 0,
+            ..Default::default()
+        };
+        sup.register("w1", test_spec("w1"), None, None, true, policy);
+
+        sup.on_exit("w1", Some(1), None);
+
+        let pending = sup.pending_restarts();
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].1.skip_relay_prompt);
     }
 
     #[test]
