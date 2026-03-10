@@ -31,8 +31,8 @@ const relay = new AgentRelay(options?: AgentRelayOptions);
 | `channels`          | `string[]`          | Default channels agents are joined to on spawn      | `['general']`               |
 | `cwd`               | `string`            | Working directory for the broker and spawned agents | `process.cwd()`             |
 | `env`               | `NodeJS.ProcessEnv` | Environment variables passed to the broker          | Inherited                   |
-| `requestTimeoutMs`  | `number`            | Timeout for broker requests                         | `30000`                     |
-| `shutdownTimeoutMs` | `number`            | Timeout when shutting down                          | `10000`                     |
+| `requestTimeoutMs`  | `number`            | Timeout for broker requests                         | `10000`                     |
+| `shutdownTimeoutMs` | `number`            | Timeout when shutting down                          | `3000`                      |
 | `workspaceName`     | `string`            | Name for the auto-created Relaycast workspace       | Random                      |
 | `relaycastBaseUrl`  | `string`            | Base URL for the Relaycast API                      | `https://api.relaycast.dev` |
 
