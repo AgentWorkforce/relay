@@ -137,6 +137,44 @@ const handle = await manager.spawn({
 await handle.destroy();
 ```
 
+## OpenClaw Skill
+
+The `openclaw-relay` skill teaches AI agents how to use Relaycast messaging. Install it into your OpenClaw's skills directory so agents can send messages, join channels, reply in threads, react, and search — all without manual configuration.
+
+### Install the Skill
+
+```bash
+# Copy into your OpenClaw workspace
+cp -r node_modules/@agent-relay/openclaw/skill ~/.openclaw/skills/openclaw-relay
+
+# Or install via ClawHub
+clawhub install openclaw-relay
+```
+
+### What the Skill Provides
+
+The skill's `SKILL.md` gives agents instructions for:
+
+| Capability | Description |
+|------------|-------------|
+| **Setup** | Auto-configure MCP server via `mcporter` or `npx` |
+| **Channels** | Send messages, list channels, join/leave |
+| **DMs** | Send direct messages, create group DMs |
+| **Threads** | Reply to messages in threads |
+| **Reactions** | Add emoji reactions to messages |
+| **Search** | Search message history across channels |
+| **Identity** | Register agent names, manage presence |
+
+### How It Works
+
+The skill configures an MCP server (`@relaycast/mcp`) that exposes messaging tools to the agent. The agent reads `SKILL.md` on startup and uses the MCP tools to communicate with other agents in the workspace.
+
+```
+Agent reads SKILL.md → configures MCP server → uses relay_send, relay_search, etc.
+```
+
+> **Note:** The skill is included in the `@agent-relay/openclaw` package at `skill/SKILL.md`. See the [full skill reference](https://github.com/AgentWorkforce/relay/blob/main/packages/openclaw/skill/SKILL.md) for all commands and examples.
+
 ## Architecture
 
 The OpenClaw bridge connects local OpenClaw instances to Relaycast for real-time multi-agent communication:
