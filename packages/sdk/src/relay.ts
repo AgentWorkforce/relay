@@ -867,7 +867,10 @@ export class AgentRelay {
    *   4. Auto-create a fresh workspace via the Relaycast REST API
    */
   private async ensureRelaycastApiKey(): Promise<void> {
-    if (this.relayApiKey) return;
+    if (this.relayApiKey) {
+      this.wireRelaycastBaseUrl();
+      return;
+    }
 
     const envKey = this.clientOptions.env?.RELAY_API_KEY ?? process.env.RELAY_API_KEY;
     if (envKey) {
@@ -882,6 +885,7 @@ export class AgentRelay {
       } else if (!this.clientOptions.env.RELAY_API_KEY) {
         this.clientOptions.env.RELAY_API_KEY = envKey;
       }
+      this.wireRelaycastBaseUrl();
       return;
     }
 
@@ -893,9 +897,12 @@ export class AgentRelay {
       this.clientOptions.env = { ...process.env };
     }
 
-    // Wire relaycastBaseUrl into the broker's environment so it connects
-    // to the correct Relaycast API endpoint.
-    if (this.relaycastBaseUrl && !this.clientOptions.env.RELAYCAST_BASE_URL) {
+    this.wireRelaycastBaseUrl();
+  }
+
+  /** Inject relaycastBaseUrl into broker env if set and not already present. */
+  private wireRelaycastBaseUrl(): void {
+    if (this.relaycastBaseUrl && this.clientOptions.env && !this.clientOptions.env.RELAYCAST_BASE_URL) {
       this.clientOptions.env.RELAYCAST_BASE_URL = this.relaycastBaseUrl;
     }
   }
