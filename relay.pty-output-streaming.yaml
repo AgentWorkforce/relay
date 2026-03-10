@@ -1,19 +1,32 @@
 version: '1.0'
 name: pty-output-streaming
 description: >
-  Implement PTY output streaming (GitHub issue #390). Adds real-time visibility
-  into spawned agent output by emitting buffered output chunks as JSON events
-  from relay-pty, parsing them in the TS wrapper, adding protocol types for
-  subscription, wiring daemon forwarding, and exposing an SDK client method.
+  PTY output streaming improvements for GitHub issue #390.
 
-  Five layers: Rust PTY emitter -> TS wrapper parser -> protocol types ->
-  daemon subscription -> SDK client method. Layers 1-2 are required for
-  minimum viability; layers 3-5 enable subscription from external clients.
+  STATUS: The core feature is ALREADY IMPLEMENTED. The full pipeline exists:
+    - Rust: src/pty_worker.rs emits `worker_stream` frames (lines 441-444, 836-839)
+    - Protocol: packages/sdk/src/protocol.ts defines `worker_stream` BrokerEvent
+      and `WorkerToBroker` types
+    - SDK: packages/sdk/src/relay.ts handles `worker_stream` events, provides
+      agent.onOutput() callback with per-agent filtering and unsubscribe
+    - Tests: packages/sdk/src/__tests__/orchestration-upgrades.test.ts covers
+      onOutput, per-agent filtering, unsubscribe, and idle-resume on output
+
+  The existing push model works end-to-end:
+    Rust pty_worker → send_frame("worker_stream") → Broker → SDK event handler
+    → onWorkerOutput global hook + dispatchOutput() → agent.onOutput(callback)
+
+  REMAINING GAP: The Rust side emits worker_stream on EVERY PTY read chunk with
+  no rate-limiting or buffering. High-frequency output (e.g. streaming compilation
+  logs) floods the broker with small frames. Adding 100ms batched buffering in
+  src/pty_worker.rs would reduce frame rate to ~10/sec max while preserving
+  real-time feel. SDK-level output filtering by stream type (stdout vs stderr)
+  could also be added as a convenience.
 
 swarm:
   pattern: dag
-  maxConcurrency: 3
-  timeoutMs: 7200000
+  maxConcurrency: 2
+  timeoutMs: 3600000
   channel: pty-streaming
   idleNudge:
     nudgeAfterMs: 300000
@@ -23,340 +36,184 @@ swarm:
 agents:
   - name: rust-dev
     cli: claude
-    channels: [pty-streaming, rust-track]
+    channels: [pty-streaming]
     role: >
-      Rust backend developer. Modifies relay-pty/src/main.rs to emit buffered
-      output chunks as JSON events on stderr. Familiar with the PTY event loop,
-      tokio async, and serde_json serialization.
+      Rust backend developer. Modifies src/pty_worker.rs to add rate-limited
+      buffering for worker_stream frame emission. Familiar with the PTY event
+      loop, tokio async, and the existing send_frame helper.
     constraints:
       model: opus
 
-  - name: ts-wrapper-dev
-    cli: claude
-    channels: [pty-streaming, ts-track]
-    role: >
-      TypeScript developer working on the PTY orchestrator wrapper and protocol
-      types. Parses stderr JSON events, adds protocol message types, wires
-      daemon subscription, and adds SDK client method.
-    constraints:
-      model: sonnet
-
-  - name: integration-tester
+  - name: sdk-dev
     cli: claude
     channels: [pty-streaming]
     role: >
-      Tests the full pipeline end-to-end. Verifies Rust emits output events,
-      TS wrapper parses them, daemon forwards them, and SDK can subscribe.
+      TypeScript SDK developer. Adds optional stream filtering to the
+      agent.onOutput() API in packages/sdk/src/relay.ts. Writes tests in
+      packages/sdk/src/__tests__/orchestration-upgrades.test.ts.
     constraints:
       model: sonnet
 
 workflows:
-  - name: implement-pty-output-streaming
+  - name: improve-pty-output-streaming
     description: >
-      Layered implementation: Rust emitter -> TS wrapper -> protocol types ->
-      daemon forwarding -> SDK subscription -> integration test -> PR.
+      Add rate-limited buffering on the Rust side and optional stream filtering
+      on the SDK side. The core worker_stream pipeline already works end-to-end.
     onError: retry
     preflight:
-      - command: ls relay-pty/src/main.rs
-        description: 'Rust PTY source exists'
-      - command: ls packages/wrapper/src/relay-pty-orchestrator.ts
-        description: 'TS PTY orchestrator exists'
-      - command: cargo build --manifest-path relay-pty/Cargo.toml 2>&1 | tail -3
-        description: 'Rust builds cleanly before changes'
+      - command: test -f src/pty_worker.rs
+        description: 'Rust PTY worker source exists'
+      - command: test -f packages/sdk/src/relay.ts
+        description: 'SDK relay source exists'
+      - command: grep -q worker_stream src/pty_worker.rs
+        description: 'worker_stream emission already exists in pty_worker'
+      - command: grep -q worker_stream packages/sdk/src/protocol.ts
+        description: 'worker_stream protocol type already defined'
       - command: git status --porcelain
         failIf: non-empty
         description: 'Working directory is clean'
 
     steps:
-      # ── Wave 1: Parallel foundation work (Rust + Protocol types) ────────
+      # ── Wave 1: Parallel — Rust buffering + SDK filtering ─────────────
 
-      - name: rust-output-emitter
+      - name: rust-output-buffering
         type: agent
         agent: rust-dev
         task: |
-          Implement buffered PTY output streaming in relay-pty/src/main.rs.
+          Add 100ms rate-limited buffering to worker_stream emission in
+          src/pty_worker.rs.
 
-          CONTEXT (from issue #390):
-          relay-pty already captures all PTY output in its event loop. After
-          writing to stdout (line ~716) and the log file (line ~720), the data
-          is parsed for relay commands but the raw output text is never emitted
-          as a JSON event back to the daemon.
+          CONTEXT:
+          The PTY event loop in run_pty_worker() already emits worker_stream
+          frames at line 441-444:
+            let _ = send_frame(&out_tx, "worker_stream", None, json!({
+                "stream": "stdout",
+                "chunk": text,
+            })).await;
+
+          This fires on EVERY PTY read chunk with no batching. High-frequency
+          output floods the broker with many small frames.
 
           TASK:
-          1. Add an output buffer (String) and a last-flush timestamp (Instant)
-             to the PTY event loop state.
+          1. Add an output buffer (String) and a last-flush Instant near the
+             existing `echo_buffer` and `continuity_buffer` declarations
+             (around line 229).
 
-          2. In the PTY read handler, after the stdout write and log file write
-             but BEFORE the relay command parser:
-             - Append the chunk (as lossy UTF-8) to the output buffer
-             - If 100ms have elapsed since last flush OR buffer exceeds 4096 bytes:
-               - If json_output is enabled and buffer is non-empty after trim:
-                 - Emit a JSON event to stderr:
-                   {"type":"output","ts":<epoch_ms>,"data":"<buffered_text>"}
-                 - Use serde_json::json! macro and eprintln!
-               - Clear the buffer and reset the flush timestamp
+          2. Replace the direct send_frame("worker_stream") call at line 441-444
+             with buffer accumulation:
+             - Append the chunk text to the output buffer
+             - Only flush (send the frame) when:
+               a) 100ms have elapsed since last flush, OR
+               b) buffer exceeds 4096 bytes
+             - On flush: send the accumulated buffer as one worker_stream frame,
+               clear the buffer, reset the flush timestamp
+             - Skip sending if buffer is empty after trim
 
-          3. Add a flush on the existing tick/timer arm of the select! loop so
-             buffered output is flushed even during quiet periods.
+          3. Add a flush check on the existing verification_tick interval
+             (line 234, fires every 200ms) so buffered output is flushed even
+             during quiet periods. Look for the `_ = verification_tick.tick()`
+             arm in the select! loop and add a buffer flush there.
 
-          4. Ensure the output event uses the same stderr JSON emission path as
-             existing relay_command events (eprintln with serde_json::to_string).
+          4. Keep the watchdog late-output emission at line 836-839 as-is
+             (it already handles the drain-on-exit case).
 
           CONSTRAINTS:
           - Use anyhow::Result, not unwrap() in production paths
-          - Use tracing macros for any debug logging
-          - Do not add new crate dependencies (serde_json is already available)
-          - The buffer+flush approach limits events to ~10/sec max
-          - Skip chunks that are pure whitespace after trim
+          - Use tracing macros for debug logging
+          - Do not add new crate dependencies
+          - Use std::time::Instant for timestamps (already imported)
+          - Follow existing code style in the file
 
           After implementing, run:
-            cargo build --manifest-path relay-pty/Cargo.toml 2>&1 | tail -10
-            cargo clippy --manifest-path relay-pty/Cargo.toml 2>&1 | tail -10
+            cargo build 2>&1 | tail -10
+            cargo clippy -- -D warnings 2>&1 | tail -10
 
           Do NOT use relay_spawn or add_agent.
-          Print exactly: RUST_EMITTER_DONE
+          Print exactly: RUST_BUFFERING_DONE
         verification:
           type: output_contains
-          value: RUST_EMITTER_DONE
+          value: RUST_BUFFERING_DONE
         retries: 2
 
-      - name: protocol-types
+      - name: sdk-stream-filtering
         type: agent
-        agent: ts-wrapper-dev
+        agent: sdk-dev
         task: |
-          Add protocol message types for PTY output streaming subscription.
+          Add optional stream-type filtering to agent.onOutput() in the SDK.
 
-          CONTEXT (from issue #390):
-          We need two new message types so SDK clients can subscribe to a
-          worker's real-time output. The daemon already has onLogOutput
-          infrastructure; these types formalize the subscription protocol.
+          CONTEXT:
+          packages/sdk/src/relay.ts already has a working onOutput() API
+          (line 1190-1204) that receives all worker_stream events for an agent.
+          The worker_stream event includes a `stream` field ("stdout" or
+          potentially "stderr") but there's no way to filter by stream type.
+
+          The AgentOutputCallback type (line 148) supports two modes:
+            type AgentOutputCallback =
+              | ((chunk: string) => void)
+              | ((data: AgentOutputPayload) => void);
 
           TASK:
-          1. Find the protocol types file. Check these locations:
-             - packages/protocol/src/types.ts
-             - packages/sdk/src/protocol.ts
-             - packages/shared/src/protocol.ts
-             Look for where existing message types like LOG, SPAWN, etc. are defined.
+          1. In packages/sdk/src/relay.ts, update the onOutput method signature
+             to accept an optional filter parameter:
+               onOutput(callback: AgentOutputCallback, options?: { stream?: string }): () => void
 
-          2. Add two new message types to the enum/union:
-             - SUBSCRIBE_WORKER_OUTPUT: sent by client to daemon to subscribe
-               Payload: { agent: string }
-             - WORKER_OUTPUT: sent by daemon to subscribed clients
-               Payload: { agent: string, data: string, ts: number }
+          2. In the implementation (around line 1190-1204), when options.stream
+             is provided, only invoke the callback when the event's stream field
+             matches the filter.
 
-          3. Add corresponding TypeScript interfaces for the payloads:
-             - SubscribeWorkerOutputPayload { agent: string }
-             - WorkerOutputPayload { agent: string, data: string, ts: number }
+          3. Add tests in packages/sdk/src/__tests__/orchestration-upgrades.test.ts:
+             - Test that onOutput with { stream: 'stdout' } only receives stdout
+             - Test that onOutput without filter receives all streams
+             - Test that onOutput with { stream: 'stderr' } ignores stdout
 
-          4. If there is a Rust protocol counterpart (check relay-pty/src/ for
-             protocol types), add the matching Rust types with serde derives.
+          4. Update the Agent interface (line 180) to include the options param.
 
           CONSTRAINTS:
-          - Follow existing naming conventions in the types file
+          - Follow existing code patterns in relay.ts
+          - Keep backward compatibility — no options = receive all (existing behavior)
           - Use type-only imports where appropriate
-          - Export new types from the module's index
-
-          After implementing, run type checking:
-            npx tsc --noEmit -p packages/sdk/tsconfig.json 2>&1 | tail -10
-            (or whichever tsconfig covers the protocol types)
-
-          Do NOT use relay_spawn or add_agent.
-          Print exactly: PROTOCOL_TYPES_DONE
-        verification:
-          type: output_contains
-          value: PROTOCOL_TYPES_DONE
-        retries: 1
-
-      # ── Wave 2: TS wrapper parsing (depends on protocol types) ──────────
-
-      - name: ts-wrapper-parser
-        type: agent
-        agent: ts-wrapper-dev
-        dependsOn: [protocol-types]
-        task: |
-          Add stderr JSON event parsing to the PTY orchestrator wrapper.
-
-          CONTEXT (from issue #390):
-          The Rust layer now emits {"type":"output","ts":...,"data":...} events
-          on stderr. The TS wrapper needs to parse these and emit them as
-          EventEmitter events so the daemon can forward them.
-
-          TASK:
-          1. Open packages/wrapper/src/relay-pty-orchestrator.ts
-
-          2. In the spawn setup (where the child process is created), add stderr
-             line-buffered parsing:
-             - Accumulate stderr chunks into a buffer string
-             - Split on newlines, keeping incomplete lines in the buffer
-             - For each complete line, try JSON.parse
-             - Route parsed events by their "type" field
-
-          3. Add a handleEvent method (or extend existing one) that switches on
-             event.type:
-             - "output": emit an 'output' event with { agent, data, ts }
-             - "relay_command": existing handling (check if already present)
-             - "continuity": existing handling (check if already present)
-             - Unknown types: log at debug level, do not throw
-
-          4. Make sure the class extends EventEmitter (or uses whatever event
-             pattern the codebase already uses). Check existing patterns first.
-
-          5. Ensure --json-output flag is included in the relay-pty spawn args
-             so the Rust side actually emits these events.
-
-          CONSTRAINTS:
-          - Use existing EventEmitter patterns from the codebase
-          - Handle malformed JSON gracefully (try/catch, no crash)
-          - Use the WorkerOutputPayload type from the protocol types step
-          - Follow existing code style (ES modules, node: prefix imports)
+          - Run existing tests to ensure no regressions
 
           After implementing, run:
-            npx tsc --noEmit -p packages/wrapper/tsconfig.json 2>&1 | tail -10
+            npx tsc --noEmit 2>&1 | tail -10
+            npx vitest run packages/sdk/src/__tests__/orchestration-upgrades.test.ts 2>&1 | tail -20
 
           Do NOT use relay_spawn or add_agent.
-          Print exactly: TS_WRAPPER_DONE
+          Print exactly: SDK_FILTERING_DONE
         verification:
           type: output_contains
-          value: TS_WRAPPER_DONE
+          value: SDK_FILTERING_DONE
         retries: 2
 
-      # ── Wave 3: Daemon subscription + SDK client (parallel, depend on wrapper) ──
+      # ── Wave 2: Build gate ───────────────────────────────────────────
 
-      - name: daemon-subscription
-        type: agent
-        agent: ts-wrapper-dev
-        dependsOn: [ts-wrapper-parser]
-        task: |
-          Wire daemon-side output subscription and forwarding.
-
-          CONTEXT (from issue #390):
-          The wrapper now emits 'output' events. The daemon needs to:
-          (a) accept SUBSCRIBE_WORKER_OUTPUT from SDK clients
-          (b) forward WORKER_OUTPUT events to subscribers
-
-          The daemon already has infrastructure for this:
-          - packages/daemon/src/spawn-manager.ts has pty.on('output') wiring
-          - packages/daemon/src/server.ts has onLogOutput callback
-          - The __broadcastLogOutput mechanism already exists
-
-          TASK:
-          1. In packages/daemon/src/server.ts:
-             - Add a Map<string, Set<Connection>> for output subscriptions
-             - Handle SUBSCRIBE_WORKER_OUTPUT messages: add the connection to
-               the subscription set for the requested agent name
-             - Clean up subscriptions when connections close
-             - When forwarding output, create a WORKER_OUTPUT envelope and send
-               to all subscribers for that agent
-
-          2. In packages/daemon/src/spawn-manager.ts:
-             - When the PTY orchestrator emits 'output', forward it to the
-               server's subscription mechanism
-             - Use the existing onLogOutput pattern as a reference
-
-          CONSTRAINTS:
-          - Use the SUBSCRIBE_WORKER_OUTPUT and WORKER_OUTPUT types from the
-            protocol types step
-          - Follow existing message handling patterns in server.ts
-          - Clean up subscriptions on disconnect to prevent memory leaks
-          - Use tracing/logging at debug level for subscription events
-
-          After implementing, run:
-            npx tsc --noEmit -p packages/daemon/tsconfig.json 2>&1 | tail -10
-
-          Do NOT use relay_spawn or add_agent.
-          Print exactly: DAEMON_SUBSCRIPTION_DONE
-        verification:
-          type: output_contains
-          value: DAEMON_SUBSCRIPTION_DONE
-        retries: 1
-
-      - name: sdk-client-method
-        type: agent
-        agent: ts-wrapper-dev
-        dependsOn: [ts-wrapper-parser]
-        task: |
-          Add subscribeWorkerOutput method to the SDK client.
-
-          CONTEXT (from issue #390):
-          SDK clients need a clean API to subscribe to a worker's output stream.
-          The daemon now handles SUBSCRIBE_WORKER_OUTPUT and forwards
-          WORKER_OUTPUT events.
-
-          TASK:
-          1. Open packages/sdk/src/client.ts (or wherever the main SDK client
-             class is defined).
-
-          2. Add a subscribeWorkerOutput method:
-             ```
-             subscribeWorkerOutput(
-               agentName: string,
-               callback: (data: string, ts: number) => void
-             ): () => void
-             ```
-
-          3. Implementation:
-             - Send a SUBSCRIBE_WORKER_OUTPUT envelope with { agent: agentName }
-             - Register a message handler that filters for WORKER_OUTPUT
-               envelopes where payload.agent matches agentName
-             - Call the callback with (payload.data, payload.ts)
-             - Return an unsubscribe function that removes the handler
-
-          4. Export the method and add JSDoc documentation with @param and
-             @returns tags.
-
-          CONSTRAINTS:
-          - Use existing envelope creation patterns (createEnvelope or equivalent)
-          - Use existing message listener patterns (on/off or equivalent)
-          - Return a cleanup function for unsubscription
-          - Use the protocol types from the protocol-types step
-
-          After implementing, run:
-            npx tsc --noEmit -p packages/sdk/tsconfig.json 2>&1 | tail -10
-
-          Do NOT use relay_spawn or add_agent.
-          Print exactly: SDK_CLIENT_DONE
-        verification:
-          type: output_contains
-          value: SDK_CLIENT_DONE
-        retries: 1
-
-      # ── Wave 4: Build gate ─────────────────────────────────────────────
-
-      - name: build-rust
+      - name: build-check
         type: deterministic
-        dependsOn: [rust-output-emitter]
+        dependsOn: [rust-output-buffering, sdk-stream-filtering]
         command: >
-          cargo build --manifest-path relay-pty/Cargo.toml 2>&1 | tail -10 &&
-          cargo clippy --manifest-path relay-pty/Cargo.toml -- -D warnings 2>&1 | tail -10 &&
-          echo "RUST_BUILD_OK" || echo "RUST_BUILD_FAILED"
+          cargo build 2>&1 | tail -10 &&
+          cargo clippy -- -D warnings 2>&1 | tail -10 &&
+          npx tsc --noEmit 2>&1 | tail -10 &&
+          echo "BUILD_OK" || echo "BUILD_FAILED"
         captureOutput: true
         failOnError: false
 
-      - name: build-ts
-        type: deterministic
-        dependsOn: [daemon-subscription, sdk-client-method]
-        command: >
-          npx tsc --noEmit 2>&1 | tail -20 &&
-          npm run lint 2>&1 | tail -10 &&
-          echo "TS_BUILD_OK" || echo "TS_BUILD_FAILED"
-        captureOutput: true
-        failOnError: false
-
-      # ── Wave 5: Fix any build failures ─────────────────────────────────
+      # ── Wave 3: Fix any failures ─────────────────────────────────────
 
       - name: fix-build-failures
         type: agent
-        agent: ts-wrapper-dev
-        dependsOn: [build-rust, build-ts]
+        agent: sdk-dev
+        dependsOn: [build-check]
         task: |
-          Rust build: {{steps.build-rust.output}}
-          TS build: {{steps.build-ts.output}}
+          Build result: {{steps.build-check.output}}
 
-          If both show *_BUILD_OK, there is nothing to fix. Output BUILD_ALL_GREEN.
+          If it shows BUILD_OK, there is nothing to fix. Output BUILD_ALL_GREEN.
 
           Otherwise, fix any type errors, lint errors, or compilation failures.
-          For Rust issues, describe what needs to change and make the fix in
-          relay-pty/src/main.rs directly.
+          The relevant files are:
+          - src/pty_worker.rs (Rust buffering changes)
+          - packages/sdk/src/relay.ts (SDK filtering changes)
+          - packages/sdk/src/__tests__/orchestration-upgrades.test.ts (new tests)
 
           After fixing, re-run the failing build commands to verify.
 
@@ -367,116 +224,51 @@ workflows:
           value: BUILD_ALL_GREEN
         retries: 2
 
-      # ── Wave 6: Integration test ───────────────────────────────────────
+      # ── Wave 4: Run tests ────────────────────────────────────────────
 
-      - name: integration-test
-        type: agent
-        agent: integration-tester
+      - name: run-tests
+        type: deterministic
         dependsOn: [fix-build-failures]
-        task: |
-          Write and run an integration test for the PTY output streaming pipeline.
-
-          WHAT TO TEST:
-          1. Rust emitter: Verify that relay-pty with --json-output emits
-             {"type":"output",...} events on stderr when given input.
-             - Build relay-pty if not already built
-             - Spawn it with a simple command (e.g., echo "hello world")
-             - Capture stderr and verify JSON output events appear
-             - Verify the event has type, ts, and data fields
-
-          2. TS wrapper: Verify the orchestrator emits 'output' events.
-             - Write a small test in packages/wrapper/test/ or tests/
-             - Mock or spawn a real relay-pty process
-             - Assert the 'output' event fires with correct shape
-
-          3. Protocol types: Verify SUBSCRIBE_WORKER_OUTPUT and WORKER_OUTPUT
-             exist and have correct payload types (compile-time check via tsc).
-
-          WHERE TO PUT TESTS:
-          - Rust test: relay-pty/tests/ or inline #[cfg(test)] module
-          - TS test: tests/integration/ or packages/wrapper/test/
-          - Use existing test patterns in the repo
-
-          After writing tests, run them:
-            cargo test --manifest-path relay-pty/Cargo.toml 2>&1 | tail -20
-            npm test 2>&1 | tail -20
-
-          Do NOT use relay_spawn or add_agent.
-          Print exactly: INTEGRATION_TESTS_DONE
-        verification:
-          type: output_contains
-          value: INTEGRATION_TESTS_DONE
-        retries: 1
-
-      # ── Wave 7: Final regression + commit ──────────────────────────────
-
-      - name: final-regression
-        type: deterministic
-        dependsOn: [integration-test]
         command: >
-          cargo build --manifest-path relay-pty/Cargo.toml 2>&1 | tail -5 &&
-          cargo clippy --manifest-path relay-pty/Cargo.toml -- -D warnings 2>&1 | tail -5 &&
-          cargo test --manifest-path relay-pty/Cargo.toml 2>&1 | tail -10 &&
-          npx tsc --noEmit 2>&1 | tail -5 &&
-          echo "REGRESSION_PASSED" || echo "REGRESSION_FAILED"
+          cargo test 2>&1 | tail -20 &&
+          npx vitest run packages/sdk/src/__tests__/orchestration-upgrades.test.ts 2>&1 | tail -20 &&
+          echo "TESTS_PASSED" || echo "TESTS_FAILED"
         captureOutput: true
         failOnError: false
 
-      - name: commit-and-pr
+      # ── Wave 5: Commit ───────────────────────────────────────────────
+
+      - name: commit-changes
         type: deterministic
-        dependsOn: [final-regression]
+        dependsOn: [run-tests]
         command: >
-          git add relay-pty/src/ packages/wrapper/src/ packages/daemon/src/ packages/sdk/src/ tests/ &&
-          git commit -m "feat: PTY output streaming with 100ms buffered emission (#390)" &&
+          git add src/pty_worker.rs packages/sdk/src/relay.ts packages/sdk/src/__tests__/orchestration-upgrades.test.ts &&
+          git commit -m "feat: add 100ms output buffering and SDK stream filtering (#390)" &&
           git push -u origin HEAD 2>&1 &&
-          gh pr create
-            --title "feat: PTY output streaming (#390)"
-            --body "$(cat <<PR
-          ## Summary
-          Implements real-time PTY output streaming per #390.
-
-          - Rust: 100ms-buffered output chunk emission as JSON on stderr
-          - TS wrapper: stderr JSON parser emitting 'output' events
-          - Protocol: SUBSCRIBE_WORKER_OUTPUT + WORKER_OUTPUT message types
-          - Daemon: subscription mechanism forwarding output to SDK clients
-          - SDK: subscribeWorkerOutput() method with cleanup function
-
-          ## Test plan
-          - Rust unit test: verify JSON output events on stderr
-          - TS integration test: verify wrapper emits output events
-          - Full build: cargo build + tsc --noEmit + lint all green
-
-          Closes #390
-          PR
-          )"
-            --draft 2>&1 || echo "PR_DONE"
+          echo "COMMIT_DONE" || echo "COMMIT_FAILED"
         captureOutput: true
         failOnError: false
 
-      # ── Wave 8: Summary ────────────────────────────────────────────────
+      # ── Wave 6: Summary ──────────────────────────────────────────────
 
       - name: summary
         type: agent
-        agent: integration-tester
-        dependsOn: [commit-and-pr]
+        agent: sdk-dev
+        dependsOn: [commit-changes]
         task: |
-          The PTY output streaming workflow has completed. Write a summary.
+          The PTY output streaming improvement workflow has completed.
 
-          Rust emitter: {{steps.rust-output-emitter.output}}
-          Protocol types: {{steps.protocol-types.output}}
-          TS wrapper: {{steps.ts-wrapper-parser.output}}
-          Daemon: {{steps.daemon-subscription.output}}
-          SDK: {{steps.sdk-client-method.output}}
-          Build: {{steps.build-rust.output}} | {{steps.build-ts.output}}
-          Tests: {{steps.integration-test.output}}
-          Regression: {{steps.final-regression.output}}
-          PR: {{steps.commit-and-pr.output}}
+          Rust buffering: {{steps.rust-output-buffering.output}}
+          SDK filtering: {{steps.sdk-stream-filtering.output}}
+          Build: {{steps.build-check.output}}
+          Tests: {{steps.run-tests.output}}
+          Commit: {{steps.commit-changes.output}}
 
           Summarize:
-          1. What was implemented at each layer
-          2. What tests were added
-          3. Any issues encountered and how they were resolved
-          4. PR link if created
+          1. What was changed and why
+          2. What already existed (the full worker_stream pipeline)
+          3. What was added (buffering + filtering)
+          4. Test results
 
           Do NOT use relay_spawn or add_agent.
           Print exactly: WORKFLOW_SUMMARY_DONE
@@ -486,14 +278,11 @@ workflows:
 
 coordination:
   barriers:
-    - name: foundation-complete
-      waitFor: [rust-output-emitter, protocol-types]
-      timeoutMs: 1800000
     - name: implementation-complete
-      waitFor: [daemon-subscription, sdk-client-method]
+      waitFor: [rust-output-buffering, sdk-stream-filtering]
       timeoutMs: 1800000
     - name: builds-green
-      waitFor: [build-rust, build-ts]
+      waitFor: [build-check]
       timeoutMs: 600000
 
 state:
