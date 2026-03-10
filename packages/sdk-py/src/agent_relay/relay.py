@@ -305,6 +305,7 @@ class AgentSpawner:
         task: Optional[str] = None,
         model: Optional[str] = None,
         cwd: Optional[str] = None,
+        skip_relay_prompt: Optional[bool] = None,
         on_start: LifecycleHook = None,
         on_success: LifecycleHook = None,
         on_error: LifecycleHook = None,
@@ -333,6 +334,7 @@ class AgentSpawner:
                 task=task,
                 model=model,
                 cwd=cwd,
+                skip_relay_prompt=skip_relay_prompt,
             )
         except Exception as error:
             await self._relay._invoke_lifecycle_hook(

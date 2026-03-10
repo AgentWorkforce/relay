@@ -3377,8 +3377,13 @@ async fn handle_sdk_frame(
             // was warmed by preflight_agents, this is an instant cache hit (<1ms).
             // If registration times out or fails retryably, we proceed without a
             // token — the agent self-registers via MCP on first connect.
+            // Skip pre-registration when skip_relay_prompt is true — the agent
+            // won't use relay messaging so there is no need to register it, and
+            // a registration failure should not abort the spawn.
             let mut preregistration_warning: Option<String> = None;
-            let worker_relay_key = if let Some(http) = relaycast_http {
+            let worker_relay_key = if payload.skip_relay_prompt {
+                None
+            } else if let Some(http) = relaycast_http {
                 const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(15);
                 match tokio::time::timeout(
                     REGISTRATION_TIMEOUT,
