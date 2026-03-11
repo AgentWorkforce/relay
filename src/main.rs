@@ -2351,18 +2351,23 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         "received relaycast ws event"
                     );
 
-                    if matches!(ws_type, "agent.spawn_requested" | "agent.release_requested") {
-                        if let Some(control_dedup_key) =
-                            relaycast_ws_control_dedup_key(&workspace_id, ws_type, &ws_value)
-                        {
-                            if !dedup.insert_if_new(&control_dedup_key, Instant::now()) {
-                                tracing::info!(
-                                    ws_type = %ws_type,
-                                    workspace_id = %workspace_id,
-                                    "dropping duplicate relaycast control event"
-                                );
-                                continue;
-                            }
+                    let control_dedup_key = if matches!(
+                        ws_type,
+                        "agent.spawn_requested" | "agent.release_requested"
+                    ) {
+                        relaycast_ws_control_dedup_key(&workspace_id, ws_type, &ws_value)
+                    } else {
+                        None
+                    };
+
+                    if let Some(ref control_dedup_key) = control_dedup_key {
+                        if !dedup.insert_if_new(control_dedup_key, Instant::now()) {
+                            tracing::info!(
+                                ws_type = %ws_type,
+                                workspace_id = %workspace_id,
+                                "dropping duplicate relaycast control event"
+                            );
+                            continue;
                         }
                     }
 
@@ -2469,8 +2474,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     continue;
                                 }
                                 let local_spawn_echo_key =
-                                    format!("control:{workspace_id}:agent.spawn_requested:{name}");
-                                if !dedup.insert_if_new(&local_spawn_echo_key, Instant::now()) {
+                                    relaycast_spawn_control_dedup_key(&workspace_id, &name);
+                                if relaycast_ws_should_apply_local_spawn_echo_dedup(
+                                    control_dedup_key.as_deref(),
+                                    &local_spawn_echo_key,
+                                ) && !dedup.insert_if_new(&local_spawn_echo_key, Instant::now())
+                                {
                                     tracing::info!(
                                         worker = %name,
                                         workspace_id = %workspace_id,
@@ -2629,8 +2638,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 eprintln!("[agent-relay] ignoring spawn request for '{}' (broker self)", name);
                             } else {
                                 let local_spawn_echo_key =
-                                    format!("control:{workspace_id}:agent.spawn_requested:{name}");
-                                if dedup.insert_if_new(&local_spawn_echo_key, Instant::now()) {
+                                    relaycast_spawn_control_dedup_key(&workspace_id, &name);
+                                if !relaycast_ws_should_apply_local_spawn_echo_dedup(
+                                    control_dedup_key.as_deref(),
+                                    &local_spawn_echo_key,
+                                ) || dedup.insert_if_new(&local_spawn_echo_key, Instant::now())
+                                {
                                     let channels = channel
                                         .as_deref()
                                         .map(|ch| {
@@ -2731,6 +2744,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 }
                             }
                         }
+                        // Don't fall through to map_ws_event for control events
+                        // handled by the JSON fallback path.
+                        continue;
                     }
 
                     // Preserve the raw channel from the WS event for thread replies.
@@ -4043,6 +4059,30 @@ async fn handle_sdk_frame(
                     None,
                 )
                 .await?;
+
+            // Subscribe the broker's WebSocket to any custom channels the
+            // spawned agent needs so cloud-routed messages reach the broker.
+            if !payload.agent.channels.is_empty() {
+                let spawn_channels = payload.agent.channels.clone();
+                for workspace in workspaces {
+                    if let Err(error) = workspace
+                        .http_client
+                        .ensure_extra_channels(&spawn_channels)
+                        .await
+                    {
+                        tracing::warn!(
+                            workspace_id = %workspace.workspace_id,
+                            error = %error,
+                            "failed to ensure extra channels for spawned agent"
+                        );
+                    }
+                    let _ = workspace
+                        .ws_control_tx
+                        .send(WsControl::Subscribe(spawn_channels.clone()))
+                        .await;
+                }
+            }
+
             note_local_spawn_control_dedup(
                 dedup,
                 default_workspace_id.or_else(|| {
@@ -5423,6 +5463,17 @@ fn relaycast_ws_spawn_token(value: &Value) -> Option<String> {
     )
 }
 
+fn relaycast_spawn_control_dedup_key(workspace_id: &str, identity: &str) -> String {
+    format!("control:{workspace_id}:agent.spawn_requested:{identity}")
+}
+
+fn relaycast_ws_should_apply_local_spawn_echo_dedup(
+    control_dedup_key: Option<&str>,
+    local_spawn_echo_key: &str,
+) -> bool {
+    control_dedup_key != Some(local_spawn_echo_key)
+}
+
 fn note_local_spawn_control_dedup(
     dedup: &mut DedupCache,
     workspace_id: Option<&str>,
@@ -5434,11 +5485,11 @@ fn note_local_spawn_control_dedup(
     };
     let agent_name = agent_name.trim();
     if !agent_name.is_empty() {
-        let key = format!("control:{workspace_id}:agent.spawn_requested:{agent_name}");
+        let key = relaycast_spawn_control_dedup_key(workspace_id, agent_name);
         dedup.insert_if_new(&key, Instant::now());
     }
     if let Some(relay_key) = relay_key.map(str::trim).filter(|value| !value.is_empty()) {
-        let key = format!("control:{workspace_id}:agent.spawn_requested:{relay_key}");
+        let key = relaycast_spawn_control_dedup_key(workspace_id, relay_key);
         dedup.insert_if_new(&key, Instant::now());
     }
 }
@@ -6169,7 +6220,7 @@ impl BrokerState {
 mod tests {
     use std::{
         collections::{BTreeSet, HashMap, HashSet},
-        time::Instant,
+        time::{Duration, Instant},
     };
 
     use crate::helpers::{format_injection, terminal_query_responses};
@@ -6184,10 +6235,13 @@ mod tests {
         http_api_relaycast_send_timeout, is_auto_suggestion, is_bypass_selection_menu,
         is_in_editor_mode, is_relaycast_self_control_target, is_unknown_worker_error_message,
         normalize_channel, normalize_initial_task, normalize_sender,
-        relaycast_ws_control_dedup_key, relaycast_ws_spawn_token, sender_is_dashboard_label,
-        should_clear_pending_delivery_for_event, strip_ansi, PendingDelivery, TerminalQueryParser,
+        relaycast_spawn_control_dedup_key, relaycast_ws_control_dedup_key,
+        relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
+        sender_is_dashboard_label, should_clear_pending_delivery_for_event, strip_ansi,
+        PendingDelivery, TerminalQueryParser,
     };
     use crate::helpers::floor_char_boundary;
+    use relay_broker::dedup::DedupCache;
     use relay_broker::relaycast_ws::{
         format_worker_preregistration_error, RelaycastRegistrationError,
     };
@@ -6347,6 +6401,57 @@ mod tests {
             relaycast_ws_spawn_token(&value),
             Some("at_live_worker".to_string())
         );
+    }
+
+    #[test]
+    fn relaycast_ws_spawn_name_only_control_key_skips_second_name_dedup() {
+        let value = json!({
+            "type": "agent.spawn_requested",
+            "agent": {
+                "name": "worker-a",
+                "cli": "claude",
+                "task": "Ship it"
+            }
+        });
+
+        let control_key = relaycast_ws_control_dedup_key("ws_1", "agent.spawn_requested", &value)
+            .expect("control dedup key");
+        let local_key = relaycast_spawn_control_dedup_key("ws_1", "worker-a");
+
+        assert_eq!(control_key, local_key);
+        assert!(!relaycast_ws_should_apply_local_spawn_echo_dedup(
+            Some(control_key.as_str()),
+            &local_key
+        ));
+    }
+
+    #[test]
+    fn relaycast_ws_spawn_event_id_echo_still_uses_local_name_dedup() {
+        let value = json!({
+            "type": "agent.spawn_requested",
+            "event_id": "evt_123",
+            "agent": {
+                "name": "worker-a",
+                "cli": "claude",
+                "task": "Ship it"
+            }
+        });
+
+        let control_key = relaycast_ws_control_dedup_key("ws_1", "agent.spawn_requested", &value)
+            .expect("control dedup key");
+        let local_key = relaycast_spawn_control_dedup_key("ws_1", "worker-a");
+
+        assert_ne!(control_key, local_key);
+        assert!(relaycast_ws_should_apply_local_spawn_echo_dedup(
+            Some(control_key.as_str()),
+            &local_key
+        ));
+
+        let now = Instant::now();
+        let mut dedup = DedupCache::new(Duration::from_secs(60), 16);
+        assert!(dedup.insert_if_new(&local_key, now));
+        assert!(dedup.insert_if_new(&control_key, now + Duration::from_secs(1)));
+        assert!(!dedup.insert_if_new(&local_key, now + Duration::from_secs(2)));
     }
 
     #[test]
