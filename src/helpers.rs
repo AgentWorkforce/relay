@@ -837,8 +837,7 @@ pub(crate) fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) 
 /// Detect Gemini "untrusted folder" informational banner in output.
 /// Returns true when the banner is present (not an interactive menu — requires `/permissions`).
 pub(crate) fn detect_gemini_untrusted_banner(clean_output: &str) -> bool {
-    clean_output.contains("folder is untrusted")
-        && clean_output.contains("/permissions")
+    clean_output.contains("folder is untrusted") && clean_output.contains("/permissions")
 }
 
 /// Detect Gemini "Modify Trust Level" folder trust prompt in output.
