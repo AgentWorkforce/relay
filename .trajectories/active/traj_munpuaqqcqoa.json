@@ -1,0 +1,19 @@
+{
+  "id": "traj_munpuaqqcqoa",
+  "version": 1,
+  "task": {
+    "title": "Investigate DM leakage into relay-dashboard message feed"
+  },
+  "status": "active",
+  "startedAt": "2026-03-11T10:16:40.974Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "43c701e14312e46fe11153b75990a45899d8129d",
+    "endRef": "43c701e14312e46fe11153b75990a45899d8129d"
+  }
+}
