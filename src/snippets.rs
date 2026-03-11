@@ -257,6 +257,25 @@ fn merge_relaycast_with_project_mcp(
     relay_agent_token: Option<&str>,
     cwd: &Path,
 ) -> String {
+    merge_relaycast_with_project_mcp_inner(
+        relay_api_key,
+        relay_base_url,
+        relay_agent_name,
+        relay_agent_token,
+        cwd,
+        dirs::home_dir(),
+    )
+}
+
+/// Inner implementation that accepts an explicit home directory for testability.
+fn merge_relaycast_with_project_mcp_inner(
+    relay_api_key: Option<&str>,
+    relay_base_url: Option<&str>,
+    relay_agent_name: Option<&str>,
+    relay_agent_token: Option<&str>,
+    cwd: &Path,
+    home: Option<PathBuf>,
+) -> String {
     let relaycast_server = relaycast_server_config(
         relay_api_key,
         relay_base_url,
@@ -269,7 +288,7 @@ fn merge_relaycast_with_project_mcp(
     // Collect MCP config paths in precedence order (lowest first).
     // Later entries override earlier ones, matching Claude's own loading order.
     let mut config_paths: Vec<std::path::PathBuf> = Vec::new();
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = home {
         config_paths.push(home.join(".claude").join("settings.json"));
         config_paths.push(home.join(".claude").join("settings.local.json"));
     }
@@ -1031,7 +1050,7 @@ fn candidate_mcp_paths(root: &Path, target_file: &str, home: Option<&Path>) -> V
 mod tests {
     use std::fs;
 
-    use serde_json::Value;
+    use serde_json::{Map, Value};
     use tempfile::tempdir;
 
     use super::{
@@ -2215,5 +2234,372 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         // but agent.relaycast is only inserted if missing.
         // The function returns true because mcp upsert always sets changed=true.
         assert!(changed, "mcp section always gets upserted");
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests: MCP config merging end-to-end
+    // -----------------------------------------------------------------------
+
+    /// Test A: End-to-end MCP config generation for Claude spawns.
+    /// A project .mcp.json with extra servers should produce merged output
+    /// containing BOTH relaycast AND the user's servers, plus --strict-mcp-config.
+    #[tokio::test]
+    async fn merge_mcp_e2e_claude_spawn_with_user_servers() {
+        let temp = tempdir().expect("tempdir");
+        // User has filesystem and github MCP servers
+        fs::write(
+            temp.path().join(".mcp.json"),
+            r#"{
+                "mcpServers": {
+                    "filesystem": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+                    },
+                    "github": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-github"],
+                        "env": { "GITHUB_TOKEN": "ghp_test123" }
+                    }
+                }
+            }"#,
+        )
+        .expect("write .mcp.json");
+
+        let args = super::configure_relaycast_mcp_with_token(
+            "claude",
+            "TestWorker",
+            Some("rk_live_test"),
+            Some("https://api.relaycast.dev"),
+            &[],
+            temp.path(),
+            Some("tok_abc"),
+        )
+        .await
+        .expect("configure claude mcp");
+
+        // Must have --mcp-config <json> --strict-mcp-config
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[0], "--mcp-config");
+        assert_eq!(args[2], "--strict-mcp-config");
+
+        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        let servers = json["mcpServers"].as_object().expect("mcpServers object");
+
+        // All three servers present
+        assert!(
+            servers.contains_key("relaycast"),
+            "relaycast must be present"
+        );
+        assert!(
+            servers.contains_key("filesystem"),
+            "user's filesystem server must be preserved"
+        );
+        assert!(
+            servers.contains_key("github"),
+            "user's github server must be preserved"
+        );
+
+        // User server config preserved correctly
+        assert_eq!(
+            servers["github"]["env"]["GITHUB_TOKEN"].as_str(),
+            Some("ghp_test123"),
+            "user's env vars must be preserved"
+        );
+
+        // Relaycast has broker-injected credentials
+        assert_eq!(
+            servers["relaycast"]["env"]["RELAY_AGENT_NAME"].as_str(),
+            Some("TestWorker")
+        );
+        assert_eq!(
+            servers["relaycast"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
+            Some("tok_abc")
+        );
+    }
+
+    /// Test B: Precedence test — project-level .mcp.json overrides global settings.
+    /// When the same server name exists at multiple config levels, project wins.
+    #[test]
+    fn merge_mcp_precedence_project_overrides_global() {
+        let temp = tempdir().expect("tempdir");
+
+        // Fake home directory with global settings
+        let fake_home = temp.path().join("home");
+        let claude_dir = fake_home.join(".claude");
+        fs::create_dir_all(&claude_dir).expect("create .claude dir");
+
+        // Global settings.json has "testmcp" with command "global-cmd"
+        fs::write(
+            claude_dir.join("settings.json"),
+            r#"{
+                "mcpServers": {
+                    "testmcp": { "command": "global-cmd", "args": ["--global"] }
+                }
+            }"#,
+        )
+        .expect("write global settings");
+
+        // Local settings.local.json has "testmcp" with command "local-cmd"
+        fs::write(
+            claude_dir.join("settings.local.json"),
+            r#"{
+                "mcpServers": {
+                    "testmcp": { "command": "local-cmd", "args": ["--local"] }
+                }
+            }"#,
+        )
+        .expect("write local settings");
+
+        // Project .mcp.json has "testmcp" with command "project-cmd"
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).expect("create project dir");
+        fs::write(
+            project.join(".mcp.json"),
+            r#"{
+                "mcpServers": {
+                    "testmcp": { "command": "project-cmd", "args": ["--project"] }
+                }
+            }"#,
+        )
+        .expect("write project .mcp.json");
+
+        let merged = super::merge_relaycast_with_project_mcp_inner(
+            Some("rk_key"),
+            None,
+            Some("agent"),
+            None,
+            &project,
+            Some(fake_home),
+        );
+        let parsed: Value = serde_json::from_str(&merged).expect("valid JSON");
+        let servers = parsed["mcpServers"].as_object().expect("mcpServers");
+
+        // Project-level command wins
+        assert_eq!(
+            servers["testmcp"]["command"].as_str(),
+            Some("project-cmd"),
+            "project-level config must override global and local"
+        );
+        let args = servers["testmcp"]["args"]
+            .as_array()
+            .expect("args array");
+        assert_eq!(args[0].as_str(), Some("--project"));
+    }
+
+    /// Test B (cont): local settings override global settings.
+    #[test]
+    fn merge_mcp_precedence_local_overrides_global() {
+        let temp = tempdir().expect("tempdir");
+        let fake_home = temp.path().join("home");
+        let claude_dir = fake_home.join(".claude");
+        fs::create_dir_all(&claude_dir).expect("create .claude dir");
+
+        fs::write(
+            claude_dir.join("settings.json"),
+            r#"{ "mcpServers": { "testmcp": { "command": "global-cmd" } } }"#,
+        )
+        .expect("write global settings");
+
+        fs::write(
+            claude_dir.join("settings.local.json"),
+            r#"{ "mcpServers": { "testmcp": { "command": "local-cmd" } } }"#,
+        )
+        .expect("write local settings");
+
+        // No project .mcp.json
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).expect("create project dir");
+
+        let merged = super::merge_relaycast_with_project_mcp_inner(
+            Some("rk_key"),
+            None,
+            Some("agent"),
+            None,
+            &project,
+            Some(fake_home),
+        );
+        let parsed: Value = serde_json::from_str(&merged).expect("valid JSON");
+        let servers = parsed["mcpServers"].as_object().expect("mcpServers");
+
+        assert_eq!(
+            servers["testmcp"]["command"].as_str(),
+            Some("local-cmd"),
+            "local settings must override global"
+        );
+    }
+
+    /// Test C: Global-only MCP servers — a server defined only in ~/.claude/settings.json
+    /// should still appear in merged output even when no .mcp.json exists.
+    #[test]
+    fn merge_mcp_global_only_servers_appear_in_output() {
+        let temp = tempdir().expect("tempdir");
+        let fake_home = temp.path().join("home");
+        let claude_dir = fake_home.join(".claude");
+        fs::create_dir_all(&claude_dir).expect("create .claude dir");
+
+        fs::write(
+            claude_dir.join("settings.json"),
+            r#"{
+                "mcpServers": {
+                    "database": { "command": "npx", "args": ["-y", "db-mcp-server"] },
+                    "slack": { "command": "npx", "args": ["-y", "slack-mcp"] }
+                }
+            }"#,
+        )
+        .expect("write global settings");
+
+        // No .mcp.json in project
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).expect("create project dir");
+
+        let merged = super::merge_relaycast_with_project_mcp_inner(
+            Some("rk_key"),
+            None,
+            Some("agent"),
+            None,
+            &project,
+            Some(fake_home),
+        );
+        let parsed: Value = serde_json::from_str(&merged).expect("valid JSON");
+        let servers = parsed["mcpServers"].as_object().expect("mcpServers");
+
+        assert_eq!(servers.len(), 3, "global servers + relaycast");
+        assert!(
+            servers.contains_key("database"),
+            "global database server must appear"
+        );
+        assert!(
+            servers.contains_key("slack"),
+            "global slack server must appear"
+        );
+        assert!(servers.contains_key("relaycast"), "relaycast must appear");
+    }
+
+    /// Test D: Disabled servers — servers with `disabled: true` should be preserved as-is.
+    #[test]
+    fn merge_mcp_preserves_disabled_servers() {
+        let temp = tempdir().expect("tempdir");
+        fs::write(
+            temp.path().join(".mcp.json"),
+            r#"{
+                "mcpServers": {
+                    "enabled-server": {
+                        "command": "npx",
+                        "args": ["-y", "enabled-mcp"]
+                    },
+                    "disabled-server": {
+                        "command": "npx",
+                        "args": ["-y", "disabled-mcp"],
+                        "disabled": true
+                    }
+                }
+            }"#,
+        )
+        .expect("write .mcp.json");
+
+        let merged = super::merge_relaycast_with_project_mcp_inner(
+            Some("rk_key"),
+            None,
+            Some("agent"),
+            None,
+            temp.path(),
+            None,
+        );
+        let parsed: Value = serde_json::from_str(&merged).expect("valid JSON");
+        let servers = parsed["mcpServers"].as_object().expect("mcpServers");
+
+        // Disabled server is preserved with its disabled flag
+        assert!(
+            servers.contains_key("disabled-server"),
+            "disabled server must be preserved"
+        );
+        assert_eq!(
+            servers["disabled-server"]["disabled"].as_bool(),
+            Some(true),
+            "disabled flag must be preserved"
+        );
+        assert_eq!(
+            servers["disabled-server"]["command"].as_str(),
+            Some("npx"),
+            "disabled server config must be intact"
+        );
+
+        // Enabled server also present
+        assert!(servers.contains_key("enabled-server"));
+        assert!(servers.contains_key("relaycast"));
+    }
+
+    /// Test E: Large config — .mcp.json with 10+ servers. All must be preserved plus relaycast.
+    #[test]
+    fn merge_mcp_large_config_preserves_all_servers() {
+        let temp = tempdir().expect("tempdir");
+
+        // Build a .mcp.json with 15 servers
+        let mut mcp_servers = Map::new();
+        for i in 0..15 {
+            let name = format!("server-{i}");
+            let mut server = Map::new();
+            server.insert(
+                "command".into(),
+                Value::String(format!("cmd-{i}")),
+            );
+            server.insert(
+                "args".into(),
+                Value::Array(vec![Value::String(format!("--port={}", 3000 + i))]),
+            );
+            let mut env = Map::new();
+            env.insert(
+                format!("KEY_{i}"),
+                Value::String(format!("value_{i}")),
+            );
+            server.insert("env".into(), Value::Object(env));
+            mcp_servers.insert(name, Value::Object(server));
+        }
+        let mut top = Map::new();
+        top.insert("mcpServers".into(), Value::Object(mcp_servers));
+        let mcp_json = serde_json::to_string_pretty(&Value::Object(top)).expect("serialize");
+        fs::write(temp.path().join(".mcp.json"), &mcp_json).expect("write .mcp.json");
+
+        let merged = super::merge_relaycast_with_project_mcp_inner(
+            Some("rk_key"),
+            Some("https://api.relaycast.dev"),
+            Some("agent"),
+            Some("tok_test"),
+            temp.path(),
+            None,
+        );
+        let parsed: Value = serde_json::from_str(&merged).expect("valid JSON");
+        let servers = parsed["mcpServers"].as_object().expect("mcpServers");
+
+        // 15 user servers + 1 relaycast = 16
+        assert_eq!(
+            servers.len(),
+            16,
+            "all 15 user servers plus relaycast must be present"
+        );
+
+        // Verify each user server is present with correct config
+        for i in 0..15 {
+            let name = format!("server-{i}");
+            assert!(
+                servers.contains_key(&name),
+                "server {name} must be preserved"
+            );
+            assert_eq!(
+                servers[&name]["command"].as_str(),
+                Some(format!("cmd-{i}").as_str()),
+            );
+            assert_eq!(
+                servers[&name]["env"][format!("KEY_{i}")].as_str(),
+                Some(format!("value_{i}").as_str()),
+            );
+        }
+
+        // Relaycast is present with broker credentials
+        assert!(servers.contains_key("relaycast"));
+        assert_eq!(
+            servers["relaycast"]["env"]["RELAY_AGENT_NAME"].as_str(),
+            Some("agent")
+        );
     }
 }
