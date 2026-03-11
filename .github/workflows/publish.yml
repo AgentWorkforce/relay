@@ -1161,6 +1161,15 @@ jobs:
               fi
             fi
           fi
+          # Commit compacted trajectories so the working tree is clean for the release commit
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add .trajectories/ 2>/dev/null || true
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: compact trajectories for v${{ needs.build.outputs.new_version }}"
+          fi
+          # Discard any other unstaged changes (e.g. package-lock.json modified by npx)
+          git checkout -- . 2>/dev/null || true
 
       - name: Commit and tag
         env:
@@ -1175,8 +1184,8 @@ jobs:
           # Stage version-bumped files (must be separate from optional paths
           # because git add fails entirely if any path doesn't exist)
           git add package.json package-lock.json packages/*/package.json packages/sdk-py/pyproject.toml CHANGELOG.md
-          # Stage optional paths that may not exist
-          git add .trajectories/compacted/ 2>/dev/null || true
+          # Stage optional paths that may not exist (trajectories already committed in prior step)
+          git add .trajectories/ 2>/dev/null || true
           if ! git diff --staged --quiet; then
             if [ "$IS_PRERELEASE" = "true" ]; then
               git commit -m "chore(prerelease): v${NEW_VERSION}"
