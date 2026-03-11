@@ -35,7 +35,7 @@ jobs:
       - name: Check for changes
         id: changes
         run: |
-          if git diff --quiet packages/sdk/src/models.generated.ts packages/sdk-py/agent_relay/models.py; then
+          if git diff --quiet packages/config/src/cli-registry.generated.ts packages/sdk-py/agent_relay/models.py packages/sdk-py/agent_relay/__init__.py; then
             echo "changed=false" >> $GITHUB_OUTPUT
           else
             echo "changed=true" >> $GITHUB_OUTPUT
@@ -46,7 +46,7 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add packages/sdk/src/models.generated.ts packages/sdk-py/agent_relay/models.py packages/sdk-py/agent_relay/__init__.py
+          git add packages/config/src/cli-registry.generated.ts packages/sdk-py/agent_relay/models.py packages/sdk-py/agent_relay/__init__.py
           git commit -m "chore: regenerate models from cli-registry.yaml [skip ci]"
           git push
 
