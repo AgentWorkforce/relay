@@ -1168,8 +1168,9 @@ jobs:
           if ! git diff --staged --quiet; then
             git commit -m "chore: compact trajectories for v${{ needs.build.outputs.new_version }}"
           fi
-          # Discard any other unstaged changes (e.g. package-lock.json modified by npx)
-          git checkout -- . 2>/dev/null || true
+          # Discard package-lock.json changes from npx side-effects
+          # (version-bumped files and CHANGELOG must be preserved for the release commit)
+          git checkout -- package-lock.json 2>/dev/null || true
 
       - name: Commit and tag
         env:
