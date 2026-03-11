@@ -29,6 +29,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.1.21] - 2026-03-11
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Wire workspaceName/relaycastBaseUrl options in AgentRelay (#538)** (#538)
+- **Add multi-workspace support to OpenClaw bridge**
+- **Add skipRelayPrompt flag to skip MCP config injection on spawn** (#419)
+- **Wire multi-workspace runtime flows**
+- **Add multi-workspace auth plumbing**
+
+#### User-Impacting Fixes
+- SwitchWorkspace clawName, stale alias default, and corrupt JSON handling
+- Preserve skip_relay_prompt on restart
+- Reset exit info per retry + preserve exit code on spawn failure
+- Avoid wiping workspace alias/id when add-workspace updates without flags
+- Use timeoutMs directly in nudge loop timeout guard
+- Forward skip_relay_prompt in Python SDK and skip pre-registration in broker
+- Workspace default handling in add-workspace
+- Harden multi-workspace add-workspace default and logging behavior
+- Distinguish force-released (nudge exhaustion) from released (idle-complete)
+- Address PR #531 review feedback in workflow runner (#531)
+- Always record failed attempt output for workflow retries
+- Pass skipRelayPrompt through spawner headless path and simplify Rust type
+- Include exitCode and exitSignal in step events (#499) (#499)
+- Escape TOML string values for codex --config workspace env vars
+- Treat force-released agent as step failure, not success (#498)
+- Correct error message for default workspace lookup failure and forward workspace env vars in MCP snippets
+- Use workspace-scoped dedup keys for MCP self-echo pre-seeding
+- Allow clippy too_many_arguments on MultiWorkspaceSession::new
+- Address multi-workspace code review bugs from PR #519 (#519)
+- Restore carriage return in wrap retry PTY injection
+
+### Technical Perspective
+#### Dependencies & Tooling
+- Record multi-workspace implementation trail
+
+#### Releases
+- v3.1.21
+
+---
+
 ## [3.1.19] - 2026-03-10
 
 ### Product Perspective
