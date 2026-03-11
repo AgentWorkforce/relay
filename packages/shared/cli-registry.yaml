@@ -12,7 +12,7 @@ clis:
     name: "Claude Code"
     package: "@anthropic-ai/claude-code"
     npm_link: "https://www.npmjs.com/package/@anthropic-ai"
-    version: "2.1.50"
+    version: "2.1.72"
     install: "npm install -g @anthropic-ai/claude-code"
     models:
       sonnet:
@@ -30,25 +30,28 @@ clis:
     name: "Codex CLI"
     package: "@openai/codex"
     npm_link: "https://www.npmjs.com/package/@openai/codex"
-    version: "0.104.0"
+    version: "0.114.0"
     install: "npm install -g @openai/codex"
     models:
-      gpt_5_2_codex:
-        id: "gpt-5.2-codex"
-        label: "GPT-5.2 Codex — Frontier agentic coding model"
+      gpt_5_4:
+        id: "gpt-5.4"
+        label: "GPT-5.4 — Latest frontier agentic coding model"
         default: true
       gpt_5_3_codex:
         id: "gpt-5.3-codex"
-        label: "GPT-5.3 Codex — Latest frontier agentic coding model"
+        label: "GPT-5.3 Codex — Frontier agentic coding model"
       gpt_5_3_codex_spark:
         id: "gpt-5.3-codex-spark"
         label: "GPT-5.3 Codex Spark — Ultra-fast coding model"
-      gpt_5_1_codex_max:
-        id: "gpt-5.1-codex-max"
-        label: "GPT-5.1 Codex Max — Deep and fast reasoning"
+      gpt_5_2_codex:
+        id: "gpt-5.2-codex"
+        label: "GPT-5.2 Codex — Frontier agentic coding model"
       gpt_5_2:
         id: "gpt-5.2"
         label: "GPT-5.2 — Frontier model, knowledge & reasoning"
+      gpt_5_1_codex_max:
+        id: "gpt-5.1-codex-max"
+        label: "GPT-5.1 Codex Max — Deep and fast reasoning"
       gpt_5_1_codex_mini:
         id: "gpt-5.1-codex-mini"
         label: "GPT-5.1 Codex Mini — Cheaper, faster"
@@ -57,16 +60,19 @@ clis:
     name: "Gemini CLI"
     package: "@google/gemini-cli"
     npm_link: "https://www.npmjs.com/package/@google/gemini-cli"
-    version: "0.29.5"
+    version: "0.33.0"
     install: "npm install -g @google/gemini-cli"
     models:
-      gemini_3_pro_preview:
-        id: "gemini-3-pro-preview"
-        label: "Gemini 3 Pro Preview"
+      gemini_3_1_pro_preview:
+        id: "gemini-3.1-pro-preview"
+        label: "Gemini 3.1 Pro Preview"
+        default: true
+      gemini_3_flash_preview:
+        id: "gemini-3-flash-preview"
+        label: "Gemini 3 Flash Preview"
       gemini_2_5_pro:
         id: "gemini-2.5-pro"
         label: "Gemini 2.5 Pro"
-        default: true
       gemini_2_5_flash:
         id: "gemini-2.5-flash"
         label: "Gemini 2.5 Flash"
@@ -77,73 +83,317 @@ clis:
   cursor:
     name: "Cursor"
     package: "cursor"
-    version: "0.48.6"
+    version: "2026.02.27-e7d2ef6"
     install: "Download from cursor.com"
     models:
-      opus_4_5_thinking:
-        id: "opus-4.5-thinking"
-        label: "Claude 4.5 Opus (Thinking)"
+      opus_4_6_thinking:
+        id: "opus-4.6-thinking"
+        label: "Claude 4.6 Opus (Thinking)"
         default: true
+      opus_4_6:
+        id: "opus-4.6"
+        label: "Claude 4.6 Opus"
       opus_4_5:
         id: "opus-4.5"
         label: "Claude 4.5 Opus"
+      opus_4_5_thinking:
+        id: "opus-4.5-thinking"
+        label: "Claude 4.5 Opus (Thinking)"
+      sonnet_4_6:
+        id: "sonnet-4.6"
+        label: "Claude 4.6 Sonnet"
+      sonnet_4_6_thinking:
+        id: "sonnet-4.6-thinking"
+        label: "Claude 4.6 Sonnet (Thinking)"
       sonnet_4_5:
         id: "sonnet-4.5"
         label: "Claude 4.5 Sonnet"
       sonnet_4_5_thinking:
         id: "sonnet-4.5-thinking"
         label: "Claude 4.5 Sonnet (Thinking)"
-      gpt_5_2_codex:
-        id: "gpt-5.2-codex"
-        label: "GPT-5.2 Codex"
-      gpt_5_2_codex_high:
-        id: "gpt-5.2-codex-high"
-        label: "GPT-5.2 Codex High"
-      gpt_5_2_codex_low:
-        id: "gpt-5.2-codex-low"
-        label: "GPT-5.2 Codex Low"
+      composer_1_5:
+        id: "composer-1.5"
+        label: "Composer 1.5"
+      composer_1:
+        id: "composer-1"
+        label: "Composer 1"
+      gpt_5_4_xhigh:
+        id: "gpt-5.4-xhigh"
+        label: "GPT-5.4 Extra High"
+      gpt_5_4_xhigh_fast:
+        id: "gpt-5.4-xhigh-fast"
+        label: "GPT-5.4 Extra High Fast"
+      gpt_5_4_high:
+        id: "gpt-5.4-high"
+        label: "GPT-5.4 High"
+      gpt_5_4_high_fast:
+        id: "gpt-5.4-high-fast"
+        label: "GPT-5.4 High Fast"
+      gpt_5_4_medium:
+        id: "gpt-5.4-medium"
+        label: "GPT-5.4"
+      gpt_5_4_medium_fast:
+        id: "gpt-5.4-medium-fast"
+        label: "GPT-5.4 Fast"
+      gpt_5_4_low:
+        id: "gpt-5.4-low"
+        label: "GPT-5.4 Low"
+      gpt_5_3_codex_xhigh:
+        id: "gpt-5.3-codex-xhigh"
+        label: "GPT-5.3 Codex Extra High"
+      gpt_5_3_codex_xhigh_fast:
+        id: "gpt-5.3-codex-xhigh-fast"
+        label: "GPT-5.3 Codex Extra High Fast"
+      gpt_5_3_codex_high:
+        id: "gpt-5.3-codex-high"
+        label: "GPT-5.3 Codex High"
+      gpt_5_3_codex_high_fast:
+        id: "gpt-5.3-codex-high-fast"
+        label: "GPT-5.3 Codex High Fast"
+      gpt_5_3_codex:
+        id: "gpt-5.3-codex"
+        label: "GPT-5.3 Codex"
+      gpt_5_3_codex_fast:
+        id: "gpt-5.3-codex-fast"
+        label: "GPT-5.3 Codex Fast"
+      gpt_5_3_codex_low:
+        id: "gpt-5.3-codex-low"
+        label: "GPT-5.3 Codex Low"
+      gpt_5_3_codex_low_fast:
+        id: "gpt-5.3-codex-low-fast"
+        label: "GPT-5.3 Codex Low Fast"
+      gpt_5_3_codex_spark_preview:
+        id: "gpt-5.3-codex-spark-preview"
+        label: "GPT-5.3 Codex Spark"
       gpt_5_2_codex_xhigh:
         id: "gpt-5.2-codex-xhigh"
         label: "GPT-5.2 Codex Extra High"
-      gpt_5_2_codex_fast:
-        id: "gpt-5.2-codex-fast"
-        label: "GPT-5.2 Codex Fast"
-      gpt_5_2_codex_high_fast:
-        id: "gpt-5.2-codex-high-fast"
-        label: "GPT-5.2 Codex High Fast"
-      gpt_5_2_codex_low_fast:
-        id: "gpt-5.2-codex-low-fast"
-        label: "GPT-5.2 Codex Low Fast"
       gpt_5_2_codex_xhigh_fast:
         id: "gpt-5.2-codex-xhigh-fast"
         label: "GPT-5.2 Codex Extra High Fast"
-      gpt_5_1_codex_max:
-        id: "gpt-5.1-codex-max"
-        label: "GPT-5.1 Codex Max"
-      gpt_5_1_codex_max_high:
-        id: "gpt-5.1-codex-max-high"
-        label: "GPT-5.1 Codex Max High"
+      gpt_5_2_codex_high:
+        id: "gpt-5.2-codex-high"
+        label: "GPT-5.2 Codex High"
+      gpt_5_2_codex_high_fast:
+        id: "gpt-5.2-codex-high-fast"
+        label: "GPT-5.2 Codex High Fast"
+      gpt_5_2_codex:
+        id: "gpt-5.2-codex"
+        label: "GPT-5.2 Codex"
+      gpt_5_2_codex_fast:
+        id: "gpt-5.2-codex-fast"
+        label: "GPT-5.2 Codex Fast"
+      gpt_5_2_codex_low:
+        id: "gpt-5.2-codex-low"
+        label: "GPT-5.2 Codex Low"
+      gpt_5_2_codex_low_fast:
+        id: "gpt-5.2-codex-low-fast"
+        label: "GPT-5.2 Codex Low Fast"
       gpt_5_2:
         id: "gpt-5.2"
         label: "GPT-5.2"
       gpt_5_2_high:
         id: "gpt-5.2-high"
         label: "GPT-5.2 High"
+      gpt_5_1_codex_max:
+        id: "gpt-5.1-codex-max"
+        label: "GPT-5.1 Codex Max"
+      gpt_5_1_codex_max_high:
+        id: "gpt-5.1-codex-max-high"
+        label: "GPT-5.1 Codex Max High"
+      gpt_5_1_codex_mini:
+        id: "gpt-5.1-codex-mini"
+        label: "GPT-5.1 Codex Mini"
       gpt_5_1_high:
         id: "gpt-5.1-high"
         label: "GPT-5.1 High"
+      gemini_3_1_pro:
+        id: "gemini-3.1-pro"
+        label: "Gemini 3.1 Pro"
       gemini_3_pro:
         id: "gemini-3-pro"
         label: "Gemini 3 Pro"
       gemini_3_flash:
         id: "gemini-3-flash"
         label: "Gemini 3 Flash"
-      composer_1:
-        id: "composer-1"
-        label: "Composer 1"
       grok:
         id: "grok"
         label: "Grok"
+      kimi_k2_5:
+        id: "kimi-k2.5"
+        label: "Kimi K2.5"
+
+  droid:
+    name: "Droid"
+    package: "droid"
+    install: "Download from droid.dev"
+    models:
+      opus_4_6_fast:
+        id: "opus-4.6-fast"
+        label: "Opus 4.6 Fast Mode (12x)"
+        default: true
+      opus_4_5:
+        id: "opus-4.5"
+        label: "Opus 4.5 (2x)"
+      sonnet_4_5:
+        id: "sonnet-4.5"
+        label: "Sonnet 4.5 (1.2x)"
+      haiku_4_5:
+        id: "haiku-4.5"
+        label: "Haiku 4.5 (0.4x)"
+      gpt_5_2:
+        id: "gpt-5.2"
+        label: "GPT-5.2 (0.7x)"
+      gpt_5_2_codex:
+        id: "gpt-5.2-codex"
+        label: "GPT-5.2 Codex (0.7x)"
+      gemini_3_flash:
+        id: "gemini-3-flash"
+        label: "Gemini 3 Flash (0.2x)"
+      droid_core:
+        id: "droid-core-glm-4.7"
+        label: "Droid Core (GLM-4.7) (0.25x)"
+
+  opencode:
+    name: "OpenCode"
+    package: "opencode-ai"
+    npm_link: "https://www.npmjs.com/package/opencode-ai"
+    version: "1.2.24"
+    install: "npm install -g opencode-ai"
+    models:
+      opencode_big_pickle:
+        id: "opencode/big-pickle"
+        label: "Big Pickle"
+      opencode_gpt_5_nano:
+        id: "opencode/gpt-5-nano"
+        label: "GPT-5 Nano (OpenCode)"
+      opencode_mimo_v2_flash_free:
+        id: "opencode/mimo-v2-flash-free"
+        label: "Mimo V2 Flash Free"
+      opencode_minimax_m2_5_free:
+        id: "opencode/minimax-m2.5-free"
+        label: "MiniMax M2.5 Free"
+      openai_codex_mini_latest:
+        id: "openai/codex-mini-latest"
+        label: "Codex Mini Latest"
+      openai_gpt_3_5_turbo:
+        id: "openai/gpt-3.5-turbo"
+        label: "GPT-3.5 Turbo"
+      openai_gpt_4:
+        id: "openai/gpt-4"
+        label: "GPT-4"
+      openai_gpt_4_turbo:
+        id: "openai/gpt-4-turbo"
+        label: "GPT-4 Turbo"
+      openai_gpt_4_1:
+        id: "openai/gpt-4.1"
+        label: "GPT-4.1"
+      openai_gpt_4_1_mini:
+        id: "openai/gpt-4.1-mini"
+        label: "GPT-4.1 Mini"
+      openai_gpt_4_1_nano:
+        id: "openai/gpt-4.1-nano"
+        label: "GPT-4.1 Nano"
+      openai_gpt_4o:
+        id: "openai/gpt-4o"
+        label: "GPT-4o"
+      openai_gpt_4o_2024_05_13:
+        id: "openai/gpt-4o-2024-05-13"
+        label: "GPT-4o (2024-05-13)"
+      openai_gpt_4o_2024_08_06:
+        id: "openai/gpt-4o-2024-08-06"
+        label: "GPT-4o (2024-08-06)"
+      openai_gpt_4o_2024_11_20:
+        id: "openai/gpt-4o-2024-11-20"
+        label: "GPT-4o (2024-11-20)"
+      openai_gpt_4o_mini:
+        id: "openai/gpt-4o-mini"
+        label: "GPT-4o Mini"
+      openai_gpt_5:
+        id: "openai/gpt-5"
+        label: "GPT-5"
+      openai_gpt_5_codex:
+        id: "openai/gpt-5-codex"
+        label: "GPT-5 Codex"
+      openai_gpt_5_mini:
+        id: "openai/gpt-5-mini"
+        label: "GPT-5 Mini"
+      openai_gpt_5_nano:
+        id: "openai/gpt-5-nano"
+        label: "GPT-5 Nano"
+      openai_gpt_5_pro:
+        id: "openai/gpt-5-pro"
+        label: "GPT-5 Pro"
+      openai_gpt_5_1:
+        id: "openai/gpt-5.1"
+        label: "GPT-5.1"
+      openai_gpt_5_1_chat_latest:
+        id: "openai/gpt-5.1-chat-latest"
+        label: "GPT-5.1 Chat Latest"
+      openai_gpt_5_1_codex:
+        id: "openai/gpt-5.1-codex"
+        label: "GPT-5.1 Codex"
+      openai_gpt_5_1_codex_max:
+        id: "openai/gpt-5.1-codex-max"
+        label: "GPT-5.1 Codex Max"
+      openai_gpt_5_1_codex_mini:
+        id: "openai/gpt-5.1-codex-mini"
+        label: "GPT-5.1 Codex Mini"
+      openai_gpt_5_2:
+        id: "openai/gpt-5.2"
+        label: "GPT-5.2"
+        default: true
+      openai_gpt_5_2_chat_latest:
+        id: "openai/gpt-5.2-chat-latest"
+        label: "GPT-5.2 Chat Latest"
+      openai_gpt_5_2_codex:
+        id: "openai/gpt-5.2-codex"
+        label: "GPT-5.2 Codex"
+      openai_gpt_5_2_pro:
+        id: "openai/gpt-5.2-pro"
+        label: "GPT-5.2 Pro"
+      openai_gpt_5_3_codex:
+        id: "openai/gpt-5.3-codex"
+        label: "GPT-5.3 Codex"
+      openai_gpt_5_3_codex_spark:
+        id: "openai/gpt-5.3-codex-spark"
+        label: "GPT-5.3 Codex Spark"
+      openai_gpt_5_4:
+        id: "openai/gpt-5.4"
+        label: "GPT-5.4"
+      openai_gpt_5_4_pro:
+        id: "openai/gpt-5.4-pro"
+        label: "GPT-5.4 Pro"
+      openai_o1:
+        id: "openai/o1"
+        label: "O1"
+      openai_o1_mini:
+        id: "openai/o1-mini"
+        label: "O1 Mini"
+      openai_o1_preview:
+        id: "openai/o1-preview"
+        label: "O1 Preview"
+      openai_o1_pro:
+        id: "openai/o1-pro"
+        label: "O1 Pro"
+      openai_o3:
+        id: "openai/o3"
+        label: "O3"
+      openai_o3_deep_research:
+        id: "openai/o3-deep-research"
+        label: "O3 Deep Research"
+      openai_o3_mini:
+        id: "openai/o3-mini"
+        label: "O3 Mini"
+      openai_o3_pro:
+        id: "openai/o3-pro"
+        label: "O3 Pro"
+      openai_o4_mini:
+        id: "openai/o4-mini"
+        label: "O4 Mini"
+      openai_o4_mini_deep_research:
+        id: "openai/o4-mini-deep-research"
+        label: "O4 Mini Deep Research"
 
   aider:
     name: "Aider"
