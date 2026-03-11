@@ -435,10 +435,15 @@ async function installRelayAcpBinary() {
   const homeDir = os.homedir();
   const targetPath = path.join(homeDir, '.local', 'bin', 'relay-acp');
 
-  // Already installed?
+  // Already installed and functional?
   if (fs.existsSync(targetPath)) {
-    info('relay-acp binary already installed');
-    return true;
+    try {
+      execSync(`"${targetPath}" --version`, { stdio: 'pipe' });
+      info('relay-acp binary already installed');
+      return true;
+    } catch {
+      // Binary exists but broken or outdated — reinstall
+    }
   }
 
   const platform = os.platform();
