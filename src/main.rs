@@ -2639,10 +2639,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             } else {
                                 let local_spawn_echo_key =
                                     relaycast_spawn_control_dedup_key(&workspace_id, &name);
-                                if !relaycast_ws_should_apply_local_spawn_echo_dedup(
+                                let should_dedup = relaycast_ws_should_apply_local_spawn_echo_dedup(
                                     control_dedup_key.as_deref(),
                                     &local_spawn_echo_key,
-                                ) || dedup.insert_if_new(&local_spawn_echo_key, Instant::now())
+                                );
+                                // Always insert the local echo key for consistency with the primary path
+                                let is_new = dedup.insert_if_new(&local_spawn_echo_key, Instant::now());
+                                if !should_dedup || is_new
                                 {
                                     let channels = channel
                                         .as_deref()
