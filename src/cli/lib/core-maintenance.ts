@@ -290,6 +290,21 @@ export async function runUninstallCommand(
     }
   }
 
+  // Remove relay-dashboard-server from /usr/local/bin (another search path used by findDashboardBinary)
+  const usrLocalBinDashboard = path.join('/usr/local/bin', 'relay-dashboard-server');
+  if (deps.fs.existsSync(usrLocalBinDashboard)) {
+    if (isDryRun) {
+      deps.log(`[dry-run] Would remove binary: ${usrLocalBinDashboard}`);
+    } else {
+      try {
+        deps.fs.unlinkSync(usrLocalBinDashboard);
+        deps.log(`Removed ${usrLocalBinDashboard}`);
+      } catch {
+        // Best-effort.
+      }
+    }
+  }
+
   // Remove broker binary from ~/.agent-relay/bin/ (not the parent dir which stores global data)
   if (deps.fs.existsSync(installBinDir)) {
     if (isDryRun) {
