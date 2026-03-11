@@ -32,6 +32,7 @@ function createRelayMock(overrides: Partial<CoreRelay> = {}): CoreRelay {
     spawn: vi.fn(async () => undefined),
     getStatus: vi.fn(async () => ({ agent_count: 0, pending_delivery_count: 0 })),
     shutdown: vi.fn(async () => undefined),
+    workspaceKey: 'rk_live_default',
     ...overrides,
   };
 }
@@ -607,6 +608,95 @@ describe('registerCoreCommands', () => {
         args: ['--model', 'sonnet'],
       })
     );
+  });
+
+  it('up always logs the workspace key after broker starts', async () => {
+    const relay = createRelayMock();
+    const { program, deps } = createHarness({ relay });
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_default');
+  });
+
+  it('up logs the auto-created workspace key with dashboard enabled', async () => {
+    const relay = createRelayMock({ workspaceKey: 'rk_live_auto456' });
+    const { program, deps } = createHarness({ relay });
+
+    const exitCode = await runCommand(program, ['up', '--port', '4999']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_auto456');
+  });
+
+  it('up --workspace-key sets RELAY_API_KEY in env before broker starts', async () => {
+    const env: NodeJS.ProcessEnv = {};
+    const relay = createRelayMock({ workspaceKey: 'rk_live_custom' });
+    const { program, deps } = createHarness({ relay, env });
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--workspace-key', 'rk_live_custom']);
+
+    expect(exitCode).toBeUndefined();
+    expect(env.RELAY_API_KEY).toBe('rk_live_custom');
+    expect(deps.createRelay).toHaveBeenCalled();
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_custom');
+  });
+
+  it('up without --workspace-key does not set RELAY_API_KEY in env', async () => {
+    const env: NodeJS.ProcessEnv = {};
+    const relay = createRelayMock();
+    const { program } = createHarness({ relay, env });
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+
+    expect(exitCode).toBeUndefined();
+    expect(env.RELAY_API_KEY).toBeUndefined();
+  });
+
+  it('up logs "unknown" when workspace key is unexpectedly missing', async () => {
+    const relay = createRelayMock({ workspaceKey: undefined });
+    const { program, deps } = createHarness({ relay });
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: unknown');
+  });
+
+  it('start dashboard.js logs workspace key when reusing existing broker', async () => {
+    const brokerPidPath = '/tmp/project/.agent-relay/broker-project.pid';
+    const fs = createFsMock({ [brokerPidPath]: '3030' });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (pid === 3030 && (signal === 0 || signal === undefined)) {
+        return; // process is running
+      }
+      if (signal === 'SIGTERM') {
+        return;
+      }
+    });
+    const relay = createRelayMock({ workspaceKey: 'rk_live_reused' });
+    const { program, deps } = createHarness({ fs, killImpl, relay });
+
+    const exitCode = await runCommand(program, ['start', 'dashboard.js', 'claude', '--port', '4999']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_reused');
+    expect(deps.log).toHaveBeenCalledWith(
+      'Broker already running for this project; reusing existing broker.'
+    );
+  });
+
+  it('up --workspace-key overrides existing RELAY_API_KEY in env', async () => {
+    const env: NodeJS.ProcessEnv = { RELAY_API_KEY: 'rk_live_old' };
+    const relay = createRelayMock({ workspaceKey: 'rk_live_new' });
+    const { program, deps } = createHarness({ relay, env });
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--workspace-key', 'rk_live_new']);
+
+    expect(exitCode).toBeUndefined();
+    expect(env.RELAY_API_KEY).toBe('rk_live_new');
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_new');
   });
 
   it('bridge exits when no projects have running brokers', async () => {

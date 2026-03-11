@@ -10,6 +10,7 @@ type UpOptions = {
   verbose?: boolean;
   dashboardPath?: string;
   reuseExistingBroker?: boolean;
+  workspaceKey?: string;
 };
 
 type DownOptions = {
@@ -821,6 +822,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
           }
           deps.log(`Project: ${paths.projectRoot}`);
           deps.log('Mode: broker (stdio)');
+          deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
           deps.log('Broker already running for this project; reusing existing broker.');
 
           if (wantsDashboard) {
@@ -884,6 +886,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       existingPid = null;
     }
 
+    // If a workspace key was explicitly provided, inject it into the environment
+    // so the Rust broker picks it up via RELAY_API_KEY.
+    if (options.workspaceKey) {
+      deps.env.RELAY_API_KEY = options.workspaceKey;
+    }
+
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agent-relay/ while broker was running).
     await killOrphanedBrokerProcesses(paths.projectRoot, deps);
@@ -917,6 +925,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 
     deps.log(`Project: ${paths.projectRoot}`);
     deps.log('Mode: broker (stdio)');
+    deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
     deps.log('Broker started.');
 
     if (wantsDashboard) {
