@@ -179,12 +179,28 @@ test("resolveSpawnPolicy: does not duplicate bypass if already in AGENT_ARGS", (
   assert.equal(result.bypassApplied, false);
 });
 
+test("resolveSpawnPolicy: does not duplicate codex bypass when --full-auto alias is present", () => {
+  const result = resolveSpawnPolicy(
+    makeEnv({ AGENT_CLI: "codex", AGENT_ARGS: '["--full-auto"]' }),
+  );
+  assert.deepEqual(result.args, ["--full-auto"]);
+  assert.equal(result.bypassApplied, false);
+});
+
 test("resolveSpawnPolicy: does not duplicate --yolo if already in AGENT_ARGS", () => {
   const result = resolveSpawnPolicy(
     makeEnv({ AGENT_CLI: "gemini", AGENT_ARGS: '["--yolo"]' }),
   );
   const count = result.args.filter((a) => a === "--yolo").length;
   assert.equal(count, 1);
+  assert.equal(result.bypassApplied, false);
+});
+
+test("resolveSpawnPolicy: does not duplicate --yolo when -y alias is already in AGENT_ARGS", () => {
+  const result = resolveSpawnPolicy(
+    makeEnv({ AGENT_CLI: "gemini", AGENT_ARGS: '["-y"]' }),
+  );
+  assert.deepEqual(result.args, ["-y"]);
   assert.equal(result.bypassApplied, false);
 });
 
