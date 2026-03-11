@@ -226,6 +226,7 @@ clis:
   droid:
     name: "Droid"
     package: "droid"
+    version: "0.1.0"
     install: "Download from droid.dev"
     models:
       opus_4_6_fast:
