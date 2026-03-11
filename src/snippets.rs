@@ -1786,7 +1786,10 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         .await
         .expect("configure cursor mcp");
 
-        assert!(args.is_empty(), "cursor should configure MCP via file, not CLI args");
+        assert!(
+            args.is_empty(),
+            "cursor should configure MCP via file, not CLI args"
+        );
 
         let path = temp.path().join(".cursor").join("mcp.json");
         assert!(path.exists(), ".cursor/mcp.json must be created");
@@ -1834,7 +1837,10 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         .await
         .expect("configure cursor alias mcp");
 
-        assert!(args.is_empty(), "cursor alias should configure MCP via file");
+        assert!(
+            args.is_empty(),
+            "cursor alias should configure MCP via file"
+        );
 
         let path = temp.path().join(".cursor").join("mcp.json");
         assert!(path.exists(), ".cursor/mcp.json must be created");
