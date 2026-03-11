@@ -64,7 +64,8 @@ export interface SpawnFromEnvResult {
 /** SDK-owned bypass flag mapping. Cloud must NOT duplicate these. */
 const BYPASS_FLAGS: Record<string, string> = {
   claude: "--dangerously-skip-permissions",
-  codex: "--full-auto",
+  codex: "--dangerously-bypass-approvals-and-sandbox",
+  gemini: "--yolo",
 };
 
 /**
@@ -179,7 +180,7 @@ export function resolveSpawnPolicy(input: SpawnEnvInput): SpawnPolicyResult {
  * the environment.
  *
  * Applies canonical bypass flags (claude -> --dangerously-skip-permissions,
- * codex -> --full-auto) unless AGENT_DISABLE_DEFAULT_BYPASS=1.
+ * codex -> --dangerously-bypass-approvals-and-sandbox) unless AGENT_DISABLE_DEFAULT_BYPASS=1.
  *
  * Creates a broker, spawns the agent via PTY, and waits for exit.
  * Returns the exit reason and exit code.

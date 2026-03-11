@@ -118,16 +118,16 @@ test("resolveSpawnPolicy: applies --dangerously-skip-permissions for claude:opus
   assert.equal(result.bypassApplied, true);
 });
 
-test("resolveSpawnPolicy: applies --full-auto for codex", () => {
+test("resolveSpawnPolicy: applies --dangerously-bypass-approvals-and-sandbox for codex", () => {
   const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: "codex" }));
-  assert.ok(result.args.includes("--full-auto"));
+  assert.ok(result.args.includes("--dangerously-bypass-approvals-and-sandbox"));
   assert.equal(result.bypassApplied, true);
 });
 
-test("resolveSpawnPolicy: no bypass for gemini", () => {
+test("resolveSpawnPolicy: applies --yolo for gemini", () => {
   const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: "gemini" }));
-  assert.equal(result.args.length, 0);
-  assert.equal(result.bypassApplied, false);
+  assert.ok(result.args.includes("--yolo"));
+  assert.equal(result.bypassApplied, true);
 });
 
 test("resolveSpawnPolicy: no bypass for unknown CLI", () => {
@@ -170,11 +170,20 @@ test("resolveSpawnPolicy: does not duplicate bypass flag if already in AGENT_ARG
   assert.equal(result.bypassApplied, false, "bypassApplied should be false when already present");
 });
 
-test("resolveSpawnPolicy: does not duplicate --full-auto if already in AGENT_ARGS", () => {
+test("resolveSpawnPolicy: does not duplicate bypass if already in AGENT_ARGS", () => {
   const result = resolveSpawnPolicy(
-    makeEnv({ AGENT_CLI: "codex", AGENT_ARGS: '["--full-auto"]' }),
+    makeEnv({ AGENT_CLI: "codex", AGENT_ARGS: '["--dangerously-bypass-approvals-and-sandbox"]' }),
   );
-  const count = result.args.filter((a) => a === "--full-auto").length;
+  const count = result.args.filter((a) => a === "--dangerously-bypass-approvals-and-sandbox").length;
+  assert.equal(count, 1);
+  assert.equal(result.bypassApplied, false);
+});
+
+test("resolveSpawnPolicy: does not duplicate --yolo if already in AGENT_ARGS", () => {
+  const result = resolveSpawnPolicy(
+    makeEnv({ AGENT_CLI: "gemini", AGENT_ARGS: '["--yolo"]' }),
+  );
+  const count = result.args.filter((a) => a === "--yolo").length;
   assert.equal(count, 1);
   assert.equal(result.bypassApplied, false);
 });
@@ -185,26 +194,26 @@ test("resolveSpawnPolicy: parses JSON array args", () => {
   const result = resolveSpawnPolicy(
     makeEnv({ AGENT_CLI: "gemini", AGENT_ARGS: '["--reasoning","high","--verbose"]' }),
   );
-  assert.deepEqual(result.args, ["--reasoning", "high", "--verbose"]);
+  assert.deepEqual(result.args, ["--reasoning", "high", "--verbose", "--yolo"]);
 });
 
 test("resolveSpawnPolicy: falls back to space-delimited args", () => {
   const result = resolveSpawnPolicy(
     makeEnv({ AGENT_CLI: "gemini", AGENT_ARGS: "--reasoning high --verbose" }),
   );
-  assert.deepEqual(result.args, ["--reasoning", "high", "--verbose"]);
+  assert.deepEqual(result.args, ["--reasoning", "high", "--verbose", "--yolo"]);
 });
 
 test("resolveSpawnPolicy: handles invalid JSON gracefully (falls back to split)", () => {
   const result = resolveSpawnPolicy(
     makeEnv({ AGENT_CLI: "gemini", AGENT_ARGS: "[invalid json" }),
   );
-  assert.deepEqual(result.args, ["[invalid", "json"]);
+  assert.deepEqual(result.args, ["[invalid", "json", "--yolo"]);
 });
 
-test("resolveSpawnPolicy: empty AGENT_ARGS produces no extra args", () => {
+test("resolveSpawnPolicy: empty AGENT_ARGS produces bypass-only args", () => {
   const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: "gemini" }));
-  assert.deepEqual(result.args, []);
+  assert.deepEqual(result.args, ["--yolo"]);
 });
 
 // ── resolveSpawnPolicy: channels ───────────────────────────────────────────
