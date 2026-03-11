@@ -2366,6 +2366,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         }
                     }
 
+                    if matches!(ws_type, "agent.spawn_requested" | "agent.release_requested") {
+                        if let Err(ref deser_err) = serde_json::from_value::<WsEvent>(ws_value.clone()) {
+                            eprintln!(
+                                "[agent-relay] WARNING: failed to deserialize {} event: {}",
+                                ws_type, deser_err
+                            );
+                        }
+                    }
                     if let Ok(ws_event) = serde_json::from_value::<WsEvent>(ws_value.clone()) {
                         match ws_event {
                             WsEvent::AgentReleaseRequested(event) => {
@@ -2447,6 +2455,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             }
                             WsEvent::AgentSpawnRequested(event) => {
                                 let name = event.agent.name;
+                                eprintln!("[agent-relay] received spawn request for '{}' (cli: {})", name, event.agent.cli);
                                 if is_relaycast_self_control_target(
                                     &name,
                                     &workspace_self_name,
@@ -2456,6 +2465,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         worker = %name,
                                         "ignoring relaycast spawn request for broker self"
                                     );
+                                    eprintln!("[agent-relay] ignoring spawn request for '{}' (broker self)", name);
                                     continue;
                                 }
                                 let local_spawn_echo_key =
@@ -2466,6 +2476,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         workspace_id = %workspace_id,
                                         "dropping duplicate/local relaycast spawn request"
                                     );
+                                    eprintln!("[agent-relay] dropping duplicate spawn request for '{}'", name);
                                     continue;
                                 }
                                 let cli = event.agent.cli;
@@ -2580,6 +2591,145 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 continue;
                             }
                             _ => {}
+                        }
+                    } else if ws_type == "agent.spawn_requested" {
+                        // Fallback: the SDK failed to deserialize the event (e.g. missing
+                        // fields like `already_existed` or `task: null`).  Extract the
+                        // spawn info directly from the raw JSON so we don't silently
+                        // drop the request.
+                        let agent_obj = ws_value.get("agent");
+                        let name = agent_obj
+                            .and_then(|a| a.get("name"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        let cli = agent_obj
+                            .and_then(|a| a.get("cli"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("claude")
+                            .to_string();
+                        let task = agent_obj
+                            .and_then(|a| a.get("task"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        let channel = agent_obj
+                            .and_then(|a| a.get("channel"))
+                            .and_then(Value::as_str)
+                            .map(String::from);
+
+                        if !name.is_empty() {
+                            eprintln!("[agent-relay] handling spawn request for '{}' via JSON fallback (cli: {})", name, cli);
+
+                            if is_relaycast_self_control_target(
+                                &name,
+                                &workspace_self_name,
+                                &workspace_self_names,
+                            ) {
+                                eprintln!("[agent-relay] ignoring spawn request for '{}' (broker self)", name);
+                            } else {
+                                let local_spawn_echo_key =
+                                    format!("control:{workspace_id}:agent.spawn_requested:{name}");
+                                if dedup.insert_if_new(&local_spawn_echo_key, Instant::now()) {
+                                    let channels = channel
+                                        .as_deref()
+                                        .map(|ch| {
+                                            let mut chs = default_spawn_channels();
+                                            if !chs.contains(&ch.to_string()) {
+                                                chs.push(ch.to_string());
+                                            }
+                                            chs
+                                        })
+                                        .unwrap_or_else(default_spawn_channels);
+                                    let spec = AgentSpec {
+                                        name: name.clone(),
+                                        runtime: AgentRuntime::Pty,
+                                        provider: None,
+                                        cli: Some(cli.clone()),
+                                        model: None,
+                                        cwd: None,
+                                        team: None,
+                                        shadow_of: None,
+                                        shadow_mode: None,
+                                        args: vec![],
+                                        channels: channels.clone(),
+                                        restart_policy: None,
+                                    };
+                                    let spec_for_state = spec.clone();
+                                    let task_opt = Some(task).filter(|v| !v.trim().is_empty());
+                                    let effective_task = normalize_initial_task(task_opt.clone());
+
+                                    let worker_relay_key = relaycast_ws_spawn_token(&ws_value);
+
+                                    match workers.spawn(
+                                        spec,
+                                        Some("Relaycast".to_string()),
+                                        None,
+                                        worker_relay_key.clone(),
+                                        false,
+                                        Some(workspace_id.clone()),
+                                    ).await {
+                                        Ok(()) => {
+                                            if let Some(ref task_text) = effective_task {
+                                                workers.initial_tasks.insert(name.clone(), task_text.clone());
+                                            }
+                                            agent_spawn_count += 1;
+                                            telemetry.track(TelemetryEvent::AgentSpawn {
+                                                cli: cli.clone(),
+                                                runtime: "pty".to_string(),
+                                            });
+                                            let pid = workers.worker_pid(&name).unwrap_or(0);
+                                            state.agents.insert(
+                                                name.clone(),
+                                                PersistedAgent {
+                                                    runtime: AgentRuntime::Pty,
+                                                    parent: Some("Relaycast".to_string()),
+                                                    channels,
+                                                    pid: workers.worker_pid(&name),
+                                                    started_at: Some(
+                                                        std::time::SystemTime::now()
+                                                            .duration_since(std::time::UNIX_EPOCH)
+                                                            .unwrap_or_default()
+                                                            .as_secs(),
+                                                    ),
+                                                    spec: Some(spec_for_state),
+                                                    restart_policy: None,
+                                                    initial_task: effective_task,
+                                                },
+                                            );
+                                            if paths.persist { let _ = state.save(&paths.state); }
+                                            let _ = send_event(
+                                                &sdk_out_tx,
+                                                json!({
+                                                    "kind": "agent_spawned",
+                                                    "name": name,
+                                                    "runtime": "pty",
+                                                    "cli": cli,
+                                                    "pid": pid,
+                                                    "source": "relaycast_ws_fallback",
+                                                    "pre_registered": worker_relay_key.is_some(),
+                                                }),
+                                            ).await;
+                                            publish_agent_state_transition(
+                                                &workspace_state.ws_control_tx,
+                                                &name,
+                                                "spawned",
+                                                Some("relaycast_spawn"),
+                                            )
+                                            .await;
+                                            eprintln!("[agent-relay] spawned worker '{}' via relaycast (JSON fallback)", name);
+                                        }
+                                        Err(e) => {
+                                            let msg = e.to_string();
+                                            if !msg.contains("already exists") {
+                                                eprintln!("[agent-relay] failed to spawn '{}': {}", name, e);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    eprintln!("[agent-relay] dropping duplicate spawn request for '{}' (fallback)", name);
+                                }
+                            }
                         }
                     }
 
