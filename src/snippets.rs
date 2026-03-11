@@ -242,6 +242,50 @@ pub fn relaycast_mcp_config_json_with_token(
     serde_json::to_string(&Value::Object(top)).expect("MCP config serialization cannot fail")
 }
 
+/// Merge the broker's relaycast MCP config with the user's project-level `.mcp.json`.
+/// The relaycast entry always wins (prevents stale entries from overriding broker creds).
+/// Other MCP servers in `.mcp.json` are preserved so they work when spawned from the dashboard.
+fn merge_relaycast_with_project_mcp(
+    relay_api_key: Option<&str>,
+    relay_base_url: Option<&str>,
+    relay_agent_name: Option<&str>,
+    relay_agent_token: Option<&str>,
+    cwd: &Path,
+) -> String {
+    let relaycast_server = relaycast_server_config(
+        relay_api_key,
+        relay_base_url,
+        relay_agent_name,
+        relay_agent_token,
+    );
+
+    // Start with user's project-level .mcp.json if it exists
+    let mut servers = Map::new();
+    let mcp_path = cwd.join(MCP_FILE);
+    if let Ok(content) = fs::read_to_string(&mcp_path) {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&content) {
+            if let Some(existing_servers) = parsed
+                .get("mcpServers")
+                .and_then(Value::as_object)
+            {
+                // Copy all existing servers except relaycast (which we'll override)
+                for (name, config) in existing_servers {
+                    if name != RELAYCAST_SERVER {
+                        servers.insert(name.clone(), config.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Insert relaycast with broker-injected credentials (always wins)
+    servers.insert(RELAYCAST_SERVER.to_string(), relaycast_server);
+
+    let mut top = Map::new();
+    top.insert("mcpServers".to_string(), Value::Object(servers));
+    serde_json::to_string(&Value::Object(top)).expect("MCP config serialization cannot fail")
+}
+
 fn relaycast_server_config(
     relay_api_key: Option<&str>,
     relay_base_url: Option<&str>,
@@ -591,12 +635,21 @@ pub async fn configure_relaycast_mcp_with_token(
     let mut args: Vec<String> = Vec::new();
 
     if is_claude && !existing_args.iter().any(|a| a.contains("mcp-config")) {
-        let mcp_json =
-            relaycast_mcp_config_json_with_token(api_key, base_url, Some(agent_name), agent_token);
+        // Build relaycast MCP config, then merge with the user's project-level
+        // .mcp.json so other MCP servers (filesystem, database, etc.) are preserved.
+        // Relaycast entry takes priority to prevent stale configs from overriding
+        // broker-injected credentials.
+        let mcp_json = merge_relaycast_with_project_mcp(
+            api_key,
+            base_url,
+            Some(agent_name),
+            agent_token,
+            cwd,
+        );
         args.push("--mcp-config".to_string());
         args.push(mcp_json);
-        // Prevent project-level .mcp.json from overriding the broker-injected
-        // config (e.g. a stale relaycast entry without agent credentials).
+        // Use strict mode so only the merged config is used (no double-loading
+        // of .mcp.json which would re-introduce stale relaycast entries).
         if !existing_args
             .iter()
             .any(|a| a.contains("strict-mcp-config"))
@@ -1993,6 +2046,98 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
             Some(true),
             "custom tools in existing agent entry must be preserved"
         );
+    }
+
+    #[test]
+    fn merge_mcp_preserves_user_servers() {
+        let temp = tempdir().expect("tempdir");
+        let mcp_path = temp.path().join(".mcp.json");
+        // User has a filesystem MCP server configured
+        fs::write(
+            &mcp_path,
+            r#"{
+                "mcpServers": {
+                    "filesystem": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-filesystem"]
+                    },
+                    "relaycast": {
+                        "command": "npx",
+                        "args": ["-y", "@relaycast/mcp"],
+                        "env": { "RELAY_API_KEY": "old_stale_key" }
+                    }
+                }
+            }"#,
+        )
+        .expect("write .mcp.json");
+
+        let merged = super::merge_relaycast_with_project_mcp(
+            Some("rk_fresh_key"),
+            None,
+            Some("test-agent"),
+            None,
+            temp.path(),
+        );
+        let parsed: Value = serde_json::from_str(&merged).expect("valid JSON");
+        let servers = parsed["mcpServers"].as_object().expect("mcpServers");
+
+        // User's filesystem server is preserved
+        assert!(
+            servers.contains_key("filesystem"),
+            "user's filesystem MCP should be preserved"
+        );
+
+        // Relaycast entry uses broker-injected credentials, not stale ones
+        let relaycast_env = &servers["relaycast"]["env"];
+        assert_ne!(
+            relaycast_env["RELAY_API_KEY"].as_str(),
+            Some("old_stale_key"),
+            "stale relaycast key must be overridden"
+        );
+        assert_eq!(
+            relaycast_env["RELAY_AGENT_NAME"].as_str(),
+            Some("test-agent"),
+            "broker-injected agent name must be present"
+        );
+    }
+
+    #[test]
+    fn merge_mcp_works_without_project_mcp_file() {
+        let temp = tempdir().expect("tempdir");
+        // No .mcp.json exists
+
+        let merged = super::merge_relaycast_with_project_mcp(
+            Some("rk_key"),
+            None,
+            Some("agent-1"),
+            None,
+            temp.path(),
+        );
+        let parsed: Value = serde_json::from_str(&merged).expect("valid JSON");
+        let servers = parsed["mcpServers"].as_object().expect("mcpServers");
+
+        assert_eq!(servers.len(), 1, "only relaycast server when no .mcp.json");
+        assert!(servers.contains_key("relaycast"));
+    }
+
+    #[test]
+    fn merge_mcp_handles_malformed_project_file() {
+        let temp = tempdir().expect("tempdir");
+        let mcp_path = temp.path().join(".mcp.json");
+        fs::write(&mcp_path, "not valid json {{{").expect("write bad .mcp.json");
+
+        let merged = super::merge_relaycast_with_project_mcp(
+            Some("rk_key"),
+            None,
+            Some("agent-1"),
+            None,
+            temp.path(),
+        );
+        let parsed: Value = serde_json::from_str(&merged).expect("valid JSON");
+        let servers = parsed["mcpServers"].as_object().expect("mcpServers");
+
+        assert_eq!(servers.len(), 1, "malformed .mcp.json should be ignored gracefully");
+        assert!(servers.contains_key("relaycast"));
     }
 
     #[test]
