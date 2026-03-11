@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-03-10T13:50:04.591Z",
+  "lastUpdated": "2026-03-11T08:59:31.669Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -777,7 +777,8 @@
       "status": "completed",
       "startedAt": "2026-03-09T15:18:48.507Z",
       "completedAt": "2026-03-09T15:53:02.973Z",
-      "path": "/Users/khaliqgant/Projects/relay/.worktrees/multiws/.trajectories/completed/2026-03/traj_6gwpf0ojo18g.json"
+      "path": "/Users/khaliqgant/Projects/relay/.worktrees/multiws/.trajectories/completed/2026-03/traj_6gwpf0ojo18g.json",
+      "compactedInto": "compact_7ilaq2lfjpif"
     },
     "traj_ynu02q2dbiuc": {
       "title": "Fix Devin bugs in PR #536",
