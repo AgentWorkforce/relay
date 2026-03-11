@@ -807,6 +807,20 @@
       "startedAt": "2026-03-10T13:45:40.951Z",
       "completedAt": "2026-03-10T13:50:04.518Z",
       "path": "/Users/khaliqgant/Projects/relay/.trajectories/completed/2026-03/traj_bakz7bn14kn8.json"
+    },
+    "traj_c55yptnf407o": {
+      "title": "Implement postAction feature for PR #527",
+      "status": "abandoned",
+      "startedAt": "2026-03-10T14:02:43.243Z",
+      "completedAt": "2026-03-10T21:48:27.425Z",
+      "path": "/Users/khaliqgant/Projects/relay/.trajectories/completed/2026-03/traj_c55yptnf407o.json"
+    },
+    "traj_3qwcgcxhtp1b": {
+      "title": "Fix workflow local mode \u2014 broker still connects to Relaycast when DISABLE_RELAYCAST=1",
+      "status": "completed",
+      "startedAt": "2026-03-10T21:48:27.708Z",
+      "completedAt": "2026-03-10T22:15:34.476Z",
+      "path": "/Users/khaliqgant/Projects/relay/.trajectories/completed/2026-03/traj_3qwcgcxhtp1b.json"
     }
   }
 }
