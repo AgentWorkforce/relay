@@ -766,6 +766,9 @@ pub async fn configure_relaycast_mcp_with_token(
             }
         }
     } else if is_gemini || is_droid {
+        if is_gemini {
+            ensure_gemini_folder_trusted(cwd);
+        }
         configure_gemini_droid_mcp(
             cli,
             api_key,
@@ -792,6 +795,46 @@ pub async fn configure_relaycast_mcp_with_token(
     }
 
     Ok(args)
+}
+
+/// Pre-trust a folder in Gemini's `~/.gemini/trustedFolders.json` so that project
+/// settings, MCP servers, and GEMINI.md are applied when Gemini starts.
+fn ensure_gemini_folder_trusted(cwd: &Path) {
+    let home = match std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+    {
+        Some(h) => PathBuf::from(h),
+        None => return,
+    };
+
+    let trusted_file = home.join(".gemini").join("trustedFolders.json");
+
+    let mut data: Map<String, Value> = if let Ok(contents) = fs::read_to_string(&trusted_file) {
+        serde_json::from_str(&contents).unwrap_or_default()
+    } else {
+        Map::new()
+    };
+
+    let folder_key = cwd.to_string_lossy().to_string();
+
+    // Only update if not already trusted
+    match data.get(&folder_key).and_then(Value::as_str) {
+        Some("TRUST_FOLDER") | Some("TRUST_PARENT") => return,
+        _ => {}
+    }
+
+    data.insert(folder_key, Value::String("TRUST_FOLDER".to_string()));
+
+    // Ensure parent directory exists
+    if let Some(parent) = trusted_file.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    if let Ok(json) = serde_json::to_string_pretty(&data) {
+        let _ = fs::write(&trusted_file, json);
+        tracing::info!("Pre-trusted folder {:?} in Gemini trustedFolders.json", cwd);
+    }
 }
 
 /// Run `<cli> mcp remove relaycast` then `<cli> mcp add` for Gemini or Droid.

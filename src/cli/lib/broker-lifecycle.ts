@@ -1,3 +1,6 @@
+import { execSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
@@ -601,6 +604,105 @@ async function resolveStartedDashboardPort(
   });
 }
 
+/**
+ * Check if the cached dashboard UI assets match the installed dashboard-server
+ * binary version. If they are stale (or missing a version marker), re-download
+ * the latest assets from the relay-dashboard GitHub release.
+ */
+async function refreshDashboardAssetsIfStale(
+  dashboardBinary: string | null,
+  deps: CoreDependencies
+): Promise<void> {
+  if (!dashboardBinary || dashboardBinary.endsWith('.js') || dashboardBinary.endsWith('.ts')) {
+    // Dev mode or npx — skip
+    return;
+  }
+
+  // Get installed binary version
+  let binaryVersion: string;
+  try {
+    binaryVersion = execSync(`${JSON.stringify(dashboardBinary)} --version`, {
+      timeout: 5000,
+    })
+      .toString()
+      .trim();
+  } catch {
+    return; // Can't determine version — skip
+  }
+
+  if (!binaryVersion) {
+    return;
+  }
+
+  const homeDir = os.homedir();
+  const assetsDir = path.join(homeDir, '.relay', 'dashboard', 'out');
+  const versionFile = path.join(homeDir, '.relay', 'dashboard', '.version');
+
+  // Check if assets match the binary version
+  try {
+    const cachedVersion = fs.readFileSync(versionFile, 'utf-8').trim();
+    if (cachedVersion === binaryVersion) {
+      return; // Up to date
+    }
+  } catch {
+    // No version file — need to download if assets exist but are unversioned,
+    // or if assets don't exist at all
+    if (fs.existsSync(assetsDir)) {
+      // Assets exist but no version marker — they're from an old install
+    } else {
+      // No assets at all — need to download
+    }
+  }
+
+  deps.log(`Updating dashboard UI assets (${binaryVersion})...`);
+
+  const uiUrl =
+    'https://github.com/AgentWorkforce/relay-dashboard/releases/latest/download/dashboard-ui.tar.gz';
+  const targetDir = path.join(homeDir, '.relay', 'dashboard');
+  const tempFile = path.join(os.tmpdir(), `dashboard-ui-${process.pid}.tar.gz`);
+
+  try {
+    // Download
+    execSync(`curl -fsSL ${JSON.stringify(uiUrl)} -o ${JSON.stringify(tempFile)}`, {
+      timeout: 30000,
+    });
+
+    // Verify it's a valid gzip
+    const header = Buffer.alloc(2);
+    const fd = fs.openSync(tempFile, 'r');
+    fs.readSync(fd, header, 0, 2, 0);
+    fs.closeSync(fd);
+    if (header[0] !== 0x1f || header[1] !== 0x8b) {
+      fs.unlinkSync(tempFile);
+      return; // Not a valid gzip file
+    }
+
+    // Remove old assets and extract
+    fs.rmSync(assetsDir, { recursive: true, force: true });
+    fs.mkdirSync(targetDir, { recursive: true });
+    execSync(`tar -xzf ${JSON.stringify(tempFile)} -C ${JSON.stringify(targetDir)}`, {
+      timeout: 15000,
+    });
+    fs.unlinkSync(tempFile);
+
+    // Write version marker
+    fs.writeFileSync(versionFile, binaryVersion);
+
+    if (fs.existsSync(path.join(assetsDir, 'index.html'))) {
+      deps.log(`Dashboard UI assets updated to ${binaryVersion}`);
+    } else {
+      deps.warn('Dashboard UI extraction may be incomplete');
+    }
+  } catch {
+    // Best-effort — don't block startup
+    try {
+      fs.unlinkSync(tempFile);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 async function startDashboardWithFallback(
   paths: CoreProjectPaths,
   dashboardPort: number,
@@ -610,6 +712,7 @@ async function startDashboardWithFallback(
   relayApiKey?: string
 ): Promise<{ process: SpawnedProcess; port: number | null }> {
   const preferredBinary = deps.findDashboardBinary();
+  await refreshDashboardAssetsIfStale(preferredBinary, deps);
   let process = startDashboard(
     paths,
     dashboardPort,
