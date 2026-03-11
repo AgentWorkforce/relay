@@ -685,13 +685,12 @@ async function refreshDashboardAssetsIfStale(
     });
     fs.unlinkSync(tempFile);
 
-    // Write version marker
-    fs.writeFileSync(versionFile, binaryVersion);
-
+    // Write version marker only after confirming extraction succeeded
     if (fs.existsSync(path.join(assetsDir, 'index.html'))) {
+      fs.writeFileSync(versionFile, binaryVersion);
       deps.log(`Dashboard UI assets updated to ${binaryVersion}`);
     } else {
-      deps.warn('Dashboard UI extraction may be incomplete');
+      deps.warn('Dashboard UI extraction may be incomplete — skipping version marker');
     }
   } catch {
     // Best-effort — don't block startup
