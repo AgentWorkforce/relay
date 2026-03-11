@@ -1458,10 +1458,18 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         let args = super::gemini_droid_mcp_add_args(
             Some("rk_live_xyz"),
             Some("https://api.relaycast.dev"),
-            None,
-            None,
+            Some("GeminiWorker"),
+            Some("tok_gem_123"),
             true,
         );
+
+        assert!(args.contains(&"-e".to_string()));
+        assert!(args.contains(&"RELAY_API_KEY=rk_live_xyz".to_string()));
+        assert!(args.contains(&"RELAY_BASE_URL=https://api.relaycast.dev".to_string()));
+        assert!(args.contains(&"RELAY_AGENT_NAME=GeminiWorker".to_string()));
+        assert!(args.contains(&"RELAY_AGENT_TYPE=agent".to_string()));
+        assert!(args.contains(&"RELAY_STRICT_AGENT_NAME=1".to_string()));
+        assert!(args.contains(&"RELAY_AGENT_TOKEN=tok_gem_123".to_string()));
 
         let relaycast_idx = args
             .iter()
@@ -1482,6 +1490,25 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         let gemini_cmd = super::gemini_droid_manual_mcp_add_cmd("gemini", true);
         assert!(!gemini_cmd.contains("relaycast -- npx -y @relaycast/mcp"));
         assert!(gemini_cmd.contains("relaycast npx -y @relaycast/mcp"));
+    }
+
+    #[test]
+    fn droid_mcp_add_args_include_env_flags_and_token() {
+        let args = super::gemini_droid_mcp_add_args(
+            Some("rk_live_xyz"),
+            Some("https://api.relaycast.dev"),
+            Some("DroidWorker"),
+            Some("tok_droid_123"),
+            false,
+        );
+
+        assert!(args.contains(&"--env".to_string()));
+        assert!(args.contains(&"RELAY_API_KEY=rk_live_xyz".to_string()));
+        assert!(args.contains(&"RELAY_BASE_URL=https://api.relaycast.dev".to_string()));
+        assert!(args.contains(&"RELAY_AGENT_NAME=DroidWorker".to_string()));
+        assert!(args.contains(&"RELAY_AGENT_TYPE=agent".to_string()));
+        assert!(args.contains(&"RELAY_STRICT_AGENT_NAME=1".to_string()));
+        assert!(args.contains(&"RELAY_AGENT_TOKEN=tok_droid_123".to_string()));
     }
 
     // -----------------------------------------------------------------------
@@ -1742,6 +1769,81 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         assert!(
             !temp.path().join("opencode.json").exists(),
             "should not create opencode.json when opted out"
+        );
+    }
+
+    #[tokio::test]
+    async fn cursor_writes_mcp_json_with_relaycast_server() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp(
+            "cursor",
+            "CursorAgent",
+            Some("rk_live_cursor"),
+            Some("https://api.relaycast.dev"),
+            &[],
+            temp.path(),
+        )
+        .await
+        .expect("configure cursor mcp");
+
+        assert!(args.is_empty(), "cursor should configure MCP via file, not CLI args");
+
+        let path = temp.path().join(".cursor").join("mcp.json");
+        assert!(path.exists(), ".cursor/mcp.json must be created");
+        let contents = fs::read_to_string(path).expect("read cursor mcp config");
+        let json: Value = serde_json::from_str(&contents).expect("parse cursor mcp config");
+
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["command"].as_str(),
+            Some("npx")
+        );
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_API_KEY"].as_str(),
+            Some("rk_live_cursor")
+        );
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_BASE_URL"].as_str(),
+            Some("https://api.relaycast.dev")
+        );
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_NAME"].as_str(),
+            Some("CursorAgent")
+        );
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_TYPE"].as_str(),
+            Some("agent")
+        );
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_STRICT_AGENT_NAME"].as_str(),
+            Some("1")
+        );
+    }
+
+    #[tokio::test]
+    async fn cursor_agent_alias_writes_mcp_json_with_token() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp_with_token(
+            "agent",
+            "CursorAlias",
+            None,
+            None,
+            &[],
+            temp.path(),
+            Some("tok_cursor_123"),
+        )
+        .await
+        .expect("configure cursor alias mcp");
+
+        assert!(args.is_empty(), "cursor alias should configure MCP via file");
+
+        let path = temp.path().join(".cursor").join("mcp.json");
+        assert!(path.exists(), ".cursor/mcp.json must be created");
+        let contents = fs::read_to_string(path).expect("read cursor alias mcp config");
+        let json: Value = serde_json::from_str(&contents).expect("parse cursor alias mcp config");
+
+        assert_eq!(
+            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
+            Some("tok_cursor_123")
         );
     }
 
