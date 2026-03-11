@@ -268,8 +268,27 @@ export async function runUninstallCommand(
     removeZedConfig(serverName, deps.fs, isDryRun, deps.log);
   }
 
-  // --- Binary removal (standalone binaries + npm packages) ---
+  // --- Dashboard static assets removal ---
   const homeDir = os.homedir();
+  for (const assetDir of [
+    path.join(homeDir, '.relay', 'dashboard', 'out'),
+    path.join(homeDir, '.agent-relay', 'dashboard', 'out'),
+  ]) {
+    if (deps.fs.existsSync(assetDir)) {
+      if (isDryRun) {
+        deps.log(`[dry-run] Would remove dashboard assets: ${assetDir}`);
+      } else {
+        try {
+          deps.fs.rmSync(assetDir, { recursive: true, force: true });
+          deps.log(`Removed dashboard assets: ${assetDir}`);
+        } catch {
+          // Best-effort.
+        }
+      }
+    }
+  }
+
+  // --- Binary removal (standalone binaries + npm packages) ---
   const standaloneBinDir = path.join(homeDir, '.local', 'bin');
   const installBinDir = path.join(homeDir, '.agent-relay', 'bin');
 
