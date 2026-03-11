@@ -297,9 +297,7 @@ fn merge_relaycast_with_project_mcp_inner(
     for path in &config_paths {
         if let Ok(content) = fs::read_to_string(path) {
             if let Ok(parsed) = serde_json::from_str::<Value>(&content) {
-                if let Some(existing_servers) = parsed
-                    .get("mcpServers")
-                    .and_then(Value::as_object)
+                if let Some(existing_servers) = parsed.get("mcpServers").and_then(Value::as_object)
                 {
                     for (name, config) in existing_servers {
                         if name != RELAYCAST_SERVER {
@@ -672,13 +670,8 @@ pub async fn configure_relaycast_mcp_with_token(
         // .mcp.json so other MCP servers (filesystem, database, etc.) are preserved.
         // Relaycast entry takes priority to prevent stale configs from overriding
         // broker-injected credentials.
-        let mcp_json = merge_relaycast_with_project_mcp(
-            api_key,
-            base_url,
-            Some(agent_name),
-            agent_token,
-            cwd,
-        );
+        let mcp_json =
+            merge_relaycast_with_project_mcp(api_key, base_url, Some(agent_name), agent_token, cwd);
         args.push("--mcp-config".to_string());
         args.push(mcp_json);
         // Use strict mode so only the merged config is used (no double-loading
@@ -2169,7 +2162,11 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         let parsed: Value = serde_json::from_str(&merged).expect("valid JSON");
         let servers = parsed["mcpServers"].as_object().expect("mcpServers");
 
-        assert_eq!(servers.len(), 1, "malformed .mcp.json should be ignored gracefully");
+        assert_eq!(
+            servers.len(),
+            1,
+            "malformed .mcp.json should be ignored gracefully"
+        );
         assert!(servers.contains_key("relaycast"));
     }
 
@@ -2380,9 +2377,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
             Some("project-cmd"),
             "project-level config must override global and local"
         );
-        let args = servers["testmcp"]["args"]
-            .as_array()
-            .expect("args array");
+        let args = servers["testmcp"]["args"].as_array().expect("args array");
         assert_eq!(args[0].as_str(), Some("--project"));
     }
 
@@ -2539,19 +2534,13 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         for i in 0..15 {
             let name = format!("server-{i}");
             let mut server = Map::new();
-            server.insert(
-                "command".into(),
-                Value::String(format!("cmd-{i}")),
-            );
+            server.insert("command".into(), Value::String(format!("cmd-{i}")));
             server.insert(
                 "args".into(),
                 Value::Array(vec![Value::String(format!("--port={}", 3000 + i))]),
             );
             let mut env = Map::new();
-            env.insert(
-                format!("KEY_{i}"),
-                Value::String(format!("value_{i}")),
-            );
+            env.insert(format!("KEY_{i}"), Value::String(format!("value_{i}")));
             server.insert("env".into(), Value::Object(env));
             mcp_servers.insert(name, Value::Object(server));
         }
