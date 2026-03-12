@@ -632,20 +632,20 @@ async function refreshDashboardAssetsIfStale(
     return;
   }
 
-  const homeDir = os.homedir();
+  const homeDir = deps.env.HOME || deps.env.USERPROFILE || os.homedir();
   const assetsDir = path.join(homeDir, '.relay', 'dashboard', 'out');
   const versionFile = path.join(homeDir, '.relay', 'dashboard', '.version');
 
   // Check if assets match the binary version
   try {
-    const cachedVersion = fs.readFileSync(versionFile, 'utf-8').trim();
+    const cachedVersion = deps.fs.readFileSync(versionFile, 'utf-8').trim();
     if (cachedVersion === binaryVersion) {
       return; // Up to date
     }
   } catch {
     // No version file — need to download if assets exist but are unversioned,
     // or if assets don't exist at all
-    if (fs.existsSync(assetsDir)) {
+    if (deps.fs.existsSync(assetsDir)) {
       // Assets exist but no version marker — they're from an old install
     } else {
       // No assets at all — need to download
@@ -657,7 +657,8 @@ async function refreshDashboardAssetsIfStale(
   const uiUrl =
     'https://github.com/AgentWorkforce/relay-dashboard/releases/latest/download/dashboard-ui.tar.gz';
   const targetDir = path.join(homeDir, '.relay', 'dashboard');
-  const tempFile = path.join(os.tmpdir(), `dashboard-ui-${process.pid}.tar.gz`);
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `dashboard-ui-${deps.pid}-`));
+  const tempFile = path.join(tempDir, 'dashboard-ui.tar.gz');
 
   try {
     // Download (async to avoid blocking event loop during network I/O)
@@ -671,21 +672,21 @@ async function refreshDashboardAssetsIfStale(
     fs.readSync(fd, header, 0, 2, 0);
     fs.closeSync(fd);
     if (header[0] !== 0x1f || header[1] !== 0x8b) {
-      fs.unlinkSync(tempFile);
+      deps.fs.unlinkSync(tempFile);
       return; // Not a valid gzip file
     }
 
     // Remove old assets and extract (async to avoid blocking event loop)
-    fs.rmSync(assetsDir, { recursive: true, force: true });
-    fs.mkdirSync(targetDir, { recursive: true });
+    deps.fs.rmSync(assetsDir, { recursive: true, force: true });
+    deps.fs.mkdirSync(targetDir, { recursive: true });
     await deps.execCommand(
       `tar -xzf ${JSON.stringify(tempFile)} -C ${JSON.stringify(targetDir)}`
     );
-    fs.unlinkSync(tempFile);
+    deps.fs.unlinkSync(tempFile);
 
     // Write version marker only after confirming extraction succeeded
-    if (fs.existsSync(path.join(assetsDir, 'index.html'))) {
-      fs.writeFileSync(versionFile, binaryVersion);
+    if (deps.fs.existsSync(path.join(assetsDir, 'index.html'))) {
+      deps.fs.writeFileSync(versionFile, binaryVersion);
       deps.log(`Dashboard UI assets updated to ${binaryVersion}`);
     } else {
       deps.warn('Dashboard UI extraction may be incomplete — skipping version marker');
@@ -693,7 +694,13 @@ async function refreshDashboardAssetsIfStale(
   } catch {
     // Best-effort — don't block startup
     try {
-      fs.unlinkSync(tempFile);
+      deps.fs.unlinkSync(tempFile);
+    } catch {
+      /* ignore */
+    }
+  } finally {
+    try {
+      deps.fs.rmSync(tempDir, { recursive: true, force: true });
     } catch {
       /* ignore */
     }
