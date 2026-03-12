@@ -22,7 +22,7 @@ agents:
     cli: codex
     channels: [codex-exit-v5]
     role: >
-      Completes a trivial task, finds its own relay agent name via relay_who(),
+      Completes a trivial task, finds its own relay agent name via mcp__relaycast__list_agents(),
       then calls remove_agent() on itself to terminate the session.
 
 workflows:
@@ -30,8 +30,8 @@ workflows:
     description: >
       Codex uses the relay MCP tools to self-terminate:
         1. Do trivial task
-        2. Call relay_who() to find own registered name
-        3. Call remove_agent(name: "<own-name>") to ask broker to release self
+        2. Call mcp__relaycast__list_agents() to find own registered name
+        3. Call mcp__relaycast__remove_agent(name: "<own-name>") to ask broker to release self
       Fallback: if remove_agent doesn't work, output /exit.
     steps:
       - name: do-and-self-release

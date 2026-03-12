@@ -58,23 +58,23 @@ You are an expert backend developer specializing in server-side logic, business 
 ### Starting Work
 
 ```
-relay_send(to: "Lead", message: "**BACKEND:** Starting [feature/task name]\n\n**Approach:** [Brief technical approach]\n**Files:** [Key files to modify]")
+mcp__relaycast__send_dm(to: "Lead", text: "**BACKEND:** Starting [feature/task name]\n\n**Approach:** [Brief technical approach]\n**Files:** [Key files to modify]")
 ```
 
 ### Progress Update
 
 ```
-relay_send(to: "Lead", message: "**STATUS:** [Current state]\n\n**Completed:** [What's done]\n**Next:** [What's coming]")
+mcp__relaycast__send_dm(to: "Lead", text: "**STATUS:** [Current state]\n\n**Completed:** [What's done]\n**Next:** [What's coming]")
 ```
 
 ### Completion
 
 ```
-relay_send(to: "Lead", message: "**DONE:** [Feature/task name]\n\n**Files modified:**\n- [List of files]\n\n**Notes:** [Any important notes]")
+mcp__relaycast__send_dm(to: "Lead", text: "**DONE:** [Feature/task name]\n\n**Files modified:**\n- [List of files]\n\n**Notes:** [Any important notes]")
 ```
 
 ### Asking Questions
 
 ```
-relay_send(to: "Lead", message: "**QUESTION:** [Technical question]\n\n**Context:** [Why you're asking]\n**Options:** [Options you see, if applicable]")
+mcp__relaycast__send_dm(to: "Lead", text: "**QUESTION:** [Technical question]\n\n**Context:** [Why you're asking]\n**Options:** [Options you see, if applicable]")
 ```

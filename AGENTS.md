@@ -165,34 +165,37 @@ Real-time agent-to-agent messaging via MCP tools.
 
 ## MCP Tools
 
-All agent communication uses MCP tools provided by the Relaycast MCP server:
+All agent communication uses MCP tools provided by the Relaycast MCP server.
+Tool names use dot-notation: Claude uses `mcp__relaycast__<category>_<action>`, other CLIs use `relaycast.<category>.<action>`.
 
-| Tool                           | Description                           |
-| ------------------------------ | ------------------------------------- |
-| `relay_send(to, message)`      | Send a message to an agent or channel |
-| `relay_inbox()`                | Check your inbox for new messages     |
-| `relay_who()`                  | List online agents                    |
-| `relay_spawn(name, cli, task)` | Spawn a new worker agent              |
-| `relay_release(name)`          | Release/stop a worker agent           |
-| `relay_status()`               | Check relay connection status         |
+| Tool                              | Description                           |
+| --------------------------------- | ------------------------------------- |
+| `dm_send(to, text)`               | Send a DM to an agent                 |
+| `message_post(channel, text)`     | Post a message to a channel           |
+| `inbox_check()`                   | Check your inbox for new messages     |
+| `agent_list()`                    | List online agents                    |
+| `agent_add(name, cli, task)`      | Spawn a new worker agent              |
+| `agent_remove(name)`              | Release/stop a worker agent           |
 
 ## Sending Messages
 
+### Direct Messages
+
 ```
-relay_send(to: "AgentName", message: "Your message here")
+mcp__relaycast__dm_send(to: "Bob", text: "Can you review my code changes?")
 ```
 
-| TO Value    | Behavior         |
-| ----------- | ---------------- |
-| `AgentName` | Direct message   |
-| `*`         | Broadcast to all |
-| `#channel`  | Channel message  |
+### Channel Messages
+
+```
+mcp__relaycast__message_post(channel: "general", text: "The API endpoints are ready")
+```
 
 ## Spawning & Releasing
 
 ```
-relay_spawn(name: "WorkerName", cli: "claude", task: "Task description")
-relay_release(name: "WorkerName")
+mcp__relaycast__agent_add(name: "WorkerName", cli: "claude", task: "Task description")
+mcp__relaycast__agent_remove(name: "WorkerName")
 ```
 
 ## Receiving Messages

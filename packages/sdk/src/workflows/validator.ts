@@ -90,22 +90,22 @@ export function validateWorkflow(config: RelayYamlConfig): ValidationIssue[] {
         task.length > 500 &&
         !task.includes('do not') &&
         !task.includes('Do NOT') &&
-        !task.includes('relay_spawn') &&
+        !task.includes('mcp__relaycast__agent_add') &&
         !task.includes('add_agent')
       ) {
         issues.push({
           severity: 'info',
           code: 'CLAUDE_NO_SPAWN_GUARD',
           message: `Step "${step.name}" uses interactive claude with a long task. Claude may spontaneously spawn sub-agents via relay MCP tools.`,
-          fix: `Add "Do NOT use relay_spawn or add_agent to spawn sub-agents." to the task, or use \`interactive: false\`.`,
+          fix: `Add "Do NOT use mcp__relaycast__agent_add or add_agent to spawn sub-agents." to the task, or use \`interactive: false\`.`,
           location: `step:${step.name}`,
         });
       }
 
-      // Check 4: non-interactive agent that references relay_send in task
+      // Check 4: non-interactive agent that references relay messaging tools in task
       if (
         def.interactive === false &&
-        (task.includes('relay_send') || task.includes('post_message') || task.includes('check_inbox'))
+        (task.includes('mcp__relaycast__dm_send') || task.includes('mcp__relaycast__message_post') || task.includes('mcp__relaycast__inbox_check'))
       ) {
         issues.push({
           severity: 'warning',

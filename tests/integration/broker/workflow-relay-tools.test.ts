@@ -8,7 +8,7 @@
  *   - Non-claude CLIs (codex, gemini, …) must call register() before other
  *     relay tools. The workflow runner now injects a RELAY SETUP preamble
  *     into every non-claude interactive agent task.
- *   - Sub-agents spawned by leads via relay_spawn never received an agent
+ *   - Sub-agents spawned by leads via mcp__relaycast__add_agent never received an agent
  *     token. The broker's wrap.rs now pre-registers them with retry logic
  *     and passes the token via --config / RELAY_AGENT_TOKEN env var.
  *
@@ -273,7 +273,7 @@ test(
 // ── Test 4: Mixed workflow — claude lead + codex worker ──────────────────────
 //
 // Exercises the wrap.rs sub-agent pre-registration fix. The claude lead
-// spawns a codex worker via relay_spawn. The broker's wrap.rs now pre-registers
+// spawns a codex worker via mcp__relaycast__add_agent. The broker's wrap.rs now pre-registers
 // the codex sub-agent and injects the token, so it can use relay tools
 // without hitting "Not registered".
 
