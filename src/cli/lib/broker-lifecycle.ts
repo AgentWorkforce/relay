@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
+import { buildBundledRelaycastMcpCommand } from './relaycast-mcp-command.js';
 
 type UpOptions = {
   dashboard?: boolean;
@@ -220,6 +221,17 @@ function cleanupBrokerPidIfStopped(brokerPidPath: string, deps: CoreDependencies
   const pid = readPidFile(brokerPidPath, deps);
   if (pid === null || !isProcessRunning(pid, deps)) {
     safeUnlink(brokerPidPath, deps);
+  }
+}
+
+function ensureBundledRelaycastMcpCommand(deps: CoreDependencies): void {
+  if (deps.env.RELAYCAST_MCP_COMMAND?.trim()) {
+    return;
+  }
+
+  const command = buildBundledRelaycastMcpCommand(deps.execPath, deps.cliScript, deps.fs.existsSync);
+  if (command) {
+    deps.env.RELAYCAST_MCP_COMMAND = command;
   }
 }
 
@@ -822,6 +834,8 @@ async function shutdownUpResources(
 
 // eslint-disable-next-line complexity
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
+  ensureBundledRelaycastMcpCommand(deps);
+
   if (options.background) {
     const args = deps.argv.slice(2).filter((arg) => arg !== '--background');
     const child = deps.spawnProcess(deps.execPath, [deps.cliScript, ...args], {

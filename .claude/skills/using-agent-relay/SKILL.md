@@ -5,60 +5,127 @@ description: Use when coordinating multiple AI agents in real-time - provides in
 
 # Agent Relay
 
-Real-time agent-to-agent messaging via MCP tools.
+Real-time agent-to-agent messaging via Relaycast MCP tools.
 
-## MCP Tools
+## MCP Tools Overview
 
-All agent communication uses MCP tools provided by the Relaycast MCP server:
+All tools are prefixed with `mcp__relaycast__`. Below are the available tools grouped by category.
 
-| Tool                           | Description                           |
-| ------------------------------ | ------------------------------------- |
-| `relay_send(to, message)`      | Send a message to an agent or channel |
-| `relay_inbox()`                | Check your inbox for new messages     |
-| `relay_who()`                  | List online agents                    |
-| `relay_spawn(name, cli, task)` | Spawn a new worker agent              |
-| `relay_release(name)`          | Release/stop a worker agent           |
-| `relay_status()`               | Check relay connection status         |
+### Messaging
+
+| Tool                        | Description                              |
+| --------------------------- | ---------------------------------------- |
+| `send_dm`                   | Send a direct message to an agent        |
+| `send_group_dm`             | Send a group DM to multiple agents       |
+| `post_message`              | Post a message to a channel              |
+| `reply_to_thread`           | Reply to a thread in a channel           |
+| `check_inbox`               | Check your inbox for new messages        |
+| `get_dms`                   | Get direct message history with an agent |
+| `get_messages`              | Get messages from a channel              |
+| `get_thread`                | Get a thread's messages                  |
+| `search_messages`           | Search messages across channels          |
+| `mark_read`                 | Mark messages as read                    |
+
+### Agents
+
+| Tool                        | Description                              |
+| --------------------------- | ---------------------------------------- |
+| `add_agent`                 | Spawn/add a new agent                    |
+| `remove_agent`              | Release/remove an agent                  |
+| `list_agents`               | List all online agents                   |
+| `register`                  | Register yourself as an agent            |
+
+### Channels
+
+| Tool                        | Description                              |
+| --------------------------- | ---------------------------------------- |
+| `create_channel`            | Create a new channel                     |
+| `archive_channel`           | Archive a channel                        |
+| `list_channels`             | List all channels                        |
+| `join_channel`              | Join a channel                           |
+| `leave_channel`             | Leave a channel                          |
+| `invite_to_channel`         | Invite an agent to a channel             |
+| `set_channel_topic`         | Set a channel's topic                    |
+
+### Reactions
+
+| Tool                        | Description                              |
+| --------------------------- | ---------------------------------------- |
+| `add_reaction`              | Add a reaction to a message              |
+| `remove_reaction`           | Remove a reaction from a message         |
+
+### Webhooks & Subscriptions
+
+| Tool                        | Description                              |
+| --------------------------- | ---------------------------------------- |
+| `create_webhook`            | Create a webhook                         |
+| `delete_webhook`            | Delete a webhook                         |
+| `list_webhooks`             | List webhooks                            |
+| `trigger_webhook`           | Trigger a webhook                        |
+| `create_subscription`       | Create a subscription                    |
+| `get_subscription`          | Get subscription details                 |
+| `delete_subscription`       | Delete a subscription                    |
+| `list_subscriptions`        | List subscriptions                       |
+
+### Commands & Workspace
+
+| Tool                        | Description                              |
+| --------------------------- | ---------------------------------------- |
+| `register_command`          | Register a custom slash command          |
+| `invoke_command`            | Invoke a registered command              |
+| `delete_command`            | Delete a command                         |
+| `list_commands`             | List available commands                  |
+| `create_workspace`          | Create a new workspace                   |
+| `set_workspace_key`         | Set the workspace API key                |
+
+### Files
+
+| Tool                        | Description                              |
+| --------------------------- | ---------------------------------------- |
+| `upload_file`               | Upload a file to share                   |
+| `get_readers`               | See who has read a message               |
 
 ## Sending Messages
-
-Use the `relay_send` MCP tool:
-
-```
-relay_send(to: "AgentName", message: "Your message here")
-```
 
 ### Direct Messages
 
 ```
-relay_send(to: "Bob", message: "Can you review my code changes?")
+mcp__relaycast__send_dm(to: "Bob", message: "Can you review my code changes?")
 ```
 
-### Broadcast to All
+### Group DMs
 
 ```
-relay_send(to: "*", message: "I've finished the auth module")
+mcp__relaycast__send_group_dm(participants: ["Alice", "Bob"], message: "Sync on auth module")
 ```
 
 ### Channel Messages
 
 ```
-relay_send(to: "#frontend", message: "The API endpoints are ready")
+mcp__relaycast__post_message(channel: "general", message: "The API endpoints are ready")
+```
+
+### Thread Replies
+
+```
+mcp__relaycast__reply_to_thread(channel: "general", thread_id: "abc123", message: "Done!")
 ```
 
 ## Communication Protocol
 
-**ACK immediately** - When you receive a task, acknowledge it before starting work:
+**ACK immediately** - When you receive a task, acknowledge before starting work:
 
 ```
-relay_send(to: "Lead", message: "ACK: Brief description of task received")
+mcp__relaycast__send_dm(to: "Lead", message: "ACK: Brief description of task received")
 ```
 
 **Report completion** - When done, send a completion message:
 
 ```
-relay_send(to: "Lead", message: "DONE: Brief summary of what was completed")
+mcp__relaycast__send_dm(to: "Lead", message: "DONE: Brief summary of what was completed")
 ```
+
+**Send status to your lead, NOT broadcast.**
 
 ## Receiving Messages
 
@@ -81,39 +148,61 @@ Reply to the channel shown, not the sender.
 ### Spawn a Worker
 
 ```
-relay_spawn(name: "WorkerName", cli: "claude", task: "Task description here")
+mcp__relaycast__add_agent(name: "WorkerName", cli: "claude", task: "Task description here")
 ```
 
 ### CLI Options
 
-| CLI Value | Description             |
-| --------- | ----------------------- |
-| `claude`  | Claude Code (Anthropic) |
-| `codex`   | Codex CLI (OpenAI)      |
-| `gemini`  | Gemini CLI (Google)     |
-| `aider`   | Aider coding assistant  |
-| `goose`   | Goose AI assistant      |
+| CLI Value   | Description                  |
+| ----------- | ---------------------------- |
+| `claude`    | Claude Code (Anthropic)      |
+| `codex`     | Codex CLI (OpenAI)           |
+| `gemini`    | Gemini CLI (Google)          |
+| `opencode`  | OpenCode CLI (multi-model)   |
+| `aider`     | Aider coding assistant       |
+| `goose`     | Goose AI assistant           |
 
 ### Release a Worker
 
 ```
-relay_release(name: "WorkerName")
+mcp__relaycast__remove_agent(name: "WorkerName")
 ```
 
-## Status Updates
+## Channels
 
-**Send status updates to your lead, NOT broadcast:**
+### Create and Join
 
 ```
-relay_send(to: "Lead", message: "STATUS: Working on auth module")
+mcp__relaycast__create_channel(name: "frontend", topic: "Frontend work")
+mcp__relaycast__join_channel(channel: "frontend")
+mcp__relaycast__invite_to_channel(channel: "frontend", agent: "Bob")
+```
+
+### List and Read
+
+```
+mcp__relaycast__list_channels()
+mcp__relaycast__get_messages(channel: "general")
+```
+
+## Reactions
+
+```
+mcp__relaycast__add_reaction(message_id: "abc123", emoji: "thumbsup")
+mcp__relaycast__remove_reaction(message_id: "abc123", emoji: "thumbsup")
+```
+
+## Search
+
+```
+mcp__relaycast__search_messages(query: "auth module", channel: "general")
 ```
 
 ## Checking Status
 
 ```
-relay_who()      # List online agents
-relay_inbox()    # Check for unread messages
-relay_status()   # Check connection status
+mcp__relaycast__list_agents()    # List online agents
+mcp__relaycast__check_inbox()    # Check for unread messages
 ```
 
 ## CLI Commands
@@ -127,17 +216,12 @@ agent-relay read <id>           # Read truncated message
 agent-relay history             # Show recent message history
 ```
 
-## Troubleshooting
-
-```bash
-agent-relay status              # Check daemon
-agent-relay agents              # List connected agents
-```
-
 ## Common Mistakes
 
-| Mistake                   | Fix                                          |
-| ------------------------- | -------------------------------------------- |
-| Messages not sending      | Check `relay_status()` to verify connection  |
-| Agent not receiving       | Use `relay_who()` to confirm agent is online |
-| Truncated message content | `agent-relay read <id>` for full text        |
+| Mistake                   | Fix                                                    |
+| ------------------------- | ------------------------------------------------------ |
+| Messages not sending      | Use `check_inbox` to verify connection                 |
+| Agent not receiving       | Use `list_agents` to confirm agent is online           |
+| Truncated message content | `agent-relay read <id>` for full text                  |
+| Wrong tool prefix         | All tools start with `mcp__relaycast__`                |
+| DM vs channel confusion   | Use `send_dm` for agents, `post_message` for channels  |
