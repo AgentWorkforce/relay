@@ -3499,7 +3499,7 @@ export class WorkflowRunner {
       (specialistNote ? `- ${specialistNote}\n` : '') +
       `- If you delegate, you must still verify completion yourself.\n` +
       `- Preferred final decision format:\n` +
-      `  OWNER_DECISION: COMPLETE|INCOMPLETE_RETRY|INCOMPLETE_FAIL|NEEDS_CLARIFICATION\n` +
+      `  OWNER_DECISION: <one of COMPLETE, INCOMPLETE_RETRY, INCOMPLETE_FAIL, NEEDS_CLARIFICATION>\n` +
       `  REASON: <one sentence>\n` +
       `- Legacy completion marker still supported: STEP_COMPLETE:${step.name}\n` +
       `- Then self-terminate immediately with /exit.`
@@ -3525,7 +3525,7 @@ export class WorkflowRunner {
       `- Ask the worker directly on ${channelLine} if you need a status update\n` +
       verificationGuide +
       `\nWhen you have enough evidence, return:\n` +
-      `OWNER_DECISION: COMPLETE|INCOMPLETE_RETRY|INCOMPLETE_FAIL|NEEDS_CLARIFICATION\n` +
+      `OWNER_DECISION: <one of COMPLETE, INCOMPLETE_RETRY, INCOMPLETE_FAIL, NEEDS_CLARIFICATION>\n` +
       `REASON: <one sentence>\n` +
       `Legacy completion marker still supported: STEP_COMPLETE:${step.name}`
     );
@@ -3958,7 +3958,7 @@ export class WorkflowRunner {
     // Process-exit fallback: if the agent exited cleanly (code 0) and verification
     // passes (or no verification is configured), infer completion rather than failing.
     // This reduces dependence on agents posting exact coordination signals.
-    const processExitFallback = this.tryProcessExitFallback(step, specialistOutput, verificationTaskText);
+    const processExitFallback = this.tryProcessExitFallback(step, specialistOutput, verificationTaskText, ownerOutput);
     if (processExitFallback) {
       this.log(
         `[${step.name}] Completion inferred from clean process exit (code 0)` +
@@ -4010,9 +4010,8 @@ export class WorkflowRunner {
     const outputLikelyContainsEchoedPrompt =
       ownerOutput.includes('STEP OWNER CONTRACT') ||
       ownerOutput.includes('Preferred final decision format') ||
-      ownerOutput.includes(
-        'OWNER_DECISION: COMPLETE|INCOMPLETE_RETRY|INCOMPLETE_FAIL|NEEDS_CLARIFICATION'
-      );
+      ownerOutput.includes('one of COMPLETE, INCOMPLETE_RETRY') ||
+      ownerOutput.includes('COMPLETE|INCOMPLETE_RETRY');
 
     if (decisionMatches.length === 0) {
       if (!hasMarker) return null;
@@ -4022,10 +4021,21 @@ export class WorkflowRunner {
       };
     }
 
+    // Filter out matches that appear on a template/instruction line (e.g.
+    // "COMPLETE|INCOMPLETE_RETRY|INCOMPLETE_FAIL|NEEDS_CLARIFICATION") to avoid
+    // picking up the template format as the agent's actual decision.
+    const realMatches = outputLikelyContainsEchoedPrompt
+      ? decisionMatches.filter((m) => {
+          const lineStart = ownerOutput.lastIndexOf('\n', m.index!) + 1;
+          const lineEnd = ownerOutput.indexOf('\n', m.index!);
+          const line = ownerOutput.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
+          return !line.includes('COMPLETE|INCOMPLETE_RETRY');
+        })
+      : decisionMatches;
     const decisionMatch =
-      outputLikelyContainsEchoedPrompt && decisionMatches.length > 1
-        ? decisionMatches[decisionMatches.length - 1]
-        : decisionMatches[0];
+      realMatches.length > 0
+        ? realMatches[realMatches.length - 1]
+        : decisionMatches[decisionMatches.length - 1];
     const decision = decisionMatch?.[1]?.toUpperCase() as WorkflowOwnerDecision | undefined;
     if (
       decision !== 'COMPLETE' &&
@@ -4067,10 +4077,14 @@ export class WorkflowRunner {
   }
 
   private judgeOwnerCompletionByEvidence(stepName: string, ownerOutput: string): string | null {
+    // Never infer completion when the raw output contains an explicit retry/fail/clarification signal.
+    if (/OWNER_DECISION:\s*(?:INCOMPLETE_RETRY|INCOMPLETE_FAIL|NEEDS_CLARIFICATION)\b/i.test(ownerOutput)) {
+      return null;
+    }
     const sanitized = this.stripEchoedPromptLines(ownerOutput, [
       /^STEP OWNER CONTRACT:?$/i,
       /^Preferred final decision format:?$/i,
-      /^OWNER_DECISION:\s*COMPLETE\|INCOMPLETE_RETRY\|INCOMPLETE_FAIL\|NEEDS_CLARIFICATION$/i,
+      /^OWNER_DECISION:\s*(?:COMPLETE\|INCOMPLETE_RETRY|<one of COMPLETE, INCOMPLETE_RETRY)/i,
       /^REASON:\s*<one sentence>$/i,
       /^Legacy completion marker still supported:/i,
       /^STEP_COMPLETE:/i,
@@ -4116,10 +4130,16 @@ export class WorkflowRunner {
   private tryProcessExitFallback(
     step: WorkflowStep,
     specialistOutput: string,
-    verificationTaskText?: string
+    verificationTaskText?: string,
+    ownerOutput?: string
   ): CompletionDecisionResult | null {
     const gracePeriodMs = this.currentConfig?.swarm.completionGracePeriodMs ?? 5000;
     if (gracePeriodMs === 0) return null;
+
+    // Never infer completion when the owner explicitly requested retry/fail/clarification.
+    if (ownerOutput && /OWNER_DECISION:\s*(?:INCOMPLETE_RETRY|INCOMPLETE_FAIL|NEEDS_CLARIFICATION)\b/i.test(ownerOutput)) {
+      return null;
+    }
 
     const evidence = this.getStepCompletionEvidence(step.name);
     const hasCleanExit = evidence?.coordinationSignals.some(
@@ -4339,10 +4359,18 @@ export class WorkflowRunner {
 
     const outputLikelyContainsEchoedPrompt =
       reviewOutput.includes('Return exactly') || reviewOutput.includes('REVIEW_DECISION: APPROVE or REJECT');
+    const realReviewMatches = outputLikelyContainsEchoedPrompt
+      ? decisionMatches.filter((m) => {
+          const lineStart = reviewOutput.lastIndexOf('\n', m.index!) + 1;
+          const lineEnd = reviewOutput.indexOf('\n', m.index!);
+          const line = reviewOutput.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
+          return !line.includes('APPROVE or REJECT');
+        })
+      : decisionMatches;
     const decisionMatch =
-      outputLikelyContainsEchoedPrompt && decisionMatches.length > 1
-        ? decisionMatches[decisionMatches.length - 1]
-        : decisionMatches[0];
+      realReviewMatches.length > 0
+        ? realReviewMatches[realReviewMatches.length - 1]
+        : decisionMatches[decisionMatches.length - 1];
     const decision = decisionMatch?.[1]?.toUpperCase();
     if (decision !== 'APPROVE' && decision !== 'REJECT') {
       return null;

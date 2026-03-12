@@ -1649,4 +1649,106 @@ describe('Completion Pipeline', () => {
       expect(run.status).toBe('completed');
     }, 15000);
   });
+
+  describe('template re-quoting regression (parseOwnerDecision)', () => {
+    it('should not pick COMPLETE from re-quoted template when agent said INCOMPLETE_RETRY', async () => {
+      // Bug repro: agent says INCOMPLETE_RETRY then re-quotes the template format,
+      // causing the last-match heuristic to pick COMPLETE from the template line.
+      mockSpawnOutputs = [
+        'worker did the task\n',
+        [
+          'STEP OWNER CONTRACT:',
+          '- Preferred final decision format:',
+          '  OWNER_DECISION: COMPLETE|INCOMPLETE_RETRY|INCOMPLETE_FAIL|NEEDS_CLARIFICATION',
+          '  REASON: <one sentence>',
+          '',
+          'OWNER_DECISION: INCOMPLETE_RETRY',
+          'REASON: Tests are still failing',
+          '',
+          'I chose INCOMPLETE_RETRY as per the options OWNER_DECISION: COMPLETE|INCOMPLETE_RETRY|INCOMPLETE_FAIL|NEEDS_CLARIFICATION',
+        ].join('\n'),
+      ];
+
+      const run = await runner.execute(makeSupervisedConfig({ retries: 0 }), 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('INCOMPLETE_RETRY');
+
+      const steps = await db.getStepsByRunId(run.id);
+      expect(steps[0]?.completionReason).toBe('retry_requested_by_owner');
+    }, 15000);
+
+    it('should correctly parse COMPLETE when it is the real decision, not just template text', async () => {
+      // Ensure the fix doesn't break the happy path — agent says COMPLETE after echoed template
+      mockSpawnOutputs = [
+        'worker did the task\n',
+        [
+          'STEP OWNER CONTRACT:',
+          '- Preferred final decision format:',
+          '  OWNER_DECISION: COMPLETE|INCOMPLETE_RETRY|INCOMPLETE_FAIL|NEEDS_CLARIFICATION',
+          '',
+          'OWNER_DECISION: COMPLETE',
+          'REASON: Worker finished the task successfully',
+        ].join('\n'),
+      ];
+
+      const run = await runner.execute(makeSupervisedConfig({ retries: 0 }), 'default');
+      expect(run.status).toBe('completed');
+
+      const steps = await db.getStepsByRunId(run.id);
+      expect(steps[0]?.completionReason).toBe('completed_by_owner_decision');
+    }, 15000);
+  });
+
+  describe('fallback guards against explicit retry signals', () => {
+    it('should not complete via evidence fallback when output contains INCOMPLETE_RETRY', async () => {
+      // Bug repro: parseOwnerDecision returns null (garbled PTY), but raw output
+      // contains INCOMPLETE_RETRY. judgeOwnerCompletionByEvidence should refuse
+      // to infer completion.
+      mockSpawnOutputs = [
+        'worker completed locally\n',
+        [
+          'I reviewed the worker output. The task looks done but tests are failing.',
+          'OW NER_DECISION: INCOMPLETE_RETRY',  // garbled by PTY line wrap
+          'REASON: tests failing',
+          'The worker completed the implementation but verification failed.',
+          'OWNER_DECISION: INCOMPLETE_RETRY',  // clear signal in raw output
+        ].join('\n'),
+      ];
+
+      const run = await runner.execute(makeSupervisedConfig({ retries: 0 }), 'default');
+      expect(run.status).toBe('failed');
+    }, 15000);
+
+    it('should not complete via process-exit fallback when output contains INCOMPLETE_RETRY', async () => {
+      const config = makeConfig({
+        swarm: { pattern: 'dag', completionGracePeriodMs: 5000 },
+        agents: [{ name: 'agent-a', cli: 'claude' }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [
+              {
+                name: 'retried-worker',
+                agent: 'agent-a',
+                task: 'Do work',
+                verification: { type: 'exit_code', value: '0' },
+              },
+            ],
+          },
+        ],
+      });
+
+      // Agent exits code 0 and verification passes, BUT output contains INCOMPLETE_RETRY
+      mockSpawnOutputs = [
+        'Implemented the feature.\nOWNER_DECISION: INCOMPLETE_RETRY\nREASON: needs more tests\n',
+      ];
+
+      const localDb = makeDb();
+      runner = new WorkflowRunner({ db: localDb, workspaceId: 'ws-test' });
+      const run = await runner.execute(config, 'default');
+
+      // Should NOT complete — the explicit retry signal should prevent fallback
+      expect(run.status).toBe('failed');
+    }, 15000);
+  });
 });
