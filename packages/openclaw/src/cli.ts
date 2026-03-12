@@ -260,7 +260,7 @@ async function runAddWorkspace(
   }
 
   const wantsDefault = flags['default'] === 'true';
-  let workspaceId = flags['workspace-id'];
+  let workspaceId: string | undefined = flags['workspace-id'];
 
   if (wantsDefault && !workspaceId) {
     const gateway = await loadGatewayConfig();

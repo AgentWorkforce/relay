@@ -4,7 +4,7 @@ import { join, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { spawn as spawnProcess } from 'node:child_process';
+import { spawn as spawnProcess, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 
 import { detectOpenClaw, saveGatewayConfig, addWorkspace } from './config.js';
