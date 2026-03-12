@@ -329,7 +329,25 @@ describe('Completion Pipeline', () => {
   // ── Unit Test 3: Owner requests retry via OWNER_DECISION ──────────────
 
   describe('owner decision retry', () => {
-    it('should retry step when owner requests INCOMPLETE_RETRY', async () => {
+    it('should fail with a clear error when owner requests INCOMPLETE_RETRY and retries are disabled', async () => {
+      mockSpawnOutputs = [
+        'worker first attempt\n',
+        'OWNER_DECISION: INCOMPLETE_RETRY\nREASON: missing error handling\n',
+      ];
+
+      const run = await runner.execute(makeSupervisedConfig({ retries: 0 }), 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('no retries are configured (maxRetries=0)');
+      expect(run.error).toContain('OWNER_DECISION: INCOMPLETE_RETRY');
+
+      const steps = await db.getStepsByRunId(run.id);
+      expect(steps).toHaveLength(1);
+      expect(steps[0]?.status).toBe('failed');
+      expect(steps[0]?.completionReason).toBe('retry_requested_by_owner');
+      expect(mockRelayInstance.spawnPty).toHaveBeenCalledTimes(2);
+    }, 15000);
+
+    it('should retry and complete when owner requests INCOMPLETE_RETRY and retries remain', async () => {
       const retryEvents: Array<{ type: string; stepName: string }> = [];
       runner.on((event) => {
         if (event.type === 'step:retrying') {
@@ -350,17 +368,77 @@ describe('Completion Pipeline', () => {
       const config = makeSupervisedConfig({ retries: 1 });
       const run = await runner.execute(config, 'default');
 
-      // The step should either complete (if OWNER_DECISION triggers retry)
-      // or fail (if the pipeline doesn't implement retry yet).
-      // Once the pipeline is implemented, this should be 'completed'.
-      if (run.status === 'completed') {
-        expect(retryEvents.length).toBeGreaterThanOrEqual(1);
-        expect(retryEvents[0].stepName).toBe('step-1');
-      } else {
-        // Backward compat: if OWNER_DECISION isn't parsed yet, the step fails
-        // due to missing STEP_COMPLETE in the owner output
-        expect(run.status).toBe('failed');
-      }
+      expect(run.status).toBe('completed');
+      expect(retryEvents).toEqual([{ type: 'step:retrying', stepName: 'step-1' }]);
+
+      const steps = await db.getStepsByRunId(run.id);
+      expect(steps).toHaveLength(1);
+      expect(steps[0]?.status).toBe('completed');
+      expect(steps[0]?.retryCount).toBe(1);
+      expect(mockRelayInstance.spawnPty).toHaveBeenCalledTimes(5);
+    }, 15000);
+
+    it('should fail after retries are exhausted when owner keeps requesting INCOMPLETE_RETRY', async () => {
+      mockSpawnOutputs = [
+        'worker first attempt\n',
+        'OWNER_DECISION: INCOMPLETE_RETRY\nREASON: missing tests\n',
+        'worker second attempt\n',
+        'OWNER_DECISION: INCOMPLETE_RETRY\nREASON: still missing tests\n',
+      ];
+
+      const run = await runner.execute(makeSupervisedConfig({ retries: 1 }), 'default');
+
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('retry budget is exhausted (maxRetries=1)');
+      expect(run.error).toContain('after 2 total attempts');
+
+      const steps = await db.getStepsByRunId(run.id);
+      expect(steps).toHaveLength(1);
+      expect(steps[0]?.status).toBe('failed');
+      expect(steps[0]?.completionReason).toBe('retry_requested_by_owner');
+      expect(steps[0]?.retryCount).toBe(1);
+      expect(mockRelayInstance.spawnPty).toHaveBeenCalledTimes(4);
+    }, 15000);
+
+    it('should not complete a self-owned step when INCOMPLETE_RETRY conflicts with success signals', async () => {
+      mockSpawnOutputs = [
+        [
+          'OWNER_DECISION: INCOMPLETE_RETRY',
+          'REASON: owner wants another verification pass',
+          'STEP_COMPLETE:step-1',
+          'expected content',
+          'verified locally',
+        ].join('\n'),
+      ];
+
+      const run = await runner.execute(
+        makeConfig({
+          workflows: [
+            {
+              name: 'default',
+              steps: [
+                {
+                  name: 'step-1',
+                  agent: 'agent-a',
+                  task: 'Run tests',
+                  retries: 0,
+                  verification: { type: 'output_contains', value: 'expected content' },
+                },
+              ],
+            },
+          ],
+        }),
+        'default'
+      );
+
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('no retries are configured (maxRetries=0)');
+
+      const steps = await db.getStepsByRunId(run.id);
+      expect(steps).toHaveLength(1);
+      expect(steps[0]?.status).toBe('failed');
+      expect(steps[0]?.completionReason).toBe('retry_requested_by_owner');
+      expect(mockRelayInstance.spawnPty).toHaveBeenCalledTimes(1);
     }, 15000);
 
     it('should not let passing verification override INCOMPLETE_RETRY', async () => {
