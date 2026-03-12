@@ -4,6 +4,7 @@ use relaycast::{CreateAgentRequest, RelayCast, RelayCastOptions, RelayError};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,6 +192,23 @@ impl AuthSessionSet {
 struct AuthHttpError {
     status: StatusCode,
     message: String,
+}
+
+/// Generate a deterministic workspace name based on the current user and working
+/// directory so that the same user in the same project gets the same workspace
+/// across sessions (enabling message continuity and resume).
+fn deterministic_workspace_name() -> String {
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown".to_string());
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{user}:{cwd}"));
+    let hash = format!("{:x}", hasher.finalize());
+    format!("relay-{}", &hash[..8])
 }
 
 #[derive(Clone)]
@@ -387,7 +405,7 @@ impl AuthClient {
 
         let mut attempted_fresh_workspace = false;
         if candidates.is_empty() {
-            let ws_name = format!("relay-{}", &Uuid::new_v4().to_string()[..8]);
+            let ws_name = deterministic_workspace_name();
             let (workspace_id, api_key) = self.create_workspace(&ws_name).await?;
             workspace_id_hint = Some(workspace_id);
             candidates.push(("fresh", api_key));
@@ -439,7 +457,7 @@ impl AuthClient {
         }
 
         if !attempted_fresh_workspace {
-            let ws_name = format!("relay-{}", &Uuid::new_v4().to_string()[..8]);
+            let ws_name = deterministic_workspace_name();
             let (workspace_id, api_key) = self.create_workspace(&ws_name).await?;
             workspace_id_hint = Some(workspace_id);
             match self
@@ -1046,6 +1064,15 @@ mod tests {
             .unwrap();
         assert!(!live);
         channels.assert_hits(1);
+    }
+
+    #[test]
+    fn deterministic_workspace_name_is_stable() {
+        let a = super::deterministic_workspace_name();
+        let b = super::deterministic_workspace_name();
+        assert_eq!(a, b);
+        assert!(a.starts_with("relay-"));
+        assert_eq!(a.len(), "relay-".len() + 8);
     }
 
     #[test]
