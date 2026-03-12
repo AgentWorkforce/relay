@@ -1,0 +1,43 @@
+version: '1.0'
+name: test-gemini-sequential
+
+description: Minimal sequential Gemini workflow with step output chaining.
+
+swarm:
+  pattern: pipeline
+  channel: test-gemini-seq
+  timeoutMs: 240000
+
+agents:
+  - name: gemini-a
+    cli: gemini
+    preset: worker
+  - name: gemini-b
+    cli: gemini
+    preset: worker
+
+workflows:
+  - name: gemini-sequential
+    steps:
+      - name: first
+        type: agent
+        agent: gemini-a
+        task: |
+          Output exactly:
+          FIRST_OK
+          VALUE=beta
+        verification:
+          type: output_contains
+          value: VALUE=beta
+
+      - name: second
+        type: agent
+        agent: gemini-b
+        dependsOn: [first]
+        task: |
+          Read this injected prior output and respond exactly:
+          SEEN_PREVIOUS={{steps.first.output}}
+          SECOND_OK
+        verification:
+          type: output_contains
+          value: SECOND_OK

@@ -1,0 +1,29 @@
+version: '1.0'
+name: test-codex-simple
+description: >
+  Minimal Codex-backed workflow sanity check. Validates that a single
+  non-interactive agent step can run and satisfy output verification.
+
+swarm:
+  pattern: pipeline
+  channel: test-codex-simple
+  timeoutMs: 180000
+
+agents:
+  - name: codex-worker
+    cli: codex
+    preset: worker
+
+workflows:
+  - name: codex-simple
+    steps:
+      - name: codex-step
+        type: agent
+        agent: codex-worker
+        task: |
+          Output exactly these two lines and nothing else:
+          CODEX_WORKFLOW_OK
+          DONE
+        verification:
+          type: output_contains
+          value: DONE
