@@ -471,6 +471,94 @@ When the next phase needs to read files produced by the current phase, use a det
     Now implement the executor that uses these modules...
 ```
 
+## Completion Signals: Required vs Optional
+
+The runner uses a multi-tier completion resolution system. **No single signal is mandatory** — the runner resolves completion from whatever evidence is available.
+
+### Tier 1: Explicit owner decision (strongest)
+
+```
+OWNER_DECISION: COMPLETE
+REASON: All files written and tests pass
+```
+
+The structured `OWNER_DECISION` format is preferred for owner/lead agents. It gives the runner an unambiguous completion signal.
+
+### Tier 2: Legacy completion marker
+
+```
+STEP_COMPLETE:step-name
+```
+
+Still supported but optional. The runner treats it as equivalent to `OWNER_DECISION: COMPLETE`.
+
+### Tier 3: Verification gate
+
+If `verification` is configured on the step, the runner checks it automatically. A passing verification gate completes the step even without an explicit owner decision.
+
+### Tier 4: Evidence-based completion
+
+When no explicit signal is found, the runner checks collected evidence:
+- Coordination signals in output (`WORKER_DONE`, `LEAD_DONE`)
+- Process exit code 0 (clean exit)
+- Tool side-effects (git diff checks, file inspections)
+- Positive-conclusion language in owner output
+
+If both a positive conclusion **and** at least one evidence signal are present, the step completes.
+
+### Tier 5: Process-exit fallback
+
+When the agent exits with code 0 but posts **no** coordination signal at all:
+- The runner waits a configurable grace period (`completionGracePeriodMs`, default 5s)
+- If verification is configured and passes, the step completes with reason `completed_by_process_exit`
+- If no verification is configured, the step completes based on the clean exit alone
+
+This tier is the key mechanism for reducing dependence on exact agent behavior.
+
+### What this means for workflow authors
+
+- **Don't require exact text output** as the only completion signal. Always configure a verification gate (`exit_code`, `file_exists`, or `output_contains`) as a backup.
+- **Describe the deliverable, not the ceremony.** Say "implement the auth module" not "implement the auth module and then output IMPL_DONE".
+- **Prefer `exit_code` verification** for code-editing workers — it's the most reliable signal because it doesn't depend on the agent printing specific text.
+- **Use `completionGracePeriodMs: 0`** in the swarm config to disable the process-exit fallback if you need strict signal compliance.
+
+### Configuring the grace period
+
+```yaml
+swarm:
+  pattern: dag
+  completionGracePeriodMs: 5000  # default: 5s. Set to 0 to disable.
+```
+
+## Robust Coordination Best Practices
+
+### Design for agent non-compliance
+
+Agents may not follow instructions perfectly. The runner is designed to handle this gracefully:
+
+1. **Always configure verification gates** — they're the most reliable completion mechanism because they don't depend on agent behavior at all.
+2. **Use deterministic steps for critical checks** — `file_exists` checks, test runs, and type checks are deterministic and infallible.
+3. **Don't rely on agents posting exact signal text** — use `exit_code` verification instead of `output_contains` when possible.
+4. **Let the runner handle self-termination** — it appends `/exit` instructions automatically and detects idle agents.
+
+### Completion strategy by step type
+
+| Step type | Recommended verification | Why |
+|---|---|---|
+| Code editing (codex worker) | `exit_code` | Agent may not print tokens reliably |
+| Analysis/review (claude) | `output_contains` with unique token | Structured output is the deliverable |
+| File creation (any worker) | `file_exists` | Deterministic check, zero agent dependency |
+| Lead coordination | None (owner decision or evidence) | Lead agents are interactive and monitored |
+
+### Owner steps: structured decisions preferred
+
+For supervised steps with a dedicated owner, the `OWNER_DECISION` format is preferred over legacy `STEP_COMPLETE:` markers because:
+- It supports negative outcomes (`INCOMPLETE_RETRY`, `INCOMPLETE_FAIL`) not just success
+- It includes a `REASON` field for observability
+- The runner can distinguish owner intent from echoed prompt text more reliably
+
+But if the owner doesn't post either format, the runner still resolves completion from evidence.
+
 ## Common Mistakes
 
 | Mistake                                                     | Fix                                                               |

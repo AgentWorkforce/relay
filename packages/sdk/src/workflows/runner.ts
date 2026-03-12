@@ -3955,6 +3955,19 @@ export class WorkflowRunner {
       }
     }
 
+    // Process-exit fallback: if the agent exited cleanly (code 0) and verification
+    // passes (or no verification is configured), infer completion rather than failing.
+    // This reduces dependence on agents posting exact coordination signals.
+    const processExitFallback = this.tryProcessExitFallback(step, specialistOutput, verificationTaskText);
+    if (processExitFallback) {
+      this.log(
+        `[${step.name}] Completion inferred from clean process exit (code 0)` +
+          (step.verification ? ' + verification passed' : '') +
+          ' — no coordination signal was required'
+      );
+      return processExitFallback;
+    }
+
     throw new WorkflowCompletionError(
       `Step "${step.name}" owner completion decision missing: no OWNER_DECISION, legacy STEP_COMPLETE marker, or evidence-backed completion signal`,
       'failed_no_evidence'
@@ -4074,7 +4087,8 @@ export class WorkflowRunner {
         (signal) =>
           signal.kind === 'worker_done' ||
           signal.kind === 'lead_done' ||
-          signal.kind === 'verification_passed'
+          signal.kind === 'verification_passed' ||
+          (signal.kind === 'process_exit' && signal.value === '0')
       ) ?? false;
     const hasValidatedInspectionSignal =
       evidence?.toolSideEffects.some(
@@ -4090,6 +4104,47 @@ export class WorkflowRunner {
     }
 
     return this.firstMeaningfulLine(sanitized) ?? 'Evidence-backed completion';
+  }
+
+  /**
+   * Process-exit fallback: when agent exits with code 0 but posts no coordination
+   * signal, check if verification passes (or no verification is configured) and
+   * infer completion. This is the key mechanism for reducing agent compliance
+   * dependence — the runner trusts a clean exit + passing verification over
+   * requiring exact signal text.
+   */
+  private tryProcessExitFallback(
+    step: WorkflowStep,
+    specialistOutput: string,
+    verificationTaskText?: string
+  ): CompletionDecisionResult | null {
+    const gracePeriodMs = this.currentConfig?.swarm.completionGracePeriodMs ?? 5000;
+    if (gracePeriodMs === 0) return null;
+
+    const evidence = this.getStepCompletionEvidence(step.name);
+    const hasCleanExit = evidence?.coordinationSignals.some(
+      (signal) =>
+        signal.kind === 'process_exit' && signal.value === '0'
+    ) ?? false;
+
+    if (!hasCleanExit) return null;
+
+    // If verification is configured, it must pass for the fallback to succeed.
+    if (step.verification) {
+      const verificationResult = this.runVerification(
+        step.verification,
+        specialistOutput,
+        step.name,
+        verificationTaskText,
+        { allowFailure: true }
+      );
+      if (!verificationResult.passed) return null;
+    }
+
+    return {
+      completionReason: 'completed_by_process_exit',
+      reason: `Process exited with code 0${step.verification ? ' and verification passed' : ''} — coordination signal not required`,
+    };
   }
 
   private async runStepReviewGate(
@@ -4907,19 +4962,31 @@ export class WorkflowRunner {
       stopHeartbeat?.();
 
       if (exitResult === 'timeout') {
-        // Safety net: check if the verification file exists before giving up.
-        // The agent may have completed work but failed to /exit.
-        if (step.verification?.type === 'file_exists') {
-          const verifyPath = path.resolve(this.cwd, step.verification.value);
-          if (existsSync(verifyPath)) {
-            this.postToChannel(`**[${step.name}]** Agent idle after completing work — releasing`);
+        // Grace-period fallback: before failing, check if the agent completed
+        // its work but just failed to self-terminate. Run verification if
+        // configured — a passing gate + timeout is better than a hard failure.
+        let timeoutRecovered = false;
+        if (step.verification) {
+          const ptyOutput = (this.ptyOutputBuffers.get(agentName) ?? []).join('');
+          const verificationResult = this.runVerification(
+            step.verification,
+            ptyOutput,
+            step.name,
+            undefined,
+            { allowFailure: true }
+          );
+          if (verificationResult.passed) {
+            this.log(
+              `[${step.name}] Agent timed out but verification passed — treating as complete`
+            );
+            this.postToChannel(
+              `**[${step.name}]** Agent idle after completing work — verification passed, releasing`
+            );
             await agent.release();
-            // Fall through to read output below
-          } else {
-            await agent.release();
-            throw new Error(`Step "${step.name}" timed out after ${timeoutMs ?? 'unknown'}ms`);
+            timeoutRecovered = true;
           }
-        } else {
+        }
+        if (!timeoutRecovered) {
           await agent.release();
           throw new Error(`Step "${step.name}" timed out after ${timeoutMs ?? 'unknown'}ms`);
         }
