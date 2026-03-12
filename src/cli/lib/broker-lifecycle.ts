@@ -1,4 +1,3 @@
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -618,14 +617,13 @@ async function refreshDashboardAssetsIfStale(
     return;
   }
 
-  // Get installed binary version
+  // Get installed binary version (async to avoid blocking event loop)
   let binaryVersion: string;
   try {
-    binaryVersion = execSync(`${JSON.stringify(dashboardBinary)} --version`, {
-      timeout: 5000,
-    })
-      .toString()
-      .trim();
+    const versionResult = await deps.execCommand(
+      `${JSON.stringify(dashboardBinary)} --version`
+    );
+    binaryVersion = versionResult.stdout.trim();
   } catch {
     return; // Can't determine version — skip
   }
@@ -662,10 +660,10 @@ async function refreshDashboardAssetsIfStale(
   const tempFile = path.join(os.tmpdir(), `dashboard-ui-${process.pid}.tar.gz`);
 
   try {
-    // Download
-    execSync(`curl -fsSL ${JSON.stringify(uiUrl)} -o ${JSON.stringify(tempFile)}`, {
-      timeout: 30000,
-    });
+    // Download (async to avoid blocking event loop during network I/O)
+    await deps.execCommand(
+      `curl -fsSL --max-time 30 ${JSON.stringify(uiUrl)} -o ${JSON.stringify(tempFile)}`
+    );
 
     // Verify it's a valid gzip
     const header = Buffer.alloc(2);
@@ -677,12 +675,12 @@ async function refreshDashboardAssetsIfStale(
       return; // Not a valid gzip file
     }
 
-    // Remove old assets and extract
+    // Remove old assets and extract (async to avoid blocking event loop)
     fs.rmSync(assetsDir, { recursive: true, force: true });
     fs.mkdirSync(targetDir, { recursive: true });
-    execSync(`tar -xzf ${JSON.stringify(tempFile)} -C ${JSON.stringify(targetDir)}`, {
-      timeout: 15000,
-    });
+    await deps.execCommand(
+      `tar -xzf ${JSON.stringify(tempFile)} -C ${JSON.stringify(targetDir)}`
+    );
     fs.unlinkSync(tempFile);
 
     // Write version marker only after confirming extraction succeeded
