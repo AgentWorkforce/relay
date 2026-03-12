@@ -347,6 +347,49 @@ describe('Completion Pipeline', () => {
         expect(run.status).toBe('failed');
       }
     }, 15000);
+
+    it('should not let passing verification override INCOMPLETE_RETRY', async () => {
+      mockSpawnOutputs = [
+        'worker output with expected content\n',
+        [
+          'OWNER_DECISION: INCOMPLETE_RETRY',
+          'REASON: missing WORKER_DONE marker',
+          'verified artifacts after inspecting output',
+          'worker finished implementation',
+        ].join('\n'),
+      ];
+
+      const run = await runner.execute(
+        makeSupervisedConfig({
+          verification: { type: 'output_contains', value: 'expected content' },
+        }),
+        'default'
+      );
+
+      expect(run.status).toBe('failed');
+      expect(mockRelayInstance.spawnPty).toHaveBeenCalledTimes(2);
+    }, 15000);
+
+    it('should not let passing verification override NEEDS_CLARIFICATION', async () => {
+      mockSpawnOutputs = [
+        'worker output with expected content\n',
+        [
+          'OWNER_DECISION: NEEDS_CLARIFICATION',
+          'REASON: owner needs proof of the channel handoff',
+          'verified artifacts after inspecting output',
+        ].join('\n'),
+      ];
+
+      const run = await runner.execute(
+        makeSupervisedConfig({
+          verification: { type: 'output_contains', value: 'expected content' },
+        }),
+        'default'
+      );
+
+      expect(run.status).toBe('failed');
+      expect(mockRelayInstance.spawnPty).toHaveBeenCalledTimes(2);
+    }, 15000);
   });
 
   // ── Unit Test 4: Owner rejects AND verification fails ─────────────────
@@ -364,6 +407,83 @@ describe('Completion Pipeline', () => {
 
       const run = await runner.execute(config, 'default');
       expect(run.status).toBe('failed');
+    }, 15000);
+
+    it('should fail when owner rejects even if verification passes', async () => {
+      mockSpawnOutputs = [
+        'worker output with expected content\n',
+        [
+          'OWNER_DECISION: INCOMPLETE_FAIL',
+          'REASON: work is incomplete without WORKER_DONE proof',
+          'artifacts verified locally',
+          'worker finished implementation',
+        ].join('\n'),
+      ];
+
+      const run = await runner.execute(
+        makeSupervisedConfig({
+          verification: { type: 'output_contains', value: 'expected content' },
+        }),
+        'default'
+      );
+
+      expect(run.status).toBe('failed');
+      expect(mockRelayInstance.spawnPty).toHaveBeenCalledTimes(2);
+    }, 15000);
+
+    it('should still complete by owner decision when COMPLETE and verification both pass', async () => {
+      mockSpawnOutputs = [
+        'worker output with expected content\n',
+        'OWNER_DECISION: COMPLETE\nREASON: verified artifacts\n',
+        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: owner confirmed\n',
+      ];
+
+      const run = await runner.execute(
+        makeSupervisedConfig({
+          verification: { type: 'output_contains', value: 'expected content' },
+        }),
+        'default'
+      );
+
+      expect(run.status).toBe('completed');
+      const [step] = await db.getStepsByRunId(run.id);
+      expect(step?.completionReason).toBe('completed_by_owner_decision');
+    }, 15000);
+
+    it('should fail verification before accepting OWNER_DECISION COMPLETE', async () => {
+      mockSpawnOutputs = [
+        'worker output without the required token\n',
+        'OWNER_DECISION: COMPLETE\nREASON: verified artifacts\n',
+      ];
+
+      const run = await runner.execute(
+        makeSupervisedConfig({
+          verification: { type: 'output_contains', value: 'expected content' },
+        }),
+        'default'
+      );
+
+      expect(run.status).toBe('failed');
+      expect(mockRelayInstance.spawnPty).toHaveBeenCalledTimes(2);
+    }, 15000);
+
+    it('should still complete as verified when no owner decision is provided and verification passes', async () => {
+      mockSpawnOutputs = [
+        'worker output with expected content\n',
+        'Owner checked the output and left no structured decision.\n',
+        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: verification passed\n',
+      ];
+
+      const run = await runner.execute(
+        makeSupervisedConfig({
+          verification: { type: 'output_contains', value: 'expected content' },
+        }),
+        'default'
+      );
+
+      expect(run.status).toBe('completed');
+      const [step] = await db.getStepsByRunId(run.id);
+      expect(step?.completionReason).toBe('completed_verified');
     }, 15000);
   });
 
