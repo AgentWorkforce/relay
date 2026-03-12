@@ -131,6 +131,20 @@ const mockRelayInstance = {
   listAgentsRaw: vi.fn().mockResolvedValue([]),
 };
 
+let relayEventCounter = 0;
+
+function emitRelayChannelMessage(message: { from: string; to: string; text: string }) {
+  setTimeout(() => {
+    mockRelayInstance.onMessageReceived?.({
+      eventId: `evt-${++relayEventCounter}`,
+      from: message.from,
+      to: message.to,
+      text: message.text,
+      threadId: undefined,
+    });
+  }, 0);
+}
+
 vi.mock('../relay.js', () => ({
   AgentRelay: vi.fn().mockImplementation(() => mockRelayInstance),
 }));
@@ -225,6 +239,7 @@ describe('Completion Pipeline', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    relayEventCounter = 0;
     waitForExitFn = vi.fn().mockResolvedValue('exited');
     waitForIdleFn = vi.fn().mockImplementation(() => never());
     mockSpawnOutputs = [];
@@ -561,6 +576,13 @@ describe('Completion Pipeline', () => {
         ([, text]: [string, string]) => text
       );
       expect(channelMessages.some((text: string) => text.includes('WORKER_DONE'))).toBe(true);
+
+      const evidence = runner.getStepCompletionEvidence('step-1');
+      const workerDoneSignals =
+        evidence?.coordinationSignals.filter(
+          (signal) => signal.kind === 'worker_done' && signal.source === 'channel'
+        ) ?? [];
+      expect(workerDoneSignals.some((signal) => signal.sender === 'specialist')).toBe(true);
     }, 15000);
 
     it('should forward worker channel evidence to the owner prompt', async () => {
@@ -572,6 +594,67 @@ describe('Completion Pipeline', () => {
 
       const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('completed');
+    }, 15000);
+
+    it('should not count lead-authored WORKER_DONE channel posts as worker completion evidence', async () => {
+      waitForExitFn = vi.fn().mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return 'exited';
+      });
+      mockRelayInstance.spawnPty.mockImplementation(async ({ name, task }: { name: string; task?: string }) => {
+        const agent = await defaultSpawnPtyImplementation({ name, task });
+        if (task?.includes('You are the step owner/supervisor for step "step-1".')) {
+          emitRelayChannelMessage({
+            from: agent.name,
+            to: 'completion-provenance',
+            text: 'WORKER_DONE: lead summarized the handoff',
+          });
+        }
+        return agent;
+      });
+      mockSpawnOutputs = [
+        'worker progress update only\n',
+        'Owner observed the channel but left no decision.\n',
+      ];
+
+      const config = makeSupervisedConfig();
+      config.swarm = { ...config.swarm, channel: 'completion-provenance' };
+
+      const run = await runner.execute(config, 'default');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('owner completion decision missing');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const evidence = runner.getStepCompletionEvidence('step-1');
+      const spoofedPosts =
+        evidence?.channelPosts.filter(
+          (post) => post.sender === 'team-lead' && post.text.includes('WORKER_DONE')
+        ) ?? [];
+      expect(spoofedPosts.length).toBeGreaterThan(0);
+      expect(evidence?.coordinationSignals.filter((signal) => signal.kind === 'worker_done') ?? []).toHaveLength(0);
+      const spoofedPost = evidence?.channelPosts.find(
+        (post) => post.sender === 'team-lead' && post.text.includes('WORKER_DONE')
+      );
+      expect(spoofedPost?.signals.some((signal) => signal.kind === 'worker_done') ?? false).toBe(false);
+    }, 15000);
+
+    it('should filter wrong-agent coordination signals from the evidence view', async () => {
+      mockSpawnOutputs = [
+        'LEAD_DONE: worker cannot declare lead completion\nWORKER_DONE: all tasks completed\n',
+        'Owner confirmed\nSTEP_COMPLETE:step-1\n',
+        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: verified\n',
+      ];
+
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
+      expect(run.status).toBe('completed');
+
+      const evidence = runner.getStepCompletionEvidence('step-1');
+      expect(evidence?.coordinationSignals.filter((signal) => signal.kind === 'lead_done')).toHaveLength(0);
+      expect(
+        evidence?.coordinationSignals.some(
+          (signal) => signal.kind === 'worker_done' && signal.sender === 'specialist'
+        )
+      ).toBe(true);
     }, 15000);
   });
 

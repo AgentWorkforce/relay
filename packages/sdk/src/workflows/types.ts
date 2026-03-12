@@ -338,6 +338,7 @@ export interface CompletionEvidenceSignal {
   source: CompletionEvidenceSignalSource;
   text: string;
   observedAt: string;
+  sender?: string;
   actor?: string;
   role?: string;
   value?: string;
@@ -351,6 +352,7 @@ export interface CompletionEvidenceChannelPost {
   postedAt: string;
   origin: CompletionEvidenceChannelOrigin;
   completionRelevant: boolean;
+  sender?: string;
   actor?: string;
   role?: string;
   target?: string;
