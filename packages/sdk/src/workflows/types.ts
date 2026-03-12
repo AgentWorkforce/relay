@@ -521,6 +521,11 @@ export type WorkflowOwnerDecision =
   | 'INCOMPLETE_RETRY'
   | 'INCOMPLETE_FAIL'
   | 'NEEDS_CLARIFICATION';
+/**
+ * Completion reasons are recorded for both successful and failed steps.
+ * `retry_requested_by_owner` is a retry-control signal, not a success state:
+ * the runner retries while budget remains and fails the step once retries are exhausted.
+ */
 export type WorkflowStepCompletionReason =
   | 'completed_verified'
   | 'completed_by_owner_decision'

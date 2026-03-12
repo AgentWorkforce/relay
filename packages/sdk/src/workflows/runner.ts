@@ -3189,6 +3189,11 @@ export class WorkflowRunner {
     let lastExitSignal: string | undefined;
     let lastCompletionReason: WorkflowStepCompletionReason | undefined;
 
+    // OWNER_DECISION: INCOMPLETE_RETRY is enforced here at the attempt-loop level so every
+    // interactive execution path shares the same contract:
+    // - retries remaining => throw back into the loop and retry
+    // - maxRetries = 0 => fail immediately after the first retry request
+    // - retry budget exhausted => fail with retry_requested_by_owner, never "completed"
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       this.checkAborted();
 
@@ -3353,6 +3358,16 @@ export class WorkflowRunner {
           completionReason = verificationResult.completionReason;
         }
 
+        // Retry-style owner decisions are control-flow signals, not terminal success states.
+        // Guard here so they cannot accidentally fall through into review or completed-step
+        // persistence if a future branch returns a completionReason instead of throwing.
+        if (completionReason === 'retry_requested_by_owner') {
+          throw new WorkflowCompletionError(
+            `Step "${step.name}" owner requested another attempt`,
+            'retry_requested_by_owner'
+          );
+        }
+
         // Every interactive step gets a review pass; pick a dedicated reviewer when available.
         let combinedOutput = specialistOutput;
         if (usesOwnerFlow && reviewDef) {
@@ -3398,6 +3413,9 @@ export class WorkflowRunner {
         lastError = err instanceof Error ? err.message : String(err);
         lastCompletionReason =
           err instanceof WorkflowCompletionError ? err.completionReason : undefined;
+        if (lastCompletionReason === 'retry_requested_by_owner' && attempt >= maxRetries) {
+          lastError = this.buildOwnerRetryBudgetExceededMessage(step.name, maxRetries, lastError);
+        }
         if (err instanceof SpawnExitError) {
           lastExitCode = err.exitCode;
           lastExitSignal = err.exitSignal;
@@ -3430,6 +3448,35 @@ export class WorkflowRunner {
     }, lastCompletionReason);
     throw new Error(
       `Step "${step.name}" failed after ${maxRetries} retries: ${lastError ?? 'Unknown error'}`
+    );
+  }
+
+  private buildOwnerRetryBudgetExceededMessage(
+    stepName: string,
+    maxRetries: number,
+    ownerDecisionError?: string
+  ): string {
+    const attempts = maxRetries + 1;
+    const prefix = `Step "${stepName}" `;
+    const normalizedDecision = ownerDecisionError?.startsWith(prefix)
+      ? ownerDecisionError.slice(prefix.length).trim()
+      : ownerDecisionError?.trim();
+    const decisionSuffix = normalizedDecision
+      ? ` Latest owner decision: ${normalizedDecision}`
+      : '';
+
+    if (maxRetries === 0) {
+      return (
+        `Step "${stepName}" owner requested another attempt, but no retries are configured ` +
+        `(maxRetries=0). Configure retries > 0 to allow OWNER_DECISION: INCOMPLETE_RETRY.` +
+        decisionSuffix
+      );
+    }
+
+    return (
+      `Step "${stepName}" owner requested another attempt after ${attempts} total attempts, ` +
+      `but the retry budget is exhausted (maxRetries=${maxRetries}).` +
+      decisionSuffix
     );
   }
 
@@ -3832,6 +3879,9 @@ export class WorkflowRunner {
     const hasMarker = this.hasOwnerCompletionMarker(step, ownerOutput, injectedTaskText);
     const explicitOwnerDecision = this.parseOwnerDecision(step, ownerOutput, false);
 
+    // INCOMPLETE_RETRY / NEEDS_CLARIFICATION are non-terminal owner outcomes. They never mark
+    // the step complete here; instead they throw back to executeAgentStep(), which decides
+    // whether to retry or fail based on the remaining retry budget for this step.
     if (explicitOwnerDecision?.decision === 'INCOMPLETE_RETRY') {
       throw new WorkflowCompletionError(
         `Step "${step.name}" owner requested retry${explicitOwnerDecision.reason ? `: ${explicitOwnerDecision.reason}` : ''}`,
