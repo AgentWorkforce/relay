@@ -665,7 +665,11 @@ pub async fn configure_relaycast_mcp_with_token(
 
     let mut args: Vec<String> = Vec::new();
 
-    if is_claude && !existing_args.iter().any(|a| a.contains("mcp-config")) {
+    if is_claude
+        && !existing_args
+            .iter()
+            .any(|a| a == "--mcp-config" || a.starts_with("--mcp-config="))
+    {
         // Build relaycast MCP config, then merge with the user's project-level
         // .mcp.json so other MCP servers (filesystem, database, etc.) are preserved.
         // Relaycast entry takes priority to prevent stale configs from overriding
@@ -678,7 +682,7 @@ pub async fn configure_relaycast_mcp_with_token(
         // of .mcp.json which would re-introduce stale relaycast entries).
         if !existing_args
             .iter()
-            .any(|a| a.contains("strict-mcp-config"))
+            .any(|a| a == "--strict-mcp-config")
         {
             args.push("--strict-mcp-config".to_string());
         }
@@ -1520,6 +1524,35 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         assert!(
             args.is_empty(),
             "should return no args when user already provided --mcp-config"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_still_injects_mcp_config_when_strict_flag_in_existing_args() {
+        let temp = tempdir().expect("tempdir");
+        // Regression: --strict-mcp-config in existing_args must NOT prevent
+        // broker from injecting --mcp-config (the old substring check matched
+        // "mcp-config" inside "--strict-mcp-config").
+        let existing = vec!["--strict-mcp-config".to_string()];
+        let args = super::configure_relaycast_mcp(
+            "claude",
+            "Worker",
+            Some("rk_live_abc"),
+            Some("https://api.relaycast.dev"),
+            &existing,
+            temp.path(),
+        )
+        .await
+        .expect("configure claude mcp with strict in existing");
+
+        assert!(
+            args.iter().any(|a| a == "--mcp-config"),
+            "broker must still inject --mcp-config even when --strict-mcp-config is in existing_args"
+        );
+        // Should not duplicate --strict-mcp-config since it's already present
+        assert!(
+            !args.iter().any(|a| a == "--strict-mcp-config"),
+            "should not duplicate --strict-mcp-config"
         );
     }
 
