@@ -762,12 +762,12 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
   // ── Scenario 9: Owner completion marker validation ─────────────────────
 
   describe('Scenario 9: Owner completion marker', () => {
-    it('should fail when owner does not produce STEP_COMPLETE marker', async () => {
+    it('should fail when owner does not provide a marker, decision, or evidence', async () => {
       mockSpawnOutputs = ['The work is done but I forgot the sentinel.\n'];
 
       const run = await runner.execute(makeConfig(), 'default');
       expect(run.status).toBe('failed');
-      expect(run.error).toContain('owner completion marker');
+      expect(run.error).toContain('owner completion decision missing');
     }, 15000);
 
     it('should succeed when owner produces correct STEP_COMPLETE:step-name', async () => {
