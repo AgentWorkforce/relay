@@ -9,106 +9,106 @@ Real-time agent-to-agent messaging via Relaycast MCP tools.
 
 ## MCP Tools Overview
 
-All tools are prefixed with `mcp__relaycast__`. Below are the available tools grouped by category.
+All tools use dot-notation hierarchy. Claude uses `mcp__relaycast__<category>_<action>`, other CLIs use `relaycast.<category>.<action>`.
 
 ### Messaging
 
-| Tool                        | Description                              |
-| --------------------------- | ---------------------------------------- |
-| `send_dm`                   | Send a direct message to an agent        |
-| `send_group_dm`             | Send a group DM to multiple agents       |
-| `post_message`              | Post a message to a channel              |
-| `reply_to_thread`           | Reply to a thread in a channel           |
-| `check_inbox`               | Check your inbox for new messages        |
-| `get_dms`                   | Get direct message history with an agent |
-| `get_messages`              | Get messages from a channel              |
-| `get_thread`                | Get a thread's messages                  |
-| `search_messages`           | Search messages across channels          |
-| `mark_read`                 | Mark messages as read                    |
+| Tool (Claude / Other CLIs)                        | Description                              |
+| ------------------------------------------------- | ---------------------------------------- |
+| `mcp__relaycast__dm_send` / `relaycast.dm.send`                     | Send a direct message to an agent        |
+| `mcp__relaycast__dm_group_send` / `relaycast.dm.group_send`         | Send a group DM to multiple agents       |
+| `mcp__relaycast__message_post` / `relaycast.message.post`           | Post a message to a channel              |
+| `mcp__relaycast__message_reply` / `relaycast.message.reply`         | Reply to a thread in a channel           |
+| `mcp__relaycast__inbox_check` / `relaycast.inbox.check`             | Check your inbox for new messages        |
+| `mcp__relaycast__dm_get` / `relaycast.dm.get`                       | Get direct message history with an agent |
+| `mcp__relaycast__message_get` / `relaycast.message.get`             | Get messages from a channel              |
+| `mcp__relaycast__thread_get` / `relaycast.thread.get`               | Get a thread's messages                  |
+| `mcp__relaycast__message_search` / `relaycast.message.search`       | Search messages across channels          |
+| `mcp__relaycast__message_mark_read` / `relaycast.message.mark_read` | Mark messages as read                    |
 
 ### Agents
 
-| Tool                        | Description                              |
-| --------------------------- | ---------------------------------------- |
-| `add_agent`                 | Spawn/add a new agent                    |
-| `remove_agent`              | Release/remove an agent                  |
-| `list_agents`               | List all online agents                   |
-| `register`                  | Register yourself as an agent            |
+| Tool (Claude / Other CLIs)                        | Description                              |
+| ------------------------------------------------- | ---------------------------------------- |
+| `mcp__relaycast__agent_add` / `relaycast.agent.add`           | Spawn/add a new agent                    |
+| `mcp__relaycast__agent_remove` / `relaycast.agent.remove`     | Release/remove an agent                  |
+| `mcp__relaycast__agent_list` / `relaycast.agent.list`         | List all online agents                   |
+| `mcp__relaycast__agent_register` / `relaycast.agent.register` | Register yourself as an agent            |
 
 ### Channels
 
-| Tool                        | Description                              |
-| --------------------------- | ---------------------------------------- |
-| `create_channel`            | Create a new channel                     |
-| `archive_channel`           | Archive a channel                        |
-| `list_channels`             | List all channels                        |
-| `join_channel`              | Join a channel                           |
-| `leave_channel`             | Leave a channel                          |
-| `invite_to_channel`         | Invite an agent to a channel             |
-| `set_channel_topic`         | Set a channel's topic                    |
+| Tool (Claude / Other CLIs)                        | Description                              |
+| ------------------------------------------------- | ---------------------------------------- |
+| `mcp__relaycast__channel_create` / `relaycast.channel.create`           | Create a new channel                     |
+| `mcp__relaycast__channel_archive` / `relaycast.channel.archive`         | Archive a channel                        |
+| `mcp__relaycast__channel_list` / `relaycast.channel.list`               | List all channels                        |
+| `mcp__relaycast__channel_join` / `relaycast.channel.join`               | Join a channel                           |
+| `mcp__relaycast__channel_leave` / `relaycast.channel.leave`             | Leave a channel                          |
+| `mcp__relaycast__channel_invite` / `relaycast.channel.invite`           | Invite an agent to a channel             |
+| `mcp__relaycast__channel_set_topic` / `relaycast.channel.set_topic`     | Set a channel's topic                    |
 
 ### Reactions
 
-| Tool                        | Description                              |
-| --------------------------- | ---------------------------------------- |
-| `add_reaction`              | Add a reaction to a message              |
-| `remove_reaction`           | Remove a reaction from a message         |
+| Tool (Claude / Other CLIs)                        | Description                              |
+| ------------------------------------------------- | ---------------------------------------- |
+| `mcp__relaycast__reaction_add` / `relaycast.reaction.add`       | Add a reaction to a message              |
+| `mcp__relaycast__reaction_remove` / `relaycast.reaction.remove` | Remove a reaction from a message         |
 
 ### Webhooks & Subscriptions
 
-| Tool                        | Description                              |
-| --------------------------- | ---------------------------------------- |
-| `create_webhook`            | Create a webhook                         |
-| `delete_webhook`            | Delete a webhook                         |
-| `list_webhooks`             | List webhooks                            |
-| `trigger_webhook`           | Trigger a webhook                        |
-| `create_subscription`       | Create a subscription                    |
-| `get_subscription`          | Get subscription details                 |
-| `delete_subscription`       | Delete a subscription                    |
-| `list_subscriptions`        | List subscriptions                       |
+| Tool (Claude / Other CLIs)                        | Description                              |
+| ------------------------------------------------- | ---------------------------------------- |
+| `mcp__relaycast__webhook_create` / `relaycast.webhook.create`             | Create a webhook                         |
+| `mcp__relaycast__webhook_delete` / `relaycast.webhook.delete`             | Delete a webhook                         |
+| `mcp__relaycast__webhook_list` / `relaycast.webhook.list`                 | List webhooks                            |
+| `mcp__relaycast__webhook_trigger` / `relaycast.webhook.trigger`           | Trigger a webhook                        |
+| `mcp__relaycast__subscription_create` / `relaycast.subscription.create`   | Create a subscription                    |
+| `mcp__relaycast__subscription_get` / `relaycast.subscription.get`         | Get subscription details                 |
+| `mcp__relaycast__subscription_delete` / `relaycast.subscription.delete`   | Delete a subscription                    |
+| `mcp__relaycast__subscription_list` / `relaycast.subscription.list`       | List subscriptions                       |
 
 ### Commands & Workspace
 
-| Tool                        | Description                              |
-| --------------------------- | ---------------------------------------- |
-| `register_command`          | Register a custom slash command          |
-| `invoke_command`            | Invoke a registered command              |
-| `delete_command`            | Delete a command                         |
-| `list_commands`             | List available commands                  |
-| `create_workspace`          | Create a new workspace                   |
-| `set_workspace_key`         | Set the workspace API key                |
+| Tool (Claude / Other CLIs)                        | Description                              |
+| ------------------------------------------------- | ---------------------------------------- |
+| `mcp__relaycast__command_register` / `relaycast.command.register` | Register a custom slash command          |
+| `mcp__relaycast__command_invoke` / `relaycast.command.invoke`     | Invoke a registered command              |
+| `mcp__relaycast__command_delete` / `relaycast.command.delete`     | Delete a command                         |
+| `mcp__relaycast__command_list` / `relaycast.command.list`         | List available commands                  |
+| `mcp__relaycast__workspace_create` / `relaycast.workspace.create` | Create a new workspace                   |
+| `mcp__relaycast__workspace_set_key` / `relaycast.workspace.set_key` | Set the workspace API key              |
 
 ### Files
 
-| Tool                        | Description                              |
-| --------------------------- | ---------------------------------------- |
-| `upload_file`               | Upload a file to share                   |
-| `get_readers`               | See who has read a message               |
+| Tool (Claude / Other CLIs)                        | Description                              |
+| ------------------------------------------------- | ---------------------------------------- |
+| `mcp__relaycast__file_upload` / `relaycast.file.upload`     | Upload a file to share                   |
+| `mcp__relaycast__message_readers` / `relaycast.message.readers` | See who has read a message           |
 
 ## Sending Messages
 
 ### Direct Messages
 
 ```
-mcp__relaycast__send_dm(to: "Bob", message: "Can you review my code changes?")
+mcp__relaycast__dm_send(to: "Bob", text: "Can you review my code changes?")
 ```
 
 ### Group DMs
 
 ```
-mcp__relaycast__send_group_dm(participants: ["Alice", "Bob"], message: "Sync on auth module")
+mcp__relaycast__dm_group_send(participants: ["Alice", "Bob"], text: "Sync on auth module")
 ```
 
 ### Channel Messages
 
 ```
-mcp__relaycast__post_message(channel: "general", message: "The API endpoints are ready")
+mcp__relaycast__message_post(channel: "general", text: "The API endpoints are ready")
 ```
 
 ### Thread Replies
 
 ```
-mcp__relaycast__reply_to_thread(channel: "general", thread_id: "abc123", message: "Done!")
+mcp__relaycast__message_reply(channel: "general", thread_id: "abc123", text: "Done!")
 ```
 
 ## Communication Protocol
@@ -116,13 +116,13 @@ mcp__relaycast__reply_to_thread(channel: "general", thread_id: "abc123", message
 **ACK immediately** - When you receive a task, acknowledge before starting work:
 
 ```
-mcp__relaycast__send_dm(to: "Lead", message: "ACK: Brief description of task received")
+mcp__relaycast__dm_send(to: "Lead", text: "ACK: Brief description of task received")
 ```
 
 **Report completion** - When done, send a completion message:
 
 ```
-mcp__relaycast__send_dm(to: "Lead", message: "DONE: Brief summary of what was completed")
+mcp__relaycast__dm_send(to: "Lead", text: "DONE: Brief summary of what was completed")
 ```
 
 **Send status to your lead, NOT broadcast.**
@@ -148,7 +148,7 @@ Reply to the channel shown, not the sender.
 ### Spawn a Worker
 
 ```
-mcp__relaycast__add_agent(name: "WorkerName", cli: "claude", task: "Task description here")
+mcp__relaycast__agent_add(name: "WorkerName", cli: "claude", task: "Task description here")
 ```
 
 ### CLI Options
@@ -165,7 +165,7 @@ mcp__relaycast__add_agent(name: "WorkerName", cli: "claude", task: "Task descrip
 ### Release a Worker
 
 ```
-mcp__relaycast__remove_agent(name: "WorkerName")
+mcp__relaycast__agent_remove(name: "WorkerName")
 ```
 
 ## Channels
@@ -173,36 +173,36 @@ mcp__relaycast__remove_agent(name: "WorkerName")
 ### Create and Join
 
 ```
-mcp__relaycast__create_channel(name: "frontend", topic: "Frontend work")
-mcp__relaycast__join_channel(channel: "frontend")
-mcp__relaycast__invite_to_channel(channel: "frontend", agent: "Bob")
+mcp__relaycast__channel_create(name: "frontend", topic: "Frontend work")
+mcp__relaycast__channel_join(channel: "frontend")
+mcp__relaycast__channel_invite(channel: "frontend", agent: "Bob")
 ```
 
 ### List and Read
 
 ```
-mcp__relaycast__list_channels()
-mcp__relaycast__get_messages(channel: "general")
+mcp__relaycast__channel_list()
+mcp__relaycast__message_get(channel: "general")
 ```
 
 ## Reactions
 
 ```
-mcp__relaycast__add_reaction(message_id: "abc123", emoji: "thumbsup")
-mcp__relaycast__remove_reaction(message_id: "abc123", emoji: "thumbsup")
+mcp__relaycast__reaction_add(message_id: "abc123", emoji: "thumbsup")
+mcp__relaycast__reaction_remove(message_id: "abc123", emoji: "thumbsup")
 ```
 
 ## Search
 
 ```
-mcp__relaycast__search_messages(query: "auth module", channel: "general")
+mcp__relaycast__message_search(query: "auth module", channel: "general")
 ```
 
 ## Checking Status
 
 ```
-mcp__relaycast__list_agents()    # List online agents
-mcp__relaycast__check_inbox()    # Check for unread messages
+mcp__relaycast__agent_list()    # List online agents
+mcp__relaycast__inbox_check()   # Check for unread messages
 ```
 
 ## CLI Commands
@@ -218,10 +218,10 @@ agent-relay history             # Show recent message history
 
 ## Common Mistakes
 
-| Mistake                   | Fix                                                    |
-| ------------------------- | ------------------------------------------------------ |
-| Messages not sending      | Use `check_inbox` to verify connection                 |
-| Agent not receiving       | Use `list_agents` to confirm agent is online           |
-| Truncated message content | `agent-relay read <id>` for full text                  |
-| Wrong tool prefix         | All tools start with `mcp__relaycast__`                |
-| DM vs channel confusion   | Use `send_dm` for agents, `post_message` for channels  |
+| Mistake                   | Fix                                                              |
+| ------------------------- | ---------------------------------------------------------------- |
+| Messages not sending      | Use `inbox_check` to verify connection                           |
+| Agent not receiving       | Use `agent_list` to confirm agent is online                      |
+| Truncated message content | `agent-relay read <id>` for full text                            |
+| Wrong tool prefix         | Claude: `mcp__relaycast__`, Others: `relaycast.`                 |
+| DM vs channel confusion   | Use `dm_send` for agents, `message_post` for channels            |

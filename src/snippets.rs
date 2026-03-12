@@ -23,12 +23,12 @@ const MCP_SECTION: &str = r#"## MCP-First Workflow (Preferred)
 
 MCP is configured for this workspace/CLI. Use MCP tools first:
 
-- `relay_send(to, message)`
-- `relay_spawn(name, cli, task)`
-- `relay_inbox()`
-- `relay_who()`
-- `relay_release(name)`
-- `relay_status()`
+- `mcp__relaycast__dm_send(to, text)` — Send a DM
+- `mcp__relaycast__message_post(channel, text)` — Post to channel
+- `mcp__relaycast__agent_add(name, cli, task)` — Spawn agent
+- `mcp__relaycast__inbox_check()` — Check messages
+- `mcp__relaycast__agent_list()` — List agents
+- `mcp__relaycast__agent_remove(name)` — Release agent
 
 Use MCP/skills only; do not use filesystem protocols.
 
