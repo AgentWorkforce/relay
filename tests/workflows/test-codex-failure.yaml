@@ -1,0 +1,26 @@
+version: '1.0'
+name: test-codex-failure
+
+description: Intentional failure case to verify workflow failure handling.
+
+swarm:
+  pattern: pipeline
+  channel: test-codex-failure
+  timeoutMs: 180000
+
+agents:
+  - name: codex-fail
+    cli: codex
+    preset: worker
+
+workflows:
+  - name: codex-failure
+    steps:
+      - name: fail-step
+        type: agent
+        agent: codex-fail
+        task: |
+          Output exactly THIS_WILL_NOT_MATCH
+        verification:
+          type: output_contains
+          value: EXPECTED_SENTINEL

@@ -1,0 +1,39 @@
+version: '1.0'
+name: test-gemini-parallel
+
+description: Minimal Gemini parallel fan-out workflow.
+
+swarm:
+  pattern: dag
+  channel: test-gemini-parallel
+  timeoutMs: 240000
+  maxConcurrency: 2
+
+agents:
+  - name: gemini-left
+    cli: gemini
+    preset: worker
+  - name: gemini-right
+    cli: gemini
+    preset: worker
+
+workflows:
+  - name: gemini-parallel
+    steps:
+      - name: left
+        type: agent
+        agent: gemini-left
+        task: |
+          Output exactly LEFT_OK
+        verification:
+          type: output_contains
+          value: LEFT_OK
+
+      - name: right
+        type: agent
+        agent: gemini-right
+        task: |
+          Output exactly RIGHT_OK
+        verification:
+          type: output_contains
+          value: RIGHT_OK

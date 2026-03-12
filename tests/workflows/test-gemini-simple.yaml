@@ -1,0 +1,28 @@
+version: '1.0'
+name: test-gemini-simple
+
+description: Minimal Gemini-backed workflow sanity check.
+
+swarm:
+  pattern: pipeline
+  channel: test-gemini-simple
+  timeoutMs: 180000
+
+agents:
+  - name: gemini-worker
+    cli: gemini
+    preset: worker
+
+workflows:
+  - name: gemini-simple
+    steps:
+      - name: gemini-step
+        type: agent
+        agent: gemini-worker
+        task: |
+          Output exactly these two lines and nothing else:
+          GEMINI_WORKFLOW_OK
+          DONE
+        verification:
+          type: output_contains
+          value: DONE

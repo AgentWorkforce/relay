@@ -10,6 +10,14 @@ Test workflows that encode the key rules for writing workflows that don't time o
 | `test-non-interactive-bounded.yaml` | Non-interactive agents with content injected by deterministic steps |
 | `test-lead-worker-pattern.yaml`     | Interactive lead + non-interactive workers, relay coordination      |
 | `test-step-sizing.yaml`             | One step = one deliverable; chaining vs discovery                   |
+| `test-codex-simple.yaml`            | Minimal Codex single-step agent workflow smoke test                 |
+| `test-codex-sequential.yaml`        | Codex pipeline with step output chaining                            |
+| `test-codex-parallel.yaml`          | Codex DAG / fan-out smoke test                                      |
+| `test-codex-failure.yaml`           | Codex verification failure should fail the workflow                 |
+| `test-gemini-simple.yaml`           | Minimal Gemini single-step agent workflow smoke test                |
+| `test-gemini-sequential.yaml`       | Gemini pipeline with step output chaining                           |
+| `test-gemini-parallel.yaml`         | Gemini DAG / fan-out smoke test                                     |
+| `test-gemini-failure.yaml`          | Gemini verification failure should fail the workflow                |
 
 ## Core Rules
 
