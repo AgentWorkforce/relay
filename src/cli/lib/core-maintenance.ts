@@ -281,21 +281,16 @@ export async function runUninstallCommand(
         deps.log(`[dry-run] Would remove dashboard asset path: ${assetPath}`);
       } else {
         try {
-          const isDir = (() => {
-            try {
-              return deps.fs.statSync(assetPath).isDirectory();
-            } catch {
-              return false;
-            }
-          })();
-          if (isDir) {
-            deps.fs.rmSync(assetPath, { recursive: true, force: true });
-          } else {
-            deps.fs.unlinkSync(assetPath);
-          }
+          deps.fs.rmSync(assetPath, { recursive: true, force: true });
           deps.log(`Removed dashboard asset path: ${assetPath}`);
         } catch {
-          // Best-effort.
+          // Best-effort fallback for file-only implementations.
+          try {
+            deps.fs.unlinkSync(assetPath);
+            deps.log(`Removed dashboard asset path: ${assetPath}`);
+          } catch {
+            // Best-effort.
+          }
         }
       }
     }
