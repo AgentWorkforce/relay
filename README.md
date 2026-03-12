@@ -70,6 +70,8 @@ await relay.shutdown();
 ## Supported CLI’s
 - Claude
 - Codex
+- Gemini
+- Opencode
 
 ---
 
