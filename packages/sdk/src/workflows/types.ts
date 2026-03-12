@@ -310,6 +310,126 @@ export interface VerificationCheck {
   description?: string;
 }
 
+// ── Completion evidence ─────────────────────────────────────────────────────
+
+export type CompletionEvidenceSignalSource =
+  | 'channel'
+  | 'stdout'
+  | 'stderr'
+  | 'process'
+  | 'filesystem'
+  | 'tool'
+  | 'verification';
+
+export type CompletionEvidenceSignalKind =
+  | 'worker_done'
+  | 'lead_done'
+  | 'step_complete'
+  | 'owner_decision'
+  | 'review_decision'
+  | 'task_summary'
+  | 'verification_passed'
+  | 'verification_failed'
+  | 'process_exit'
+  | 'custom';
+
+export interface CompletionEvidenceSignal {
+  kind: CompletionEvidenceSignalKind;
+  source: CompletionEvidenceSignalSource;
+  text: string;
+  observedAt: string;
+  actor?: string;
+  role?: string;
+  value?: string;
+}
+
+export type CompletionEvidenceChannelOrigin = 'runner_post' | 'forwarded_chunk' | 'relay_message';
+
+export interface CompletionEvidenceChannelPost {
+  stepName: string;
+  text: string;
+  postedAt: string;
+  origin: CompletionEvidenceChannelOrigin;
+  completionRelevant: boolean;
+  actor?: string;
+  role?: string;
+  target?: string;
+  signals: CompletionEvidenceSignal[];
+}
+
+export type CompletionEvidenceFileChangeKind = 'created' | 'modified' | 'deleted';
+
+export interface CompletionEvidenceFileChange {
+  path: string;
+  kind: CompletionEvidenceFileChangeKind;
+  observedAt: string;
+  root?: string;
+}
+
+export type CompletionEvidenceToolSideEffectType =
+  | 'persist_step_output'
+  | 'post_channel_message'
+  | 'verification_observed'
+  | 'worktree_created'
+  | 'owner_monitoring'
+  | 'review_started'
+  | 'review_completed'
+  | 'worker_exit'
+  | 'worker_error'
+  | 'retry'
+  | 'custom';
+
+export interface CompletionEvidenceToolSideEffect {
+  type: CompletionEvidenceToolSideEffectType;
+  detail: string;
+  observedAt: string;
+  raw?: Record<string, unknown>;
+}
+
+export interface StepCompletionEvidence {
+  stepName: string;
+  status?: WorkflowStepStatus;
+  startedAt?: string;
+  completedAt?: string;
+  lastUpdatedAt: string;
+  roots: string[];
+  output: {
+    stdout: string;
+    stderr: string;
+    combined: string;
+  };
+  channelPosts: CompletionEvidenceChannelPost[];
+  files: CompletionEvidenceFileChange[];
+  process: {
+    exitCode?: number;
+    exitSignal?: string;
+  };
+  toolSideEffects: CompletionEvidenceToolSideEffect[];
+  coordinationSignals: CompletionEvidenceSignal[];
+}
+
+export type StepCompletionMode =
+  | 'marker'
+  | 'evidence'
+  | 'verification'
+  | 'owner_decision'
+  | 'review'
+  | 'heuristic';
+
+export interface StepCompletionDecisionEvidence {
+  summary?: string;
+  signals?: string[];
+  channelPosts?: string[];
+  files?: string[];
+  exitCode?: number;
+}
+
+export interface StepCompletionDecision {
+  mode: StepCompletionMode;
+  reason?: string;
+  evidence?: StepCompletionDecisionEvidence;
+}
+
 // ── Coordination ────────────────────────────────────────────────────────────
 
 /** Coordination settings for multi-agent synchronization. */
@@ -394,6 +514,19 @@ export interface WorkflowRunRow {
 }
 
 export type WorkflowStepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+export type WorkflowOwnerDecision =
+  | 'COMPLETE'
+  | 'INCOMPLETE_RETRY'
+  | 'INCOMPLETE_FAIL'
+  | 'NEEDS_CLARIFICATION';
+export type WorkflowStepCompletionReason =
+  | 'completed_verified'
+  | 'completed_by_owner_decision'
+  | 'completed_by_evidence'
+  | 'retry_requested_by_owner'
+  | 'failed_verification'
+  | 'failed_owner_decision'
+  | 'failed_no_evidence';
 
 /** Database row representing a single workflow step execution. */
 export interface WorkflowStepRow {
@@ -410,6 +543,7 @@ export interface WorkflowStepRow {
   dependsOn: string[];
   output?: string;
   error?: string;
+  completionReason?: WorkflowStepCompletionReason;
   startedAt?: string;
   completedAt?: string;
   retryCount: number;

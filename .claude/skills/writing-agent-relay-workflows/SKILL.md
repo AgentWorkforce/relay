@@ -1,6 +1,6 @@
 ---
 name: writing-agent-relay-workflows
-description: Use when building multi-agent workflows with the relay broker-sdk - covers the WorkflowBuilder API, DAG step dependencies, agent definitions, step output chaining via {{steps.X.output}}, verification gates, dedicated channels, swarm patterns, error handling, event listeners, step sizing rules, and the lead+workers team pattern for complex steps
+description: Use when building multi-agent workflows with the relay broker-sdk - covers the WorkflowBuilder API, DAG step dependencies, agent definitions, step output chaining via {{steps.X.output}}, verification gates, evidence-based completion, owner decisions, dedicated channels, swarm patterns, error handling, event listeners, step sizing rules, authoring best practices, and the lead+workers team pattern for complex steps
 ---
 
 # Writing Agent Relay Workflows
@@ -33,14 +33,15 @@ const result = await workflow('my-workflow')
 
   .step('plan', {
     agent: 'lead',
-    task: `Analyze the codebase and produce a plan.\nEnd with: PLAN_COMPLETE`,
+    task: `Analyze the codebase and produce a plan.`,
     retries: 2,
-    verification: { type: 'output_contains', value: 'PLAN_COMPLETE' },
+    verification: { type: 'output_contains', value: 'PLAN_COMPLETE' }, // optional accelerator
   })
   .step('implement', {
     agent: 'worker',
     task: `Implement based on this plan:\n{{steps.plan.output}}`,
     dependsOn: ['plan'],
+    verification: { type: 'exit_code' },
   })
 
   .onError('retry', { maxRetries: 2, retryDelayMs: 10_000 })
@@ -55,13 +56,17 @@ Use `{{steps.STEP_NAME.output}}` in a downstream step's task to inject the prior
 
 ### Verification Gates
 
-Steps can require specific strings in the agent's output before being marked complete:
+Steps can include verification checks. These are **one input** to the completion decision — not the only one. The runner uses a multi-signal pipeline: deterministic verification, owner judgment, and evidence collection.
 
 ```typescript
-verification: { type: 'output_contains', value: 'DONE' }
+verification: { type: 'exit_code' }                        // preferred for code-editing steps
+verification: { type: 'output_contains', value: 'DONE' }   // optional accelerator, not mandatory
+verification: { type: 'file_exists', value: 'src/out.ts' } // deterministic file check
 ```
 
-Other types: `file_exists`, `exit_code`, `custom`.
+Types: `exit_code` (preferred for implementations), `output_contains`, `file_exists`, `custom`.
+
+**Key principle:** Verification passing is sufficient for step completion — even if no sentinel marker is present. The runner completes steps through evidence, not ceremony.
 
 ### DAG Dependencies
 
@@ -82,6 +87,29 @@ Always set `.channel('wf-my-workflow-name')` for workflow isolation. If omitted,
 ### Self-Termination
 
 Do NOT add exit instructions to task strings. The runner automatically appends self-termination instructions with the agent's runtime name in `spawnAndWait()`.
+
+### Step Completion Model
+
+Steps complete through a **multi-signal decision pipeline**, not a single sentinel marker:
+
+1. **Deterministic verification** (highest priority) — if `verification` passes (exit_code, file_exists, output_contains), the step completes immediately
+2. **Owner decision** — the step owner (lead or step agent) can issue a structured decision: `OWNER_DECISION: COMPLETE|INCOMPLETE_RETRY|INCOMPLETE_FAIL`
+3. **Evidence-based completion** — channel messages (WORKER_DONE signals), file artifacts, and process exit codes are collected as evidence
+4. **Marker fast-path** — `STEP_COMPLETE:<step-name>` still works as an accelerator but is never required
+
+**Completion states:**
+
+| State | Meaning |
+| --- | --- |
+| `completed_verified` | Deterministic verification passed |
+| `completed_by_owner_decision` | Owner approved the step |
+| `completed_by_evidence` | Evidence-based completion (channel signals, files, exit code) |
+| `retry_requested_by_owner` | Owner requested retry via OWNER_DECISION |
+| `failed_verification` | Verification explicitly failed |
+| `failed_owner_decision` | Owner rejected the step |
+| `failed_no_evidence` | No verification, no owner decision, no evidence — hard fail |
+
+**Review parsing is tolerant:** The runner accepts semantically equivalent outputs like "Approved", "Complete — task done", "LGTM", not just exact `REVIEW_DECISION: APPROVE` strings.
 
 ### No Per-Agent Timeouts
 
@@ -282,35 +310,30 @@ steps:
     dependsOn: [prior-step]
     task: |
       Lead the track on #my-track. Workers: track-worker-1, track-worker-2.
-      Post assignments to the channel. Review output. Output: TRACK_COMPLETE
-    verification:
-      type: output_contains
-      value: TRACK_COMPLETE
+      Post assignments to the channel. Review worker output.
+      When all workers are done and output is satisfactory, summarize results.
+    # Lead uses OWNER_DECISION or the runner detects completion via evidence
 
   - name: track-worker-1-impl
     agent: track-worker-1
     dependsOn: [prior-step] # same dep as lead — starts concurrently
     task: |
       Join #my-track. track-lead will post your assignment.
-      Implement the file as directed. Post WORKER1_DONE when complete.
-      Output: WORKER1_DONE
+      Implement the file as directed. Post a summary when complete.
     verification:
-      type: output_contains
-      value: WORKER1_DONE
+      type: exit_code  # preferred for code-editing workers
 
   - name: track-worker-2-impl
     agent: track-worker-2
     dependsOn: [prior-step]
     task: |
       Join #my-track. track-lead will post your assignment.
-      Implement the file as directed. Post WORKER2_DONE when complete.
-      Output: WORKER2_DONE
+      Implement the file as directed. Post a summary when complete.
     verification:
-      type: output_contains
-      value: WORKER2_DONE
+      type: exit_code
 
-  # Next step depends only on the lead — lead won't output TRACK_COMPLETE
-  # until workers are done and output is verified.
+  # Next step depends only on the lead — lead reviews workers via channel
+  # evidence and issues OWNER_DECISION or STEP_COMPLETE when satisfied.
   - name: next-step
     agent: ...
     dependsOn: [track-lead-coord]
@@ -318,11 +341,12 @@ steps:
 
 ### Key Points
 
-- **Lead task prompt**: who your workers are, which channel to use, what to assign, when to output the gate signal. ~15 lines.
-- **Worker task prompt**: which channel to join, that the lead will post their assignment, what signal to output when done. ~5 lines.
+- **Lead task prompt**: who your workers are, which channel to use, what to assign, what "done" looks like. ~15 lines. Describe the work contract, not output ceremony.
+- **Worker task prompt**: which channel to join, that the lead will post their assignment. ~5 lines. Workers post summaries, not mandatory sentinel strings.
 - **Workers don't need the full spec in their prompt** — they get it from the lead at runtime via the channel.
-- **Downstream steps depend on the lead**, not the workers — the lead gates the signal after verifying worker output.
+- **Downstream steps depend on the lead**, not the workers — the lead reviews worker output via channel evidence and issues completion.
 - **Separate channels per team** prevent cross-talk: `#harness-track`, `#review-track`, etc.
+- **Channel evidence is first-class** — worker summaries, DONE signals, and file creation events posted to the channel are collected as completion evidence by the runner.
 
 ## Concurrency: Don't Over-Parallelize
 
@@ -456,14 +480,15 @@ When the next phase needs to read files produced by the current phase, use a det
 | Using `general` channel                                     | Set `.channel('wf-name')` for isolation                           |
 | Referencing `{{steps.X.output}}` without `dependsOn: ['X']` | Output won't be available yet                                     |
 | Making review steps serial when they could be parallel      | Both reviewers can depend on the same upstream step               |
-| Not using verification gates on critical steps              | Add `output_contains` with a completion marker                    |
+| Requiring exact sentinel strings as the only completion gate | Use deterministic verification (`exit_code`, `file_exists`) or owner judgment |
 | Writing 100-line task prompts                               | Split into lead + workers communicating on a channel              |
 | Putting the full spec in every worker's task                | Lead posts the spec to the channel at runtime                     |
 | `maxConcurrency: 16` with many parallel steps               | Cap at 5–6; broker times out spawning 10+ agents at once          |
 | Asking non-interactive agent to read a large file via tools | Pre-read in a deterministic step, inject via `{{steps.X.output}}` |
 | Workers depending on the lead step (deadlock)               | Workers and lead both depend on a shared context step             |
 | Omitting `agents` field for deterministic-only workflows    | Field is now optional — pure shell pipelines work without it      |
-| Verification token buried at end of long codex task         | Use `REQUIRED: The very last line you print must be exactly: TOKEN` |
+| Designing prompts around output ceremony instead of work    | Describe the deliverable and acceptance criteria, not what to print |
+| Treating markers as mandatory truth                          | Markers are optional accelerators; verification and evidence decide completion |
 
 ## Verification Tokens with Non-Interactive Workers
 
@@ -552,17 +577,77 @@ workflows:
     steps:
       - name: plan
         agent: lead
-        task: 'Produce a plan. End with: PLAN_COMPLETE'
-        verification:
-          type: output_contains
-          value: PLAN_COMPLETE
+        task: 'Produce a detailed implementation plan.'
+        # No sentinel required — owner judgment + evidence complete the step
       - name: implement
         agent: worker
         task: 'Implement: {{steps.plan.output}}'
         dependsOn: [plan]
+        verification:
+          type: exit_code  # deterministic: exit 0 = success
 ```
 
 Run with: `agent-relay run path/to/workflow.yaml`
+
+## Workflow Authoring Rules
+
+Follow these principles when designing workflow step prompts:
+
+### 1. Prefer verification over sentinel-only prompts
+
+Use deterministic checks (`exit_code`, `file_exists`) as the primary completion signal. Don't rely solely on agents printing magic strings.
+
+```yaml
+# GOOD — deterministic verification
+verification:
+  type: exit_code  # or file_exists: src/auth.ts
+
+# OKAY — sentinel as optional accelerator alongside verification
+verification:
+  type: output_contains
+  value: PLAN_COMPLETE
+
+# BAD — no verification, relying only on agent printing a string
+task: "Do X. You MUST print STEP_COMPLETE when done."
+```
+
+### 2. Use owners/reviewers to interpret ambiguous outputs
+
+The step owner (lead or step agent) can approve or reject a step via `OWNER_DECISION`. This is useful when automated verification isn't sufficient — the owner reads evidence and makes a judgment call.
+
+```yaml
+# Owner reviews worker output and decides
+task: |
+  Review worker output on #my-track.
+  If satisfactory, approve. If not, request retry.
+  # Runner accepts: OWNER_DECISION: COMPLETE, or tolerant variants like "Approved", "LGTM"
+```
+
+### 3. For channel workflows, define required channel events explicitly
+
+When coordination happens via channel messages, tell agents what to post and what the lead should observe:
+
+```yaml
+# Worker prompt — describe what to communicate
+task: |
+  Implement auth module. Post a summary of changes to #my-track when done.
+
+# Lead prompt — describe what to observe
+task: |
+  Monitor #my-track for worker summaries. When all workers have posted summaries,
+  review the changes and approve the step.
+```
+
+### 4. Treat exact completion strings as optional accelerators only
+
+`STEP_COMPLETE:<name>` and `REVIEW_DECISION: APPROVE` still work as fast-paths but are never required. The runner's completion pipeline will find evidence even without them.
+
+### 5. Ensure prompts describe work contract, not output ceremony
+
+**Bad:** "You MUST end your response with exactly: IMPLEMENTATION_DONE"
+**Good:** "Implement the auth module. Write the file to src/auth.ts. The step is complete when the file exists and compiles."
+
+The prompt should describe what the agent should deliver, not what it should print.
 
 ## Available Swarm Patterns
 

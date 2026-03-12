@@ -6,8 +6,17 @@
 
 import { spawn as cpSpawn, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import type { WriteStream } from 'node:fs';
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import type { Dirent, WriteStream } from 'node:fs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -27,6 +36,12 @@ import type {
   AgentCli,
   AgentDefinition,
   AgentPreset,
+  CompletionEvidenceChannelOrigin,
+  CompletionEvidenceChannelPost,
+  CompletionEvidenceFileChange,
+  CompletionEvidenceSignal,
+  CompletionEvidenceSignalKind,
+  CompletionEvidenceToolSideEffect,
   DryRunReport,
   DryRunWave,
   ErrorHandlingConfig,
@@ -34,12 +49,16 @@ import type {
   PathDefinition,
   PreflightCheck,
   RelayYamlConfig,
+  StepCompletionDecision,
+  StepCompletionEvidence,
   SwarmPattern,
   VerificationCheck,
   WorkflowDefinition,
+  WorkflowOwnerDecision,
   WorkflowRunRow,
   WorkflowRunStatus,
   WorkflowStep,
+  WorkflowStepCompletionReason,
   WorkflowStepRow,
   WorkflowStepStatus,
 } from './types.js';
@@ -82,6 +101,33 @@ class SpawnExitError extends Error {
     this.exitCode = exitCode;
     this.exitSignal = exitSignal ?? undefined;
   }
+}
+
+class WorkflowCompletionError extends Error {
+  completionReason?: WorkflowStepCompletionReason;
+
+  constructor(message: string, completionReason?: WorkflowStepCompletionReason) {
+    super(message);
+    this.name = 'WorkflowCompletionError';
+    this.completionReason = completionReason;
+  }
+}
+
+interface VerificationResult {
+  passed: boolean;
+  completionReason?: WorkflowStepCompletionReason;
+  error?: string;
+}
+
+interface VerificationOptions {
+  allowFailure?: boolean;
+  completionMarkerFound?: boolean;
+}
+
+interface CompletionDecisionResult {
+  completionReason: WorkflowStepCompletionReason;
+  ownerDecision?: WorkflowOwnerDecision;
+  reason?: string;
 }
 
 // ── Events ──────────────────────────────────────────────────────────────────
@@ -177,6 +223,9 @@ interface SpawnedAgentInfo {
 
 interface SpawnAndWaitOptions {
   agentNameSuffix?: string;
+  evidenceStepName?: string;
+  evidenceRole?: string;
+  logicalName?: string;
   onSpawned?: (info: SpawnedAgentInfo) => void | Promise<void>;
   onChunk?: (info: { agentName: string; chunk: string }) => void;
 }
@@ -185,6 +234,31 @@ interface SupervisedRuntimeAgent {
   stepName: string;
   role: 'owner' | 'specialist';
   logicalName: string;
+}
+
+interface RuntimeStepAgent {
+  stepName: string;
+  role: string;
+  logicalName: string;
+}
+
+interface FileSnapshotEntry {
+  mtimeMs: number;
+  size: number;
+}
+
+interface StepEvidenceRecord {
+  evidence: StepCompletionEvidence;
+  baselineSnapshots: Map<string, Map<string, FileSnapshotEntry>>;
+  filesCaptured: boolean;
+}
+
+interface ChannelEvidenceOptions {
+  stepName?: string;
+  actor?: string;
+  role?: string;
+  target?: string;
+  origin?: CompletionEvidenceChannelOrigin;
 }
 
 // ── CLI resolution ───────────────────────────────────────────────────────────
@@ -267,6 +341,10 @@ export class WorkflowRunner {
   private readonly lastActivity = new Map<string, string>();
   /** Runtime-name lookup for agents participating in supervised owner flows. */
   private readonly supervisedRuntimeAgents = new Map<string, SupervisedRuntimeAgent>();
+  /** Runtime-name lookup for active step agents so channel messages can be attributed to a step. */
+  private readonly runtimeStepAgents = new Map<string, RuntimeStepAgent>();
+  /** Per-step completion evidence collected across output, channel, files, and tool side-effects. */
+  private readonly stepCompletionEvidence = new Map<string, StepEvidenceRecord>();
   /** Resolved named paths from the top-level `paths` config, keyed by name → absolute directory. */
   private resolvedPaths = new Map<string, string>();
 
@@ -361,6 +439,432 @@ export class WorkflowRunner {
       );
     }
     return resolved;
+  }
+
+  private static readonly EVIDENCE_IGNORED_DIRS = new Set([
+    '.git',
+    '.agent-relay',
+    '.trajectories',
+    'node_modules',
+  ]);
+
+  public getStepCompletionEvidence(stepName: string): StepCompletionEvidence | undefined {
+    const record = this.stepCompletionEvidence.get(stepName);
+    return record ? structuredClone(record.evidence) : undefined;
+  }
+
+  private getOrCreateStepEvidenceRecord(stepName: string): StepEvidenceRecord {
+    const existing = this.stepCompletionEvidence.get(stepName);
+    if (existing) return existing;
+
+    const now = new Date().toISOString();
+    const record: StepEvidenceRecord = {
+      evidence: {
+        stepName,
+        lastUpdatedAt: now,
+        roots: [],
+        output: {
+          stdout: '',
+          stderr: '',
+          combined: '',
+        },
+        channelPosts: [],
+        files: [],
+        process: {},
+        toolSideEffects: [],
+        coordinationSignals: [],
+      },
+      baselineSnapshots: new Map(),
+      filesCaptured: false,
+    };
+    this.stepCompletionEvidence.set(stepName, record);
+    return record;
+  }
+
+  private beginStepEvidence(stepName: string, roots: Array<string | undefined>, startedAt?: string): void {
+    const record = this.getOrCreateStepEvidenceRecord(stepName);
+    const evidence = record.evidence;
+    const now = startedAt ?? new Date().toISOString();
+
+    evidence.startedAt ??= now;
+    evidence.status = 'running';
+    evidence.lastUpdatedAt = now;
+
+    for (const root of this.uniqueEvidenceRoots(roots)) {
+      if (!evidence.roots.includes(root)) {
+        evidence.roots.push(root);
+      }
+      if (!record.baselineSnapshots.has(root)) {
+        record.baselineSnapshots.set(root, this.captureFileSnapshot(root));
+      }
+    }
+  }
+
+  private captureStepTerminalEvidence(
+    stepName: string,
+    output: { stdout?: string; stderr?: string; combined?: string },
+    process?: { exitCode?: number; exitSignal?: string }
+  ): void {
+    const record = this.getOrCreateStepEvidenceRecord(stepName);
+    const evidence = record.evidence;
+    const observedAt = new Date().toISOString();
+
+    const append = (current: string, next?: string): string => {
+      if (!next) return current;
+      return current ? `${current}\n${next}` : next;
+    };
+
+    if (output.stdout) {
+      evidence.output.stdout = append(evidence.output.stdout, output.stdout);
+      for (const signal of this.extractCompletionSignals(output.stdout, 'stdout', observedAt)) {
+        evidence.coordinationSignals.push(signal);
+      }
+    }
+    if (output.stderr) {
+      evidence.output.stderr = append(evidence.output.stderr, output.stderr);
+      for (const signal of this.extractCompletionSignals(output.stderr, 'stderr', observedAt)) {
+        evidence.coordinationSignals.push(signal);
+      }
+    }
+
+    const combinedOutput =
+      output.combined ??
+      [output.stdout, output.stderr].filter((value): value is string => Boolean(value)).join('\n');
+    if (combinedOutput) {
+      evidence.output.combined = append(evidence.output.combined, combinedOutput);
+    }
+
+    if (process) {
+      if (process.exitCode !== undefined) {
+        evidence.process.exitCode = process.exitCode;
+        evidence.coordinationSignals.push({
+          kind: 'process_exit',
+          source: 'process',
+          text: `Process exited with code ${process.exitCode}`,
+          observedAt,
+          value: String(process.exitCode),
+        });
+      }
+      if (process.exitSignal !== undefined) {
+        evidence.process.exitSignal = process.exitSignal;
+      }
+    }
+
+    evidence.lastUpdatedAt = observedAt;
+  }
+
+  private finalizeStepEvidence(
+    stepName: string,
+    status: WorkflowStepStatus,
+    completedAt?: string,
+    completionReason?: WorkflowStepCompletionReason
+  ): void {
+    const record = this.stepCompletionEvidence.get(stepName);
+    if (!record) return;
+
+    const evidence = record.evidence;
+    const observedAt = completedAt ?? new Date().toISOString();
+    evidence.status = status;
+    if (status !== 'running') {
+      evidence.completedAt = observedAt;
+    }
+    evidence.lastUpdatedAt = observedAt;
+
+    if (!record.filesCaptured) {
+      const existing = new Set(evidence.files.map((file) => `${file.kind}:${file.path}`));
+      for (const root of evidence.roots) {
+        const before = record.baselineSnapshots.get(root) ?? new Map<string, FileSnapshotEntry>();
+        const after = this.captureFileSnapshot(root);
+        for (const change of this.diffFileSnapshots(before, after, root, observedAt)) {
+          const key = `${change.kind}:${change.path}`;
+          if (existing.has(key)) continue;
+          existing.add(key);
+          evidence.files.push(change);
+        }
+      }
+      record.filesCaptured = true;
+    }
+
+    if (completionReason) {
+      const decision = this.buildStepCompletionDecision(stepName, completionReason);
+      if (decision) {
+        void this.trajectory?.stepCompletionDecision(stepName, decision);
+      }
+    }
+  }
+
+  private recordStepToolSideEffect(
+    stepName: string,
+    effect: Omit<CompletionEvidenceToolSideEffect, 'observedAt'> & { observedAt?: string }
+  ): void {
+    const record = this.getOrCreateStepEvidenceRecord(stepName);
+    const observedAt = effect.observedAt ?? new Date().toISOString();
+    record.evidence.toolSideEffects.push({
+      ...effect,
+      observedAt,
+    });
+    record.evidence.lastUpdatedAt = observedAt;
+  }
+
+  private recordChannelEvidence(text: string, options: ChannelEvidenceOptions = {}): void {
+    const stepName =
+      options.stepName ??
+      this.inferStepNameFromChannelText(text) ??
+      (options.actor ? this.runtimeStepAgents.get(options.actor)?.stepName : undefined);
+    if (!stepName) return;
+
+    const record = this.getOrCreateStepEvidenceRecord(stepName);
+    const postedAt = new Date().toISOString();
+    const signals = this.extractCompletionSignals(text, 'channel', postedAt, {
+      actor: options.actor,
+      role: options.role,
+    });
+
+    const channelPost: CompletionEvidenceChannelPost = {
+      stepName,
+      text,
+      postedAt,
+      origin: options.origin ?? 'runner_post',
+      completionRelevant: signals.length > 0,
+      actor: options.actor,
+      role: options.role,
+      target: options.target,
+      signals,
+    };
+
+    record.evidence.channelPosts.push(channelPost);
+    record.evidence.coordinationSignals.push(...signals);
+    record.evidence.lastUpdatedAt = postedAt;
+  }
+
+  private extractCompletionSignals(
+    text: string,
+    source: CompletionEvidenceSignal['source'],
+    observedAt: string,
+    meta?: { actor?: string; role?: string }
+  ): CompletionEvidenceSignal[] {
+    const signals: CompletionEvidenceSignal[] = [];
+    const seen = new Set<string>();
+    const add = (
+      kind: CompletionEvidenceSignalKind,
+      signalText: string,
+      value?: string
+    ): void => {
+      const trimmed = signalText.trim().slice(0, 280);
+      if (!trimmed) return;
+      const key = `${kind}:${trimmed}:${value ?? ''}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      signals.push({
+        kind,
+        source,
+        text: trimmed,
+        observedAt,
+        actor: meta?.actor,
+        role: meta?.role,
+        value,
+      });
+    };
+
+    for (const match of text.matchAll(/\bWORKER_DONE\b(?::\s*([^\n]+))?/gi)) {
+      add('worker_done', match[0], match[1]?.trim());
+    }
+    for (const match of text.matchAll(/\bLEAD_DONE\b(?::\s*([^\n]+))?/gi)) {
+      add('lead_done', match[0], match[1]?.trim());
+    }
+    for (const match of text.matchAll(/\bSTEP_COMPLETE:([A-Za-z0-9_.:-]+)/g)) {
+      add('step_complete', match[0], match[1]);
+    }
+    for (const match of text.matchAll(
+      /\bOWNER_DECISION:\s*(COMPLETE|INCOMPLETE_RETRY|INCOMPLETE_FAIL|NEEDS_CLARIFICATION)\b/gi
+    )) {
+      add('owner_decision', match[0], match[1].toUpperCase());
+    }
+    for (const match of text.matchAll(/\bREVIEW_DECISION:\s*(APPROVE|REJECT)\b/gi)) {
+      add('review_decision', match[0], match[1].toUpperCase());
+    }
+    if (/\bverification gate observed\b|\bverification passed\b/i.test(text)) {
+      add('verification_passed', this.firstMeaningfulLine(text) ?? text);
+    }
+    if (/\bverification failed\b/i.test(text)) {
+      add('verification_failed', this.firstMeaningfulLine(text) ?? text);
+    }
+    if (
+      /\b(summary|handoff|ready for review|ready for handoff|task complete|work complete|completed work|finished work)\b/i.test(
+        text
+      )
+    ) {
+      add('task_summary', this.firstMeaningfulLine(text) ?? text);
+    }
+
+    return signals;
+  }
+
+  private inferStepNameFromChannelText(text: string): string | undefined {
+    const bracketMatch = text.match(/^\*\*\[([^\]]+)\]/);
+    if (bracketMatch?.[1]) return bracketMatch[1];
+
+    const markerMatch = text.match(/\bSTEP_COMPLETE:([A-Za-z0-9_.:-]+)/);
+    if (markerMatch?.[1]) return markerMatch[1];
+
+    return undefined;
+  }
+
+  private uniqueEvidenceRoots(roots: Array<string | undefined>): string[] {
+    return [...new Set(roots.filter((root): root is string => Boolean(root)).map((root) => path.resolve(root)))];
+  }
+
+  private captureFileSnapshot(root: string): Map<string, FileSnapshotEntry> {
+    const snapshot = new Map<string, FileSnapshotEntry>();
+    if (!existsSync(root)) return snapshot;
+
+    const visit = (currentPath: string): void => {
+      let entries: Dirent[];
+      try {
+        entries = readdirSync(currentPath, { withFileTypes: true });
+      } catch {
+        return;
+      }
+
+      for (const entry of entries) {
+        if (entry.isDirectory() && WorkflowRunner.EVIDENCE_IGNORED_DIRS.has(entry.name)) {
+          continue;
+        }
+
+        const fullPath = path.join(currentPath, entry.name);
+        if (entry.isDirectory()) {
+          visit(fullPath);
+          continue;
+        }
+
+        try {
+          const stats = statSync(fullPath);
+          if (!stats.isFile()) continue;
+          snapshot.set(fullPath, { mtimeMs: stats.mtimeMs, size: stats.size });
+        } catch {
+          // Best-effort evidence collection only.
+        }
+      }
+    };
+
+    try {
+      const stats = statSync(root);
+      if (stats.isFile()) {
+        snapshot.set(root, { mtimeMs: stats.mtimeMs, size: stats.size });
+        return snapshot;
+      }
+    } catch {
+      return snapshot;
+    }
+
+    visit(root);
+    return snapshot;
+  }
+
+  private diffFileSnapshots(
+    before: Map<string, FileSnapshotEntry>,
+    after: Map<string, FileSnapshotEntry>,
+    root: string,
+    observedAt: string
+  ): CompletionEvidenceFileChange[] {
+    const allPaths = new Set([...before.keys(), ...after.keys()]);
+    const changes: CompletionEvidenceFileChange[] = [];
+
+    for (const filePath of allPaths) {
+      const prior = before.get(filePath);
+      const next = after.get(filePath);
+
+      let kind: CompletionEvidenceFileChange['kind'] | undefined;
+      if (!prior && next) {
+        kind = 'created';
+      } else if (prior && !next) {
+        kind = 'deleted';
+      } else if (prior && next && (prior.mtimeMs !== next.mtimeMs || prior.size !== next.size)) {
+        kind = 'modified';
+      }
+
+      if (!kind) continue;
+
+      changes.push({
+        path: this.normalizeEvidencePath(filePath),
+        kind,
+        observedAt,
+        root,
+      });
+    }
+
+    return changes.sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  private normalizeEvidencePath(filePath: string): string {
+    const relative = path.relative(this.cwd, filePath);
+    if (!relative || relative === '') return path.basename(filePath);
+    return relative.startsWith('..') ? filePath : relative;
+  }
+
+  private buildStepCompletionDecision(
+    stepName: string,
+    completionReason: WorkflowStepCompletionReason
+  ): StepCompletionDecision | undefined {
+    let reason: string | undefined;
+    let mode: StepCompletionDecision['mode'];
+    switch (completionReason) {
+      case 'completed_verified':
+        mode = 'verification';
+        reason = 'Verification passed';
+        break;
+      case 'completed_by_evidence':
+        mode = 'evidence';
+        reason = 'Completion inferred from collected evidence';
+        break;
+      case 'completed_by_owner_decision': {
+        const evidence = this.getStepCompletionEvidence(stepName);
+        const markerObserved = evidence?.coordinationSignals.some((signal) => signal.kind === 'step_complete');
+        mode = markerObserved ? 'marker' : 'owner_decision';
+        reason = markerObserved ? 'Legacy STEP_COMPLETE marker observed' : 'Owner approved completion';
+        break;
+      }
+      default:
+        return undefined;
+    }
+
+    return {
+      mode,
+      reason,
+      evidence: this.buildTrajectoryCompletionEvidence(stepName),
+    };
+  }
+
+  private buildTrajectoryCompletionEvidence(
+    stepName: string
+  ): StepCompletionDecision['evidence'] | undefined {
+    const evidence = this.getStepCompletionEvidence(stepName);
+    if (!evidence) return undefined;
+
+    const signals = evidence.coordinationSignals
+      .slice(-6)
+      .map((signal) => signal.value ?? signal.text);
+    const channelPosts = evidence.channelPosts
+      .filter((post) => post.completionRelevant)
+      .slice(-3)
+      .map((post) => post.text.slice(0, 160));
+    const files = evidence.files.slice(0, 6).map((file) => `${file.kind}:${file.path}`);
+
+    const summaryParts: string[] = [];
+    if (signals.length > 0) summaryParts.push(`${signals.length} signal(s)`);
+    if (channelPosts.length > 0) summaryParts.push(`${channelPosts.length} relevant channel post(s)`);
+    if (files.length > 0) summaryParts.push(`${files.length} file change(s)`);
+    if (evidence.process.exitCode !== undefined) {
+      summaryParts.push(`exit=${evidence.process.exitCode}`);
+    }
+
+    return {
+      summary: summaryParts.length > 0 ? summaryParts.join(', ') : undefined,
+      signals: signals.length > 0 ? signals : undefined,
+      channelPosts: channelPosts.length > 0 ? channelPosts : undefined,
+      files: files.length > 0 ? files : undefined,
+      exitCode: evidence.process.exitCode,
+    };
   }
 
   // ── Progress logging ────────────────────────────────────────────────────
@@ -1296,9 +1800,11 @@ export class WorkflowRunner {
       if (state.row.status === 'failed') {
         state.row.status = 'pending';
         state.row.error = undefined;
+        state.row.completionReason = undefined;
         await this.db.updateStep(state.row.id, {
           status: 'pending',
           error: undefined,
+          completionReason: undefined,
           updatedAt: new Date().toISOString(),
         });
       }
@@ -1327,6 +1833,8 @@ export class WorkflowRunner {
     this.currentConfig = config;
     this.currentRunId = runId;
     this.runStartTime = Date.now();
+    this.runtimeStepAgents.clear();
+    this.stepCompletionEvidence.clear();
 
     this.log(`Starting workflow "${workflow.name}" (${workflow.steps.length} steps)`);
 
@@ -1468,8 +1976,24 @@ export class WorkflowRunner {
           const toShort = msg.to.replace(/-[a-f0-9]{6,}$/, '');
           this.log(`[msg] ${fromShort} → ${toShort}: ${body}`);
 
+          if (this.channel && (msg.to === this.channel || msg.to === `#${this.channel}`)) {
+            const runtimeAgent = this.runtimeStepAgents.get(msg.from);
+            this.recordChannelEvidence(msg.text, {
+              actor: msg.from,
+              role: runtimeAgent?.role,
+              target: msg.to,
+              origin: 'relay_message',
+              stepName: runtimeAgent?.stepName,
+            });
+          }
+
           const supervision = this.supervisedRuntimeAgents.get(msg.from);
           if (supervision?.role === 'owner') {
+            this.recordStepToolSideEffect(supervision.stepName, {
+              type: 'owner_monitoring',
+              detail: `Owner messaged ${msg.to}: ${msg.text.slice(0, 120)}`,
+              raw: { to: msg.to, text: msg.text },
+            });
             void this.trajectory?.ownerMonitoringEvent(
               supervision.stepName,
               supervision.logicalName,
@@ -1651,6 +2175,7 @@ export class WorkflowRunner {
               updatedAt: new Date().toISOString(),
             });
             this.emit({ type: 'step:failed', runId, stepName, error: 'Cancelled' });
+            this.finalizeStepEvidence(stepName, 'failed');
           }
         }
         this.emit({ type: 'run:cancelled', runId });
@@ -1690,6 +2215,7 @@ export class WorkflowRunner {
       this.lastIdleLog.clear();
       this.lastActivity.clear();
       this.supervisedRuntimeAgents.clear();
+      this.runtimeStepAgents.clear();
 
       this.log('Shutting down broker...');
       await this.relay?.shutdown();
@@ -1824,6 +2350,9 @@ export class WorkflowRunner {
             attempts: (state?.row.retryCount ?? 0) + 1,
             output: state?.row.output,
             verificationPassed: state?.row.status === 'completed' && step.verification !== undefined,
+            completionMode: state?.row.completionReason
+              ? this.buildStepCompletionDecision(step.name, state.row.completionReason)?.mode
+              : undefined,
           });
         }
       }
@@ -2029,13 +2558,24 @@ export class WorkflowRunner {
     const maxRetries = step.retries ?? errorHandling?.maxRetries ?? 0;
     const retryDelay = errorHandling?.retryDelayMs ?? 1000;
     let lastError: string | undefined;
+    let lastCompletionReason: WorkflowStepCompletionReason | undefined;
+    let lastExitCode: number | undefined;
+    let lastExitSignal: string | undefined;
 
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       this.checkAborted();
 
+      lastExitCode = undefined;
+      lastExitSignal = undefined;
+
       if (attempt > 0) {
         this.emit({ type: 'step:retrying', runId, stepName: step.name, attempt });
         this.postToChannel(`**[${step.name}]** Retrying (attempt ${attempt + 1}/${maxRetries + 1})`);
+        this.recordStepToolSideEffect(step.name, {
+          type: 'retry',
+          detail: `Retrying attempt ${attempt + 1}/${maxRetries + 1}`,
+          raw: { attempt, maxRetries },
+        });
         state.row.retryCount = attempt;
         await this.db.updateStep(state.row.id, {
           retryCount: attempt,
@@ -2046,9 +2586,13 @@ export class WorkflowRunner {
 
       // Mark step as running
       state.row.status = 'running';
+      state.row.error = undefined;
+      state.row.completionReason = undefined;
       state.row.startedAt = new Date().toISOString();
       await this.db.updateStep(state.row.id, {
         status: 'running',
+        error: undefined,
+        completionReason: undefined,
         startedAt: state.row.startedAt,
         updatedAt: new Date().toISOString(),
       });
@@ -2068,11 +2612,13 @@ export class WorkflowRunner {
 
       // Resolve step workdir (named path reference) for deterministic steps
       const stepCwd = this.resolveStepWorkdir(step) ?? this.cwd;
+      this.beginStepEvidence(step.name, [stepCwd], state.row.startedAt);
 
       try {
         // Delegate to executor if present
         if (this.executor?.executeDeterministicStep) {
           const result = await this.executor.executeDeterministicStep(step, resolvedCommand, stepCwd);
+          lastExitCode = result.exitCode;
           const failOnError = step.failOnError !== false;
           if (failOnError && result.exitCode !== 0) {
             throw new Error(
@@ -2081,25 +2627,40 @@ export class WorkflowRunner {
           }
           const output =
             step.captureOutput !== false ? result.output : `Command completed (exit code ${result.exitCode})`;
-          if (step.verification) {
-            this.runVerification(step.verification, output, step.name);
-          }
+          this.captureStepTerminalEvidence(
+            step.name,
+            { stdout: result.output, combined: result.output },
+            { exitCode: result.exitCode }
+          );
+          const verificationResult = step.verification
+            ? this.runVerification(step.verification, output, step.name)
+            : undefined;
 
           // Mark completed
           state.row.status = 'completed';
           state.row.output = output;
+          state.row.completionReason = verificationResult?.completionReason;
           state.row.completedAt = new Date().toISOString();
           await this.db.updateStep(state.row.id, {
             status: 'completed',
             output,
+            completionReason: verificationResult?.completionReason,
             completedAt: state.row.completedAt,
             updatedAt: new Date().toISOString(),
           });
           await this.persistStepOutput(runId, step.name, output);
           this.emit({ type: 'step:completed', runId, stepName: step.name, output });
+          this.finalizeStepEvidence(
+            step.name,
+            'completed',
+            state.row.completedAt,
+            verificationResult?.completionReason
+          );
           return;
         }
 
+        let commandStdout = '';
+        let commandStderr = '';
         const output = await new Promise<string>((resolve, reject) => {
           const child = cpSpawn('sh', ['-c', resolvedCommand], {
             stdio: 'pipe',
@@ -2140,7 +2701,7 @@ export class WorkflowRunner {
             stderrChunks.push(chunk.toString());
           });
 
-          child.on('close', (code) => {
+          child.on('close', (code, signal) => {
             if (timer) clearTimeout(timer);
             if (abortHandler && abortSignal) {
               abortSignal.removeEventListener('abort', abortHandler);
@@ -2160,6 +2721,10 @@ export class WorkflowRunner {
 
             const stdout = stdoutChunks.join('');
             const stderr = stderrChunks.join('');
+            commandStdout = stdout;
+            commandStderr = stderr;
+            lastExitCode = code ?? undefined;
+            lastExitSignal = signal ?? undefined;
 
             // Check exit code unless failOnError is explicitly false
             const failOnError = step.failOnError !== false;
@@ -2183,18 +2748,29 @@ export class WorkflowRunner {
             reject(new Error(`Failed to execute command: ${err.message}`));
           });
         });
+        this.captureStepTerminalEvidence(
+          step.name,
+          {
+            stdout: commandStdout || output,
+            stderr: commandStderr,
+            combined: [commandStdout || output, commandStderr].filter(Boolean).join('\n'),
+          },
+          { exitCode: lastExitCode, exitSignal: lastExitSignal }
+        );
 
-        if (step.verification) {
-          this.runVerification(step.verification, output, step.name);
-        }
+        const verificationResult = step.verification
+          ? this.runVerification(step.verification, output, step.name)
+          : undefined;
 
         // Mark completed
         state.row.status = 'completed';
         state.row.output = output;
+        state.row.completionReason = verificationResult?.completionReason;
         state.row.completedAt = new Date().toISOString();
         await this.db.updateStep(state.row.id, {
           status: 'completed',
           output,
+          completionReason: verificationResult?.completionReason,
           completedAt: state.row.completedAt,
           updatedAt: new Date().toISOString(),
         });
@@ -2203,15 +2779,29 @@ export class WorkflowRunner {
         await this.persistStepOutput(runId, step.name, output);
 
         this.emit({ type: 'step:completed', runId, stepName: step.name, output });
+        this.finalizeStepEvidence(
+          step.name,
+          'completed',
+          state.row.completedAt,
+          verificationResult?.completionReason
+        );
         return;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
+        lastCompletionReason =
+          err instanceof WorkflowCompletionError ? err.completionReason : undefined;
       }
     }
 
     const errorMsg = lastError ?? 'Unknown error';
     this.postToChannel(`**[${step.name}]** Failed: ${errorMsg}`);
-    await this.markStepFailed(state, errorMsg, runId);
+    await this.markStepFailed(
+      state,
+      errorMsg,
+      runId,
+      { exitCode: lastExitCode, exitSignal: lastExitSignal },
+      lastCompletionReason
+    );
     throw new Error(`Step "${step.name}" failed: ${errorMsg}`);
   }
 
@@ -2227,14 +2817,20 @@ export class WorkflowRunner {
   ): Promise<void> {
     const state = stepStates.get(step.name);
     if (!state) throw new Error(`Step state not found: ${step.name}`);
+    let lastExitCode: number | undefined;
+    let lastExitSignal: string | undefined;
 
     this.checkAborted();
 
     // Mark step as running
     state.row.status = 'running';
+    state.row.error = undefined;
+    state.row.completionReason = undefined;
     state.row.startedAt = new Date().toISOString();
     await this.db.updateStep(state.row.id, {
       status: 'running',
+      error: undefined,
+      completionReason: undefined,
       startedAt: state.row.startedAt,
       updatedAt: new Date().toISOString(),
     });
@@ -2254,6 +2850,7 @@ export class WorkflowRunner {
 
     // Resolve workdir for worktree steps (same as deterministic/agent steps)
     const stepCwd = this.resolveStepWorkdir(step) ?? this.cwd;
+    this.beginStepEvidence(step.name, [stepCwd], state.row.startedAt);
 
     if (!branch) {
       const errorMsg = 'Worktree step missing required "branch" field';
@@ -2298,6 +2895,10 @@ export class WorkflowRunner {
         throw new Error(`Step "${step.name}" failed: ${errorMsg}`);
       }
 
+      let commandStdout = '';
+      let commandStderr = '';
+      let commandExitCode: number | undefined;
+      let commandExitSignal: string | undefined;
       const output = await new Promise<string>((resolve, reject) => {
         const child = cpSpawn('sh', ['-c', worktreeCmd], {
           stdio: 'pipe',
@@ -2338,7 +2939,7 @@ export class WorkflowRunner {
           stderrChunks.push(chunk.toString());
         });
 
-        child.on('close', (code) => {
+        child.on('close', (code, signal) => {
           if (timer) clearTimeout(timer);
           if (abortHandler && abortSignal) {
             abortSignal.removeEventListener('abort', abortHandler);
@@ -2356,7 +2957,13 @@ export class WorkflowRunner {
             return;
           }
 
+          commandStdout = stdoutChunks.join('');
           const stderr = stderrChunks.join('');
+          commandStderr = stderr;
+          commandExitCode = code ?? undefined;
+          commandExitSignal = signal ?? undefined;
+          lastExitCode = commandExitCode;
+          lastExitSignal = commandExitSignal;
 
           if (code !== 0 && code !== null) {
             reject(
@@ -2379,6 +2986,15 @@ export class WorkflowRunner {
           reject(new Error(`Failed to execute git worktree command: ${err.message}`));
         });
       });
+      this.captureStepTerminalEvidence(
+        step.name,
+        {
+          stdout: commandStdout || output,
+          stderr: commandStderr,
+          combined: [commandStdout || output, commandStderr].filter(Boolean).join('\n'),
+        },
+        { exitCode: commandExitCode, exitSignal: commandExitSignal }
+      );
 
       // Mark completed
       state.row.status = 'completed';
@@ -2398,10 +3014,19 @@ export class WorkflowRunner {
       this.postToChannel(
         `**[${step.name}]** Worktree created at: ${output}\n  Branch: ${branch}${!branchExists && createBranch ? ' (created)' : ''}`
       );
+      this.recordStepToolSideEffect(step.name, {
+        type: 'worktree_created',
+        detail: `Worktree created at ${output}`,
+        raw: { branch, createdBranch: !branchExists && createBranch },
+      });
+      this.finalizeStepEvidence(step.name, 'completed', state.row.completedAt);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.postToChannel(`**[${step.name}]** Failed: ${errorMsg}`);
-      await this.markStepFailed(state, errorMsg, runId);
+      await this.markStepFailed(state, errorMsg, runId, {
+        exitCode: lastExitCode,
+        exitSignal: lastExitSignal,
+      });
       throw new Error(`Step "${step.name}" failed: ${errorMsg}`);
     }
   }
@@ -2454,6 +3079,7 @@ export class WorkflowRunner {
     let lastError: string | undefined;
     let lastExitCode: number | undefined;
     let lastExitSignal: string | undefined;
+    let lastCompletionReason: WorkflowStepCompletionReason | undefined;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       this.checkAborted();
@@ -2465,6 +3091,11 @@ export class WorkflowRunner {
       if (attempt > 0) {
         this.emit({ type: 'step:retrying', runId, stepName: step.name, attempt });
         this.postToChannel(`**[${step.name}]** Retrying (attempt ${attempt + 1}/${maxRetries + 1})`);
+        this.recordStepToolSideEffect(step.name, {
+          type: 'retry',
+          detail: `Retrying attempt ${attempt + 1}/${maxRetries + 1}`,
+          raw: { attempt, maxRetries },
+        });
         state.row.retryCount = attempt;
         await this.db.updateStep(state.row.id, {
           retryCount: attempt,
@@ -2477,9 +3108,13 @@ export class WorkflowRunner {
       try {
         // Mark step as running
         state.row.status = 'running';
+        state.row.error = undefined;
+        state.row.completionReason = undefined;
         state.row.startedAt = new Date().toISOString();
         await this.db.updateStep(state.row.id, {
           status: 'running',
+          error: undefined,
+          completionReason: undefined,
           startedAt: state.row.startedAt,
           updatedAt: new Date().toISOString(),
         });
@@ -2539,10 +3174,21 @@ export class WorkflowRunner {
         };
         const effectiveSpecialist = applyStepWorkdir(specialistDef);
         const effectiveOwner = applyStepWorkdir(ownerDef);
+        const effectiveReviewer = reviewDef ? applyStepWorkdir(reviewDef) : undefined;
+        this.beginStepEvidence(
+          step.name,
+          [
+            this.resolveAgentCwd(effectiveSpecialist),
+            this.resolveAgentCwd(effectiveOwner),
+            effectiveReviewer ? this.resolveAgentCwd(effectiveReviewer) : undefined,
+          ],
+          state.row.startedAt
+        );
 
         let specialistOutput: string;
         let ownerOutput: string;
         let ownerElapsed: number;
+        let completionReason: WorkflowStepCompletionReason | undefined;
 
         if (usesDedicatedOwner) {
           const result = await this.executeSupervisedAgentStep(
@@ -2554,6 +3200,7 @@ export class WorkflowRunner {
           specialistOutput = result.specialistOutput;
           ownerOutput = result.ownerOutput;
           ownerElapsed = result.ownerElapsed;
+          completionReason = result.completionReason;
         } else {
           const ownerTask = this.injectStepOwnerContract(step, resolvedTask, effectiveOwner, effectiveSpecialist);
 
@@ -2562,27 +3209,39 @@ export class WorkflowRunner {
           const ownerStartTime = Date.now();
           const spawnResult = this.executor
             ? await this.executor.executeAgentStep(resolvedStep, effectiveOwner, ownerTask, timeoutMs)
-            : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs);
+            : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
+                evidenceStepName: step.name,
+                evidenceRole: usesOwnerFlow ? 'owner' : 'specialist',
+                logicalName: effectiveOwner.name,
+              });
           const output = typeof spawnResult === 'string' ? spawnResult : spawnResult.output;
           lastExitCode = typeof spawnResult === 'string' ? undefined : spawnResult.exitCode;
           lastExitSignal = typeof spawnResult === 'string' ? undefined : spawnResult.exitSignal;
           ownerElapsed = Date.now() - ownerStartTime;
           this.log(`[${step.name}] Owner "${effectiveOwner.name}" exited`);
           if (usesOwnerFlow) {
-            this.assertOwnerCompletionMarker(step, output, ownerTask);
+            const completionDecision = this.resolveOwnerCompletionDecision(
+              step,
+              output,
+              output,
+              ownerTask,
+              resolvedTask
+            );
+            completionReason = completionDecision.completionReason;
           }
           specialistOutput = output;
           ownerOutput = output;
         }
 
         // Run verification if configured
-        if (step.verification) {
-          this.runVerification(
+        if (step.verification && !usesOwnerFlow) {
+          const verificationResult = this.runVerification(
             step.verification,
             specialistOutput,
             step.name,
             effectiveOwner.interactive === false ? undefined : resolvedTask
           );
+          completionReason = verificationResult.completionReason;
         }
 
         // Every interactive step gets a review pass; pick a dedicated reviewer when available.
@@ -2604,10 +3263,12 @@ export class WorkflowRunner {
         // Mark completed
         state.row.status = 'completed';
         state.row.output = combinedOutput;
+        state.row.completionReason = completionReason;
         state.row.completedAt = new Date().toISOString();
         await this.db.updateStep(state.row.id, {
           status: 'completed',
           output: combinedOutput,
+          completionReason,
           completedAt: state.row.completedAt,
           updatedAt: new Date().toISOString(),
         });
@@ -2616,10 +3277,18 @@ export class WorkflowRunner {
         await this.persistStepOutput(runId, step.name, combinedOutput);
 
         this.emit({ type: 'step:completed', runId, stepName: step.name, output: combinedOutput, exitCode: lastExitCode, exitSignal: lastExitSignal });
+        this.finalizeStepEvidence(
+          step.name,
+          'completed',
+          state.row.completedAt,
+          completionReason
+        );
         await this.trajectory?.stepCompleted(step, combinedOutput, attempt + 1);
         return;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
+        lastCompletionReason =
+          err instanceof WorkflowCompletionError ? err.completionReason : undefined;
         if (err instanceof SpawnExitError) {
           lastExitCode = err.exitCode;
           lastExitSignal = err.exitSignal;
@@ -2649,7 +3318,7 @@ export class WorkflowRunner {
     await this.markStepFailed(state, lastError ?? 'Unknown error', runId, {
       exitCode: lastExitCode,
       exitSignal: lastExitSignal,
-    });
+    }, lastCompletionReason);
     throw new Error(
       `Step "${step.name}" failed after ${maxRetries} retries: ${lastError ?? 'Unknown error'}`
     );
@@ -2673,7 +3342,10 @@ export class WorkflowRunner {
       `- You are the accountable owner for step "${step.name}".\n` +
       (specialistNote ? `- ${specialistNote}\n` : '') +
       `- If you delegate, you must still verify completion yourself.\n` +
-      `- Before exiting, provide an explicit completion line: STEP_COMPLETE:${step.name}\n` +
+      `- Preferred final decision format:\n` +
+      `  OWNER_DECISION: COMPLETE|INCOMPLETE_RETRY|INCOMPLETE_FAIL|NEEDS_CLARIFICATION\n` +
+      `  REASON: <one sentence>\n` +
+      `- Legacy completion marker still supported: STEP_COMPLETE:${step.name}\n` +
       `- Then self-terminate immediately with /exit.`
     );
   }
@@ -2696,8 +3368,10 @@ export class WorkflowRunner {
       `- Check file changes: run \`git diff --stat\` or inspect expected files directly\n` +
       `- Ask the worker directly on ${channelLine} if you need a status update\n` +
       verificationGuide +
-      `\nWhen you're satisfied the work is done correctly:\n` +
-      `Output exactly: STEP_COMPLETE:${step.name}`
+      `\nWhen you have enough evidence, return:\n` +
+      `OWNER_DECISION: COMPLETE|INCOMPLETE_RETRY|INCOMPLETE_FAIL|NEEDS_CLARIFICATION\n` +
+      `REASON: <one sentence>\n` +
+      `Legacy completion marker still supported: STEP_COMPLETE:${step.name}`
     );
   }
 
@@ -2722,7 +3396,12 @@ export class WorkflowRunner {
     supervised: SupervisedStep,
     resolvedTask: string,
     timeoutMs?: number
-  ): Promise<{ specialistOutput: string; ownerOutput: string; ownerElapsed: number }> {
+  ): Promise<{
+    specialistOutput: string;
+    ownerOutput: string;
+    ownerElapsed: number;
+    completionReason: WorkflowStepCompletionReason;
+  }> {
     if (this.executor) {
       const supervisorTask = this.buildOwnerSupervisorTask(
         step,
@@ -2759,10 +3438,20 @@ export class WorkflowRunner {
           timeoutMs
         );
         const ownerElapsed = Date.now() - ownerStartTime;
-
-        this.assertOwnerCompletionMarker(step, ownerOutput, supervisorTask);
         const specialistOutput = await specialistPromise;
-        return { specialistOutput, ownerOutput, ownerElapsed };
+        const completionDecision = this.resolveOwnerCompletionDecision(
+          step,
+          ownerOutput,
+          specialistOutput,
+          supervisorTask,
+          resolvedTask
+        );
+        return {
+          specialistOutput,
+          ownerOutput,
+          ownerElapsed,
+          completionReason: completionDecision.completionReason,
+        };
       } catch (error) {
         await specialistSettled;
         throw error;
@@ -2786,6 +3475,9 @@ export class WorkflowRunner {
     );
     const workerPromise = this.spawnAndWait(supervised.specialist, specialistStep, timeoutMs, {
       agentNameSuffix: 'worker',
+      evidenceStepName: step.name,
+      evidenceRole: 'worker',
+      logicalName: supervised.specialist.name,
       onSpawned: ({ actualName, agent }) => {
         workerHandle = agent;
         workerRuntimeName = actualName;
@@ -2815,6 +3507,11 @@ export class WorkflowRunner {
       .then((result) => {
         workerReleased = true;
         this.postToChannel(`**[${step.name}]** Worker \`${workerRuntimeName}\` exited`);
+        this.recordStepToolSideEffect(step.name, {
+          type: 'worker_exit',
+          detail: `Worker ${workerRuntimeName} exited`,
+          raw: { worker: workerRuntimeName, exitCode: result.exitCode, exitSignal: result.exitSignal },
+        });
         if (step.verification?.type === 'output_contains' && result.output.includes(step.verification.value)) {
           this.postToChannel(
             `**[${step.name}]** Verification gate observed: output contains ${JSON.stringify(step.verification.value)}`
@@ -2826,6 +3523,11 @@ export class WorkflowRunner {
         this.postToChannel(
           `**[${step.name}]** Worker \`${workerRuntimeName}\` exited with error: ${message}`
         );
+        this.recordStepToolSideEffect(step.name, {
+          type: 'worker_error',
+          detail: `Worker ${workerRuntimeName} exited with error: ${message}`,
+          raw: { worker: workerRuntimeName, error: message },
+        });
       });
 
     await workerReady;
@@ -2844,6 +3546,9 @@ export class WorkflowRunner {
     try {
       const ownerResultObj = await this.spawnAndWait(supervised.owner, ownerStep, timeoutMs, {
         agentNameSuffix: 'owner',
+        evidenceStepName: step.name,
+        evidenceRole: 'owner',
+        logicalName: supervised.owner.name,
         onSpawned: ({ actualName }) => {
           this.supervisedRuntimeAgents.set(actualName, {
             stepName: step.name,
@@ -2858,10 +3563,20 @@ export class WorkflowRunner {
       const ownerElapsed = Date.now() - ownerStartTime;
       const ownerOutput = ownerResultObj.output;
       this.log(`[${step.name}] Owner "${supervised.owner.name}" exited`);
-      this.assertOwnerCompletionMarker(step, ownerOutput, supervisorTask);
-
       const specialistOutput = (await workerPromise).output;
-      return { specialistOutput, ownerOutput, ownerElapsed };
+      const completionDecision = this.resolveOwnerCompletionDecision(
+        step,
+        ownerOutput,
+        specialistOutput,
+        supervisorTask,
+        resolvedTask
+      );
+      return {
+        specialistOutput,
+        ownerOutput,
+        ownerElapsed,
+        completionReason: completionDecision.completionReason,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!workerReleased && workerHandle) {
@@ -2887,7 +3602,12 @@ export class WorkflowRunner {
       .filter(Boolean)
       .slice(0, 3);
     for (const line of lines) {
-      this.postToChannel(`**[${stepName}]** ${roleLabel} \`${agentName}\`: ${line.slice(0, 280)}`);
+      this.postToChannel(`**[${stepName}]** ${roleLabel} \`${agentName}\`: ${line.slice(0, 280)}`, {
+        stepName,
+        actor: agentName,
+        role: roleLabel,
+        origin: 'forwarded_chunk',
+      });
     }
   }
 
@@ -2904,6 +3624,11 @@ export class WorkflowRunner {
     if (/STEP_COMPLETE:/i.test(stripped)) details.push('Declared the step complete');
 
     for (const detail of details) {
+      this.recordStepToolSideEffect(step.name, {
+        type: 'owner_monitoring',
+        detail,
+        raw: { output: stripped.slice(0, 240), owner: ownerDef.name },
+      });
       await this.trajectory?.ownerMonitoringEvent(step.name, ownerDef.name, detail, {
         output: stripped.slice(0, 240),
       });
@@ -2980,23 +3705,204 @@ export class WorkflowRunner {
     return ownerDef;
   }
 
-  private assertOwnerCompletionMarker(step: WorkflowStep, output: string, injectedTaskText: string): void {
+  private resolveOwnerCompletionDecision(
+    step: WorkflowStep,
+    ownerOutput: string,
+    specialistOutput: string,
+    injectedTaskText: string,
+    verificationTaskText?: string
+  ): CompletionDecisionResult {
+    const hasMarker = this.hasOwnerCompletionMarker(step, ownerOutput, injectedTaskText);
+    const verificationResult = step.verification
+      ? this.runVerification(step.verification, specialistOutput, step.name, verificationTaskText, {
+          allowFailure: true,
+          completionMarkerFound: hasMarker,
+        })
+      : { passed: false };
+
+    if (verificationResult.passed) {
+      return { completionReason: 'completed_verified' };
+    }
+
+    const ownerDecision = this.parseOwnerDecision(step, ownerOutput, hasMarker);
+    if (ownerDecision?.decision === 'COMPLETE') {
+      if (!hasMarker) {
+        this.log(
+          `[${step.name}] Structured OWNER_DECISION completed the step without legacy STEP_COMPLETE marker`
+        );
+      }
+      return {
+        completionReason: 'completed_by_owner_decision',
+        ownerDecision: ownerDecision.decision,
+        reason: ownerDecision.reason,
+      };
+    }
+    if (ownerDecision?.decision === 'INCOMPLETE_RETRY') {
+      throw new WorkflowCompletionError(
+        `Step "${step.name}" owner requested retry${ownerDecision.reason ? `: ${ownerDecision.reason}` : ''}`,
+        'retry_requested_by_owner'
+      );
+    }
+    if (ownerDecision?.decision === 'INCOMPLETE_FAIL') {
+      throw new WorkflowCompletionError(
+        `Step "${step.name}" owner marked the step incomplete${ownerDecision.reason ? `: ${ownerDecision.reason}` : ''}`,
+        'failed_owner_decision'
+      );
+    }
+    if (ownerDecision?.decision === 'NEEDS_CLARIFICATION') {
+      throw new WorkflowCompletionError(
+        `Step "${step.name}" owner requested clarification before completion${ownerDecision.reason ? `: ${ownerDecision.reason}` : ''}`,
+        'retry_requested_by_owner'
+      );
+    }
+
+    const evidenceReason = this.judgeOwnerCompletionByEvidence(ownerOutput);
+    if (evidenceReason) {
+      if (!hasMarker) {
+        this.log(
+          `[${step.name}] Evidence-based completion resolved without legacy STEP_COMPLETE marker`
+        );
+      }
+      return {
+        completionReason: 'completed_by_evidence',
+        reason: evidenceReason,
+      };
+    }
+
+    if (verificationResult.error) {
+      throw new WorkflowCompletionError(
+        `Step "${step.name}" verification failed and no owner decision or evidence established completion: ${verificationResult.error}`,
+        'failed_verification'
+      );
+    }
+
+    throw new WorkflowCompletionError(
+      `Step "${step.name}" owner completion decision missing: no OWNER_DECISION, legacy STEP_COMPLETE marker, or evidence-backed completion signal`,
+      'failed_no_evidence'
+    );
+  }
+
+  private hasOwnerCompletionMarker(
+    step: WorkflowStep,
+    output: string,
+    injectedTaskText: string
+  ): boolean {
     const marker = `STEP_COMPLETE:${step.name}`;
     const taskHasMarker = injectedTaskText.includes(marker);
     const first = output.indexOf(marker);
     if (first === -1) {
-      throw new Error(`Step "${step.name}" owner completion marker missing: "${marker}"`);
+      return false;
     }
-    // PTY output includes injected task text, so require a second marker occurrence
-    // when the marker was present in the injected prompt (either owner contract or supervisor prompt).
+    // PTY output often includes echoed prompt text, so when the injected task
+    // itself contains the legacy marker require a second occurrence from the
+    // agent response.
     const outputLikelyContainsInjectedPrompt =
-      output.includes('STEP OWNER CONTRACT') || output.includes('Output exactly: STEP_COMPLETE:');
+      output.includes('STEP OWNER CONTRACT') ||
+      output.includes('Preferred final decision format') ||
+      output.includes('Legacy completion marker still supported') ||
+      output.includes('Output exactly: STEP_COMPLETE:');
     if (taskHasMarker && outputLikelyContainsInjectedPrompt) {
-      const hasSecond = output.includes(marker, first + marker.length);
-      if (!hasSecond) {
-        throw new Error(`Step "${step.name}" owner completion marker missing in agent response: "${marker}"`);
-      }
+      return output.includes(marker, first + marker.length);
     }
+    return true;
+  }
+
+  private parseOwnerDecision(
+    step: WorkflowStep,
+    ownerOutput: string,
+    hasMarker: boolean
+  ): { decision: WorkflowOwnerDecision; reason?: string } | null {
+    const decisionPattern =
+      /OWNER_DECISION:\s*(COMPLETE|INCOMPLETE_RETRY|INCOMPLETE_FAIL|NEEDS_CLARIFICATION)\b/gi;
+    const decisionMatches = [...ownerOutput.matchAll(decisionPattern)];
+    const outputLikelyContainsEchoedPrompt =
+      ownerOutput.includes('STEP OWNER CONTRACT') ||
+      ownerOutput.includes('Preferred final decision format') ||
+      ownerOutput.includes(
+        'OWNER_DECISION: COMPLETE|INCOMPLETE_RETRY|INCOMPLETE_FAIL|NEEDS_CLARIFICATION'
+      );
+
+    if (decisionMatches.length === 0) {
+      if (!hasMarker) return null;
+      return {
+        decision: 'COMPLETE',
+        reason: `Legacy completion marker observed: STEP_COMPLETE:${step.name}`,
+      };
+    }
+
+    const decisionMatch =
+      outputLikelyContainsEchoedPrompt && decisionMatches.length > 1
+        ? decisionMatches[decisionMatches.length - 1]
+        : decisionMatches[0];
+    const decision = decisionMatch?.[1]?.toUpperCase() as WorkflowOwnerDecision | undefined;
+    if (
+      decision !== 'COMPLETE' &&
+      decision !== 'INCOMPLETE_RETRY' &&
+      decision !== 'INCOMPLETE_FAIL' &&
+      decision !== 'NEEDS_CLARIFICATION'
+    ) {
+      return null;
+    }
+
+    const reasonPattern = /(?:^|\n)REASON:\s*(.+)/gi;
+    const reasonMatches = [...ownerOutput.matchAll(reasonPattern)];
+    const reasonMatch =
+      outputLikelyContainsEchoedPrompt && reasonMatches.length > 1
+        ? reasonMatches[reasonMatches.length - 1]
+        : reasonMatches[0];
+    const reason = reasonMatch?.[1]?.trim();
+
+    return {
+      decision,
+      reason: reason && reason !== '<one sentence>' ? reason : undefined,
+    };
+  }
+
+  private stripEchoedPromptLines(output: string, patterns: RegExp[]): string {
+    return output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => patterns.every((pattern) => !pattern.test(line)))
+      .join('\n');
+  }
+
+  private firstMeaningfulLine(output: string): string | undefined {
+    return output
+      .split('\n')
+      .map((line) => line.trim())
+      .find(Boolean);
+  }
+
+  private judgeOwnerCompletionByEvidence(ownerOutput: string): string | null {
+    const sanitized = this.stripEchoedPromptLines(ownerOutput, [
+      /^STEP OWNER CONTRACT:?$/i,
+      /^Preferred final decision format:?$/i,
+      /^OWNER_DECISION:\s*COMPLETE\|INCOMPLETE_RETRY\|INCOMPLETE_FAIL\|NEEDS_CLARIFICATION$/i,
+      /^REASON:\s*<one sentence>$/i,
+      /^Legacy completion marker still supported:/i,
+      /^STEP_COMPLETE:/i,
+    ]);
+    if (!sanitized) return null;
+
+    const hasPositiveConclusion =
+      /\b(complete(?:d)?|done|verified|looks correct|safe handoff|artifact verified)\b/i.test(
+        sanitized
+      ) || /\bartifacts?\b.*\b(correct|verified|complete)\b/i.test(sanitized);
+    const hasEvidenceSignal =
+      /git diff --stat/i.test(sanitized) ||
+      /\bls -la\b/i.test(sanitized) ||
+      /\b(checked|inspected|verified|confirmed)\b/i.test(sanitized) ||
+      /\bartifacts?\b/i.test(sanitized) ||
+      /\bworker (?:already exited|finished|completed)\b/i.test(sanitized) ||
+      /\btests? pass(?:ed)?\b/i.test(sanitized) ||
+      /\bfile exists?\b/i.test(sanitized);
+
+    if (!hasPositiveConclusion || !hasEvidenceSignal) {
+      return null;
+    }
+
+    return this.firstMeaningfulLine(sanitized) ?? 'Evidence-backed completion';
   }
 
   private async runStepReviewGate(
@@ -3052,7 +3958,17 @@ export class WorkflowRunner {
 
     await this.trajectory?.registerAgent(reviewerDef.name, 'reviewer');
     this.postToChannel(`**[${step.name}]** Review started (reviewer: ${reviewerDef.name})`);
+    this.recordStepToolSideEffect(step.name, {
+      type: 'review_started',
+      detail: `Review started with ${reviewerDef.name}`,
+      raw: { reviewer: reviewerDef.name },
+    });
     const emitReviewCompleted = async (decision: 'approved' | 'rejected', reason?: string) => {
+      this.recordStepToolSideEffect(step.name, {
+        type: 'review_completed',
+        detail: `Review ${decision} by ${reviewerDef.name}${reason ? `: ${reason}` : ''}`,
+        raw: { reviewer: reviewerDef.name, decision, reason },
+      });
       await this.trajectory?.reviewCompleted(step.name, reviewerDef.name, decision, reason);
       this.emit({
         type: 'step:review-completed',
@@ -3108,6 +4024,9 @@ export class WorkflowRunner {
 
     try {
       await this.spawnAndWait(reviewerDef, reviewStep, safetyTimeoutMs, {
+        evidenceStepName: step.name,
+        evidenceRole: 'reviewer',
+        logicalName: reviewerDef.name,
         onSpawned: ({ agent }) => {
           reviewerHandle = agent;
         },
@@ -3154,6 +4073,22 @@ export class WorkflowRunner {
   private parseReviewDecision(
     reviewOutput: string
   ): { decision: 'approved' | 'rejected'; reason?: string } | null {
+    const strict = this.parseStrictReviewDecision(reviewOutput);
+    if (strict) {
+      return strict;
+    }
+
+    const tolerant = this.parseTolerantReviewDecision(reviewOutput);
+    if (tolerant) {
+      return tolerant;
+    }
+
+    return this.judgeReviewDecisionFromEvidence(reviewOutput);
+  }
+
+  private parseStrictReviewDecision(
+    reviewOutput: string
+  ): { decision: 'approved' | 'rejected'; reason?: string } | null {
     const decisionPattern = /REVIEW_DECISION:\s*(APPROVE|REJECT)/gi;
     const decisionMatches = [...reviewOutput.matchAll(decisionPattern)];
     if (decisionMatches.length === 0) {
@@ -3182,6 +4117,115 @@ export class WorkflowRunner {
     return {
       decision: decision === 'APPROVE' ? 'approved' : 'rejected',
       reason: reason && reason !== '<one sentence>' ? reason : undefined,
+    };
+  }
+
+  private parseTolerantReviewDecision(
+    reviewOutput: string
+  ): { decision: 'approved' | 'rejected'; reason?: string } | null {
+    const sanitized = this.stripEchoedPromptLines(reviewOutput, [
+      /^Return exactly:?$/i,
+      /^REVIEW_DECISION:\s*APPROVE\s+or\s+REJECT$/i,
+      /^REVIEW_REASON:\s*<one sentence>$/i,
+    ]);
+    if (!sanitized) {
+      return null;
+    }
+
+    const lines = sanitized
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    for (const line of lines) {
+      const candidate = line.replace(/^REVIEW_DECISION:\s*/i, '').trim();
+      const decision = this.normalizeReviewDecisionCandidate(candidate);
+      if (decision) {
+        return {
+          decision,
+          reason: this.parseReviewReason(sanitized) ?? this.firstMeaningfulLine(sanitized),
+        };
+      }
+    }
+
+    const decision = this.normalizeReviewDecisionCandidate(lines.join(' '));
+    if (!decision) {
+      return null;
+    }
+
+    return {
+      decision,
+      reason: this.parseReviewReason(sanitized) ?? this.firstMeaningfulLine(sanitized),
+    };
+  }
+
+  private normalizeReviewDecisionCandidate(candidate: string): 'approved' | 'rejected' | null {
+    const value = candidate.trim().toLowerCase();
+    if (!value) return null;
+
+    if (
+      /^(approve|approved|complete|completed|pass|passed|accept|accepted|lgtm|ship it|looks good|looks fine)\b/i.test(
+        value
+      )
+    ) {
+      return 'approved';
+    }
+    if (
+      /^(reject|rejected|retry|retry requested|fail|failed|incomplete|needs clarification|not complete|not ready|insufficient evidence)\b/i.test(
+        value
+      )
+    ) {
+      return 'rejected';
+    }
+    return null;
+  }
+
+  private parseReviewReason(reviewOutput: string): string | undefined {
+    const reasonPattern = /REVIEW_REASON:\s*(.+)/gi;
+    const reasonMatches = [...reviewOutput.matchAll(reasonPattern)];
+    const outputLikelyContainsEchoedPrompt =
+      reviewOutput.includes('Return exactly') || reviewOutput.includes('REVIEW_DECISION: APPROVE or REJECT');
+    const reasonMatch =
+      outputLikelyContainsEchoedPrompt && reasonMatches.length > 1
+        ? reasonMatches[reasonMatches.length - 1]
+        : reasonMatches[0];
+    const reason = reasonMatch?.[1]?.trim();
+    return reason && reason !== '<one sentence>' ? reason : undefined;
+  }
+
+  private judgeReviewDecisionFromEvidence(
+    reviewOutput: string
+  ): { decision: 'approved' | 'rejected'; reason?: string } | null {
+    const sanitized = this.stripEchoedPromptLines(reviewOutput, [
+      /^Return exactly:?$/i,
+      /^REVIEW_DECISION:\s*APPROVE\s+or\s+REJECT$/i,
+      /^REVIEW_REASON:\s*<one sentence>$/i,
+    ]);
+    if (!sanitized) {
+      return null;
+    }
+
+    const hasPositiveEvidence =
+      /\b(approved?|complete(?:d)?|verified|looks good|looks fine|safe handoff|pass(?:ed)?)\b/i.test(
+        sanitized
+      );
+    const hasNegativeEvidence =
+      /\b(reject(?:ed)?|retry|fail(?:ed)?|incomplete|missing checks|insufficient evidence|not safe)\b/i.test(
+        sanitized
+      );
+
+    if (hasNegativeEvidence) {
+      return {
+        decision: 'rejected',
+        reason: this.parseReviewReason(sanitized) ?? this.firstMeaningfulLine(sanitized),
+      };
+    }
+    if (!hasPositiveEvidence) {
+      return null;
+    }
+
+    return {
+      decision: 'approved',
+      reason: this.parseReviewReason(sanitized) ?? this.firstMeaningfulLine(sanitized),
     };
   }
 
@@ -3462,10 +4506,21 @@ export class WorkflowRunner {
         });
       });
 
+      this.captureStepTerminalEvidence(step.name, {}, { exitCode, exitSignal });
       return { output, exitCode, exitSignal };
     } finally {
-      const combinedOutput = stdoutChunks.join('') + stderrChunks.join('');
+      const stdout = stdoutChunks.join('');
+      const stderr = stderrChunks.join('');
+      const combinedOutput = stdout + stderr;
       this.lastFailedStepOutput.set(step.name, combinedOutput);
+      this.captureStepTerminalEvidence(
+        step.name,
+        {
+          stdout,
+          stderr,
+          combined: combinedOutput,
+        }
+      );
       stopHeartbeat?.();
       logStream.end();
       this.unregisterWorker(agentName);
@@ -3486,6 +4541,8 @@ export class WorkflowRunner {
     if (!this.relay) {
       throw new Error('AgentRelay not initialized');
     }
+
+    const evidenceStepName = options.evidenceStepName ?? step.name;
 
     // Deterministic name: step name + optional role suffix + first 8 chars of run ID.
     const requestedName = `${step.name}${options.agentNameSuffix ? `-${options.agentNameSuffix}` : ''}-${(this.currentRunId ?? this.generateShortId()).slice(0, 8)}`;
@@ -3538,7 +4595,7 @@ export class WorkflowRunner {
 
     const agentChannels = this.channel ? [this.channel] : agentDef.channels;
 
-    let agent: Awaited<ReturnType<typeof this.relay.spawnPty>>;
+    let agent: Awaited<ReturnType<typeof this.relay.spawnPty>> | undefined;
     let exitResult: string = 'unknown';
     let stopHeartbeat: (() => void) | undefined;
     let ptyChunks: string[] = [];
@@ -3584,18 +4641,25 @@ export class WorkflowRunner {
         const oldListener = this.ptyListeners.get(oldName);
         if (oldListener) {
           this.ptyListeners.delete(oldName);
-          this.ptyListeners.set(agent.name, (chunk: string) => {
+          const resolvedAgentName = agent.name;
+          this.ptyListeners.set(resolvedAgentName, (chunk: string) => {
             const stripped = WorkflowRunner.stripAnsi(chunk);
-            this.ptyOutputBuffers.get(agent.name)?.push(stripped);
+            this.ptyOutputBuffers.get(resolvedAgentName)?.push(stripped);
             newLogStream.write(chunk);
-            options.onChunk?.({ agentName: agent.name, chunk });
+            options.onChunk?.({ agentName: resolvedAgentName, chunk });
           });
         }
 
         agentName = agent.name;
       }
 
-      await options.onSpawned?.({ requestedName, actualName: agent.name, agent });
+      const liveAgent = agent;
+      await options.onSpawned?.({ requestedName, actualName: liveAgent.name, agent: liveAgent });
+      this.runtimeStepAgents.set(liveAgent.name, {
+        stepName: evidenceStepName,
+        role: options.evidenceRole ?? agentDef.role ?? 'agent',
+        logicalName: options.logicalName ?? agentDef.name,
+      });
 
       // Register in workers.json so `agents:kill` can find this agent
       let workerPid: number | undefined;
@@ -3610,11 +4674,11 @@ export class WorkflowRunner {
       // Register the spawned agent in Relaycast for observability + start heartbeat
       if (this.relayApiKey) {
         const agentClient = await this.registerRelaycastExternalAgent(
-          agent.name,
+          liveAgent.name,
           `Workflow agent for step "${step.name}" (${agentDef.cli})`
         ).catch((err) => {
           console.warn(
-            `[WorkflowRunner] Failed to register ${agent.name} in Relaycast:`,
+            `[WorkflowRunner] Failed to register ${liveAgent.name} in Relaycast:`,
             err?.message ?? err
           );
           return null;
@@ -3672,6 +4736,19 @@ export class WorkflowRunner {
       // Snapshot PTY chunks before cleanup — we need them for output reading below
       ptyChunks = this.ptyOutputBuffers.get(agentName) ?? [];
       this.lastFailedStepOutput.set(step.name, ptyChunks.join(''));
+      if (ptyChunks.length > 0 || agent?.exitCode !== undefined || agent?.exitSignal !== undefined) {
+        this.captureStepTerminalEvidence(
+          evidenceStepName,
+          {
+            stdout: ptyChunks.length > 0 ? ptyChunks.join('') : undefined,
+            combined: ptyChunks.length > 0 ? ptyChunks.join('') : undefined,
+          },
+          {
+            exitCode: agent?.exitCode,
+            exitSignal: agent?.exitSignal,
+          }
+        );
+      }
 
       // Always clean up PTY resources — prevents fd leaks if spawnPty or waitForExit throws
       stopHeartbeat?.();
@@ -3685,6 +4762,7 @@ export class WorkflowRunner {
       }
       this.unregisterWorker(agentName);
       this.supervisedRuntimeAgents.delete(agentName);
+      this.runtimeStepAgents.delete(agentName);
     }
 
     let output: string;
@@ -3700,6 +4778,14 @@ export class WorkflowRunner {
           : exitResult === 'released'
             ? 'Agent completed (idle — treated as done)'
             : `Agent exited (${exitResult})`;
+    }
+
+    if (ptyChunks.length === 0) {
+      this.captureStepTerminalEvidence(
+        evidenceStepName,
+        { stdout: output, combined: output },
+        { exitCode: agent?.exitCode, exitSignal: agent?.exitSignal }
+      );
     }
 
     return {
@@ -3890,8 +4976,34 @@ export class WorkflowRunner {
     check: VerificationCheck,
     output: string,
     stepName: string,
-    injectedTaskText?: string
-  ): void {
+    injectedTaskText?: string,
+    options?: VerificationOptions
+  ): VerificationResult {
+    const fail = (message: string): VerificationResult => {
+      const observedAt = new Date().toISOString();
+      this.recordStepToolSideEffect(stepName, {
+        type: 'verification_observed',
+        detail: message,
+        observedAt,
+        raw: { passed: false, type: check.type, value: check.value },
+      });
+      this.getOrCreateStepEvidenceRecord(stepName).evidence.coordinationSignals.push({
+        kind: 'verification_failed',
+        source: 'verification',
+        text: message,
+        observedAt,
+        value: check.value,
+      });
+      if (options?.allowFailure) {
+        return {
+          passed: false,
+          completionReason: 'failed_verification',
+          error: message,
+        };
+      }
+      throw new WorkflowCompletionError(message, 'failed_verification');
+    };
+
     switch (check.type) {
       case 'output_contains': {
         // Guard against false positives: the PTY captures the injected task text
@@ -3905,13 +5017,13 @@ export class WorkflowRunner {
           const first = output.indexOf(token);
           const hasSecond = first !== -1 && output.includes(token, first + token.length);
           if (!hasSecond) {
-            throw new Error(
+            return fail(
               `Verification failed for "${stepName}": output does not contain "${token}" ` +
                 `(token found only in task injection — agent must output it explicitly)`
             );
           }
         } else if (!output.includes(token)) {
-          throw new Error(`Verification failed for "${stepName}": output does not contain "${token}"`);
+          return fail(`Verification failed for "${stepName}": output does not contain "${token}"`);
         }
         break;
       }
@@ -3922,14 +5034,44 @@ export class WorkflowRunner {
 
       case 'file_exists':
         if (!existsSync(path.resolve(this.cwd, check.value))) {
-          throw new Error(`Verification failed for "${stepName}": file "${check.value}" does not exist`);
+          return fail(`Verification failed for "${stepName}": file "${check.value}" does not exist`);
         }
         break;
 
       case 'custom':
         // Custom verifications are evaluated by callers; no-op here
-        break;
+        return { passed: false };
     }
+
+    if (options?.completionMarkerFound === false) {
+      this.log(
+        `[${stepName}] Verification passed without legacy STEP_COMPLETE marker; allowing completion`
+      );
+    }
+
+    const successMessage =
+      options?.completionMarkerFound === false
+        ? `Verification passed without legacy STEP_COMPLETE marker`
+        : `Verification passed`;
+    const observedAt = new Date().toISOString();
+    this.recordStepToolSideEffect(stepName, {
+      type: 'verification_observed',
+      detail: successMessage,
+      observedAt,
+      raw: { passed: true, type: check.type, value: check.value },
+    });
+    this.getOrCreateStepEvidenceRecord(stepName).evidence.coordinationSignals.push({
+      kind: 'verification_passed',
+      source: 'verification',
+      text: successMessage,
+      observedAt,
+      value: check.value,
+    });
+
+    return {
+      passed: true,
+      completionReason: 'completed_verified',
+    };
   }
 
   // ── State helpers ─────────────────────────────────────────────────────
@@ -3952,14 +5094,18 @@ export class WorkflowRunner {
     state: StepState,
     error: string,
     runId: string,
-    exitInfo?: { exitCode?: number; exitSignal?: string }
+    exitInfo?: { exitCode?: number; exitSignal?: string },
+    completionReason?: WorkflowStepCompletionReason
   ): Promise<void> {
+    this.captureStepTerminalEvidence(state.row.stepName, {}, exitInfo);
     state.row.status = 'failed';
     state.row.error = error;
+    state.row.completionReason = completionReason;
     state.row.completedAt = new Date().toISOString();
     await this.db.updateStep(state.row.id, {
       status: 'failed',
       error,
+      completionReason,
       completedAt: state.row.completedAt,
       updatedAt: new Date().toISOString(),
     });
@@ -3971,6 +5117,7 @@ export class WorkflowRunner {
       exitCode: exitInfo?.exitCode,
       exitSignal: exitInfo?.exitSignal,
     });
+    this.finalizeStepEvidence(state.row.stepName, 'failed', state.row.completedAt, completionReason);
   }
 
   private async markDownstreamSkipped(
@@ -4129,8 +5276,24 @@ export class WorkflowRunner {
   }
 
   /** Post a message to the workflow channel. Fire-and-forget — never throws or blocks. */
-  private postToChannel(text: string): void {
+  private postToChannel(text: string, options: ChannelEvidenceOptions = {}): void {
     if (!this.relayApiKey || !this.channel) return;
+    this.recordChannelEvidence(text, options);
+
+    const stepName = options.stepName ?? this.inferStepNameFromChannelText(text);
+    if (stepName) {
+      this.recordStepToolSideEffect(stepName, {
+        type: 'post_channel_message',
+        detail: text.slice(0, 240),
+        raw: {
+          actor: options.actor,
+          role: options.role,
+          target: options.target ?? this.channel,
+          origin: options.origin ?? 'runner_post',
+        },
+      });
+    }
+
     this.ensureRelaycastRunnerAgent()
       .then((agent) => agent.send(this.channel!, text))
       .catch(() => {
@@ -4308,6 +5471,9 @@ export class WorkflowRunner {
         output: state.row.output,
         error: state.row.error,
         verificationPassed: state.row.status === 'completed' && stepsWithVerification.has(name),
+        completionMode: state.row.completionReason
+          ? this.buildStepCompletionDecision(name, state.row.completionReason)?.mode
+          : undefined,
       });
     }
     return outcomes;
@@ -4449,25 +5615,31 @@ export class WorkflowRunner {
   /** Persist step output to disk and post full output as a channel message. */
   private async persistStepOutput(runId: string, stepName: string, output: string): Promise<void> {
     // 1. Write to disk
+    const outputPath = path.join(this.getStepOutputDir(runId), `${stepName}.md`);
     try {
       const dir = this.getStepOutputDir(runId);
       mkdirSync(dir, { recursive: true });
       const cleaned = WorkflowRunner.stripAnsi(output);
-      await writeFile(path.join(dir, `${stepName}.md`), cleaned);
+      await writeFile(outputPath, cleaned);
     } catch {
       // Non-critical
     }
+    this.recordStepToolSideEffect(stepName, {
+      type: 'persist_step_output',
+      detail: `Persisted step output to ${this.normalizeEvidencePath(outputPath)}`,
+      raw: { path: outputPath },
+    });
 
     // 2. Post scrubbed output as a single channel message (most recent tail only)
     const scrubbed = WorkflowRunner.scrubForChannel(output);
     if (scrubbed.length === 0) {
-      this.postToChannel(`**[${stepName}]** Step completed — output written to disk`);
+      this.postToChannel(`**[${stepName}]** Step completed — output written to disk`, { stepName });
       return;
     }
 
     const maxMsg = 2000;
     const preview = scrubbed.length > maxMsg ? scrubbed.slice(-maxMsg) : scrubbed;
-    this.postToChannel(`**[${stepName}] Output:**\n\`\`\`\n${preview}\n\`\`\``);
+    this.postToChannel(`**[${stepName}] Output:**\n\`\`\`\n${preview}\n\`\`\``, { stepName });
   }
 
   /** Load persisted step output from disk. */
