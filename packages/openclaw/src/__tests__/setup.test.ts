@@ -6,6 +6,7 @@ const addWorkspace = vi.fn();
 const detectOpenClaw = vi.fn();
 const saveGatewayConfig = vi.fn();
 const registerRelaycastAgent = vi.fn();
+const resolveRelaycastWorkspaceId = vi.fn();
 const syncMcporterServers = vi.fn();
 
 vi.mock('node:fs/promises', () => ({
@@ -52,6 +53,7 @@ vi.mock('./../config.js', () => ({
 
 vi.mock('./../mcporter-config.js', () => ({
   registerRelaycastAgent,
+  resolveRelaycastWorkspaceId,
   syncMcporterServers,
 }));
 
@@ -88,6 +90,7 @@ describe('setup', () => {
       agentToken: 'tok_new',
       workspaceId: 'ws_new',
     });
+    resolveRelaycastWorkspaceId.mockResolvedValue('ws_new');
     addWorkspace.mockResolvedValue({
       workspaces: [
         {
@@ -141,6 +144,47 @@ describe('setup', () => {
         }),
         agentToken: 'tok_new',
       })
+    );
+  });
+
+  it('falls back to workspace.info when agent registration omits workspaceId', async () => {
+    registerRelaycastAgent.mockResolvedValue({
+      agentToken: 'tok_new',
+    });
+    resolveRelaycastWorkspaceId.mockResolvedValue('ws_fallback');
+    addWorkspace.mockResolvedValue({
+      workspaces: [
+        {
+          api_key: 'rk_live_new',
+          workspace_alias: 'test-claw',
+          workspace_id: 'ws_fallback',
+          is_default: true,
+        },
+      ],
+      default_workspace_id: 'ws_fallback',
+    });
+
+    const { setup } = await import('../setup.js');
+    const result = await setup({
+      apiKey: 'rk_live_existing',
+      clawName: 'test-claw',
+      channels: ['general'],
+      baseUrl: 'https://api.relaycast.dev',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(resolveRelaycastWorkspaceId).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: 'rk_live_existing',
+        clawName: 'test-claw',
+      })
+    );
+    expect(addWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        api_key: 'rk_live_existing',
+        workspace_id: 'ws_fallback',
+      }),
+      { syncRuntime: false }
     );
   });
 });

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const files = new Map<string, string>();
 const execFileSync = vi.fn();
 const registerOrGet = vi.fn();
+const workspaceInfo = vi.fn();
 
 vi.mock('node:child_process', () => ({
   execFileSync,
@@ -34,6 +35,9 @@ vi.mock('@relaycast/sdk', () => ({
     agents: {
       registerOrGet,
     },
+    workspace: {
+      info: workspaceInfo,
+    },
   })),
 }));
 
@@ -62,6 +66,7 @@ describe('mcporter config helpers', () => {
       token: 'tok_new',
       data: { workspace_id: 'ws_new' },
     });
+    workspaceInfo.mockResolvedValue({ id: 'ws_from_info' });
   });
 
   it('preserves the existing agent token when the active workspace key stays the same', async () => {
@@ -153,5 +158,29 @@ describe('mcporter config helpers', () => {
       agentToken: 'tok_new',
       workspaceId: 'ws_new',
     });
+  });
+
+  it('falls back to workspace.info when registration omits workspace id', async () => {
+    registerOrGet.mockResolvedValue({ token: 'tok_new' });
+    workspaceInfo.mockResolvedValue({ id: 'ws_from_info' });
+
+    const { registerRelaycastAgent, resolveRelaycastWorkspaceId } = await import('../mcporter-config.js');
+    const registration = await registerRelaycastAgent({
+      apiKey: 'rk_live_a',
+      baseUrl: 'https://api.relaycast.dev',
+      clawName: 'my-claw',
+    });
+    const resolved = await resolveRelaycastWorkspaceId({
+      apiKey: 'rk_live_a',
+      baseUrl: 'https://api.relaycast.dev',
+      clawName: 'my-claw',
+    });
+
+    expect(registration).toEqual({
+      agentToken: 'tok_new',
+      workspaceId: 'ws_from_info',
+    });
+    expect(resolved).toBe('ws_from_info');
+    expect(workspaceInfo).toHaveBeenCalled();
   });
 });

@@ -5,6 +5,7 @@ import { InboundGateway } from './gateway.js';
 import { listOpenClaws, releaseOpenClaw, spawnOpenClaw } from './control.js';
 import { startMcpServer } from './mcp/server.js';
 import { registerRelaycastAgent } from './mcporter-config.js';
+import { redactErrorMessage, redactRelaySecrets } from './redaction.js';
 import { runtimeSetup } from './runtime/setup.js';
 
 const require = createRequire(import.meta.url);
@@ -117,7 +118,7 @@ async function runSetup(
     console.log(`\nWorkspace key: ${maskedApiKey}`);
     console.log('Share this key with other claws to join the same workspace.');
   } else {
-    console.error(`Setup failed: ${result.message}`);
+    console.error(`Setup failed: ${redactRelaySecrets(result.message)}`);
     process.exit(1);
   }
 }
@@ -278,7 +279,7 @@ async function runAddWorkspace(
       workspaceId = registration.workspaceId;
     } catch (err) {
       console.error(
-        `Failed to resolve workspace_id automatically: ${err instanceof Error ? err.message : String(err)}`
+        `Failed to resolve workspace_id automatically: ${redactErrorMessage(err)}`
       );
       process.exit(1);
     }
@@ -298,7 +299,7 @@ async function runAddWorkspace(
       ...(flags['default'] !== undefined ? { is_default: flags['default'] === 'true' } : {}),
     });
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(redactErrorMessage(err));
     process.exit(1);
   }
 
@@ -343,11 +344,11 @@ async function runSwitchWorkspace(positional: string[]): Promise<void> {
   try {
     result = await switchWorkspace(identifier);
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(redactErrorMessage(err));
     process.exit(1);
   }
   if (!result) {
-    console.error(`Workspace "${identifier}" not found.`);
+    console.error(`Workspace "${redactRelaySecrets(identifier)}" not found.`);
     console.error('Run "relay-openclaw list-workspaces" to see available workspaces.');
     process.exit(1);
   }
@@ -411,6 +412,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(redactErrorMessage(err));
   process.exit(1);
 });

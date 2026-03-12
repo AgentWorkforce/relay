@@ -35,6 +35,15 @@ function mcporterConfigPath(): string {
   return join(homedir(), '.mcporter', 'mcporter.json');
 }
 
+function createRelaycastClient(
+  gatewayConfig: Pick<GatewayConfig, 'apiKey' | 'baseUrl'>
+): RelayCast {
+  return new RelayCast({
+    apiKey: gatewayConfig.apiKey,
+    baseUrl: gatewayConfig.baseUrl,
+  });
+}
+
 function extractNestedString(value: unknown, path: string[]): string | undefined {
   let current = value;
   for (const key of path) {
@@ -42,6 +51,15 @@ function extractNestedString(value: unknown, path: string[]): string | undefined
     current = (current as Record<string, unknown>)[key];
   }
   return typeof current === 'string' && current.trim() ? current : undefined;
+}
+
+async function resolveWorkspaceIdFromClient(relaycast: RelayCast): Promise<string | undefined> {
+  const workspace = (await relaycast.workspace.info()) as Record<string, unknown>;
+  return (
+    extractNestedString(workspace, ['id']) ??
+    extractNestedString(workspace, ['workspaceId']) ??
+    extractNestedString(workspace, ['workspace_id'])
+  );
 }
 
 async function loadMcporterServerEnv(serverName: string): Promise<Record<string, string>> {
@@ -156,27 +174,33 @@ export function resolveMcporter(): McporterCommand {
 export async function registerRelaycastAgent(
   gatewayConfig: Pick<GatewayConfig, 'apiKey' | 'baseUrl' | 'clawName'>
 ): Promise<AgentRegistration> {
-  const relaycast = new RelayCast({
-    apiKey: gatewayConfig.apiKey,
-    baseUrl: gatewayConfig.baseUrl,
-  });
+  const relaycast = createRelaycastClient(gatewayConfig);
   const registered = (await relaycast.agents.registerOrGet({
     name: gatewayConfig.clawName,
     type: 'agent',
   })) as Record<string, unknown>;
+  const workspaceId =
+    extractNestedString(registered, ['workspaceId']) ??
+    extractNestedString(registered, ['workspace_id']) ??
+    extractNestedString(registered, ['workspace', 'id']) ??
+    extractNestedString(registered, ['data', 'workspaceId']) ??
+    extractNestedString(registered, ['data', 'workspace_id']) ??
+    extractNestedString(registered, ['data', 'workspace', 'id']) ??
+    await resolveWorkspaceIdFromClient(relaycast);
 
   return {
     agentToken:
       extractNestedString(registered, ['token']) ??
       extractNestedString(registered, ['data', 'token']),
-    workspaceId:
-      extractNestedString(registered, ['workspaceId']) ??
-      extractNestedString(registered, ['workspace_id']) ??
-      extractNestedString(registered, ['workspace', 'id']) ??
-      extractNestedString(registered, ['data', 'workspaceId']) ??
-      extractNestedString(registered, ['data', 'workspace_id']) ??
-      extractNestedString(registered, ['data', 'workspace', 'id']),
+    workspaceId,
   };
+}
+
+export async function resolveRelaycastWorkspaceId(
+  gatewayConfig: Pick<GatewayConfig, 'apiKey' | 'baseUrl' | 'clawName'>
+): Promise<string | undefined> {
+  const relaycast = createRelaycastClient(gatewayConfig);
+  return resolveWorkspaceIdFromClient(relaycast);
 }
 
 export async function syncMcporterServers(

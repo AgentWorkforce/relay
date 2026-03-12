@@ -9,7 +9,12 @@ import { randomBytes } from 'node:crypto';
 
 import { detectOpenClaw, saveGatewayConfig, addWorkspace } from './config.js';
 import { InboundGateway } from './gateway.js';
-import { registerRelaycastAgent, syncMcporterServers } from './mcporter-config.js';
+import {
+  registerRelaycastAgent,
+  resolveRelaycastWorkspaceId,
+  syncMcporterServers,
+} from './mcporter-config.js';
+import { redactErrorMessage, redactRelaySecrets } from './redaction.js';
 import { DEFAULT_OPENCLAW_GATEWAY_PORT, type GatewayConfig } from './types.js';
 
 /**
@@ -217,13 +222,15 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
           };
         }
       } else if (!res.ok) {
-        const body = await res.text();
+        const body = redactRelaySecrets((await res.text()).trim());
         return {
           ok: false,
           apiKey: '',
           clawName,
           skillDir: '',
-          message: `Failed to create workspace: ${res.status} ${body}`,
+          message: body
+            ? `Failed to create workspace: ${res.status} ${body}`
+            : `Failed to create workspace: ${res.status}`,
         };
       } else {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -251,7 +258,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
         apiKey: '',
         clawName,
         skillDir: '',
-        message: `Failed to create workspace: ${err instanceof Error ? err.message : String(err)}`,
+        message: `Failed to create workspace: ${redactErrorMessage(err)}`,
       };
     }
   }
@@ -300,11 +307,12 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
         detection.config = cfg;
         configMutated = true;
       } catch (writeErr) {
-        console.warn(`[setup] Could not write generated token to config file: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
+        console.warn(`[setup] Could not write generated token to config file: ${redactErrorMessage(writeErr)}`);
       }
     } else {
-      console.warn('[setup] No config file available to persist generated token. Set manually:');
-      console.warn(`[setup]   export OPENCLAW_GATEWAY_TOKEN=${generated}`);
+      console.warn(
+        '[setup] No config file available to persist generated token. Set OPENCLAW_GATEWAY_TOKEN manually in your environment or config.'
+      );
     }
   }
 
@@ -358,10 +366,18 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     }
   } catch (regErr) {
     console.warn(
-      `Agent registration failed (non-fatal): ${
-        regErr instanceof Error ? regErr.message : String(regErr)
-      }`
+      `Agent registration failed (non-fatal): ${redactErrorMessage(regErr)}`
     );
+  }
+
+  if (!workspaceId) {
+    try {
+      workspaceId = await resolveRelaycastWorkspaceId(gatewayConfig);
+    } catch (workspaceErr) {
+      console.warn(
+        `Workspace ID lookup failed (non-fatal): ${redactErrorMessage(workspaceErr)}`
+      );
+    }
   }
 
   if (!workspaceId) {
@@ -371,7 +387,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
       clawName,
       skillDir: '',
       message:
-        'Workspace registration succeeded but no workspace_id was available. Re-run setup with a workspace that exposes workspace_id metadata.',
+        'Workspace setup succeeded but canonical workspace_id could not be resolved. Re-run setup with --workspace-id or verify the workspace key.',
     };
   }
 
@@ -392,7 +408,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     console.warn('mcporter not found (tried global binary and npx). MCP tools will not be available.');
     console.warn('Install mcporter and re-run setup to enable MCP tools:');
     console.warn('  npm install -g mcporter');
-    console.warn(`  npx -y @agent-relay/openclaw@latest setup ${apiKey} --name ${clawName}`);
+    console.warn(`  npx -y @agent-relay/openclaw@latest setup <workspace-key> --name ${clawName}`);
   }
 
   // Auto-start the inbound gateway in the background, but only if one isn't

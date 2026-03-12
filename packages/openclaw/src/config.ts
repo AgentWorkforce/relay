@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 
 import type { GatewayConfig, WorkspaceEntry, WorkspacesConfig } from './types.js';
 import { registerRelaycastAgent, syncMcporterServers } from './mcporter-config.js';
+import { maskWorkspaceKey, redactErrorMessage, redactRelaySecrets } from './redaction.js';
 
 function envValue(vars: Record<string, string>, key: string): string | undefined {
   const processValue = process.env[key]?.trim();
@@ -455,7 +456,7 @@ export async function addWorkspace(
     } catch (err) {
       console.warn(
         `[config] Failed to refresh Relaycast agent token for "${gateway.clawName}": ${
-          err instanceof Error ? err.message : String(err)
+          redactErrorMessage(err)
         }`
       );
     }
@@ -524,7 +525,7 @@ export async function switchWorkspace(identifier: string): Promise<WorkspacesCon
     } catch (err) {
       console.warn(
         `[config] Failed to refresh Relaycast agent token for "${gateway.clawName}": ${
-          err instanceof Error ? err.message : String(err)
+          redactErrorMessage(err)
         }`
       );
     }
@@ -580,7 +581,7 @@ function normalizeAlias(alias?: string): string | null {
 }
 
 function workspaceDisplayLabel(workspace: WorkspaceEntry): string {
-  return workspace.workspace_alias ?? workspace.workspace_id ?? workspace.api_key;
+  return workspace.workspace_alias ?? workspace.workspace_id ?? maskWorkspaceKey(workspace.api_key);
 }
 
 function applyDefaultWorkspaceId(config: WorkspacesConfig, workspaceId: string): void {
@@ -622,7 +623,7 @@ function resolveWorkspaceTarget(workspaces: WorkspaceEntry[], identifier: string
 
   if (uniqueMatches.length > 1) {
     throw new Error(
-      `Workspace selector "${identifier}" is ambiguous. Matches: ${uniqueMatches
+      `Workspace selector "${redactRelaySecrets(identifier)}" is ambiguous. Matches: ${uniqueMatches
         .map((workspace) => workspaceDisplayLabel(workspace))
         .join(', ')}.`
     );
