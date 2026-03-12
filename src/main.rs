@@ -805,12 +805,31 @@ impl WorkerRegistry {
                     .await?
                 };
 
-                let has_extra =
-                    bypass_flag.is_some() || !effective_args.is_empty() || !mcp_args.is_empty();
+                // Inject --model flag when spec.model is set and not already in args.
+                let model_flag = spec.model.as_deref().and_then(|m| {
+                    if m.is_empty()
+                        || effective_args
+                            .iter()
+                            .any(|a| a == "--model" || a == "-m")
+                    {
+                        None
+                    } else {
+                        Some(m.to_string())
+                    }
+                });
+
+                let has_extra = bypass_flag.is_some()
+                    || model_flag.is_some()
+                    || !effective_args.is_empty()
+                    || !mcp_args.is_empty();
                 if has_extra {
                     command.arg("--");
                     if let Some(flag) = bypass_flag {
                         command.arg(flag);
+                    }
+                    if let Some(ref model) = model_flag {
+                        command.arg("--model");
+                        command.arg(model);
                     }
                     for arg in &mcp_args {
                         command.arg(arg);
@@ -7595,5 +7614,82 @@ mod tests {
         let state_path = std::path::Path::new(".agent-relay/state.json");
         let result = continuity_dir(state_path);
         assert_eq!(result, std::path::PathBuf::from(".agent-relay/continuity"));
+    }
+
+    // ==================== model flag injection tests ====================
+    // Tests for the --model flag injection logic used in WorkerRegistry::spawn().
+    // When spec.model is set and non-empty, the broker should inject --model <value>
+    // into the spawned CLI's argv, unless the user already specified --model.
+
+    /// Mirror of the model flag logic in WorkerRegistry::spawn().
+    fn compute_model_flag(model: Option<&str>, existing_args: &[String]) -> Option<String> {
+        model.and_then(|m| {
+            if m.is_empty()
+                || existing_args
+                    .iter()
+                    .any(|a| a == "--model" || a == "-m")
+            {
+                None
+            } else {
+                Some(m.to_string())
+            }
+        })
+    }
+
+    #[test]
+    fn model_flag_injected_when_present() {
+        assert_eq!(
+            compute_model_flag(Some("haiku"), &[]),
+            Some("haiku".to_string()),
+            "model should be injected when set and args are empty"
+        );
+    }
+
+    #[test]
+    fn model_flag_not_injected_when_none() {
+        assert_eq!(
+            compute_model_flag(None, &[]),
+            None,
+            "model should not be injected when not set"
+        );
+    }
+
+    #[test]
+    fn model_flag_not_injected_when_empty() {
+        assert_eq!(
+            compute_model_flag(Some(""), &[]),
+            None,
+            "model should not be injected when empty string"
+        );
+    }
+
+    #[test]
+    fn model_flag_not_injected_when_already_in_args() {
+        let args = vec!["--model".to_string(), "opus".to_string()];
+        assert_eq!(
+            compute_model_flag(Some("haiku"), &args),
+            None,
+            "model should not be injected when --model already in args"
+        );
+    }
+
+    #[test]
+    fn model_flag_not_injected_when_short_flag_in_args() {
+        let args = vec!["-m".to_string(), "opus".to_string()];
+        assert_eq!(
+            compute_model_flag(Some("haiku"), &args),
+            None,
+            "model should not be injected when -m already in args"
+        );
+    }
+
+    #[test]
+    fn model_flag_injected_with_other_args() {
+        let args = vec!["--verbose".to_string()];
+        assert_eq!(
+            compute_model_flag(Some("gpt-4o"), &args),
+            Some("gpt-4o".to_string()),
+            "model should be injected when other unrelated args exist"
+        );
     }
 }
