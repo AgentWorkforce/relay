@@ -680,10 +680,7 @@ pub async fn configure_relaycast_mcp_with_token(
         args.push(mcp_json);
         // Use strict mode so only the merged config is used (no double-loading
         // of .mcp.json which would re-introduce stale relaycast entries).
-        if !existing_args
-            .iter()
-            .any(|a| a == "--strict-mcp-config")
-        {
+        if !existing_args.iter().any(|a| a == "--strict-mcp-config") {
             args.push("--strict-mcp-config".to_string());
         }
     }
