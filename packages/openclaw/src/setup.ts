@@ -4,13 +4,12 @@ import { join, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { spawn as spawnProcess, execFileSync } from 'node:child_process';
+import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 
-import { RelayCast } from '@relaycast/sdk';
-
-import { detectOpenClaw, saveGatewayConfig, addWorkspace, loadWorkspacesConfig, buildWorkspacesJson } from './config.js';
+import { detectOpenClaw, saveGatewayConfig, addWorkspace } from './config.js';
 import { InboundGateway } from './gateway.js';
+import { registerRelaycastAgent, syncMcporterServers } from './mcporter-config.js';
 import { DEFAULT_OPENCLAW_GATEWAY_PORT, type GatewayConfig } from './types.js';
 
 /**
@@ -48,24 +47,6 @@ function setNestedValue(obj: Record<string, unknown>, path: string, value: unkno
     current = current[key] as Record<string, unknown>;
   }
   current[keys[keys.length - 1]] = value;
-}
-
-/**
- * Resolve how to invoke mcporter. Prefers a global binary, falls back to npx.
- */
-function resolveMcporter(): { cmd: string; prefix: string[] } {
-  try {
-    execFileSync('mcporter', ['--version'], { stdio: 'pipe' });
-    return { cmd: 'mcporter', prefix: [] };
-  } catch {
-    // Global binary not found — try npx (no timeout; cold-cache downloads can be slow)
-    try {
-      execFileSync('npx', ['-y', 'mcporter', '--version'], { stdio: 'pipe' });
-      return { cmd: 'npx', prefix: ['-y', 'mcporter'] };
-    } catch {
-      throw new Error('mcporter not found (tried global binary and npx)');
-    }
-  }
 }
 
 /** Check if a port is already in use by attempting a TCP connection. */
@@ -201,6 +182,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
 
   // Resolve API key: use provided key or create a new workspace
   let apiKey = options.apiKey;
+  let workspaceId: string | undefined;
 
   if (!apiKey) {
     try {
@@ -219,6 +201,11 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const lookupBody = (await lookupRes.json()) as any;
           apiKey = lookupBody.apiKey ?? lookupBody.api_key ?? lookupBody.data?.apiKey ?? lookupBody.data?.api_key;
+          workspaceId =
+            lookupBody.workspaceId ??
+            lookupBody.workspace_id ??
+            lookupBody.data?.workspaceId ??
+            lookupBody.data?.workspace_id;
         }
         if (!apiKey) {
           return {
@@ -242,6 +229,11 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const successBody = (await res.json()) as any;
         apiKey = successBody.apiKey ?? successBody.api_key ?? successBody.data?.apiKey ?? successBody.data?.api_key;
+        workspaceId =
+          successBody.workspaceId ??
+          successBody.workspace_id ??
+          successBody.data?.workspaceId ??
+          successBody.data?.workspace_id;
       }
 
       if (!apiKey) {
@@ -353,115 +345,54 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   };
   await saveGatewayConfig(gatewayConfig);
 
-  // Register this workspace in the multi-workspace config
-  await addWorkspace({
+  let mcpConfigured = false;
+  let agentToken: string | undefined;
+  try {
+    const registration = await registerRelaycastAgent(gatewayConfig);
+    agentToken = registration.agentToken;
+    workspaceId = workspaceId ?? registration.workspaceId;
+    if (agentToken) {
+      console.log(`Agent "${clawName}" registered with token.`);
+    } else {
+      console.warn('Agent registered but no token found in response.');
+    }
+  } catch (regErr) {
+    console.warn(
+      `Agent registration failed (non-fatal): ${
+        regErr instanceof Error ? regErr.message : String(regErr)
+      }`
+    );
+  }
+
+  if (!workspaceId) {
+    return {
+      ok: false,
+      apiKey: '',
+      clawName,
+      skillDir: '',
+      message:
+        'Workspace registration succeeded but no workspace_id was available. Re-run setup with a workspace that exposes workspace_id metadata.',
+    };
+  }
+
+  const wsConfig = await addWorkspace({
     api_key: apiKey,
     workspace_alias: clawName,
+    workspace_id: workspaceId,
     is_default: true,
+  }, { syncRuntime: false });
+
+  const sync = await syncMcporterServers({
+    gatewayConfig,
+    workspacesConfig: wsConfig,
+    agentToken,
   });
-
-  // Register MCP servers via mcporter (global binary or npx fallback)
-  let mcpConfigured = false;
-  {
-    // Build env args for mcporter, including multi-workspace JSON if available
-    const wsConfig = await loadWorkspacesConfig();
-    const workspacesJson = wsConfig ? buildWorkspacesJson(wsConfig) : null;
-
-    const envArgs = [
-      '--env', `RELAY_API_KEY=${apiKey}`,
-      ...(baseUrl !== 'https://api.relaycast.dev'
-        ? ['--env', `RELAY_BASE_URL=${baseUrl}`]
-        : []),
-      ...(workspacesJson
-        ? ['--env', `RELAY_WORKSPACES_JSON=${workspacesJson}`]
-        : []),
-      ...(wsConfig?.default_workspace
-        ? ['--env', `RELAY_DEFAULT_WORKSPACE=${wsConfig.default_workspace}`]
-        : []),
-    ];
-
-    let mcp: { cmd: string; prefix: string[] } | null = null;
-    try {
-      mcp = resolveMcporter();
-    } catch {
-      console.warn('mcporter not found (tried global binary and npx). MCP tools will not be available.');
-      console.warn('Install mcporter and re-run setup to enable MCP tools:');
-      console.warn('  npm install -g mcporter');
-      console.warn(`  npx -y @agent-relay/openclaw@latest setup ${apiKey} --name ${clawName}`);
-    }
-
-    if (mcp) {
-      try {
-        // Register relaycast messaging MCP server
-        execFileSync(mcp.cmd, [
-          ...mcp.prefix,
-          'config', 'add', 'relaycast',
-          '--command', 'npx',
-          '--arg', '@relaycast/mcp',
-          ...envArgs,
-          '--scope', 'home',
-          '--description', 'Relaycast messaging MCP server',
-        ], { stdio: 'pipe' });
-
-        // Register openclaw-spawner MCP server
-        execFileSync(mcp.cmd, [
-          ...mcp.prefix,
-          'config', 'add', 'openclaw-spawner',
-          '--command', 'npx',
-          '--arg', '@agent-relay/openclaw',
-          '--arg', 'mcp-server',
-          ...envArgs,
-          '--scope', 'home',
-          '--description', 'OpenClaw spawner MCP server',
-        ], { stdio: 'pipe' });
-
-        mcpConfigured = true;
-
-        // Register this claw via the Relaycast SDK and fetch the current
-        // usable agent token for the named claw.
-        //
-        // IMPORTANT: use registerOrGet here, not registerOrRotate.
-        // Re-running setup is a common, user-facing recovery step. Rotating the
-        // token during setup can invalidate an already-running MCP server or any
-        // other local process that still has the previous token, producing the
-        // confusing partial-failure mode where list/read works (workspace key)
-        // but post/send fails with "Invalid agent token".
-        try {
-          const relaycast = new RelayCast({ apiKey, baseUrl });
-          const registered = await relaycast.agents.registerOrGet({
-            name: clawName,
-            type: 'agent',
-          });
-          const agentToken = registered.token;
-
-          if (agentToken) {
-            // Reconfigure mcporter with the agent token so subsequent calls are authenticated
-            try {
-              execFileSync(mcp.cmd, [...mcp.prefix, 'config', 'remove', 'relaycast'], { stdio: 'pipe' });
-            } catch { /* may not exist */ }
-
-            execFileSync(mcp.cmd, [
-              ...mcp.prefix,
-              'config', 'add', 'relaycast',
-              '--command', 'npx',
-              '--arg', '@relaycast/mcp',
-              ...envArgs,
-              '--env', `RELAY_AGENT_TOKEN=${agentToken}`,
-              '--scope', 'home',
-              '--description', 'Relaycast messaging MCP server',
-            ], { stdio: 'pipe' });
-
-            console.log(`Agent "${clawName}" registered with token.`);
-          } else {
-            console.warn('Agent registered but no token found in response.');
-          }
-        } catch (regErr) {
-          console.warn(`Agent registration failed (non-fatal): ${regErr instanceof Error ? regErr.message : String(regErr)}`);
-        }
-      } catch (err) {
-        console.warn(`mcporter configuration failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
+  mcpConfigured = sync.configured;
+  if (!sync.configured) {
+    console.warn('mcporter not found (tried global binary and npx). MCP tools will not be available.');
+    console.warn('Install mcporter and re-run setup to enable MCP tools:');
+    console.warn('  npm install -g mcporter');
+    console.warn(`  npx -y @agent-relay/openclaw@latest setup ${apiKey} --name ${clawName}`);
   }
 
   // Auto-start the inbound gateway in the background, but only if one isn't

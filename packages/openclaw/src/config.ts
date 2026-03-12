@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 
 import type { GatewayConfig, WorkspaceEntry, WorkspacesConfig } from './types.js';
+import { registerRelaycastAgent, syncMcporterServers } from './mcporter-config.js';
 
 function envValue(vars: Record<string, string>, key: string): string | undefined {
   const processValue = process.env[key]?.trim();
@@ -352,12 +353,22 @@ export async function loadWorkspacesConfig(): Promise<WorkspacesConfig | null> {
 
   try {
     const raw = await readFile(configPath, 'utf-8');
-    return JSON.parse(raw) as WorkspacesConfig;
+    const parsed = JSON.parse(raw) as WorkspacesConfig;
+    const normalized = normalizeWorkspacesConfig(parsed);
+
+    for (const warning of normalized.warnings) {
+      console.warn(`Warning: ${warning}`);
+    }
+    if (normalized.changed) {
+      await saveWorkspacesConfig(normalized.config);
+    }
+
+    return normalized.config;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`Warning: failed to parse ${configPath}: ${message}`);
     console.warn('The file may be corrupted. Existing workspace config will not be modified.');
-    return { workspaces: [], default_workspace: undefined };
+    return { workspaces: [] };
   }
 }
 
@@ -367,69 +378,107 @@ export async function loadWorkspacesConfig(): Promise<WorkspacesConfig | null> {
 export async function saveWorkspacesConfig(config: WorkspacesConfig): Promise<void> {
   const configPath = await workspacesConfigPath();
   await mkdir(dirname(configPath), { recursive: true });
-  await writeFile(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+  const normalized: WorkspacesConfig = {
+    workspaces: config.workspaces,
+    ...(config.default_workspace_id ? { default_workspace_id: config.default_workspace_id } : {}),
+  };
+  await writeFile(configPath, JSON.stringify(normalized, null, 2) + '\n', 'utf-8');
 }
 
 /**
  * Add a workspace entry. If an entry with the same api_key already exists,
  * it is updated in place. The first workspace added becomes the default.
  */
-export async function addWorkspace(entry: WorkspaceEntry): Promise<WorkspacesConfig> {
-  let config = await loadWorkspacesConfig();
+export interface WorkspaceMutationOptions {
+  syncRuntime?: boolean;
+}
 
-  if (!config) {
-    // Bootstrap from existing single-workspace .env if available
-    const gateway = await loadGatewayConfig();
-    if (gateway) {
-      config = {
-        workspaces: [{
-          api_key: gateway.apiKey,
-          workspace_alias: gateway.clawName,
-          is_default: true,
-        }],
-        default_workspace: gateway.clawName,
-      };
-    } else {
-      config = { workspaces: [], default_workspace: undefined };
-    }
-  }
-
-  const normalizeWorkspaceLabel = (workspace: WorkspaceEntry): string => {
-    return workspace.workspace_alias ?? workspace.workspace_id ?? workspace.api_key;
+export async function addWorkspace(
+  entry: WorkspaceEntry,
+  options: WorkspaceMutationOptions = {}
+): Promise<WorkspacesConfig> {
+  const config = await loadOrBootstrapWorkspacesConfig();
+  const normalizedEntry = normalizeWorkspaceEntry(entry);
+  const existingIdx = config.workspaces.findIndex((w) => w.api_key === normalizedEntry.api_key);
+  const existingEntry = existingIdx >= 0 ? config.workspaces[existingIdx] : undefined;
+  const mergedEntry = {
+    ...existingEntry,
+    ...normalizedEntry,
+    ...(normalizedEntry.is_default === undefined && existingEntry
+      ? { is_default: existingEntry.is_default }
+      : {}),
   };
 
-  // Check for existing entry with same api_key
-  const hasExplicitDefault = entry.is_default !== undefined;
-  const existingIdx = config.workspaces.findIndex((w) => w.api_key === entry.api_key);
+  if (mergedEntry.is_default && !mergedEntry.workspace_id) {
+    throw new Error(
+      `Workspace "${workspaceDisplayLabel(mergedEntry)}" is missing workspace_id. Pass --workspace-id before setting it as default.`
+    );
+  }
+
+  assertUniqueWorkspaceAlias(
+    config.workspaces.filter((workspace) => workspace.api_key !== normalizedEntry.api_key),
+    mergedEntry
+  );
+
   if (existingIdx >= 0) {
-    const existingEntry = config.workspaces[existingIdx];
-    config.workspaces[existingIdx] = { ...existingEntry, ...entry };
-    if (!hasExplicitDefault) {
-      config.workspaces[existingIdx].is_default = existingEntry.is_default;
-    }
-    const updatedEntry = config.workspaces[existingIdx];
-    if (updatedEntry.is_default) {
-      config.default_workspace = normalizeWorkspaceLabel(updatedEntry);
-    }
+    config.workspaces[existingIdx] = mergedEntry;
   } else {
-    config.workspaces.push(entry);
+    config.workspaces.push(mergedEntry);
   }
 
-  const targetWorkspace = config.workspaces.find((w) => w.api_key === entry.api_key);
-  if (!targetWorkspace) {
-    throw new Error(`Failed to locate workspace entry for ${entry.api_key}`);
-  }
+  const shouldPromoteToDefault =
+    mergedEntry.is_default === true ||
+    (!config.default_workspace_id &&
+      config.workspaces.length === 1 &&
+      Boolean(mergedEntry.workspace_id));
 
-  // If this is explicitly default, or this is the first workspace without an existing default,
-  // set it as default.
-  if (
-    entry.is_default === true ||
-    (config.default_workspace === undefined && config.workspaces.length === 1)
+  if (shouldPromoteToDefault && mergedEntry.workspace_id) {
+    applyDefaultWorkspaceId(config, mergedEntry.workspace_id);
+  } else if (
+    existingEntry?.is_default &&
+    mergedEntry.workspace_id &&
+    (!config.default_workspace_id || config.default_workspace_id === existingEntry.workspace_id)
   ) {
-    config.default_workspace = normalizeWorkspaceLabel(targetWorkspace);
-    for (const w of config.workspaces) {
-      w.is_default = w.api_key === targetWorkspace.api_key;
+    applyDefaultWorkspaceId(config, mergedEntry.workspace_id);
+  }
+
+  const shouldSyncRuntime = options.syncRuntime !== false;
+  const gateway = await loadGatewayConfig();
+  if (shouldSyncRuntime && gateway && config.default_workspace_id && mergedEntry.workspace_id === config.default_workspace_id) {
+    gateway.apiKey = mergedEntry.api_key;
+    await saveGatewayConfig(gateway);
+
+    let agentToken: string | undefined;
+    try {
+      const registration = await registerRelaycastAgent(gateway);
+      agentToken = registration.agentToken;
+    } catch (err) {
+      console.warn(
+        `[config] Failed to refresh Relaycast agent token for "${gateway.clawName}": ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
     }
+
+    const sync = await syncMcporterServers({
+      gatewayConfig: gateway,
+      workspacesConfig: config,
+      agentToken,
+    });
+    if (!sync.configured) {
+      console.warn('mcporter not found (tried global binary and npx). MCP tools were not updated.');
+    }
+  } else if (shouldSyncRuntime && gateway) {
+    const sync = await syncMcporterServers({
+      gatewayConfig: gateway,
+      workspacesConfig: config,
+    });
+    if (!sync.configured) {
+      console.warn('mcporter not found (tried global binary and npx). MCP tools were not updated.');
+    }
+  } else if (!shouldSyncRuntime && gateway && config.default_workspace_id && mergedEntry.workspace_id === config.default_workspace_id) {
+    gateway.apiKey = mergedEntry.api_key;
+    await saveGatewayConfig(gateway);
   }
 
   await saveWorkspacesConfig(config);
@@ -452,22 +501,42 @@ export async function switchWorkspace(identifier: string): Promise<WorkspacesCon
   const config = await loadWorkspacesConfig();
   if (!config) return null;
 
-  const target = config.workspaces.find(
-    (w) => w.workspace_alias === identifier || w.workspace_id === identifier
-  );
+  const target = resolveWorkspaceTarget(config.workspaces, identifier);
   if (!target) return null;
-
-  config.default_workspace = target.workspace_alias ?? target.workspace_id ?? target.api_key;
-  for (const w of config.workspaces) {
-    w.is_default = w.api_key === target.api_key;
+  if (!target.workspace_id) {
+    throw new Error(
+      `Workspace "${workspaceDisplayLabel(target)}" is missing workspace_id and cannot be selected as the default workspace.`
+    );
   }
+
+  applyDefaultWorkspaceId(config, target.workspace_id);
 
   // Also update the single-workspace .env to match the new default
   const gateway = await loadGatewayConfig();
   if (gateway) {
     gateway.apiKey = target.api_key;
-    gateway.clawName = target.workspace_alias ?? target.workspace_id ?? target.api_key;
     await saveGatewayConfig(gateway);
+
+    let agentToken: string | undefined;
+    try {
+      const registration = await registerRelaycastAgent(gateway);
+      agentToken = registration.agentToken;
+    } catch (err) {
+      console.warn(
+        `[config] Failed to refresh Relaycast agent token for "${gateway.clawName}": ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+
+    const sync = await syncMcporterServers({
+      gatewayConfig: gateway,
+      workspacesConfig: config,
+      agentToken,
+    });
+    if (!sync.configured) {
+      console.warn('mcporter not found (tried global binary and npx). MCP tools were not updated.');
+    }
   }
 
   await saveWorkspacesConfig(config);
@@ -488,9 +557,152 @@ export function buildWorkspacesJson(config: WorkspacesConfig): string | null {
   }));
 
   const payload: Record<string, unknown> = { memberships };
-  if (config.default_workspace) {
-    payload.default_workspace_id = config.default_workspace;
+  if (config.default_workspace_id) {
+    payload.default_workspace_id = config.default_workspace_id;
   }
 
   return JSON.stringify(payload);
+}
+
+function normalizeWorkspaceEntry(entry: WorkspaceEntry): WorkspaceEntry {
+  const workspaceAlias = entry.workspace_alias?.trim();
+  const workspaceId = entry.workspace_id?.trim();
+  return {
+    ...entry,
+    ...(workspaceAlias ? { workspace_alias: workspaceAlias } : {}),
+    ...(workspaceId ? { workspace_id: workspaceId } : {}),
+  };
+}
+
+function normalizeAlias(alias?: string): string | null {
+  const trimmed = alias?.trim();
+  return trimmed ? trimmed.toLowerCase() : null;
+}
+
+function workspaceDisplayLabel(workspace: WorkspaceEntry): string {
+  return workspace.workspace_alias ?? workspace.workspace_id ?? workspace.api_key;
+}
+
+function applyDefaultWorkspaceId(config: WorkspacesConfig, workspaceId: string): void {
+  config.default_workspace_id = workspaceId;
+  delete config.default_workspace;
+  for (const workspace of config.workspaces) {
+    workspace.is_default = workspace.workspace_id === workspaceId;
+  }
+}
+
+function assertUniqueWorkspaceAlias(existing: WorkspaceEntry[], candidate: WorkspaceEntry): void {
+  const normalizedAlias = normalizeAlias(candidate.workspace_alias);
+  if (!normalizedAlias) return;
+
+  const conflict = existing.find((workspace) => normalizeAlias(workspace.workspace_alias) === normalizedAlias);
+  if (!conflict) return;
+
+  throw new Error(
+    `Workspace alias "${candidate.workspace_alias}" is already used by "${workspaceDisplayLabel(conflict)}". Aliases must be unique.`
+  );
+}
+
+function resolveWorkspaceTarget(workspaces: WorkspaceEntry[], identifier: string): WorkspaceEntry | null {
+  const trimmed = identifier.trim();
+  if (!trimmed) return null;
+
+  const normalizedIdentifier = trimmed.toLowerCase();
+  const matches = workspaces.filter(
+    (workspace) =>
+      workspace.workspace_id === trimmed ||
+      workspace.api_key === trimmed ||
+      normalizeAlias(workspace.workspace_alias) === normalizedIdentifier
+  );
+
+  const uniqueMatches = matches.filter(
+    (workspace, index) =>
+      matches.findIndex((candidate) => candidate.api_key === workspace.api_key) === index
+  );
+
+  if (uniqueMatches.length > 1) {
+    throw new Error(
+      `Workspace selector "${identifier}" is ambiguous. Matches: ${uniqueMatches
+        .map((workspace) => workspaceDisplayLabel(workspace))
+        .join(', ')}.`
+    );
+  }
+
+  return uniqueMatches[0] ?? null;
+}
+
+async function loadOrBootstrapWorkspacesConfig(): Promise<WorkspacesConfig> {
+  const existing = await loadWorkspacesConfig();
+  if (existing) return existing;
+
+  const gateway = await loadGatewayConfig();
+  if (!gateway) {
+    return { workspaces: [] };
+  }
+
+  return {
+    workspaces: [
+      {
+        api_key: gateway.apiKey,
+        workspace_alias: gateway.clawName,
+        is_default: true,
+      },
+    ],
+  };
+}
+
+function normalizeWorkspacesConfig(config: WorkspacesConfig): {
+  config: WorkspacesConfig;
+  changed: boolean;
+  warnings: string[];
+} {
+  const normalized: WorkspacesConfig = {
+    workspaces: config.workspaces.map((workspace) => normalizeWorkspaceEntry(workspace)),
+  };
+  const warnings: string[] = [];
+  let changed = false;
+
+  const selector = config.default_workspace_id ?? config.default_workspace;
+  let resolvedDefaultWorkspaceId: string | undefined;
+  if (selector) {
+    try {
+      resolvedDefaultWorkspaceId = resolveWorkspaceTarget(normalized.workspaces, selector)?.workspace_id;
+    } catch (err) {
+      warnings.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  if (!resolvedDefaultWorkspaceId) {
+    const explicitDefaults = normalized.workspaces.filter((workspace) => workspace.is_default);
+    if (explicitDefaults.length === 1 && explicitDefaults[0].workspace_id) {
+      resolvedDefaultWorkspaceId = explicitDefaults[0].workspace_id;
+    } else if (!selector && normalized.workspaces.length === 1 && normalized.workspaces[0].workspace_id) {
+      resolvedDefaultWorkspaceId = normalized.workspaces[0].workspace_id;
+    }
+  }
+
+  if (selector && !resolvedDefaultWorkspaceId) {
+    warnings.push(
+      `Could not migrate default workspace selector "${selector}" to a canonical workspace_id.`
+    );
+  }
+
+  if (resolvedDefaultWorkspaceId) {
+    normalized.default_workspace_id = resolvedDefaultWorkspaceId;
+    for (const workspace of normalized.workspaces) {
+      workspace.is_default = workspace.workspace_id === resolvedDefaultWorkspaceId;
+    }
+  }
+
+  if (config.default_workspace !== undefined) {
+    changed = true;
+  }
+  if (config.default_workspace_id !== normalized.default_workspace_id) {
+    changed = true;
+  }
+  if (JSON.stringify(config.workspaces) !== JSON.stringify(normalized.workspaces)) {
+    changed = true;
+  }
+
+  return { config: normalized, changed, warnings };
 }

@@ -87,7 +87,9 @@ export interface WorkspaceEntry {
 export interface WorkspacesConfig {
   /** All configured workspace entries. */
   workspaces: WorkspaceEntry[];
-  /** Alias or workspace_id of the default workspace. */
+  /** Canonical workspace_id of the default workspace. */
+  default_workspace_id?: string;
+  /** Legacy alias-preferred selector retained only for migration on load. */
   default_workspace?: string;
 }
 

@@ -4,6 +4,7 @@ import { loadGatewayConfig, addWorkspace, listWorkspaces, switchWorkspace } from
 import { InboundGateway } from './gateway.js';
 import { listOpenClaws, releaseOpenClaw, spawnOpenClaw } from './control.js';
 import { startMcpServer } from './mcp/server.js';
+import { registerRelaycastAgent } from './mcporter-config.js';
 import { runtimeSetup } from './runtime/setup.js';
 
 const require = createRequire(import.meta.url);
@@ -258,12 +259,48 @@ async function runAddWorkspace(
     process.exit(1);
   }
 
-  const config = await addWorkspace({
-    api_key: apiKey,
-    ...(flags['alias'] ? { workspace_alias: flags['alias'] } : {}),
-    ...(flags['workspace-id'] ? { workspace_id: flags['workspace-id'] } : {}),
-    ...(flags['default'] !== undefined ? { is_default: flags['default'] === 'true' } : {}),
-  });
+  const wantsDefault = flags['default'] === 'true';
+  let workspaceId = flags['workspace-id'];
+
+  if (wantsDefault && !workspaceId) {
+    const gateway = await loadGatewayConfig();
+    if (!gateway) {
+      console.error('add-workspace --default requires --workspace-id before setup has been run.');
+      process.exit(1);
+    }
+
+    try {
+      const registration = await registerRelaycastAgent({
+        apiKey,
+        baseUrl: gateway.baseUrl,
+        clawName: gateway.clawName,
+      });
+      workspaceId = registration.workspaceId;
+    } catch (err) {
+      console.error(
+        `Failed to resolve workspace_id automatically: ${err instanceof Error ? err.message : String(err)}`
+      );
+      process.exit(1);
+    }
+
+    if (!workspaceId) {
+      console.error('add-workspace --default could not resolve workspace_id automatically. Pass --workspace-id.');
+      process.exit(1);
+    }
+  }
+
+  let config;
+  try {
+    config = await addWorkspace({
+      api_key: apiKey,
+      ...(flags['alias'] ? { workspace_alias: flags['alias'] } : {}),
+      ...(workspaceId ? { workspace_id: workspaceId } : {}),
+      ...(flags['default'] !== undefined ? { is_default: flags['default'] === 'true' } : {}),
+    });
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
 
   const entry = config.workspaces.find((w) => w.api_key === apiKey);
   const label = entry?.workspace_alias
@@ -271,8 +308,8 @@ async function runAddWorkspace(
     ?? apiKey.slice(0, 12) + '...';
   console.log(`Workspace "${label}" added.`);
   console.log(`Total workspaces: ${config.workspaces.length}`);
-  if (config.default_workspace) {
-    console.log(`Default workspace: ${config.default_workspace}`);
+  if (config.default_workspace_id) {
+    console.log(`Default workspace: ${config.default_workspace_id}`);
   }
 }
 
@@ -302,15 +339,21 @@ async function runSwitchWorkspace(positional: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const result = await switchWorkspace(identifier);
+  let result;
+  try {
+    result = await switchWorkspace(identifier);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
   if (!result) {
     console.error(`Workspace "${identifier}" not found.`);
     console.error('Run "relay-openclaw list-workspaces" to see available workspaces.');
     process.exit(1);
   }
 
-  console.log(`Switched default workspace to "${identifier}".`);
-  console.log('The .env config has been updated. Restart the gateway to apply.');
+  console.log(`Switched default workspace to "${result.default_workspace_id ?? identifier}".`);
+  console.log('Gateway and MCP configuration were updated for the selected workspace.');
 }
 
 async function main(): Promise<void> {
