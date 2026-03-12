@@ -253,8 +253,14 @@ interface StepEvidenceRecord {
   filesCaptured: boolean;
 }
 
+interface StepSignalParticipants {
+  ownerSenders: Set<string>;
+  workerSenders: Set<string>;
+}
+
 interface ChannelEvidenceOptions {
   stepName?: string;
+  sender?: string;
   actor?: string;
   role?: string;
   target?: string;
@@ -345,6 +351,8 @@ export class WorkflowRunner {
   private readonly runtimeStepAgents = new Map<string, RuntimeStepAgent>();
   /** Per-step completion evidence collected across output, channel, files, and tool side-effects. */
   private readonly stepCompletionEvidence = new Map<string, StepEvidenceRecord>();
+  /** Expected owner/worker identities per step so coordination signals can be validated by sender. */
+  private readonly stepSignalParticipants = new Map<string, StepSignalParticipants>();
   /** Resolved named paths from the top-level `paths` config, keyed by name → absolute directory. */
   private resolvedPaths = new Map<string, string>();
 
@@ -450,7 +458,10 @@ export class WorkflowRunner {
 
   public getStepCompletionEvidence(stepName: string): StepCompletionEvidence | undefined {
     const record = this.stepCompletionEvidence.get(stepName);
-    return record ? structuredClone(record.evidence) : undefined;
+    if (!record) return undefined;
+
+    const evidence = structuredClone(record.evidence);
+    return this.filterStepEvidenceBySignalProvenance(stepName, evidence);
   }
 
   private getOrCreateStepEvidenceRecord(stepName: string): StepEvidenceRecord {
@@ -481,6 +492,97 @@ export class WorkflowRunner {
     return record;
   }
 
+  private initializeStepSignalParticipants(
+    stepName: string,
+    ownerSender?: string,
+    workerSender?: string
+  ): void {
+    this.stepSignalParticipants.set(stepName, {
+      ownerSenders: new Set(),
+      workerSenders: new Set(),
+    });
+    this.rememberStepSignalSender(stepName, 'owner', ownerSender);
+    this.rememberStepSignalSender(stepName, 'worker', workerSender);
+  }
+
+  private rememberStepSignalSender(
+    stepName: string,
+    participant: 'owner' | 'worker',
+    ...senders: Array<string | undefined>
+  ): void {
+    const participants =
+      this.stepSignalParticipants.get(stepName) ??
+      {
+        ownerSenders: new Set<string>(),
+        workerSenders: new Set<string>(),
+      };
+    this.stepSignalParticipants.set(stepName, participants);
+
+    const target =
+      participant === 'owner' ? participants.ownerSenders : participants.workerSenders;
+    for (const sender of senders) {
+      const trimmed = sender?.trim();
+      if (trimmed) target.add(trimmed);
+    }
+  }
+
+  private resolveSignalParticipantKind(role?: string): 'owner' | 'worker' | undefined {
+    const roleLC = role?.toLowerCase().trim();
+    if (!roleLC) return undefined;
+    if (/\b(owner|lead|supervisor)\b/.test(roleLC)) return 'owner';
+    if (/\b(worker|specialist|engineer|implementer)\b/.test(roleLC)) return 'worker';
+    return undefined;
+  }
+
+  private isSignalFromExpectedSender(stepName: string, signal: CompletionEvidenceSignal): boolean {
+    const expectedParticipant =
+      signal.kind === 'worker_done'
+        ? 'worker'
+        : signal.kind === 'lead_done'
+          ? 'owner'
+          : undefined;
+    if (!expectedParticipant) return true;
+
+    const participants = this.stepSignalParticipants.get(stepName);
+    if (!participants) return true;
+
+    const allowedSenders =
+      expectedParticipant === 'owner' ? participants.ownerSenders : participants.workerSenders;
+    if (allowedSenders.size === 0) return true;
+
+    const sender = signal.sender ?? signal.actor;
+    if (sender) {
+      return allowedSenders.has(sender);
+    }
+
+    const observedParticipant = this.resolveSignalParticipantKind(signal.role);
+    if (observedParticipant) {
+      return observedParticipant === expectedParticipant;
+    }
+
+    return signal.source !== 'channel';
+  }
+
+  private filterStepEvidenceBySignalProvenance(
+    stepName: string,
+    evidence: StepCompletionEvidence
+  ): StepCompletionEvidence {
+    evidence.channelPosts = evidence.channelPosts.map((post) => {
+      const signals = post.signals.filter((signal) =>
+        this.isSignalFromExpectedSender(stepName, signal)
+      );
+      return {
+        ...post,
+        completionRelevant: signals.length > 0,
+        signals,
+      };
+    });
+    evidence.coordinationSignals = evidence.coordinationSignals.filter((signal) =>
+      this.isSignalFromExpectedSender(stepName, signal)
+    );
+    return evidence;
+  }
+
   private beginStepEvidence(stepName: string, roots: Array<string | undefined>, startedAt?: string): void {
     const record = this.getOrCreateStepEvidenceRecord(stepName);
     const evidence = record.evidence;
@@ -503,7 +605,8 @@ export class WorkflowRunner {
   private captureStepTerminalEvidence(
     stepName: string,
     output: { stdout?: string; stderr?: string; combined?: string },
-    process?: { exitCode?: number; exitSignal?: string }
+    process?: { exitCode?: number; exitSignal?: string },
+    meta?: { sender?: string; actor?: string; role?: string }
   ): void {
     const record = this.getOrCreateStepEvidenceRecord(stepName);
     const evidence = record.evidence;
@@ -516,13 +619,13 @@ export class WorkflowRunner {
 
     if (output.stdout) {
       evidence.output.stdout = append(evidence.output.stdout, output.stdout);
-      for (const signal of this.extractCompletionSignals(output.stdout, 'stdout', observedAt)) {
+      for (const signal of this.extractCompletionSignals(output.stdout, 'stdout', observedAt, meta)) {
         evidence.coordinationSignals.push(signal);
       }
     }
     if (output.stderr) {
       evidence.output.stderr = append(evidence.output.stderr, output.stderr);
-      for (const signal of this.extractCompletionSignals(output.stderr, 'stderr', observedAt)) {
+      for (const signal of this.extractCompletionSignals(output.stderr, 'stderr', observedAt, meta)) {
         evidence.coordinationSignals.push(signal);
       }
     }
@@ -615,7 +718,9 @@ export class WorkflowRunner {
 
     const record = this.getOrCreateStepEvidenceRecord(stepName);
     const postedAt = new Date().toISOString();
+    const sender = options.sender ?? options.actor;
     const signals = this.extractCompletionSignals(text, 'channel', postedAt, {
+      sender,
       actor: options.actor,
       role: options.role,
     });
@@ -626,6 +731,7 @@ export class WorkflowRunner {
       postedAt,
       origin: options.origin ?? 'runner_post',
       completionRelevant: signals.length > 0,
+      sender,
       actor: options.actor,
       role: options.role,
       target: options.target,
@@ -641,7 +747,7 @@ export class WorkflowRunner {
     text: string,
     source: CompletionEvidenceSignal['source'],
     observedAt: string,
-    meta?: { actor?: string; role?: string }
+    meta?: { sender?: string; actor?: string; role?: string }
   ): CompletionEvidenceSignal[] {
     const signals: CompletionEvidenceSignal[] = [];
     const seen = new Set<string>();
@@ -660,6 +766,7 @@ export class WorkflowRunner {
         source,
         text: trimmed,
         observedAt,
+        sender: meta?.sender,
         actor: meta?.actor,
         role: meta?.role,
         value,
@@ -1979,6 +2086,7 @@ export class WorkflowRunner {
           if (this.channel && (msg.to === this.channel || msg.to === `#${this.channel}`)) {
             const runtimeAgent = this.runtimeStepAgents.get(msg.from);
             this.recordChannelEvidence(msg.text, {
+              sender: runtimeAgent?.logicalName ?? msg.from,
               actor: msg.from,
               role: runtimeAgent?.role,
               target: msg.to,
@@ -3122,6 +3230,7 @@ export class WorkflowRunner {
         this.postToChannel(
           `**[${step.name}]** Started (owner: ${ownerDef.name}, specialist: ${specialistDef.name})`
         );
+        this.initializeStepSignalParticipants(step.name, ownerDef.name, specialistDef.name);
         await this.trajectory?.stepStarted(step, ownerDef.name, {
           role: usesDedicatedOwner ? 'owner' : 'specialist',
           owner: ownerDef.name,
@@ -3492,7 +3601,13 @@ export class WorkflowRunner {
         }
       },
       onChunk: ({ agentName, chunk }) => {
-        this.forwardAgentChunkToChannel(step.name, 'Worker', agentName, chunk);
+        this.forwardAgentChunkToChannel(
+          step.name,
+          'Worker',
+          agentName,
+          chunk,
+          supervised.specialist.name
+        );
       },
     }).catch((error) => {
       if (!workerSpawned) {
@@ -3594,7 +3709,8 @@ export class WorkflowRunner {
     stepName: string,
     roleLabel: string,
     agentName: string,
-    chunk: string
+    chunk: string,
+    sender?: string
   ): void {
     const lines = WorkflowRunner.stripAnsi(chunk)
       .split('\n')
@@ -3604,6 +3720,7 @@ export class WorkflowRunner {
     for (const line of lines) {
       this.postToChannel(`**[${stepName}]** ${roleLabel} \`${agentName}\`: ${line.slice(0, 280)}`, {
         stepName,
+        sender,
         actor: agentName,
         role: roleLabel,
         origin: 'forwarded_chunk',
@@ -3774,7 +3891,7 @@ export class WorkflowRunner {
     }
 
     if (!explicitOwnerDecision) {
-      const evidenceReason = this.judgeOwnerCompletionByEvidence(ownerOutput);
+      const evidenceReason = this.judgeOwnerCompletionByEvidence(step.name, ownerOutput);
       if (evidenceReason) {
         if (!hasMarker) {
           this.log(
@@ -3886,7 +4003,7 @@ export class WorkflowRunner {
       .find(Boolean);
   }
 
-  private judgeOwnerCompletionByEvidence(ownerOutput: string): string | null {
+  private judgeOwnerCompletionByEvidence(stepName: string, ownerOutput: string): string | null {
     const sanitized = this.stripEchoedPromptLines(ownerOutput, [
       /^STEP OWNER CONTRACT:?$/i,
       /^Preferred final decision format:?$/i,
@@ -3901,14 +4018,22 @@ export class WorkflowRunner {
       /\b(complete(?:d)?|done|verified|looks correct|safe handoff|artifact verified)\b/i.test(
         sanitized
       ) || /\bartifacts?\b.*\b(correct|verified|complete)\b/i.test(sanitized);
-    const hasEvidenceSignal =
-      /git diff --stat/i.test(sanitized) ||
-      /\bls -la\b/i.test(sanitized) ||
-      /\b(checked|inspected|verified|confirmed)\b/i.test(sanitized) ||
-      /\bartifacts?\b/i.test(sanitized) ||
-      /\bworker (?:already exited|finished|completed)\b/i.test(sanitized) ||
-      /\btests? pass(?:ed)?\b/i.test(sanitized) ||
-      /\bfile exists?\b/i.test(sanitized);
+    const evidence = this.getStepCompletionEvidence(stepName);
+    const hasValidatedCoordinationSignal =
+      evidence?.coordinationSignals.some(
+        (signal) =>
+          signal.kind === 'worker_done' ||
+          signal.kind === 'lead_done' ||
+          signal.kind === 'verification_passed'
+      ) ?? false;
+    const hasValidatedInspectionSignal =
+      evidence?.toolSideEffects.some(
+        (effect) =>
+          effect.type === 'owner_monitoring' &&
+          (/Checked git diff stats/i.test(effect.detail) ||
+            /Listed files for verification/i.test(effect.detail))
+      ) ?? false;
+    const hasEvidenceSignal = hasValidatedCoordinationSignal || hasValidatedInspectionSignal;
 
     if (!hasPositiveConclusion || !hasEvidenceSignal) {
       return null;
@@ -4672,6 +4797,17 @@ export class WorkflowRunner {
         role: options.evidenceRole ?? agentDef.role ?? 'agent',
         logicalName: options.logicalName ?? agentDef.name,
       });
+      const signalParticipant = this.resolveSignalParticipantKind(
+        options.evidenceRole ?? agentDef.role ?? 'agent'
+      );
+      if (signalParticipant) {
+        this.rememberStepSignalSender(
+          evidenceStepName,
+          signalParticipant,
+          liveAgent.name,
+          options.logicalName ?? agentDef.name
+        );
+      }
 
       // Register in workers.json so `agents:kill` can find this agent
       let workerPid: number | undefined;
@@ -4758,6 +4894,11 @@ export class WorkflowRunner {
           {
             exitCode: agent?.exitCode,
             exitSignal: agent?.exitSignal,
+          },
+          {
+            sender: options.logicalName ?? agentDef.name,
+            actor: agent?.name ?? agentName,
+            role: options.evidenceRole ?? agentDef.role ?? 'agent',
           }
         );
       }
@@ -4796,7 +4937,12 @@ export class WorkflowRunner {
       this.captureStepTerminalEvidence(
         evidenceStepName,
         { stdout: output, combined: output },
-        { exitCode: agent?.exitCode, exitSignal: agent?.exitSignal }
+        { exitCode: agent?.exitCode, exitSignal: agent?.exitSignal },
+        {
+          sender: options.logicalName ?? agentDef.name,
+          actor: agent?.name ?? agentName,
+          role: options.evidenceRole ?? agentDef.role ?? 'agent',
+        }
       );
     }
 
