@@ -23,6 +23,7 @@ import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { stripAnsi as stripAnsiFn } from '../pty.js';
 import type { BrokerEvent } from '../protocol.js';
+import { resolveSpawnPolicy } from '../spawn-from-env.js';
 
 import {
   loadCustomSteps,
@@ -3347,6 +3348,31 @@ export class WorkflowRunner {
           ownerOutput = output;
         }
 
+        // Even non-interactive steps can emit an explicit OWNER_DECISION contract.
+        // Honor retry/fail/clarification signals before verification-driven success so
+        // real runs stay consistent with interactive owner flows.
+        if (!usesOwnerFlow) {
+          const explicitOwnerDecision = this.parseOwnerDecision(step, ownerOutput, false);
+          if (explicitOwnerDecision?.decision === 'INCOMPLETE_RETRY') {
+            throw new WorkflowCompletionError(
+              `Step "${step.name}" owner requested retry${explicitOwnerDecision.reason ? `: ${explicitOwnerDecision.reason}` : ''}`,
+              'retry_requested_by_owner'
+            );
+          }
+          if (explicitOwnerDecision?.decision === 'INCOMPLETE_FAIL') {
+            throw new WorkflowCompletionError(
+              `Step "${step.name}" owner marked the step incomplete${explicitOwnerDecision.reason ? `: ${explicitOwnerDecision.reason}` : ''}`,
+              'failed_owner_decision'
+            );
+          }
+          if (explicitOwnerDecision?.decision === 'NEEDS_CLARIFICATION') {
+            throw new WorkflowCompletionError(
+              `Step "${step.name}" owner requested clarification before completion${explicitOwnerDecision.reason ? `: ${explicitOwnerDecision.reason}` : ''}`,
+              'retry_requested_by_owner'
+            );
+          }
+        }
+
         // Run verification if configured
         if (step.verification && !usesOwnerFlow) {
           const verificationResult = this.runVerification(
@@ -4872,11 +4898,17 @@ export class WorkflowRunner {
 
     try {
       const agentCwd = this.resolveAgentCwd(agentDef);
+      const interactiveSpawnPolicy = resolveSpawnPolicy({
+        AGENT_NAME: agentName,
+        AGENT_CLI: agentDef.cli,
+        RELAY_API_KEY: this.relayApiKey ?? 'workflow-runner',
+        AGENT_CHANNELS: (agentChannels ?? []).join(','),
+      });
       agent = await this.relay.spawnPty({
         name: agentName,
         cli: agentDef.cli,
         model: agentDef.constraints?.model,
-        args: [],
+        args: interactiveSpawnPolicy.args,
         channels: agentChannels,
         task: taskWithExit,
         idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
