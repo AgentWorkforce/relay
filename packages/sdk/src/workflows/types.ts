@@ -76,6 +76,13 @@ export interface SwarmConfig {
   channel?: string;
   /** Idle agent detection and nudging configuration for interactive agents. */
   idleNudge?: IdleNudgeConfig;
+  /**
+   * Grace period (ms) after an agent exits with code 0 but without posting
+   * the expected coordination signal. During this window the runner checks
+   * verification gates and evidence before failing the step.
+   * Default: 5000 (5 seconds). Set to 0 to disable.
+   */
+  completionGracePeriodMs?: number;
 }
 
 export type SwarmPattern =
@@ -530,6 +537,7 @@ export type WorkflowStepCompletionReason =
   | 'completed_verified'
   | 'completed_by_owner_decision'
   | 'completed_by_evidence'
+  | 'completed_by_process_exit'
   | 'retry_requested_by_owner'
   | 'failed_verification'
   | 'failed_owner_decision'

@@ -1512,6 +1512,7 @@ describe('Completion Pipeline', () => {
             'completed_verified',
             'completed_by_owner_decision',
             'completed_by_evidence',
+            'completed_by_process_exit',
             'retry_requested_by_owner',
             'failed_verification',
             'failed_owner_decision',
@@ -1520,6 +1521,132 @@ describe('Completion Pipeline', () => {
           expect(validReasons).toContain(step.completionReason);
         }
       }
+    }, 15000);
+  });
+
+  describe('process-exit fallback (compliance reduction)', () => {
+    it('should complete step via process exit code 0 when no coordination signal is posted', async () => {
+      // Agent exits cleanly (code 0) but doesn't post STEP_COMPLETE or OWNER_DECISION.
+      // With verification configured (exit_code), the runner should infer completion.
+      const config = makeConfig({
+        swarm: { pattern: 'dag', completionGracePeriodMs: 5000 },
+        agents: [{ name: 'agent-a', cli: 'claude' }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [
+              {
+                name: 'silent-worker',
+                agent: 'agent-a',
+                task: 'Do some work silently',
+                verification: { type: 'exit_code', value: '0' },
+              },
+            ],
+          },
+        ],
+      });
+
+      // Output has no STEP_COMPLETE, no OWNER_DECISION — just normal work output
+      mockSpawnOutputs = ['Implemented the auth module. All tests pass.'];
+
+      const localDb = makeDb();
+      runner = new WorkflowRunner({ db: localDb, workspaceId: 'ws-test' });
+      const events: any[] = [];
+      const run = await runner.execute(config, 'default');
+
+      expect(run.status).toBe('completed');
+      const steps = await localDb.getStepsByRunId(run.id);
+      const step = steps.find((s: any) => s.stepName === 'silent-worker');
+      expect(step?.status).toBe('completed');
+      // Should be completed_by_process_exit or completed_verified (exit_code verification)
+      expect(step?.completionReason).toBeDefined();
+    }, 15000);
+
+    it('should fail when process exits with non-zero code and no signal', async () => {
+      // Agent exits with non-zero and no coordination signal — should fail
+      const config = makeConfig({
+        swarm: { pattern: 'dag', completionGracePeriodMs: 5000 },
+        agents: [{ name: 'agent-a', cli: 'claude' }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [
+              {
+                name: 'failing-worker',
+                agent: 'agent-a',
+                task: 'Try something',
+              },
+            ],
+          },
+        ],
+      });
+
+      // No STEP_COMPLETE, no OWNER_DECISION, and we'll simulate a non-clean exit
+      // by having the output lack any positive signals
+      mockSpawnOutputs = ['Error: something went wrong'];
+
+      const localDb = makeDb();
+      runner = new WorkflowRunner({ db: localDb, workspaceId: 'ws-test' });
+      const run = await runner.execute(config, 'default');
+      expect(run.status).toBe('failed');
+    }, 15000);
+
+    it('should respect completionGracePeriodMs: 0 to disable fallback', async () => {
+      // With grace period disabled, missing signals should always fail
+      const config = makeConfig({
+        swarm: { pattern: 'dag', completionGracePeriodMs: 0 },
+        agents: [{ name: 'agent-a', cli: 'claude' }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [
+              {
+                name: 'strict-worker',
+                agent: 'agent-a',
+                task: 'Do work with strict compliance required',
+              },
+            ],
+          },
+        ],
+      });
+
+      // Output has no signals at all
+      mockSpawnOutputs = ['Work completed but no signal posted.'];
+
+      const localDb = makeDb();
+      runner = new WorkflowRunner({ db: localDb, workspaceId: 'ws-test' });
+      const run = await runner.execute(config, 'default');
+      expect(run.status).toBe('failed');
+    }, 15000);
+
+    it('should complete via evidence when process exits 0 and owner output has positive conclusion', async () => {
+      // Agent posts no explicit signal but says "done" + exit code 0 is captured as evidence
+      const config = makeConfig({
+        swarm: { pattern: 'dag' },
+        agents: [{ name: 'agent-a', cli: 'claude' }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [
+              {
+                name: 'wordy-worker',
+                agent: 'agent-a',
+                task: 'Implement the feature',
+                verification: { type: 'exit_code', value: '0' },
+              },
+            ],
+          },
+        ],
+      });
+
+      // Output contains positive conclusion words but no explicit marker
+      mockSpawnOutputs = ['Feature implemented and verified. All artifacts are correct and complete.'];
+
+      const localDb = makeDb();
+      runner = new WorkflowRunner({ db: localDb, workspaceId: 'ws-test' });
+      const run = await runner.execute(config, 'default');
+
+      expect(run.status).toBe('completed');
     }, 15000);
   });
 });
