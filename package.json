@@ -184,6 +184,7 @@
     "@agent-relay/user-directory": "3.1.23",
     "@agent-relay/utils": "3.1.23",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "@relaycast/mcp": "^0.5.1",
     "@relaycast/sdk": "^0.4.0",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",

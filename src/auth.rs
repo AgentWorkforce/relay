@@ -575,10 +575,23 @@ impl AuthClient {
     }
 
     async fn create_workspace(&self, name: &str) -> Result<(String, String)> {
-        let result = RelayCast::create_workspace(name, Some(&self.base_url))
-            .await
-            .map_err(relay_error_to_anyhow)?;
-        Ok((result.workspace_id, result.api_key))
+        match RelayCast::create_workspace(name, Some(&self.base_url)).await {
+            Ok(result) => Ok((result.workspace_id, result.api_key)),
+            Err(error) if is_workspace_name_conflict(&error) => {
+                let suffix = Uuid::new_v4().simple().to_string();
+                let fallback_name = format!("{name}-{}", &suffix[..8]);
+                tracing::warn!(
+                    workspace_name = %name,
+                    fallback_name = %fallback_name,
+                    "workspace already exists; retrying with a fresh fallback name"
+                );
+                let result = RelayCast::create_workspace(&fallback_name, Some(&self.base_url))
+                    .await
+                    .map_err(relay_error_to_anyhow)?;
+                Ok((result.workspace_id, result.api_key))
+            }
+            Err(error) => Err(relay_error_to_anyhow(error)),
+        }
     }
 
     async fn register_agent_with_workspace_key(
@@ -740,6 +753,21 @@ fn is_conflict_code(code: &str) -> bool {
     )
 }
 
+fn is_workspace_name_conflict(error: &RelayError) -> bool {
+    match error {
+        RelayError::Api {
+            code,
+            message,
+            status,
+        } => {
+            *status == 409
+                || is_conflict_code(code)
+                || message.to_ascii_lowercase().contains("already exists")
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Mutex, MutexGuard};
@@ -761,6 +789,8 @@ mod tests {
         // contexts but we accept the risk in test code.
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
+            std::env::remove_var("RELAY_WORKSPACES_JSON");
+            std::env::remove_var("RELAY_DEFAULT_WORKSPACE");
         }
         guard
     }
@@ -947,6 +977,49 @@ mod tests {
         workspace.assert_hits(1);
         first_conflict.assert_hits(1);
         second_success.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn workspace_name_conflict_retries_with_fresh_suffix() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        let workspace_name = super::deterministic_workspace_name();
+        let first_conflict = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/workspaces")
+                .json_body(json!({ "name": workspace_name }));
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(
+                    r#"{"ok":false,"error":{"code":"workspace_already_exists","message":"Workspace already exists"}}"#,
+                );
+        });
+        let second_workspace = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/workspaces")
+                .body_contains(&format!("\"name\":\"{workspace_name}-"));
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"workspace_id":"ws_fallback","api_key":"rk_live_fallback","created_at":"2025-01-01T00:00:00Z"}}"#);
+        });
+        let register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_fallback");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a_fallback","name":"lead","token":"at_live_fallback","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
+        });
+
+        let client = AuthClient::new(server.base_url());
+        let session = client.startup_session(Some("lead")).await.unwrap();
+
+        assert_eq!(session.token, "at_live_fallback");
+        assert_eq!(session.credentials.api_key, "rk_live_fallback");
+        assert_eq!(session.credentials.workspace_id, "ws_fallback");
+        first_conflict.assert_hits(1);
+        second_workspace.assert_hits(1);
+        register.assert_hits(1);
     }
 
     #[tokio::test]
