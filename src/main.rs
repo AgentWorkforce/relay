@@ -807,7 +807,7 @@ impl WorkerRegistry {
 
                 // Inject --model flag when spec.model is set and not already in args.
                 let model_flag = spec.model.as_deref().and_then(|m| {
-                    if m.is_empty() || effective_args.iter().any(|a| a == "--model" || a == "-m") {
+                    if m.is_empty() || effective_args.iter().any(|a| a == "--model" || a.starts_with("--model=") || a == "-m") {
                         None
                     } else {
                         Some(m.to_string())
@@ -7620,7 +7620,7 @@ mod tests {
     /// Mirror of the model flag logic in WorkerRegistry::spawn().
     fn compute_model_flag(model: Option<&str>, existing_args: &[String]) -> Option<String> {
         model.and_then(|m| {
-            if m.is_empty() || existing_args.iter().any(|a| a == "--model" || a == "-m") {
+            if m.is_empty() || existing_args.iter().any(|a| a == "--model" || a.starts_with("--model=") || a == "-m") {
                 None
             } else {
                 Some(m.to_string())
@@ -7672,6 +7672,16 @@ mod tests {
             compute_model_flag(Some("haiku"), &args),
             None,
             "model should not be injected when -m already in args"
+        );
+    }
+
+    #[test]
+    fn model_flag_not_injected_when_equals_format_in_args() {
+        let args = vec!["--model=opus".to_string()];
+        assert_eq!(
+            compute_model_flag(Some("haiku"), &args),
+            None,
+            "model should not be injected when --model=value already in args"
         );
     }
 
