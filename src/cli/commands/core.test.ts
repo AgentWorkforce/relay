@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -25,6 +26,67 @@ function createSpawnedProcessMock(overrides: Partial<SpawnedProcess> = {}): Spaw
     unref: vi.fn(() => undefined),
     ...overrides,
   };
+}
+
+type ControlledDashboardProcess = SpawnedProcess & {
+  stdout: EventEmitter;
+  stderr: EventEmitter;
+  on: (event: string, listener: (...args: unknown[]) => void) => ControlledDashboardProcess;
+  off: (event: string, listener: (...args: unknown[]) => void) => ControlledDashboardProcess;
+  removeListener: (event: string, listener: (...args: unknown[]) => void) => ControlledDashboardProcess;
+  emitStdout: (chunk: string) => void;
+  emitStderr: (chunk: string) => void;
+  emitExit: (code: number | null, signal: string | null) => void;
+};
+
+function createControlledDashboardProcessMock(
+  overrides: Partial<SpawnedProcess> = {}
+): ControlledDashboardProcess {
+  const processEvents = new EventEmitter();
+  const stdout = new EventEmitter();
+  const stderr = new EventEmitter();
+
+  const process = {
+    pid: 9001,
+    killed: false,
+    kill: vi.fn((signal?: NodeJS.Signals | number) => {
+      process.killed = true;
+      processEvents.emit('exit', null, typeof signal === 'string' ? signal : null);
+    }),
+    unref: vi.fn(() => undefined),
+    stdout,
+    stderr,
+    on: ((event: string, listener: (...args: unknown[]) => void) => {
+      processEvents.on(event, listener);
+      return process;
+    }) as ControlledDashboardProcess['on'],
+    off: ((event: string, listener: (...args: unknown[]) => void) => {
+      processEvents.off(event, listener);
+      return process;
+    }) as ControlledDashboardProcess['off'],
+    removeListener: ((event: string, listener: (...args: unknown[]) => void) => {
+      processEvents.removeListener(event, listener);
+      return process;
+    }) as ControlledDashboardProcess['removeListener'],
+    emitStdout: (chunk: string) => {
+      stdout.emit('data', Buffer.from(chunk));
+    },
+    emitStderr: (chunk: string) => {
+      stderr.emit('data', Buffer.from(chunk));
+    },
+    emitExit: (code: number | null, signal: string | null) => {
+      processEvents.emit('exit', code, signal);
+    },
+    ...overrides,
+  } as ControlledDashboardProcess;
+
+  return process;
+}
+
+async function flushMicrotasks(rounds = 5): Promise<void> {
+  for (let i = 0; i < rounds; i += 1) {
+    await Promise.resolve();
+  }
 }
 
 function createRelayMock(overrides: Partial<CoreRelay> = {}): CoreRelay {
@@ -192,6 +254,27 @@ describe('registerCoreCommands', () => {
     expect(fs.writeFileSync).toHaveBeenCalledWith(brokerPidPath, '4242\n', 'utf-8');
   });
 
+  it('up does not wait for dashboard port resolution before holding open', async () => {
+    vi.useFakeTimers();
+    try {
+      const { program, deps } = createHarness();
+      let settled = false;
+      const commandPromise = runCommand(program, ['up', '--port', '4999']).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      await flushMicrotasks();
+
+      expect(deps.holdOpen).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(true);
+
+      await expect(commandPromise).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('start dashboard.js logs a focused cli-tools dashboard URL', async () => {
     const relay = createRelayMock({
       getStatus: vi.fn(async () => ({ agent_count: 1, pending_delivery_count: 0 })),
@@ -211,6 +294,61 @@ describe('registerCoreCommands', () => {
     expect(logCalls).toEqual(
       expect.arrayContaining([['Dashboard: http://localhost:4999/dev/cli-tools?tool=claude']])
     );
+  });
+
+  it('start dashboard.js does not wait for dashboard port resolution when reusing a broker', async () => {
+    vi.useFakeTimers();
+    try {
+      const brokerPidPath = '/tmp/project/.agent-relay/broker-project.pid';
+      const fs = createFsMock({ [brokerPidPath]: '3030' });
+      const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+        if (pid === 3030 && (signal === 0 || signal === undefined)) {
+          return;
+        }
+        throw new Error('unexpected kill check');
+      });
+      const { program, deps } = createHarness({ fs, killImpl });
+      let settled = false;
+      const commandPromise = runCommand(program, ['start', 'dashboard.js', 'claude', '--port', '4999']).then(
+        (result) => {
+          settled = true;
+          return result;
+        }
+      );
+
+      await flushMicrotasks();
+
+      expect(deps.holdOpen).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(true);
+
+      await expect(commandPromise).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('up does not wait for dashboard port detection before returning', async () => {
+    vi.useFakeTimers();
+    try {
+      const spawnedProcess = createSpawnedProcessMock({
+        stdout: { on: vi.fn(() => undefined), removeListener: vi.fn(() => undefined), off: vi.fn(() => undefined) },
+        stderr: { on: vi.fn(() => undefined), removeListener: vi.fn(() => undefined), off: vi.fn(() => undefined) },
+        on: vi.fn(() => undefined),
+      } as unknown as Partial<SpawnedProcess>);
+      const { program, deps } = createHarness({ spawnedProcess });
+
+      const commandPromise = runCommand(program, ['up', '--port', '4999']);
+      await vi.runAllTicksAsync();
+      await expect(commandPromise).resolves.toBeUndefined();
+
+      expect(deps.holdOpen).toHaveBeenCalledTimes(1);
+      expect(deps.log).toHaveBeenCalledWith('Dashboard: http://localhost:4999');
+      expect(deps.warn).not.toHaveBeenCalledWith(
+        'Dashboard did not report its bound port quickly; assuming requested port 4999'
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('up exits early when broker pid file points to a running process', async () => {
@@ -474,6 +612,49 @@ describe('registerCoreCommands', () => {
     expect(
       errorCalls.filter((call) => String(call[0]).includes('Dashboard process killed by signal'))
     ).toHaveLength(0);
+  });
+
+  it('up retries dashboard startup in the background and shuts down the fallback process', async () => {
+    vi.useFakeTimers();
+    try {
+      const preferredProcess = createControlledDashboardProcessMock({ pid: 9001 });
+      const fallbackProcess = createControlledDashboardProcessMock({ pid: 9002 });
+      const spawnImpl = vi
+        .fn<CoreDependencies['spawnProcess']>()
+        .mockReturnValueOnce(preferredProcess)
+        .mockReturnValueOnce(fallbackProcess);
+
+      const { program, deps, relay } = createHarness({ spawnImpl });
+
+      await expect(runCommand(program, ['up', '--port', '4999'])).resolves.toBeUndefined();
+
+      preferredProcess.emitExit(1, null);
+      await flushMicrotasks();
+
+      expect(deps.warn).toHaveBeenCalledWith('Retrying dashboard startup using npx @agent-relay/dashboard-server@latest');
+      expect(spawnImpl).toHaveBeenNthCalledWith(
+        2,
+        'npx',
+        expect.arrayContaining(['--yes', '@agent-relay/dashboard-server@latest', '--port', '4999']),
+        expect.any(Object)
+      );
+
+      fallbackProcess.emitStdout('Server running at http://localhost:4999\n');
+      await flushMicrotasks();
+
+      const onSignalMock = deps.onSignal as unknown as { mock: { calls: unknown[][] } };
+      const sigintHandler = onSignalMock.mock.calls.find((call) => call[0] === 'SIGINT')?.[1] as
+        | (() => Promise<void>)
+        | undefined;
+      expect(sigintHandler).toBeDefined();
+
+      await expect((sigintHandler as () => Promise<void>)()).rejects.toMatchObject({ code: 0 });
+      expect(fallbackProcess.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(preferredProcess.kill).not.toHaveBeenCalled();
+      expect(relay.shutdown).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('down stops broker and cleans stale files', async () => {
