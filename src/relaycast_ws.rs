@@ -6,7 +6,7 @@ use relaycast::{
     format_registration_error, retry_agent_registration as sdk_retry_agent_registration,
     AgentClient, AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
     MessageListQuery, RelayCast, RelayCastOptions, RelayError, ReleaseAgentRequest,
-    WsLifecycleEvent,
+    WorkspaceDmConversation, WorkspaceDmMessage, WsLifecycleEvent,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -665,6 +665,64 @@ impl RelaycastHttpClient {
         }
 
         Ok(all_messages)
+    }
+
+    /// Fetch all DM conversations visible to the workspace-level client.
+    pub async fn get_all_dm_conversations(&self) -> Result<Vec<WorkspaceDmConversation>> {
+        let relay = match (*self.relay).as_ref() {
+            Some(relay) => relay,
+            None => {
+                tracing::debug!(
+                    "no relay client available, cannot fetch workspace DM conversations"
+                );
+                return Ok(vec![]);
+            }
+        };
+
+        match relay.all_dm_conversations().await {
+            Ok(conversations) => Ok(conversations),
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to fetch workspace DM conversations");
+                Ok(vec![])
+            }
+        }
+    }
+
+    /// Fetch DM messages for a workspace conversation.
+    pub async fn get_workspace_dm_messages(
+        &self,
+        conversation_id: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<WorkspaceDmMessage>> {
+        let relay = match (*self.relay).as_ref() {
+            Some(relay) => relay,
+            None => {
+                tracing::debug!(
+                    conversation_id = %conversation_id,
+                    "no relay client available, cannot fetch workspace DM messages"
+                );
+                return Ok(vec![]);
+            }
+        };
+
+        let opts = MessageListQuery {
+            limit: Some(limit as i32),
+            after: after.map(str::to_string),
+            ..Default::default()
+        };
+
+        match relay.dm_messages(conversation_id, Some(opts)).await {
+            Ok(messages) => Ok(messages),
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = %conversation_id,
+                    error = %error,
+                    "failed to fetch workspace DM messages"
+                );
+                Ok(vec![])
+            }
+        }
     }
 
     /// Resolve participant names for a DM conversation ID.
