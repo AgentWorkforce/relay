@@ -730,7 +730,10 @@ async function startDashboardWithFallback(
   relayApiKey?: string
 ): Promise<{ process: SpawnedProcess; port: number | null }> {
   const preferredBinary = deps.findDashboardBinary();
-  await refreshDashboardAssetsIfStale(preferredBinary, deps);
+  // Defer asset refresh to background — don't block dashboard spawn.
+  // Assets are only stale on version upgrades; the dashboard can still
+  // serve with the previous version's assets while the refresh completes.
+  refreshDashboardAssetsIfStale(preferredBinary, deps).catch(() => {});
   let process = startDashboard(
     paths,
     dashboardPort,
@@ -765,8 +768,11 @@ async function waitForDashboard(
   deps: Pick<CoreDependencies, 'warn'>,
   isShuttingDown: () => boolean
 ): Promise<void> {
+  // Use exponential backoff: start at 100ms, cap at 500ms.
+  // This reduces the average wait time when the dashboard starts quickly.
   for (let i = 0; i < 20; i++) {
-    await new Promise((r) => setTimeout(r, 500));
+    const delay = Math.min(100 * Math.pow(1.3, i), 500);
+    await new Promise((r) => setTimeout(r, delay));
     if (process.killed) {
       if (!isShuttingDown()) {
         deps.warn(`Warning: Dashboard process exited before becoming ready on port ${port}`);

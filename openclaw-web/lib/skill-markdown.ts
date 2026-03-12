@@ -22,8 +22,7 @@ function resolveSkillPath(): string {
   throw new Error(`Unable to locate SKILL.md. Checked: ${candidates.join(', ')}`);
 }
 
-const SKILL_PATH = resolveSkillPath();
-const SKILL_MARKDOWN = fs.readFileSync(SKILL_PATH, 'utf8');
+let _cachedSkillMarkdown: string | null = null;
 
 const JOIN_WORKSPACE_LINE =
   'Use a shared workspace key (`rk_live_...`) so all claws join the same workspace:';
@@ -32,8 +31,16 @@ const OBSERVER_AUTH_LINE = 'Authenticate with workspace key (`rk_live_...`).';
 const TOKEN_PLACEHOLDER = 'rk_live_YOUR_WORKSPACE_KEY';
 const SETUP_SKIP_NOTE = 'Since you already have a workspace key, skip Step 1 and continue with Step 2 below.';
 
+/**
+ * Lazily read and cache the skill markdown on first access instead of
+ * blocking module load with a synchronous fs.readFileSync call.
+ */
 export function readSkillMarkdown(): string {
-  return SKILL_MARKDOWN;
+  if (_cachedSkillMarkdown === null) {
+    const skillPath = resolveSkillPath();
+    _cachedSkillMarkdown = fs.readFileSync(skillPath, 'utf8');
+  }
+  return _cachedSkillMarkdown;
 }
 
 export function applyInviteToken(markdown: string, inviteToken: string): string {
