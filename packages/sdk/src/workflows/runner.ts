@@ -3713,6 +3713,27 @@ export class WorkflowRunner {
     verificationTaskText?: string
   ): CompletionDecisionResult {
     const hasMarker = this.hasOwnerCompletionMarker(step, ownerOutput, injectedTaskText);
+    const explicitOwnerDecision = this.parseOwnerDecision(step, ownerOutput, false);
+
+    if (explicitOwnerDecision?.decision === 'INCOMPLETE_RETRY') {
+      throw new WorkflowCompletionError(
+        `Step "${step.name}" owner requested retry${explicitOwnerDecision.reason ? `: ${explicitOwnerDecision.reason}` : ''}`,
+        'retry_requested_by_owner'
+      );
+    }
+    if (explicitOwnerDecision?.decision === 'INCOMPLETE_FAIL') {
+      throw new WorkflowCompletionError(
+        `Step "${step.name}" owner marked the step incomplete${explicitOwnerDecision.reason ? `: ${explicitOwnerDecision.reason}` : ''}`,
+        'failed_owner_decision'
+      );
+    }
+    if (explicitOwnerDecision?.decision === 'NEEDS_CLARIFICATION') {
+      throw new WorkflowCompletionError(
+        `Step "${step.name}" owner requested clarification before completion${explicitOwnerDecision.reason ? `: ${explicitOwnerDecision.reason}` : ''}`,
+        'retry_requested_by_owner'
+      );
+    }
+
     const verificationResult = step.verification
       ? this.runVerification(step.verification, specialistOutput, step.name, verificationTaskText, {
           allowFailure: true,
@@ -3720,12 +3741,14 @@ export class WorkflowRunner {
         })
       : { passed: false };
 
-    if (verificationResult.passed) {
-      return { completionReason: 'completed_verified' };
+    if (verificationResult.error) {
+      throw new WorkflowCompletionError(
+        `Step "${step.name}" verification failed and no owner decision or evidence established completion: ${verificationResult.error}`,
+        'failed_verification'
+      );
     }
 
-    const ownerDecision = this.parseOwnerDecision(step, ownerOutput, hasMarker);
-    if (ownerDecision?.decision === 'COMPLETE') {
+    if (explicitOwnerDecision?.decision === 'COMPLETE') {
       if (!hasMarker) {
         this.log(
           `[${step.name}] Structured OWNER_DECISION completed the step without legacy STEP_COMPLETE marker`
@@ -3733,47 +3756,36 @@ export class WorkflowRunner {
       }
       return {
         completionReason: 'completed_by_owner_decision',
+        ownerDecision: explicitOwnerDecision.decision,
+        reason: explicitOwnerDecision.reason,
+      };
+    }
+    if (verificationResult.passed) {
+      return { completionReason: 'completed_verified' };
+    }
+
+    const ownerDecision = this.parseOwnerDecision(step, ownerOutput, hasMarker);
+    if (ownerDecision?.decision === 'COMPLETE') {
+      return {
+        completionReason: 'completed_by_owner_decision',
         ownerDecision: ownerDecision.decision,
         reason: ownerDecision.reason,
       };
     }
-    if (ownerDecision?.decision === 'INCOMPLETE_RETRY') {
-      throw new WorkflowCompletionError(
-        `Step "${step.name}" owner requested retry${ownerDecision.reason ? `: ${ownerDecision.reason}` : ''}`,
-        'retry_requested_by_owner'
-      );
-    }
-    if (ownerDecision?.decision === 'INCOMPLETE_FAIL') {
-      throw new WorkflowCompletionError(
-        `Step "${step.name}" owner marked the step incomplete${ownerDecision.reason ? `: ${ownerDecision.reason}` : ''}`,
-        'failed_owner_decision'
-      );
-    }
-    if (ownerDecision?.decision === 'NEEDS_CLARIFICATION') {
-      throw new WorkflowCompletionError(
-        `Step "${step.name}" owner requested clarification before completion${ownerDecision.reason ? `: ${ownerDecision.reason}` : ''}`,
-        'retry_requested_by_owner'
-      );
-    }
 
-    const evidenceReason = this.judgeOwnerCompletionByEvidence(ownerOutput);
-    if (evidenceReason) {
-      if (!hasMarker) {
-        this.log(
-          `[${step.name}] Evidence-based completion resolved without legacy STEP_COMPLETE marker`
-        );
+    if (!explicitOwnerDecision) {
+      const evidenceReason = this.judgeOwnerCompletionByEvidence(ownerOutput);
+      if (evidenceReason) {
+        if (!hasMarker) {
+          this.log(
+            `[${step.name}] Evidence-based completion resolved without legacy STEP_COMPLETE marker`
+          );
+        }
+        return {
+          completionReason: 'completed_by_evidence',
+          reason: evidenceReason,
+        };
       }
-      return {
-        completionReason: 'completed_by_evidence',
-        reason: evidenceReason,
-      };
-    }
-
-    if (verificationResult.error) {
-      throw new WorkflowCompletionError(
-        `Step "${step.name}" verification failed and no owner decision or evidence established completion: ${verificationResult.error}`,
-        'failed_verification'
-      );
     }
 
     throw new WorkflowCompletionError(
