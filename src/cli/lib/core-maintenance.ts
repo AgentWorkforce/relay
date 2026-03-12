@@ -270,17 +270,30 @@ export async function runUninstallCommand(
 
   // --- Dashboard static assets removal ---
   const homeDir = os.homedir();
-  for (const assetDir of [
+  for (const assetPath of [
     path.join(homeDir, '.relay', 'dashboard', 'out'),
+    path.join(homeDir, '.relay', 'dashboard', '.version'),
     path.join(homeDir, '.agent-relay', 'dashboard', 'out'),
+    path.join(homeDir, '.agent-relay', 'dashboard', '.version'),
   ]) {
-    if (deps.fs.existsSync(assetDir)) {
+    if (deps.fs.existsSync(assetPath)) {
       if (isDryRun) {
-        deps.log(`[dry-run] Would remove dashboard assets: ${assetDir}`);
+        deps.log(`[dry-run] Would remove dashboard asset path: ${assetPath}`);
       } else {
         try {
-          deps.fs.rmSync(assetDir, { recursive: true, force: true });
-          deps.log(`Removed dashboard assets: ${assetDir}`);
+          const isDir = (() => {
+            try {
+              return deps.fs.statSync(assetPath).isDirectory();
+            } catch {
+              return false;
+            }
+          })();
+          if (isDir) {
+            deps.fs.rmSync(assetPath, { recursive: true, force: true });
+          } else {
+            deps.fs.unlinkSync(assetPath);
+          }
+          deps.log(`Removed dashboard asset path: ${assetPath}`);
         } catch {
           // Best-effort.
         }
