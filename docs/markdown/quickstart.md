@@ -96,7 +96,7 @@ asyncio.run(main())
 | Claude   | `Models.Claude.*`   |
 | Codex    | `Models.Codex.*`    |
 | Gemini   | `Models.Gemini.*`   |
-| OpenCode | `Models.OpenCode.*` |
+| OpenCode | `Models.Opencode.*` |
 
 ## Next Steps
 
