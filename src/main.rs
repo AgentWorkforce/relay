@@ -6849,14 +6849,14 @@ mod tests {
     fn injection_format_preserved() {
         let rendered = format_injection("alice", "evt_1", "hello", "bob");
         assert!(rendered.contains("<system-reminder>"));
-        assert!(rendered.contains("mcp__relaycast__send_dm"));
+        assert!(rendered.contains("mcp__relaycast__dm_send"));
         assert!(rendered.contains("Relay message from alice [evt_1]: hello"));
     }
 
     #[test]
     fn injection_format_includes_channel() {
         let rendered = format_injection("alice", "evt_1", "hello", "#general");
-        assert!(rendered.contains("mcp__relaycast__post_message"));
+        assert!(rendered.contains("mcp__relaycast__message_post"));
         assert!(rendered.contains("channel: \"general\""));
         assert!(rendered.contains("Relay message from alice in #general [evt_1]: hello"));
     }

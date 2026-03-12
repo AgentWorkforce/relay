@@ -69,9 +69,9 @@ async function initRelay() {
 const DEFAULT_TASK = [
   'You are a helpful assistant connected to Agent Relay.',
   'When you receive a relay message (it will appear as "Relay message from X [id]: ..."),',
-  'reply by calling mcp__relaycast__post_message with channel: "general" and your reply as the text.',
+  'reply by calling mcp__relaycast__message_post with channel: "general" and your reply as the text.',
   'Do not use send_dm. Do not type your reply in the terminal.',
-  'Only respond via mcp__relaycast__post_message(channel: "general", text: "...").',
+  'Only respond via mcp__relaycast__message_post(channel: "general", text: "...").',
 ].join(' ');
 
 ipcMain.handle('spawn', async (_e, name, cli, task) => {
