@@ -232,25 +232,32 @@ export async function syncMcporterServers(
   const relaycastEnv = buildRelaycastEnv(options.gatewayConfig, options.workspacesConfig, agentToken);
   const spawnerEnv = buildRelaycastEnv(options.gatewayConfig, options.workspacesConfig);
 
-  removeServer(mcp, 'relaycast');
-  addServer(
-    mcp,
-    'relaycast',
-    'npx',
-    ['@relaycast/mcp'],
-    relaycastEnv,
-    'Relaycast messaging MCP server'
-  );
+  try {
+    removeServer(mcp, 'relaycast');
+    addServer(
+      mcp,
+      'relaycast',
+      'npx',
+      ['@relaycast/mcp'],
+      relaycastEnv,
+      'Relaycast messaging MCP server'
+    );
 
-  removeServer(mcp, 'openclaw-spawner');
-  addServer(
-    mcp,
-    'openclaw-spawner',
-    'npx',
-    ['@agent-relay/openclaw', 'mcp-server'],
-    spawnerEnv,
-    'OpenClaw spawner MCP server'
-  );
+    removeServer(mcp, 'openclaw-spawner');
+    addServer(
+      mcp,
+      'openclaw-spawner',
+      'npx',
+      ['@agent-relay/openclaw', 'mcp-server'],
+      spawnerEnv,
+      'OpenClaw spawner MCP server'
+    );
+  } catch (err) {
+    console.warn(
+      `mcporter configuration failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return { configured: false, tokenAction, agentToken };
+  }
 
   return { configured: true, tokenAction, agentToken };
 }

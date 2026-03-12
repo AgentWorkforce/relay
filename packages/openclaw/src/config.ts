@@ -566,12 +566,12 @@ export function buildWorkspacesJson(config: WorkspacesConfig): string | null {
 }
 
 function normalizeWorkspaceEntry(entry: WorkspaceEntry): WorkspaceEntry {
-  const workspaceAlias = entry.workspace_alias?.trim();
-  const workspaceId = entry.workspace_id?.trim();
+  const workspaceAlias = entry.workspace_alias?.trim() || undefined;
+  const workspaceId = entry.workspace_id?.trim() || undefined;
   return {
     ...entry,
-    ...(workspaceAlias ? { workspace_alias: workspaceAlias } : {}),
-    ...(workspaceId ? { workspace_id: workspaceId } : {}),
+    workspace_alias: workspaceAlias,
+    workspace_id: workspaceId,
   };
 }
 
