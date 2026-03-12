@@ -133,8 +133,11 @@ jobs:
           node dist/src/cli/index.js up --port "$TEST_PORT" &
           DAEMON_PID=$!
 
-          # Wait for health endpoint
-          for i in {1..20}; do
+          # Wait for health endpoint. On cold runners the dashboard may need
+          # extra time because `agent-relay up` can fall back to `npx
+          # @agent-relay/dashboard-server@latest` when no standalone binary is
+          # preinstalled.
+          for i in {1..60}; do
             if curl -sf "http://127.0.0.1:${TEST_PORT}/health" > /dev/null; then
               break
             fi
