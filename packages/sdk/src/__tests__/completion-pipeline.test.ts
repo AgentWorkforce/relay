@@ -71,6 +71,30 @@ let waitForExitFn: (ms?: number) => Promise<'exited' | 'timeout' | 'released'>;
 let waitForIdleFn: (ms?: number) => Promise<'idle' | 'timeout' | 'exited'>;
 let mockSpawnOutputs: string[] = [];
 
+vi.mock('node:child_process', async () => {
+  const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+  const { EventEmitter } = await import('node:events');
+
+  return {
+    ...actual,
+    spawn: vi.fn().mockImplementation(() => {
+      const child = new EventEmitter() as any;
+      child.pid = 4242;
+      child.kill = vi.fn();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+
+      const output = mockSpawnOutputs.shift() ?? '';
+      queueMicrotask(() => {
+        if (output) child.stdout.emit('data', Buffer.from(output));
+        child.emit('close', 0, null);
+      });
+
+      return child;
+    }),
+  };
+});
+
 const mockAgent = {
   name: 'test-agent-abc',
   get waitForExit() {
@@ -312,8 +336,7 @@ describe('Completion Pipeline', () => {
       });
 
       const run = await runner.execute(config, 'default');
-      expect(run.status).toBe('completed');
-    }, 15000);
+      expect(run.status).toBe('completed');    }, 15000);
   });
 
   // ── Unit Test 2: Owner approves despite malformed worker marker ────────
@@ -416,6 +439,41 @@ describe('Completion Pipeline', () => {
       expect(steps[0]?.completionReason).toBe('retry_requested_by_owner');
       expect(steps[0]?.retryCount).toBe(1);
       expect(mockRelayInstance.spawnPty).toHaveBeenCalledTimes(4);
+    }, 15000);
+
+
+    it('should honor INCOMPLETE_RETRY from a non-interactive reviewer step', async () => {
+      const localDb = makeDb();
+      runner = new WorkflowRunner({ db: localDb, workspaceId: 'ws-test' });
+      mockSpawnOutputs = ['OWNER_DECISION: INCOMPLETE_RETRY\nREASON: explicit retry requested\n'];
+
+      const run = await runner.execute(
+        makeConfig({
+          agents: [{ name: 'reviewer', cli: 'claude', preset: 'reviewer' }],
+          workflows: [
+            {
+              name: 'default',
+              steps: [
+                {
+                  name: 'review-step',
+                  agent: 'reviewer',
+                  task: 'Review the artifact and decide whether to retry.',
+                  verification: { type: 'output_contains', value: 'OWNER_DECISION: INCOMPLETE_RETRY' },
+                },
+              ],
+            },
+          ],
+        }),
+        'default'
+      );
+
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('owner requested another attempt');
+
+      const steps = await localDb.getStepsByRunId(run.id);
+      expect(steps).toHaveLength(1);
+      expect(steps[0]?.status).toBe('failed');
+      expect(steps[0]?.completionReason).toBe('retry_requested_by_owner');
     }, 15000);
 
     it('should not complete a self-owned step when INCOMPLETE_RETRY conflicts with success signals', async () => {
@@ -1051,6 +1109,14 @@ describe('Completion Pipeline', () => {
 
       const run = await runner.execute(config, 'default');
       expect(run.status).toBe('completed');
+      expect(
+        mockRelayInstance.spawnPty.mock.calls.some(
+          ([input]) =>
+            input.cli === 'codex' &&
+            Array.isArray(input.args) &&
+            input.args.includes('--dangerously-bypass-approvals-and-sandbox')
+        )
+      ).toBe(true);
     }, 15000);
   });
 

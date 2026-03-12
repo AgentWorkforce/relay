@@ -3387,6 +3387,31 @@ export class WorkflowRunner {
           ownerOutput = output;
         }
 
+        // Even non-interactive steps can emit an explicit OWNER_DECISION contract.
+        // Honor retry/fail/clarification signals before verification-driven success so
+        // real runs stay consistent with interactive owner flows.
+        if (!usesOwnerFlow) {
+          const explicitOwnerDecision = this.parseOwnerDecision(step, ownerOutput, false);
+          if (explicitOwnerDecision?.decision === 'INCOMPLETE_RETRY') {
+            throw new WorkflowCompletionError(
+              `Step "${step.name}" owner requested retry${explicitOwnerDecision.reason ? `: ${explicitOwnerDecision.reason}` : ''}`,
+              'retry_requested_by_owner'
+            );
+          }
+          if (explicitOwnerDecision?.decision === 'INCOMPLETE_FAIL') {
+            throw new WorkflowCompletionError(
+              `Step "${step.name}" owner marked the step incomplete${explicitOwnerDecision.reason ? `: ${explicitOwnerDecision.reason}` : ''}`,
+              'failed_owner_decision'
+            );
+          }
+          if (explicitOwnerDecision?.decision === 'NEEDS_CLARIFICATION') {
+            throw new WorkflowCompletionError(
+              `Step "${step.name}" owner requested clarification before completion${explicitOwnerDecision.reason ? `: ${explicitOwnerDecision.reason}` : ''}`,
+              'retry_requested_by_owner'
+            );
+          }
+        }
+
         // Run verification if configured.
         // Self-owned interactive steps still need verification fallback so
         // explicit OWNER_DECISION output is not mandatory for the happy path.
