@@ -680,7 +680,7 @@ fn build_stage_task(
     // watches for agent_exited / agent_released events, so the agent
     // just needs to finish and exit normally.
     body.push_str(
-        "\n\nWhen you are done, use the `relay_release` MCP tool to release yourself, \
+        "\n\nWhen you are done, use the `mcp__relaycast__agent_remove` MCP tool to release yourself, \
          or simply exit. The orchestrator will collect your output automatically.",
     );
 
@@ -884,7 +884,7 @@ async fn wait_for_worker_results(
             // stream output as result. Covers:
             //   - agent_exited: PTY child process exited (e.g. codex finished)
             //   - agent_exit:   agent requested exit via /exit command
-            //   - agent_released: agent released itself via relay_release MCP tool
+            //   - agent_released: agent released itself via mcp__relaycast__agent_remove MCP tool
             "agent_exited" | "agent_exit" | "agent_released" => {
                 let name = event
                     .get("name")

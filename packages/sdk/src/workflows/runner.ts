@@ -3260,8 +3260,8 @@ export class WorkflowRunner {
       case 'worker':
         return (
           'You are a non-interactive worker agent. Produce clean, structured output to stdout.\n' +
-          'Do NOT use relay_spawn, add_agent, or any MCP tool to spawn sub-agents.\n' +
-          'Do NOT use relay_send or any Relaycast messaging tools — you have no relay connection.\n\n'
+          'Do NOT use mcp__relaycast__agent_add, add_agent, or any MCP tool to spawn sub-agents.\n' +
+          'Do NOT use mcp__relaycast__dm_send or any Relaycast messaging tools — you have no relay connection.\n\n'
         );
       case 'reviewer':
         return (
@@ -3299,7 +3299,7 @@ export class WorkflowRunner {
       step.task +
       '\n\n---\n' +
       'IMPORTANT: You are running as a non-interactive subprocess. ' +
-      'Do NOT call relay_spawn, add_agent, or any MCP tool to spawn or manage other agents.\n\n' +
+      'Do NOT call mcp__relaycast__agent_add, add_agent, or any MCP tool to spawn or manage other agents.\n\n' +
       'CRITICAL REQUIREMENT — YOU MUST FOLLOW THIS EXACTLY:\n' +
       'You are running in non-interactive mode. There is NO opportunity for follow-up, ' +
       'clarification, or additional input. Your stdout output is your ONLY deliverable.\n\n' +
@@ -4085,7 +4085,7 @@ export class WorkflowRunner {
       'RELAY SETUP — do this FIRST before any other relay tool:\n' +
       `1. Call: register(name="${agentName}")\n` +
       '   This authenticates you in the Relaycast workspace.\n' +
-      '   ALL relay tools (relay_send, relay_inbox, post_message, etc.) require\n' +
+      '   ALL relay tools (mcp__relaycast__dm_send, mcp__relaycast__inbox_check, mcp__relaycast__message_post, etc.) require\n' +
       '   registration first — they will fail with "Not registered" otherwise.\n' +
       `2. Your agent name is "${agentName}" — use this exact name when registering.`
     );
@@ -4113,10 +4113,10 @@ export class WorkflowRunner {
       'If it involves multiple independent subtasks, touches many files, or could take a long time, ' +
       'you should break it down and delegate to helper agents to avoid timeouts.\n\n' +
       'Option 1 — Spawn relay agents (for real parallel coding work):\n' +
-      '  - relay_spawn(name="helper-1", cli="claude", task="Specific subtask description")\n' +
-      '  - Coordinate via relay_send(to="helper-1", message="...")\n' +
-      '  - Check on them with relay_inbox()\n' +
-      '  - Clean up when done: relay_release(name="helper-1")\n\n' +
+      '  - mcp__relaycast__agent_add(name="helper-1", cli="claude", task="Specific subtask description")\n' +
+      '  - Coordinate via mcp__relaycast__dm_send(to="helper-1", text="...")\n' +
+      '  - Check on them with mcp__relaycast__inbox_check()\n' +
+      '  - Clean up when done: mcp__relaycast__agent_remove(name="helper-1")\n\n' +
       subAgentOption +
       'Guidelines:\n' +
       '- You are the lead — delegate but stay in control, track progress, integrate results\n' +

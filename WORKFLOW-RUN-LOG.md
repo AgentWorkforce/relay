@@ -134,7 +134,7 @@ in interactive PTY mode. Run them in order; stop when one works reliably.
 | `relay.codex-exit-v2-lead-relay.yaml`     | Lead relay DM             | Claude lead DMs codex "output /exit now" after TASK_DONE signal       |
 | `relay.codex-exit-v3-file-sentinel.yaml`  | File + /exit              | Codex writes `/tmp/codex-exit-test/sentinel.txt` then outputs `/exit` |
 | `relay.codex-exit-v4-noninteractive.yaml` | Non-interactive (control) | `interactive: false` — `codex exec` one-shot, exits naturally         |
-| `relay.codex-exit-v5-self-release.yaml`   | Self-release via relay    | Codex calls `relay_release()` on own agent name via MCP tool          |
+| `relay.codex-exit-v5-self-release.yaml`   | Self-release via relay    | Codex calls `mcp__relaycast__agent_remove()` on own agent name via MCP tool          |
 
 ### How to run
 
@@ -152,7 +152,7 @@ node packages/sdk/dist/workflows/cli.js tests/workflows/codex-exit/relay.codex-e
 - Did the `do-task` / `codex-task` step complete without timeout?
 - Did it complete via `/exit` detection, process exit, or force-release?
 - How long did it take from task completion to step marked done?
-- For V5: did `relay_release` appear in codex output? Did it work?
+- For V5: did `mcp__relaycast__agent_remove` appear in codex output? Did it work?
 
 ### Results Log
 

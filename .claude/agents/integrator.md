@@ -136,19 +136,19 @@ Then: Dead letter queue
 Integration status:
 
 ```
-relay_send(to: "Lead", message: "STATUS: Stripe integration progress\n- Auth: OAuth flow complete\n- Endpoints: 3/5 implemented\n- Webhooks: payment_intent events handled\n- Testing: Sandbox verified")
+mcp__relaycast__send_dm(to: "Lead", text: "STATUS: Stripe integration progress\n- Auth: OAuth flow complete\n- Endpoints: 3/5 implemented\n- Webhooks: payment_intent events handled\n- Testing: Sandbox verified")
 ```
 
 When blocked:
 
 ```
-relay_send(to: "Lead", message: "BLOCKED: GitHub integration issue\n- Problem: Rate limited (5000/hour exceeded)\n- Impact: Sync delayed\n- Mitigation: Implementing request queuing\n- ETA: 30 min for fix")
+mcp__relaycast__send_dm(to: "Lead", text: "BLOCKED: GitHub integration issue\n- Problem: Rate limited (5000/hour exceeded)\n- Impact: Sync delayed\n- Mitigation: Implementing request queuing\n- ETA: 30 min for fix")
 ```
 
 Completion:
 
 ```
-relay_send(to: "Lead", message: "DONE: Slack integration complete\n- OAuth: Workspace install flow\n- Events: message, reaction handlers\n- Commands: /status slash command\n- Tests: 15 cases passing")
+mcp__relaycast__send_dm(to: "Lead", text: "DONE: Slack integration complete\n- OAuth: Workspace install flow\n- Events: message, reaction handlers\n- Commands: /status slash command\n- Tests: 15 cases passing")
 ```
 
 ## Error Handling

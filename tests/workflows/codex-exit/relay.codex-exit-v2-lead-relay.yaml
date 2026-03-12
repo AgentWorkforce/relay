@@ -51,7 +51,7 @@ workflows:
           when it signals completion.
 
           STEP 1 — Wait for codex-worker to post "TASK_DONE" to #codex-exit-v2.
-          Poll the channel every 5 seconds using relay_inbox or get channel messages.
+          Poll the channel every 5 seconds using mcp__relaycast__check_inbox or get channel messages.
 
           STEP 2 — When you see "TASK_DONE" from codex-worker, immediately send
           a direct message to codex-worker with this exact text:
@@ -77,8 +77,8 @@ workflows:
             TASK_RUNNING
 
           PART 2 — SIGNAL COMPLETION:
-          Post "TASK_DONE" to #codex-exit-v2 channel using relay_send.
-          Command: relay_send(to: "#codex-exit-v2", message: "TASK_DONE")
+          Post "TASK_DONE" to #codex-exit-v2 channel using mcp__relaycast__post_message.
+          Command: mcp__relaycast__post_message(channel: "codex-exit-v2", text: "TASK_DONE")
 
           PART 3 — WAIT FOR EXIT INSTRUCTION:
           After posting TASK_DONE, check your relay inbox repeatedly (every 3-5 seconds).

@@ -67,8 +67,8 @@ workflows:
 
           The checks should FAIL (confirming the bugs exist).
 
-          Do NOT re-investigate. Do NOT relay_spawn or add_agent.
-          Do NOT relay_send the result — print it directly to your terminal.
+          Do NOT re-investigate. Do NOT use mcp__relaycast__add_agent.
+          Do NOT use mcp__relaycast__send_dm or mcp__relaycast__post_message for the result — print it directly to your terminal.
           Print exactly: BROKER_REPRODUCTIONS_FAILING
         verification:
           type: output_contains
@@ -101,8 +101,8 @@ workflows:
           When ALL 7 tests pass:
           cd ../relay-dashboard && npx vitest run test/bugs/ 2>&1 | tail -10
 
-          Do NOT relay_spawn or add_agent.
-          Do NOT relay_send the result — print it directly to your terminal.
+          Do NOT use mcp__relaycast__add_agent.
+          Do NOT use mcp__relaycast__send_dm or mcp__relaycast__post_message for the result — print it directly to your terminal.
           Print exactly: DASHBOARD_FIXES_DONE
         verification:
           type: output_contains
@@ -129,8 +129,8 @@ workflows:
           ~/.cargo/bin/cargo build --release 2>&1 | tail -10
           bash tests/integration/broker/bug-repro.sh 2>&1 | tail -20
 
-          Do NOT relay_spawn or add_agent.
-          Do NOT relay_send the result — print it directly to your terminal.
+          Do NOT use mcp__relaycast__add_agent.
+          Do NOT use mcp__relaycast__send_dm or mcp__relaycast__post_message for the result — print it directly to your terminal.
           Print exactly: BROKER_FIXES_DONE
         verification:
           type: output_contains
@@ -199,8 +199,8 @@ workflows:
           - Opencode MCP: works when RELAY_AGENT_TOKEN not yet set?
           - Cursor MCP: conflicts with existing cursor settings?
 
-          Do NOT relay_spawn or add_agent.
-          Do NOT relay_send the result — print it directly to your terminal.
+          Do NOT use mcp__relaycast__add_agent.
+          Do NOT use mcp__relaycast__send_dm or mcp__relaycast__post_message for the result — print it directly to your terminal.
           Print exactly: RED_TEAM_CLEAN if no issues, or RED_TEAM_ISSUES:<findings> if problems.
         verification:
           type: output_contains
@@ -232,8 +232,8 @@ workflows:
           git push -u origin HEAD &&
           gh pr create --title "fix: 4 broker bugs" --body "Fixes bugs 8-11. bug-repro.sh green." --draft
 
-          Do NOT relay_spawn or add_agent.
-          Do NOT relay_send the result — print it directly to your terminal.
+          Do NOT use mcp__relaycast__add_agent.
+          Do NOT use mcp__relaycast__send_dm or mcp__relaycast__post_message for the result — print it directly to your terminal.
           Print exactly: ALL_SHIPPED
         verification:
           type: output_contains
@@ -259,8 +259,8 @@ workflows:
           3. PR links if created
           4. Anything unresolved
 
-          Do NOT relay_spawn or add_agent.
-          Do NOT relay_send the result — print it directly to your terminal.
+          Do NOT use mcp__relaycast__add_agent.
+          Do NOT use mcp__relaycast__send_dm or mcp__relaycast__post_message for the result — print it directly to your terminal.
           Print exactly: WORKFLOW_SUMMARY_DONE on the last line.
         verification:
           type: output_contains

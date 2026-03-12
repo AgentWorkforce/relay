@@ -76,19 +76,19 @@ You are an infrastructure specialist focused on cloud platforms, container orche
 ### Task Acknowledgment
 
 ```
-relay_send(to: "Sender", message: "ACK: Setting up CI/CD pipeline for [project]")
+mcp__relaycast__send_dm(to: "Sender", text: "ACK: Setting up CI/CD pipeline for [project]")
 ```
 
 ### Status Updates
 
 ```
-relay_send(to: "Lead", message: "STATUS: Pipeline configuration 70% complete, testing deployment stage")
+mcp__relaycast__send_dm(to: "Lead", text: "STATUS: Pipeline configuration 70% complete, testing deployment stage")
 ```
 
 ### Completion
 
 ```
-relay_send(to: "Lead", message: "DONE: CI/CD pipeline deployed\n- Build: 2-3 min average\n- Tests: Automated gate\n- Deploy: Blue-green to staging")
+mcp__relaycast__send_dm(to: "Lead", text: "DONE: CI/CD pipeline deployed\n- Build: 2-3 min average\n- Tests: Automated gate\n- Deploy: Blue-green to staging")
 ```
 
 ## Anti-Patterns to Avoid

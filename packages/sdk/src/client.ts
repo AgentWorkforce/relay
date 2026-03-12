@@ -490,8 +490,8 @@ export class AgentRelayClient {
       ...this.options.binaryArgs,
     ];
 
-    // Ensure the SDK bin directory (containing agent-relay-broker + relay_send) is on
-    // PATH so spawned workers can find relay_send without any user setup.
+    // Ensure the SDK bin directory (containing agent-relay-broker) is on
+    // PATH so spawned workers can find it without any user setup.
     const env = { ...this.options.env };
     if (isExplicitPath(this.options.binaryPath)) {
       const binDir = path.dirname(path.resolve(resolvedBinary));

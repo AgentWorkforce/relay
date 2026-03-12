@@ -32,13 +32,13 @@ agent-relay -n Alice claude
 Inside Alice's terminal, use MCP tools:
 
 ```
-relay_spawn(name: "Dev1", cli: "claude", task: "Write unit tests for the auth module")
+mcp__relaycast__agent_add(name: "Dev1", cli: "claude", task: "Write unit tests for the auth module")
 ```
 
 Or send a message:
 
 ```
-relay_send(to: "Dev1", message: "Write unit tests for the auth module")
+mcp__relaycast__send_dm(to: "Dev1", text: "Write unit tests for the auth module")
 ```
 
 **Expected:**
@@ -56,7 +56,7 @@ agent-relay agents
 ### Test Release
 
 ```
-relay_release(name: "Dev1")
+mcp__relaycast__agent_remove(name: "Dev1")
 ```
 
 **Expected:**
@@ -69,15 +69,15 @@ relay_release(name: "Dev1")
 First spawn multiple workers:
 
 ```
-relay_spawn(name: "Dev1", cli: "claude", task: "Task 1")
-relay_spawn(name: "Dev2", cli: "claude", task: "Task 2")
-relay_spawn(name: "QA1", cli: "claude", task: "Task 3")
+mcp__relaycast__agent_add(name: "Dev1", cli: "claude", task: "Task 1")
+mcp__relaycast__agent_add(name: "Dev2", cli: "claude", task: "Task 2")
+mcp__relaycast__agent_add(name: "QA1", cli: "claude", task: "Task 3")
 ```
 
 Then release all:
 
 ```
-relay_release(name: "*")
+mcp__relaycast__agent_remove(name: "*")
 ```
 
 **Expected:** All workers released.
@@ -133,7 +133,7 @@ agent-relay -n Bob claude
 From Alice (Project A):
 
 ```
-relay_send(to: "project-b:Bob", message: "Hey Bob, can you review my changes?")
+mcp__relaycast__send_dm(to: "project-b:Bob", text: "Hey Bob, can you review my changes?")
 ```
 
 **Expected:** Bob receives the message in Project B.
@@ -141,7 +141,7 @@ relay_send(to: "project-b:Bob", message: "Hey Bob, can you review my changes?")
 From Bob (Project B):
 
 ```
-relay_send(to: "project-a:Alice", message: "Sure, sending review now.")
+mcp__relaycast__send_dm(to: "project-a:Alice", text: "Sure, sending review now.")
 ```
 
 **Expected:** Alice receives the message in Project A.
@@ -151,7 +151,7 @@ relay_send(to: "project-a:Alice", message: "Sure, sending review now.")
 From the bridge/architect:
 
 ```
-relay_send(to: "*:lead", message: "Standup time - report your status")
+mcp__relaycast__send_dm(to: "*:lead", text: "Standup time - report your status")
 ```
 
 **Expected:** Both Alice and Bob receive the message.

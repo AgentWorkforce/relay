@@ -105,13 +105,13 @@ Speed Layer: Stream -> Process -> Serve (real-time)
 Pipeline status:
 
 ```
-relay_send(to: "Lead", message: "STATUS: ETL pipeline running\n- Source: 2.4M records extracted\n- Transform: 2.1M passed validation\n- Failed: 12K quarantined (malformed dates)\n- ETA: 15 min to completion")
+mcp__relaycast__send_dm(to: "Lead", text: "STATUS: ETL pipeline running\n- Source: 2.4M records extracted\n- Transform: 2.1M passed validation\n- Failed: 12K quarantined (malformed dates)\n- ETA: 15 min to completion")
 ```
 
 Completion:
 
 ```
-relay_send(to: "Lead", message: "DONE: Daily ETL complete\n- Records processed: 2,388,421\n- Duration: 23 min\n- Failures: 0.5% (quarantined)\n- Data freshness: T-1 day")
+mcp__relaycast__send_dm(to: "Lead", text: "DONE: Daily ETL complete\n- Records processed: 2,388,421\n- Duration: 23 min\n- Failures: 0.5% (quarantined)\n- Data freshness: T-1 day")
 ```
 
 ## Data Quality Checks

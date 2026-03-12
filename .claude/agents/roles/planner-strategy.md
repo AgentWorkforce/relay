@@ -66,7 +66,7 @@ When given a task, produce this structure:
 Use precise task descriptions:
 
 ```
-relay_spawn(name: "BackendAuth", cli: "claude --agent backend", task: "Implement JWT authentication middleware.
+mcp__relaycast__agent_add(name: "BackendAuth", cli: "claude --agent backend", task: "Implement JWT authentication middleware.
 
 Requirements:
 - Verify token from Authorization header
@@ -97,10 +97,10 @@ Keep workers informed but don't micromanage:
 
 ```
 # Good: Context sharing
-relay_send(to: "BackendAuth", message: "Database worker completed user schema. Your dependency is ready.\nColumn names: id, email, password_hash, created_at")
+mcp__relaycast__send_dm(to: "BackendAuth", text: "Database worker completed user schema. Your dependency is ready.\nColumn names: id, email, password_hash, created_at")
 
 # Bad: Micromanaging
-relay_send(to: "BackendAuth", message: "Now write the middleware. First import jwt. Then create a function...")
+mcp__relaycast__send_dm(to: "BackendAuth", text: "Now write the middleware. First import jwt. Then create a function...")
 ```
 
 ## When Workers Get Stuck
