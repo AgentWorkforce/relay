@@ -543,11 +543,11 @@ agents:
       expect(run.status, run.error).toBe('completed');
     });
 
-    it('should fail when owner response does not include completion marker', async () => {
+    it('should fail when owner response provides no decision, marker, or evidence', async () => {
       mockSpawnOutputs = ['Owner completed work but forgot sentinel\n'];
       const run = await runner.execute(makeConfig(), 'default');
       expect(run.status).toBe('failed');
-      expect(run.error).toContain('owner completion marker');
+      expect(run.error).toContain('owner completion decision missing');
     });
 
     it('should run specialist work in a separate process and mirror worker output to the channel', async () => {
@@ -615,8 +615,8 @@ agents:
       expect(stepRows[0].output).not.toContain('Worker already exited; artifacts look correct');
     });
 
-    it('should fail closed when review response is malformed', async () => {
-      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'REVIEW_REASON: looks fine\n'];
+    it('should fail when review response lacks any usable decision signal', async () => {
+      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'I need more context before deciding.\n'];
       const run = await runner.execute(makeConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review response malformed');

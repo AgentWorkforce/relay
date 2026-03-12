@@ -16,7 +16,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { TrajectoryConfig, WorkflowStep } from './types.js';
+import type { StepCompletionDecision, TrajectoryConfig, WorkflowStep } from './types.js';
 
 // ── Trajectory file format (compatible with trail CLI) ───────────────────────
 
@@ -84,6 +84,8 @@ export interface StepOutcome {
   nonInteractive?: boolean;
   /** Duration in ms. */
   durationMs?: number;
+  /** How the step completion was determined. */
+  completionMode?: StepCompletionDecision['mode'];
 }
 
 // ── Failure root-cause categories ───────────────────────────────────────────
@@ -339,8 +341,35 @@ export class WorkflowTrajectory {
     await this.flush();
   }
 
+  async stepCompletionDecision(stepName: string, decision: StepCompletionDecision): Promise<void> {
+    if (!this.enabled || !this.trajectory) return;
+
+    const modeLabel = decision.mode === 'marker' ? 'marker-based' : `${decision.mode}-based`;
+    const reason = decision.reason ? ` — ${decision.reason}` : '';
+    const evidence = this.formatCompletionEvidenceSummary(decision.evidence);
+    const evidenceSuffix = evidence ? ` (${evidence})` : '';
+
+    this.addEvent(
+      decision.mode === 'marker' ? 'completion-marker' : 'completion-evidence',
+      `"${stepName}" ${modeLabel} completion${reason}${evidenceSuffix}`,
+      'medium',
+      {
+        stepName,
+        completionMode: decision.mode,
+        reason: decision.reason,
+        evidence: decision.evidence,
+      }
+    );
+    await this.flush();
+  }
+
   /** Record step completed — captures what was accomplished. */
-  async stepCompleted(step: WorkflowStep, output: string, attempt: number): Promise<void> {
+  async stepCompleted(
+    step: WorkflowStep,
+    output: string,
+    attempt: number,
+    decision?: StepCompletionDecision
+  ): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
 
     const suffix = attempt > 1 ? ` (after ${attempt} attempts)` : '';
@@ -357,7 +386,12 @@ export class WorkflowTrajectory {
         ? lastMeaningful
         : output.trim().slice(0, 120) || '(no output)';
 
-    this.addEvent('finding', `"${step.name}" completed${suffix} → ${completion}`, 'medium');
+    if (decision) {
+      await this.stepCompletionDecision(step.name, decision);
+    }
+
+    const modeSuffix = decision ? ` [${decision.mode}]` : '';
+    this.addEvent('finding', `"${step.name}" completed${suffix}${modeSuffix} → ${completion}`, 'medium');
     await this.flush();
   }
 
@@ -695,6 +729,21 @@ export class WorkflowTrajectory {
     if (raw) event.raw = raw;
 
     chapter.events.push(event);
+  }
+
+  private formatCompletionEvidenceSummary(
+    evidence: StepCompletionDecision['evidence'] | undefined
+  ): string | undefined {
+    if (!evidence) return undefined;
+
+    const parts: string[] = [];
+    if (evidence.summary) parts.push(evidence.summary);
+    if (evidence.signals?.length) parts.push(`signals=${evidence.signals.join(', ')}`);
+    if (evidence.channelPosts?.length) parts.push(`channel=${evidence.channelPosts.join(' | ')}`);
+    if (evidence.files?.length) parts.push(`files=${evidence.files.join(', ')}`);
+    if (evidence.exitCode !== undefined) parts.push(`exit=${evidence.exitCode}`);
+
+    return parts.length > 0 ? parts.join('; ') : undefined;
   }
 
   private async flush(): Promise<void> {
