@@ -291,10 +291,11 @@ class HumanHandle:
 class AgentSpawner:
     """Shorthand spawner for a specific CLI (e.g., relay.claude.spawn(...))."""
 
-    def __init__(self, cli: str, default_name: str, relay: AgentRelay):
+    def __init__(self, cli: str, default_name: str, relay: AgentRelay, transport: str = "pty"):
         self._cli = cli
         self._default_name = default_name
         self._relay = relay
+        self._transport = transport
 
     async def spawn(
         self,
@@ -326,9 +327,10 @@ class AgentSpawner:
         )
 
         try:
-            result = await client.spawn_pty(
+            result = await client.spawn_provider(
                 name=agent_name,
-                cli=self._cli,
+                provider=self._cli,
+                transport=self._transport,
                 args=args or [],
                 channels=agent_channels,
                 task=task,
@@ -434,9 +436,10 @@ class AgentRelay:
         self._idle_resolvers: dict[str, list[asyncio.Future[str]]] = {}
 
         # Shorthand spawners
-        self.codex = AgentSpawner("codex", "Codex", self)
-        self.claude = AgentSpawner("claude", "Claude", self)
-        self.gemini = AgentSpawner("gemini", "Gemini", self)
+        self.codex = AgentSpawner("codex", "Codex", self, transport="pty")
+        self.claude = AgentSpawner("claude", "Claude", self, transport="pty")
+        self.gemini = AgentSpawner("gemini", "Gemini", self, transport="pty")
+        self.opencode = AgentSpawner("opencode", "OpenCode", self, transport="headless")
 
     @property
     def workspace_key(self) -> Optional[str]:

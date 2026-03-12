@@ -358,6 +358,16 @@ test('waitForIdle: idle resolves before timeout', async () => {
   const result = await promise;
   assert.equal(result, 'idle');
 });
+// ── shorthand spawners ───────────────────────────────────────────────────────
+
+test('AgentRelay: has shorthand spawners for major CLIs', () => {
+  const relay = new AgentRelay({ channels: ['general'] });
+  assert.ok(relay.claude, 'relay.claude should be defined');
+  assert.ok(relay.codex, 'relay.codex should be defined');
+  assert.ok(relay.gemini, 'relay.gemini should be defined');
+  assert.ok(relay.opencode, 'relay.opencode should be defined');
+});
+
 // ── agent.status ────────────────────────────────────────────────────────────
 
 test('agent.status: mock agent has ready status', () => {

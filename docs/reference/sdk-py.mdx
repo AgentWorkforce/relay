@@ -43,6 +43,7 @@ relay = AgentRelay(
 agent = await relay.claude.spawn(name="Analyst", model=Models.Claude.OPUS, channels=["dev"], task="...")
 agent = await relay.codex.spawn(name="Coder", model=Models.Codex.GPT_5_3_CODEX, channels=["dev"], task="...")
 agent = await relay.gemini.spawn(name="Researcher", model=Models.Gemini.GEMINI_2_5_PRO, channels=["dev"], task="...")
+agent = await relay.opencode.spawn(name="Optimizer", model=Models.Opencode.OPENAI_GPT_5_2, channels=["dev"], task="...")
 ```
 
 **Spawn keyword arguments:**
@@ -240,8 +241,12 @@ Models.Codex.GPT_5_1_CODEX_MAX    # "gpt-5.1-codex-max"
 Models.Codex.GPT_5_1_CODEX_MINI   # "gpt-5.1-codex-mini"
 
 # Gemini
-Models.Gemini.GEMINI_2_5_PRO    # "gemini-2.5-pro"
-Models.Gemini.GEMINI_2_5_FLASH  # "gemini-2.5-flash"
+Models.Gemini.GEMINI_3_1_PRO_PREVIEW    # "gemini-3.1-pro-preview"
+Models.Gemini.GEMINI_2_5_PRO            # "gemini-2.5-pro"
+
+# OpenCode
+Models.Opencode.OPENAI_GPT_5_2          # "openai/gpt-5.2"
+Models.Opencode.OPENCODE_GPT_5_NANO     # "opencode/gpt-5-nano"
 ```
 
 ---

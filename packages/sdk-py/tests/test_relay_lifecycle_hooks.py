@@ -17,7 +17,7 @@ class _FakeRelayClient:
         self.spawn_calls: list[dict] = []
         self.release_calls: list[tuple[str, str | None]] = []
 
-    async def spawn_pty(self, **kwargs):
+    async def spawn_provider(self, **kwargs):
         self.spawn_calls.append(kwargs)
         if self.spawn_error:
             raise self.spawn_error
@@ -142,6 +142,23 @@ async def test_shorthand_spawn_lifecycle_hooks_success():
 
     assert agent.name == "ShorthandWorker"
     assert events == ["start", "success"]
+    assert client.spawn_calls[-1]["transport"] == "pty"
+
+
+@pytest.mark.asyncio
+async def test_opencode_shorthand_spawn_success():
+    relay = AgentRelay()
+    client = _FakeRelayClient()
+    relay._ensure_started = AsyncMock(return_value=client)
+
+    agent = await relay.opencode.spawn(
+        name="OpencodeWorker",
+        channels=["general"],
+    )
+
+    assert agent.name == "OpencodeWorker"
+    assert client.spawn_calls[-1]["provider"] == "opencode"
+    assert client.spawn_calls[-1]["transport"] == "headless"
 
 
 @pytest.mark.asyncio

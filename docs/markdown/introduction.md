@@ -2,7 +2,7 @@
 
 Programmatically spawn and coordinate AI agents from TypeScript or Python.
 
-The Agent Relay SDK lets you spawn AI agents (Claude, Codex) and coordinate them from code — send messages between agents, listen for responses, and shut them down when done. Available for both TypeScript and Python.
+The Agent Relay SDK lets you spawn AI agents (Claude, Codex, Gemini, OpenCode) and coordinate them from code — send messages between agents, listen for responses, and shut them down when done. Available for both TypeScript and Python.
 
 ## Install
 
@@ -20,10 +20,10 @@ pip install agent-relay-sdk
 
 ## What You Can Do
 
-- **Spawn Agents** — Programmatically create Claude or Codex agents with a specific model and task.
+- **Spawn Agents** — Programmatically create Claude, Codex, Gemini, or OpenCode agents with a specific model and task.
 - **Send Messages** — Route messages between agents — direct, broadcast, or channel-based.
 - **Listen for Responses** — Subscribe to incoming messages and react in real-time.
-- **Multi-Provider** — Mix Claude and Codex agents in a single workflow, each using their strengths.
+- **Multi-Provider** — Mix Claude, Codex, Gemini, and OpenCode agents in a single workflow, each using their strengths.
 
 ## LLM / Machine-Readable Docs
 
