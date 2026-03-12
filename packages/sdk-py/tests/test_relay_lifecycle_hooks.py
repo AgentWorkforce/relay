@@ -17,6 +17,12 @@ class _FakeRelayClient:
         self.spawn_calls: list[dict] = []
         self.release_calls: list[tuple[str, str | None]] = []
 
+    async def spawn_pty(self, **kwargs):
+        self.spawn_calls.append(kwargs)
+        if self.spawn_error:
+            raise self.spawn_error
+        return {"name": kwargs["name"], "runtime": "pty"}
+
     async def spawn_provider(self, **kwargs):
         self.spawn_calls.append(kwargs)
         if self.spawn_error:
