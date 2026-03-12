@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
@@ -10,6 +12,7 @@ type UpOptions = {
   verbose?: boolean;
   dashboardPath?: string;
   reuseExistingBroker?: boolean;
+  workspaceKey?: string;
 };
 
 type DownOptions = {
@@ -600,6 +603,112 @@ async function resolveStartedDashboardPort(
   });
 }
 
+/**
+ * Check if the cached dashboard UI assets match the installed dashboard-server
+ * binary version. If they are stale (or missing a version marker), re-download
+ * the latest assets from the relay-dashboard GitHub release.
+ */
+async function refreshDashboardAssetsIfStale(
+  dashboardBinary: string | null,
+  deps: CoreDependencies
+): Promise<void> {
+  if (!dashboardBinary || dashboardBinary.endsWith('.js') || dashboardBinary.endsWith('.ts')) {
+    // Dev mode or npx — skip
+    return;
+  }
+
+  // Get installed binary version (async to avoid blocking event loop)
+  let binaryVersion: string;
+  try {
+    const versionResult = await deps.execCommand(
+      `${JSON.stringify(dashboardBinary)} --version`
+    );
+    binaryVersion = versionResult.stdout.trim();
+  } catch {
+    return; // Can't determine version — skip
+  }
+
+  if (!binaryVersion) {
+    return;
+  }
+
+  const homeDir = deps.env.HOME || deps.env.USERPROFILE || os.homedir();
+  const assetsDir = path.join(homeDir, '.relay', 'dashboard', 'out');
+  const versionFile = path.join(homeDir, '.relay', 'dashboard', '.version');
+
+  // Check if assets match the binary version
+  try {
+    const cachedVersion = deps.fs.readFileSync(versionFile, 'utf-8').trim();
+    if (cachedVersion === binaryVersion) {
+      return; // Up to date
+    }
+  } catch {
+    // No version file — need to download if assets exist but are unversioned,
+    // or if assets don't exist at all
+    if (deps.fs.existsSync(assetsDir)) {
+      // Assets exist but no version marker — they're from an old install
+    } else {
+      // No assets at all — need to download
+    }
+  }
+
+  deps.log(`Updating dashboard UI assets (${binaryVersion})...`);
+
+  const uiUrl =
+    'https://github.com/AgentWorkforce/relay-dashboard/releases/latest/download/dashboard-ui.tar.gz';
+  const targetDir = path.join(homeDir, '.relay', 'dashboard');
+  let tempDir: string | undefined;
+  let tempFile: string | undefined;
+
+  try {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `dashboard-ui-${deps.pid}-`));
+    tempFile = path.join(tempDir, 'dashboard-ui.tar.gz');
+    // Download (async to avoid blocking event loop during network I/O)
+    await deps.execCommand(
+      `curl -fsSL --max-time 30 ${JSON.stringify(uiUrl)} -o ${JSON.stringify(tempFile)}`
+    );
+
+    // Verify it's a valid gzip
+    const header = Buffer.alloc(2);
+    const fd = fs.openSync(tempFile, 'r');
+    fs.readSync(fd, header, 0, 2, 0);
+    fs.closeSync(fd);
+    if (header[0] !== 0x1f || header[1] !== 0x8b) {
+      if (tempFile) deps.fs.unlinkSync(tempFile);
+      return; // Not a valid gzip file
+    }
+
+    // Remove old assets and extract (async to avoid blocking event loop)
+    deps.fs.rmSync(assetsDir, { recursive: true, force: true });
+    deps.fs.mkdirSync(targetDir, { recursive: true });
+    await deps.execCommand(
+      `tar -xzf ${JSON.stringify(tempFile)} -C ${JSON.stringify(targetDir)}`
+    );
+    if (tempFile) deps.fs.unlinkSync(tempFile);
+
+    // Write version marker only after confirming extraction succeeded
+    if (deps.fs.existsSync(path.join(assetsDir, 'index.html'))) {
+      deps.fs.writeFileSync(versionFile, binaryVersion);
+      deps.log(`Dashboard UI assets updated to ${binaryVersion}`);
+    } else {
+      deps.warn('Dashboard UI extraction may be incomplete — skipping version marker');
+    }
+  } catch {
+    // Best-effort — don't block startup
+    try {
+      if (tempFile) deps.fs.unlinkSync(tempFile);
+    } catch {
+      /* ignore */
+    }
+  } finally {
+    try {
+      if (tempDir) deps.fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 async function startDashboardWithFallback(
   paths: CoreProjectPaths,
   dashboardPort: number,
@@ -609,6 +718,7 @@ async function startDashboardWithFallback(
   relayApiKey?: string
 ): Promise<{ process: SpawnedProcess; port: number | null }> {
   const preferredBinary = deps.findDashboardBinary();
+  await refreshDashboardAssetsIfStale(preferredBinary, deps);
   let process = startDashboard(
     paths,
     dashboardPort,
@@ -821,6 +931,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
           }
           deps.log(`Project: ${paths.projectRoot}`);
           deps.log('Mode: broker (stdio)');
+          deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
           deps.log('Broker already running for this project; reusing existing broker.');
 
           if (wantsDashboard) {
@@ -884,6 +995,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       existingPid = null;
     }
 
+    // If a workspace key was explicitly provided, inject it into the environment
+    // so the Rust broker picks it up via RELAY_API_KEY.
+    if (options.workspaceKey) {
+      deps.env.RELAY_API_KEY = options.workspaceKey;
+    }
+
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agent-relay/ while broker was running).
     await killOrphanedBrokerProcesses(paths.projectRoot, deps);
@@ -917,6 +1034,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 
     deps.log(`Project: ${paths.projectRoot}`);
     deps.log('Mode: broker (stdio)');
+    deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
     deps.log('Broker started.');
 
     if (wantsDashboard) {

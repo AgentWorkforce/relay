@@ -834,6 +834,12 @@ pub(crate) fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) 
     (has_header, has_allow_option)
 }
 
+/// Detect Gemini "untrusted folder" informational banner in output.
+/// Returns true when the banner is present (not an interactive menu — requires `/permissions`).
+pub(crate) fn detect_gemini_untrusted_banner(clean_output: &str) -> bool {
+    clean_output.contains("folder is untrusted") && clean_output.contains("/permissions")
+}
+
 /// Detect Gemini "Modify Trust Level" folder trust prompt in output.
 /// Returns (has_header, has_trust_option).
 pub(crate) fn detect_gemini_trust_prompt(clean_output: &str) -> (bool, bool) {
@@ -1398,6 +1404,26 @@ mod tests {
         let (has_header, has_trust) = detect_gemini_trust_prompt(output);
         assert!(has_header);
         assert!(!has_trust);
+    }
+
+    // ==================== detect_gemini_untrusted_banner tests ====================
+
+    #[test]
+    fn gemini_untrusted_banner_full_match() {
+        let output = "ℹ This folder is untrusted, project settings, hooks, MCPs, and GEMINI.md files will not be applied for this folder.\n  Use the /permissions command to change the trust level.";
+        assert!(detect_gemini_untrusted_banner(output));
+    }
+
+    #[test]
+    fn gemini_untrusted_banner_no_match() {
+        let output = "Welcome to Gemini CLI\n> ";
+        assert!(!detect_gemini_untrusted_banner(output));
+    }
+
+    #[test]
+    fn gemini_untrusted_banner_partial_no_permissions() {
+        let output = "This folder is untrusted, some settings will not apply.";
+        assert!(!detect_gemini_untrusted_banner(output));
     }
 
     // ==================== detect_cli_ready edge cases ====================

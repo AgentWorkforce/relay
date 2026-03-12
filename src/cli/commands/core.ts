@@ -381,6 +381,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
     .option('--background', 'Run broker in the background (detached)')
     .option('--verbose', 'Enable verbose logging')
+    .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
     .action(
       async (options: {
         dashboard?: boolean;
@@ -388,6 +389,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
         spawn?: boolean;
         background?: boolean;
         verbose?: boolean;
+        workspaceKey?: string;
       }) => {
         await runUpCommand(options, deps);
       }

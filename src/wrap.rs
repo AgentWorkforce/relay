@@ -50,6 +50,9 @@ pub(crate) struct PtyAutoState {
     // Gemini folder trust prompt
     pub(crate) gemini_trust_buffer: String,
     pub(crate) gemini_trust_handled: bool,
+    // Gemini untrusted folder banner (triggers /permissions command)
+    pub(crate) gemini_untrusted_buffer: String,
+    pub(crate) gemini_untrusted_handled: bool,
     // Auto-suggestion / injection state
     pub(crate) auto_suggestion_visible: bool,
     pub(crate) last_injection_time: Option<Instant>,
@@ -76,6 +79,8 @@ impl PtyAutoState {
             last_gemini_action_approval: None,
             gemini_trust_buffer: String::new(),
             gemini_trust_handled: false,
+            gemini_untrusted_buffer: String::new(),
+            gemini_untrusted_handled: false,
             auto_suggestion_visible: false,
             last_injection_time: None,
             last_auto_enter_time: None,
@@ -221,6 +226,28 @@ impl PtyAutoState {
                 let _ = pty.write_all(b"\r");
                 self.gemini_trust_buffer.clear();
                 self.gemini_trust_handled = true;
+            }
+        }
+    }
+
+    /// Detect the Gemini "untrusted folder" informational banner and send `/permissions`
+    /// to open the trust menu. The existing `handle_gemini_trust` will then pick up the
+    /// interactive "Modify Trust Level" prompt that appears in response.
+    pub(crate) async fn handle_gemini_untrusted_banner(&mut self, text: &str, pty: &PtySession) {
+        if !self.gemini_untrusted_handled {
+            Self::append_buf(&mut self.gemini_untrusted_buffer, text, 2500, 2000);
+            let clean = strip_ansi(&self.gemini_untrusted_buffer);
+            if detect_gemini_untrusted_banner(&clean) {
+                tracing::info!(
+                    "Detected Gemini 'untrusted folder' banner, sending /permissions command"
+                );
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let _ = pty.write_all(b"/permissions\n");
+                self.gemini_untrusted_buffer.clear();
+                self.gemini_untrusted_handled = true;
+                // Reset trust handler so it can pick up the resulting "Modify Trust Level" menu
+                self.gemini_trust_handled = false;
+                self.gemini_trust_buffer.clear();
             }
         }
     }
@@ -599,6 +626,7 @@ pub(crate) async fn run_wrap(
                         pty_auto.handle_bypass_permissions(&text, &pty).await;
                         pty_auto.handle_codex_model_prompt(&text, &pty).await;
                         pty_auto.handle_gemini_action(&text, &pty).await;
+                        pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
                         pty_auto.handle_gemini_trust(&text, &pty).await;
 
                         // Accumulate echo buffer for verification matching
