@@ -40,7 +40,7 @@ impl MultiWorkspaceSession {
     pub fn new(
         http_base: impl Into<String>,
         ws_base: impl Into<String>,
-        auth: AuthClient,
+        _auth: AuthClient,
         sessions: AuthSessionSet,
         channels: Vec<String>,
         read_mcp_identity: bool,
@@ -94,13 +94,8 @@ impl MultiWorkspaceSession {
 
             let (workspace_tx, mut workspace_rx) = mpsc::channel(512);
             let (ws_control_tx, ws_control_rx) = mpsc::channel(8);
-            let ws_client = RelaycastWsClient::new(
-                ws_base.clone(),
-                auth.clone(),
-                self_token.clone(),
-                session.credentials,
-                channels.clone(),
-            );
+            let ws_client =
+                RelaycastWsClient::new(ws_base.clone(), http_client.clone(), channels.clone());
             let merged_tx_clone = merged_tx.clone();
             let workspace_id_clone = workspace_id.clone();
             let workspace_alias_clone = workspace_alias.clone();
