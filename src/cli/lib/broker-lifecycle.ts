@@ -657,10 +657,12 @@ async function refreshDashboardAssetsIfStale(
   const uiUrl =
     'https://github.com/AgentWorkforce/relay-dashboard/releases/latest/download/dashboard-ui.tar.gz';
   const targetDir = path.join(homeDir, '.relay', 'dashboard');
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `dashboard-ui-${deps.pid}-`));
-  const tempFile = path.join(tempDir, 'dashboard-ui.tar.gz');
+  let tempDir: string | undefined;
+  let tempFile: string | undefined;
 
   try {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `dashboard-ui-${deps.pid}-`));
+    tempFile = path.join(tempDir, 'dashboard-ui.tar.gz');
     // Download (async to avoid blocking event loop during network I/O)
     await deps.execCommand(
       `curl -fsSL --max-time 30 ${JSON.stringify(uiUrl)} -o ${JSON.stringify(tempFile)}`
@@ -672,7 +674,7 @@ async function refreshDashboardAssetsIfStale(
     fs.readSync(fd, header, 0, 2, 0);
     fs.closeSync(fd);
     if (header[0] !== 0x1f || header[1] !== 0x8b) {
-      deps.fs.unlinkSync(tempFile);
+      if (tempFile) deps.fs.unlinkSync(tempFile);
       return; // Not a valid gzip file
     }
 
@@ -682,7 +684,7 @@ async function refreshDashboardAssetsIfStale(
     await deps.execCommand(
       `tar -xzf ${JSON.stringify(tempFile)} -C ${JSON.stringify(targetDir)}`
     );
-    deps.fs.unlinkSync(tempFile);
+    if (tempFile) deps.fs.unlinkSync(tempFile);
 
     // Write version marker only after confirming extraction succeeded
     if (deps.fs.existsSync(path.join(assetsDir, 'index.html'))) {
@@ -694,13 +696,13 @@ async function refreshDashboardAssetsIfStale(
   } catch {
     // Best-effort — don't block startup
     try {
-      deps.fs.unlinkSync(tempFile);
+      if (tempFile) deps.fs.unlinkSync(tempFile);
     } catch {
       /* ignore */
     }
   } finally {
     try {
-      deps.fs.rmSync(tempDir, { recursive: true, force: true });
+      if (tempDir) deps.fs.rmSync(tempDir, { recursive: true, force: true });
     } catch {
       /* ignore */
     }
