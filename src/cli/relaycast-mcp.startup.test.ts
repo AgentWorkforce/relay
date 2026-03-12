@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 type LoadOptions = {
   wsClientThrows?: boolean;
+  connectThrows?: boolean;
+  forceEntrypoint?: boolean;
 };
 
 type RelayBehavior = {
@@ -11,6 +13,16 @@ type RelayBehavior = {
 
 async function loadRelaycastMcpModule(options: LoadOptions = {}) {
   vi.resetModules();
+
+  const originalArgv = process.argv;
+  if (options.forceEntrypoint) {
+    process.argv = ['node', '/entry'];
+    const realpathSync = vi.fn(() => '/entry');
+    vi.doMock('node:fs', () => ({
+      default: { realpathSync },
+      realpathSync,
+    }));
+  }
 
   const serverInstances: FakeMcpServer[] = [];
   const wsBridgeInstances: FakeWsBridge[] = [];
@@ -56,7 +68,11 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
   class FakeMcpServer {
     readonly tools = new Map<string, { config: unknown; handler: (input: any) => Promise<any> }>();
     readonly prompts = new Map<string, { config: unknown; handler: () => Promise<any> }>();
-    readonly connect = vi.fn(async (_transport: unknown) => undefined);
+    readonly connect = vi.fn(async (_transport: unknown) => {
+      if (options.connectThrows) {
+        throw new Error('stdio connect failed');
+      }
+    });
     readonly server: {
       _requestHandlers: Map<string, (req: unknown, extra: unknown) => Promise<{ tools?: Array<Record<string, unknown>> }>>;
       setRequestHandler: ReturnType<typeof vi.fn>;
@@ -158,6 +174,9 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
   vi.doMock('@relaycast/mcp/dist/resources/ws-bridge.js', () => ({ WsBridge: FakeWsBridge }));
 
   const mod = await import('./relaycast-mcp.js');
+  if (options.forceEntrypoint) {
+    process.argv = originalArgv;
+  }
 
   return {
     mod,
@@ -330,6 +349,28 @@ describe('createPatchedRelayMcpServer', () => {
     });
   });
 
+  it('preserves the current agent session when the workspace key does not change', async () => {
+    const { mod, mocks } = await loadRelaycastMcpModule();
+    mod.createPatchedRelayMcpServer({
+      apiKey: 'rk_live_existing',
+      agentToken: 'at_live_existing',
+      agentName: 'PinnedWorker',
+      baseUrl: 'https://api.relaycast.dev',
+    });
+
+    const server = mocks.serverInstances[0];
+    const bridge = mocks.wsBridgeInstances[0];
+    const setWorkspaceKeyTool = server.tools.get('set_workspace_key');
+
+    const result = await setWorkspaceKeyTool?.handler({ api_key: 'rk_live_existing' });
+
+    expect(bridge?.stop).not.toHaveBeenCalled();
+    expect(result.structuredContent).toEqual({
+      message: 'Workspace key set.',
+    });
+    expect(mocks.channelToolGetters[0]()).toMatchObject({ token: 'at_live_existing' });
+  });
+
   it('marks websocket initialization attempted even when bridge setup fails', async () => {
     const { mod, mocks } = await loadRelaycastMcpModule({ wsClientThrows: true });
     mod.createPatchedRelayMcpServer({
@@ -344,6 +385,24 @@ describe('createPatchedRelayMcpServer', () => {
       source_surface: 'mcp',
       agent_name: 'PinnedWorker',
     });
+  });
+
+  it('swallows websocket resource update emission failures', async () => {
+    const { mod, mocks } = await loadRelaycastMcpModule();
+    mod.createPatchedRelayMcpServer({
+      apiKey: 'rk_live_existing',
+      agentToken: 'at_live_existing',
+      agentName: 'PinnedWorker',
+    });
+
+    const server = mocks.serverInstances[0];
+    const bridge = mocks.wsBridgeInstances[0];
+    server.server.sendResourceUpdated.mockRejectedValueOnce(new Error('emit failed'));
+
+    bridge?.onResourceUpdated('relaycast://channels/general');
+    await Promise.resolve();
+
+    expect(server.server.sendResourceUpdated).toHaveBeenCalledWith({ uri: 'relaycast://channels/general' });
   });
 });
 
@@ -434,6 +493,18 @@ describe('startPatchedStdio', () => {
     expect(mocks.telemetry.capture).toHaveBeenCalledWith('relaycast_mcp_server_started', {
       source_surface: 'mcp',
       transport: 'stdio',
+    });
+  });
+
+  it('reports entrypoint startup failures to stderr and exits', async () => {
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    await loadRelaycastMcpModule({ forceEntrypoint: true, connectThrows: true });
+
+    await vi.waitFor(() => {
+      expect(stderrWrite).toHaveBeenCalledWith(expect.stringContaining('stdio connect failed'));
+      expect(exit).toHaveBeenCalledWith(1);
     });
   });
 });
