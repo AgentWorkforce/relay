@@ -76,7 +76,7 @@ type RegisterAgentWithRebindArgs = {
   forcedAgentType?: AgentType;
 };
 
-function normalizeBaseUrl(baseUrl?: string): string {
+export function normalizeBaseUrl(baseUrl?: string): string {
   return (baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
 }
 
@@ -90,7 +90,7 @@ function isEntrypoint(): boolean {
   }
 }
 
-function envFlagEnabled(value: string | undefined): boolean {
+export function envFlagEnabled(value: string | undefined): boolean {
   if (!value) {
     return false;
   }
@@ -99,7 +99,7 @@ function envFlagEnabled(value: string | undefined): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
 }
 
-function normalizeAgentType(value: string | undefined): AgentType | undefined {
+export function normalizeAgentType(value: string | undefined): AgentType | undefined {
   if (value === 'agent' || value === 'human') {
     return value;
   }
@@ -576,7 +576,7 @@ export async function startPatchedStdio(options: PatchedMcpServerOptions): Promi
   await mcpServer.connect(transport);
 }
 
-function optionsFromEnv(): PatchedMcpServerOptions {
+export function optionsFromEnv(): PatchedMcpServerOptions {
   return {
     apiKey: process.env.RELAY_API_KEY,
     baseUrl: process.env.RELAY_BASE_URL,
