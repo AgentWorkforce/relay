@@ -8,7 +8,7 @@ RATE_DIR="${TMPDIR:-/tmp}/relay-beforemodel"
 
 INPUT=$(cat)
 
-if [ ! -s "$TOKEN_FILE" ]; then
+if [ ! -s "$TOKEN_FILE" ] || ! command -v jq >/dev/null 2>&1; then
   printf '%s\n' "$EMPTY_OUTPUT"
   exit 0
 fi
