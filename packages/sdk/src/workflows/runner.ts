@@ -5319,19 +5319,30 @@ export class WorkflowRunner {
         return agent.waitForExit(timeoutMs);
       }
 
-      // Idle = done: race exit against idle. Whichever fires first completes the step.
-      const result = await Promise.race([
-        agent.waitForExit(timeoutMs).then((r) => ({ kind: 'exit' as const, result: r })),
-        agent.waitForIdle(timeoutMs).then((r) => ({ kind: 'idle' as const, result: r })),
-      ]);
-      if (result.kind === 'idle' && result.result === 'idle') {
-        this.log(`[${step.name}] Agent "${agent.name}" went idle — treating as complete`);
-        this.postToChannel(`**[${step.name}]** Agent \`${agent.name}\` idle — treating as complete`);
-        await agent.release();
-        return 'released';
+      // Idle = done: race exit against idle, but only accept idle if verification passes.
+      while (true) {
+        const result = await Promise.race([
+          agent.waitForExit(timeoutMs).then((r) => ({ kind: 'exit' as const, result: r })),
+          agent.waitForIdle(timeoutMs).then((r) => ({ kind: 'idle' as const, result: r })),
+        ]);
+        if (result.kind === 'idle' && result.result === 'idle') {
+          // Check verification before treating idle as complete
+          if (step.verification && step.verification.type === 'output_contains') {
+            const ptyOutput = (this.ptyOutputBuffers.get(agent.name) ?? []).join('');
+            if (!ptyOutput.includes(step.verification.value)) {
+              this.log(`[${step.name}] Agent "${agent.name}" went idle but verification not yet passed — continuing to wait`);
+              // Continue waiting for exit or next idle cycle
+              continue;
+            }
+          }
+          this.log(`[${step.name}] Agent "${agent.name}" went idle — treating as complete`);
+          this.postToChannel(`**[${step.name}]** Agent \`${agent.name}\` idle — treating as complete`);
+          await agent.release();
+          return 'released';
+        }
+        // Exit won the race, or idle returned 'exited'/'timeout' — pass through.
+        return result.result as 'exited' | 'timeout' | 'released';
       }
-      // Exit won the race, or idle returned 'exited'/'timeout' — pass through.
-      return result.result as 'exited' | 'timeout' | 'released';
     }
 
     const nudgeAfterMs = nudgeConfig.nudgeAfterMs ?? 120_000;
