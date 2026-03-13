@@ -87,7 +87,7 @@ async def test_instructions_wrapping(mock_relay, mock_agent):
     
     result = await mock_agent.instructions()
     assert "Agno base instructions." in result
-    assert "Relay message from Other" in result
+    assert "Other: Agno message" in result
 
 @pytest.mark.asyncio
 async def test_instructions_wrapping_callable(mock_relay, mock_agent):
@@ -102,6 +102,24 @@ async def test_instructions_wrapping_callable(mock_relay, mock_agent):
     result = await mock_agent.instructions()
     assert "Dynamic context." in result
     assert original_instructions.called
+
+
+@pytest.mark.asyncio
+async def test_instructions_wrapping_async_callable(mock_relay, mock_agent):
+    adapter = _adapter_module()
+    from agent_relay.communicate.types import Message
+
+    async def original_instructions():
+        return "Async context."
+
+    mock_agent.instructions = original_instructions
+    mock_relay.inbox.return_value = [Message(sender="Other", text="Agno message", message_id="1")]
+
+    adapter.on_relay(mock_agent, mock_relay)
+
+    result = await mock_agent.instructions()
+    assert result.startswith("\n\nNew messages from other agents:\n  Other: Agno message\n")
+    assert result.endswith("\n\nAsync context.")
 
 @pytest.mark.asyncio
 async def test_instructions_no_messages(mock_relay, mock_agent):

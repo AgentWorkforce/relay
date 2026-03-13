@@ -28,6 +28,8 @@ class Relay:
         self._state_lock = threading.Lock()
         self._connect_task: asyncio.Task[None] | None = None
         self._connected = False
+        self._ws_connected = False
+        self._poll_task: asyncio.Task[None] | None = None
 
         self.transport.on_ws_message(self._handle_transport_message)
 
@@ -48,6 +50,10 @@ class Relay:
 
     async def inbox(self) -> list[Message]:
         await self._ensure_connected()
+        if not self._ws_connected:
+            polled = await self.transport.check_inbox()
+            for msg in polled:
+                await self._handle_transport_message(msg)
         with self._state_lock:
             messages = list(self._pending)
             self._pending.clear()
@@ -83,8 +89,18 @@ class Relay:
             except asyncio.CancelledError:
                 pass
 
+        poll_task = self._poll_task
+        self._poll_task = None
+        if poll_task is not None and not poll_task.done():
+            poll_task.cancel()
+            try:
+                await poll_task
+            except asyncio.CancelledError:
+                pass
+
         await self.transport.disconnect()
         self._connected = False
+        self._ws_connected = False
 
     def send_sync(self, to: str, text: str) -> None:
         return self._run_sync(self.send(to, text))
@@ -117,7 +133,14 @@ class Relay:
             await connect_task
             return
 
-        await self.transport.connect()
+        try:
+            await self.transport.connect()
+            self._ws_connected = True
+        except Exception:
+            # WebSocket failed — register agent via HTTP and fall back to polling
+            await self.transport.register_agent()
+            self._ws_connected = False
+            self._start_poll_loop()
         self._connected = True
 
     def _schedule_connect(self) -> None:
@@ -141,19 +164,40 @@ class Relay:
         if self._connect_task is task:
             self._connect_task = None
 
+    def _start_poll_loop(self) -> None:
+        if self._poll_task is not None and not self._poll_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._poll_task = loop.create_task(self._poll_loop())
+
+    async def _poll_loop(self) -> None:
+        interval = self.config.poll_interval_ms / 1000.0
+        while self._connected and not self._ws_connected:
+            try:
+                messages = await self.transport.check_inbox()
+                for msg in messages:
+                    await self._handle_transport_message(msg)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            await asyncio.sleep(interval)
+
     async def _handle_transport_message(self, message: Message) -> None:
         with self._state_lock:
             callbacks = list(self._callbacks)
-            if not callbacks:
-                if len(self._pending) >= MAX_PENDING_MESSAGES:
-                    self._pending.pop(0)
-                    warnings.warn(
-                        "Relay pending buffer exceeded 10,000 messages; dropping oldest message.",
-                        UserWarning,
-                        stacklevel=2,
-                    )
-                self._pending.append(message)
-                return
+            # Always buffer the message (spec: "both" case — callbacks AND inbox)
+            if len(self._pending) >= MAX_PENDING_MESSAGES:
+                self._pending.pop(0)
+                warnings.warn(
+                    "Relay pending buffer exceeded 10,000 messages; dropping oldest message.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            self._pending.append(message)
 
         for callback in callbacks:
             result = callback(message)

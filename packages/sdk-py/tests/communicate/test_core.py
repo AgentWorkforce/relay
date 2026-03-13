@@ -189,7 +189,8 @@ async def test_on_message_registers_callback_and_unsubscribe_restores_buffering(
     inbox_messages = await relay.inbox()
 
     assert received == [callback_message]
-    assert inbox_messages == [buffered_message]
+    # "both" case: callback messages are also buffered per spec Section 5.3
+    assert inbox_messages == [callback_message, buffered_message]
 
 
 @pytest.mark.asyncio

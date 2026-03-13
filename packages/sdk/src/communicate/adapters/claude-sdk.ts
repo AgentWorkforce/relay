@@ -45,6 +45,13 @@ async function drainInbox(relay: RelayLike): Promise<string | undefined> {
   return `New messages from other agents:\n${messages.map((message) => formatRelayMessage(message)).join('\n')}`;
 }
 
+/**
+ * Attach relay communication to Claude Agent SDK options via MCP server and hooks.
+ * @param _name - Agent name for relay registration.
+ * @param options - Claude SDK query options to augment.
+ * @param relay - Optional pre-configured Relay instance.
+ * @returns Augmented options with relaycast MCP server and inbox-draining hooks.
+ */
 export function onRelay<TOptions extends ClaudeOptionsLike>(
   _name: string,
   options: TOptions,

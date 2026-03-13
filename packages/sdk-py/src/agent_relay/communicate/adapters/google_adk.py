@@ -1,6 +1,7 @@
 """Google ADK adapter for on_relay()."""
 
 from __future__ import annotations
+import inspect
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -41,17 +42,24 @@ def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
 
     async def relay_callback(llm_request: Any) -> None:
         if orig_callback:
-            await orig_callback(llm_request)
-        
+            result = orig_callback(llm_request)
+            if inspect.isawaitable(result):
+                await result
+
         messages = await relay.inbox()
         if messages:
-            content = "\n\nNew messages from other agents:\n"
-            for m in messages:
-                content += f"  Relay message from {m.sender}: {m.text}\n"
-            
-            # Assuming llm_request.contents is a list of user messages
-            # and we can append a new user part/content
-            llm_request.contents.append(content)
+            from google.genai.types import Content, Part
+
+            if getattr(llm_request, "contents", None) is None:
+                llm_request.contents = []
+
+            for message in messages:
+                llm_request.contents.append(
+                    Content(
+                        role="user",
+                        parts=[Part(text=f"[Relay] {message.sender}: {message.text}")],
+                    )
+                )
 
     agent.before_model_callback = relay_callback
     return agent
