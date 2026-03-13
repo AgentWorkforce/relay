@@ -40,64 +40,36 @@ type RelayLike = {
   onMessage(callback: MessageCallback): () => void;
 };
 
-function textToolResult(text: string): ToolResult {
-  return {
-    content: [{ type: 'text', text }],
-    details: {},
-  };
-}
+const txt = (text: string): ToolResult => ({ content: [{ type: 'text', text }], details: {} });
 
 function createRelayTools(relay: RelayLike): RelayTool[] {
-  return [
-    {
-      name: 'relay_send',
-      label: 'Relay send',
-      description: 'Send a direct message to another relay agent.',
-      parameters: Type.Object({
-        to: Type.String(),
-        text: Type.String(),
-      }),
-      async execute(_toolCallId, params: { to: string; text: string }) {
-        await relay.send(params.to, params.text);
-        return textToolResult(`Sent relay message to ${params.to}.`);
-      },
-    },
-    {
-      name: 'relay_inbox',
-      label: 'Relay inbox',
-      description: 'Drain and inspect newly received relay messages.',
-      parameters: Type.Object({}),
-      async execute() {
-        const messages = await relay.inbox();
-        return textToolResult(formatRelayInbox(messages));
-      },
-    },
-    {
-      name: 'relay_post',
-      label: 'Relay post',
-      description: 'Post a message to a relay channel.',
-      parameters: Type.Object({
-        channel: Type.String(),
-        text: Type.String(),
-      }),
-      async execute(_toolCallId, params: { channel: string; text: string }) {
-        await relay.post(params.channel, params.text);
-        return textToolResult(`Posted relay message to #${params.channel}.`);
-      },
-    },
-    {
-      name: 'relay_agents',
-      label: 'Relay agents',
-      description: 'List currently online relay agents.',
-      parameters: Type.Object({}),
-      async execute() {
-        const agents = await relay.agents();
-        return textToolResult(agents.join('\n'));
-      },
-    },
+  const toolDefs: Array<[string, string, unknown, (p: Record<string, string>) => Promise<string>]> = [
+    ['relay_send', 'Send a direct message to another relay agent.',
+      Type.Object({ to: Type.String(), text: Type.String() }),
+      async (p) => { await relay.send(p.to, p.text); return `Sent relay message to ${p.to}.`; }],
+    ['relay_inbox', 'Drain and inspect newly received relay messages.',
+      Type.Object({}),
+      async () => formatRelayInbox(await relay.inbox())],
+    ['relay_post', 'Post a message to a relay channel.',
+      Type.Object({ channel: Type.String(), text: Type.String() }),
+      async (p) => { await relay.post(p.channel, p.text); return `Posted relay message to #${p.channel}.`; }],
+    ['relay_agents', 'List currently online relay agents.',
+      Type.Object({}),
+      async () => (await relay.agents()).join('\n')],
   ];
+  return toolDefs.map(([name, description, parameters, run]) => ({
+    name, label: name.replace('_', ' '), description, parameters,
+    async execute(_id: string, params: Record<string, string>) { return txt(await run(params)); },
+  }));
 }
 
+/**
+ * Attach relay communication tools and message routing to a Pi agent config.
+ * @param name - Agent name for relay registration.
+ * @param config - Pi agent session config to augment.
+ * @param relay - Optional pre-configured Relay instance.
+ * @returns Augmented config with relay tools and session hook.
+ */
 export function onRelay<TConfig extends PiConfigLike>(
   name: string,
   config: TConfig,

@@ -1,10 +1,19 @@
 """Agno adapter for on_relay()."""
 
 from __future__ import annotations
+import inspect
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..core import Relay
+
+
+def _format_instructions_with_inbox(messages: list[Any], base_instructions: str) -> str:
+    content = "\n\nNew messages from other agents:\n"
+    for message in messages:
+        content += f"  {message.sender}: {message.text}\n"
+    return f"{content}\n{base_instructions}" if base_instructions else content
+
 
 def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
     """Wrap Agno Agent to connect it to the relay."""
@@ -40,14 +49,22 @@ def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
     orig_instructions = agent.instructions
 
     async def instructions_wrapper(*args: Any, **kwargs: Any) -> str:
-        base = orig_instructions(*args, **kwargs) if callable(orig_instructions) else (orig_instructions or "")
+        if callable(orig_instructions):
+            if inspect.iscoroutinefunction(orig_instructions):
+                base = await orig_instructions(*args, **kwargs)
+            else:
+                base = orig_instructions(*args, **kwargs)
+                if inspect.isawaitable(base):
+                    base = await base
+        else:
+            base = orig_instructions
+
+        base = base or ""
         messages = await relay.inbox()
-        if not messages: return base
-        
-        content = "\n\nNew messages from other agents:\n"
-        for m in messages:
-            content += f"  Relay message from {m.sender}: {m.text}\n"
-        return base + content
+        if not messages:
+            return base
+
+        return _format_instructions_with_inbox(messages, base)
 
     agent.instructions = instructions_wrapper
     return agent
