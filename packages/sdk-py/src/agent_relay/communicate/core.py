@@ -7,7 +7,7 @@ import asyncio
 import threading
 import warnings
 from inspect import isawaitable
-from typing import Any
+from typing import Any, Callable
 
 from .transport import RelayTransport
 from .types import Message, MessageCallback, RelayConfig
@@ -59,7 +59,17 @@ class Relay:
             self._pending.clear()
         return messages
 
-    def on_message(self, callback: MessageCallback) -> callable:
+    async def peek(self) -> list[Message]:
+        """Return buffered messages without draining them."""
+        await self._ensure_connected()
+        if not self._ws_connected:
+            polled = await self.transport.check_inbox()
+            for msg in polled:
+                await self._handle_transport_message(msg)
+        with self._state_lock:
+            return list(self._pending)
+
+    def on_message(self, callback: MessageCallback) -> Callable[[], None]:
         with self._state_lock:
             self._callbacks.append(callback)
 
@@ -210,7 +220,11 @@ class Relay:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(awaitable)
-        raise RuntimeError("Sync Relay methods cannot run from an active event loop.")
+        # Running inside an active event loop — execute in a separate thread
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, awaitable).result()
 
 
 def on_relay(agent: Any, relay: Relay | None = None) -> Any:

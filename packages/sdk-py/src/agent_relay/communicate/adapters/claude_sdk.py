@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from ..core import Relay
 
 
-def on_relay(name: str, options: Any, relay: "Relay | None" = None) -> Any:
+def on_relay(options: Any, relay: "Relay | None" = None, *, name: str | None = None) -> Any:
     """Wrap Claude Agent SDK query options to connect them to the relay."""
     try:
         from claude_agent_sdk.types import HookResult
@@ -19,9 +19,10 @@ def on_relay(name: str, options: Any, relay: "Relay | None" = None) -> Any:
             "Install it with: pip install claude-agent-sdk"
         ) from exc
 
+    agent_name = name or getattr(options, "name", "Agent")
     if relay is None:
         from ..core import Relay
-        relay = Relay(name)
+        relay = Relay(agent_name)
 
     if getattr(options, "hooks", None) is None:
         options.hooks = SimpleNamespace(post_tool_use=None, stop=None)

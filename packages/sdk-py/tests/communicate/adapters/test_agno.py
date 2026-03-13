@@ -24,6 +24,7 @@ def mock_relay():
     relay = MagicMock()
     relay.agent_name = "TestAgent"
     relay.inbox = AsyncMock(return_value=[])
+    relay.peek = AsyncMock(return_value=[])
     relay.send = AsyncMock()
     relay.post = AsyncMock()
     relay.agents = AsyncMock(return_value=[])
@@ -77,14 +78,14 @@ async def test_instructions_wrapping(mock_relay, mock_agent):
     adapter = _adapter_module()
     from agent_relay.communicate.types import Message
     
-    mock_relay.inbox.return_value = [
+    mock_relay.peek.return_value = [
         Message(sender="Other", text="Agno message", message_id="1")
     ]
-    
+
     adapter.on_relay(mock_agent, mock_relay)
-    
+
     assert callable(mock_agent.instructions)
-    
+
     result = await mock_agent.instructions()
     assert "Agno base instructions." in result
     assert "Other: Agno message" in result
@@ -113,7 +114,7 @@ async def test_instructions_wrapping_async_callable(mock_relay, mock_agent):
         return "Async context."
 
     mock_agent.instructions = original_instructions
-    mock_relay.inbox.return_value = [Message(sender="Other", text="Agno message", message_id="1")]
+    mock_relay.peek.return_value = [Message(sender="Other", text="Agno message", message_id="1")]
 
     adapter.on_relay(mock_agent, mock_relay)
 
@@ -125,7 +126,7 @@ async def test_instructions_wrapping_async_callable(mock_relay, mock_agent):
 async def test_instructions_no_messages(mock_relay, mock_agent):
     """When inbox is empty, only base instructions returned."""
     adapter = _adapter_module()
-    mock_relay.inbox = AsyncMock(return_value=[])
+    mock_relay.peek = AsyncMock(return_value=[])
 
     adapter.on_relay(mock_agent, mock_relay)
 

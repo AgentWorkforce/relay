@@ -27,6 +27,7 @@ def mock_relay():
     relay = MagicMock()
     relay.agent_name = "TestAgent"
     relay.inbox = AsyncMock(return_value=[])
+    relay.peek = AsyncMock(return_value=[])
     return relay
 
 @pytest.fixture
@@ -52,7 +53,7 @@ async def test_instructions_wrapping_string(monkeypatch, mock_relay, mock_agent)
     adapter = _adapter_module()
     from agent_relay.communicate.types import Message
 
-    mock_relay.inbox.return_value = [
+    mock_relay.peek.return_value = [
         Message(sender="Other", text="Hello", message_id="1")
     ]
 
@@ -89,7 +90,7 @@ async def test_instructions_wrapping_async_callable(monkeypatch, mock_relay, moc
         return "Async context."
 
     mock_agent.instructions = original_instructions
-    mock_relay.inbox.return_value = [Message(sender="Other", text="Hello", message_id="1")]
+    mock_relay.peek.return_value = [Message(sender="Other", text="Hello", message_id="1")]
 
     adapter.on_relay(mock_agent, mock_relay)
 
