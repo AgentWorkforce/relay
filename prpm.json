@@ -23,7 +23,7 @@
         "agent-management"
       ],
       "files": [
-        ".claude/skills/choosing-swarm-patterns/SKILL.md"
+        "skills/choosing-swarm-patterns/SKILL.md"
       ]
     },
     {
@@ -41,7 +41,7 @@
         "workflow-design"
       ],
       "files": [
-        ".claude/skills/adding-swarm-patterns/SKILL.md"
+        "skills/adding-swarm-patterns/SKILL.md"
       ]
     },
     {
@@ -59,7 +59,7 @@
         "swarm-patterns"
       ],
       "files": [
-        ".claude/skills/writing-agent-relay-workflows/SKILL.md"
+        "skills/writing-agent-relay-workflows/SKILL.md"
       ]
     },
     {
@@ -77,7 +77,25 @@
         "messaging"
       ],
       "files": [
-        ".claude/skills/using-agent-relay/SKILL.md"
+        "skills/using-agent-relay/SKILL.md"
+      ]
+    },
+    {
+      "name": "running-headless-orchestrator",
+      "version": "1.0.0",
+      "description": "Use when an agent needs to self-bootstrap agent-relay and autonomously manage a team of workers - covers infrastructure startup, agent spawning, lifecycle monitoring, and team coordination without human intervention",
+      "format": "claude",
+      "subtype": "skill",
+      "tags": [
+        "multi-agent",
+        "orchestration",
+        "headless",
+        "autonomous",
+        "self-bootstrap",
+        "agent-management"
+      ],
+      "files": [
+        "skills/running-headless-orchestrator/SKILL.md"
       ]
     },
     {
@@ -126,7 +144,7 @@
         "coordination"
       ],
       "files": [
-        ".claude/skills/using-beads-bv/SKILL.md"
+        "skills/using-beads-bv/SKILL.md"
       ]
     },
     {
