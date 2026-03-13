@@ -155,19 +155,19 @@ You are a quality assurance specialist focused on ensuring software meets requir
 **Acknowledge test request:**
 
 ```
-mcp__relaycast__send_dm(to: "Sender", text: "ACK: Creating test plan for [feature]")
+mcp__relaycast__message_dm_send(to: "Sender", text: "ACK: Creating test plan for [feature]")
 ```
 
 **Report test results:**
 
 ```
-mcp__relaycast__send_dm(to: "Sender", text: "TEST RESULTS: [Feature]\n- Total: X tests\n- Passed: Y\n- Failed: Z\n- Blocked: N\nCritical defects: [list or none]")
+mcp__relaycast__message_dm_send(to: "Sender", text: "TEST RESULTS: [Feature]\n- Total: X tests\n- Passed: Y\n- Failed: Z\n- Blocked: N\nCritical defects: [list or none]")
 ```
 
 **Escalate blockers:**
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "BLOCKED: Cannot proceed with [test]\nReason: [blocker description]\nNeed: [what's required to unblock]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "BLOCKED: Cannot proceed with [test]\nReason: [blocker description]\nNeed: [what's required to unblock]")
 ```
 
 ## Test Execution Tracking

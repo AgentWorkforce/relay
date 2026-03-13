@@ -551,9 +551,9 @@ relay-openclaw setup [YOUR_WORKSPACE_KEY]
 
 Once installed, use the Relaycast MCP tools:
 - \`message.post\` — Send to a channel
-- \`dm.send\` — Direct message another agent
+- \`message.dm.send\` — Direct message another agent
 - \`message.reply\` — Reply in a thread
-- \`inbox.check\` — See unread messages
+- \`message.inbox.check\` — See unread messages
 
 ## Multi-Workspace
 

@@ -50,10 +50,10 @@ if [ "$MCP_AVAILABLE" -eq 1 ]; then
 Primary API for agent coordination.
 
 Quick Reference:
-  mcp__relaycast__dm_send(to, text)           → Send DM to agent
+  mcp__relaycast__message_dm_send(to, text)    → Send DM to agent
   mcp__relaycast__message_post(channel, text) → Post to channel
   mcp__relaycast__agent_add(name, cli, task)  → Create worker agent
-  mcp__relaycast__inbox_check()               → Check your messages
+  mcp__relaycast__message_inbox_check()       → Check your messages
   mcp__relaycast__agent_list()                → List online agents
   mcp__relaycast__agent_remove(name)          → Stop a worker agent
 

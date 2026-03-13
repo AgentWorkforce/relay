@@ -139,8 +139,8 @@ test("mcp-hints: DM messages hint to use send_dm", { timeout: 90_000 }, async (t
 
     // DM should hint to use send_dm with sender name
     assert.ok(
-      output.includes("mcp__relaycast__dm_send"),
-      "DM should hint to use mcp__relaycast__dm_send"
+      output.includes("mcp__relaycast__message_dm_send"),
+      "DM should hint to use mcp__relaycast__message_dm_send"
     );
     assert.ok(
       output.includes("alice"),
@@ -335,7 +335,7 @@ test("e2e-mcp: agent responds to DM using MCP send_dm", { timeout: 180_000 }, as
   try {
     // Spawn agent with explicit task to respond via MCP
     await harness.spawnAgent(agentName, cli, ["general"], {
-      task: "You are a test agent. When you receive a message, respond using the mcp__relaycast__dm_send tool to reply directly to the sender. Keep responses brief.",
+      task: "You are a test agent. When you receive a message, respond using the mcp__relaycast__message_dm_send tool to reply directly to the sender. Keep responses brief.",
     });
     await sleep(15_000);
 
@@ -498,7 +498,7 @@ test("e2e-mcp: agent can check inbox for reactions", { timeout: 180_000 }, async
 
   try {
     await harness.spawnAgent(agentName, cli, ["general"], {
-      task: "You are a test agent. Use the mcp__relaycast__inbox_check tool to see if you have any new messages or reactions. Report what you find.",
+      task: "You are a test agent. Use the mcp__relaycast__message_inbox_check tool to see if you have any new messages or reactions. Report what you find.",
     });
     await sleep(15_000);
 
@@ -508,7 +508,7 @@ test("e2e-mcp: agent can check inbox for reactions", { timeout: 180_000 }, async
     await harness.sendMessage({
       to: agentName,
       from: "test-user",
-      text: "Please check your inbox using mcp__relaycast__inbox_check and tell me if you see any messages or reactions.",
+      text: "Please check your inbox using mcp__relaycast__message_inbox_check and tell me if you see any messages or reactions.",
     });
 
     await sleep(60_000);
@@ -519,7 +519,7 @@ test("e2e-mcp: agent can check inbox for reactions", { timeout: 180_000 }, async
     // Verify agent attempted to use check_inbox
     // This is indicated by MCP tool calls in the output
     const usedCheckInbox = output.includes("check_inbox") ||
-                           output.includes("mcp__relaycast__inbox_check") ||
+                           output.includes("mcp__relaycast__message_inbox_check") ||
                            output.includes("inbox");
 
     assert.ok(

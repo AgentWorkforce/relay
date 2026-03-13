@@ -83,7 +83,7 @@ OUT OF SCOPE:
 Use clear, structured completion messages:
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "DONE: Password validation for registration\n\nImplemented:\n- src/auth/validation.ts - passwordSchema with Zod\n- Checks: min 8 chars, 1+ number, 1+ special char\n- Tests: tests/auth/validation.test.ts (12 tests, all pass)\n\nIntegration:\n- Import { validatePassword } from 'src/auth/validation'\n- Call before hashing in registration handler\n\nNotes:\n- Saw email validation is missing too (separate task?)")
+mcp__relaycast__message_dm_send(to: "Lead", text: "DONE: Password validation for registration\n\nImplemented:\n- src/auth/validation.ts - passwordSchema with Zod\n- Checks: min 8 chars, 1+ number, 1+ special char\n- Tests: tests/auth/validation.test.ts (12 tests, all pass)\n\nIntegration:\n- Import { validatePassword } from 'src/auth/validation'\n- Call before hashing in registration handler\n\nNotes:\n- Saw email validation is missing too (separate task?)")
 ```
 
 ## Handling Blockers
@@ -91,7 +91,7 @@ mcp__relaycast__send_dm(to: "Lead", text: "DONE: Password validation for registr
 When stuck, communicate clearly:
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "BLOCKED: Cannot proceed with JWT middleware\n\nMissing:\n- JWT_SECRET not in .env.example\n- Unclear: should I use RS256 or HS256?\n\nWhat I've done so far:\n- Middleware structure ready\n- Token parsing logic complete\n- Waiting on secret configuration\n\nCan continue once:\n1. Secret is configured\n2. Algorithm is decided")
+mcp__relaycast__message_dm_send(to: "Lead", text: "BLOCKED: Cannot proceed with JWT middleware\n\nMissing:\n- JWT_SECRET not in .env.example\n- Unclear: should I use RS256 or HS256?\n\nWhat I've done so far:\n- Middleware structure ready\n- Token parsing logic complete\n- Waiting on secret configuration\n\nCan continue once:\n1. Secret is configured\n2. Algorithm is decided")
 ```
 
 ## Anti-Patterns to Avoid

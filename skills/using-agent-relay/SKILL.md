@@ -15,16 +15,16 @@ All tools use dot-notation hierarchy. Claude uses `mcp__relaycast__<category>_<a
 
 | Tool (Claude / Other CLIs)                        | Description                              |
 | ------------------------------------------------- | ---------------------------------------- |
-| `mcp__relaycast__dm_send` / `relaycast.dm.send`                     | Send a direct message to an agent        |
-| `mcp__relaycast__dm_group_send` / `relaycast.dm.group_send`         | Send a group DM to multiple agents       |
+| `mcp__relaycast__message_dm_send` / `relaycast.message.dm.send`                     | Send a direct message to an agent        |
+| `mcp__relaycast__message_dm_send_group` / `relaycast.message.dm.send_group`         | Send a group DM to multiple agents       |
 | `mcp__relaycast__message_post` / `relaycast.message.post`           | Post a message to a channel              |
 | `mcp__relaycast__message_reply` / `relaycast.message.reply`         | Reply to a thread in a channel           |
-| `mcp__relaycast__inbox_check` / `relaycast.inbox.check`             | Check your inbox for new messages        |
-| `mcp__relaycast__dm_get` / `relaycast.dm.get`                       | Get direct message history with an agent |
+| `mcp__relaycast__message_inbox_check` / `relaycast.message.inbox.check`             | Check your inbox for new messages        |
+| `mcp__relaycast__message_dm_list` / `relaycast.message.dm.list`                       | Get direct message history with an agent |
 | `mcp__relaycast__message_get` / `relaycast.message.get`             | Get messages from a channel              |
 | `mcp__relaycast__thread_get` / `relaycast.thread.get`               | Get a thread's messages                  |
 | `mcp__relaycast__message_search` / `relaycast.message.search`       | Search messages across channels          |
-| `mcp__relaycast__message_mark_read` / `relaycast.message.mark_read` | Mark messages as read                    |
+| `mcp__relaycast__message_inbox_mark_read` / `relaycast.message.inbox.mark_read` | Mark messages as read                    |
 
 ### Agents
 
@@ -51,8 +51,8 @@ All tools use dot-notation hierarchy. Claude uses `mcp__relaycast__<category>_<a
 
 | Tool (Claude / Other CLIs)                        | Description                              |
 | ------------------------------------------------- | ---------------------------------------- |
-| `mcp__relaycast__reaction_add` / `relaycast.reaction.add`       | Add a reaction to a message              |
-| `mcp__relaycast__reaction_remove` / `relaycast.reaction.remove` | Remove a reaction from a message         |
+| `mcp__relaycast__message_reaction_add` / `relaycast.message.reaction.add`       | Add a reaction to a message              |
+| `mcp__relaycast__message_reaction_remove` / `relaycast.message.reaction.remove` | Remove a reaction from a message         |
 
 ### Webhooks & Subscriptions
 
@@ -83,20 +83,20 @@ All tools use dot-notation hierarchy. Claude uses `mcp__relaycast__<category>_<a
 | Tool (Claude / Other CLIs)                        | Description                              |
 | ------------------------------------------------- | ---------------------------------------- |
 | `mcp__relaycast__file_upload` / `relaycast.file.upload`     | Upload a file to share                   |
-| `mcp__relaycast__message_readers` / `relaycast.message.readers` | See who has read a message           |
+| `mcp__relaycast__message_inbox_get_readers` / `relaycast.message.inbox.get_readers` | See who has read a message           |
 
 ## Sending Messages
 
 ### Direct Messages
 
 ```
-mcp__relaycast__dm_send(to: "Bob", text: "Can you review my code changes?")
+mcp__relaycast__message_dm_send(to: "Bob", text: "Can you review my code changes?")
 ```
 
 ### Group DMs
 
 ```
-mcp__relaycast__dm_group_send(participants: ["Alice", "Bob"], text: "Sync on auth module")
+mcp__relaycast__message_dm_send_group(participants: ["Alice", "Bob"], text: "Sync on auth module")
 ```
 
 ### Channel Messages
@@ -116,13 +116,13 @@ mcp__relaycast__message_reply(channel: "general", thread_id: "abc123", text: "Do
 **ACK immediately** - When you receive a task, acknowledge before starting work:
 
 ```
-mcp__relaycast__dm_send(to: "Lead", text: "ACK: Brief description of task received")
+mcp__relaycast__message_dm_send(to: "Lead", text: "ACK: Brief description of task received")
 ```
 
 **Report completion** - When done, send a completion message:
 
 ```
-mcp__relaycast__dm_send(to: "Lead", text: "DONE: Brief summary of what was completed")
+mcp__relaycast__message_dm_send(to: "Lead", text: "DONE: Brief summary of what was completed")
 ```
 
 **Send status to your lead, NOT broadcast.**
@@ -188,8 +188,8 @@ mcp__relaycast__message_get(channel: "general")
 ## Reactions
 
 ```
-mcp__relaycast__reaction_add(message_id: "abc123", emoji: "thumbsup")
-mcp__relaycast__reaction_remove(message_id: "abc123", emoji: "thumbsup")
+mcp__relaycast__message_reaction_add(message_id: "abc123", emoji: "thumbsup")
+mcp__relaycast__message_reaction_remove(message_id: "abc123", emoji: "thumbsup")
 ```
 
 ## Search
@@ -202,7 +202,7 @@ mcp__relaycast__message_search(query: "auth module", channel: "general")
 
 ```
 mcp__relaycast__agent_list()    # List online agents
-mcp__relaycast__inbox_check()   # Check for unread messages
+mcp__relaycast__message_inbox_check()   # Check for unread messages
 ```
 
 ## CLI Commands
@@ -220,8 +220,8 @@ agent-relay history             # Show recent message history
 
 | Mistake                   | Fix                                                              |
 | ------------------------- | ---------------------------------------------------------------- |
-| Messages not sending      | Use `inbox_check` to verify connection                           |
+| Messages not sending      | Use `message.inbox.check` to verify connection                   |
 | Agent not receiving       | Use `agent_list` to confirm agent is online                      |
 | Truncated message content | `agent-relay read <id>` for full text                            |
 | Wrong tool prefix         | Claude: `mcp__relaycast__`, Others: `relaycast.`                 |
-| DM vs channel confusion   | Use `dm_send` for agents, `message_post` for channels            |
+| DM vs channel confusion   | Use `message.dm.send` for agents, `message.post` for channels    |

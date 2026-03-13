@@ -115,13 +115,13 @@ You are an observability specialist focused on monitoring, alerting, and perform
 When setting up monitoring:
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "STATUS: Setting up observability for payment-service\n- Metrics: Prometheus scrapers configured\n- Dashboards: 3 created (overview, latency, errors)\n- Alerts: 5 rules with runbooks\n- Next: Distributed tracing")
+mcp__relaycast__message_dm_send(to: "Lead", text: "STATUS: Setting up observability for payment-service\n- Metrics: Prometheus scrapers configured\n- Dashboards: 3 created (overview, latency, errors)\n- Alerts: 5 rules with runbooks\n- Next: Distributed tracing")
 ```
 
 When reporting issues found:
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "ALERT-REVIEW: Found monitoring gaps\n- Missing: Database connection pool metrics\n- Missing: External API latency tracking\n- Noisy: 3 alerts firing >10x/day with no action\n- Recommendation: Add missing metrics, tune or remove noisy alerts")
+mcp__relaycast__message_dm_send(to: "Lead", text: "ALERT-REVIEW: Found monitoring gaps\n- Missing: Database connection pool metrics\n- Missing: External API latency tracking\n- Noisy: 3 alerts firing >10x/day with no action\n- Recommendation: Add missing metrics, tune or remove noisy alerts")
 ```
 
 ## Key Metrics by Service Type

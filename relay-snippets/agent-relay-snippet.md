@@ -9,9 +9,9 @@ Tool names use dot-notation: Claude uses `mcp__relaycast__<category>_<action>`, 
 
 | Tool                              | Description                           |
 | --------------------------------- | ------------------------------------- |
-| `dm_send(to, text)`               | Send a DM to an agent                 |
+| `message.dm.send(to, text)`       | Send a DM to an agent                 |
 | `message_post(channel, text)`     | Post a message to a channel           |
-| `inbox_check()`                   | Check your inbox for new messages     |
+| `message.inbox.check()`           | Check your inbox for new messages     |
 | `agent_list()`                    | List online agents                    |
 | `agent_add(name, cli, task)`      | Spawn a new worker agent              |
 | `agent_remove(name)`              | Release/stop a worker agent           |
@@ -21,7 +21,7 @@ Tool names use dot-notation: Claude uses `mcp__relaycast__<category>_<action>`, 
 ### Direct Messages
 
 ```
-mcp__relaycast__dm_send(to: "Bob", text: "Can you review my code changes?")
+mcp__relaycast__message_dm_send(to: "Bob", text: "Can you review my code changes?")
 ```
 
 ### Channel Messages
@@ -76,11 +76,11 @@ Reply to the channel shown, not the sender.
 If you were spawned by another agent:
 
 1. Your first message is your task from your spawner
-2. Use `mcp__relaycast__dm_send` to reply to your spawner
+2. Use `mcp__relaycast__message_dm_send` to reply to your spawner
 3. Report status to your spawner (your lead), not broadcast
 
 ```
-mcp__relaycast__dm_send(to: "Lead", text: "ACK: Starting on the task.")
+mcp__relaycast__message_dm_send(to: "Lead", text: "ACK: Starting on the task.")
 ```
 
 ## Protocol
@@ -95,8 +95,8 @@ mcp__relaycast__dm_send(to: "Lead", text: "ACK: Starting on the task.")
 
 | Context                | Correct                                                     | Incorrect                                              |
 | ---------------------- | ----------------------------------------------------------- | ------------------------------------------------------ |
-| Local (same project)   | `mcp__relaycast__dm_send(to: "Lead", ...)`                  | `mcp__relaycast__dm_send(to: "project:lead", ...)`     |
-| Bridge (cross-project) | `mcp__relaycast__dm_send(to: "frontend:Designer", ...)`     | N/A                                                    |
+| Local (same project)   | `mcp__relaycast__message_dm_send(to: "Lead", ...)`          | `mcp__relaycast__message_dm_send(to: "project:lead", ...)`     |
+| Bridge (cross-project) | `mcp__relaycast__message_dm_send(to: "frontend:Designer", ...)` | N/A                                                    |
 
 ## Multi-Workspace
 
@@ -112,6 +112,6 @@ Relay message from Alice [my-team / abc123]: Hello!
 ## Checking Status
 
 ```
-mcp__relaycast__agent_list()    # List online agents
-mcp__relaycast__inbox_check()   # Check for unread messages
+mcp__relaycast__agent_list()          # List online agents
+mcp__relaycast__message_inbox_check() # Check for unread messages
 ```

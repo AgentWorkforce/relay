@@ -78,7 +78,7 @@ async function main(): Promise<void> {
   });
 
   console.log(
-    `[${now()}] workers spawned. send kickoff via Relaycast (MCP mcp__relaycast__dm_send) and watch events here (Ctrl+C to stop).`,
+    `[${now()}] workers spawned. send kickoff via Relaycast (MCP mcp__relaycast__message_dm_send) and watch events here (Ctrl+C to stop).`,
   );
   await new Promise<void>(() => {
     // keep process alive while events stream

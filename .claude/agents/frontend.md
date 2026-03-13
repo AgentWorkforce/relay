@@ -29,11 +29,11 @@ You are an expert frontend designer and developer. You create production-grade c
 ### Starting Work
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "**FRONTEND:** Starting [component/page name]\n\n**Direction:** [Chosen aesthetic]\n**Key feature:** [The memorable thing]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**FRONTEND:** Starting [component/page name]\n\n**Direction:** [Chosen aesthetic]\n**Key feature:** [The memorable thing]")
 ```
 
 ### Completion
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "**COMPLETE:** [Component name]\n\n**Files:** [List of files]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**COMPLETE:** [Component name]\n\n**Files:** [List of files]")
 ```
