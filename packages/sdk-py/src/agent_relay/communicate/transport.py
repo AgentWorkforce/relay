@@ -122,6 +122,9 @@ class RelayTransport:
             except RelayConnectionError:
                 raise
             except aiohttp.ClientError as exc:
+                if attempt < HTTP_RETRY_ATTEMPTS:
+                    await asyncio.sleep(min(2 ** (attempt - 1), WS_RECONNECT_MAX_DELAY))
+                    continue
                 raise RelayConnectionError(0, str(exc)) from exc
 
         raise RelayConnectionError(500, "Unexpected transport retry failure")
@@ -228,8 +231,10 @@ class RelayTransport:
         if self._ws is not None and not self._ws.closed:
             return
 
+        from urllib.parse import quote
+
         session = await self._ensure_session()
-        ws_url = f"{self._ws_base_url()}/v1/ws/{self.agent_id}?token={self.token}"
+        ws_url = f"{self._ws_base_url()}/v1/ws/{self.agent_id}?token={quote(self.token, safe='')}"
         self._ws = await session.ws_connect(ws_url)
 
     def _ws_base_url(self) -> str:

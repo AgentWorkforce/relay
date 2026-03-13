@@ -204,8 +204,8 @@ packages/sdk/src/
 │   ├── transport.ts         # WebSocket + HTTP client
 │   ├── utils.ts             # Shared helpers
 │   └── adapters/
-│       ├── claude-sdk.ts    # withRelay() for Claude Agent SDK
-│       └── pi.ts            # withRelay() for Pi
+│       ├── claude-sdk.ts    # onRelay() for Claude Agent SDK
+│       └── pi.ts            # onRelay() for Pi
 
 packages/sdk/src/__tests__/
 ├── ...                      # existing tests unchanged
@@ -235,12 +235,12 @@ from agent_relay.communicate.adapters.google_adk import on_relay
 
 ```typescript
 // TypeScript — subpath export
-import { withRelay } from "@agent-relay/sdk/communicate";
+import { onRelay } from "@agent-relay/sdk/communicate";
 import { Relay } from "@agent-relay/sdk/communicate";
 
 // Framework-specific
-import { withRelay } from "@agent-relay/sdk/communicate/adapters/claude-sdk";
-import { withRelay } from "@agent-relay/sdk/communicate/adapters/pi";
+import { onRelay } from "@agent-relay/sdk/communicate/adapters/claude-sdk";
+import { onRelay } from "@agent-relay/sdk/communicate/adapters/pi";
 ```
 
 ### 4.4 New SDK Exports
