@@ -10,10 +10,10 @@ if TYPE_CHECKING:
 
 
 def _format_instructions_with_inbox(messages: list[Any], base_instructions: str) -> str:
-    content = "\n\nNew messages from other agents:\n"
+    content = "New messages from other agents:\n"
     for message in messages:
         content += f"  {message.sender}: {message.text}\n"
-    return f"{content}\n{base_instructions}" if base_instructions else content
+    return f"{base_instructions}\n\n{content}" if base_instructions else content
 
 
 def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
@@ -72,7 +72,7 @@ def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
             base = orig_instructions
 
         base = base or ""
-        messages = await relay.peek()
+        messages = await relay.inbox()
         if not messages:
             return base
 

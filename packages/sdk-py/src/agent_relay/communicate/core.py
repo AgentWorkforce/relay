@@ -10,7 +10,7 @@ from inspect import isawaitable
 from typing import Any, Callable
 
 from .transport import RelayTransport
-from .types import Message, MessageCallback, RelayConfig
+from .types import Message, MessageCallback, RelayAuthError, RelayConfig, RelayConfigError
 
 MAX_PENDING_MESSAGES = 10_000
 
@@ -155,6 +155,8 @@ class Relay:
             try:
                 await self.transport.connect()
                 self._ws_connected = True
+            except (RelayConfigError, RelayAuthError):
+                raise
             except Exception:
                 # WebSocket failed — register agent via HTTP and fall back to polling
                 await self.transport.register_agent()

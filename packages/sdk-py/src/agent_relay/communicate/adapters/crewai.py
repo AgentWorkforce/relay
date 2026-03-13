@@ -47,9 +47,9 @@ class _RelayBackstory:
     def _resolve_sync(self) -> str:
         messages = self._drain_buffer()
         try:
-            asyncio.get_running_loop()
-        except RuntimeError:
             messages.extend(self._relay.inbox_sync())
+        except Exception:
+            pass  # Buffer messages are still available
         return _format_backstory(self._dedupe(messages), self._base_backstory)
 
     async def _resolve_async(self) -> str:

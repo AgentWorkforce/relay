@@ -44,8 +44,8 @@ export function onRelay(
     return onPiRelay(name, target as Parameters<typeof onPiRelay>[1], relayInstance);
   }
 
-  // Detect Claude SDK: has mcpServers or hooks
-  if ('mcpServers' in obj || 'hooks' in obj) {
+  // Detect Claude SDK: has mcpServers or hooks, or is a plain empty options object
+  if ('mcpServers' in obj || 'hooks' in obj || Object.keys(obj).length === 0) {
     return onClaudeRelay(name, target as Parameters<typeof onClaudeRelay>[1], relayInstance);
   }
 
