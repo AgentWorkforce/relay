@@ -69,7 +69,7 @@ The broker:
 ### Step 2: Spawn Workers via MCP
 
 ```
-mcp__relaycast__add_agent(
+mcp__relaycast__agent_add(
   name: "Worker1",
   cli: "claude",
   task: "Implement the authentication module following the existing patterns"
@@ -80,19 +80,19 @@ mcp__relaycast__add_agent(
 
 ```
 # Check for worker messages
-mcp__relaycast__check_inbox()
+mcp__relaycast__inbox_check()
 
 # Send follow-up instructions
-mcp__relaycast__send_dm(to: "Worker1", text: "Also add unit tests")
+mcp__relaycast__dm_send(to: "Worker1", text: "Also add unit tests")
 
 # List active workers
-mcp__relaycast__list_agents()
+mcp__relaycast__agent_list()
 ```
 
 ### Step 4: Release Workers
 
 ```
-mcp__relaycast__remove_agent(name: "Worker1")
+mcp__relaycast__agent_remove(name: "Worker1")
 ```
 
 ### Step 5: Shutdown (optional)
