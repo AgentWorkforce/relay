@@ -7,9 +7,18 @@ if TYPE_CHECKING:
     from ..core import Relay
 
 
-def on_relay(agent: Any, relay: Relay) -> Any:
+def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
     """Wrap CrewAI Agent to connect it to the relay."""
-    from langchain_core.tools import tool
+    if relay is None:
+        from ..core import Relay
+        relay = Relay(getattr(agent, "name", "Agent"))
+    try:
+        from crewai.tools import tool
+    except ImportError:
+        raise ImportError(
+            "on_relay() for CrewAI requires the 'crewai' package. "
+            "Install it with: pip install crewai"
+        )
 
     @tool
     async def relay_send(to: str, text: str) -> str:

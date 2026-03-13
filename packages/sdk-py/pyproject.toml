@@ -17,6 +17,12 @@ dependencies = [
 communicate = [
     "aiohttp>=3.9",
 ]
+openai-agents = ["openai-agents>=0.1"]
+claude-sdk = ["claude-agent-sdk>=0.1"]
+google-adk = ["google-adk>=0.1"]
+agno = ["agno>=0.1"]
+swarms = ["swarms>=0.1"]
+crewai = ["crewai>=0.1"]
 dev = [
     "aiohttp>=3.9",
     "pytest>=8.0",
