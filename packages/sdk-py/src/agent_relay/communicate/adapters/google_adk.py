@@ -40,11 +40,16 @@ def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
     # 2. Inject before_model_callback for receiving
     orig_callback = getattr(agent, "before_model_callback", None)
 
-    async def relay_callback(llm_request: Any) -> None:
+    async def relay_callback(llm_request: Any) -> Any:
+        orig_result = None
         if orig_callback:
-            result = orig_callback(llm_request)
-            if inspect.isawaitable(result):
-                await result
+            orig_result = orig_callback(llm_request)
+            if inspect.isawaitable(orig_result):
+                orig_result = await orig_result
+
+        # If original callback short-circuited (returned Content), respect that
+        if orig_result is not None:
+            return orig_result
 
         messages = await relay.inbox()
         if messages:
@@ -60,6 +65,8 @@ def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
                         parts=[Part(text=f"[Relay] {message.sender}: {message.text}")],
                     )
                 )
+
+        return None
 
     agent.before_model_callback = relay_callback
     return agent

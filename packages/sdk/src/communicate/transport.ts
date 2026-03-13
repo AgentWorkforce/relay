@@ -193,6 +193,10 @@ export class RelayTransport {
           body: payload === undefined ? undefined : JSON.stringify(payload),
         });
       } catch (error) {
+        if (attempt < HTTP_RETRY_ATTEMPTS) {
+          await sleep(Math.min(2 ** (attempt - 1) * 1_000, WS_RECONNECT_MAX_DELAY_MS));
+          continue;
+        }
         throw new RelayConnectionError(0, error instanceof Error ? error.message : String(error));
       }
 

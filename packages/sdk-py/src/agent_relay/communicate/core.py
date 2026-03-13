@@ -27,6 +27,7 @@ class Relay:
         self._callbacks: list[MessageCallback] = []
         self._state_lock = threading.Lock()
         self._connect_task: asyncio.Task[None] | None = None
+        self._connect_future: asyncio.Future[None] | None = None
         self._connected = False
         self._ws_connected = False
         self._poll_task: asyncio.Task[None] | None = None
@@ -137,12 +138,19 @@ class Relay:
         if self._connected:
             return
 
+        # Deduplicate concurrent callers — reuse in-flight connect
+        if self._connect_future is not None and not self._connect_future.done():
+            await self._connect_future
+            return
+
         current_task = asyncio.current_task()
         connect_task = self._connect_task
         if connect_task is not None and connect_task is not current_task and not connect_task.done():
             await connect_task
             return
 
+        loop = asyncio.get_running_loop()
+        self._connect_future = loop.create_future()
         try:
             await self.transport.connect()
             self._ws_connected = True
@@ -152,6 +160,7 @@ class Relay:
             self._ws_connected = False
             self._start_poll_loop()
         self._connected = True
+        self._connect_future.set_result(None)
 
     def _schedule_connect(self) -> None:
         if self._connected:
