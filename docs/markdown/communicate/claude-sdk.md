@@ -24,7 +24,7 @@ from agent_relay.communicate import Relay, on_relay
 from claude_agent_sdk import ClaudeAgentOptions
 
 relay = Relay("MyClaude")
-options = on_relay(ClaudeAgentOptions(), relay)
+options = on_relay("MyClaude", ClaudeAgentOptions(), relay)
 ```
 
 ```typescript

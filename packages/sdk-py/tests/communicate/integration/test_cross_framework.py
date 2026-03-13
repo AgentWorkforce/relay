@@ -20,13 +20,51 @@ def _reload_module(module_name: str):
 
 
 def _load_openai_adapter(monkeypatch):
-    openai_agents = ModuleType("openai_agents")
-    openai_agents.function_tool = lambda fn: fn
-    monkeypatch.setitem(sys.modules, "openai_agents", openai_agents)
+    agents_module = ModuleType("agents")
+    agents_module.Agent = type("Agent", (), {})
+    agents_module.function_tool = lambda fn: fn
+    monkeypatch.setitem(sys.modules, "agents", agents_module)
     return _reload_module("agent_relay.communicate.adapters.openai_agents")
 
 
-def _load_google_adapter():
+def _install_google_modules(monkeypatch):
+    google_module = ModuleType("google")
+    google_adk_module = ModuleType("google.adk")
+    google_adk_agents_module = ModuleType("google.adk.agents")
+    google_genai_module = ModuleType("google.genai")
+    google_genai_types_module = ModuleType("google.genai.types")
+
+    class Part:
+        def __init__(self, text: str):
+            self.text = text
+
+        def __repr__(self) -> str:
+            return f"Part(text={self.text!r})"
+
+    class Content:
+        def __init__(self, role: str, parts: list[Part]):
+            self.role = role
+            self.parts = parts
+
+        def __repr__(self) -> str:
+            return f"Content(role={self.role!r}, parts={self.parts!r})"
+
+    google_module.adk = google_adk_module
+    google_module.genai = google_genai_module
+    google_adk_module.agents = google_adk_agents_module
+    google_genai_module.types = google_genai_types_module
+    google_genai_types_module.Content = Content
+    google_genai_types_module.Part = Part
+
+    monkeypatch.setitem(sys.modules, "google", google_module)
+    monkeypatch.setitem(sys.modules, "google.adk", google_adk_module)
+    monkeypatch.setitem(sys.modules, "google.adk.agents", google_adk_agents_module)
+    monkeypatch.setitem(sys.modules, "google.genai", google_genai_module)
+    monkeypatch.setitem(sys.modules, "google.genai.types", google_genai_types_module)
+
+
+def _load_google_adapter(monkeypatch):
+    _install_google_modules(monkeypatch)
     return _reload_module("agent_relay.communicate.adapters.google_adk")
 
 
@@ -133,7 +171,7 @@ async def _close_relays(*relays: Relay) -> None:
 @pytest.mark.asyncio
 async def test_openai_sender_reaches_google_adk_before_model_callback(relay_server, monkeypatch):
     openai_adapter = _load_openai_adapter(monkeypatch)
-    google_adapter = _load_google_adapter()
+    google_adapter = _load_google_adapter(monkeypatch)
 
     sender_relay = Relay("OpenAISender", relay_server.make_config(auto_cleanup=False))
     receiver_relay = Relay("GoogleReceiver", relay_server.make_config(auto_cleanup=False))
@@ -159,7 +197,7 @@ async def test_openai_sender_reaches_google_adk_before_model_callback(relay_serv
     finally:
         await _close_relays(sender_relay, receiver_relay)
 
-    assert any("Relay message from OpenAISender" in str(part) for part in contents)
+    assert any("[Relay] OpenAISender: handoff complete" in str(part) for part in contents)
     assert any("handoff complete" in str(part) for part in contents)
 
 
@@ -180,7 +218,7 @@ async def test_swarms_sender_reaches_claude_sdk_hook_system_message(relay_server
     receiver_options = SimpleNamespace(mcp_servers=[], hooks=Hooks())
 
     swarms_adapter.on_relay(sender_agent, sender_relay)
-    claude_adapter.on_relay(receiver_relay, receiver_options)
+    claude_adapter.on_relay("ClaudeReceiver", receiver_options, relay=receiver_relay)
 
     try:
         await _prime_claude_receiver(
@@ -204,7 +242,7 @@ async def test_swarms_sender_reaches_claude_sdk_hook_system_message(relay_server
 @pytest.mark.asyncio
 async def test_multiple_framework_agents_post_to_the_same_channel(relay_server, monkeypatch):
     openai_adapter = _load_openai_adapter(monkeypatch)
-    google_adapter = _load_google_adapter()
+    google_adapter = _load_google_adapter(monkeypatch)
     swarms_adapter = _load_swarms_adapter()
     claude_adapter = _load_claude_adapter(monkeypatch)
 
@@ -228,7 +266,7 @@ async def test_multiple_framework_agents_post_to_the_same_channel(relay_server, 
     openai_adapter.on_relay(openai_agent, openai_relay)
     google_adapter.on_relay(google_agent, google_relay)
     swarms_adapter.on_relay(swarms_agent, swarms_relay)
-    claude_adapter.on_relay(receiver_relay, receiver_options)
+    claude_adapter.on_relay("ClaudeChannelReader", receiver_options, relay=receiver_relay)
 
     try:
         await _prime_claude_receiver(
@@ -262,7 +300,7 @@ async def test_multiple_framework_agents_post_to_the_same_channel(relay_server, 
 
 @pytest.mark.asyncio
 async def test_cross_framework_dm_is_available_via_receiver_inbox_tool(relay_server, monkeypatch):
-    google_adapter = _load_google_adapter()
+    google_adapter = _load_google_adapter(monkeypatch)
     openai_adapter = _load_openai_adapter(monkeypatch)
 
     sender_relay = Relay("GoogleSender", relay_server.make_config(auto_cleanup=False))

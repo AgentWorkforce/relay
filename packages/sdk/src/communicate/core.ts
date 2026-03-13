@@ -8,6 +8,12 @@ import {
 
 const MAX_PENDING_MESSAGES = 10_000;
 
+/**
+ * Core relay client for inter-agent communication.
+ *
+ * Lazily connects on first API call. Buffers incoming WebSocket messages
+ * for {@link inbox} when no callbacks are registered.
+ */
 export class Relay {
   readonly agentName: string;
   readonly config;
@@ -33,21 +39,40 @@ export class Relay {
     }
   }
 
+  /**
+   * Send a direct message to another agent.
+   * @param to - Recipient agent name.
+   * @param text - Message content.
+   */
   async send(to: string, text: string): Promise<void> {
     await this.ensureConnected();
     await this.transport.sendDm(to, text);
   }
 
+  /**
+   * Post a message to a channel.
+   * @param channel - Target channel name.
+   * @param text - Message content.
+   */
   async post(channel: string, text: string): Promise<void> {
     await this.ensureConnected();
     await this.transport.postMessage(channel, text);
   }
 
+  /**
+   * Reply to a specific message in a thread.
+   * @param messageId - ID of the message to reply to.
+   * @param text - Reply content.
+   */
   async reply(messageId: string, text: string): Promise<void> {
     await this.ensureConnected();
     await this.transport.reply(messageId, text);
   }
 
+  /**
+   * Drain and return all buffered messages, clearing the buffer.
+   * @returns Array of buffered messages.
+   */
   async inbox(): Promise<Message[]> {
     await this.ensureConnected();
     const messages = [...this.pending];
@@ -55,6 +80,11 @@ export class Relay {
     return messages;
   }
 
+  /**
+   * Register a callback for incoming messages.
+   * @param callback - Invoked for each received message.
+   * @returns Unsubscribe function.
+   */
   onMessage(callback: MessageCallback): () => void {
     this.callbacks.add(callback);
     void this.ensureConnected();
@@ -64,11 +94,16 @@ export class Relay {
     };
   }
 
+  /**
+   * List currently online agents.
+   * @returns Array of agent names.
+   */
   async agents(): Promise<string[]> {
     await this.ensureConnected();
     return this.transport.listAgents();
   }
 
+  /** Unregister the agent, close the WebSocket, and clean up. */
   async close(): Promise<void> {
     if (this.exitHandler) {
       process.removeListener('beforeExit', this.exitHandler);
