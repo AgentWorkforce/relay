@@ -1322,8 +1322,6 @@ export async function runStatusCommand(deps: CoreDependencies): Promise<void> {
       }
     } catch {
       // PID-based status is enough when broker query fails.
-    } finally {
-      await relay.shutdown().catch(() => undefined);
     }
   }
 }
