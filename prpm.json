@@ -129,25 +129,7 @@
         "relay-snippets/agent-relay-protocol.md"
       ]
     },
-    {
-      "name": "using-beads-bv",
-      "version": "1.0.0",
-      "description": "Skill for dependency-aware task planning with beads (bd) CLI and bv graph sidecar - covers ready work selection, priority management, and robot flags",
-      "format": "claude",
-      "subtype": "skill",
-      "private": true,
-      "tags": [
-        "task-management",
-        "dependency-tracking",
-        "project-planning",
-        "lead-agent",
-        "coordination"
-      ],
-      "files": [
-        "skills/using-beads-bv/SKILL.md"
-      ]
-    },
-    {
+{
       "name": "shadow-agents",
       "version": "1.0.0",
       "description": "Shadow agent profiles for code review, session auditing, and active monitoring - assign to spawned agents for oversight",
