@@ -5349,16 +5349,38 @@ export class WorkflowRunner {
             const ptyOutput = (this.ptyOutputBuffers.get(agent.name) ?? []).join('');
             const taskText = step.task ?? '';
             const taskHasToken = taskText.includes(token);
+            let verificationPassed = true;
             if (taskHasToken) {
               const first = ptyOutput.indexOf(token);
-              const hasSecond = first !== -1 && ptyOutput.includes(token, first + token.length);
-              if (!hasSecond) {
-                this.log(`[${step.name}] Agent "${agent.name}" went idle but verification not yet passed — continuing to wait`);
+              verificationPassed = first !== -1 && ptyOutput.includes(token, first + token.length);
+            } else {
+              verificationPassed = ptyOutput.includes(token);
+            }
+            if (!verificationPassed) {
+              // The broker fires agent_idle only once per idle transition.
+              // If the agent is still working (will produce output then idle again),
+              // continuing the loop works. But if the agent is permanently idle,
+              // waitForIdle won't resolve again. Wait briefly for new output,
+              // then release and let upstream verification handle the result.
+              this.log(`[${step.name}] Agent "${agent.name}" went idle but verification not yet passed — waiting for more output`);
+              const idleGraceSecs = 15;
+              const graceResult = await Promise.race([
+                agent.waitForExit(idleGraceSecs * 1000).then((r) => ({ kind: 'exit' as const, result: r })),
+                agent.waitForIdle(idleGraceSecs * 1000).then((r) => ({ kind: 'idle' as const, result: r })),
+              ]);
+              if (graceResult.kind === 'idle' && graceResult.result === 'idle') {
+                // Agent went idle again after producing output — re-check verification
                 continue;
               }
-            } else if (!ptyOutput.includes(token)) {
-              this.log(`[${step.name}] Agent "${agent.name}" went idle but verification not yet passed — continuing to wait`);
-              continue;
+              if (graceResult.kind === 'exit') {
+                return graceResult.result as 'exited' | 'timeout' | 'released';
+              }
+              // Grace period timed out — agent is permanently idle without verification.
+              // Release and let upstream executeAgentStep handle verification.
+              this.log(`[${step.name}] Agent "${agent.name}" still idle after ${idleGraceSecs}s grace — releasing`);
+              this.postToChannel(`**[${step.name}]** Agent \`${agent.name}\` idle — releasing (verification pending)`);
+              await agent.release();
+              return 'released';
             }
           }
           this.log(`[${step.name}] Agent "${agent.name}" went idle — treating as complete`);
