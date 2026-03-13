@@ -121,6 +121,7 @@ Avoid `timeoutMs` on agents/steps unless you have a specific reason. The global 
 .agent('name', {
   cli: 'claude' | 'codex' | 'gemini' | 'aider' | 'goose' | 'opencode' | 'droid',
   role?: string,        // describes agent's purpose (used by pattern auto-selection)
+  preset?: 'lead' | 'worker' | 'reviewer' | 'analyst', // sets interactive mode + task guardrails
   retries?: number,     // default retry count for steps using this agent
   model?: string,       // model override
   interactive?: boolean, // default: true. Set false for non-interactive subprocess mode
@@ -128,6 +129,8 @@ Avoid `timeoutMs` on agents/steps unless you have a specific reason. The global 
 ```
 
 ## Step Definition
+
+### Agent Steps
 
 ```typescript
 .step('name', {
@@ -138,6 +141,24 @@ Avoid `timeoutMs` on agents/steps unless you have a specific reason. The global 
   retries?: number,               // overrides agent-level retries
 })
 ```
+
+### Deterministic Steps (Shell Commands)
+
+```typescript
+.step('verify-files', {
+  type: 'deterministic',
+  command: 'test -f src/auth.ts && echo "FILE_EXISTS"',
+  dependsOn: ['implement'],
+  captureOutput: true,       // capture stdout for {{steps.verify-files.output}}
+  failOnError: true,         // fail workflow if exit code != 0
+})
+```
+
+Deterministic steps run shell commands without spawning an agent. Use them for:
+- File existence checks after implementation waves
+- Reading file contents to inject into downstream agent steps via `{{steps.X.output}}`
+- Running build/test commands as workflow gates
+- Gathering system info or context before agent steps
 
 ## Event Listener
 
@@ -577,6 +598,7 @@ But if the owner doesn't post either format, the runner still resolves completio
 | Omitting `agents` field for deterministic-only workflows    | Field is now optional — pure shell pipelines work without it      |
 | Designing prompts around output ceremony instead of work    | Describe the deliverable and acceptance criteria, not what to print |
 | Treating markers as mandatory truth                          | Markers are optional accelerators; verification and evidence decide completion |
+| Using `fan-out`/`hub-spoke` for simple parallel workers     | Use `dag` — hub patterns trigger auto owner/supervisor/reviewer pipeline |
 
 ## Verification Tokens with Non-Interactive Workers
 
