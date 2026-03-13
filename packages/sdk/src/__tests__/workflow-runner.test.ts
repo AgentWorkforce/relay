@@ -564,14 +564,79 @@ agents:
       expect(spawnCalls[0][0].name).toContain('step-1-worker');
       expect(spawnCalls[1][0].name).toContain('step-1-owner');
       expect(spawnCalls[0][0].task).not.toContain('STEP_COMPLETE:step-1');
+      expect(spawnCalls[0][0].task).toContain('WORKER COMPLETION CONTRACT');
+      expect(spawnCalls[0][0].task).toContain('WORKER_DONE: <brief summary>');
       expect(spawnCalls[1][0].task).toContain('You are the step owner/supervisor for step "step-1".');
       expect(spawnCalls[1][0].task).toContain('runtime: step-1-worker');
+      expect(spawnCalls[1][0].task).toContain('LEAD_DONE: <brief summary>');
 
       const channelMessages = (mockRelaycastAgent.send as any).mock.calls.map(
         ([, text]: [string, string]) => text
       );
       expect(channelMessages.some((text: string) => text.includes('Worker `step-1-worker'))).toBe(true);
       expect(channelMessages.some((text: string) => text.includes('worker finished'))).toBe(true);
+    });
+
+    it('should apply verification fallback for self-owned interactive steps', async () => {
+      mockSpawnOutputs = [
+        'LEAD_DONE\n',
+        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: verified\n',
+      ];
+
+      const run = await runner.execute(
+        makeConfig({
+          agents: [{ name: 'team-lead', cli: 'claude', role: 'Lead coordinator' }],
+          workflows: [
+            {
+              name: 'default',
+              steps: [
+                {
+                  name: 'lead-step',
+                  agent: 'team-lead',
+                  task: 'Output exactly:\nLEAD_DONE\n/exit',
+                  verification: { type: 'exit_code', value: 0 },
+                },
+              ],
+            },
+          ],
+        }),
+        'default'
+      );
+
+      expect(run.status, run.error).toBe('completed');
+      const steps = await db.getStepsByRunId(run.id);
+      expect(steps[0]?.completionReason).toBe('completed_verified');
+    });
+
+    it('should pass canonical bypass args to interactive codex PTY spawns', async () => {
+      mockSpawnOutputs = [
+        'LEAD_DONE\n',
+        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: verified\n',
+      ];
+
+      const run = await runner.execute(
+        makeConfig({
+          agents: [{ name: 'lead', cli: 'codex', role: 'Lead coordinator' }],
+          workflows: [
+            {
+              name: 'default',
+              steps: [
+                {
+                  name: 'lead-step',
+                  agent: 'lead',
+                  task: 'Output exactly:\nLEAD_DONE\n/exit',
+                  verification: { type: 'exit_code', value: 0 },
+                },
+              ],
+            },
+          ],
+        }),
+        'default'
+      );
+
+      expect(run.status, run.error).toBe('completed');
+      const spawnCalls = (mockRelayInstance.spawnPty as any).mock.calls;
+      expect(spawnCalls[0][0].args).toEqual(['--dangerously-bypass-approvals-and-sandbox']);
     });
 
     it('should let the owner complete after checking file-based artifacts', async () => {

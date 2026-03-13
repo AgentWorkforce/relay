@@ -23,6 +23,7 @@ import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { stripAnsi as stripAnsiFn } from '../pty.js';
 import type { BrokerEvent } from '../protocol.js';
+import { resolveSpawnPolicy } from '../spawn-from-env.js';
 
 import {
   loadCustomSteps,
@@ -226,6 +227,7 @@ interface SpawnAndWaitOptions {
   evidenceStepName?: string;
   evidenceRole?: string;
   logicalName?: string;
+  preserveOnIdle?: boolean;
   onSpawned?: (info: SpawnedAgentInfo) => void | Promise<void>;
   onChunk?: (info: { agentName: string; chunk: string }) => void;
 }
@@ -3232,8 +3234,8 @@ export class WorkflowRunner {
           updatedAt: new Date().toISOString(),
         });
         this.emit({ type: 'step:started', runId, stepName: step.name });
-        this.postToChannel(
-          `**[${step.name}]** Started (owner: ${ownerDef.name}, specialist: ${specialistDef.name})`
+        this.log(
+          `[${step.name}] Started (owner: ${ownerDef.name}, specialist: ${specialistDef.name})`
         );
         this.initializeStepSignalParticipants(step.name, ownerDef.name, specialistDef.name);
         await this.trajectory?.stepStarted(step, ownerDef.name, {
@@ -3334,21 +3336,34 @@ export class WorkflowRunner {
           ownerElapsed = Date.now() - ownerStartTime;
           this.log(`[${step.name}] Owner "${effectiveOwner.name}" exited`);
           if (usesOwnerFlow) {
-            const completionDecision = this.resolveOwnerCompletionDecision(
-              step,
-              output,
-              output,
-              ownerTask,
-              resolvedTask
-            );
-            completionReason = completionDecision.completionReason;
+            try {
+              const completionDecision = this.resolveOwnerCompletionDecision(
+                step,
+                output,
+                output,
+                ownerTask,
+                resolvedTask
+              );
+              completionReason = completionDecision.completionReason;
+            } catch (error) {
+              const canUseVerificationFallback =
+                !usesDedicatedOwner &&
+                step.verification &&
+                error instanceof WorkflowCompletionError &&
+                error.completionReason === 'failed_no_evidence';
+              if (!canUseVerificationFallback) {
+                throw error;
+              }
+            }
           }
           specialistOutput = output;
           ownerOutput = output;
         }
 
-        // Run verification if configured
-        if (step.verification && !usesOwnerFlow) {
+        // Run verification if configured.
+        // Self-owned interactive steps still need verification fallback so
+        // explicit OWNER_DECISION output is not mandatory for the happy path.
+        if (step.verification && (!usesOwnerFlow || !usesDedicatedOwner) && !completionReason) {
           const verificationResult = this.runVerification(
             step.verification,
             specialistOutput,
@@ -3514,6 +3529,10 @@ export class WorkflowRunner {
   ): string {
     const verificationGuide = this.buildSupervisorVerificationGuide(step.verification);
     const channelLine = this.channel ? `#${this.channel}` : '(workflow channel unavailable)';
+    const channelContract = this.channel
+      ? `- Prefer Relaycast/group-chat handoff signals over terminal sentinels: wait for the worker to post \`WORKER_DONE: <brief summary>\` in ${channelLine}\n` +
+        `- When you have validated the handoff, post \`LEAD_DONE: <brief summary>\` to ${channelLine} before you exit\n`
+      : '';
     return (
       `You are the step owner/supervisor for step "${step.name}".\n\n` +
       `Worker: ${supervised.specialist.name} (runtime: ${workerRuntimeName}) on ${channelLine}\n` +
@@ -3523,11 +3542,29 @@ export class WorkflowRunner {
       `- Watch ${channelLine} for the worker's progress messages and mirrored PTY output\n` +
       `- Check file changes: run \`git diff --stat\` or inspect expected files directly\n` +
       `- Ask the worker directly on ${channelLine} if you need a status update\n` +
+      channelContract +
       verificationGuide +
       `\nWhen you have enough evidence, return:\n` +
       `OWNER_DECISION: <one of COMPLETE, INCOMPLETE_RETRY, INCOMPLETE_FAIL, NEEDS_CLARIFICATION>\n` +
       `REASON: <one sentence>\n` +
       `Legacy completion marker still supported: STEP_COMPLETE:${step.name}`
+    );
+  }
+
+  private buildWorkerHandoffTask(
+    step: WorkflowStep,
+    originalTask: string,
+    supervised: SupervisedStep
+  ): string {
+    if (!this.channel) return originalTask;
+
+    return (
+      `${originalTask}\n\n---\n` +
+      `WORKER COMPLETION CONTRACT:\n` +
+      `- You are handing work off to owner "${supervised.owner.name}" for step "${step.name}".\n` +
+      `- When your work is ready for review, post to #${this.channel}: \`WORKER_DONE: <brief summary>\`\n` +
+      `- Do not rely on terminal output alone for handoff; use the workflow group chat signal above.\n` +
+      `- After posting your handoff signal, self-terminate with /exit unless the owner asks for follow-up.`
     );
   }
 
@@ -3559,13 +3596,14 @@ export class WorkflowRunner {
     completionReason: WorkflowStepCompletionReason;
   }> {
     if (this.executor) {
+      const specialistTask = this.buildWorkerHandoffTask(step, resolvedTask, supervised);
       const supervisorTask = this.buildOwnerSupervisorTask(
         step,
         resolvedTask,
         supervised,
         supervised.specialist.name
       );
-      const specialistStep = { ...step, task: resolvedTask };
+      const specialistStep = { ...step, task: specialistTask };
       const ownerStep: WorkflowStep = {
         ...step,
         name: `${step.name}-owner`,
@@ -3579,7 +3617,7 @@ export class WorkflowRunner {
       const specialistPromise = this.executor.executeAgentStep(
         specialistStep,
         supervised.specialist,
-        resolvedTask,
+        specialistTask,
         timeoutMs
       );
       // Guard against unhandled rejection if owner fails before specialist settles
@@ -3625,7 +3663,8 @@ export class WorkflowRunner {
       rejectWorkerSpawn = reject;
     });
 
-    const specialistStep = { ...step, task: resolvedTask };
+    const specialistTask = this.buildWorkerHandoffTask(step, resolvedTask, supervised);
+    const specialistStep = { ...step, task: specialistTask };
     this.log(
       `[${step.name}] Spawning specialist "${supervised.specialist.name}" (cli: ${supervised.specialist.cli})`
     );
@@ -3668,15 +3707,15 @@ export class WorkflowRunner {
     workerPromise
       .then((result) => {
         workerReleased = true;
-        this.postToChannel(`**[${step.name}]** Worker \`${workerRuntimeName}\` exited`);
+        this.log(`[${step.name}] Worker ${workerRuntimeName} exited`);
         this.recordStepToolSideEffect(step.name, {
           type: 'worker_exit',
           detail: `Worker ${workerRuntimeName} exited`,
           raw: { worker: workerRuntimeName, exitCode: result.exitCode, exitSignal: result.exitSignal },
         });
         if (step.verification?.type === 'output_contains' && result.output.includes(step.verification.value)) {
-          this.postToChannel(
-            `**[${step.name}]** Verification gate observed: output contains ${JSON.stringify(step.verification.value)}`
+          this.log(
+            `[${step.name}] Verification gate observed: output contains ${JSON.stringify(step.verification.value)}`
           );
         }
       })
@@ -3759,7 +3798,7 @@ export class WorkflowRunner {
     chunk: string,
     sender?: string
   ): void {
-    const lines = WorkflowRunner.stripAnsi(chunk)
+    const lines = WorkflowRunner.scrubForChannel(chunk)
       .split('\n')
       .map((line) => line.trim())
       .filter(Boolean)
@@ -4872,11 +4911,17 @@ export class WorkflowRunner {
 
     try {
       const agentCwd = this.resolveAgentCwd(agentDef);
+      const interactiveSpawnPolicy = resolveSpawnPolicy({
+        AGENT_NAME: agentName,
+        AGENT_CLI: agentDef.cli,
+        RELAY_API_KEY: this.relayApiKey ?? 'workflow-runner',
+        AGENT_CHANNELS: (agentChannels ?? []).join(','),
+      });
       agent = await this.relay.spawnPty({
         name: agentName,
         cli: agentDef.cli,
         model: agentDef.constraints?.model,
-        args: [],
+        args: interactiveSpawnPolicy.args,
         channels: agentChannels,
         task: taskWithExit,
         idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
@@ -4977,14 +5022,20 @@ export class WorkflowRunner {
         await channelAgent?.channels.invite(this.channel, agent.name).catch(() => {});
       }
 
-      // Post assignment notification (no task content — task arrives via direct broker injection)
-      this.postToChannel(`**[${step.name}]** Assigned to \`${agent.name}\``);
+      // Keep operational assignment chatter out of the agent coordination channel.
+      this.log(`[${step.name}] Assigned to ${agent.name}`);
 
       // Register agent handle for hub-mediated nudging
       this.activeAgentHandles.set(agentName, agent);
 
       // Wait for agent to exit, with idle nudging if configured
-      exitResult = await this.waitForExitWithIdleNudging(agent, agentDef, step, timeoutMs);
+      exitResult = await this.waitForExitWithIdleNudging(
+        agent,
+        agentDef,
+        step,
+        timeoutMs,
+        options.preserveOnIdle ?? this.shouldPreserveIdleSupervisor(agentDef, step, options.evidenceRole)
+      );
 
       // Stop heartbeat now that agent has exited
       stopHeartbeat?.();
@@ -5122,6 +5173,37 @@ export class WorkflowRunner {
     'auctioneer',
   ]);
 
+  private isLeadLikeAgent(agentDef: AgentDefinition, roleOverride?: string): boolean {
+    if (agentDef.preset === 'lead') return true;
+
+    const role = (roleOverride ?? agentDef.role ?? '').toLowerCase();
+    const nameLC = agentDef.name.toLowerCase();
+    return [...WorkflowRunner.HUB_ROLES].some(
+      (hubRole) =>
+        new RegExp(`\\b${hubRole}\\b`, 'i').test(nameLC) ||
+        new RegExp(`\\b${hubRole}\\b`, 'i').test(role)
+    );
+  }
+
+  private shouldPreserveIdleSupervisor(
+    agentDef: AgentDefinition,
+    step: WorkflowStep,
+    evidenceRole?: string
+  ): boolean {
+    if (evidenceRole && /\bowner\b/i.test(evidenceRole)) {
+      return true;
+    }
+
+    if (!this.isLeadLikeAgent(agentDef, evidenceRole)) {
+      return false;
+    }
+
+    const task = step.task ?? '';
+    return /\b(wait|waiting|monitor|supervis|check inbox|check.*channel|poll|DONE|_DONE|signal|handoff)\b/i.test(
+      task
+    );
+  }
+
   /**
    * Wait for agent exit with idle detection and nudging.
    * If no idle nudge config is set, falls through to simple waitForExit.
@@ -5130,10 +5212,18 @@ export class WorkflowRunner {
     agent: Agent,
     agentDef: AgentDefinition,
     step: WorkflowStep,
-    timeoutMs?: number
+    timeoutMs?: number,
+    preserveIdleSupervisor = false
   ): Promise<'exited' | 'timeout' | 'released' | 'force-released'> {
     const nudgeConfig = this.currentConfig?.swarm.idleNudge;
     if (!nudgeConfig) {
+      if (preserveIdleSupervisor) {
+        this.log(
+          `[${step.name}] Supervising agent "${agent.name}" may idle while waiting — using exit-only completion`
+        );
+        return agent.waitForExit(timeoutMs);
+      }
+
       // Idle = done: race exit against idle. Whichever fires first completes the step.
       const result = await Promise.race([
         agent.waitForExit(timeoutMs).then((r) => ({ kind: 'exit' as const, result: r })),
@@ -5154,6 +5244,7 @@ export class WorkflowRunner {
     const maxNudges = nudgeConfig.maxNudges ?? 1;
 
     let nudgeCount = 0;
+    let preservedSupervisorNoticeSent = false;
     const startTime = Date.now();
 
     while (true) {
@@ -5192,6 +5283,19 @@ export class WorkflowRunner {
         nudgeCount++;
         this.postToChannel(`**[${step.name}]** Agent \`${agent.name}\` idle — nudge #${nudgeCount} sent`);
         this.emit({ type: 'step:nudged', runId: this.currentRunId ?? '', stepName: step.name, nudgeCount });
+        continue;
+      }
+
+      if (preserveIdleSupervisor) {
+        if (!preservedSupervisorNoticeSent) {
+          this.log(
+            `[${step.name}] Supervising agent "${agent.name}" stayed idle after ${nudgeCount} nudge(s) — preserving until exit or timeout`
+          );
+          this.postToChannel(
+            `**[${step.name}]** Supervising agent \`${agent.name}\` is waiting on handoff — keeping it alive until it exits or the step times out`
+          );
+          preservedSupervisorNoticeSent = true;
+        }
         continue;
       }
 
