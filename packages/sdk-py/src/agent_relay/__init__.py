@@ -3,6 +3,7 @@
 # ── Primary API: Direct spawn/message (matches TypeScript SDK) ────────────────
 
 from .relay import AgentRelay, Agent, AgentSpawner, HumanHandle, Message, SpawnOptions
+from .communicate import Relay, RelayConfig, on_relay
 from .models import Models
 from .client import AgentRelayClient, AgentRelayProtocolError, AgentRelayProcessError
 from .protocol import (
@@ -76,6 +77,9 @@ __all__ = [
     "HumanHandle",
     "Message",
     "SpawnOptions",
+    "Relay",
+    "RelayConfig",
+    "on_relay",
     "Models",
     "AgentRelayClient",
     "AgentRelayProtocolError",
