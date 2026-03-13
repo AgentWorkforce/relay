@@ -3445,7 +3445,7 @@ export class WorkflowRunner {
 
         // Every interactive step gets a review pass; pick a dedicated reviewer when available.
         // Resolve reviewer JIT so activeReviewers reflects concurrent steps that started earlier.
-        if (usesAutoHardening && !reviewDef) {
+        if (usesAutoHardening && usesDedicatedOwner && !reviewDef) {
           reviewDef = this.resolveAutoReviewAgent(ownerDef, agentMap);
           supervised.reviewer = reviewDef;
         }
@@ -5340,12 +5340,24 @@ export class WorkflowRunner {
           agent.waitForIdle(remaining).then((r) => ({ kind: 'idle' as const, result: r })),
         ]);
         if (result.kind === 'idle' && result.result === 'idle') {
-          // Check verification before treating idle as complete
+          // Check verification before treating idle as complete.
+          // Mirror runVerification's double-occurrence guard: if the task text
+          // contains the token (from the prompt instruction), require a second
+          // occurrence from the agent's actual output to avoid false positives.
           if (step.verification && step.verification.type === 'output_contains') {
+            const token = step.verification.value;
             const ptyOutput = (this.ptyOutputBuffers.get(agent.name) ?? []).join('');
-            if (!ptyOutput.includes(step.verification.value)) {
+            const taskText = step.task ?? '';
+            const taskHasToken = taskText.includes(token);
+            if (taskHasToken) {
+              const first = ptyOutput.indexOf(token);
+              const hasSecond = first !== -1 && ptyOutput.includes(token, first + token.length);
+              if (!hasSecond) {
+                this.log(`[${step.name}] Agent "${agent.name}" went idle but verification not yet passed — continuing to wait`);
+                continue;
+              }
+            } else if (!ptyOutput.includes(token)) {
               this.log(`[${step.name}] Agent "${agent.name}" went idle but verification not yet passed — continuing to wait`);
-              // Continue waiting for exit or next idle cycle
               continue;
             }
           }
