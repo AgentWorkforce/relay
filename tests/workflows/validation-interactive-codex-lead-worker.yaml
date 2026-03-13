@@ -16,6 +16,8 @@ agents:
       model: gpt-5.3-codex
   - name: worker
     cli: codex
+    preset: worker
+    interactive: true
     channels: [validation-interactive-codex-lead-worker]
     constraints:
       model: gpt-5.3-codex

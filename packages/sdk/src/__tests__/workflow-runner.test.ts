@@ -608,6 +608,50 @@ agents:
       expect(steps[0]?.completionReason).toBe('completed_verified');
     });
 
+    it('should keep explicit interactive workers self-owned without extra supervisor/reviewer spawns', async () => {
+      const ownerAssignments: Array<{ owner: string; specialist: string }> = [];
+      runner.on((event) => {
+        if (event.type === 'step:owner-assigned') {
+          ownerAssignments.push({ owner: event.ownerName, specialist: event.specialistName });
+        }
+      });
+
+      mockSpawnOutputs = ['STEP_COMPLETE:worker-step\nWORKER_DONE_LOCAL\n'];
+
+      const run = await runner.execute(
+        makeConfig({
+          agents: [
+            { name: 'team-lead', cli: 'claude', role: 'Lead coordinator', preset: 'lead' },
+            { name: 'relay-worker', cli: 'codex', preset: 'worker', interactive: true },
+          ],
+          workflows: [
+            {
+              name: 'default',
+              steps: [
+                {
+                  name: 'worker-step',
+                  agent: 'relay-worker',
+                  task: 'Output exactly:\nWORKER_DONE_LOCAL\n/exit',
+                  verification: { type: 'output_contains', value: 'WORKER_DONE_LOCAL' },
+                },
+              ],
+            },
+          ],
+        }),
+        'default'
+      );
+
+      expect(ownerAssignments).toContainEqual({ owner: 'relay-worker', specialist: 'relay-worker' });
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('verification failed');
+
+      const spawnCalls = (mockRelayInstance.spawnPty as any).mock.calls;
+      expect(spawnCalls).toHaveLength(1);
+      expect(spawnCalls[0][0].task).toContain('STEP OWNER CONTRACT');
+      expect(spawnCalls[0][0].name).not.toContain('-owner-');
+      expect(spawnCalls[0][0].name).not.toContain('-review-');
+    });
+
     it('should pass canonical bypass args to interactive codex PTY spawns', async () => {
       mockSpawnOutputs = [
         'LEAD_DONE\n',

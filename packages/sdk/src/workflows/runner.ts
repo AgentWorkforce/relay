@@ -3164,8 +3164,9 @@ export class WorkflowRunner {
     }
     const specialistDef = WorkflowRunner.resolveAgentDef(rawAgentDef);
     const usesOwnerFlow = specialistDef.interactive !== false;
-    const ownerDef = usesOwnerFlow ? this.resolveAutoStepOwner(specialistDef, agentMap) : specialistDef;
-    const reviewDef = usesOwnerFlow ? this.resolveAutoReviewAgent(ownerDef, agentMap) : undefined;
+    const usesAutoHardening = usesOwnerFlow && !this.isExplicitInteractiveWorker(specialistDef);
+    const ownerDef = usesAutoHardening ? this.resolveAutoStepOwner(specialistDef, agentMap) : specialistDef;
+    const reviewDef = usesAutoHardening ? this.resolveAutoReviewAgent(ownerDef, agentMap) : undefined;
     const supervised: SupervisedStep = {
       specialist: specialistDef,
       owner: ownerDef,
@@ -3319,6 +3320,10 @@ export class WorkflowRunner {
           completionReason = result.completionReason;
         } else {
           const ownerTask = this.injectStepOwnerContract(step, resolvedTask, effectiveOwner, effectiveSpecialist);
+          const explicitInteractiveWorker = this.isExplicitInteractiveWorker(effectiveOwner);
+          let explicitWorkerHandle: Agent | undefined;
+          let explicitWorkerCompleted = false;
+          let explicitWorkerOutput = '';
 
           this.log(`[${step.name}] Spawning owner "${effectiveOwner.name}" (cli: ${effectiveOwner.cli})${step.workdir ? ` [workdir: ${step.workdir}]` : ''}`);
           const resolvedStep = { ...step, task: ownerTask };
@@ -3329,6 +3334,28 @@ export class WorkflowRunner {
                 evidenceStepName: step.name,
                 evidenceRole: usesOwnerFlow ? 'owner' : 'specialist',
                 logicalName: effectiveOwner.name,
+                onSpawned: explicitInteractiveWorker
+                  ? ({ agent }) => {
+                      explicitWorkerHandle = agent;
+                    }
+                  : undefined,
+                onChunk: explicitInteractiveWorker
+                  ? ({ chunk }) => {
+                      explicitWorkerOutput += WorkflowRunner.stripAnsi(chunk);
+                      if (
+                        !explicitWorkerCompleted &&
+                        this.hasExplicitInteractiveWorkerCompletionEvidence(
+                          step,
+                          explicitWorkerOutput,
+                          ownerTask,
+                          resolvedTask
+                        )
+                      ) {
+                        explicitWorkerCompleted = true;
+                        void explicitWorkerHandle?.release().catch(() => undefined);
+                      }
+                    }
+                  : undefined,
               });
           const output = typeof spawnResult === 'string' ? spawnResult : spawnResult.output;
           lastExitCode = typeof spawnResult === 'string' ? undefined : spawnResult.exitCode;
@@ -3875,6 +3902,8 @@ export class WorkflowRunner {
     agentMap: Map<string, AgentDefinition>
   ): AgentDefinition {
     const allDefs = [...agentMap.values()].map((d) => WorkflowRunner.resolveAgentDef(d));
+    const eligible = (def: AgentDefinition): boolean =>
+      def.name !== ownerDef.name && !this.isExplicitInteractiveWorker(def);
     const isReviewer = (def: AgentDefinition): boolean => {
       const roleLC = def.role?.toLowerCase() ?? '';
       const nameLC = def.name.toLowerCase();
@@ -3897,15 +3926,19 @@ export class WorkflowRunner {
       return isReviewer(def) ? 1 : 0;
     };
     const dedicated = allDefs
-      .filter((d) => d.name !== ownerDef.name && isReviewer(d))
+      .filter((d) => eligible(d) && isReviewer(d))
       .sort((a, b) => reviewerPriority(b) - reviewerPriority(a) || a.name.localeCompare(b.name))[0];
     if (dedicated) return dedicated;
 
-    const alternate = allDefs.find((d) => d.name !== ownerDef.name && d.interactive !== false);
+    const alternate = allDefs.find((d) => eligible(d) && d.interactive !== false);
     if (alternate) return alternate;
 
     // Self-review fallback — log a warning since owner reviewing itself is weak.
     return ownerDef;
+  }
+
+  private isExplicitInteractiveWorker(agentDef: AgentDefinition): boolean {
+    return agentDef.preset === 'worker' && agentDef.interactive !== false;
   }
 
   private resolveOwnerCompletionDecision(
@@ -4011,6 +4044,20 @@ export class WorkflowRunner {
       `Step "${step.name}" owner completion decision missing: no OWNER_DECISION, legacy STEP_COMPLETE marker, or evidence-backed completion signal`,
       'failed_no_evidence'
     );
+  }
+
+  private hasExplicitInteractiveWorkerCompletionEvidence(
+    step: WorkflowStep,
+    output: string,
+    injectedTaskText: string,
+    verificationTaskText: string
+  ): boolean {
+    try {
+      this.resolveOwnerCompletionDecision(step, output, output, injectedTaskText, verificationTaskText);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private hasOwnerCompletionMarker(
@@ -4130,10 +4177,16 @@ export class WorkflowRunner {
     ]);
     if (!sanitized) return null;
 
+    const hasExplicitSelfRelease =
+      /Calling\s+(?:[\w.-]+\.)?remove_agent\(\{[^<\n]*"reason":"task completed"/i.test(
+        sanitized
+      );
     const hasPositiveConclusion =
       /\b(complete(?:d)?|done|verified|looks correct|safe handoff|artifact verified)\b/i.test(
         sanitized
-      ) || /\bartifacts?\b.*\b(correct|verified|complete)\b/i.test(sanitized);
+      ) ||
+      /\bartifacts?\b.*\b(correct|verified|complete)\b/i.test(sanitized) ||
+      hasExplicitSelfRelease;
     const evidence = this.getStepCompletionEvidence(stepName);
     const hasValidatedCoordinationSignal =
       evidence?.coordinationSignals.some(
