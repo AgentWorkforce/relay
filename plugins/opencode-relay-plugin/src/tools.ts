@@ -138,9 +138,6 @@ export function createRelayConnectTool(
         throw new Error('Invalid workspace key. Get one at relaycast.dev');
       }
 
-      state.workspace = workspace;
-      state.agentName = name;
-
       const res = await fetch(`${normalizeBaseUrl(state.apiBaseUrl)}/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -160,6 +157,8 @@ export function createRelayConnectTool(
         throw new Error('Relay API error: register response missing token');
       }
 
+      state.workspace = workspace;
+      state.agentName = name;
       state.token = data.token;
       state.connected = true;
 

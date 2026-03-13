@@ -67,7 +67,7 @@ if [ "$COUNT" -eq 0 ]; then
 fi
 
 FORMATTED=$(printf '%s' "$MESSAGES" | jq -r '
-  .messages[]
+  .messages[:20][]
   | if .channel then
       "Relay message from \(.from) [#\(.channel)]: \(.text)"
     else

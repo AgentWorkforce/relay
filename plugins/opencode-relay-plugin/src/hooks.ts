@@ -54,7 +54,12 @@ async function handleSessionIdle(
   // Update the watermark before the request to avoid tight polling loops on errors.
   state.lastIdlePollAt = now;
 
-  const messages = await pollInbox(state);
+  let messages: RelayMessage[];
+  try {
+    messages = await pollInbox(state);
+  } catch {
+    return;
+  }
   if (messages.length === 0) {
     return;
   }
