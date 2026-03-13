@@ -410,13 +410,9 @@ mod tests {
             env::set_var("TERM", "dumb");
         }
 
-        let (pty, mut rx) = PtySession::spawn(
-            "sh",
-            &["-c".into(), "printf '%s' \"$TERM\"".into()],
-            24,
-            80,
-        )
-        .unwrap();
+        let (pty, mut rx) =
+            PtySession::spawn("sh", &["-c".into(), "printf '%s' \"$TERM\"".into()], 24, 80)
+                .unwrap();
 
         let mut collected = Vec::new();
         while let Ok(Some(chunk)) = timeout(Duration::from_secs(2), rx.recv()).await {
