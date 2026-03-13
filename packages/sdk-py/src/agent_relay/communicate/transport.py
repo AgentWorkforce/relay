@@ -272,6 +272,10 @@ class RelayTransport:
 
     async def _dispatch_ws_payload(self, raw_payload: str) -> None:
         payload = json.loads(raw_payload)
+        if payload.get("type") == "ping":
+            if self._ws is not None and not self._ws.closed:
+                await self._ws.send_json({"type": "pong"})
+            return
         if payload.get("type") != "message":
             return
 
