@@ -54,6 +54,16 @@
       "types": "./dist/communicate/index.d.ts",
       "import": "./dist/communicate/index.js",
       "default": "./dist/communicate/index.js"
+    },
+    "./communicate/adapters/pi": {
+      "types": "./dist/communicate/adapters/pi.d.ts",
+      "import": "./dist/communicate/adapters/pi.js",
+      "default": "./dist/communicate/adapters/pi.js"
+    },
+    "./communicate/adapters/claude-sdk": {
+      "types": "./dist/communicate/adapters/claude-sdk.d.ts",
+      "import": "./dist/communicate/adapters/claude-sdk.js",
+      "default": "./dist/communicate/adapters/claude-sdk.js"
     }
   },
   "files": [
