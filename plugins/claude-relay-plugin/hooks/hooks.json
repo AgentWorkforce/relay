@@ -1,23 +1,4 @@
 {
-  "name": "agent-relay",
-  "version": "0.1.0",
-  "description": "Relaycast MCP plus Claude Code hooks for brokerless multi-agent coordination.",
-  "mcpServers": {
-    "relaycast": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@relaycast/mcp"
-      ],
-      "env": {
-        "RELAY_API_KEY": "${RELAY_API_KEY}",
-        "RELAY_BASE_URL": "${RELAY_BASE_URL}",
-        "RELAY_AGENT_NAME": "${RELAY_AGENT_NAME}",
-        "RELAY_AGENT_TYPE": "agent",
-        "RELAY_STRICT_AGENT_NAME": "1"
-      }
-    }
-  },
   "hooks": {
     "Stop": [
       {

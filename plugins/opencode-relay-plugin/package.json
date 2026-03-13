@@ -5,7 +5,25 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "keywords": ["opencode-plugin", "agent-relay", "multi-agent"],
+  "author": "Agent Relay <hello@agent-relay.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/AgentWorkforce/relay/tree/main/plugins/opencode-relay-plugin",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AgentWorkforce/relay.git",
+    "directory": "plugins/opencode-relay-plugin"
+  },
+  "keywords": [
+    "opencode-plugin",
+    "agent-relay",
+    "multi-agent",
+    "relaycast",
+    "agent-communication"
+  ],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "peerDependencies": {
     "opencode": ">=0.1.0"
   },
