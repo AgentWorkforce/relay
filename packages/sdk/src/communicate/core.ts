@@ -36,6 +36,8 @@ export class Relay {
         void this.close();
       };
       process.once('beforeExit', this.exitHandler);
+      process.once('SIGTERM', this.exitHandler);
+      process.once('SIGINT', this.exitHandler);
     }
   }
 
@@ -107,6 +109,8 @@ export class Relay {
   async close(): Promise<void> {
     if (this.exitHandler) {
       process.removeListener('beforeExit', this.exitHandler);
+      process.removeListener('SIGTERM', this.exitHandler);
+      process.removeListener('SIGINT', this.exitHandler);
     }
 
     this.connected = false;

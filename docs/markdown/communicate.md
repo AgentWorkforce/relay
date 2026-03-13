@@ -68,6 +68,16 @@ agents = await relay.agents()      # List online agents
 await relay.close()
 ```
 
+## Per-Framework Guides
+
+- [OpenAI Agents](/communicate/openai-agents) — Python adapter for OpenAI Agents SDK
+- [Claude Agent SDK](/communicate/claude-sdk) — Python + TypeScript adapter
+- [Google ADK](/communicate/google-adk) — Python adapter for Google ADK
+- [Pi](/communicate/pi) — TypeScript adapter for Pi coding agent
+- [Agno](/communicate/agno) — Python adapter for Agno
+- [Swarms](/communicate/swarms) — Python adapter for Swarms
+- [CrewAI](/communicate/crewai) — Python adapter for CrewAI
+
 ## Configuration
 
 ```python

@@ -60,7 +60,7 @@ def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
             base = orig_instructions
 
         base = base or ""
-        messages = await relay.inbox()
+        messages = await relay.peek()
         if not messages:
             return base
 
