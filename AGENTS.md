@@ -1,35 +1,3 @@
-<!-- PRPM_MANIFEST_START -->
-
-<skills_system priority="1">
-<usage>
-When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge.
-
-How to use skills (loaded into main context):
-
-- Use the <path> from the skill entry below
-- Invoke: Bash("cat <path>")
-- The skill content will load into your current context
-- Example: Bash("cat .openskills/backend-architect/SKILL.md")
-
-Usage notes:
-
-- Skills share your context window
-- Do not invoke a skill that is already loaded in your context
-  </usage>
-
-<available_skills>
-
-<skill activation="lazy">
-<name>frontend-design</name>
-<description>Design and build modern frontend interfaces with best practices and user experience principles. Create beautiful, accessible, and performant web interfaces.</description>
-<path>.openskills/frontend-design/SKILL.md</path>
-</skill>
-
-</available_skills>
-</skills_system>
-
-<!-- PRPM_MANIFEST_END -->
-
 # Git Workflow Rules
 
 ## NEVER Push Directly to Main
@@ -58,8 +26,9 @@ git push origin main  # NO!
 
 This ensures the user maintains control over what goes into the main branch.
 
-<!-- prpm:snippet:start @agent-workforce/trail-snippet@1.0.1 -->
 
+
+<!-- prpm:snippet:start @agent-workforce/trail-snippet@1.1.0 -->
 # Trail
 
 Record your work as a trajectory for future agents and humans to follow.
@@ -67,13 +36,11 @@ Record your work as a trajectory for future agents and humans to follow.
 ## Usage
 
 If `trail` is installed globally, run commands directly:
-
 ```bash
 trail start "Task description"
 ```
 
 If not globally installed, use npx to run from local installation:
-
 ```bash
 npx trail start "Task description"
 ```
@@ -87,7 +54,6 @@ trail start "Implement user authentication"
 ```
 
 With external task reference:
-
 ```bash
 trail start "Fix login bug" --task "ENG-123"
 ```
@@ -102,16 +68,41 @@ trail decision "Chose JWT over sessions" \
 ```
 
 For minor decisions, reasoning is optional:
-
 ```bash
 trail decision "Used existing auth middleware"
 ```
 
 **Record decisions when you:**
-
 - Choose between alternatives
 - Make architectural trade-offs
 - Decide on an approach after investigation
+
+## Recording Reflections
+
+Periodically step back and synthesize progress:
+
+```bash
+trail reflect "Workers aligned on auth approach, API layer progressing well" \
+  --confidence 0.8
+```
+
+With focal points and adjustments:
+```bash
+trail reflect "Frontend and backend duplicating validation logic" \
+  --focal-points "duplication,ownership" \
+  --adjustments "Reassigning validation to backend team" \
+  --confidence 0.7
+```
+
+**Record reflections when you:**
+- Have received several updates and need to synthesize the big picture
+- Notice workers or tasks diverging from the plan
+- Want to course-correct before continuing
+- Are coordinating multiple agents and need to assess overall progress
+
+Reflections differ from decisions: decisions record a specific choice,
+reflections record a higher-level synthesis of what's happening and whether
+the current approach is working.
 
 ## Completing Work
 
@@ -122,7 +113,6 @@ trail complete --summary "Added JWT auth with refresh tokens" --confidence 0.85
 ```
 
 **Confidence levels:**
-
 - 0.9+ : High confidence, well-tested
 - 0.7-0.9 : Good confidence, standard implementation
 - 0.5-0.7 : Some uncertainty, edge cases possible
@@ -139,82 +129,54 @@ trail abandon --reason "Blocked by missing API credentials"
 ## Checking Status
 
 View current trajectory:
-
 ```bash
 trail status
 ```
 
+## Listing and Viewing Trajectories
+
+List all trajectories:
+```bash
+trail list
+```
+
+View a specific trajectory:
+```bash
+trail show <trajectory-id>
+```
+
+Export a trajectory (markdown, json, timeline, html, pr-summary):
+```bash
+trail export <trajectory-id> --format markdown
+```
+
+## Compacting Trajectories
+
+After a PR merge, compact related trajectories into a single summary:
+
+```bash
+trail compact --pr 42
+```
+
+Compact by branch:
+```bash
+trail compact --branch feature/auth
+```
+
+Compact by commit range:
+```bash
+trail compact --commits abc123..def456
+```
+
+Compaction consolidates decisions and creates a grouped summary, reducing noise while preserving key decisions.
+
 ## Why Trail?
 
 Your trajectory helps others understand:
-
 - **What** you built (commits show this)
 - **Why** you built it this way (trajectory shows this)
 - **What alternatives** you considered
 - **What challenges** you faced
 
 Future agents can query past trajectories to learn from your decisions.
-
-<!-- prpm:snippet:end @agent-workforce/trail-snippet@1.0.1 -->
-
-<!-- prpm:snippet:start @agent-relay/agent-relay-snippet@1.2.0 -->
-
-# Agent Relay
-
-Real-time agent-to-agent messaging via MCP tools.
-
-## MCP Tools
-
-All agent communication uses MCP tools provided by the Relaycast MCP server.
-Tool names use dot-notation: Claude uses `mcp__relaycast__<category>_<action>`, other CLIs use `relaycast.<category>.<action>`.
-
-| Tool                              | Description                           |
-| --------------------------------- | ------------------------------------- |
-| `dm_send(to, text)`               | Send a DM to an agent                 |
-| `message_post(channel, text)`     | Post a message to a channel           |
-| `inbox_check()`                   | Check your inbox for new messages     |
-| `agent_list()`                    | List online agents                    |
-| `agent_add(name, cli, task)`      | Spawn a new worker agent              |
-| `agent_remove(name)`              | Release/stop a worker agent           |
-
-## Sending Messages
-
-### Direct Messages
-
-```
-mcp__relaycast__dm_send(to: "Bob", text: "Can you review my code changes?")
-```
-
-### Channel Messages
-
-```
-mcp__relaycast__message_post(channel: "general", text: "The API endpoints are ready")
-```
-
-## Spawning & Releasing
-
-```
-mcp__relaycast__agent_add(name: "WorkerName", cli: "claude", task: "Task description")
-mcp__relaycast__agent_remove(name: "WorkerName")
-```
-
-## Receiving Messages
-
-Messages appear as:
-
-```
-Relay message from Alice [abc123]: Content here
-```
-
-Channel messages include `[#channel]`:
-
-```
-Relay message from Alice [abc123] [#general]: Hello!
-```
-
-## Protocol
-
-- **ACK** when you receive a task: `ACK: Brief description`
-- **DONE** when complete: `DONE: What was accomplished`
-- Send status to your **lead**, not broadcast
-<!-- prpm:snippet:end @agent-relay/agent-relay-snippet@1.2.0 -->
+<!-- prpm:snippet:end @agent-workforce/trail-snippet@1.1.0 -->
