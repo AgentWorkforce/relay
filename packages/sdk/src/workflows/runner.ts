@@ -357,8 +357,8 @@ export class WorkflowRunner {
   private readonly stepSignalParticipants = new Map<string, StepSignalParticipants>();
   /** Resolved named paths from the top-level `paths` config, keyed by name → absolute directory. */
   private resolvedPaths = new Map<string, string>();
-  /** Tracks agent names currently assigned as reviewers to avoid double-booking the same agent. */
-  private readonly activeReviewers = new Set<string>();
+  /** Tracks agent names currently assigned as reviewers (ref-counted to handle concurrent usage). */
+  private readonly activeReviewers = new Map<string, number>();
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -3441,7 +3441,7 @@ export class WorkflowRunner {
         // Every interactive step gets a review pass; pick a dedicated reviewer when available.
         let combinedOutput = specialistOutput;
         if (usesOwnerFlow && reviewDef) {
-          this.activeReviewers.add(reviewDef.name);
+          this.activeReviewers.set(reviewDef.name, (this.activeReviewers.get(reviewDef.name) ?? 0) + 1);
           try {
             const remainingMs = timeoutMs ? Math.max(0, timeoutMs - ownerElapsed) : undefined;
             const reviewOutput = await this.runStepReviewGate(
@@ -3455,7 +3455,9 @@ export class WorkflowRunner {
             );
             combinedOutput = this.combineStepAndReviewOutput(specialistOutput, reviewOutput);
           } finally {
-            this.activeReviewers.delete(reviewDef.name);
+            const count = (this.activeReviewers.get(reviewDef.name) ?? 1) - 1;
+            if (count <= 0) this.activeReviewers.delete(reviewDef.name);
+            else this.activeReviewers.set(reviewDef.name, count);
           }
         }
 
