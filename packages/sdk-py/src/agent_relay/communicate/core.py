@@ -176,28 +176,27 @@ def on_relay(agent: Any, relay: Relay | None = None) -> Any:
         relay = Relay(getattr(agent, "name", "Agent"))
 
     cls_module = type(agent).__module__
-    if "claude_agent_sdk" in cls_module:
-        from .adapters.claude_sdk import on_relay as _adapt
-        return _adapt(relay, agent)
-    if "google.adk" in cls_module:
-        from .adapters.google_adk import on_relay as _adapt
-        return _adapt(agent, relay)
-    if "openai_agents" in cls_module:
+    if cls_module.startswith("agents"):
         from .adapters.openai_agents import on_relay as _adapt
         return _adapt(agent, relay)
-    if "agno" in cls_module:
+    if cls_module.startswith("google.adk"):
+        from .adapters.google_adk import on_relay as _adapt
+        return _adapt(agent, relay)
+    if cls_module.startswith("agno"):
         from .adapters.agno import on_relay as _adapt
         return _adapt(agent, relay)
-    if "swarms" in cls_module:
+    if cls_module.startswith("swarms"):
         from .adapters.swarms import on_relay as _adapt
         return _adapt(agent, relay)
-    if "crewai" in cls_module:
+    if cls_module.startswith("crewai"):
         from .adapters.crewai import on_relay as _adapt
         return _adapt(agent, relay)
 
     raise TypeError(
         f"on_relay() doesn't recognize {type(agent).__name__} from {cls_module}. "
-        "Supported frameworks: Claude Agent SDK, Google ADK, OpenAI Agents, Agno, Swarms, CrewAI (Python)."
+        "Supported frameworks: OpenAI Agents, Google ADK, Agno, Swarms, CrewAI (Python). "
+        "For Claude Agent SDK, import the adapter directly: "
+        "from agent_relay.communicate.adapters.claude_sdk import on_relay"
     )
 
 
