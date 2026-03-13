@@ -36,3 +36,6 @@ export function onRelay(nameOrAgent: any, configOrOptions?: any, maybeRelay?: an
   
   throw new Error(`onRelay() could not auto-detect framework for ${name}.`);
 }
+
+/** Alias for onRelay — spec uses both names */
+export const withRelay = onRelay;
