@@ -3167,7 +3167,9 @@ export class WorkflowRunner {
     }
     const specialistDef = WorkflowRunner.resolveAgentDef(rawAgentDef);
     const usesOwnerFlow = specialistDef.interactive !== false;
-    const usesAutoHardening = usesOwnerFlow && !this.isExplicitInteractiveWorker(specialistDef);
+    const currentPattern = this.currentConfig?.swarm?.pattern ?? '';
+    const isHubPattern = WorkflowRunner.HUB_PATTERNS.has(currentPattern);
+    const usesAutoHardening = usesOwnerFlow && isHubPattern && !this.isExplicitInteractiveWorker(specialistDef);
     const ownerDef = usesAutoHardening ? this.resolveAutoStepOwner(specialistDef, agentMap) : specialistDef;
     const reviewDef = usesAutoHardening ? this.resolveAutoReviewAgent(ownerDef, agentMap) : undefined;
     const supervised: SupervisedStep = {
@@ -3335,7 +3337,7 @@ export class WorkflowRunner {
             ? await this.executor.executeAgentStep(resolvedStep, effectiveOwner, ownerTask, timeoutMs)
             : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
                 evidenceStepName: step.name,
-                evidenceRole: usesOwnerFlow ? 'owner' : 'specialist',
+                evidenceRole: 'specialist',
                 logicalName: effectiveOwner.name,
                 onSpawned: explicitInteractiveWorker
                   ? ({ agent }) => {
