@@ -811,34 +811,6 @@ async function discoverExistingBrokerApiPort(
   return preferredApiPort;
 }
 
-/**
- * Probe the default API port range to find a running broker's API endpoint.
- * Returns the port number if found, or 0 if no broker API is responding.
- */
-async function findRunningBrokerApiPort(deps: CoreDependencies): Promise<number> {
-  const dashboardPort = Number.parseInt(
-    deps.env.AGENT_RELAY_DASHBOARD_PORT ?? '3888',
-    10
-  );
-  const startPort = (Number.isFinite(dashboardPort) ? dashboardPort : 3888) + 1;
-
-  for (let attempt = 0; attempt < MAX_API_PORT_ATTEMPTS; attempt += 1) {
-    const candidatePort = startPort + attempt;
-    if (candidatePort > MAX_PORT) {
-      break;
-    }
-    try {
-      const response = await fetch(`http://localhost:${candidatePort}/health`);
-      if (response.ok) {
-        return candidatePort;
-      }
-    } catch {
-      // Port not responding, keep scanning.
-    }
-  }
-  return 0;
-}
-
 async function shutdownUpResources(
   relay: CoreRelay,
   dashboardProcess: SpawnedProcess | undefined,
@@ -1336,7 +1308,7 @@ export async function runStatusCommand(deps: CoreDependencies): Promise<void> {
   // Discover the existing broker's API port instead of spawning a new broker.
   // Without an API port, createRelay spawns a fresh broker process which
   // conflicts with the already-running one and can cause the command to fail.
-  const apiPort = await findRunningBrokerApiPort(deps);
+  const apiPort = await deps.findBrokerApiPort();
 
   if (apiPort > 0) {
     const relay = deps.createRelay(paths.projectRoot, apiPort);
