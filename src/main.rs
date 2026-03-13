@@ -6868,7 +6868,7 @@ mod tests {
     fn injection_format_preserved() {
         let rendered = format_injection("alice", "evt_1", "hello", "bob");
         assert!(rendered.contains("<system-reminder>"));
-        assert!(rendered.contains("mcp__relaycast__dm_send"));
+        assert!(rendered.contains("mcp__relaycast__message_dm_send"));
         assert!(rendered.contains("Relay message from alice [evt_1]: hello"));
     }
 

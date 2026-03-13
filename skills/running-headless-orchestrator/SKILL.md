@@ -80,10 +80,10 @@ mcp__relaycast__agent_add(
 
 ```
 # Check for worker messages
-mcp__relaycast__inbox_check()
+mcp__relaycast__message_inbox_check()
 
 # Send follow-up instructions
-mcp__relaycast__dm_send(to: "Worker1", text: "Also add unit tests")
+mcp__relaycast__message_dm_send(to: "Worker1", text: "Also add unit tests")
 
 # List active workers
 mcp__relaycast__agent_list()

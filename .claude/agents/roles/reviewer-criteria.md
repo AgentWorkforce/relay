@@ -158,7 +158,7 @@ When participating in consensus reviews:
 
 ```
 
-mcp__relaycast__send_dm(to: "\_consensus", text: "PROPOSAL: [proposal-id]\nVOTE: approve | reject | abstain\n\nBLOCKING ISSUES:\n- [List any blocking issues]\n\nSUGGESTIONS:\n- [List non-blocking suggestions]\n\nSUMMARY:\n[One sentence reasoning]")
+mcp__relaycast__message_dm_send(to: "\_consensus", text: "PROPOSAL: [proposal-id]\nVOTE: approve | reject | abstain\n\nBLOCKING ISSUES:\n- [List any blocking issues]\n\nSUGGESTIONS:\n- [List non-blocking suggestions]\n\nSUMMARY:\n[One sentence reasoning]")
 
 ```
 

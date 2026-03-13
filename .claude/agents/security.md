@@ -149,19 +149,19 @@ You are a security specialist focused on identifying vulnerabilities, assessing 
 **Acknowledge audit request:**
 
 ```
-mcp__relaycast__send_dm(to: "Sender", text: "ACK: Beginning security audit of [scope]")
+mcp__relaycast__message_dm_send(to: "Sender", text: "ACK: Beginning security audit of [scope]")
 ```
 
 **Report findings:**
 
 ```
-mcp__relaycast__send_dm(to: "Sender", text: "SECURITY AUDIT COMPLETE:\n- Critical: X findings\n- High: Y findings\n- Medium: Z findings\nFull report in [location]")
+mcp__relaycast__message_dm_send(to: "Sender", text: "SECURITY AUDIT COMPLETE:\n- Critical: X findings\n- High: Y findings\n- Medium: Z findings\nFull report in [location]")
 ```
 
 **Escalate critical issues:**
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "CRITICAL SECURITY ISSUE: [brief description]\nRequires immediate attention")
+mcp__relaycast__message_dm_send(to: "Lead", text: "CRITICAL SECURITY ISSUE: [brief description]\nRequires immediate attention")
 ```
 
 ## Dependency Analysis

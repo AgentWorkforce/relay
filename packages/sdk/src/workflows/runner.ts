@@ -4692,7 +4692,7 @@ export class WorkflowRunner {
         return (
           'You are a non-interactive worker agent. Produce clean, structured output to stdout.\n' +
           'Do NOT use mcp__relaycast__agent_add, add_agent, or any MCP tool to spawn sub-agents.\n' +
-          'Do NOT use mcp__relaycast__dm_send or any Relaycast messaging tools — you have no relay connection.\n\n'
+          'Do NOT use mcp__relaycast__message_dm_send or any Relaycast messaging tools — you have no relay connection.\n\n'
         );
       case 'reviewer':
         return (
@@ -5717,7 +5717,7 @@ export class WorkflowRunner {
       'RELAY SETUP — do this FIRST before any other relay tool:\n' +
       `1. Call: register(name="${agentName}")\n` +
       '   This authenticates you in the Relaycast workspace.\n' +
-      '   ALL relay tools (mcp__relaycast__dm_send, mcp__relaycast__inbox_check, mcp__relaycast__message_post, etc.) require\n' +
+      '   ALL relay tools (mcp__relaycast__message_dm_send, mcp__relaycast__message_inbox_check, mcp__relaycast__message_post, etc.) require\n' +
       '   registration first — they will fail with "Not registered" otherwise.\n' +
       `2. Your agent name is "${agentName}" — use this exact name when registering.`
     );
@@ -5746,8 +5746,8 @@ export class WorkflowRunner {
       'you should break it down and delegate to helper agents to avoid timeouts.\n\n' +
       'Option 1 — Spawn relay agents (for real parallel coding work):\n' +
       '  - mcp__relaycast__agent_add(name="helper-1", cli="claude", task="Specific subtask description")\n' +
-      '  - Coordinate via mcp__relaycast__dm_send(to="helper-1", text="...")\n' +
-      '  - Check on them with mcp__relaycast__inbox_check()\n' +
+      '  - Coordinate via mcp__relaycast__message_dm_send(to="helper-1", text="...")\n' +
+      '  - Check on them with mcp__relaycast__message_inbox_check()\n' +
       '  - Clean up when done: mcp__relaycast__agent_remove(name="helper-1")\n\n' +
       subAgentOption +
       'Guidelines:\n' +

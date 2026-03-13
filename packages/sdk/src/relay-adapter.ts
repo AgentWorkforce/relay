@@ -33,16 +33,16 @@ const WORKFLOW_BOOTSTRAP_TASK =
 
 const WORKFLOW_CONVENTIONS = [
   'Messaging requirements:',
-  '- When you receive `Relay message from <sender> ...`, reply using `mcp__relaycast__dm_send(to: "<sender>", text: "...")`.',
+  '- When you receive `Relay message from <sender> ...`, reply using `mcp__relaycast__message_dm_send(to: "<sender>", text: "...")`.',
   '- Send `ACK: ...` when you receive a task.',
   '- Send `DONE: ...` when the task is complete.',
-  '- Do not reply only in terminal text; send the response via mcp__relaycast__dm_send.',
-  '- Use mcp__relaycast__inbox_check() and mcp__relaycast__agent_list() when context is missing.',
+  '- Do not reply only in terminal text; send the response via mcp__relaycast__message_dm_send.',
+  '- Use mcp__relaycast__message_inbox_check() and mcp__relaycast__agent_list() when context is missing.',
 ].join('\n');
 
 function hasWorkflowConventions(task: string): boolean {
   const lower = task.toLowerCase();
-  return lower.includes('mcp__relaycast__dm_send(') || lower.includes('relay_send(') || (lower.includes('ack:') && lower.includes('done:'));
+  return lower.includes('mcp__relaycast__message_dm_send(') || lower.includes('relay_send(') || (lower.includes('ack:') && lower.includes('done:'));
 }
 
 function buildSpawnTask(

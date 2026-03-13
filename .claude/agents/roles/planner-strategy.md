@@ -97,10 +97,10 @@ Keep workers informed but don't micromanage:
 
 ```
 # Good: Context sharing
-mcp__relaycast__send_dm(to: "BackendAuth", text: "Database worker completed user schema. Your dependency is ready.\nColumn names: id, email, password_hash, created_at")
+mcp__relaycast__message_dm_send(to: "BackendAuth", text: "Database worker completed user schema. Your dependency is ready.\nColumn names: id, email, password_hash, created_at")
 
 # Bad: Micromanaging
-mcp__relaycast__send_dm(to: "BackendAuth", text: "Now write the middleware. First import jwt. Then create a function...")
+mcp__relaycast__message_dm_send(to: "BackendAuth", text: "Now write the middleware. First import jwt. Then create a function...")
 ```
 
 ## When Workers Get Stuck

@@ -107,13 +107,13 @@ View <- ViewModel <- Repository <- DataSource
 Development update:
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "STATUS: Mobile feature progress\n- Screen: ProfileEdit 80% complete\n- Blocking: API endpoint not ready\n- Testing: iPhone 12, Pixel 6 verified\n- Next: Form validation, error states")
+mcp__relaycast__message_dm_send(to: "Lead", text: "STATUS: Mobile feature progress\n- Screen: ProfileEdit 80% complete\n- Blocking: API endpoint not ready\n- Testing: iPhone 12, Pixel 6 verified\n- Next: Form validation, error states")
 ```
 
 Completion:
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "DONE: ProfileEdit screen complete\n- iOS: SwiftUI implementation\n- Android: Compose implementation\n- Tests: UI tests passing\n- Accessibility: VoiceOver/TalkBack verified")
+mcp__relaycast__message_dm_send(to: "Lead", text: "DONE: ProfileEdit screen complete\n- iOS: SwiftUI implementation\n- Android: Compose implementation\n- Tests: UI tests passing\n- Accessibility: VoiceOver/TalkBack verified")
 ```
 
 ## Testing Checklist

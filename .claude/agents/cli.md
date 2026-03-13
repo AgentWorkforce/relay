@@ -134,13 +134,13 @@ echo '{"status": "success", "count": 42}'
 Implementation status:
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "STATUS: CLI tool progress\n- Commands: init, run complete\n- Pending: config subcommand\n- Testing: 23 test cases passing\n- Docs: --help implemented")
+mcp__relaycast__message_dm_send(to: "Lead", text: "STATUS: CLI tool progress\n- Commands: init, run complete\n- Pending: config subcommand\n- Testing: 23 test cases passing\n- Docs: --help implemented")
 ```
 
 Completion:
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "DONE: CLI tool complete\n- Commands: init, run, config\n- Tests: 31 passing, 0 failing\n- Docs: README, --help, man page\n- Package: npm/brew ready")
+mcp__relaycast__message_dm_send(to: "Lead", text: "DONE: CLI tool complete\n- Commands: init, run, config\n- Tests: 31 passing, 0 failing\n- Docs: README, --help, man page\n- Package: npm/brew ready")
 ```
 
 ## Testing CLI Tools

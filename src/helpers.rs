@@ -444,11 +444,11 @@ fn build_mcp_reminder(
     // Codex/others use relaycast.<tool>.  Include both so any agent can act.
     let dm_hint = if reply_target.eq_ignore_ascii_case(sender_name) {
         format!(
-            "- For direct replies to \"{sender_name}\", use mcp__relaycast__dm_send or relaycast.dm.send (to: \"{sender_name}\")."
+            "- For direct replies to \"{sender_name}\", use mcp__relaycast__message_dm_send or relaycast.message.dm.send (to: \"{sender_name}\")."
         )
     } else {
         format!(
-            "- For direct replies to \"{sender_name}\", use mcp__relaycast__dm_send or relaycast.dm.send (to: \"{reply_target}\")."
+            "- For direct replies to \"{sender_name}\", use mcp__relaycast__message_dm_send or relaycast.message.dm.send (to: \"{reply_target}\")."
         )
     };
     let channel_hint_line = format!(
@@ -484,7 +484,7 @@ fn build_mcp_reminder(
         dm_hint,
         channel_hint_line,
         "- For thread replies, use mcp__relaycast__message_reply or relaycast.message.reply.".to_string(),
-        "- To check unread messages/reactions, use mcp__relaycast__inbox_check or relaycast.inbox.check.".to_string(),
+        "- To check unread messages/reactions, use mcp__relaycast__message_inbox_check or relaycast.message.inbox.check.".to_string(),
         "- To self-terminate when your task is complete, call remove_agent(name: \"<your-agent-name>\") or output /exit on its own line.".to_string(),
         "</system-reminder>".to_string(),
     ]
@@ -523,7 +523,7 @@ fn build_mcp_short_hint(
     };
 
     format!(
-        "<system-reminder>Reply via Relaycast MCP: mcp__relaycast__dm_send/relaycast.dm.send (to: \"{dm_target}\") or mcp__relaycast__message_post/relaycast.message.post (channel: \"{channel_hint}\").{register_hint}</system-reminder>"
+        "<system-reminder>Reply via Relaycast MCP: mcp__relaycast__message_dm_send/relaycast.message.dm.send (to: \"{dm_target}\") or mcp__relaycast__message_post/relaycast.message.post (channel: \"{channel_hint}\").{register_hint}</system-reminder>"
     )
 }
 
@@ -1617,7 +1617,7 @@ mod tests {
         assert!(result.contains("<system-reminder>"));
         assert!(result.contains("Relaycast MCP tools"));
         assert!(result.contains("pre-registered by the broker"));
-        assert!(result.contains("mcp__relaycast__dm_send"));
+        assert!(result.contains("mcp__relaycast__message_dm_send"));
         assert!(result.contains("Relay message from Alice [evt_1]: hello world"));
     }
 
@@ -1682,7 +1682,7 @@ mod tests {
     fn format_injection_without_reminder_includes_short_mcp_hint() {
         let result = format_injection_with_reminder("alice", "evt_9", "retry body", "bob", false);
         assert!(result.contains("<system-reminder>Reply via Relaycast MCP"));
-        assert!(result.contains("mcp__relaycast__dm_send"));
+        assert!(result.contains("mcp__relaycast__message_dm_send"));
         assert!(result.contains("mcp__relaycast__message_post"));
         assert!(result.contains("Relay message from alice [evt_9]: retry body"));
     }

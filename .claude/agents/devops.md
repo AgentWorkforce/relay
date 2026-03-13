@@ -80,13 +80,13 @@ You are a DevOps CI specialist focused on continuous integration, continuous dep
 When reporting pipeline status:
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "CI: Build #42 passed\n- Tests: 156 passed, 0 failed\n- Coverage: 84%\n- Security: 0 critical, 2 low\n- Deploy: Ready for staging")
+mcp__relaycast__message_dm_send(to: "Lead", text: "CI: Build #42 passed\n- Tests: 156 passed, 0 failed\n- Coverage: 84%\n- Security: 0 critical, 2 low\n- Deploy: Ready for staging")
 ```
 
 When blocked:
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "BLOCKED: CI pipeline failing\n- Issue: Docker build timeout\n- Root cause: [investigation]\n- Options: [proposed solutions]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "BLOCKED: CI pipeline failing\n- Issue: Docker build timeout\n- Root cause: [investigation]\n- Options: [proposed solutions]")
 ```
 
 ## Key Metrics to Track

@@ -64,7 +64,7 @@ if !existing_args.iter().any(|a| a == "--agent") { ... }
 
 After an agent is running, incoming relay messages are injected into the PTY with `<system-reminder>` wrappers that guide the agent to reply using MCP tools:
 
-- DMs → hint to use `mcp__relaycast__dm_send`
+- DMs → hint to use `mcp__relaycast__message_dm_send`
 - Channel messages → hint to use `mcp__relaycast__message_post`
 - Includes channel context `[#channel-name]` when applicable
 - Prevents double-wrapping of system-reminder tags

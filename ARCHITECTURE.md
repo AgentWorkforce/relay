@@ -7,7 +7,7 @@ Agent Relay is a real-time messaging system that enables autonomous agent-to-age
 The system works by:
 
 1. Wrapping agent CLI processes in PTY sessions managed by a Rust broker
-2. Providing MCP tools for agent communication (mcp__relaycast__send_dm, mcp__relaycast__agent_add, etc.)
+2. Providing MCP tools for agent communication (mcp__relaycast__message_dm_send, mcp__relaycast__agent_add, etc.)
 3. Routing messages through Relaycast (cloud WebSocket service)
 4. Injecting incoming messages directly into agent terminal input
 
@@ -45,7 +45,7 @@ Agent Relay solves this by providing a communication layer that requires **zero 
 
 ### 1.2 Core Principle: MCP Tool Protocol
 
-The fundamental insight is that AI agents can invoke MCP (Model Context Protocol) tools. By providing relay tools (`mcp__relaycast__send_dm`, `mcp__relaycast__agent_add`, `mcp__relaycast__agent_list`, etc.) via MCP, agents can communicate without modifying the underlying AI system.
+The fundamental insight is that AI agents can invoke MCP (Model Context Protocol) tools. By providing relay tools (`mcp__relaycast__message_dm_send`, `mcp__relaycast__agent_add`, `mcp__relaycast__agent_list`, etc.) via MCP, agents can communicate without modifying the underlying AI system.
 
 This approach:
 
@@ -167,7 +167,7 @@ The broker uses native PTY sessions (via `portable-pty`) instead of tmux:
 │  │  │              Agent Process (claude, etc.)          │  │  │
 │  │  │                                                    │  │  │
 │  │  │  Output: "I'll send a message to Bob"             │  │  │
-│  │  │  MCP call: mcp__relaycast__send_dm(to: "Bob", text: "...")│  │  │
+│  │  │  MCP call: mcp__relaycast__message_dm_send(to: "Bob", text: "...")│  │  │
 │  │  │                                                    │  │  │
 │  │  └────────────────────────────────────────────────────┘  │  │
 │  └──────────────────────────────────────────────────────────┘  │
@@ -209,7 +209,7 @@ The broker uses `portable-pty` for cross-platform PTY management, replacing the 
 Output is stripped of ANSI escape codes before pattern matching to handle terminal formatting.
 
 **3. MCP Tool Protocol**
-Agents communicate by invoking MCP tools (e.g., `mcp__relaycast__send_dm`, `mcp__relaycast__agent_add`, `mcp__relaycast__agent_list`). The broker processes these tool calls and routes messages accordingly.
+Agents communicate by invoking MCP tools (e.g., `mcp__relaycast__message_dm_send`, `mcp__relaycast__agent_add`, `mcp__relaycast__agent_list`). The broker processes these tool calls and routes messages accordingly.
 
 **4. Message Deduplication**
 Uses a hash-based dedup cache to prevent re-sending the same message:
@@ -300,12 +300,12 @@ Agents communicate by invoking MCP tools provided by the Relaycast MCP server:
 
 | Tool                                          | Description                  |
 | --------------------------------------------- | ---------------------------- |
-| `mcp__relaycast__send_dm(to, text)`           | Send a DM to an agent        |
+| `mcp__relaycast__message_dm_send(to, text)`   | Send a DM to an agent        |
 | `mcp__relaycast__post_message(channel, text)` | Post a message to a channel  |
 | `mcp__relaycast__agent_add(name, cli, task)`  | Spawn a worker agent         |
 | `mcp__relaycast__agent_remove(name)`          | Release a worker agent       |
 | `mcp__relaycast__agent_list()`                | List connected agents        |
-| `mcp__relaycast__inbox_check()`               | Check incoming messages      |
+| `mcp__relaycast__message_inbox_check()`       | Check incoming messages      |
 
 ### 4.2 Broker Stdio Protocol
 
@@ -367,7 +367,7 @@ Alice (Agent)          Broker              Relaycast           Bob (Agent)
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ 1. AGENT INVOKES MCP TOOL                                               │
-│    Agent calls: mcp__relaycast__send_dm(to: "Bob", text: "Can you review auth.ts?")
+│    Agent calls: mcp__relaycast__message_dm_send(to: "Bob", text: "Can you review auth.ts?")
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
@@ -544,7 +544,7 @@ Alice                    Relaycast                  Bob, Carol, Dave
 
 ### 8.3 Why MCP Tools Instead of Output Parsing?
 
-**Decision**: Use MCP tools (`mcp__relaycast__send_dm()`, `mcp__relaycast__agent_add()`, etc.) instead of inline output parsing (`->relay:Target message`).
+**Decision**: Use MCP tools (`mcp__relaycast__message_dm_send()`, `mcp__relaycast__agent_add()`, etc.) instead of inline output parsing (`->relay:Target message`).
 
 **Rationale**:
 
@@ -713,7 +713,7 @@ agent-relay spawn Bob codex "Another task"
 
 ```
 # Send a direct message
-mcp__relaycast__send_dm(to: "Bob", text: "Please review the auth module")
+mcp__relaycast__message_dm_send(to: "Bob", text: "Please review the auth module")
 
 # Post to a channel
 mcp__relaycast__post_message(channel: "general", text: "I've finished the database migration")

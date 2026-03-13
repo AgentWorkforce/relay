@@ -127,19 +127,19 @@ STILL avoid even in prototypes:
 Starting prototype:
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "ACK: Starting prototype for [feature]\n- Hypothesis: [what we're testing]\n- Scope: [core flow only]\n- Timeline: [hours, not days]\n- Shortcuts: [what I'll fake/skip]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "ACK: Starting prototype for [feature]\n- Hypothesis: [what we're testing]\n- Scope: [core flow only]\n- Timeline: [hours, not days]\n- Shortcuts: [what I'll fake/skip]")
 ```
 
 Progress update:
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "STATUS: Prototype progress\n- Core flow: Working\n- Hardcoded: User data, config\n- Faked: Payment processing\n- Ready for: Internal demo")
+mcp__relaycast__message_dm_send(to: "Lead", text: "STATUS: Prototype progress\n- Core flow: Working\n- Hardcoded: User data, config\n- Faked: Payment processing\n- Ready for: Internal demo")
 ```
 
 Completion:
 
 ```
-mcp__relaycast__send_dm(to: "Lead", text: "DONE: Prototype ready for feedback\n- Demo: [link/instructions]\n- Works: [core scenarios]\n- Faked: [list of shortcuts]\n- Next: [recommend keep/kill/iterate]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "DONE: Prototype ready for feedback\n- Demo: [link/instructions]\n- Works: [core scenarios]\n- Faked: [list of shortcuts]\n- Next: [recommend keep/kill/iterate]")
 ```
 
 ## Prototype Documentation
