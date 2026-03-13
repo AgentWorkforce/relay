@@ -14,7 +14,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+communicate = [
+    "aiohttp>=3.9",
+]
 dev = [
+    "aiohttp>=3.9",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
