@@ -90,17 +90,28 @@ impl RelaycastWsClient {
                         }))
                         .await;
 
-                    // Workspace stream receives all workspace events, including DMs.
-                    // We still track configured broker channels locally so existing
-                    // broker UI/state consumers see the same channel join events.
-                    let channels = self.active_subscriptions();
-                    if !channels.is_empty() {
-                        tracing::info!(
-                            target = "broker::ws",
-                            channels = ?channels,
-                            "workspace stream active; tracking broker channels locally"
-                        );
-                        for channel in &channels {
+                    // The workspace stream delivers DMs automatically, but channel
+                    // messages still require explicit WS subscriptions. Keep local
+                    // broker channel join events so existing UI/state consumers see
+                    // the same join notifications.
+                    let active_subscriptions = self.active_subscriptions();
+                    if !active_subscriptions.is_empty() {
+                        if let Err(error) = ws.subscribe(active_subscriptions.clone()).await {
+                            tracing::warn!(
+                                target = "relay_broker::ws",
+                                channels = ?active_subscriptions,
+                                error = %error,
+                                "failed to subscribe websocket to broker channels after connect"
+                            );
+                        } else {
+                            tracing::info!(
+                                target = "broker::ws",
+                                channels = ?active_subscriptions,
+                                "subscribed websocket to broker channels after connect"
+                            );
+                        }
+
+                        for channel in &active_subscriptions {
                             let _ = inbound_tx
                                 .send(json!({
                                     "type":"broker.channel_join",
@@ -137,11 +148,24 @@ impl RelaycastWsClient {
                                                 }
                                             }
                                         }
-                                        tracing::info!(
-                                            channels = ?channels,
-                                            "updated local broker channel tracking for workspace stream"
-                                        );
-                                        for channel in joined_now {
+                                        if !joined_now.is_empty() {
+                                            if let Err(error) = ws.subscribe(joined_now.clone()).await {
+                                                tracing::warn!(
+                                                    target = "relay_broker::ws",
+                                                    channels = ?joined_now,
+                                                    error = %error,
+                                                    "failed to subscribe websocket to newly joined broker channels"
+                                                );
+                                            } else {
+                                                tracing::info!(
+                                                    target = "broker::ws",
+                                                    channels = ?joined_now,
+                                                    "subscribed websocket to newly joined broker channels"
+                                                );
+                                            }
+                                        }
+
+                                        for channel in &joined_now {
                                             let _ = inbound_tx
                                                 .send(json!({
                                                     "type":"broker.channel_join",
