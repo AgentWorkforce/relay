@@ -126,6 +126,12 @@ Added workdir to WorktreeWorkflowStep
         },
         "idleNudge": {
           "$ref": "#/definitions/IdleNudgeConfig"
+        },
+        "completionGracePeriodMs": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 5000,
+          "description": "Grace period (ms) after an agent exits with code 0 but without posting the expected coordination signal. During this window the runner checks verification gates and evidence before failing. Set to 0 to disable."
         }
       }
     },

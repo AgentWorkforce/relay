@@ -1,0 +1,23 @@
+version: '1.0'
+name: validation-legacy-marker
+swarm:
+  pattern: pipeline
+  channel: validation-legacy-marker
+  timeoutMs: 180000
+agents:
+  - name: legacy-worker
+    cli: codex
+    preset: worker
+workflows:
+  - name: legacy-marker
+    steps:
+      - name: legacy-step
+        type: agent
+        agent: legacy-worker
+        task: |
+          Output exactly:
+          STEP_COMPLETE:legacy-step
+          LEGACY_OK
+        verification:
+          type: output_contains
+          value: LEGACY_OK

@@ -1,0 +1,29 @@
+version: '1.0'
+name: validation-lead-worker-happy-strict
+swarm:
+  pattern: dag
+  channel: validation-lead-worker-happy-strict
+  timeoutMs: 180000
+agents:
+  - name: lead
+    cli: claude
+    preset: lead
+    channels: [validation-lead-worker-happy-strict]
+  - name: worker
+    cli: claude
+    preset: worker
+    interactive: true
+    channels: [validation-lead-worker-happy-strict]
+workflows:
+  - name: happy-strict
+    steps:
+      - name: worker-step
+        type: agent
+        agent: worker
+        task: |
+          Output exactly:
+          WORKER_DONE_LOCALLY
+          /exit
+        verification:
+          type: output_contains
+          value: WORKER_DONE_LOCALLY
