@@ -126,6 +126,9 @@ export class Relay {
     if (!this.connectPromise) {
       this.connectPromise = this.transport.connect().then(() => {
         this.connected = true;
+      }).catch((error) => {
+        this.connectPromise = undefined;
+        throw error;
       });
     }
 

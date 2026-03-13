@@ -152,15 +152,19 @@ class Relay:
         loop = asyncio.get_running_loop()
         self._connect_future = loop.create_future()
         try:
-            await self.transport.connect()
-            self._ws_connected = True
-        except Exception:
-            # WebSocket failed — register agent via HTTP and fall back to polling
-            await self.transport.register_agent()
-            self._ws_connected = False
-            self._start_poll_loop()
-        self._connected = True
-        self._connect_future.set_result(None)
+            try:
+                await self.transport.connect()
+                self._ws_connected = True
+            except Exception:
+                # WebSocket failed — register agent via HTTP and fall back to polling
+                await self.transport.register_agent()
+                self._ws_connected = False
+                self._start_poll_loop()
+            self._connected = True
+            self._connect_future.set_result(None)
+        except BaseException as exc:
+            self._connect_future.set_exception(exc)
+            raise
 
     def _schedule_connect(self) -> None:
         if self._connected:
