@@ -1,12 +1,12 @@
 export const DEFAULT_RELAY_BASE_URL = 'https://api.relaycast.dev';
 
 export interface Message {
-  sender: string;
-  text: string;
-  channel?: string;
-  threadId?: string;
-  timestamp?: number;
-  messageId?: string;
+  readonly sender: string;
+  readonly text: string;
+  readonly channel?: string;
+  readonly threadId?: string;
+  readonly timestamp?: number;
+  readonly messageId?: string;
 }
 
 export type MessageCallback = (message: Message) => void | Promise<void>;

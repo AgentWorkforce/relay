@@ -6,8 +6,11 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from ..core import Relay
 
-def on_relay(relay: Relay, options: Any) -> Any:
+def on_relay(options: Any, relay: "Relay | None" = None) -> Any:
     """Wrap Claude Agent SDK query options to connect them to the relay."""
+    if relay is None:
+        from ..core import Relay
+        relay = Relay(getattr(options, "name", "ClaudeAgent"))
     # 1. Inject Relaycast MCP server
     mcp_config = {"name": "relaycast", "command": "agent-relay", "args": ["mcp"]}
     if hasattr(options, "mcp_servers"):

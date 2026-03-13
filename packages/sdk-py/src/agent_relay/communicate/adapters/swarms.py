@@ -6,8 +6,11 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from ..core import Relay
 
-def on_relay(agent: Any, relay: Relay) -> Any:
+def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
     """Wrap Swarms Agent to connect it to the relay."""
+    if relay is None:
+        from ..core import Relay
+        relay = Relay(getattr(agent, "name", "Agent"))
     
     # 1. Add tools (as callables)
     async def relay_send(to: str, text: str) -> str:

@@ -6,8 +6,11 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from ..core import Relay
 
-def on_relay(agent: Any, relay: Relay) -> Any:
+def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
     """Wrap Agno Agent to connect it to the relay."""
+    if relay is None:
+        from ..core import Relay
+        relay = Relay(getattr(agent, "name", "Agent"))
     
     # 1. Add tools
     async def relay_send(to: str, text: str) -> str:
@@ -36,8 +39,8 @@ def on_relay(agent: Any, relay: Relay) -> Any:
     # 2. Wrap instructions
     orig_instructions = agent.instructions
 
-    async def instructions_wrapper() -> str:
-        base = orig_instructions() if callable(orig_instructions) else (orig_instructions or "")
+    async def instructions_wrapper(*args: Any, **kwargs: Any) -> str:
+        base = orig_instructions(*args, **kwargs) if callable(orig_instructions) else (orig_instructions or "")
         messages = await relay.inbox()
         if not messages: return base
         

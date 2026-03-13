@@ -8,8 +8,14 @@ from contextlib import suppress
 from inspect import isawaitable
 from typing import Any
 
-import aiohttp
-from aiohttp import WSMsgType
+try:
+    import aiohttp
+    from aiohttp import WSMsgType
+except ImportError:
+    raise ImportError(
+        "Communicate mode requires 'aiohttp'. "
+        "Install it with: pip install agent-relay-sdk[communicate]"
+    )
 
 from .types import (
     DEFAULT_RELAY_BASE_URL,
