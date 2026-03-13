@@ -33,20 +33,7 @@
       "group": "Get Started",
       "pages": [
         "introduction",
-        "quickstart",
-        "communicate"
-      ]
-    },
-    {
-      "group": "Communicate",
-      "pages": [
-        "communicate/openai-agents",
-        "communicate/claude-sdk",
-        "communicate/google-adk",
-        "communicate/pi",
-        "communicate/agno",
-        "communicate/swarms",
-        "communicate/crewai"
+        "quickstart"
       ]
     },
     {
