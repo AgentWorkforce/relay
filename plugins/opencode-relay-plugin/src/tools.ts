@@ -406,5 +406,7 @@ export function registerTools(
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/, '');
+  let end = baseUrl.length;
+  while (end > 0 && baseUrl[end - 1] === '/') end--;
+  return end === baseUrl.length ? baseUrl : baseUrl.slice(0, end);
 }

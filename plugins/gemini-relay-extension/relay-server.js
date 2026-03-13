@@ -11,8 +11,7 @@ const ENV_FILE = path.join(EXTENSION_DIR, ".env");
 const RELAY_DIR = path.join(os.homedir(), ".relay");
 const TOKEN_FILE = path.join(RELAY_DIR, "token");
 const STATE_FILE = path.join(RELAY_DIR, "gemini-session.json");
-const REGISTER_URL = "https://www.relaycast.dev/api/v1/register";
-const DEFAULT_BASE_URL = "https://api.relaycast.dev";
+const DEFAULT_BASE_URL = "https://www.relaycast.dev/api";
 
 loadDotEnv(ENV_FILE);
 fs.mkdirSync(RELAY_DIR, { recursive: true });
@@ -137,7 +136,8 @@ function sanitize(value) {
 }
 
 async function registerAgent(workspace, name) {
-  const response = await fetch(REGISTER_URL, {
+  const registerUrl = baseUrl + "/v1/register";
+  const response = await fetch(registerUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

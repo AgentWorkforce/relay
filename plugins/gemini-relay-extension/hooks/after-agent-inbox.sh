@@ -4,7 +4,8 @@ set -eu
 
 ALLOW_OUTPUT='{"decision":"allow"}'
 TOKEN_FILE="${HOME}/.relay/token"
-INBOX_URL="https://www.relaycast.dev/api/v1/inbox/check"
+BASE_URL="${RELAY_BASE_URL:-https://www.relaycast.dev/api}"
+INBOX_URL="${BASE_URL}/v1/inbox/check"
 GUARD_DIR="${TMPDIR:-/tmp}/relay-afteragent"
 
 if ! command -v jq >/dev/null 2>&1; then

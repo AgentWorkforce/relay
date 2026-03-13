@@ -4,7 +4,8 @@ set -eu
 
 EMPTY_OUTPUT='{}'
 TOKEN_FILE="${HOME}/.relay/token"
-INBOX_URL="https://www.relaycast.dev/api/v1/inbox/check"
+BASE_URL="${RELAY_BASE_URL:-https://www.relaycast.dev/api}"
+INBOX_URL="${BASE_URL}/v1/inbox/check"
 
 if ! command -v jq >/dev/null 2>&1; then
   printf '%s\n' "$EMPTY_OUTPUT"

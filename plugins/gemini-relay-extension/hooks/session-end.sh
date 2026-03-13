@@ -48,7 +48,7 @@ if [ -s "$WORKERS_FILE" ] && command -v jq >/dev/null 2>&1 && [ -n "${RELAY_API_
     curl -fsS -X POST \
       -H "Authorization: Bearer ${RELAY_API_KEY}" \
       -H "Content-Type: application/json" \
-      -d "{\"name\":\"${worker}\",\"reason\":\"Gemini session ended\",\"delete_agent\":false}" \
+      -d "$(jq -nc --arg name "$worker" '{name: $name, reason: "Gemini session ended", delete_agent: false}')" \
       "${BASE_URL}/v1/agents/release" >/dev/null 2>&1 || true
   done
 fi
