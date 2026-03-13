@@ -29,6 +29,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.2.0] - 2026-03-13
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Deterministic workspace key from user + directory (#549)** (#549)
+
+#### User-Impacting Fixes
+- Pass --model flag to spawned CLI processes (#559) (#559)
+- Rebind relaycast tokens after workspace switch (#558) (#558)
+- Update MCP tool name references to dot-notation hierarchy (#555) (#555)
+- Inject inter-agent DMs via workspace WebSocket (#553) (#553)
+- Exact flag matching for --mcp-config guard (#550) (#550)
+
+### Technical Perspective
+#### Architecture & API Changes
+- Move skills to dedicated directory with symlinks (#561) (#561)
+
+#### Performance & Reliability
+- Add workflow smoke matrix for codex and gemini (#544) (#544)
+
+#### Releases
+- v3.2.0
+
+---
+
 ## [3.1.23] - 2026-03-12
 
 ### Technical Perspective
