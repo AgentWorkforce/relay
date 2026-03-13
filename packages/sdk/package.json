@@ -49,6 +49,11 @@
       "types": "./dist/workflows/index.d.ts",
       "import": "./dist/workflows/index.js",
       "default": "./dist/workflows/index.js"
+    },
+    "./communicate": {
+      "types": "./dist/communicate/index.d.ts",
+      "import": "./dist/communicate/index.js",
+      "default": "./dist/communicate/index.js"
     }
   },
   "files": [
@@ -78,11 +83,26 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
+    "@types/ws": "^8.5.10",
     "typescript": "^5.7.3"
   },
   "dependencies": {
     "@agent-relay/config": "3.2.1",
     "@relaycast/sdk": "^0.4.0",
+    "@sinclair/typebox": "^0.34.14",
+    "ws": "^8.18.3",
     "yaml": "^2.7.0"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/claude-agent-sdk": ">=0.1.0",
+    "@mariozechner/pi-coding-agent": ">=0.50.0"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/claude-agent-sdk": {
+      "optional": true
+    },
+    "@mariozechner/pi-coding-agent": {
+      "optional": true
+    }
   }
 }
