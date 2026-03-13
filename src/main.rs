@@ -1508,8 +1508,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             "RELAY_WORKSPACES_JSON".to_string(),
             relay_workspaces_json.clone(),
         ),
-        // Suppress interactive update prompts that block non-interactive PTY spawns
-        ("CODEX_SKIP_UPDATE_CHECK".to_string(), "1".to_string()),
     ];
     if let Some(default_workspace_id) = default_workspace_id.clone() {
         worker_env.push((
