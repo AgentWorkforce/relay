@@ -318,6 +318,10 @@ export class RelayTransport {
 
   private async dispatchWsPayload(rawPayload: string): Promise<void> {
     const payload = JSON.parse(rawPayload) as JsonObject;
+    if (payload.type === 'ping') {
+      this.ws?.send(JSON.stringify({ type: 'pong' }));
+      return;
+    }
     if (payload.type !== 'message' || !this.messageCallback) {
       return;
     }
