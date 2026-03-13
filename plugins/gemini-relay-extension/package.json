@@ -13,7 +13,7 @@
     "skills"
   ],
   "scripts": {
-    "check": "node --check relay-server.js && sh -n hooks/after-tool-inbox.sh && sh -n hooks/after-agent-inbox.sh && sh -n hooks/session-start.sh && sh -n hooks/session-end.sh"
+    "check": "node --check relay-server.js && sh -n hooks/after-tool-inbox.sh && sh -n hooks/after-agent-inbox.sh && sh -n hooks/before-model-inject.sh && sh -n hooks/session-start.sh && sh -n hooks/session-end.sh"
   },
   "dependencies": {
     "@relaycast/mcp": "^0.5.1"

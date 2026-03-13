@@ -11,6 +11,6 @@
   },
   "scripts": {
     "build": "npx tsc -p tsconfig.json",
-    "test": "npx vitest run tests/tools.test.ts tests/spawn.test.ts tests/polling.test.ts"
+    "test": "npx vitest run tests/tools.test.ts tests/spawn.test.ts tests/polling.test.ts tests/integration.test.ts"
   }
 }
