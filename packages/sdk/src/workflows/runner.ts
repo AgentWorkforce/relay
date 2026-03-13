@@ -3171,7 +3171,9 @@ export class WorkflowRunner {
     const isHubPattern = WorkflowRunner.HUB_PATTERNS.has(currentPattern);
     const usesAutoHardening = usesOwnerFlow && isHubPattern && !this.isExplicitInteractiveWorker(specialistDef);
     const ownerDef = usesAutoHardening ? this.resolveAutoStepOwner(specialistDef, agentMap) : specialistDef;
-    const reviewDef = usesAutoHardening ? this.resolveAutoReviewAgent(ownerDef, agentMap) : undefined;
+    // Reviewer resolution is deferred to just before the review gate runs (see below)
+    // so that activeReviewers is up-to-date for concurrent steps.
+    let reviewDef: ReturnType<typeof this.resolveAutoReviewAgent> | undefined;
     const supervised: SupervisedStep = {
       specialist: specialistDef,
       owner: ownerDef,
@@ -3337,7 +3339,8 @@ export class WorkflowRunner {
             ? await this.executor.executeAgentStep(resolvedStep, effectiveOwner, ownerTask, timeoutMs)
             : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
                 evidenceStepName: step.name,
-                evidenceRole: 'specialist',
+                evidenceRole: usesOwnerFlow ? 'owner' : 'specialist',
+                preserveOnIdle: !isHubPattern ? false : undefined,
                 logicalName: effectiveOwner.name,
                 onSpawned: explicitInteractiveWorker
                   ? ({ agent }) => {
@@ -3441,6 +3444,11 @@ export class WorkflowRunner {
         }
 
         // Every interactive step gets a review pass; pick a dedicated reviewer when available.
+        // Resolve reviewer JIT so activeReviewers reflects concurrent steps that started earlier.
+        if (usesAutoHardening && !reviewDef) {
+          reviewDef = this.resolveAutoReviewAgent(ownerDef, agentMap);
+          supervised.reviewer = reviewDef;
+        }
         let combinedOutput = specialistOutput;
         if (usesOwnerFlow && reviewDef) {
           this.activeReviewers.set(reviewDef.name, (this.activeReviewers.get(reviewDef.name) ?? 0) + 1);
@@ -5320,10 +5328,16 @@ export class WorkflowRunner {
       }
 
       // Idle = done: race exit against idle, but only accept idle if verification passes.
+      const idleLoopStart = Date.now();
       while (true) {
+        const elapsed = Date.now() - idleLoopStart;
+        const remaining = timeoutMs != null ? Math.max(0, timeoutMs - elapsed) : undefined;
+        if (remaining != null && remaining <= 0) {
+          return 'timeout';
+        }
         const result = await Promise.race([
-          agent.waitForExit(timeoutMs).then((r) => ({ kind: 'exit' as const, result: r })),
-          agent.waitForIdle(timeoutMs).then((r) => ({ kind: 'idle' as const, result: r })),
+          agent.waitForExit(remaining).then((r) => ({ kind: 'exit' as const, result: r })),
+          agent.waitForIdle(remaining).then((r) => ({ kind: 'idle' as const, result: r })),
         ]);
         if (result.kind === 'idle' && result.result === 'idle') {
           // Check verification before treating idle as complete
