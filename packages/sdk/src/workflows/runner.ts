@@ -357,6 +357,8 @@ export class WorkflowRunner {
   private readonly stepSignalParticipants = new Map<string, StepSignalParticipants>();
   /** Resolved named paths from the top-level `paths` config, keyed by name → absolute directory. */
   private resolvedPaths = new Map<string, string>();
+  /** Tracks agent names currently assigned as reviewers to avoid double-booking the same agent. */
+  private readonly activeReviewers = new Set<string>();
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -2326,6 +2328,7 @@ export class WorkflowRunner {
       this.lastActivity.clear();
       this.supervisedRuntimeAgents.clear();
       this.runtimeStepAgents.clear();
+      this.activeReviewers.clear();
 
       this.log('Shutting down broker...');
       await this.relay?.shutdown();
@@ -3438,17 +3441,22 @@ export class WorkflowRunner {
         // Every interactive step gets a review pass; pick a dedicated reviewer when available.
         let combinedOutput = specialistOutput;
         if (usesOwnerFlow && reviewDef) {
-          const remainingMs = timeoutMs ? Math.max(0, timeoutMs - ownerElapsed) : undefined;
-          const reviewOutput = await this.runStepReviewGate(
-            step,
-            resolvedTask,
-            specialistOutput,
-            ownerOutput,
-            ownerDef,
-            reviewDef,
-            remainingMs
-          );
-          combinedOutput = this.combineStepAndReviewOutput(specialistOutput, reviewOutput);
+          this.activeReviewers.add(reviewDef.name);
+          try {
+            const remainingMs = timeoutMs ? Math.max(0, timeoutMs - ownerElapsed) : undefined;
+            const reviewOutput = await this.runStepReviewGate(
+              step,
+              resolvedTask,
+              specialistOutput,
+              ownerOutput,
+              ownerDef,
+              reviewDef,
+              remainingMs
+            );
+            combinedOutput = this.combineStepAndReviewOutput(specialistOutput, reviewOutput);
+          } finally {
+            this.activeReviewers.delete(reviewDef.name);
+          }
         }
 
         // Mark completed
@@ -3950,12 +3958,17 @@ export class WorkflowRunner {
       if (roleLC.includes('critic')) return 2;
       return isReviewer(def) ? 1 : 0;
     };
-    const dedicated = allDefs
+    // Prefer agents not currently assigned as reviewers to avoid double-booking
+    const notBusy = (def: AgentDefinition): boolean => !this.activeReviewers.has(def.name);
+
+    const dedicatedCandidates = allDefs
       .filter((d) => eligible(d) && isReviewer(d))
-      .sort((a, b) => reviewerPriority(b) - reviewerPriority(a) || a.name.localeCompare(b.name))[0];
+      .sort((a, b) => reviewerPriority(b) - reviewerPriority(a) || a.name.localeCompare(b.name));
+    const dedicated = dedicatedCandidates.find(notBusy) ?? dedicatedCandidates[0];
     if (dedicated) return dedicated;
 
-    const alternate = allDefs.find((d) => eligible(d) && d.interactive !== false);
+    const alternateCandidates = allDefs.filter((d) => eligible(d) && d.interactive !== false);
+    const alternate = alternateCandidates.find(notBusy) ?? alternateCandidates[0];
     if (alternate) return alternate;
 
     // Self-review fallback — log a warning since owner reviewing itself is weak.

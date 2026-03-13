@@ -4,6 +4,7 @@ import type { AgentRelayOptions } from '../relay.js';
 import type {
   AgentCli,
   AgentDefinition,
+  AgentPreset,
   DryRunReport,
   ErrorHandlingConfig,
   IdleNudgeConfig,
@@ -33,6 +34,8 @@ export interface AgentOptions {
   /** When false, the agent runs as a non-interactive subprocess (no PTY, no relay messaging).
    *  Default: true. */
   interactive?: boolean;
+  /** Agent preset: 'lead' (interactive PTY), 'worker' | 'reviewer' | 'analyst' (non-interactive subprocess). */
+  preset?: AgentPreset;
 }
 
 export interface StepOptions {
@@ -146,6 +149,7 @@ export class WorkflowBuilder {
     if (options.role !== undefined) def.role = options.role;
     if (options.task !== undefined) def.task = options.task;
     if (options.channels !== undefined) def.channels = options.channels;
+    if (options.preset !== undefined) def.preset = options.preset;
     if (options.interactive !== undefined) def.interactive = options.interactive;
 
     if (
