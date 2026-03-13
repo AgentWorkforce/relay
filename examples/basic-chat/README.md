@@ -46,7 +46,7 @@ Once Claude starts, you can tell it:
 2. Messages are sent using MCP tools:
 
    ```
-   relay_send(to: "RecipientName", message: "Your message here")
+   mcp__relaycast__send_dm(to: "RecipientName", text: "Your message here")
    ```
 
 3. Received messages appear as:
@@ -56,7 +56,7 @@ Once Claude starts, you can tell it:
 
 ## Tips
 
-- Use `relay_send(to: "Name", message: "...")` to send direct messages
-- Use `relay_send(to: "*", message: "...")` to broadcast to all connected agents
-- Use `relay_who()` to see connected agents
+- Use `mcp__relaycast__send_dm(to: "Name", text: "...")` to send direct messages
+- Use `mcp__relaycast__post_message(channel: "general", text: "...")` to broadcast to a channel
+- Use `mcp__relaycast__list_agents()` to see connected agents
 - Check broker status with `agent-relay status`

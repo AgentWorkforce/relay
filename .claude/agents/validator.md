@@ -190,19 +190,19 @@ if (!result.success) {
 **Acknowledge validation task:**
 
 ```
-relay_send(to: "Sender", message: "ACK: Reviewing validation for [component]")
+mcp__relaycast__send_dm(to: "Sender", text: "ACK: Reviewing validation for [component]")
 ```
 
 **Report findings:**
 
 ```
-relay_send(to: "Sender", message: "VALIDATION REVIEW COMPLETE:\n- Fields checked: X\n- Issues found: Y\n- Critical gaps: [list]\nSchema proposal ready")
+mcp__relaycast__send_dm(to: "Sender", text: "VALIDATION REVIEW COMPLETE:\n- Fields checked: X\n- Issues found: Y\n- Critical gaps: [list]\nSchema proposal ready")
 ```
 
 **Recommend implementation:**
 
 ```
-relay_send(to: "Developer", message: "TASK: Implement validation schema\nSee proposed schema in [file]\nKey requirements:\n- All user input validated\n- Clear error messages\n- Type-safe with inference")
+mcp__relaycast__send_dm(to: "Developer", text: "TASK: Implement validation schema\nSee proposed schema in [file]\nKey requirements:\n- All user input validated\n- Clear error messages\n- Type-safe with inference")
 ```
 
 ## Common Validation Patterns
