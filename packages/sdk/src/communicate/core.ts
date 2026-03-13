@@ -133,17 +133,15 @@ export class Relay {
   }
 
   private async handleTransportMessage(message: Message): Promise<void> {
-    if (this.callbacks.size === 0) {
-      if (this.pending.length >= MAX_PENDING_MESSAGES) {
-        this.pending.shift();
-        process.emitWarning(
-          'Relay pending buffer exceeded 10,000 messages; dropping oldest message.',
-          'RelayWarning'
-        );
-      }
-      this.pending.push(message);
-      return;
+    // Always buffer the message (spec: "both" case — callbacks AND inbox)
+    if (this.pending.length >= MAX_PENDING_MESSAGES) {
+      this.pending.shift();
+      process.emitWarning(
+        'Relay pending buffer exceeded 10,000 messages; dropping oldest message.',
+        'RelayWarning'
+      );
     }
+    this.pending.push(message);
 
     for (const callback of [...this.callbacks]) {
       await callback(message);
