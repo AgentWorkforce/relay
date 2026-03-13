@@ -3,7 +3,11 @@
 # ── Primary API: Direct spawn/message (matches TypeScript SDK) ────────────────
 
 from .relay import AgentRelay, Agent, AgentSpawner, HumanHandle, Message, SpawnOptions
-from .communicate import Relay, RelayConfig, on_relay
+try:
+    from .communicate import Relay, RelayConfig, on_relay
+except ImportError:
+    # communicate extras not installed (pip install agent-relay-sdk[communicate])
+    pass
 from .models import Models
 from .client import AgentRelayClient, AgentRelayProtocolError, AgentRelayProcessError
 from .protocol import (

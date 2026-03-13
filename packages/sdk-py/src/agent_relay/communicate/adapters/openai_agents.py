@@ -6,9 +6,18 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from ..core import Relay
 
-def on_relay(agent: Any, relay: Relay) -> Any:
+def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
     """Wrap OpenAI Agent to connect it to the relay."""
-    from openai_agents import function_tool
+    if relay is None:
+        from ..core import Relay
+        relay = Relay(getattr(agent, "name", "Agent"))
+    try:
+        from agents import function_tool
+    except ImportError:
+        raise ImportError(
+            "on_relay() for OpenAI Agents requires the 'openai-agents' package. "
+            "Install it with: pip install openai-agents"
+        )
 
     async def relay_send(to: str, text: str) -> str:
         """Send a private message to another agent."""
@@ -41,8 +50,8 @@ def on_relay(agent: Any, relay: Relay) -> Any:
     # 2. Wrap instructions
     orig_instructions = agent.instructions
 
-    async def instructions_wrapper() -> str:
-        base = orig_instructions() if callable(orig_instructions) else (orig_instructions or "")
+    async def instructions_wrapper(*args: Any, **kwargs: Any) -> str:
+        base = orig_instructions(*args, **kwargs) if callable(orig_instructions) else (orig_instructions or "")
         messages = await relay.inbox()
         if not messages: return base
         
