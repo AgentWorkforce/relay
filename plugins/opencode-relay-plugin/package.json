@@ -1,0 +1,16 @@
+{
+  "name": "opencode-relay-plugin",
+  "version": "0.1.0",
+  "description": "Agent Relay plugin for OpenCode - multi-instance messaging and orchestration",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "keywords": ["opencode-plugin", "agent-relay", "multi-agent"],
+  "peerDependencies": {
+    "opencode": ">=0.1.0"
+  },
+  "scripts": {
+    "build": "npx tsc -p tsconfig.json",
+    "test": "npx vitest run tests/tools.test.ts tests/spawn.test.ts tests/polling.test.ts"
+  }
+}

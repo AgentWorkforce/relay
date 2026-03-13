@@ -1,0 +1,5 @@
+{
+  "name": "claude-relay-plugin",
+  "private": true,
+  "type": "module"
+}

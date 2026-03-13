@@ -1,0 +1,24 @@
+{
+  "name": "gemini-relay-extension",
+  "version": "0.1.0",
+  "description": "Agent Relay extension for Gemini CLI",
+  "type": "module",
+  "files": [
+    "agents",
+    "commands",
+    "gemini-extension.json",
+    "GEMINI.md",
+    "hooks",
+    "relay-server.js",
+    "skills"
+  ],
+  "scripts": {
+    "check": "node --check relay-server.js && sh -n hooks/after-tool-inbox.sh && sh -n hooks/after-agent-inbox.sh && sh -n hooks/session-start.sh && sh -n hooks/session-end.sh"
+  },
+  "dependencies": {
+    "@relaycast/mcp": "^0.5.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
