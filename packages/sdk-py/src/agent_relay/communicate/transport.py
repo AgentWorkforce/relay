@@ -66,7 +66,10 @@ class RelayTransport:
         self._ws = None
         if ws is not None and not ws.closed:
             with suppress(Exception):
-                await ws.close()
+                try:
+                    await asyncio.wait_for(ws.close(), timeout=2)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
 
         if ws_task is not None and not ws_task.done():
             ws_task.cancel()
@@ -133,16 +136,37 @@ class RelayTransport:
         self._message_callback = callback
 
     async def register_agent(self) -> str:
+        """Register agent, or rotate token if it already exists (registerOrRotate pattern)."""
         self._require_config(require_workspace=True)
 
         if self.agent_id is not None and self.token is not None:
             return self.agent_id
 
-        payload = await self.send_http(
-            "POST",
-            "/v1/agents",
-            payload={"name": self.agent_name, "type": "agent"},
-        )
+        try:
+            payload = await self.send_http(
+                "POST",
+                "/v1/agents",
+                payload={"name": self.agent_name, "type": "agent"},
+            )
+        except RelayConnectionError as exc:
+            if exc.status_code == 409:
+                # Agent already exists — get its info and rotate the token
+                from urllib.parse import quote
+                agent_payload = await self.send_http(
+                    "GET",
+                    f"/v1/agents/{quote(self.agent_name, safe='')}",
+                )
+                agent_data = agent_payload.get("data", agent_payload)
+                self.agent_id = agent_data["id"]
+
+                rotate_payload = await self.send_http(
+                    "POST",
+                    f"/v1/agents/{quote(self.agent_name, safe='')}/rotate-token",
+                )
+                rotate_data = rotate_payload.get("data", rotate_payload)
+                self.token = rotate_data["token"]
+                return self.agent_id
+            raise
         # Relaycast API wraps in {ok, data: {...}}
         data = payload.get("data", payload)
         self.agent_id = data["id"]
@@ -192,6 +216,15 @@ class RelayTransport:
         )
         data = payload.get("data", payload)
         return data.get("id", data.get("message_id", ""))
+
+
+    async def join_channel(self, channel: str) -> None:
+        await self._ensure_registered()
+        from urllib.parse import quote
+        await self._send_http_as_agent(
+            'POST',
+            f'/v1/channels/{quote(channel, safe="")}/join',
+        )
 
     async def check_inbox(self) -> list[Message]:
         await self._ensure_registered()
@@ -420,21 +453,22 @@ class RelayTransport:
 
     @staticmethod
     def _message_from_payload(payload: dict[str, Any]) -> Message:
-        # Relaycast events nest message data differently:
-        # {type: "message.created", agent_name: "X", text: "...", channel_name: "general"}
-        # {type: "dm.received", from: "X", text: "...", conversation_id: "..."}
+        # Support both flat and nested message structures
+        m = payload.get("message") if isinstance(payload.get("message"), dict) else payload
         sender = (
-            payload.get("sender")
+            m.get("sender")
+            or m.get("agent_name")
+            or m.get("from")
+            or m.get("agentName")
             or payload.get("agent_name")
             or payload.get("from")
-            or payload.get("agentName")
             or "unknown"
         )
-        text = payload.get("text", "")
-        channel = payload.get("channel") or payload.get("channel_name") or payload.get("channelName")
-        thread_id = payload.get("thread_id") or payload.get("threadId") or payload.get("conversation_id") or payload.get("conversationId")
-        timestamp = payload.get("timestamp") or payload.get("created_at") or payload.get("createdAt")
-        message_id = payload.get("message_id") or payload.get("id") or payload.get("messageId")
+        text = m.get("text", "")
+        channel = m.get("channel") or m.get("channel_name") or m.get("channelName") or payload.get("channel") or payload.get("channel_name")
+        thread_id = m.get("thread_id") or m.get("threadId") or m.get("conversation_id") or m.get("conversationId") or payload.get("thread_id")
+        timestamp = m.get("timestamp") or m.get("created_at") or m.get("createdAt") or payload.get("timestamp")
+        message_id = m.get("id") or m.get("message_id") or m.get("messageId") or payload.get("message_id")
 
         return Message(
             sender=sender,

@@ -85,6 +85,11 @@ class Relay:
 
         return unsubscribe
 
+
+    async def join(self, channel: str) -> None:
+        await self._ensure_connected()
+        await self.transport.join_channel(channel)
+
     async def agents(self) -> list[str]:
         await self._ensure_connected()
         return await self.transport.list_agents()
@@ -159,6 +164,12 @@ class Relay:
             await self.transport.register_agent()
             self._ws_connected = False
             self._start_poll_loop()
+        
+        from contextlib import suppress
+        for ch in self.config.channels:
+            with suppress(Exception):
+                await self.transport.join_channel(ch)
+
         self._connected = True
         self._connect_future.set_result(None)
 
