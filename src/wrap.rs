@@ -434,7 +434,8 @@ mod opencode_perm_tests {
         // Simulate a recent approval
         state.last_opencode_perm_approval = Some(Instant::now());
         // Append some text to the buffer
-        state.opencode_perm_buffer = "EXECUTE (command, timeout: 120s, impact: medium)\n> Yes, allow".to_string();
+        state.opencode_perm_buffer =
+            "EXECUTE (command, timeout: 120s, impact: medium)\n> Yes, allow".to_string();
 
         // During cooldown the buffer should be cleared (tested via state inspection)
         let in_cooldown = state
@@ -474,8 +475,7 @@ mod opencode_perm_tests {
     fn opencode_perm_cooldown_expires() {
         let mut state = PtyAutoState::new();
         // Set approval time far in the past (beyond GEMINI_ACTION_COOLDOWN)
-        state.last_opencode_perm_approval =
-            Some(Instant::now() - Duration::from_secs(10));
+        state.last_opencode_perm_approval = Some(Instant::now() - Duration::from_secs(10));
         let in_cooldown = state
             .last_opencode_perm_approval
             .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
