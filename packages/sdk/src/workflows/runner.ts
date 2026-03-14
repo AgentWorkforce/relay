@@ -357,6 +357,8 @@ export class WorkflowRunner {
   private readonly stepSignalParticipants = new Map<string, StepSignalParticipants>();
   /** Resolved named paths from the top-level `paths` config, keyed by name → absolute directory. */
   private resolvedPaths = new Map<string, string>();
+  /** Tracks agent names currently assigned as reviewers (ref-counted to handle concurrent usage). */
+  private readonly activeReviewers = new Map<string, number>();
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -2326,6 +2328,7 @@ export class WorkflowRunner {
       this.lastActivity.clear();
       this.supervisedRuntimeAgents.clear();
       this.runtimeStepAgents.clear();
+      this.activeReviewers.clear();
 
       this.log('Shutting down broker...');
       await this.relay?.shutdown();
@@ -3164,9 +3167,13 @@ export class WorkflowRunner {
     }
     const specialistDef = WorkflowRunner.resolveAgentDef(rawAgentDef);
     const usesOwnerFlow = specialistDef.interactive !== false;
-    const usesAutoHardening = usesOwnerFlow && !this.isExplicitInteractiveWorker(specialistDef);
+    const currentPattern = this.currentConfig?.swarm?.pattern ?? '';
+    const isHubPattern = WorkflowRunner.HUB_PATTERNS.has(currentPattern);
+    const usesAutoHardening = usesOwnerFlow && isHubPattern && !this.isExplicitInteractiveWorker(specialistDef);
     const ownerDef = usesAutoHardening ? this.resolveAutoStepOwner(specialistDef, agentMap) : specialistDef;
-    const reviewDef = usesAutoHardening ? this.resolveAutoReviewAgent(ownerDef, agentMap) : undefined;
+    // Reviewer resolution is deferred to just before the review gate runs (see below)
+    // so that activeReviewers is up-to-date for concurrent steps.
+    let reviewDef: ReturnType<typeof this.resolveAutoReviewAgent> | undefined;
     const supervised: SupervisedStep = {
       specialist: specialistDef,
       owner: ownerDef,
@@ -3333,6 +3340,7 @@ export class WorkflowRunner {
             : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
                 evidenceStepName: step.name,
                 evidenceRole: usesOwnerFlow ? 'owner' : 'specialist',
+                preserveOnIdle: (!isHubPattern || !this.isLeadLikeAgent(effectiveOwner)) ? false : undefined,
                 logicalName: effectiveOwner.name,
                 onSpawned: explicitInteractiveWorker
                   ? ({ agent }) => {
@@ -3436,19 +3444,31 @@ export class WorkflowRunner {
         }
 
         // Every interactive step gets a review pass; pick a dedicated reviewer when available.
+        // Resolve reviewer JIT so activeReviewers reflects concurrent steps that started earlier.
+        if (usesAutoHardening && usesDedicatedOwner && !reviewDef) {
+          reviewDef = this.resolveAutoReviewAgent(ownerDef, agentMap);
+          supervised.reviewer = reviewDef;
+        }
         let combinedOutput = specialistOutput;
         if (usesOwnerFlow && reviewDef) {
-          const remainingMs = timeoutMs ? Math.max(0, timeoutMs - ownerElapsed) : undefined;
-          const reviewOutput = await this.runStepReviewGate(
-            step,
-            resolvedTask,
-            specialistOutput,
-            ownerOutput,
-            ownerDef,
-            reviewDef,
-            remainingMs
-          );
-          combinedOutput = this.combineStepAndReviewOutput(specialistOutput, reviewOutput);
+          this.activeReviewers.set(reviewDef.name, (this.activeReviewers.get(reviewDef.name) ?? 0) + 1);
+          try {
+            const remainingMs = timeoutMs ? Math.max(0, timeoutMs - ownerElapsed) : undefined;
+            const reviewOutput = await this.runStepReviewGate(
+              step,
+              resolvedTask,
+              specialistOutput,
+              ownerOutput,
+              ownerDef,
+              reviewDef,
+              remainingMs
+            );
+            combinedOutput = this.combineStepAndReviewOutput(specialistOutput, reviewOutput);
+          } finally {
+            const count = (this.activeReviewers.get(reviewDef.name) ?? 1) - 1;
+            if (count <= 0) this.activeReviewers.delete(reviewDef.name);
+            else this.activeReviewers.set(reviewDef.name, count);
+          }
         }
 
         // Mark completed
@@ -3950,12 +3970,17 @@ export class WorkflowRunner {
       if (roleLC.includes('critic')) return 2;
       return isReviewer(def) ? 1 : 0;
     };
-    const dedicated = allDefs
+    // Prefer agents not currently assigned as reviewers to avoid double-booking
+    const notBusy = (def: AgentDefinition): boolean => !this.activeReviewers.has(def.name);
+
+    const dedicatedCandidates = allDefs
       .filter((d) => eligible(d) && isReviewer(d))
-      .sort((a, b) => reviewerPriority(b) - reviewerPriority(a) || a.name.localeCompare(b.name))[0];
+      .sort((a, b) => reviewerPriority(b) - reviewerPriority(a) || a.name.localeCompare(b.name));
+    const dedicated = dedicatedCandidates.find(notBusy) ?? dedicatedCandidates[0];
     if (dedicated) return dedicated;
 
-    const alternate = allDefs.find((d) => eligible(d) && d.interactive !== false);
+    const alternateCandidates = allDefs.filter((d) => eligible(d) && d.interactive !== false);
+    const alternate = alternateCandidates.find(notBusy) ?? alternateCandidates[0];
     if (alternate) return alternate;
 
     // Self-review fallback — log a warning since owner reviewing itself is weak.
@@ -5302,19 +5327,70 @@ export class WorkflowRunner {
         return agent.waitForExit(timeoutMs);
       }
 
-      // Idle = done: race exit against idle. Whichever fires first completes the step.
-      const result = await Promise.race([
-        agent.waitForExit(timeoutMs).then((r) => ({ kind: 'exit' as const, result: r })),
-        agent.waitForIdle(timeoutMs).then((r) => ({ kind: 'idle' as const, result: r })),
-      ]);
-      if (result.kind === 'idle' && result.result === 'idle') {
-        this.log(`[${step.name}] Agent "${agent.name}" went idle — treating as complete`);
-        this.postToChannel(`**[${step.name}]** Agent \`${agent.name}\` idle — treating as complete`);
-        await agent.release();
-        return 'released';
+      // Idle = done: race exit against idle, but only accept idle if verification passes.
+      const idleLoopStart = Date.now();
+      while (true) {
+        const elapsed = Date.now() - idleLoopStart;
+        const remaining = timeoutMs != null ? Math.max(0, timeoutMs - elapsed) : undefined;
+        if (remaining != null && remaining <= 0) {
+          return 'timeout';
+        }
+        const result = await Promise.race([
+          agent.waitForExit(remaining).then((r) => ({ kind: 'exit' as const, result: r })),
+          agent.waitForIdle(remaining).then((r) => ({ kind: 'idle' as const, result: r })),
+        ]);
+        if (result.kind === 'idle' && result.result === 'idle') {
+          // Check verification before treating idle as complete.
+          // Mirror runVerification's double-occurrence guard: if the task text
+          // contains the token (from the prompt instruction), require a second
+          // occurrence from the agent's actual output to avoid false positives.
+          if (step.verification && step.verification.type === 'output_contains') {
+            const token = step.verification.value;
+            const ptyOutput = (this.ptyOutputBuffers.get(agent.name) ?? []).join('');
+            const taskText = step.task ?? '';
+            const taskHasToken = taskText.includes(token);
+            let verificationPassed = true;
+            if (taskHasToken) {
+              const first = ptyOutput.indexOf(token);
+              verificationPassed = first !== -1 && ptyOutput.includes(token, first + token.length);
+            } else {
+              verificationPassed = ptyOutput.includes(token);
+            }
+            if (!verificationPassed) {
+              // The broker fires agent_idle only once per idle transition.
+              // If the agent is still working (will produce output then idle again),
+              // continuing the loop works. But if the agent is permanently idle,
+              // waitForIdle won't resolve again. Wait briefly for new output,
+              // then release and let upstream verification handle the result.
+              this.log(`[${step.name}] Agent "${agent.name}" went idle but verification not yet passed — waiting for more output`);
+              const idleGraceSecs = 15;
+              const graceResult = await Promise.race([
+                agent.waitForExit(idleGraceSecs * 1000).then((r) => ({ kind: 'exit' as const, result: r })),
+                agent.waitForIdle(idleGraceSecs * 1000).then((r) => ({ kind: 'idle' as const, result: r })),
+              ]);
+              if (graceResult.kind === 'idle' && graceResult.result === 'idle') {
+                // Agent went idle again after producing output — re-check verification
+                continue;
+              }
+              if (graceResult.kind === 'exit') {
+                return graceResult.result as 'exited' | 'timeout' | 'released';
+              }
+              // Grace period timed out — agent is permanently idle without verification.
+              // Release and let upstream executeAgentStep handle verification.
+              this.log(`[${step.name}] Agent "${agent.name}" still idle after ${idleGraceSecs}s grace — releasing`);
+              this.postToChannel(`**[${step.name}]** Agent \`${agent.name}\` idle — releasing (verification pending)`);
+              await agent.release();
+              return 'released';
+            }
+          }
+          this.log(`[${step.name}] Agent "${agent.name}" went idle — treating as complete`);
+          this.postToChannel(`**[${step.name}]** Agent \`${agent.name}\` idle — treating as complete`);
+          await agent.release();
+          return 'released';
+        }
+        // Exit won the race, or idle returned 'exited'/'timeout' — pass through.
+        return result.result as 'exited' | 'timeout' | 'released';
       }
-      // Exit won the race, or idle returned 'exited'/'timeout' — pass through.
-      return result.result as 'exited' | 'timeout' | 'released';
     }
 
     const nudgeAfterMs = nudgeConfig.nudgeAfterMs ?? 120_000;
