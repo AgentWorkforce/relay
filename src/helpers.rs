@@ -853,8 +853,7 @@ pub(crate) fn detect_gemini_trust_prompt(clean_output: &str) -> (bool, bool) {
 /// Returns (has_trust_ref, has_confirmation).
 pub(crate) fn detect_claude_trust_prompt(clean_output: &str) -> (bool, bool) {
     let lower = clean_output.to_lowercase();
-    let has_trust_ref =
-        lower.contains("trust") && lower.contains("folder");
+    let has_trust_ref = lower.contains("trust") && lower.contains("folder");
     let has_confirmation = (lower.contains("yes") && lower.contains("trust"))
         && lower.contains("no")
         && lower.contains("exit");
