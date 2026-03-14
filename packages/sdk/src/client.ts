@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { getProjectPaths } from '@agent-relay/config';
+
 import {
   PROTOCOL_VERSION,
   type AgentRuntime,
@@ -885,4 +887,290 @@ function resolveDefaultBinaryPath(): string {
 
   // 4. Auto-install from GitHub releases
   return installBrokerBinary();
+}
+
+// ---------------------------------------------------------------------------
+// HTTP transport client — connects to an already-running broker's HTTP API
+// ---------------------------------------------------------------------------
+
+export interface HttpAgentRelayClientOptions {
+  port: number;
+  apiKey?: string;
+}
+
+export interface DiscoverAndConnectOptions {
+  cwd?: string;
+  apiKey?: string;
+  /** Auto-start the broker if not running (default: false). */
+  autoStart?: boolean;
+}
+
+const DEFAULT_DASHBOARD_PORT = 3888;
+const HTTP_MAX_PORT_SCAN = 25;
+const HTTP_AUTOSTART_TIMEOUT_MS = 10_000;
+const HTTP_AUTOSTART_POLL_MS = 250;
+
+function sanitizeBrokerName(name: string): string {
+  return name.replace(/[^\p{L}\p{N}-]/gu, '-');
+}
+
+function brokerPidFilename(projectRoot: string): string {
+  const brokerName = path.basename(projectRoot) || 'project';
+  return `broker-${sanitizeBrokerName(brokerName)}.pid`;
+}
+
+export class HttpAgentRelayClient {
+  private readonly port: number;
+  private readonly apiKey?: string;
+
+  constructor(options: HttpAgentRelayClientOptions) {
+    this.port = options.port;
+    this.apiKey = options.apiKey;
+  }
+
+  /**
+   * Connect to an already-running broker on the given port.
+   */
+  static async connectHttp(
+    port: number,
+    options?: { apiKey?: string }
+  ): Promise<HttpAgentRelayClient> {
+    const client = new HttpAgentRelayClient({ port, apiKey: options?.apiKey });
+    // Verify connectivity
+    await client.healthCheck();
+    return client;
+  }
+
+  /**
+   * Discover a running broker for the current project and connect to it.
+   * Reads the broker PID file, verifies the process is alive, scans ports
+   * for the HTTP API, and returns a connected client.
+   */
+  static async discoverAndConnect(
+    options?: DiscoverAndConnectOptions
+  ): Promise<HttpAgentRelayClient> {
+    const cwd = options?.cwd ?? process.cwd();
+    const apiKey = options?.apiKey ?? process.env.RELAY_BROKER_API_KEY?.trim();
+    const autoStart = options?.autoStart ?? false;
+    const paths = getProjectPaths(cwd);
+    const preferredApiPort = DEFAULT_DASHBOARD_PORT + 1;
+
+    // Try to find a running broker via PID file
+    const pidFilePath = path.join(paths.dataDir, brokerPidFilename(paths.projectRoot));
+    const legacyPidPath = path.join(paths.dataDir, 'broker.pid');
+    let brokerRunning = false;
+
+    for (const pidPath of [pidFilePath, legacyPidPath]) {
+      if (fs.existsSync(pidPath)) {
+        const pidStr = fs.readFileSync(pidPath, 'utf-8').trim();
+        const pid = Number.parseInt(pidStr, 10);
+        if (Number.isFinite(pid) && pid > 0) {
+          try {
+            process.kill(pid, 0);
+            brokerRunning = true;
+            break;
+          } catch {
+            // Process not running
+          }
+        }
+      }
+    }
+
+    if (brokerRunning) {
+      const port = await HttpAgentRelayClient.scanForBrokerPort(preferredApiPort);
+      if (port !== null) {
+        return new HttpAgentRelayClient({ port, apiKey });
+      }
+      throw new AgentRelayProcessError(
+        'broker is running for this project, but its local API is unavailable'
+      );
+    }
+
+    if (!autoStart) {
+      throw new AgentRelayProcessError('broker is not running for this project');
+    }
+
+    // Auto-start the broker
+    const execPath = process.execPath;
+    const cliScript = process.argv[1] || 'dist/src/cli/index.js';
+    const isNodeEntrypoint =
+      cliScript &&
+      cliScript !== execPath &&
+      (cliScript.endsWith('.js') ||
+        cliScript.endsWith('.cjs') ||
+        cliScript.endsWith('.mjs') ||
+        cliScript.endsWith('.ts'));
+    const prefixArgs = isNodeEntrypoint ? [cliScript] : [];
+
+    const child = spawn(
+      execPath,
+      [...prefixArgs, 'up', '--no-dashboard', '--port', String(DEFAULT_DASHBOARD_PORT)],
+      {
+        cwd: paths.projectRoot,
+        env: process.env,
+        detached: true,
+        stdio: 'ignore',
+      }
+    );
+    child.unref();
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < HTTP_AUTOSTART_TIMEOUT_MS) {
+      const port = await HttpAgentRelayClient.scanForBrokerPort(preferredApiPort);
+      if (port !== null) {
+        return new HttpAgentRelayClient({ port, apiKey });
+      }
+      await new Promise((resolve) => setTimeout(resolve, HTTP_AUTOSTART_POLL_MS));
+    }
+
+    throw new AgentRelayProcessError(
+      `broker did not become ready within ${HTTP_AUTOSTART_TIMEOUT_MS}ms`
+    );
+  }
+
+  private static async scanForBrokerPort(startPort: number): Promise<number | null> {
+    for (let i = 0; i < HTTP_MAX_PORT_SCAN; i++) {
+      const port = startPort + i;
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/health`);
+        if (!res.ok) continue;
+        const payload = (await res.json().catch(() => null)) as { service?: string } | null;
+        if (payload?.service === 'agent-relay-listen') {
+          return port;
+        }
+      } catch {
+        // Keep scanning
+      }
+    }
+    return null;
+  }
+
+  private async request<T = unknown>(pathname: string, init?: RequestInit): Promise<T> {
+    const headers = new Headers(init?.headers);
+    if (this.apiKey && !headers.has('x-api-key') && !headers.has('authorization')) {
+      headers.set('x-api-key', this.apiKey);
+    }
+
+    const response = await fetch(`http://127.0.0.1:${this.port}${pathname}`, {
+      ...init,
+      headers,
+    });
+
+    const text = await response.text();
+    let payload: unknown;
+    try {
+      payload = text ? JSON.parse(text) : undefined;
+    } catch {
+      payload = text;
+    }
+
+    if (!response.ok) {
+      const msg = HttpAgentRelayClient.extractErrorMessage(response, payload);
+      throw new AgentRelayProcessError(msg);
+    }
+
+    return payload as T;
+  }
+
+  private static extractErrorMessage(response: Response, payload: unknown): string {
+    if (typeof payload === 'string' && payload.trim()) return payload.trim();
+    const p = payload as Record<string, unknown> | undefined;
+    if (typeof p?.error === 'string') return p.error;
+    if (typeof (p?.error as Record<string, unknown>)?.message === 'string')
+      return (p!.error as Record<string, unknown>).message as string;
+    if (typeof p?.message === 'string' && (p.message as string).trim())
+      return (p.message as string).trim();
+    return `${response.status} ${response.statusText}`.trim();
+  }
+
+  async healthCheck(): Promise<{ service: string }> {
+    return this.request<{ service: string }>('/health');
+  }
+
+  /** No-op — broker is already running. */
+  async start(): Promise<void> {}
+
+  /** No-op — don't kill an externally-managed broker. */
+  async shutdown(): Promise<void> {}
+
+  async spawnPty(input: SpawnPtyInput): Promise<{ name: string; runtime: AgentRuntime }> {
+    const payload = await this.request<{ name?: string }>('/api/spawn', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: input.name,
+        cli: input.cli,
+        model: input.model,
+        args: input.args ?? [],
+        task: input.task,
+        channels: input.channels ?? [],
+        cwd: input.cwd,
+        team: input.team,
+        shadowOf: input.shadowOf,
+        shadowMode: input.shadowMode,
+        continueFrom: input.continueFrom,
+      }),
+    });
+    return {
+      name: typeof payload?.name === 'string' ? payload.name : input.name,
+      runtime: 'pty',
+    };
+  }
+
+  async sendMessage(input: SendMessageInput): Promise<{ event_id: string; targets: string[] }> {
+    return this.request<{ event_id: string; targets: string[] }>('/api/send', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        to: input.to,
+        text: input.text,
+        from: input.from,
+        threadId: input.threadId,
+        workspaceId: input.workspaceId,
+        workspaceAlias: input.workspaceAlias,
+      }),
+    });
+  }
+
+  async listAgents(): Promise<ListAgent[]> {
+    const payload = await this.request<{ agents?: ListAgent[] }>('/api/spawned', { method: 'GET' });
+    return Array.isArray(payload?.agents) ? payload.agents : [];
+  }
+
+  async release(name: string, reason?: string): Promise<{ name: string }> {
+    const payload = await this.request<{ name?: string }>(
+      `/api/spawned/${encodeURIComponent(name)}`,
+      {
+        method: 'DELETE',
+        ...(reason
+          ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }) }
+          : {}),
+      }
+    );
+    return { name: typeof payload?.name === 'string' ? payload.name : name };
+  }
+
+  async setModel(
+    name: string,
+    model: string,
+    opts?: { timeoutMs?: number }
+  ): Promise<{ name: string; model: string; success: boolean }> {
+    const payload = await this.request<{ success?: boolean; model?: string }>(
+      `/api/spawned/${encodeURIComponent(name)}/model`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model, timeoutMs: opts?.timeoutMs }),
+      }
+    );
+    return {
+      name,
+      model: typeof payload?.model === 'string' ? payload.model : model,
+      success: payload?.success !== false,
+    };
+  }
+
+  async getConfig(): Promise<{ workspace_key?: string }> {
+    return this.request<{ workspace_key?: string }>('/api/config');
+  }
 }
