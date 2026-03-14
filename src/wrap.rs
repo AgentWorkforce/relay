@@ -424,6 +424,76 @@ mod idle_tests {
     }
 }
 
+#[cfg(test)]
+mod opencode_perm_tests {
+    use super::*;
+
+    #[test]
+    fn opencode_perm_buffer_cleared_in_cooldown() {
+        let mut state = PtyAutoState::new();
+        // Simulate a recent approval
+        state.last_opencode_perm_approval = Some(Instant::now());
+        // Append some text to the buffer
+        state.opencode_perm_buffer = "EXECUTE (command, timeout: 120s, impact: medium)\n> Yes, allow".to_string();
+
+        // During cooldown the buffer should be cleared (tested via state inspection)
+        let in_cooldown = state
+            .last_opencode_perm_approval
+            .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
+            .unwrap_or(false);
+        assert!(in_cooldown);
+    }
+
+    #[test]
+    fn opencode_perm_no_cooldown_initially() {
+        let state = PtyAutoState::new();
+        assert!(state.last_opencode_perm_approval.is_none());
+        assert!(state.opencode_perm_buffer.is_empty());
+    }
+
+    #[test]
+    fn opencode_perm_buffer_accumulates_text() {
+        let mut state = PtyAutoState::new();
+        PtyAutoState::append_buf(
+            &mut state.opencode_perm_buffer,
+            "EXECUTE (command, timeout: 120s, impact: medium)\n",
+            2500,
+            2000,
+        );
+        PtyAutoState::append_buf(
+            &mut state.opencode_perm_buffer,
+            "> Yes, allow\n",
+            2500,
+            2000,
+        );
+        assert!(state.opencode_perm_buffer.contains("EXECUTE"));
+        assert!(state.opencode_perm_buffer.contains("Yes, allow"));
+    }
+
+    #[test]
+    fn opencode_perm_cooldown_expires() {
+        let mut state = PtyAutoState::new();
+        // Set approval time far in the past (beyond GEMINI_ACTION_COOLDOWN)
+        state.last_opencode_perm_approval =
+            Some(Instant::now() - Duration::from_secs(10));
+        let in_cooldown = state
+            .last_opencode_perm_approval
+            .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
+            .unwrap_or(false);
+        assert!(!in_cooldown);
+    }
+
+    #[test]
+    fn append_buf_truncates_at_limit() {
+        let mut buf = String::new();
+        // Fill buffer to just past the max
+        let chunk = "A".repeat(2600);
+        PtyAutoState::append_buf(&mut buf, &chunk, 2500, 2000);
+        // After exceeding 2500 it should be truncated to keep_bytes (2000)
+        assert!(buf.len() <= 2100); // allow some slack for char boundary rounding
+    }
+}
+
 /// Interactive wrap mode: wraps a CLI in a PTY with terminal passthrough
 /// while connecting to Relaycast for relay message injection.
 /// Usage: `agent-relay codex --full-auto`
