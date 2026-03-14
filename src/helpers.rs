@@ -849,6 +849,17 @@ pub(crate) fn detect_gemini_trust_prompt(clean_output: &str) -> (bool, bool) {
     (has_header, has_trust_option)
 }
 
+/// Detect Claude Code folder trust prompt in output.
+/// Returns (has_trust_ref, has_confirmation).
+pub(crate) fn detect_claude_trust_prompt(clean_output: &str) -> (bool, bool) {
+    let lower = clean_output.to_lowercase();
+    let has_trust_ref =
+        lower.contains("trust this folder") || lower.contains("i trust this folder");
+    let has_confirmation = (lower.contains("yes") && lower.contains("trust"))
+        && lower.contains("no") && lower.contains("exit");
+    (has_trust_ref, has_confirmation)
+}
+
 /// Continuity actions that an agent can request via PTY output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ContinuityAction {

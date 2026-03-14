@@ -53,6 +53,9 @@ pub(crate) struct PtyAutoState {
     // Gemini untrusted folder banner (triggers /permissions command)
     pub(crate) gemini_untrusted_buffer: String,
     pub(crate) gemini_untrusted_handled: bool,
+    // Claude Code folder trust prompt
+    pub(crate) claude_trust_buffer: String,
+    pub(crate) claude_trust_handled: bool,
     // Auto-suggestion / injection state
     pub(crate) auto_suggestion_visible: bool,
     pub(crate) last_injection_time: Option<Instant>,
@@ -81,6 +84,8 @@ impl PtyAutoState {
             gemini_trust_handled: false,
             gemini_untrusted_buffer: String::new(),
             gemini_untrusted_handled: false,
+            claude_trust_buffer: String::new(),
+            claude_trust_handled: false,
             auto_suggestion_visible: false,
             last_injection_time: None,
             last_auto_enter_time: None,
@@ -248,6 +253,27 @@ impl PtyAutoState {
                 // Reset trust handler so it can pick up the resulting "Modify Trust Level" menu
                 self.gemini_trust_handled = false;
                 self.gemini_trust_buffer.clear();
+            }
+        }
+    }
+
+    /// Detect and auto-accept Claude Code folder trust prompts.
+    /// The prompt is a selection menu with "Yes, I trust this folder" pre-selected,
+    /// so we just press Enter to confirm.
+    pub(crate) async fn handle_claude_trust(&mut self, text: &str, pty: &PtySession) {
+        if !self.claude_trust_handled {
+            Self::append_buf(&mut self.claude_trust_buffer, text, 2500, 2000);
+            let clean = strip_ansi(&self.claude_trust_buffer);
+            let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(&clean);
+            if has_trust_ref && has_confirmation {
+                tracing::info!(
+                    "Detected Claude Code folder trust prompt, auto-accepting"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                // "Yes, I trust this folder" is pre-selected (option 1), press Enter
+                let _ = pty.write_all(b"\r");
+                self.claude_trust_buffer.clear();
+                self.claude_trust_handled = true;
             }
         }
     }
@@ -628,6 +654,7 @@ pub(crate) async fn run_wrap(
                         pty_auto.handle_gemini_action(&text, &pty).await;
                         pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
                         pty_auto.handle_gemini_trust(&text, &pty).await;
+                        pty_auto.handle_claude_trust(&text, &pty).await;
 
                         // Accumulate echo buffer for verification matching
                         echo_buffer.push_str(&text);
