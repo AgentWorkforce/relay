@@ -44,6 +44,9 @@ pub(crate) struct PtyAutoState {
     // Codex model upgrade prompt
     pub(crate) codex_model_prompt_handled: bool,
     pub(crate) codex_model_buffer: String,
+    // Opencode/droid EXECUTE permission prompt
+    pub(crate) opencode_perm_buffer: String,
+    pub(crate) last_opencode_perm_approval: Option<Instant>,
     // Gemini "Action Required" prompt
     pub(crate) gemini_action_buffer: String,
     pub(crate) last_gemini_action_approval: Option<Instant>,
@@ -75,6 +78,8 @@ impl PtyAutoState {
             bypass_perms_send_count: 0,
             codex_model_prompt_handled: false,
             codex_model_buffer: String::new(),
+            opencode_perm_buffer: String::new(),
+            last_opencode_perm_approval: None,
             gemini_action_buffer: String::new(),
             last_gemini_action_approval: None,
             gemini_trust_buffer: String::new(),
@@ -185,6 +190,34 @@ impl PtyAutoState {
             tokio::time::sleep(Duration::from_millis(100)).await;
             let _ = pty.write_all(b"\r"); // Enter to confirm
             self.codex_model_buffer.clear();
+        }
+    }
+
+    /// Detect and auto-approve opencode/droid EXECUTE permission prompts.
+    /// Selects "Yes, and always allow medium impact commands" (arrow down + Enter).
+    pub(crate) async fn handle_opencode_permission(&mut self, text: &str, pty: &PtySession) {
+        let in_cooldown = self
+            .last_opencode_perm_approval
+            .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
+            .unwrap_or(false);
+        if !in_cooldown {
+            Self::append_buf(&mut self.opencode_perm_buffer, text, 2500, 2000);
+            let clean = strip_ansi(&self.opencode_perm_buffer);
+            let (has_header, has_allow_option) = detect_opencode_permission_prompt(&clean);
+            if has_header && has_allow_option {
+                tracing::info!(
+                    "Detected opencode EXECUTE permission prompt, selecting 'always allow'"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                // Arrow down to "Yes, and always allow medium impact commands"
+                let _ = pty.write_all(b"\x1b[B");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let _ = pty.write_all(b"\r");
+                self.opencode_perm_buffer.clear();
+                self.last_opencode_perm_approval = Some(Instant::now());
+            }
+        } else {
+            self.opencode_perm_buffer.clear();
         }
     }
 
@@ -625,6 +658,7 @@ pub(crate) async fn run_wrap(
                         pty_auto.handle_mcp_approval(&text, &pty).await;
                         pty_auto.handle_bypass_permissions(&text, &pty).await;
                         pty_auto.handle_codex_model_prompt(&text, &pty).await;
+                        pty_auto.handle_opencode_permission(&text, &pty).await;
                         pty_auto.handle_gemini_action(&text, &pty).await;
                         pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
                         pty_auto.handle_gemini_trust(&text, &pty).await;

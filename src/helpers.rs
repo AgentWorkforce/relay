@@ -826,6 +826,22 @@ pub(crate) fn detect_codex_model_prompt(clean_output: &str) -> (bool, bool) {
     (has_upgrade_ref, has_model_options)
 }
 
+/// Detect opencode/droid EXECUTE permission prompt in output.
+/// Returns (has_header, has_allow_option).
+/// The prompt looks like:
+/// ```text
+/// EXECUTE (command, timeout: 120s, impact: medium)
+/// > Yes, allow
+///   Yes, and always allow medium impact commands (all commands that are reversible)
+///   No, cancel
+/// ```
+pub(crate) fn detect_opencode_permission_prompt(clean_output: &str) -> (bool, bool) {
+    let has_header = clean_output.contains("EXECUTE") && clean_output.contains("impact:");
+    let has_allow_option = clean_output.contains("Yes, allow")
+        || clean_output.contains("Yes, and always allow");
+    (has_header, has_allow_option)
+}
+
 /// Detect Gemini "Action Required" permission prompt in output.
 pub(crate) fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) {
     let has_header = clean_output.contains("Action Required");
@@ -1424,6 +1440,40 @@ mod tests {
     fn gemini_untrusted_banner_partial_no_permissions() {
         let output = "This folder is untrusted, some settings will not apply.";
         assert!(!detect_gemini_untrusted_banner(output));
+    }
+
+    // ==================== detect_opencode_permission_prompt tests ====================
+
+    #[test]
+    fn opencode_permission_prompt_full_match() {
+        let output = "EXECUTE (command, timeout: 120s, impact: medium)\n> Yes, allow\n  Yes, and always allow medium impact commands (all commands that are reversible)\n  No, cancel";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(has_header);
+        assert!(has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_always_allow() {
+        let output = "EXECUTE (command, timeout: 60s, impact: high)\nYes, and always allow";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(has_header);
+        assert!(has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_no_match() {
+        let output = "Running command...\nDone.";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(!has_header);
+        assert!(!has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_header_only() {
+        let output = "EXECUTE (command, timeout: 120s, impact: medium)\nLoading...";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(has_header);
+        assert!(!has_allow);
     }
 
     // ==================== detect_cli_ready edge cases ====================
