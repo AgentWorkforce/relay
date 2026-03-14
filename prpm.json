@@ -690,6 +690,269 @@
       "files": [
         ".claude/agents/fixer.md"
       ]
+    },
+    {
+      "name": "claude-relay-plugin",
+      "version": "0.1.0",
+      "description": "Claude Code plugin for Agent Relay - MCP integration, inbox polling hooks, worker agents, and multi-agent coordination skills",
+      "format": "claude-plugin",
+      "subtype": "plugin",
+      "tags": [
+        "claude-code",
+        "plugin",
+        "multi-agent",
+        "relaycast",
+        "mcp",
+        "hooks"
+      ],
+      "files": [
+        "plugins/claude-relay-plugin/.claude-plugin/plugin.json",
+        "plugins/claude-relay-plugin/.mcp.json",
+        "plugins/claude-relay-plugin/hooks/hooks.json",
+        "plugins/claude-relay-plugin/hooks/stop-inbox.js",
+        "plugins/claude-relay-plugin/hooks/stop-inbox.ts",
+        "plugins/claude-relay-plugin/hooks/post-tool-inbox.sh",
+        "plugins/claude-relay-plugin/hooks/pre-compact.sh",
+        "plugins/claude-relay-plugin/hooks/subagent-bootstrap.sh",
+        "plugins/claude-relay-plugin/skills/relay-team/SKILL.md",
+        "plugins/claude-relay-plugin/skills/relay-fanout/SKILL.md",
+        "plugins/claude-relay-plugin/skills/relay-pipeline/SKILL.md",
+        "plugins/claude-relay-plugin/agents/relay-worker/agent.md",
+        "plugins/claude-relay-plugin/agents/relay-worker/config.json"
+      ]
+    },
+    {
+      "name": "opencode-relay-plugin",
+      "version": "0.1.0",
+      "description": "OpenCode plugin for Agent Relay - native tools, idle polling hooks, worker spawning, and multi-agent orchestration",
+      "format": "generic",
+      "subtype": "plugin",
+      "tags": [
+        "opencode",
+        "plugin",
+        "multi-agent",
+        "relaycast",
+        "tools",
+        "hooks"
+      ],
+      "files": [
+        "plugins/opencode-relay-plugin/src/index.ts",
+        "plugins/opencode-relay-plugin/src/tools.ts",
+        "plugins/opencode-relay-plugin/src/hooks.ts",
+        "plugins/opencode-relay-plugin/package.json",
+        "plugins/opencode-relay-plugin/tsconfig.json"
+      ]
+    },
+    {
+      "name": "gemini-relay-extension",
+      "version": "0.1.0",
+      "description": "Gemini CLI extension for Agent Relay - MCP server, lifecycle hooks, custom commands, and multi-agent skills",
+      "format": "generic",
+      "subtype": "plugin",
+      "tags": [
+        "gemini-cli",
+        "extension",
+        "multi-agent",
+        "relaycast",
+        "mcp",
+        "hooks"
+      ],
+      "files": [
+        "plugins/gemini-relay-extension/gemini-extension.json",
+        "plugins/gemini-relay-extension/relay-server.js",
+        "plugins/gemini-relay-extension/hooks/hooks.json",
+        "plugins/gemini-relay-extension/hooks/after-tool-inbox.sh",
+        "plugins/gemini-relay-extension/hooks/after-agent-inbox.sh",
+        "plugins/gemini-relay-extension/hooks/before-model-inject.sh",
+        "plugins/gemini-relay-extension/hooks/session-start.sh",
+        "plugins/gemini-relay-extension/hooks/session-end.sh",
+        "plugins/gemini-relay-extension/commands/status/status.toml",
+        "plugins/gemini-relay-extension/commands/team/team.toml",
+        "plugins/gemini-relay-extension/commands/fanout/fanout.toml",
+        "plugins/gemini-relay-extension/skills/relay-orchestration/SKILL.md",
+        "plugins/gemini-relay-extension/skills/relay-protocol/SKILL.md",
+        "plugins/gemini-relay-extension/agents/relay-worker.md",
+        "plugins/gemini-relay-extension/agents/relay-researcher.md",
+        "plugins/gemini-relay-extension/agents/relay-reviewer.md",
+        "plugins/gemini-relay-extension/GEMINI.md"
+      ]
+    }
+  ],
+  "collections": [
+    {
+      "id": "agent-relay-skills",
+      "name": "Agent Relay Skills",
+      "description": "Core skills for multi-agent coordination — swarm patterns, workflow building, relay usage, and headless orchestration",
+      "version": "1.0.0",
+      "category": "development",
+      "tags": [
+        "multi-agent",
+        "orchestration",
+        "skills",
+        "swarm-patterns",
+        "workflow"
+      ],
+      "packages": [
+        {
+          "packageId": "using-agent-relay",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "Core skill for inter-agent messaging via Relaycast MCP tools"
+        },
+        {
+          "packageId": "choosing-swarm-patterns",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "Decision framework for selecting the right multi-agent coordination pattern"
+        },
+        {
+          "packageId": "adding-swarm-patterns",
+          "version": "^1.0.0",
+          "required": false,
+          "reason": "For implementing custom swarm patterns beyond the built-in set"
+        },
+        {
+          "packageId": "writing-agent-relay-workflows",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "WorkflowBuilder API for DAG-based multi-agent workflows"
+        },
+        {
+          "packageId": "running-headless-orchestrator",
+          "version": "^1.0.0",
+          "required": false,
+          "reason": "For autonomous orchestration without human intervention"
+        }
+      ]
+    },
+    {
+      "id": "agent-relay-plugins",
+      "name": "Agent Relay CLI Plugins",
+      "description": "Native plugins for Claude Code, OpenCode, and Gemini CLI — hooks, tools, MCP servers, and multi-agent skills for each platform",
+      "version": "0.1.0",
+      "category": "development",
+      "tags": [
+        "plugins",
+        "claude-code",
+        "opencode",
+        "gemini-cli",
+        "multi-agent",
+        "relaycast"
+      ],
+      "packages": [
+        {
+          "packageId": "claude-relay-plugin",
+          "version": "^0.1.0",
+          "required": false,
+          "reason": "Claude Code plugin with MCP, hooks, worker agents, and coordination skills"
+        },
+        {
+          "packageId": "opencode-relay-plugin",
+          "version": "^0.1.0",
+          "required": false,
+          "reason": "OpenCode plugin with native tools, idle polling, and worker spawning"
+        },
+        {
+          "packageId": "gemini-relay-extension",
+          "version": "^0.1.0",
+          "required": false,
+          "reason": "Gemini CLI extension with MCP server, lifecycle hooks, and commands"
+        }
+      ]
+    },
+    {
+      "id": "agent-relay-complete",
+      "name": "Agent Relay Complete",
+      "description": "Everything needed for multi-agent coordination — all skills, agents, snippets, and CLI plugins bundled together",
+      "version": "1.0.0",
+      "category": "development",
+      "tags": [
+        "multi-agent",
+        "complete",
+        "all-in-one",
+        "orchestration",
+        "agent-relay"
+      ],
+      "packages": [
+        {
+          "packageId": "using-agent-relay",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "Core inter-agent messaging skill"
+        },
+        {
+          "packageId": "choosing-swarm-patterns",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "Swarm pattern decision framework"
+        },
+        {
+          "packageId": "adding-swarm-patterns",
+          "version": "^1.0.0",
+          "required": false,
+          "reason": "Custom swarm pattern implementation"
+        },
+        {
+          "packageId": "writing-agent-relay-workflows",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "WorkflowBuilder API for DAG workflows"
+        },
+        {
+          "packageId": "running-headless-orchestrator",
+          "version": "^1.0.0",
+          "required": false,
+          "reason": "Autonomous headless orchestration"
+        },
+        {
+          "packageId": "agent-relay-snippet",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "AGENTS.md snippet for relay usage instructions"
+        },
+        {
+          "packageId": "agent-relay-protocol",
+          "version": "^1.0.0",
+          "required": false,
+          "reason": "Internal protocol snippet for dashboard integration"
+        },
+        {
+          "packageId": "agent-policy-snippet",
+          "version": "^1.0.0",
+          "required": false,
+          "reason": "Agent policy rules for spawn and messaging restrictions"
+        },
+        {
+          "packageId": "lead-agent",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "Lead coordinator agent for multi-agent teams"
+        },
+        {
+          "packageId": "shadow-agents",
+          "version": "^1.0.0",
+          "required": false,
+          "reason": "Shadow agents for code review, auditing, and monitoring"
+        },
+        {
+          "packageId": "claude-relay-plugin",
+          "version": "^0.1.0",
+          "required": false,
+          "reason": "Claude Code native plugin"
+        },
+        {
+          "packageId": "opencode-relay-plugin",
+          "version": "^0.1.0",
+          "required": false,
+          "reason": "OpenCode native plugin"
+        },
+        {
+          "packageId": "gemini-relay-extension",
+          "version": "^0.1.0",
+          "required": false,
+          "reason": "Gemini CLI native extension"
+        }
+      ]
     }
   ]
 }

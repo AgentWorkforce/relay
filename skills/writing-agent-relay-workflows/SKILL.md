@@ -599,6 +599,8 @@ But if the owner doesn't post either format, the runner still resolves completio
 | Designing prompts around output ceremony instead of work    | Describe the deliverable and acceptance criteria, not what to print |
 | Treating markers as mandatory truth                          | Markers are optional accelerators; verification and evidence decide completion |
 | Using `fan-out`/`hub-spoke` for simple parallel workers     | Use `dag` — hub patterns trigger auto owner/supervisor/reviewer pipeline |
+| Workers without `preset: 'worker'` in lead+worker workflows | Add `preset: 'worker'` — it auto-sets `interactive: false` and produces clean stdout for `{{steps.X.output}}` injection |
+| Lead running concurrently with workers, monitoring channel  | Make lead `dependsOn` workers — use `{{steps.X.output}}` injection instead of real-time channel monitoring |
 
 ## Verification Tokens with Non-Interactive Workers
 

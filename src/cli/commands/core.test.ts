@@ -121,6 +121,7 @@ function createHarness(options?: {
     pid: 4242,
     now: vi.fn(() => Date.now()),
     isPortInUse: vi.fn(async () => false),
+    findBrokerApiPort: vi.fn(async () => 3889),
     sleep: vi.fn(async () => undefined),
     onSignal: vi.fn(() => undefined),
     holdOpen: vi.fn(async () => undefined),
