@@ -29,6 +29,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.2.2] - 2026-03-14
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Package plugins as proper platform formats and PRPM collections**
+- **Implement CLI native plugins for OpenCode, Claude Code, and Gemini CLI**
+- **Add deterministic step support to WorkflowBuilder**
+
+#### User-Impacting Fixes
+- Suppress codex update prompt in spawned workers
+- Remove relay.shutdown() that killed the running broker in status command
+- Add jq availability check in before-model-inject.sh
+- Make broker API port discovery injectable for testability
+- Status command spawns new broker instead of connecting to existing one
+- Address Devin review round 2 — error handling, state mutation order, message limit
+- Address Devin PR review comments
+- Address minor verification gaps across all 3 plugins
+- Idle verification loop handles single-fire agent_idle events
+- Idle verification loop mirrors runVerification double-occurrence guard
+- Non-lead agents in hub-spoke should use idle-as-complete
+- Address Devin review feedback on PR #566 (#566)
+- Use ref-counted Map for activeReviewers instead of Set
+- WorkflowBuilder drops preset field and reviewer double-booking
+
+### Technical Perspective
+#### Dependencies & Tooling
+- Update MCP tool name references to 3-level hierarchy (#564) (#564)
+
+#### Releases
+- v3.2.2
+
+---
+
 ## [3.2.1] - 2026-03-13
 
 ### Product Perspective
