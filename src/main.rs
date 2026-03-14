@@ -16,7 +16,8 @@ mod wrap;
 
 use helpers::{
     detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
-    detect_gemini_trust_prompt, detect_gemini_untrusted_banner, floor_char_boundary,
+    detect_gemini_trust_prompt, detect_gemini_untrusted_banner, detect_opencode_permission_prompt,
+    floor_char_boundary,
     is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode, normalize_cli_name,
     parse_cli_command, strip_ansi, TerminalQueryParser,
 };
