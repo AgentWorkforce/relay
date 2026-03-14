@@ -122,7 +122,17 @@ export async function runAgentsCommand(
   options: { all?: boolean; remote?: boolean; json?: boolean },
   deps: AgentManagementListingDependencies
 ): Promise<void> {
-  const client = await deps.createClient(deps.getProjectRoot());
+  let client: Awaited<ReturnType<typeof deps.createClient>>;
+  try {
+    client = await deps.createClient(deps.getProjectRoot());
+  } catch {
+    if (options.json) {
+      deps.log(JSON.stringify([], null, 2));
+    } else {
+      deps.log('No agents found. Ensure the broker is running and agents are connected.');
+    }
+    return;
+  }
   const workers = await client.listAgents().catch(() => []);
   await client.shutdown().catch(() => undefined);
 
@@ -227,7 +237,18 @@ export async function runWhoCommand(
   options: { all?: boolean; json?: boolean },
   deps: AgentManagementListingDependencies
 ): Promise<void> {
-  const client = await deps.createClient(deps.getProjectRoot());
+  let client: Awaited<ReturnType<typeof deps.createClient>>;
+  try {
+    client = await deps.createClient(deps.getProjectRoot());
+  } catch {
+    if (options.json) {
+      deps.log(JSON.stringify([], null, 2));
+    } else {
+      const hint = options.all ? '' : ' (use --all to include internal/cli agents)';
+      deps.log(`No active agents found${hint}.`);
+    }
+    return;
+  }
   const onlineAgents = await client
     .listAgents()
     .then((list) =>

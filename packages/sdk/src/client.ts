@@ -905,7 +905,14 @@ export interface DiscoverAndConnectOptions {
   autoStart?: boolean;
 }
 
-const DEFAULT_DASHBOARD_PORT = 3888;
+const DEFAULT_DASHBOARD_PORT = (() => {
+  const envPort = typeof process !== 'undefined' ? process.env.AGENT_RELAY_DASHBOARD_PORT : undefined;
+  if (envPort) {
+    const parsed = Number.parseInt(envPort, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return 3888;
+})();
 const HTTP_MAX_PORT_SCAN = 25;
 const HTTP_AUTOSTART_TIMEOUT_MS = 10_000;
 const HTTP_AUTOSTART_POLL_MS = 250;
@@ -1109,6 +1116,9 @@ export class HttpAgentRelayClient {
         shadowOf: input.shadowOf,
         shadowMode: input.shadowMode,
         continueFrom: input.continueFrom,
+        idleThresholdSecs: input.idleThresholdSecs,
+        restartPolicy: input.restartPolicy,
+        skipRelayPrompt: input.skipRelayPrompt,
       }),
     });
     return {
@@ -1128,6 +1138,8 @@ export class HttpAgentRelayClient {
         threadId: input.threadId,
         workspaceId: input.workspaceId,
         workspaceAlias: input.workspaceAlias,
+        priority: input.priority,
+        data: input.data,
       }),
     });
   }
