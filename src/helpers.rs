@@ -837,8 +837,8 @@ pub(crate) fn detect_codex_model_prompt(clean_output: &str) -> (bool, bool) {
 /// ```
 pub(crate) fn detect_opencode_permission_prompt(clean_output: &str) -> (bool, bool) {
     let has_header = clean_output.contains("EXECUTE") && clean_output.contains("impact:");
-    let has_allow_option = clean_output.contains("Yes, allow")
-        || clean_output.contains("Yes, and always allow");
+    let has_allow_option =
+        clean_output.contains("Yes, allow") || clean_output.contains("Yes, and always allow");
     (has_header, has_allow_option)
 }
 
