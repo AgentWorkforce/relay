@@ -856,7 +856,8 @@ pub(crate) fn detect_claude_trust_prompt(clean_output: &str) -> (bool, bool) {
     let has_trust_ref =
         lower.contains("trust this folder") || lower.contains("i trust this folder");
     let has_confirmation = (lower.contains("yes") && lower.contains("trust"))
-        && lower.contains("no") && lower.contains("exit");
+        && lower.contains("no")
+        && lower.contains("exit");
     (has_trust_ref, has_confirmation)
 }
 

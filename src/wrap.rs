@@ -266,9 +266,7 @@ impl PtyAutoState {
             let clean = strip_ansi(&self.claude_trust_buffer);
             let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(&clean);
             if has_trust_ref && has_confirmation {
-                tracing::info!(
-                    "Detected Claude Code folder trust prompt, auto-accepting"
-                );
+                tracing::info!("Detected Claude Code folder trust prompt, auto-accepting");
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 // "Yes, I trust this folder" is pre-selected (option 1), press Enter
                 let _ = pty.write_all(b"\r");

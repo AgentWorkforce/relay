@@ -17,9 +17,8 @@ mod wrap;
 use helpers::{
     detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
     detect_gemini_action_required, detect_gemini_trust_prompt, detect_gemini_untrusted_banner,
-    floor_char_boundary,
-    is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode, normalize_cli_name,
-    parse_cli_command, strip_ansi, TerminalQueryParser,
+    floor_char_boundary, is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode,
+    normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
 use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiRequest};
 use routing::display_target_for_dashboard;
@@ -6255,8 +6254,7 @@ mod tests {
         build_agent_state_transition_event, build_thread_infos, channels_from_csv, continuity_dir,
         delivery_retry_interval, derive_ws_base_url_from_http, detect_bypass_permissions_prompt,
         detect_claude_trust_prompt, display_target_for_dashboard, drop_pending_for_worker,
-        extract_mcp_message_ids,
-        http_api_event_emit_timeout, http_api_local_delivery_timeout,
+        extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
         http_api_relaycast_send_timeout, is_auto_suggestion, is_bypass_selection_menu,
         is_in_editor_mode, is_relaycast_self_control_target, is_unknown_worker_error_message,
         normalize_channel, normalize_initial_task, normalize_sender,
