@@ -373,6 +373,12 @@ fn relaycast_server_config(
     }
     if let Some(token) = relay_agent_token.map(str::trim).filter(|s| !s.is_empty()) {
         env.insert("RELAY_AGENT_TOKEN".into(), Value::String(token.to_string()));
+        // Skip bootstrap when the broker has already pre-registered the agent —
+        // prevents blocking HTTP calls during MCP initialize handshake.
+        env.insert(
+            "RELAY_SKIP_BOOTSTRAP".into(),
+            Value::String("1".to_string()),
+        );
     }
     // Forward multi-workspace context so spawned child agents can connect to
     // the correct workspaces via their MCP configuration.
