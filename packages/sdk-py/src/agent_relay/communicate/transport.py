@@ -140,59 +140,168 @@ class RelayTransport:
 
         payload = await self.send_http(
             "POST",
-            "/v1/agents/register",
-            payload={"name": self.agent_name, "workspace": self.config.workspace},
+            "/v1/agents",
+            payload={"name": self.agent_name, "type": "agent"},
         )
-        self.agent_id = payload["agent_id"]
-        self.token = payload["token"]
+        # Relaycast API wraps in {ok, data: {...}}
+        data = payload.get("data", payload)
+        self.agent_id = data["id"]
+        self.token = data["token"]
         return self.agent_id
 
     async def unregister_agent(self) -> None:
-        if self.agent_id is None:
+        if self.agent_id is None or self.token is None:
             await self._close_session_if_idle()
             return
 
-        agent_id = self.agent_id
-        await self.send_http("DELETE", f"/v1/agents/{agent_id}")
+        await self._send_http_as_agent("POST", "/v1/agents/disconnect")
         self.agent_id = None
         self.token = None
         await self._close_session_if_idle()
 
     async def send_dm(self, recipient: str, text: str) -> str:
         await self._ensure_registered()
-        payload = await self.send_http(
+        payload = await self._send_http_as_agent(
             "POST",
-            "/v1/messages/dm",
-            payload={"to": recipient, "text": text, "from": self.agent_name},
+            "/v1/dm",
+            payload={"to": recipient, "text": text},
         )
-        return payload["message_id"]
+        data = payload.get("data", payload)
+        return data.get("id", data.get("message_id", ""))
 
     async def post_message(self, channel: str, text: str) -> str:
         await self._ensure_registered()
-        payload = await self.send_http(
+        from urllib.parse import quote
+
+        payload = await self._send_http_as_agent(
             "POST",
-            "/v1/messages/channel",
-            payload={"channel": channel, "text": text, "from": self.agent_name},
+            f"/v1/channels/{quote(channel, safe='')}/messages",
+            payload={"text": text},
         )
-        return payload["message_id"]
+        data = payload.get("data", payload)
+        return data.get("id", data.get("message_id", ""))
 
     async def reply(self, message_id: str, text: str) -> str:
         await self._ensure_registered()
-        payload = await self.send_http(
+        from urllib.parse import quote
+
+        payload = await self._send_http_as_agent(
             "POST",
-            "/v1/messages/reply",
-            payload={"message_id": message_id, "text": text, "from": self.agent_name},
+            f"/v1/messages/{quote(message_id, safe='')}/replies",
+            payload={"text": text},
         )
-        return payload["message_id"]
+        data = payload.get("data", payload)
+        return data.get("id", data.get("message_id", ""))
 
     async def check_inbox(self) -> list[Message]:
         await self._ensure_registered()
-        payload = await self.send_http("GET", f"/v1/inbox/{self.agent_id}")
-        return [self._message_from_payload(item) for item in payload.get("messages", [])]
+        from urllib.parse import quote
+
+        payload = await self._send_http_as_agent("GET", "/v1/inbox")
+        data = payload.get("data", payload)
+        messages: list[Message] = []
+
+        # Fetch unread DM conversations
+        for dm in data.get("unread_dms", []):
+            conv_id = dm.get("conversation_id", "")
+            sender = dm.get("from", "unknown")
+            # Fetch actual messages from the conversation
+            try:
+                conv_payload = await self._send_http_as_agent(
+                    "GET", f"/v1/dm/{quote(conv_id, safe='')}/messages"
+                )
+                conv_data = conv_payload.get("data", conv_payload)
+                items = conv_data if isinstance(conv_data, list) else []
+                for item in items:
+                    messages.append(Message(
+                        sender=item.get("agent_name", sender),
+                        text=item.get("text", ""),
+                        channel=None,
+                        thread_id=conv_id,
+                        timestamp=item.get("created_at"),
+                        message_id=item.get("id"),
+                    ))
+            except Exception:
+                # Fall back to the summary last_message
+                last = dm.get("last_message", {})
+                if last.get("text"):
+                    messages.append(Message(
+                        sender=sender,
+                        text=last["text"],
+                        channel=None,
+                        thread_id=conv_id,
+                        timestamp=last.get("created_at"),
+                        message_id=last.get("id"),
+                    ))
+
+        # Also include unread channel mentions
+        for mention in data.get("mentions", []):
+            messages.append(Message(
+                sender=mention.get("from", mention.get("agent_name", "unknown")),
+                text=mention.get("text", ""),
+                channel=mention.get("channel_name"),
+                thread_id=mention.get("thread_id"),
+                timestamp=mention.get("created_at"),
+                message_id=mention.get("id"),
+            ))
+
+        return messages
 
     async def list_agents(self) -> list[str]:
         payload = await self.send_http("GET", "/v1/agents")
-        return list(payload.get("agents", []))
+        data = payload.get("data", payload)
+        if isinstance(data, list):
+            return [a.get("name", a) if isinstance(a, dict) else a for a in data]
+        return list(data.get("agents", []))
+
+    async def _send_http_as_agent(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None = None,
+    ) -> Any:
+        """Like send_http but authenticates with the per-agent token."""
+        await self._ensure_registered()
+        session = await self._ensure_session()
+        url = f"{self._base_url()}{path}"
+        headers = {"Authorization": f"Bearer {self.token}"}
+
+        for attempt in range(1, HTTP_RETRY_ATTEMPTS + 1):
+            try:
+                async with session.request(method, url, json=payload, headers=headers) as response:
+                    if response.status == 401:
+                        raise RelayAuthError(await self._error_message(response))
+
+                    if 500 <= response.status <= 599:
+                        message = await self._error_message(response)
+                        if attempt < HTTP_RETRY_ATTEMPTS:
+                            await asyncio.sleep(min(2 ** (attempt - 1), WS_RECONNECT_MAX_DELAY))
+                            continue
+                        raise RelayConnectionError(response.status, message)
+
+                    if response.status >= 400:
+                        raise RelayConnectionError(
+                            response.status,
+                            await self._error_message(response),
+                        )
+
+                    if response.status == 204:
+                        return None
+
+                    if response.content_type == "application/json":
+                        return await response.json()
+
+                    return await response.text()
+            except (RelayAuthError, RelayConnectionError):
+                raise
+            except aiohttp.ClientError as exc:
+                if attempt < HTTP_RETRY_ATTEMPTS:
+                    await asyncio.sleep(min(2 ** (attempt - 1), WS_RECONNECT_MAX_DELAY))
+                    continue
+                raise RelayConnectionError(0, str(exc)) from exc
+
+        raise RelayConnectionError(500, "Unexpected transport retry failure")
 
     async def _ensure_registered(self) -> None:
         if self.agent_id is None or self.token is None:
@@ -234,7 +343,7 @@ class RelayTransport:
         from urllib.parse import quote
 
         session = await self._ensure_session()
-        ws_url = f"{self._ws_base_url()}/v1/ws/{self.agent_id}?token={quote(self.token, safe='')}"
+        ws_url = f"{self._ws_base_url()}/v1/ws?token={quote(self.token, safe='')}"
         self._ws = await session.ws_connect(ws_url)
 
     def _ws_base_url(self) -> str:
@@ -283,30 +392,57 @@ class RelayTransport:
 
     async def _dispatch_ws_payload(self, raw_payload: str) -> None:
         payload = json.loads(raw_payload)
-        if payload.get("type") == "ping":
+        event_type = payload.get("type", "")
+
+        if event_type == "ping":
             if self._ws is not None and not self._ws.closed:
                 await self._ws.send_json({"type": "pong"})
             return
-        if payload.get("type") != "message":
+
+        # Accept message.created, dm.received, direct_message.received, thread.reply, and legacy "message"
+        message_events = {"message.created", "dm.received", "direct_message.received",
+                          "thread.reply", "message", "group_dm.received"}
+        if event_type not in message_events:
             return
 
         callback = self._message_callback
         if callback is None:
             return
 
-        result = callback(self._message_from_payload(payload))
+        try:
+            msg = self._message_from_payload(payload)
+        except (KeyError, TypeError):
+            return
+
+        result = callback(msg)
         if isawaitable(result):
             await result
 
     @staticmethod
     def _message_from_payload(payload: dict[str, Any]) -> Message:
+        # Relaycast events nest message data differently:
+        # {type: "message.created", agent_name: "X", text: "...", channel_name: "general"}
+        # {type: "dm.received", from: "X", text: "...", conversation_id: "..."}
+        sender = (
+            payload.get("sender")
+            or payload.get("agent_name")
+            or payload.get("from")
+            or payload.get("agentName")
+            or "unknown"
+        )
+        text = payload.get("text", "")
+        channel = payload.get("channel") or payload.get("channel_name") or payload.get("channelName")
+        thread_id = payload.get("thread_id") or payload.get("threadId") or payload.get("conversation_id") or payload.get("conversationId")
+        timestamp = payload.get("timestamp") or payload.get("created_at") or payload.get("createdAt")
+        message_id = payload.get("message_id") or payload.get("id") or payload.get("messageId")
+
         return Message(
-            sender=payload["sender"],
-            text=payload["text"],
-            channel=payload.get("channel"),
-            thread_id=payload.get("thread_id"),
-            timestamp=payload.get("timestamp"),
-            message_id=payload.get("message_id"),
+            sender=sender,
+            text=text,
+            channel=channel,
+            thread_id=thread_id,
+            timestamp=timestamp,
+            message_id=message_id,
         )
 
     @staticmethod
@@ -316,6 +452,10 @@ class RelayTransport:
         except Exception:
             text = await response.text()
             return text or response.reason or "Request failed"
+        # Relaycast wraps errors as {ok: false, error: {code, message}}
+        error = payload.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
         return str(payload.get("message") or response.reason or "Request failed")
 
 
