@@ -1006,11 +1006,13 @@ export class HttpAgentRelayClient {
 
     // Auto-start the broker using the resolved binary path (not process.argv[1],
     // which only works from CLI context — breaks when SDK is imported by user apps).
+    // The broker binary requires the `init` subcommand with `--api-port` and
+    // `--persist` so it writes PID files for subsequent discovery.
     const brokerBinary = options?.brokerBinaryPath ?? resolveDefaultBinaryPath();
 
     const child = spawn(
       brokerBinary,
-      ['--port', String(DEFAULT_DASHBOARD_PORT)],
+      ['init', '--persist', '--api-port', String(preferredApiPort)],
       {
         cwd: paths.projectRoot,
         env: process.env,
