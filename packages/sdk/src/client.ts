@@ -903,6 +903,13 @@ export interface DiscoverAndConnectOptions {
   apiKey?: string;
   /** Auto-start the broker if not running (default: false). */
   autoStart?: boolean;
+  /**
+   * Path to the broker binary for auto-start.
+   * If not provided, the SDK resolves it automatically via standard install locations
+   * (~/.agent-relay/bin, bundled platform binary, or Cargo release build).
+   * Only used when `autoStart: true`.
+   */
+  brokerBinaryPath?: string;
 }
 
 const DEFAULT_DASHBOARD_PORT = (() => {
@@ -997,21 +1004,13 @@ export class HttpAgentRelayClient {
       throw new AgentRelayProcessError('broker is not running for this project');
     }
 
-    // Auto-start the broker
-    const execPath = process.execPath;
-    const cliScript = process.argv[1] || 'dist/src/cli/index.js';
-    const isNodeEntrypoint =
-      cliScript &&
-      cliScript !== execPath &&
-      (cliScript.endsWith('.js') ||
-        cliScript.endsWith('.cjs') ||
-        cliScript.endsWith('.mjs') ||
-        cliScript.endsWith('.ts'));
-    const prefixArgs = isNodeEntrypoint ? [cliScript] : [];
+    // Auto-start the broker using the resolved binary path (not process.argv[1],
+    // which only works from CLI context — breaks when SDK is imported by user apps).
+    const brokerBinary = options?.brokerBinaryPath ?? resolveDefaultBinaryPath();
 
     const child = spawn(
-      execPath,
-      [...prefixArgs, 'up', '--no-dashboard', '--port', String(DEFAULT_DASHBOARD_PORT)],
+      brokerBinary,
+      ['--port', String(DEFAULT_DASHBOARD_PORT)],
       {
         cwd: paths.projectRoot,
         env: process.env,
