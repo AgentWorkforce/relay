@@ -1,0 +1,532 @@
+version: '1.0'
+name: post-action-hook
+description: >
+  Implements GitHub issue #500: Add optional postAction hook to WorkflowStep.
+  postAction supports shell commands and HTTP webhooks that run after a step
+  completes successfully, with configurable failAction (fail vs warn).
+
+  Pipeline: read context -> add types -> implement runner logic -> update
+  validator -> write tests -> type-check -> run tests -> fix if broken ->
+  final tests -> capture diff -> review.
+
+swarm:
+  pattern: dag
+  maxConcurrency: 3
+  timeoutMs: 2400000  # 40 min
+  channel: post-action-hook
+
+agents:
+  - name: types-author
+    cli: codex
+    preset: worker
+    role: 'Adds PostAction interface and updates WorkflowStep in types.ts and schema.json.'
+    constraints:
+      model: o4-mini
+
+  - name: implementer
+    cli: codex
+    preset: worker
+    role: 'Implements postAction execution logic in runner.ts (shell + HTTP + interpolation).'
+    constraints:
+      model: o4-mini
+
+  - name: validator-author
+    cli: codex
+    preset: worker
+    role: 'Updates the YAML validator to accept and validate postAction fields.'
+    constraints:
+      model: o4-mini
+
+  - name: test-writer
+    cli: codex
+    preset: worker
+    role: 'Writes unit tests for postAction execution: shell, webhook, interpolation, failAction.'
+    constraints:
+      model: o4-mini
+
+  - name: fixer
+    cli: codex
+    preset: worker
+    role: 'Fixes TypeScript errors or failing tests found during verification.'
+    constraints:
+      model: o4-mini
+
+  - name: reviewer
+    cli: claude
+    preset: reviewer
+    role: 'Reviews the full diff for correctness, security, edge cases, and backwards compatibility.'
+    constraints:
+      model: sonnet
+
+workflows:
+  - name: default
+    description: 'Add postAction hook to workflow steps with shell command and webhook support.'
+    onError: skip
+
+    preflight:
+      - command: test -f packages/sdk/src/workflows/types.ts
+        description: 'Workflow types file exists'
+      - command: test -f packages/sdk/src/workflows/runner.ts
+        description: 'Workflow runner file exists'
+      - command: test -f packages/sdk/src/workflows/validator.ts
+        description: 'Workflow validator file exists'
+
+    steps:
+      # ── Phase 1: Read existing code for context ────────────────────────────
+
+      - name: read-types
+        type: deterministic
+        command: cat packages/sdk/src/workflows/types.ts
+        captureOutput: true
+        failOnError: false
+
+      - name: read-runner-spawn
+        type: deterministic
+        command: cat packages/sdk/src/workflows/runner.ts
+        captureOutput: true
+        failOnError: false
+
+      - name: read-runner-interpolate
+        type: deterministic
+        command: cat packages/sdk/src/workflows/runner.ts
+        captureOutput: true
+        failOnError: false
+
+      - name: read-runner-deterministic
+        type: deterministic
+        command: cat packages/sdk/src/workflows/runner.ts
+        captureOutput: true
+        failOnError: false
+
+      - name: read-validator
+        type: deterministic
+        command: cat packages/sdk/src/workflows/validator.ts
+        captureOutput: true
+        failOnError: false
+
+      - name: read-schema
+        type: deterministic
+        command: cat packages/sdk/src/workflows/schema.json
+        captureOutput: true
+        failOnError: false
+
+      - name: read-existing-tests
+        type: deterministic
+        command: cat packages/sdk/src/__tests__/workflow-runner.test.ts
+        captureOutput: true
+        failOnError: false
+
+      # ── Phase 2: Add type definitions ──────────────────────────────────────
+
+      - name: add-types
+        type: agent
+        agent: types-author
+        dependsOn: [read-types, read-schema]
+        timeoutMs: 300000  # 5 min
+        task: |
+          Add the PostAction interface and update WorkflowStep in two files.
+
+          CURRENT types.ts:
+          {{steps.read-types.output}}
+
+          CURRENT schema.json:
+          {{steps.read-schema.output}}
+
+          ── Task 1: Update packages/sdk/src/workflows/types.ts ──
+
+          Add this interface BEFORE the WorkflowStep interface:
+
+          ```typescript
+          /** Webhook configuration for a postAction. */
+          export interface PostActionWebhook {
+            /** URL to call. Supports {{step.output}}, {{step.name}}, {{run.id}} interpolation. */
+            url: string;
+            /** HTTP method. Default: POST. */
+            method?: 'POST' | 'PUT' | 'PATCH';
+            /** Additional headers to send. */
+            headers?: Record<string, string>;
+            /** Request body. Supports {{step.output}}, {{step.name}}, {{run.id}} interpolation. */
+            body?: string;
+          }
+
+          /** Action to run after a step completes successfully. */
+          export interface PostAction {
+            /** Shell command to execute. */
+            command?: string;
+            /** HTTP webhook to call. */
+            webhook?: PostActionWebhook;
+            /** Behavior on failure: 'fail' aborts the workflow, 'warn' logs and continues. Default: 'warn'. */
+            failAction?: 'fail' | 'warn';
+          }
+          ```
+
+          Then add this field to the WorkflowStep interface, after the `captureOutput` field:
+
+          ```typescript
+            // ── Post-action hook ────────────────────────────────────────────────────
+            /** Optional action to run after the step completes successfully. */
+            postAction?: PostAction;
+          ```
+
+          ── Task 2: Update packages/sdk/src/workflows/schema.json ──
+
+          Add "postAction" to the step properties in the JSON schema. Add definitions
+          for PostAction and PostActionWebhook objects matching the TypeScript types.
+          The postAction property should be optional (do NOT add it to "required").
+
+          Only modify these two files. Do not change anything else.
+        verification:
+          type: exit_code
+
+      # ── Phase 3: Implement runner logic ────────────────────────────────────
+
+      - name: implement-runner
+        type: agent
+        agent: implementer
+        dependsOn: [add-types, read-runner-spawn, read-runner-interpolate, read-runner-deterministic]
+        timeoutMs: 600000  # 10 min
+        task: |
+          Implement postAction execution in packages/sdk/src/workflows/runner.ts.
+
+          CONTEXT — spawnAndWait method:
+          {{steps.read-runner-spawn.output}}
+
+          CONTEXT — interpolation method:
+          {{steps.read-runner-interpolate.output}}
+
+          CONTEXT — deterministic/exec patterns:
+          {{steps.read-runner-deterministic.output}}
+
+          ── What to implement ──
+
+          Add a private method `executePostAction` to the WorkflowRunner class:
+
+          ```typescript
+          /**
+           * Execute a step's postAction hook (shell command and/or webhook).
+           * Called after a step completes successfully.
+           */
+          private async executePostAction(
+            step: WorkflowStep,
+            stepOutput: string,
+            runId: string,
+          ): Promise<void> {
+            const postAction = step.postAction;
+            if (!postAction) return;
+
+            const failAction = postAction.failAction ?? 'warn';
+
+            // Interpolate postAction-specific variables
+            const interpolatePostAction = (template: string): string => {
+              return template
+                .replace(/\{\{step\.output\}\}/g, stepOutput)
+                .replace(/\{\{step\.name\}\}/g, step.name)
+                .replace(/\{\{run\.id\}\}/g, runId);
+            };
+
+            // Execute shell command if present
+            if (postAction.command) {
+              try {
+                const resolvedCmd = interpolatePostAction(postAction.command);
+                this.log(`[${step.name}] Running postAction command: ${resolvedCmd}`);
+                const { execSync } = await import('node:child_process');
+                execSync(resolvedCmd, {
+                  timeout: step.timeoutMs ?? 30_000,
+                  stdio: 'pipe',
+                  cwd: process.cwd(),
+                });
+                this.log(`[${step.name}] postAction command completed`);
+              } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : String(err);
+                if (failAction === 'fail') {
+                  throw new Error(`postAction command failed for step "${step.name}": ${msg}`);
+                }
+                this.log(`[${step.name}] postAction command warning: ${msg}`);
+              }
+            }
+
+            // Execute webhook if present
+            if (postAction.webhook) {
+              try {
+                const webhook = postAction.webhook;
+                const url = interpolatePostAction(webhook.url);
+                const method = webhook.method ?? 'POST';
+                const body = webhook.body ? interpolatePostAction(webhook.body) : undefined;
+                const headers: Record<string, string> = {
+                  'Content-Type': 'application/json',
+                  ...(webhook.headers ?? {}),
+                };
+
+                this.log(`[${step.name}] Running postAction webhook: ${method} ${url}`);
+                const response = await fetch(url, { method, headers, body });
+
+                if (!response.ok) {
+                  throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                this.log(`[${step.name}] postAction webhook completed (${response.status})`);
+              } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : String(err);
+                if (failAction === 'fail') {
+                  throw new Error(`postAction webhook failed for step "${step.name}": ${msg}`);
+                }
+                this.log(`[${step.name}] postAction webhook warning: ${msg}`);
+              }
+            }
+          }
+          ```
+
+          Then call this method in two places:
+
+          1. In the agent step execution path — after the step completes successfully
+             (after verification passes, before updating the step status to 'completed'),
+             find where the step output is captured and add:
+             ```typescript
+             await this.executePostAction(step, output, runId);
+             ```
+
+          2. In the deterministic step execution path — after the command runs successfully
+             and output is captured, add the same call:
+             ```typescript
+             await this.executePostAction(step, output, runId);
+             ```
+
+          Make sure to import the PostAction type if needed. Use the existing import
+          from './types.js' which already imports WorkflowStep.
+
+          SECURITY NOTE: Interpolated values ({{step.output}}, {{step.name}}, {{run.id}})
+          are inserted into shell commands via string replacement. Sanitize and escape
+          these values before shell execution to prevent command injection. Consider
+          using environment variables or shell-escaped strings instead of direct
+          interpolation into the command string.
+
+          Only modify packages/sdk/src/workflows/runner.ts.
+        verification:
+          type: exit_code
+
+      # ── Phase 4: Update validator ──────────────────────────────────────────
+
+      - name: update-validator
+        type: agent
+        agent: validator-author
+        dependsOn: [add-types, read-validator]
+        timeoutMs: 300000  # 5 min
+        task: |
+          Update the YAML validator to accept and validate postAction fields.
+
+          CURRENT validator.ts:
+          {{steps.read-validator.output}}
+
+          ── What to implement ──
+
+          In packages/sdk/src/workflows/validator.ts, add validation for the
+          postAction field on workflow steps:
+
+          1. If a step has a `postAction` field, validate that:
+             - At least one of `command` or `webhook` is present
+             - If `webhook` is present, `url` is a non-empty string
+             - If `webhook.method` is present, it is one of 'POST', 'PUT', 'PATCH'
+             - If `failAction` is present, it is one of 'fail', 'warn'
+
+          2. Add warnings (not errors) for:
+             - postAction with both command and webhook (valid but worth noting)
+
+          Follow the existing validation patterns in the file. Use the same
+          error/warning collection approach already in use.
+
+          Only modify packages/sdk/src/workflows/validator.ts.
+        verification:
+          type: exit_code
+
+      # ── Phase 5: Write tests ───────────────────────────────────────────────
+
+      - name: write-tests
+        type: agent
+        agent: test-writer
+        dependsOn: [implement-runner, update-validator, read-existing-tests]
+        timeoutMs: 300000  # 5 min
+        task: |
+          Write unit tests for the postAction feature. Create a NEW test file:
+          packages/sdk/src/__tests__/post-action.test.ts
+
+          EXISTING test patterns (for reference on mock setup):
+          {{steps.read-existing-tests.output}}
+
+          ── Tests to write ──
+
+          Use the same mock infrastructure as workflow-runner.test.ts (mock fetch,
+          mock Relaycast SDK, mock DB adapter, WorkflowRunner import).
+
+          Create these test cases in a describe('postAction hook') block:
+
+          1. 'executes shell command after deterministic step completes'
+             - Config with a deterministic step that has postAction.command
+             - Verify the command runs (mock execSync)
+             - Step should succeed
+
+          2. 'executes webhook after agent step completes'
+             - Config with an agent step that has postAction.webhook
+             - Verify fetch is called with the correct URL, method, headers, body
+             - Step should succeed
+
+          3. 'interpolates {{step.output}}, {{step.name}}, {{run.id}} in webhook body'
+             - Verify the interpolation replaces placeholders in URL and body
+
+          4. 'failAction: warn logs warning and continues on command failure'
+             - Mock execSync to throw
+             - Step should still succeed (not fail the workflow)
+
+          5. 'failAction: fail throws and fails the step on command failure'
+             - Mock execSync to throw
+             - postAction has failAction: 'fail'
+             - Step should fail
+
+          6. 'failAction: warn logs warning and continues on webhook failure'
+             - Mock fetch to return a 500 response for the webhook URL
+             - Step should still succeed
+
+          7. 'skips postAction when not defined on step'
+             - A step with no postAction field
+             - Verify no extra execSync or fetch calls
+
+          8. 'executes both command and webhook when both are defined'
+             - postAction has both command and webhook
+             - Verify both execute in order
+
+          Use vitest (describe, it, expect, vi) and the same patterns as the
+          existing test file. Make sure mocks are properly set up and cleaned up.
+        verification:
+          type: exit_code
+
+      # ── Phase 6: Type-check ────────────────────────────────────────────────
+
+      - name: type-check
+        type: deterministic
+        dependsOn: [implement-runner, update-validator, write-tests]
+        command: >
+          cd packages/sdk &&
+          TSC_OUT=$(npx tsc --noEmit 2>&1); TSC_EXIT=$?;
+          echo "$TSC_OUT" | tail -30;
+          if [ $TSC_EXIT -eq 0 ]; then echo "TYPE_CHECK_PASSED"; else echo "TYPE_CHECK_FAILED"; fi
+        captureOutput: true
+        failOnError: false
+
+      # ── Phase 7: Run tests ─────────────────────────────────────────────────
+
+      - name: run-tests
+        type: deterministic
+        dependsOn: [type-check]
+        command: >-
+          cd packages/sdk &&
+          TEST_OUT=$(npx vitest run 2>&1); TEST_EXIT=$?;
+          echo "$TEST_OUT" | tail -80;
+          echo "EXIT:$TEST_EXIT"
+        captureOutput: true
+        failOnError: false
+
+      # ── Phase 8: Fix failures ──────────────────────────────────────────────
+
+      - name: fix-if-broken
+        type: agent
+        agent: fixer
+        dependsOn: [run-tests, type-check]
+        timeoutMs: 300000  # 5 min
+        task: |
+          Review the type-check and test results. Fix any failures.
+
+          Type-check:
+          {{steps.type-check.output}}
+
+          Test run:
+          {{steps.run-tests.output}}
+
+          If both show PASSED / all tests pass, output: FIX_DONE:none
+
+          Otherwise:
+          - For TypeScript errors: fix the relevant source files
+          - For failing tests: fix the tests or the implementation
+          - Do NOT change the intended behavior — only fix syntax/type/mock issues
+          - Do NOT weaken or remove test assertions
+
+          Files you may edit:
+          - packages/sdk/src/workflows/types.ts
+          - packages/sdk/src/workflows/runner.ts
+          - packages/sdk/src/workflows/validator.ts
+          - packages/sdk/src/__tests__/post-action.test.ts
+        verification:
+          type: exit_code
+        maxIterations: 2
+
+      # ── Phase 9: Final test run ────────────────────────────────────────────
+
+      - name: final-tests
+        type: deterministic
+        dependsOn: [fix-if-broken]
+        command: >-
+          cd packages/sdk &&
+          TEST_OUT=$(npx vitest run 2>&1); TEST_EXIT=$?;
+          echo "$TEST_OUT" | tail -60;
+          echo "EXIT:$TEST_EXIT"
+        captureOutput: true
+        failOnError: false
+
+      # ── Phase 10: Capture diff for review ──────────────────────────────────
+
+      - name: capture-diff
+        type: deterministic
+        dependsOn: [final-tests]
+        command: >
+          git add -N packages/sdk/src/__tests__/post-action.test.ts 2>/dev/null;
+          git diff HEAD --
+          packages/sdk/src/workflows/types.ts
+          packages/sdk/src/workflows/runner.ts
+          packages/sdk/src/workflows/validator.ts
+          packages/sdk/src/workflows/schema.json
+          packages/sdk/src/__tests__/post-action.test.ts
+        captureOutput: true
+        failOnError: false
+
+      # ── Phase 11: Code review ──────────────────────────────────────────────
+
+      - name: review
+        type: agent
+        agent: reviewer
+        dependsOn: [capture-diff, final-tests]
+        timeoutMs: 300000  # 5 min
+        task: |
+          Review the postAction hook implementation for issue #500.
+
+          Final test result:
+          {{steps.final-tests.output}}
+
+          Diff:
+          {{steps.capture-diff.output}}
+
+          Review checklist:
+          1. PostAction and PostActionWebhook interfaces match the spec from issue #500
+          2. WorkflowStep correctly includes the optional postAction field
+          3. executePostAction handles both shell commands and webhooks
+          4. Interpolation replaces {{step.output}}, {{step.name}}, {{run.id}} correctly
+          5. failAction: 'warn' logs but does not abort; failAction: 'fail' throws
+          6. Shell commands use execSync with a timeout — no unbounded execution
+          7. Webhook uses fetch with proper error handling for non-ok responses
+          8. No security issues: command injection via interpolated values?
+          9. Validator correctly rejects postAction with no command or webhook
+          10. Tests cover all happy and error paths
+          11. No regressions to existing workflow behavior (steps without postAction)
+          12. schema.json updated to match the TypeScript types
+        verification:
+          type: exit_code
+
+errorHandling:
+  strategy: continue
+  maxRetries: 1
+  retryDelayMs: 3000
+  notifyChannel: post-action-hook
+
+state:
+  backend: memory
+  ttlMs: 7200000  # 2 hours
+
+trajectories:
+  enabled: true
+  autoDecisions: true
