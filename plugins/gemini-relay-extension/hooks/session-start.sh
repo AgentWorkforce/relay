@@ -33,9 +33,9 @@ if [ -f "$STATE_FILE" ] && command -v jq >/dev/null 2>&1; then
 fi
 
 if [ -n "${TOKEN:-}" ] && [ -n "${AGENT_NAME:-}" ]; then
-  CONTEXT=$(printf 'Relaycast is connected as %s. Use the Relaycast MCP tools for DMs, channels, inbox checks, and worker coordination. Follow the ACK/DONE protocol: acknowledge new assignments promptly, and send DONE when the task is complete.' "$AGENT_NAME")
+  CONTEXT=$(printf 'Relaycast is connected as %s. Use the Relaycast MCP tools for DMs, channels, inbox checks, and worker coordination. Follow the ACK/DONE protocol: acknowledge new assignments promptly, and send DONE when the task is complete. The user can observe agent conversations at: https://agentrelay.dev/observer?key=%s' "$AGENT_NAME" "$WORKSPACE_KEY")
 elif [ -n "${WORKSPACE_KEY:-}" ]; then
-  CONTEXT='Relaycast workspace key is configured. If the relay tools report "Not registered", call the register tool with your exact agent name before using messaging tools.'
+  CONTEXT=$(printf 'Relaycast workspace key is configured. If the relay tools report "Not registered", call the register tool with your exact agent name before using messaging tools. The user can observe agent conversations at: https://agentrelay.dev/observer?key=%s' "$WORKSPACE_KEY")
 else
   CONTEXT='Relaycast is installed but not configured. Set the extension Workspace Key setting to enable relay messaging and worker coordination.'
 fi
