@@ -1,0 +1,39 @@
+version: '1.0'
+name: test-codex-parallel
+
+description: Minimal Codex parallel fan-out workflow.
+
+swarm:
+  pattern: dag
+  channel: test-codex-parallel
+  timeoutMs: 240000
+  maxConcurrency: 2
+
+agents:
+  - name: codex-left
+    cli: codex
+    preset: worker
+  - name: codex-right
+    cli: codex
+    preset: worker
+
+workflows:
+  - name: codex-parallel
+    steps:
+      - name: left
+        type: agent
+        agent: codex-left
+        task: |
+          Output exactly LEFT_OK
+        verification:
+          type: output_contains
+          value: LEFT_OK
+
+      - name: right
+        type: agent
+        agent: codex-right
+        task: |
+          Output exactly RIGHT_OK
+        verification:
+          type: output_contains
+          value: RIGHT_OK

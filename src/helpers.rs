@@ -74,7 +74,6 @@ pub(crate) fn normalize_cli_name(cli: &str) -> String {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DeliveryOutcome {
     Success,
-    #[allow(dead_code)]
     Failed,
 }
 
@@ -202,6 +201,8 @@ pub(crate) struct PendingVerification {
     pub attempts: usize,
     pub max_attempts: usize,
     pub request_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub workspace_alias: Option<String>,
     pub from: String,
     pub body: String,
     pub target: String,
@@ -355,6 +356,22 @@ pub(crate) fn terminal_query_responses(chunk: &[u8]) -> Vec<&'static [u8]> {
     parser.feed(chunk)
 }
 
+fn workspace_context_label(
+    workspace_id: Option<&str>,
+    workspace_alias: Option<&str>,
+) -> Option<String> {
+    workspace_alias
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            workspace_id
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+}
+
 fn sender_display_name(from: &str) -> &str {
     let normalized = from
         .strip_prefix("human:")
@@ -427,34 +444,34 @@ fn build_mcp_reminder(
     // Codex/others use relaycast.<tool>.  Include both so any agent can act.
     let dm_hint = if reply_target.eq_ignore_ascii_case(sender_name) {
         format!(
-            "- For direct replies to \"{sender_name}\", use mcp__relaycast__send_dm or relaycast.send_dm (to: \"{sender_name}\")."
+            "- For direct replies to \"{sender_name}\", use mcp__relaycast__message_dm_send or relaycast.message.dm.send (to: \"{sender_name}\")."
         )
     } else {
         format!(
-            "- For direct replies to \"{sender_name}\", use mcp__relaycast__send_dm or relaycast.send_dm (to: \"{reply_target}\")."
+            "- For direct replies to \"{sender_name}\", use mcp__relaycast__message_dm_send or relaycast.message.dm.send (to: \"{reply_target}\")."
         )
     };
     let channel_hint_line = format!(
-        "- For channel replies, use mcp__relaycast__post_message or relaycast.post_message (channel: \"{channel_hint}\")."
+        "- For channel replies, use mcp__relaycast__message_post or relaycast.message.post (channel: \"{channel_hint}\")."
     );
 
     let registration_lines: [String; 2] = if pre_registered {
         [
             "You are pre-registered by the broker under your assigned worker name.".to_string(),
-            "Do not call mcp__relaycast__register unless a send/reply fails with \"Not registered\"."
+            "Do not call mcp__relaycast__agent_register unless a send/reply fails with \"Not registered\"."
                 .to_string(),
         ]
     } else if let Some(name) = assigned_name {
         [
             "This worker was not pre-registered by the broker.".to_string(),
             format!(
-                "Before replying, call mcp__relaycast__register (name: \"{name}\", type: \"agent\")."
+                "Before replying, call mcp__relaycast__agent_register (name: \"{name}\", type: \"agent\")."
             ),
         ]
     } else {
         [
             "This worker was not pre-registered by the broker.".to_string(),
-            "Before replying, call mcp__relaycast__register (name: \"<worker-name>\", type: \"agent\")."
+            "Before replying, call mcp__relaycast__agent_register (name: \"<worker-name>\", type: \"agent\")."
                 .to_string(),
         ]
     };
@@ -466,8 +483,8 @@ fn build_mcp_reminder(
         registration_lines[1].clone(),
         dm_hint,
         channel_hint_line,
-        "- For thread replies, use mcp__relaycast__reply_to_thread or relaycast.reply_to_thread.".to_string(),
-        "- To check unread messages/reactions, use mcp__relaycast__check_inbox or relaycast.check_inbox.".to_string(),
+        "- For thread replies, use mcp__relaycast__message_reply or relaycast.message.reply.".to_string(),
+        "- To check unread messages/reactions, use mcp__relaycast__message_inbox_check or relaycast.message.inbox.check.".to_string(),
         "- To self-terminate when your task is complete, call remove_agent(name: \"<your-agent-name>\") or output /exit on its own line.".to_string(),
         "</system-reminder>".to_string(),
     ]
@@ -498,22 +515,45 @@ fn build_mcp_short_hint(
         String::new()
     } else if let Some(name) = assigned_name {
         format!(
-            " If unregistered, call mcp__relaycast__register(name: \"{name}\", type: \"agent\") first."
+            " If unregistered, call mcp__relaycast__agent_register(name: \"{name}\", type: \"agent\") first."
         )
     } else {
-        " If unregistered, call mcp__relaycast__register(name: \"<worker-name>\", type: \"agent\") first."
+        " If unregistered, call mcp__relaycast__agent_register(name: \"<worker-name>\", type: \"agent\") first."
             .to_string()
     };
 
     format!(
-        "<system-reminder>Reply via Relaycast MCP: mcp__relaycast__send_dm/relaycast.send_dm (to: \"{dm_target}\") or mcp__relaycast__post_message/relaycast.post_message (channel: \"{channel_hint}\").{register_hint}</system-reminder>"
+        "<system-reminder>Reply via Relaycast MCP: mcp__relaycast__message_dm_send/relaycast.message.dm.send (to: \"{dm_target}\") or mcp__relaycast__message_post/relaycast.message.post (channel: \"{channel_hint}\").{register_hint}</system-reminder>"
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn format_injection(from: &str, event_id: &str, body: &str, target: &str) -> String {
     format_injection_with_reminder(from, event_id, body, target, true)
 }
 
+pub(crate) fn format_injection_with_workspace(
+    from: &str,
+    event_id: &str,
+    body: &str,
+    target: &str,
+    workspace_id: Option<&str>,
+    workspace_alias: Option<&str>,
+) -> String {
+    format_injection_for_worker_with_workspace(
+        from,
+        event_id,
+        body,
+        target,
+        true,
+        true,
+        None,
+        workspace_id,
+        workspace_alias,
+    )
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn format_injection_with_reminder(
     from: &str,
     event_id: &str,
@@ -524,6 +564,7 @@ pub(crate) fn format_injection_with_reminder(
     format_injection_for_worker(from, event_id, body, target, include_reminder, true, None)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn format_injection_for_worker(
     from: &str,
     event_id: &str,
@@ -533,18 +574,48 @@ pub(crate) fn format_injection_for_worker(
     pre_registered: bool,
     assigned_name: Option<&str>,
 ) -> String {
+    format_injection_for_worker_with_workspace(
+        from,
+        event_id,
+        body,
+        target,
+        include_reminder,
+        pre_registered,
+        assigned_name,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn format_injection_for_worker_with_workspace(
+    from: &str,
+    event_id: &str,
+    body: &str,
+    target: &str,
+    include_reminder: bool,
+    pre_registered: bool,
+    assigned_name: Option<&str>,
+    workspace_id: Option<&str>,
+    workspace_alias: Option<&str>,
+) -> String {
     let sender_name = sender_display_name(from);
+    let workspace_label = workspace_context_label(workspace_id, workspace_alias);
+    let event_context = workspace_label
+        .as_deref()
+        .map(|label| format!("{label} / {event_id}"))
+        .unwrap_or_else(|| event_id.to_string());
     let relay_line = if body.starts_with("Relay message from ") {
         body.trim().to_string()
     } else if target.starts_with('#') {
         format!(
             "Relay message from {} in {} [{}]: {}",
-            sender_name, target, event_id, body
+            sender_name, target, event_context, body
         )
     } else {
         format!(
             "Relay message from {} [{}]: {}",
-            sender_name, event_id, body
+            sender_name, event_context, body
         )
     };
 
@@ -554,7 +625,13 @@ pub(crate) fn format_injection_for_worker(
         return format!("{short_hint}\n{relay_line}");
     }
 
-    let reminder = build_mcp_reminder(from, target, &relay_line, pre_registered, assigned_name);
+    let mut reminder = build_mcp_reminder(from, target, &relay_line, pre_registered, assigned_name);
+    if let Some(label) = workspace_label {
+        reminder = reminder.replace(
+            "</system-reminder>",
+            &format!("- This message belongs to workspace \"{label}\"; keep replies scoped to that workspace.\n</system-reminder>"),
+        );
+    }
     format!("{reminder}\n{relay_line}")
 }
 
@@ -749,12 +826,54 @@ pub(crate) fn detect_codex_model_prompt(clean_output: &str) -> (bool, bool) {
     (has_upgrade_ref, has_model_options)
 }
 
+/// Detect opencode/droid EXECUTE permission prompt in output.
+/// Returns (has_header, has_allow_option).
+/// The prompt looks like:
+/// ```text
+/// EXECUTE (command, timeout: 120s, impact: medium)
+/// > Yes, allow
+///   Yes, and always allow medium impact commands (all commands that are reversible)
+///   No, cancel
+/// ```
+pub(crate) fn detect_opencode_permission_prompt(clean_output: &str) -> (bool, bool) {
+    let has_header = clean_output.contains("EXECUTE") && clean_output.contains("impact:");
+    let has_allow_option =
+        clean_output.contains("Yes, allow") || clean_output.contains("Yes, and always allow");
+    (has_header, has_allow_option)
+}
+
 /// Detect Gemini "Action Required" permission prompt in output.
 pub(crate) fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) {
     let has_header = clean_output.contains("Action Required");
     let has_allow_option =
         clean_output.contains("Allow once") || clean_output.contains("Allow for this session");
     (has_header, has_allow_option)
+}
+
+/// Detect Gemini "untrusted folder" informational banner in output.
+/// Returns true when the banner is present (not an interactive menu — requires `/permissions`).
+pub(crate) fn detect_gemini_untrusted_banner(clean_output: &str) -> bool {
+    clean_output.contains("folder is untrusted") && clean_output.contains("/permissions")
+}
+
+/// Detect Gemini "Modify Trust Level" folder trust prompt in output.
+/// Returns (has_header, has_trust_option).
+pub(crate) fn detect_gemini_trust_prompt(clean_output: &str) -> (bool, bool) {
+    let has_header = clean_output.contains("Modify Trust Level");
+    let has_trust_option =
+        clean_output.contains("Trust this folder") || clean_output.contains("Trust parent folder");
+    (has_header, has_trust_option)
+}
+
+/// Detect Claude Code folder trust prompt in output.
+/// Returns (has_trust_ref, has_confirmation).
+pub(crate) fn detect_claude_trust_prompt(clean_output: &str) -> (bool, bool) {
+    let lower = clean_output.to_lowercase();
+    let has_trust_ref = lower.contains("trust") && lower.contains("folder");
+    let has_confirmation = (lower.contains("yes") && lower.contains("trust"))
+        && lower.contains("no,")
+        && lower.contains("exit");
+    (has_trust_ref, has_confirmation)
 }
 
 /// Continuity actions that an agent can request via PTY output.
@@ -1280,6 +1399,154 @@ mod tests {
         assert!(has_allow, "Allow once should still match");
     }
 
+    // ==================== detect_gemini_trust_prompt tests ====================
+
+    #[test]
+    fn gemini_trust_prompt_trust_this_folder() {
+        let output = "Modify Trust Level\nFolder: /Users/test/project\nCurrent Level: DO_NOT_TRUST\n1. Trust this folder (project)\n2. Trust parent folder\n3. Don't trust";
+        let (has_header, has_trust) = detect_gemini_trust_prompt(output);
+        assert!(has_header);
+        assert!(has_trust);
+    }
+
+    #[test]
+    fn gemini_trust_prompt_trust_parent() {
+        let output = "Modify Trust Level\n2. Trust parent folder (Projects)";
+        let (has_header, has_trust) = detect_gemini_trust_prompt(output);
+        assert!(has_header);
+        assert!(has_trust);
+    }
+
+    #[test]
+    fn gemini_trust_prompt_no_match() {
+        let output = "Some other prompt\nNothing to see here";
+        let (has_header, has_trust) = detect_gemini_trust_prompt(output);
+        assert!(!has_header);
+        assert!(!has_trust);
+    }
+
+    #[test]
+    fn gemini_trust_prompt_header_only() {
+        let output = "Modify Trust Level\nNo options yet";
+        let (has_header, has_trust) = detect_gemini_trust_prompt(output);
+        assert!(has_header);
+        assert!(!has_trust);
+    }
+
+    // ==================== detect_gemini_untrusted_banner tests ====================
+
+    #[test]
+    fn gemini_untrusted_banner_full_match() {
+        let output = "ℹ This folder is untrusted, project settings, hooks, MCPs, and GEMINI.md files will not be applied for this folder.\n  Use the /permissions command to change the trust level.";
+        assert!(detect_gemini_untrusted_banner(output));
+    }
+
+    #[test]
+    fn gemini_untrusted_banner_no_match() {
+        let output = "Welcome to Gemini CLI\n> ";
+        assert!(!detect_gemini_untrusted_banner(output));
+    }
+
+    #[test]
+    fn gemini_untrusted_banner_partial_no_permissions() {
+        let output = "This folder is untrusted, some settings will not apply.";
+        assert!(!detect_gemini_untrusted_banner(output));
+    }
+
+    // ==================== detect_opencode_permission_prompt tests ====================
+
+    #[test]
+    fn opencode_permission_prompt_full_match() {
+        let output = "EXECUTE (command, timeout: 120s, impact: medium)\n> Yes, allow\n  Yes, and always allow medium impact commands (all commands that are reversible)\n  No, cancel";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(has_header);
+        assert!(has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_always_allow() {
+        let output = "EXECUTE (command, timeout: 60s, impact: high)\nYes, and always allow";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(has_header);
+        assert!(has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_no_match() {
+        let output = "Running command...\nDone.";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(!has_header);
+        assert!(!has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_header_only() {
+        let output = "EXECUTE (command, timeout: 120s, impact: medium)\nLoading...";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(has_header);
+        assert!(!has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_yes_allow_only() {
+        // "Yes, allow" without "always" variant
+        let output = "EXECUTE (command, timeout: 30s, impact: low)\n> Yes, allow\n  No, cancel";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(has_header);
+        assert!(has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_high_impact() {
+        let output = "EXECUTE (command, timeout: 300s, impact: high)\n> Yes, allow\n  Yes, and always allow high impact commands\n  No, cancel";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(has_header);
+        assert!(has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_no_false_positive_execute_word() {
+        // Normal output containing "EXECUTE" but no "impact:" should not match header
+        let output = "EXECUTE SQL query completed successfully.";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(!has_header);
+        assert!(!has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_no_false_positive_yes_allow_alone() {
+        // "Yes, allow" in normal text without EXECUTE header
+        let output = "The user said: Yes, allow me to explain.";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(!has_header);
+        assert!(has_allow); // has_allow is true but has_header is false, so auto-accept won't trigger
+    }
+
+    #[test]
+    fn opencode_permission_prompt_without_execute_prefix() {
+        // Some formats may not have "EXECUTE" prefix but still have impact
+        let output = "(command, timeout: 120s, impact: medium)\n> Yes, allow";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(!has_header); // No "EXECUTE" keyword
+        assert!(has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_multiline_with_ansi_stripped() {
+        // Simulates what would remain after ANSI stripping
+        let output = "EXECUTE (command, timeout: 120s, impact: medium)\n  Yes, allow\n  Yes, and always allow medium impact commands (all commands that are reversible)\n  No, cancel";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(has_header);
+        assert!(has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_empty_input() {
+        let (has_header, has_allow) = detect_opencode_permission_prompt("");
+        assert!(!has_header);
+        assert!(!has_allow);
+    }
+
     // ==================== detect_cli_ready edge cases ====================
 
     #[test]
@@ -1471,7 +1738,7 @@ mod tests {
         assert!(result.contains("<system-reminder>"));
         assert!(result.contains("Relaycast MCP tools"));
         assert!(result.contains("pre-registered by the broker"));
-        assert!(result.contains("mcp__relaycast__send_dm"));
+        assert!(result.contains("mcp__relaycast__message_dm_send"));
         assert!(result.contains("Relay message from Alice [evt_1]: hello world"));
     }
 
@@ -1479,7 +1746,7 @@ mod tests {
     fn format_injection_channel() {
         let result = format_injection("Alice", "evt_1", "hello world", "#general");
         assert!(result.contains("<system-reminder>"));
-        assert!(result.contains("mcp__relaycast__post_message"));
+        assert!(result.contains("mcp__relaycast__message_post"));
         assert!(result.contains("channel: \"general\""));
         assert!(result.contains("Relay message from Alice in #general [evt_1]: hello world"));
     }
@@ -1497,7 +1764,7 @@ mod tests {
         );
         assert!(result.contains("<system-reminder>"));
         assert!(result.contains("not pre-registered by the broker"));
-        assert!(result.contains("mcp__relaycast__register"));
+        assert!(result.contains("mcp__relaycast__agent_register"));
         assert!(result.contains("name: \"Lead\""));
     }
 
@@ -1527,7 +1794,7 @@ mod tests {
     fn format_injection_detects_channel_from_preformatted_body() {
         let body = "Relay message from bob [abc123] [#dev-team]: Channel update";
         let result = format_injection("system", "evt_1", body, "Worker");
-        assert!(result.contains("mcp__relaycast__post_message"));
+        assert!(result.contains("mcp__relaycast__message_post"));
         assert!(result.contains("channel: \"dev-team\""));
         assert!(result.contains(body));
     }
@@ -1536,8 +1803,8 @@ mod tests {
     fn format_injection_without_reminder_includes_short_mcp_hint() {
         let result = format_injection_with_reminder("alice", "evt_9", "retry body", "bob", false);
         assert!(result.contains("<system-reminder>Reply via Relaycast MCP"));
-        assert!(result.contains("mcp__relaycast__send_dm"));
-        assert!(result.contains("mcp__relaycast__post_message"));
+        assert!(result.contains("mcp__relaycast__message_dm_send"));
+        assert!(result.contains("mcp__relaycast__message_post"));
         assert!(result.contains("Relay message from alice [evt_9]: retry body"));
     }
 

@@ -97,23 +97,23 @@ Bad Reasons:
 ### Starting Work
 
 ```
-relay_send(to: "Lead", message: "**REFACTOR:** Starting [area/component]\n\n**Goal:** [What improvement]\n**Reason:** [Why this matters]\n**Scope:** [What will be touched]\n**Risk:** [Low/Medium/High]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**REFACTOR:** Starting [area/component]\n\n**Goal:** [What improvement]\n**Reason:** [Why this matters]\n**Scope:** [What will be touched]\n**Risk:** [Low/Medium/High]")
 ```
 
 ### Progress Update
 
 ```
-relay_send(to: "Lead", message: "**REFACTOR STATUS:** [Area]\n\n**Completed:**\n- [Changes made]\n\n**Tests:** [Passing/Updated]\n**Next:** [Remaining steps]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**REFACTOR STATUS:** [Area]\n\n**Completed:**\n- [Changes made]\n\n**Tests:** [Passing/Updated]\n**Next:** [Remaining steps]")
 ```
 
 ### Completion
 
 ```
-relay_send(to: "Lead", message: "**REFACTOR DONE:** [Area/component]\n\n**Improvement:** [What's better now]\n**Changes:**\n- [List of changes]\n\n**Files:** [Modified files]\n**Tests:** [Test status]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**REFACTOR DONE:** [Area/component]\n\n**Improvement:** [What's better now]\n**Changes:**\n- [List of changes]\n\n**Files:** [Modified files]\n**Tests:** [Test status]")
 ```
 
 ### Scope Question
 
 ```
-relay_send(to: "Lead", message: "**REFACTOR SCOPE:** [Question]\n\n**Found:** [Additional tech debt discovered]\n**Options:**\n1. [Fix now - impact]\n2. [Defer - risk]\n\n**Recommendation:** [What you suggest]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**REFACTOR SCOPE:** [Question]\n\n**Found:** [Additional tech debt discovered]\n**Options:**\n1. [Fix now - impact]\n2. [Defer - risk]\n\n**Recommendation:** [What you suggest]")
 ```

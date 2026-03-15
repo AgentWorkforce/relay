@@ -1,8 +1,9 @@
 version: '1.0'
 name: test-lead-worker-pattern
 description: >
-  Tests the canonical lead + worker(s) pattern.
-  Lead is interactive (PTY, relay-aware). Workers are non-interactive.
+  Tests the canonical relay-coordinated lead + worker(s) pattern.
+  Lead is interactive (PTY, relay-aware). Workers that must post channel signals
+  are also interactive and relay-connected.
 
   DAG structure: context → [work-a, work-b, coordinate] → merge
   Workers and lead all start after context. Lead watches the channel for
@@ -31,20 +32,21 @@ agents:
 
   - name: worker-a
     cli: claude
-    preset: worker
+    role: worker
+    channels: [test-lw-pattern]
     constraints:
       model: sonnet
 
   - name: worker-b
     cli: claude
-    preset: worker
+    role: worker
+    channels: [test-lw-pattern]
     constraints:
       model: sonnet
 
 workflows:
   - name: lead-worker
     steps:
-      # Step 1: inject context
       - name: context
         type: deterministic
         command: >
@@ -53,9 +55,8 @@ workflows:
         captureOutput: true
         failOnError: true
 
-      # Steps 2, 3, 4 all start in parallel after context
-
-      # Workers are non-interactive — they do their task and post a signal to the channel
+      # Steps 2, 3, 4 all start in parallel after context.
+      # Relay-coordinated workers stay interactive so they can send channel signals.
       - name: work-a
         type: agent
         agent: worker-a
@@ -63,7 +64,10 @@ workflows:
         task: |
           List exactly 3 benefits of TypeScript type safety.
           Format each as a single sentence starting with "- ".
-          Then output exactly: WORKER_A_DONE
+          Then post exactly WORKER_A_DONE to #test-lw-pattern.
+          Then output exactly:
+          WORKER_A_DONE
+          /exit
         verification:
           type: output_contains
           value: WORKER_A_DONE
@@ -75,14 +79,14 @@ workflows:
         task: |
           List exactly 3 benefits of pure functions.
           Format each as a single sentence starting with "- ".
-          Then output exactly: WORKER_B_DONE
+          Then post exactly WORKER_B_DONE to #test-lw-pattern.
+          Then output exactly:
+          WORKER_B_DONE
+          /exit
         verification:
           type: output_contains
           value: WORKER_B_DONE
 
-      # Lead runs in parallel with workers — watches channel for their signals
-      # then posts LEAD_COMPLETE. Does NOT need to wait for workers in the DAG
-      # because the merge step gates on all three.
       - name: coordinate
         type: agent
         agent: lead
@@ -95,17 +99,16 @@ workflows:
           {{steps.context.output}}
 
           Instructions:
-          1. Check your inbox and the channel for WORKER_A_DONE and WORKER_B_DONE signals.
+          1. Check your inbox and the channel for worker-authored WORKER_A_DONE and WORKER_B_DONE signals.
           2. If you don't see them yet, wait 30 seconds and check again (up to 5 times).
           3. Once you see both signals, post to #test-lw-pattern: LEAD_COMPLETE
-          4. Then output /exit
-
-          Output LEAD_COMPLETE before /exit.
+          4. Then output exactly:
+             LEAD_COMPLETE
+             /exit
         verification:
           type: output_contains
           value: LEAD_COMPLETE
 
-      # Step 5: merge — depends on all three, validates everything completed
       - name: merge
         type: deterministic
         dependsOn: [work-a, work-b, coordinate]

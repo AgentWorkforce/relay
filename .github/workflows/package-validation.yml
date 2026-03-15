@@ -153,3 +153,60 @@ jobs:
           # Cleanup through CLI down first, then hard-kill fallback
           node dist/src/cli/index.js down --force --timeout 5000 || true
           kill $DAEMON_PID 2>/dev/null || true
+
+  standalone-macos-smoke:
+    name: Standalone macOS Smoke
+    runs-on: macos-latest
+    env:
+      NPM_CONFIG_FUND: false
+      TURBO_TELEMETRY_DISABLED: 1
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build packages
+        run: npm run build
+
+      - name: Build standalone binary
+        run: |
+          mkdir -p release-binaries
+          VERSION="$(node -p "require('./package.json').version")"
+          ARCH="$(uname -m)"
+          if [ "$ARCH" = "arm64" ]; then
+            TARGET="bun-darwin-arm64"
+            OUTPUT="agent-relay-darwin-arm64"
+          elif [ "$ARCH" = "x86_64" ]; then
+            TARGET="bun-darwin-x64"
+            OUTPUT="agent-relay-darwin-x64"
+          else
+            echo "Unsupported macOS runner architecture: $ARCH"
+            exit 1
+          fi
+          bun build \
+            --compile \
+            --minify \
+            --target="$TARGET" \
+            --external=better-sqlite3 \
+            --external=ssh2 \
+            --define="process.env.AGENT_RELAY_VERSION=\"${VERSION}\"" \
+            ./dist/src/cli/index.js \
+            --outfile "release-binaries/${OUTPUT}"
+          chmod +x "release-binaries/${OUTPUT}"
+          echo "STANDALONE_CLI=$PWD/release-binaries/${OUTPUT}" >> "$GITHUB_ENV"
+
+      - name: Smoke standalone lifecycle
+        run: bash scripts/ci-standalone-smoke.sh "$STANDALONE_CLI" "$PWD/target/release/agent-relay-broker"

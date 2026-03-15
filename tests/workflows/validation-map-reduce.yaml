@@ -1,0 +1,54 @@
+version: '1.0'
+name: validation-map-reduce
+swarm:
+  pattern: dag
+  channel: validation-map-reduce
+  timeoutMs: 360000
+  maxConcurrency: 3
+agents:
+  - name: map-a
+    cli: codex
+    preset: worker
+  - name: map-b
+    cli: codex
+    preset: worker
+  - name: reducer
+    cli: codex
+    preset: worker
+workflows:
+  - name: map-reduce
+    steps:
+      - name: map-a-step
+        type: agent
+        agent: map-a
+        task: |
+          Output exactly:
+          FRUIT=apple
+          MAP_A_DONE
+        verification:
+          type: output_contains
+          value: MAP_A_DONE
+      - name: map-b-step
+        type: agent
+        agent: map-b
+        task: |
+          Output exactly:
+          FRUIT=banana
+          MAP_B_DONE
+        verification:
+          type: output_contains
+          value: MAP_B_DONE
+      - name: reduce-step
+        type: agent
+        agent: reducer
+        dependsOn: [map-a-step, map-b-step]
+        task: |
+          Combine these outputs:
+          A: {{steps.map-a-step.output}}
+          B: {{steps.map-b-step.output}}
+          Output exactly:
+          REDUCE_RESULT=apple,banana
+          REDUCE_DONE
+        verification:
+          type: output_contains
+          value: REDUCE_DONE

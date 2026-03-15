@@ -64,9 +64,9 @@ Always emit [[SUMMARY]] blocks to communicate state to dashboard and other agent
 
 ## Communication Patterns
 
-**CRITICAL: ALL relay communication MUST use MCP tools (`relay_send`, `relay_spawn`, `relay_release`). This includes ACKs, status updates, and all other messages.**
+**CRITICAL: ALL relay communication MUST use MCP tools (`mcp__relaycast__message_dm_send`, `mcp__relaycast__agent_add`, `mcp__relaycast__agent_remove`). This includes ACKs, status updates, and all other messages.**
 
-Use MCP tools for all agent communication. Call `relay_send()` to send messages, `relay_spawn()` to create new agents, and `relay_release()` to release agents.
+Use MCP tools for all agent communication. Call `mcp__relaycast__message_dm_send()` to send messages, `mcp__relaycast__agent_add()` to create new agents, and `mcp__relaycast__agent_remove()` to release agents.
 
 ## Relay-First Communication
 
@@ -74,7 +74,7 @@ Use MCP tools for all agent communication. Call `relay_send()` to send messages,
 
 ### The Rule
 
-- When receiving a relay message -> Use `relay_send()` ALWAYS
+- When receiving a relay message -> Use `mcp__relaycast__message_dm_send()` ALWAYS
 - Responding to non-relay questions -> Text is OK
 - Agent-to-agent communication -> ALWAYS use MCP relay tools
 
@@ -102,23 +102,23 @@ Relay message from alice [xyz789] [#general]: Question for the team
 **ACK (Acknowledgment):**
 
 ```
-relay_send(to: "Sender", message: "ACK: Brief description of task received")
+mcp__relaycast__message_dm_send(to: "Sender", text: "ACK: Brief description of task received")
 ```
 
 **Delegate Task:**
 
 ```
-relay_spawn(name: "WorkerName", cli: "claude", task: "Task description here with clear requirements and acceptance criteria.")
+mcp__relaycast__agent_add(name: "WorkerName", cli: "claude", task: "Task description here with clear requirements and acceptance criteria.")
 ```
 
 **Status Check:**
 
 ```
-relay_send(to: "WorkerName", message: "Status check - how is [task] progressing?")
+mcp__relaycast__message_dm_send(to: "WorkerName", text: "Status check - how is [task] progressing?")
 ```
 
 **Release Agent:**
 
 ```
-relay_release(name: "WorkerName")
+mcp__relaycast__agent_remove(name: "WorkerName")
 ```

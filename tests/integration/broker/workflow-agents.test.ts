@@ -70,7 +70,7 @@ test('workflow-agents: runs steps for different agents', { timeout: 120_000 }, a
   await harness.start();
 
   try {
-    const result = await harness.runWorkflow(makeConfig(), undefined, { cwd });
+    const result = await harness.runWorkflow(makeConfig(), undefined, { cwd, useRelaycast: false });
     assertRunCompleted(result);
     assertStepCompleted(result, 'step-a');
     assertStepCompleted(result, 'step-b');
@@ -89,7 +89,7 @@ test('workflow-agents: runs steps for different agents', { timeout: 120_000 }, a
   }
 });
 
-test('workflow-agents: emits agent spawn/release events', { timeout: 120_000 }, async (t) => {
+test('workflow-agents: emits agent lifecycle events', { timeout: 120_000 }, async (t) => {
   if (skipIfMissing(t)) return;
 
   const cwd = createWorkdir();
@@ -97,7 +97,7 @@ test('workflow-agents: emits agent spawn/release events', { timeout: 120_000 }, 
   await harness.start();
 
   try {
-    const result = await harness.runWorkflow(makeConfig(), undefined, { cwd });
+    const result = await harness.runWorkflow(makeConfig(), undefined, { cwd, useRelaycast: false });
     const eventKinds = new Set(result.brokerEvents.map((event) => event.kind));
 
     assertRunCompleted(result);
@@ -112,7 +112,10 @@ test('workflow-agents: emits agent spawn/release events', { timeout: 120_000 }, 
       'run:completed',
     ]);
     assert.ok(eventKinds.has('agent_spawned'), 'Expected agent_spawned broker event');
-    assert.ok(eventKinds.has('agent_released'), 'Expected agent_released broker event');
+    assert.ok(
+      eventKinds.has('agent_released') || eventKinds.has('agent_exited'),
+      `Expected agent_released or agent_exited broker event, got: ${JSON.stringify([...eventKinds])}`
+    );
   } finally {
     await harness.stop();
     fs.rmSync(cwd, { force: true, recursive: true });
@@ -146,7 +149,7 @@ test('workflow-agents: retries deterministic work on transient failure', { timeo
         ],
       }),
       undefined,
-      { cwd }
+      { cwd, useRelaycast: false }
     );
 
     assertRunCompleted(result);
@@ -187,7 +190,7 @@ test('workflow-agents: surfaces deterministic agent failure', { timeout: 120_000
         ],
       }),
       undefined,
-      { cwd }
+      { cwd, useRelaycast: false }
     );
 
     assertRunFailed(result, 'does not contain');

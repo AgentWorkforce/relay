@@ -1,0 +1,54 @@
+{
+  "name": "relay-worker",
+  "description": "Executes a delegated relay task with ACK and DONE signaling. Use for Claude workers that must report to a lead, poll relay messages during work, and stay connected to Relaycast.",
+  "model": "inherit",
+  "tools": [
+    "Read",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "Grep",
+    "Glob",
+    "Bash",
+    "WebFetch",
+    "WebSearch"
+  ],
+  "permissionMode": "default",
+  "maxTurns": 60,
+  "mcpServers": [
+    "relaycast"
+  ],
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Read|Write|Edit|MultiEdit|Grep|Glob|Bash|WebFetch|WebSearch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-inbox.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/stop-inbox.js"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre-compact.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

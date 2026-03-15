@@ -12,6 +12,11 @@ export interface RelayYamlConfig {
   version: string;
   name: string;
   description?: string;
+  /** Named paths to external directories used by this workflow.
+   *  The primary working directory defaults to cwd and does not need to be declared.
+   *  Use this to declare additional directories so the runner can validate them
+   *  in preflight and agents can reference them via `workdir`. */
+  paths?: PathDefinition[];
   swarm: SwarmConfig;
   agents: AgentDefinition[];
   workflows?: WorkflowDefinition[];
@@ -19,6 +24,22 @@ export interface RelayYamlConfig {
   state?: StateConfig;
   errorHandling?: ErrorHandlingConfig;
   trajectories?: TrajectoryConfig | false;
+}
+
+// ── Path definitions ────────────────────────────────────────────────────────
+
+/** A named path to an external directory for cross-repo workflows.
+ *  Only needed for directories outside the default working directory. */
+export interface PathDefinition {
+  /** Unique name used to reference this path (e.g. "relaycast"). */
+  name: string;
+  /** Directory path, resolved relative to the YAML file.
+   *  Supports environment variables: "$HOME/.openclaw", "$RELAY_ROOT/packages/sdk". */
+  path: string;
+  /** Human-readable description of this path's role in the workflow. */
+  description?: string;
+  /** Whether this path is required. If true (default), preflight fails if it doesn't exist. */
+  required?: boolean;
 }
 
 // ── Trajectory configuration ─────────────────────────────────────────────────
@@ -55,6 +76,13 @@ export interface SwarmConfig {
   channel?: string;
   /** Idle agent detection and nudging configuration for interactive agents. */
   idleNudge?: IdleNudgeConfig;
+  /**
+   * Grace period (ms) after an agent exits with code 0 but without posting
+   * the expected coordination signal. During this window the runner checks
+   * verification gates and evidence before failing the step.
+   * Default: 5000 (5 seconds). Set to 0 to disable.
+   */
+  completionGracePeriodMs?: number;
 }
 
 export type SwarmPattern =
@@ -102,6 +130,10 @@ export interface AgentDefinition {
   interactive?: boolean;
   /** Working directory for this agent, resolved relative to the YAML file. */
   cwd?: string;
+  /** Sets this agent's working directory to a named entry from the top-level `paths` array.
+   *  Mutually exclusive with `cwd`. If omitted, the agent runs in the runner's
+   *  working directory (the directory containing the workflow YAML file). */
+  workdir?: string;
   /** Additional paths the agent needs read/write access to. */
   additionalPaths?: string[];
   /**
@@ -234,6 +266,10 @@ export interface WorkflowStep {
   // ── Deterministic step fields ──────────────────────────────────────────────
   /** Shell command to execute (required for deterministic steps). */
   command?: string;
+  /** Sets this step's working directory to a named entry from the top-level `paths` array.
+   *  If omitted, the step inherits the agent's workdir, or falls back to the runner's
+   *  working directory. */
+  workdir?: string;
   /** Fail if command exit code is non-zero. Default: true. */
   failOnError?: boolean;
   /** Capture stdout as step output for downstream steps. Default: true. */
@@ -279,6 +315,128 @@ export interface VerificationCheck {
   type: 'output_contains' | 'exit_code' | 'file_exists' | 'custom';
   value: string;
   description?: string;
+}
+
+// ── Completion evidence ─────────────────────────────────────────────────────
+
+export type CompletionEvidenceSignalSource =
+  | 'channel'
+  | 'stdout'
+  | 'stderr'
+  | 'process'
+  | 'filesystem'
+  | 'tool'
+  | 'verification';
+
+export type CompletionEvidenceSignalKind =
+  | 'worker_done'
+  | 'lead_done'
+  | 'step_complete'
+  | 'owner_decision'
+  | 'review_decision'
+  | 'task_summary'
+  | 'verification_passed'
+  | 'verification_failed'
+  | 'process_exit'
+  | 'custom';
+
+export interface CompletionEvidenceSignal {
+  kind: CompletionEvidenceSignalKind;
+  source: CompletionEvidenceSignalSource;
+  text: string;
+  observedAt: string;
+  sender?: string;
+  actor?: string;
+  role?: string;
+  value?: string;
+}
+
+export type CompletionEvidenceChannelOrigin = 'runner_post' | 'forwarded_chunk' | 'relay_message';
+
+export interface CompletionEvidenceChannelPost {
+  stepName: string;
+  text: string;
+  postedAt: string;
+  origin: CompletionEvidenceChannelOrigin;
+  completionRelevant: boolean;
+  sender?: string;
+  actor?: string;
+  role?: string;
+  target?: string;
+  signals: CompletionEvidenceSignal[];
+}
+
+export type CompletionEvidenceFileChangeKind = 'created' | 'modified' | 'deleted';
+
+export interface CompletionEvidenceFileChange {
+  path: string;
+  kind: CompletionEvidenceFileChangeKind;
+  observedAt: string;
+  root?: string;
+}
+
+export type CompletionEvidenceToolSideEffectType =
+  | 'persist_step_output'
+  | 'post_channel_message'
+  | 'verification_observed'
+  | 'worktree_created'
+  | 'owner_monitoring'
+  | 'review_started'
+  | 'review_completed'
+  | 'worker_exit'
+  | 'worker_error'
+  | 'retry'
+  | 'custom';
+
+export interface CompletionEvidenceToolSideEffect {
+  type: CompletionEvidenceToolSideEffectType;
+  detail: string;
+  observedAt: string;
+  raw?: Record<string, unknown>;
+}
+
+export interface StepCompletionEvidence {
+  stepName: string;
+  status?: WorkflowStepStatus;
+  startedAt?: string;
+  completedAt?: string;
+  lastUpdatedAt: string;
+  roots: string[];
+  output: {
+    stdout: string;
+    stderr: string;
+    combined: string;
+  };
+  channelPosts: CompletionEvidenceChannelPost[];
+  files: CompletionEvidenceFileChange[];
+  process: {
+    exitCode?: number;
+    exitSignal?: string;
+  };
+  toolSideEffects: CompletionEvidenceToolSideEffect[];
+  coordinationSignals: CompletionEvidenceSignal[];
+}
+
+export type StepCompletionMode =
+  | 'marker'
+  | 'evidence'
+  | 'verification'
+  | 'owner_decision'
+  | 'review'
+  | 'heuristic';
+
+export interface StepCompletionDecisionEvidence {
+  summary?: string;
+  signals?: string[];
+  channelPosts?: string[];
+  files?: string[];
+  exitCode?: number;
+}
+
+export interface StepCompletionDecision {
+  mode: StepCompletionMode;
+  reason?: string;
+  evidence?: StepCompletionDecisionEvidence;
 }
 
 // ── Coordination ────────────────────────────────────────────────────────────
@@ -365,6 +523,25 @@ export interface WorkflowRunRow {
 }
 
 export type WorkflowStepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+export type WorkflowOwnerDecision =
+  | 'COMPLETE'
+  | 'INCOMPLETE_RETRY'
+  | 'INCOMPLETE_FAIL'
+  | 'NEEDS_CLARIFICATION';
+/**
+ * Completion reasons are recorded for both successful and failed steps.
+ * `retry_requested_by_owner` is a retry-control signal, not a success state:
+ * the runner retries while budget remains and fails the step once retries are exhausted.
+ */
+export type WorkflowStepCompletionReason =
+  | 'completed_verified'
+  | 'completed_by_owner_decision'
+  | 'completed_by_evidence'
+  | 'completed_by_process_exit'
+  | 'retry_requested_by_owner'
+  | 'failed_verification'
+  | 'failed_owner_decision'
+  | 'failed_no_evidence';
 
 /** Database row representing a single workflow step execution. */
 export interface WorkflowStepRow {
@@ -381,6 +558,7 @@ export interface WorkflowStepRow {
   dependsOn: string[];
   output?: string;
   error?: string;
+  completionReason?: WorkflowStepCompletionReason;
   startedAt?: string;
   completedAt?: string;
   retryCount: number;

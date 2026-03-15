@@ -1,0 +1,53 @@
+{
+  "id": "traj_iy436ewnxd2s",
+  "version": 1,
+  "task": {
+    "title": "Fix switchWorkspace clawName bug and related workspace config issues"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-10T13:00:45.387Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-03-10T13:01:12.842Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ahvdhoqqgzd4",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-10T13:01:12.842Z",
+      "events": [
+        {
+          "ts": 1773147672842,
+          "type": "decision",
+          "content": "Use normalized workspace label for clawName/default updates: Use normalized workspace label for clawName/default updates",
+          "raw": {
+            "question": "Use normalized workspace label for clawName/default updates",
+            "chosen": "Use normalized workspace label for clawName/default updates",
+            "alternatives": [],
+            "reasoning": "Keeps .env claw name and default workspace consistent whether the entry has an alias, workspace ID, or only an API key"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-10T13:01:42.232Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/relay/.worktrees/multiws",
+  "tags": [],
+  "_trace": {
+    "startRef": "6899f9180f864b132d7f6bfad74fbc94c392b96b",
+    "endRef": "6899f9180f864b132d7f6bfad74fbc94c392b96b"
+  },
+  "completedAt": "2026-03-10T13:01:42.232Z",
+  "retrospective": {
+    "summary": "Fixed switchWorkspace clawName sync, refreshed stale default aliases, and warned on corrupt workspace JSON",
+    "approach": "Standard approach",
+    "confidence": 0.89
+  }
+}

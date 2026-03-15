@@ -1,0 +1,53 @@
+{
+  "id": "traj_bakz7bn14kn8",
+  "version": 1,
+  "task": {
+    "title": "Add macOS CI smoke test for standalone agent-relay CLI"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-10T13:45:40.951Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-03-10T13:49:55.582Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_hva90ygo2hnb",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-10T13:49:55.582Z",
+      "events": [
+        {
+          "ts": 1773150595582,
+          "type": "decision",
+          "content": "Add a reusable standalone lifecycle smoke script and run it in both PR macOS CI and publish-time macOS verification: Add a reusable standalone lifecycle smoke script and run it in both PR macOS CI and publish-time macOS verification",
+          "raw": {
+            "question": "Add a reusable standalone lifecycle smoke script and run it in both PR macOS CI and publish-time macOS verification",
+            "chosen": "Add a reusable standalone lifecycle smoke script and run it in both PR macOS CI and publish-time macOS verification",
+            "alternatives": [],
+            "reasoning": "The duplicate-entrypoint bug only surfaced on the standalone CLI path. Reusing the same smoke assertions in package-validation and publish verification catches regressions before merge and again against the release artifact."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-10T13:50:04.518Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "572fe206f8e2eb6c083359da0a1c96c3c85dff4a",
+    "endRef": "572fe206f8e2eb6c083359da0a1c96c3c85dff4a"
+  },
+  "completedAt": "2026-03-10T13:50:04.518Z",
+  "retrospective": {
+    "summary": "Added a reusable standalone lifecycle smoke script, wired it into macOS package-validation CI and publish-time standalone verification, and validated the script locally against the built CLI and broker.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

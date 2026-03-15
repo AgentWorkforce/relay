@@ -1,0 +1,38 @@
+version: '1.0'
+name: validation-owner-retry-strict
+swarm:
+  pattern: pipeline
+  channel: validation-owner-retry-strict
+  timeoutMs: 300000
+agents:
+  - name: worker
+    cli: codex
+    preset: worker
+  - name: reviewer
+    cli: codex
+    preset: reviewer
+workflows:
+  - name: owner-retry-strict
+    steps:
+      - name: worker-step
+        type: agent
+        agent: worker
+        task: |
+          Output exactly:
+          PARTIAL_OUTPUT
+        verification:
+          type: output_contains
+          value: PARTIAL_OUTPUT
+      - name: review-step
+        type: agent
+        agent: reviewer
+        dependsOn: [worker-step]
+        task: |
+          Review this output:
+          {{steps.worker-step.output}}
+          Output exactly:
+          OWNER_DECISION: INCOMPLETE_RETRY
+          REASON: explicit retry requested
+        verification:
+          type: output_contains
+          value: "OWNER_DECISION: INCOMPLETE_RETRY"

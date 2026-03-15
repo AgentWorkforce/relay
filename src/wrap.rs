@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use crate::helpers::{
-    check_echo_in_output, floor_char_boundary, ActivityDetector, DeliveryOutcome, PendingActivity,
-    PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
-    ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+    check_echo_in_output, floor_char_boundary, format_injection_with_workspace, ActivityDetector,
+    DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
+    ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+    MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
 };
 
 // PTY auto-response constants (shared by wrap and pty workers)
@@ -22,6 +23,8 @@ const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
 pub(crate) struct PendingWrapInjection {
     pub(crate) from: String,
     pub(crate) event_id: String,
+    pub(crate) workspace_id: Option<String>,
+    pub(crate) workspace_alias: Option<String>,
     pub(crate) body: String,
     pub(crate) target: String,
     pub(crate) queued_at: Instant,
@@ -41,9 +44,21 @@ pub(crate) struct PtyAutoState {
     // Codex model upgrade prompt
     pub(crate) codex_model_prompt_handled: bool,
     pub(crate) codex_model_buffer: String,
+    // Opencode/droid EXECUTE permission prompt
+    pub(crate) opencode_perm_buffer: String,
+    pub(crate) last_opencode_perm_approval: Option<Instant>,
     // Gemini "Action Required" prompt
     pub(crate) gemini_action_buffer: String,
     pub(crate) last_gemini_action_approval: Option<Instant>,
+    // Gemini folder trust prompt
+    pub(crate) gemini_trust_buffer: String,
+    pub(crate) gemini_trust_handled: bool,
+    // Gemini untrusted folder banner (triggers /permissions command)
+    pub(crate) gemini_untrusted_buffer: String,
+    pub(crate) gemini_untrusted_handled: bool,
+    // Claude Code folder trust prompt
+    pub(crate) claude_trust_buffer: String,
+    pub(crate) claude_trust_handled: bool,
     // Auto-suggestion / injection state
     pub(crate) auto_suggestion_visible: bool,
     pub(crate) last_injection_time: Option<Instant>,
@@ -66,8 +81,16 @@ impl PtyAutoState {
             bypass_perms_send_count: 0,
             codex_model_prompt_handled: false,
             codex_model_buffer: String::new(),
+            opencode_perm_buffer: String::new(),
+            last_opencode_perm_approval: None,
             gemini_action_buffer: String::new(),
             last_gemini_action_approval: None,
+            gemini_trust_buffer: String::new(),
+            gemini_trust_handled: false,
+            gemini_untrusted_buffer: String::new(),
+            gemini_untrusted_handled: false,
+            claude_trust_buffer: String::new(),
+            claude_trust_handled: false,
             auto_suggestion_visible: false,
             last_injection_time: None,
             last_auto_enter_time: None,
@@ -175,6 +198,34 @@ impl PtyAutoState {
         }
     }
 
+    /// Detect and auto-approve opencode/droid EXECUTE permission prompts.
+    /// Selects "Yes, and always allow medium impact commands" (arrow down + Enter).
+    pub(crate) async fn handle_opencode_permission(&mut self, text: &str, pty: &PtySession) {
+        let in_cooldown = self
+            .last_opencode_perm_approval
+            .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
+            .unwrap_or(false);
+        if !in_cooldown {
+            Self::append_buf(&mut self.opencode_perm_buffer, text, 2500, 2000);
+            let clean = strip_ansi(&self.opencode_perm_buffer);
+            let (has_header, has_allow_option) = detect_opencode_permission_prompt(&clean);
+            if has_header && has_allow_option {
+                tracing::info!(
+                    "Detected opencode EXECUTE permission prompt, selecting 'always allow'"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                // Arrow down to "Yes, and always allow medium impact commands"
+                let _ = pty.write_all(b"\x1b[B");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let _ = pty.write_all(b"\r");
+                self.opencode_perm_buffer.clear();
+                self.last_opencode_perm_approval = Some(Instant::now());
+            }
+        } else {
+            self.opencode_perm_buffer.clear();
+        }
+    }
+
     /// Detect and auto-approve Gemini "Action Required" permission prompts.
     pub(crate) async fn handle_gemini_action(&mut self, text: &str, pty: &PtySession) {
         let in_cooldown = self
@@ -194,6 +245,67 @@ impl PtyAutoState {
             }
         } else {
             self.gemini_action_buffer.clear();
+        }
+    }
+
+    /// Detect and auto-approve Gemini "Modify Trust Level" folder trust prompts.
+    /// The menu shows "Trust this folder" pre-selected as option 1, so we just press Enter.
+    pub(crate) async fn handle_gemini_trust(&mut self, text: &str, pty: &PtySession) {
+        if !self.gemini_trust_handled {
+            Self::append_buf(&mut self.gemini_trust_buffer, text, 2500, 2000);
+            let clean = strip_ansi(&self.gemini_trust_buffer);
+            let (has_header, has_trust_option) = detect_gemini_trust_prompt(&clean);
+            if has_header && has_trust_option {
+                tracing::info!(
+                    "Detected Gemini 'Modify Trust Level' prompt, auto-selecting 'Trust this folder'"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                // Option 1 "Trust this folder" is pre-selected, just press Enter
+                let _ = pty.write_all(b"\r");
+                self.gemini_trust_buffer.clear();
+                self.gemini_trust_handled = true;
+            }
+        }
+    }
+
+    /// Detect the Gemini "untrusted folder" informational banner and send `/permissions`
+    /// to open the trust menu. The existing `handle_gemini_trust` will then pick up the
+    /// interactive "Modify Trust Level" prompt that appears in response.
+    pub(crate) async fn handle_gemini_untrusted_banner(&mut self, text: &str, pty: &PtySession) {
+        if !self.gemini_untrusted_handled {
+            Self::append_buf(&mut self.gemini_untrusted_buffer, text, 2500, 2000);
+            let clean = strip_ansi(&self.gemini_untrusted_buffer);
+            if detect_gemini_untrusted_banner(&clean) {
+                tracing::info!(
+                    "Detected Gemini 'untrusted folder' banner, sending /permissions command"
+                );
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let _ = pty.write_all(b"/permissions\n");
+                self.gemini_untrusted_buffer.clear();
+                self.gemini_untrusted_handled = true;
+                // Reset trust handler so it can pick up the resulting "Modify Trust Level" menu
+                self.gemini_trust_handled = false;
+                self.gemini_trust_buffer.clear();
+            }
+        }
+    }
+
+    /// Detect and auto-accept Claude Code folder trust prompts.
+    /// The prompt is a selection menu with "Yes, I trust this folder" pre-selected,
+    /// so we just press Enter to confirm.
+    pub(crate) async fn handle_claude_trust(&mut self, text: &str, pty: &PtySession) {
+        if !self.claude_trust_handled {
+            Self::append_buf(&mut self.claude_trust_buffer, text, 2500, 2000);
+            let clean = strip_ansi(&self.claude_trust_buffer);
+            let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(&clean);
+            if has_trust_ref && has_confirmation {
+                tracing::info!("Detected Claude Code folder trust prompt, auto-accepting");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                // "Yes, I trust this folder" is pre-selected (option 1), press Enter
+                let _ = pty.write_all(b"\r");
+                self.claude_trust_buffer.clear();
+                self.claude_trust_handled = true;
+            }
         }
     }
 
@@ -336,6 +448,76 @@ mod idle_tests {
     }
 }
 
+#[cfg(test)]
+mod opencode_perm_tests {
+    use super::*;
+
+    #[test]
+    fn opencode_perm_buffer_cleared_in_cooldown() {
+        let mut state = PtyAutoState::new();
+        // Simulate a recent approval
+        state.last_opencode_perm_approval = Some(Instant::now());
+        // Append some text to the buffer
+        state.opencode_perm_buffer =
+            "EXECUTE (command, timeout: 120s, impact: medium)\n> Yes, allow".to_string();
+
+        // During cooldown the buffer should be cleared (tested via state inspection)
+        let in_cooldown = state
+            .last_opencode_perm_approval
+            .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
+            .unwrap_or(false);
+        assert!(in_cooldown);
+    }
+
+    #[test]
+    fn opencode_perm_no_cooldown_initially() {
+        let state = PtyAutoState::new();
+        assert!(state.last_opencode_perm_approval.is_none());
+        assert!(state.opencode_perm_buffer.is_empty());
+    }
+
+    #[test]
+    fn opencode_perm_buffer_accumulates_text() {
+        let mut state = PtyAutoState::new();
+        PtyAutoState::append_buf(
+            &mut state.opencode_perm_buffer,
+            "EXECUTE (command, timeout: 120s, impact: medium)\n",
+            2500,
+            2000,
+        );
+        PtyAutoState::append_buf(
+            &mut state.opencode_perm_buffer,
+            "> Yes, allow\n",
+            2500,
+            2000,
+        );
+        assert!(state.opencode_perm_buffer.contains("EXECUTE"));
+        assert!(state.opencode_perm_buffer.contains("Yes, allow"));
+    }
+
+    #[test]
+    fn opencode_perm_cooldown_expires() {
+        let mut state = PtyAutoState::new();
+        // Set approval time far in the past (beyond GEMINI_ACTION_COOLDOWN)
+        state.last_opencode_perm_approval = Some(Instant::now() - Duration::from_secs(10));
+        let in_cooldown = state
+            .last_opencode_perm_approval
+            .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
+            .unwrap_or(false);
+        assert!(!in_cooldown);
+    }
+
+    #[test]
+    fn append_buf_truncates_at_limit() {
+        let mut buf = String::new();
+        // Fill buffer to just past the max
+        let chunk = "A".repeat(2600);
+        PtyAutoState::append_buf(&mut buf, &chunk, 2500, 2000);
+        // After exceeding 2500 it should be truncated to keep_bytes (2000)
+        assert!(buf.len() <= 2100); // allow some slack for char boundary rounding
+    }
+}
+
 /// Interactive wrap mode: wraps a CLI in a PTY with terminal passthrough
 /// while connecting to Relaycast for relay message injection.
 /// Usage: `agent-relay codex --full-auto`
@@ -392,25 +574,38 @@ pub(crate) async fn run_wrap(
 
     let RelaySession {
         http_base,
-        relay_workspace_key,
-        self_name: _,
-        self_agent_id,
-        self_token: _,
-        self_names,
-        self_agent_ids,
+        default_workspace_id,
+        workspaces,
         mut ws_inbound_rx,
-        ws_control_tx,
     } = relay;
-
-    // Values for child agent env vars
-    let child_api_key = relay_workspace_key.clone();
+    let workspace_lookup: std::collections::HashMap<String, RelayWorkspace> = workspaces
+        .iter()
+        .cloned()
+        .map(|workspace| (workspace.workspace_id.clone(), workspace))
+        .collect();
+    let default_workspace = if let Some(default_workspace_id) = default_workspace_id.as_deref() {
+        workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == default_workspace_id)
+            .or_else(|| workspaces.first())
+    } else {
+        workspaces.first()
+    }
+    .cloned()
+    .context("no relay workspace available for wrap mode")?;
     let child_base_url = http_base.clone();
-
-    // HTTP client for pre-registering child agents before spawn.
-    // This ensures the child MCP server starts with a valid agent token
-    // (same as the main broker does for directly-spawned PTY agents).
-    let child_http =
-        RelaycastHttpClient::new(&http_base, &relay_workspace_key, &requested_name, "wrap");
+    let child_workspaces_json = serde_json::to_string(
+        &workspaces
+            .iter()
+            .map(|workspace| {
+                serde_json::json!({
+                    "workspace_id": workspace.workspace_id,
+                    "workspace_alias": workspace.workspace_alias,
+                    "api_key": workspace.relay_workspace_key,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )?;
 
     // Spawner for child agents
     let mut spawner = Spawner::new();
@@ -542,8 +737,14 @@ pub(crate) async fn run_wrap(
                                 mcp_response_buffer = mcp_response_buffer[start..].to_string();
                             }
                             for msg_id in extract_mcp_message_ids(&mcp_response_buffer) {
-                                if dedup.insert_if_new(&msg_id, Instant::now()) {
-                                    tracing::debug!("pre-seeded dedup with outbound message id: {}", msg_id);
+                                for workspace in &workspaces {
+                                    let scoped_key = format!("{}:{}", workspace.workspace_id, msg_id);
+                                    if dedup.insert_if_new(&scoped_key, Instant::now()) {
+                                        tracing::debug!(
+                                            workspace_id = %workspace.workspace_id,
+                                            "pre-seeded dedup with outbound message id: {}", msg_id
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -551,7 +752,11 @@ pub(crate) async fn run_wrap(
                         pty_auto.handle_mcp_approval(&text, &pty).await;
                         pty_auto.handle_bypass_permissions(&text, &pty).await;
                         pty_auto.handle_codex_model_prompt(&text, &pty).await;
+                        pty_auto.handle_opencode_permission(&text, &pty).await;
                         pty_auto.handle_gemini_action(&text, &pty).await;
+                        pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
+                        pty_auto.handle_gemini_trust(&text, &pty).await;
+                        pty_auto.handle_claude_trust(&text, &pty).await;
 
                         // Accumulate echo buffer for verification matching
                         echo_buffer.push_str(&text);
@@ -640,13 +845,29 @@ pub(crate) async fn run_wrap(
             // Relay messages from WS → intercept broker commands or queue for PTY injection
             ws_msg = ws_inbound_rx.recv() => {
                 if let Some(ws_msg) = ws_msg {
+                    let workspace_id = ws_msg.workspace_id.clone();
+                    let workspace_alias = ws_msg.workspace_alias.clone();
+                    let ws_value = ws_msg.value;
+                    let workspace_state = workspace_lookup
+                        .get(&workspace_id)
+                        .cloned()
+                        .unwrap_or_else(|| default_workspace.clone());
+                    let workspace_self_agent_id = workspace_state.self_agent_id.clone();
+                    let workspace_self_names = workspace_state.self_names.clone();
+                    let workspace_self_agent_ids = workspace_state.self_agent_ids.clone();
+                    let workspace_child_api_key = workspace_state.relay_workspace_key.clone();
+                    let workspace_child_http = workspace_state.http_client.clone();
                     // Check for command.invoked event first (spawn/release)
-                    if let Some(cmd_event) = map_ws_broker_command(&ws_msg) {
-                        if !command_targets_self(&cmd_event, &self_agent_id) {
+                    if let Some(cmd_event) = map_ws_broker_command(
+                        &ws_value,
+                        &workspace_id,
+                        workspace_alias.as_deref(),
+                    ) {
+                        if !command_targets_self(&cmd_event, &workspace_self_agent_id) {
                             tracing::debug!(
                                 command = %cmd_event.command,
                                 handler_agent_id = ?cmd_event.handler_agent_id,
-                                self_agent_id = %self_agent_id,
+                                self_agent_id = %workspace_self_agent_id,
                                 "ignoring command event for a different handler"
                             );
                             continue;
@@ -659,16 +880,18 @@ pub(crate) async fn run_wrap(
                                 }
                                 let env_vars = spawn_env_vars(
                                     &params.name,
-                                    &child_api_key,
+                                    &workspace_child_api_key,
                                     &child_base_url,
                                     &channels,
+                                    Some(&child_workspaces_json),
+                                    default_workspace_id.as_deref(),
                                 );
                                 // Pre-register the child agent so its MCP server
                                 // starts with a valid token (avoiding "Not registered"
                                 // errors when non-claude CLIs like codex try to use
                                 // relay tools before calling register() themselves).
                                 let child_token = match retry_agent_registration(
-                                    &child_http,
+                                    &workspace_child_http,
                                     &params.name,
                                     Some(&params.cli),
                                 ).await {
@@ -777,16 +1000,21 @@ pub(crate) async fn run_wrap(
                     }
 
                     // Regular relay message: map and queue for PTY injection
-                    if let Some(mapped) = map_ws_event(&ws_msg) {
-                        if !dedup.insert_if_new(&mapped.event_id, Instant::now()) {
-                            tracing::debug!("dedup: skipping {}", mapped.event_id);
+                    if let Some(mapped) = map_ws_event(
+                        &ws_value,
+                        &workspace_id,
+                        workspace_alias.as_deref(),
+                    ) {
+                        let dedup_key = format!("{}:{}", mapped.workspace_id, mapped.event_id);
+                        if !dedup.insert_if_new(&dedup_key, Instant::now()) {
+                            tracing::debug!(event_id = %mapped.event_id, workspace_id = %mapped.workspace_id, "dedup: skipping relay event");
                             continue;
                         }
-                        if self_names.contains(&mapped.from)
+                        if workspace_self_names.contains(&mapped.from)
                             || mapped
                                 .sender_agent_id
                                 .as_ref()
-                                .is_some_and(|id| self_agent_ids.contains(id))
+                                .is_some_and(|id| workspace_self_agent_ids.contains(id))
                         {
                             tracing::debug!(
                                 from = %mapped.from,
@@ -806,6 +1034,8 @@ pub(crate) async fn run_wrap(
                         pending_wrap_injections.push_back(PendingWrapInjection {
                             from: mapped.from,
                             event_id: mapped.event_id,
+                            workspace_id: Some(mapped.workspace_id),
+                            workspace_alias: mapped.workspace_alias,
                             body: mapped.text,
                             target: mapped.target,
                             queued_at: Instant::now(),
@@ -813,7 +1043,7 @@ pub(crate) async fn run_wrap(
                     } else {
                         tracing::debug!(
                             "ws event not mapped: {}",
-                            serde_json::to_string(&ws_msg).unwrap_or_default()
+                            serde_json::to_string(&ws_value).unwrap_or_default()
                         );
                     }
                 }
@@ -842,11 +1072,13 @@ pub(crate) async fn run_wrap(
                         pty_auto.auto_suggestion_visible = false;
                     }
                     tracing::debug!("relay from {} → {}", pending.from, pending.target);
-                    let injection = format_injection(
+                    let injection = format_injection_with_workspace(
                         &pending.from,
                         &pending.event_id,
                         &pending.body,
                         &pending.target,
+                        pending.workspace_id.as_deref(),
+                        pending.workspace_alias.as_deref(),
                     );
                     if let Err(e) = pty.write_all(injection.as_bytes()) {
                         tracing::warn!(
@@ -857,6 +1089,8 @@ pub(crate) async fn run_wrap(
                         pending_wrap_injections.push_front(PendingWrapInjection {
                             from: pending.from,
                             event_id: pending.event_id,
+                            workspace_id: pending.workspace_id,
+                            workspace_alias: pending.workspace_alias,
                             body: pending.body,
                             target: pending.target,
                             queued_at: pending.queued_at,
@@ -885,6 +1119,8 @@ pub(crate) async fn run_wrap(
                         attempts: 1,
                         max_attempts: MAX_VERIFICATION_ATTEMPTS,
                         request_id: None,
+                        workspace_id: pending.workspace_id,
+                        workspace_alias: pending.workspace_alias,
                         from: pending.from,
                         body: pending.body,
                         target: pending.target,
@@ -935,23 +1171,30 @@ pub(crate) async fn run_wrap(
                 // Re-inject retries
                 for mut pv in retry_queue {
                     tokio::time::sleep(throttle.delay()).await;
-                    let injection = format_injection(&pv.from, &pv.event_id, &pv.body, &pv.target);
-                if let Err(e) = pty.write_all(injection.as_bytes()) {
-                    tracing::warn!(
-                        event_id = %pv.event_id,
-                        error = %e,
-                        "wrap: retry PTY injection write failed"
-                        );
-                } else {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    let _ = pty.write_all(b"\r");
-                    tracing::debug!(
-                        delivery_id = %pv.delivery_id,
-                        event_id = %pv.event_id,
-                        "wrap: delivery re-injected (retry)"
+                    let injection = format_injection_with_workspace(
+                        &pv.from,
+                        &pv.event_id,
+                        &pv.body,
+                        &pv.target,
+                        pv.workspace_id.as_deref(),
+                        pv.workspace_alias.as_deref(),
                     );
-                }
-                pv.expected_echo = injection;
+                    if let Err(error) = pty.write_all(injection.as_bytes()) {
+                        tracing::warn!(
+                            event_id = %pv.event_id,
+                            error = %error,
+                            "wrap: retry PTY injection write failed"
+                        );
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        let _ = pty.write_all(b"\r");
+                        tracing::debug!(
+                            delivery_id = %pv.delivery_id,
+                            event_id = %pv.event_id,
+                            "wrap: delivery re-injected (retry)"
+                        );
+                    }
+                    pv.expected_echo = injection;
                     pv.injected_at = Instant::now();
                     pending_verifications.push_back(pv);
                 }
@@ -998,8 +1241,14 @@ pub(crate) async fn run_wrap(
     // Terminate all child agents
     spawner.shutdown_all(Duration::from_secs(2)).await;
 
-    if let Err(e) = ws_control_tx.send(WsControl::Shutdown).await {
-        tracing::warn!(error = %e, "failed to send WS shutdown in wrap cleanup");
+    for workspace in &workspaces {
+        if let Err(error) = workspace.ws_control_tx.send(WsControl::Shutdown).await {
+            tracing::warn!(
+                workspace_id = %workspace.workspace_id,
+                error = %error,
+                "failed to send WS shutdown in wrap cleanup"
+            );
+        }
     }
 
     // Restore terminal

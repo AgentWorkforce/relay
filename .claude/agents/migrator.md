@@ -106,13 +106,13 @@ You are a data migration specialist focused on safe, reversible database changes
 When starting migration:
 
 ```
-relay_send(to: "Lead", message: "MIGRATION: Starting user_profiles schema update\n- Records affected: ~2.4M\n- Estimated duration: 15 min\n- Rollback: Ready\n- Backup: Completed")
+mcp__relaycast__message_dm_send(to: "Lead", text: "MIGRATION: Starting user_profiles schema update\n- Records affected: ~2.4M\n- Estimated duration: 15 min\n- Rollback: Ready\n- Backup: Completed")
 ```
 
 When complete:
 
 ```
-relay_send(to: "Lead", message: "DONE: Migration completed\n- Duration: 12 min\n- Records migrated: 2,401,234\n- Validation: PASSED\n- Rollback window: 24h")
+mcp__relaycast__message_dm_send(to: "Lead", text: "DONE: Migration completed\n- Duration: 12 min\n- Records migrated: 2,401,234\n- Validation: PASSED\n- Rollback window: 24h")
 ```
 
 ## Safety Checklist

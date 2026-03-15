@@ -1,0 +1,26 @@
+version: '1.0'
+name: test-gemini-failure
+
+description: Intentional failure case to verify Gemini workflow failure handling.
+
+swarm:
+  pattern: pipeline
+  channel: test-gemini-failure
+  timeoutMs: 180000
+
+agents:
+  - name: gemini-fail
+    cli: gemini
+    preset: worker
+
+workflows:
+  - name: gemini-failure
+    steps:
+      - name: fail-step
+        type: agent
+        agent: gemini-fail
+        task: |
+          Output exactly THIS_WILL_NOT_MATCH
+        verification:
+          type: output_contains
+          value: EXPECTED_SENTINEL

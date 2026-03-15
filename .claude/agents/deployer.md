@@ -116,19 +116,19 @@ You are a deployment specialist focused on safe, reliable releases. You manage r
 Deployment start:
 
 ```
-relay_send(to: "Lead", message: "DEPLOY: Starting v2.4.1 rollout\n- Strategy: Canary (1% -> 10% -> 100%)\n- Services: api, worker, scheduler\n- Duration: ~30 min\n- Rollback: Automated on error rate >1%")
+mcp__relaycast__message_dm_send(to: "Lead", text: "DEPLOY: Starting v2.4.1 rollout\n- Strategy: Canary (1% -> 10% -> 100%)\n- Services: api, worker, scheduler\n- Duration: ~30 min\n- Rollback: Automated on error rate >1%")
 ```
 
 Progress update:
 
 ```
-relay_send(to: "Lead", message: "DEPLOY: Progress update\n- Phase: 10% traffic\n- Error rate: 0.02% (baseline: 0.03%)\n- Latency p99: 142ms (baseline: 145ms)\n- Proceeding to full rollout")
+mcp__relaycast__message_dm_send(to: "Lead", text: "DEPLOY: Progress update\n- Phase: 10% traffic\n- Error rate: 0.02% (baseline: 0.03%)\n- Latency p99: 142ms (baseline: 145ms)\n- Proceeding to full rollout")
 ```
 
 Completion:
 
 ```
-relay_send(to: "Lead", message: "DONE: v2.4.1 deployed successfully\n- Duration: 28 min\n- Error rate: 0.02%\n- All health checks passing\n- Rollback window: 2h")
+mcp__relaycast__message_dm_send(to: "Lead", text: "DONE: v2.4.1 deployed successfully\n- Duration: 28 min\n- Error rate: 0.02%\n- All health checks passing\n- Rollback window: 2h")
 ```
 
 ## Deployment Checklist

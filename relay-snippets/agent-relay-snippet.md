@@ -4,41 +4,30 @@ Real-time agent-to-agent messaging via MCP tools.
 
 ## MCP Tools
 
-All agent communication uses MCP tools provided by the Relaycast MCP server:
+All agent communication uses MCP tools provided by the Relaycast MCP server.
+Tool names use dot-notation: Claude uses `mcp__relaycast__<category>_<action>`, other CLIs use `relaycast.<category>.<action>`.
 
-| Tool                           | Description                           |
-| ------------------------------ | ------------------------------------- |
-| `relay_send(to, message)`      | Send a message to an agent or channel |
-| `relay_inbox()`                | Check your inbox for new messages     |
-| `relay_who()`                  | List online agents                    |
-| `relay_spawn(name, cli, task)` | Spawn a new worker agent              |
-| `relay_release(name)`          | Release/stop a worker agent           |
-| `relay_status()`               | Check relay connection status         |
+| Tool                              | Description                           |
+| --------------------------------- | ------------------------------------- |
+| `message.dm.send(to, text)`       | Send a DM to an agent                 |
+| `message_post(channel, text)`     | Post a message to a channel           |
+| `message.inbox.check()`           | Check your inbox for new messages     |
+| `agent_list()`                    | List online agents                    |
+| `agent_add(name, cli, task)`      | Spawn a new worker agent              |
+| `agent_remove(name)`              | Release/stop a worker agent           |
 
 ## Sending Messages
-
-Use the `relay_send` MCP tool:
-
-```
-relay_send(to: "AgentName", message: "Your message here")
-```
 
 ### Direct Messages
 
 ```
-relay_send(to: "Bob", message: "Can you review my code changes?")
-```
-
-### Broadcast to All
-
-```
-relay_send(to: "*", message: "I've finished the auth module")
+mcp__relaycast__message_dm_send(to: "Bob", text: "Can you review my code changes?")
 ```
 
 ### Channel Messages
 
 ```
-relay_send(to: "#frontend", message: "The API endpoints are ready")
+mcp__relaycast__message_post(channel: "general", text: "The API endpoints are ready")
 ```
 
 ## Spawning & Releasing Agents
@@ -46,23 +35,24 @@ relay_send(to: "#frontend", message: "The API endpoints are ready")
 ### Spawn a Worker
 
 ```
-relay_spawn(name: "WorkerName", cli: "claude", task: "Task description here")
+mcp__relaycast__agent_add(name: "WorkerName", cli: "claude", task: "Task description here")
 ```
 
 ### CLI Options
 
-| CLI Value | Description             |
-| --------- | ----------------------- |
-| `claude`  | Claude Code (Anthropic) |
-| `codex`   | Codex CLI (OpenAI)      |
-| `gemini`  | Gemini CLI (Google)     |
-| `aider`   | Aider coding assistant  |
-| `goose`   | Goose AI assistant      |
+| CLI Value   | Description                  |
+| ----------- | ---------------------------- |
+| `claude`    | Claude Code (Anthropic)      |
+| `codex`     | Codex CLI (OpenAI)           |
+| `gemini`    | Gemini CLI (Google)          |
+| `opencode`  | OpenCode CLI (multi-model)   |
+| `aider`     | Aider coding assistant       |
+| `goose`     | Goose AI assistant           |
 
 ### Release a Worker
 
 ```
-relay_release(name: "WorkerName")
+mcp__relaycast__agent_remove(name: "WorkerName")
 ```
 
 ## Receiving Messages
@@ -86,11 +76,11 @@ Reply to the channel shown, not the sender.
 If you were spawned by another agent:
 
 1. Your first message is your task from your spawner
-2. Use `relay_send` to reply to your spawner
+2. Use `mcp__relaycast__message_dm_send` to reply to your spawner
 3. Report status to your spawner (your lead), not broadcast
 
 ```
-relay_send(to: "Lead", message: "ACK: Starting on the task.")
+mcp__relaycast__message_dm_send(to: "Lead", text: "ACK: Starting on the task.")
 ```
 
 ## Protocol
@@ -103,15 +93,25 @@ relay_send(to: "Lead", message: "ACK: Starting on the task.")
 
 **Local communication** uses plain agent names. The `project:` prefix is **ONLY** for cross-project bridge mode.
 
-| Context                | Correct                                    | Incorrect                             |
-| ---------------------- | ------------------------------------------ | ------------------------------------- |
-| Local (same project)   | `relay_send(to: "Lead", ...)`              | `relay_send(to: "project:lead", ...)` |
-| Bridge (cross-project) | `relay_send(to: "frontend:Designer", ...)` | N/A                                   |
+| Context                | Correct                                                     | Incorrect                                              |
+| ---------------------- | ----------------------------------------------------------- | ------------------------------------------------------ |
+| Local (same project)   | `mcp__relaycast__message_dm_send(to: "Lead", ...)`          | `mcp__relaycast__message_dm_send(to: "project:lead", ...)`     |
+| Bridge (cross-project) | `mcp__relaycast__message_dm_send(to: "frontend:Designer", ...)` | N/A                                                    |
+
+## Multi-Workspace
+
+When connected to multiple workspaces, messages include workspace context:
+
+```
+Relay message from Alice [my-team / abc123]: Hello!
+```
+
+- Messages are scoped to the originating workspace
+- Reply within the same workspace context shown in the message header
 
 ## Checking Status
 
 ```
-relay_who()      # List online agents
-relay_inbox()    # Check for unread messages
-relay_status()   # Check connection status
+mcp__relaycast__agent_list()          # List online agents
+mcp__relaycast__message_inbox_check() # Check for unread messages
 ```

@@ -23,7 +23,7 @@
         "agent-management"
       ],
       "files": [
-        ".claude/skills/choosing-swarm-patterns/SKILL.md"
+        "skills/choosing-swarm-patterns/SKILL.md"
       ]
     },
     {
@@ -41,13 +41,13 @@
         "workflow-design"
       ],
       "files": [
-        ".claude/skills/adding-swarm-patterns/SKILL.md"
+        "skills/adding-swarm-patterns/SKILL.md"
       ]
     },
     {
       "name": "writing-agent-relay-workflows",
-      "version": "1.0.0",
-      "description": "Use when building multi-agent workflows with the relay broker-sdk - covers the WorkflowBuilder API, DAG step dependencies, agent definitions, step output chaining via {{steps.X.output}}, verification gates, dedicated channels, swarm patterns, error handling, and event listeners",
+      "version": "1.0.2",
+      "description": "Use when building multi-agent workflows with the relay broker-sdk - covers the WorkflowBuilder API, DAG step dependencies, agent definitions, step output chaining via {{steps.X.output}}, verification gates, deterministic steps, dedicated channels, swarm patterns, error handling, event listeners, step sizing rules, and the lead+workers team pattern for complex steps",
       "format": "claude",
       "subtype": "skill",
       "tags": [
@@ -59,13 +59,13 @@
         "swarm-patterns"
       ],
       "files": [
-        ".claude/skills/writing-agent-relay-workflows/SKILL.md"
+        "skills/writing-agent-relay-workflows/SKILL.md"
       ]
     },
     {
       "name": "using-agent-relay",
-      "version": "1.1.2",
-      "description": "Skill for coordinating multiple AI agents - enables real-time inter-agent messaging via PTY wrapper or file-based inbox system",
+      "version": "1.2.0",
+      "description": "Use when coordinating multiple AI agents in real-time - provides inter-agent messaging via Relaycast MCP tools with channels, threads, reactions, search, and webhooks",
       "format": "claude",
       "subtype": "skill",
       "tags": [
@@ -77,12 +77,30 @@
         "messaging"
       ],
       "files": [
-        ".claude/skills/using-agent-relay/SKILL.md"
+        "skills/using-agent-relay/SKILL.md"
+      ]
+    },
+    {
+      "name": "running-headless-orchestrator",
+      "version": "1.0.0",
+      "description": "Use when an agent needs to self-bootstrap agent-relay and autonomously manage a team of workers - covers infrastructure startup, agent spawning, lifecycle monitoring, and team coordination without human intervention",
+      "format": "claude",
+      "subtype": "skill",
+      "tags": [
+        "multi-agent",
+        "orchestration",
+        "headless",
+        "autonomous",
+        "self-bootstrap",
+        "agent-management"
+      ],
+      "files": [
+        "skills/running-headless-orchestrator/SKILL.md"
       ]
     },
     {
       "name": "agent-relay-snippet",
-      "version": "1.1.7",
+      "version": "1.2.0",
       "description": "AGENTS.md / CLAUDE.md snippet for agents on how to use agent-relay",
       "format": "generic",
       "subtype": "snippet",
@@ -97,7 +115,7 @@
     },
     {
       "name": "agent-relay-protocol",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "description": "Internal protocol snippet with session persistence, continuity, and trajectory tracking for dashboard integration",
       "format": "generic",
       "subtype": "snippet",
@@ -111,25 +129,7 @@
         "relay-snippets/agent-relay-protocol.md"
       ]
     },
-    {
-      "name": "using-beads-bv",
-      "version": "1.0.0",
-      "description": "Skill for dependency-aware task planning with beads (bd) CLI and bv graph sidecar - covers ready work selection, priority management, and robot flags",
-      "format": "claude",
-      "subtype": "skill",
-      "private": true,
-      "tags": [
-        "task-management",
-        "dependency-tracking",
-        "project-planning",
-        "lead-agent",
-        "coordination"
-      ],
-      "files": [
-        ".claude/skills/using-beads-bv/SKILL.md"
-      ]
-    },
-    {
+{
       "name": "shadow-agents",
       "version": "1.0.0",
       "description": "Shadow agent profiles for code review, session auditing, and active monitoring - assign to spawned agents for oversight",
@@ -174,7 +174,7 @@
     },
     {
       "name": "lead-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Coordinator agent for multi-agent teams - delegates tasks, makes decisions, tracks progress without implementing",
       "format": "claude",
       "subtype": "agent",
@@ -191,7 +191,7 @@
     },
     {
       "name": "frontend-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Frontend development agent - creates distinctive, production-grade web interfaces with high design quality",
       "format": "claude",
       "subtype": "agent",
@@ -209,7 +209,7 @@
     },
     {
       "name": "backend-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Backend development agent - APIs, services, server-side logic, and database integration",
       "format": "claude",
       "subtype": "agent",
@@ -227,7 +227,7 @@
     },
     {
       "name": "database-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Database specialist agent - schema design, query optimization, migrations, and data modeling",
       "format": "claude",
       "subtype": "agent",
@@ -245,7 +245,7 @@
     },
     {
       "name": "api-designer-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "API design agent - REST and GraphQL API design, endpoint schemas, versioning, and documentation",
       "format": "claude",
       "subtype": "agent",
@@ -263,7 +263,7 @@
     },
     {
       "name": "debugger-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Debugging specialist agent - systematic bug investigation, root cause analysis, and minimal targeted fixes",
       "format": "claude",
       "subtype": "agent",
@@ -280,7 +280,7 @@
     },
     {
       "name": "refactorer-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Refactoring specialist agent - code restructuring, technical debt reduction, and maintainability improvements",
       "format": "claude",
       "subtype": "agent",
@@ -297,7 +297,7 @@
     },
     {
       "name": "performance-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Performance optimization agent - profiling, bottleneck analysis, and performance improvements",
       "format": "claude",
       "subtype": "agent",
@@ -314,7 +314,7 @@
     },
     {
       "name": "tester-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Testing specialist agent - unit tests, integration tests, e2e tests, and test strategy",
       "format": "claude",
       "subtype": "agent",
@@ -332,7 +332,7 @@
     },
     {
       "name": "security-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Security auditing agent - vulnerability assessment, OWASP compliance, and security best practices",
       "format": "claude",
       "subtype": "agent",
@@ -350,7 +350,7 @@
     },
     {
       "name": "qa-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Quality assurance agent - test planning, defect tracking, and quality metrics",
       "format": "claude",
       "subtype": "agent",
@@ -367,7 +367,7 @@
     },
     {
       "name": "accessibility-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Accessibility auditing agent - WCAG compliance, a11y testing, and inclusive design",
       "format": "claude",
       "subtype": "agent",
@@ -385,7 +385,7 @@
     },
     {
       "name": "validator-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Validation specialist agent - input validation, schema enforcement, and data integrity",
       "format": "claude",
       "subtype": "agent",
@@ -487,7 +487,7 @@
     },
     {
       "name": "devops-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "DevOps specialist agent - CI/CD pipelines, infrastructure as code, and deployment automation",
       "format": "claude",
       "subtype": "agent",
@@ -522,7 +522,7 @@
     },
     {
       "name": "migrator-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Migration specialist agent - data migrations, schema changes, and version upgrades",
       "format": "claude",
       "subtype": "agent",
@@ -539,7 +539,7 @@
     },
     {
       "name": "deployer-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Deployment specialist agent - release management, deployment automation, and rollback strategies",
       "format": "claude",
       "subtype": "agent",
@@ -556,7 +556,7 @@
     },
     {
       "name": "monitor-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Monitoring specialist agent - observability setup, alerting, and metrics configuration",
       "format": "claude",
       "subtype": "agent",
@@ -574,7 +574,7 @@
     },
     {
       "name": "sysadmin-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "System administration agent - server configuration, system maintenance, and infrastructure management",
       "format": "claude",
       "subtype": "agent",
@@ -591,7 +591,7 @@
     },
     {
       "name": "data-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Data engineering agent - ETL pipelines, data processing, and data quality",
       "format": "claude",
       "subtype": "agent",
@@ -608,7 +608,7 @@
     },
     {
       "name": "mobile-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Mobile development agent - React Native, iOS, Android, and cross-platform development",
       "format": "claude",
       "subtype": "agent",
@@ -625,7 +625,7 @@
     },
     {
       "name": "cli-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "CLI development agent - command-line tools, terminal utilities, and Unix philosophy",
       "format": "claude",
       "subtype": "agent",
@@ -642,7 +642,7 @@
     },
     {
       "name": "integrator-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Integration specialist agent - third-party APIs, webhooks, OAuth, and service integration",
       "format": "claude",
       "subtype": "agent",
@@ -659,7 +659,7 @@
     },
     {
       "name": "prototyper-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Rapid prototyping agent - MVPs, proof of concepts, and quick validation",
       "format": "claude",
       "subtype": "agent",
@@ -676,7 +676,7 @@
     },
     {
       "name": "fixer-agent",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Quick fix specialist agent - hotfixes, urgent patches, and rapid bug resolution",
       "format": "claude",
       "subtype": "agent",
@@ -689,6 +689,269 @@
       ],
       "files": [
         ".claude/agents/fixer.md"
+      ]
+    },
+    {
+      "name": "claude-relay-plugin",
+      "version": "0.1.0",
+      "description": "Claude Code plugin for Agent Relay - MCP integration, inbox polling hooks, worker agents, and multi-agent coordination skills",
+      "format": "claude-plugin",
+      "subtype": "plugin",
+      "tags": [
+        "claude-code",
+        "plugin",
+        "multi-agent",
+        "relaycast",
+        "mcp",
+        "hooks"
+      ],
+      "files": [
+        "plugins/claude-relay-plugin/.claude-plugin/plugin.json",
+        "plugins/claude-relay-plugin/.mcp.json",
+        "plugins/claude-relay-plugin/hooks/hooks.json",
+        "plugins/claude-relay-plugin/hooks/stop-inbox.js",
+        "plugins/claude-relay-plugin/hooks/stop-inbox.ts",
+        "plugins/claude-relay-plugin/hooks/post-tool-inbox.sh",
+        "plugins/claude-relay-plugin/hooks/pre-compact.sh",
+        "plugins/claude-relay-plugin/hooks/subagent-bootstrap.sh",
+        "plugins/claude-relay-plugin/skills/relay-team/SKILL.md",
+        "plugins/claude-relay-plugin/skills/relay-fanout/SKILL.md",
+        "plugins/claude-relay-plugin/skills/relay-pipeline/SKILL.md",
+        "plugins/claude-relay-plugin/agents/relay-worker/agent.md",
+        "plugins/claude-relay-plugin/agents/relay-worker/config.json"
+      ]
+    },
+    {
+      "name": "opencode-relay-plugin",
+      "version": "0.1.0",
+      "description": "OpenCode plugin for Agent Relay - native tools, idle polling hooks, worker spawning, and multi-agent orchestration",
+      "format": "generic",
+      "subtype": "plugin",
+      "tags": [
+        "opencode",
+        "plugin",
+        "multi-agent",
+        "relaycast",
+        "tools",
+        "hooks"
+      ],
+      "files": [
+        "plugins/opencode-relay-plugin/src/index.ts",
+        "plugins/opencode-relay-plugin/src/tools.ts",
+        "plugins/opencode-relay-plugin/src/hooks.ts",
+        "plugins/opencode-relay-plugin/package.json",
+        "plugins/opencode-relay-plugin/tsconfig.json"
+      ]
+    },
+    {
+      "name": "gemini-relay-extension",
+      "version": "0.1.0",
+      "description": "Gemini CLI extension for Agent Relay - MCP server, lifecycle hooks, custom commands, and multi-agent skills",
+      "format": "generic",
+      "subtype": "plugin",
+      "tags": [
+        "gemini-cli",
+        "extension",
+        "multi-agent",
+        "relaycast",
+        "mcp",
+        "hooks"
+      ],
+      "files": [
+        "plugins/gemini-relay-extension/gemini-extension.json",
+        "plugins/gemini-relay-extension/relay-server.js",
+        "plugins/gemini-relay-extension/hooks/hooks.json",
+        "plugins/gemini-relay-extension/hooks/after-tool-inbox.sh",
+        "plugins/gemini-relay-extension/hooks/after-agent-inbox.sh",
+        "plugins/gemini-relay-extension/hooks/before-model-inject.sh",
+        "plugins/gemini-relay-extension/hooks/session-start.sh",
+        "plugins/gemini-relay-extension/hooks/session-end.sh",
+        "plugins/gemini-relay-extension/commands/status/status.toml",
+        "plugins/gemini-relay-extension/commands/team/team.toml",
+        "plugins/gemini-relay-extension/commands/fanout/fanout.toml",
+        "plugins/gemini-relay-extension/skills/relay-orchestration/SKILL.md",
+        "plugins/gemini-relay-extension/skills/relay-protocol/SKILL.md",
+        "plugins/gemini-relay-extension/agents/relay-worker.md",
+        "plugins/gemini-relay-extension/agents/relay-researcher.md",
+        "plugins/gemini-relay-extension/agents/relay-reviewer.md",
+        "plugins/gemini-relay-extension/GEMINI.md"
+      ]
+    }
+  ],
+  "collections": [
+    {
+      "id": "agent-relay-skills",
+      "name": "Agent Relay Skills",
+      "description": "Core skills for multi-agent coordination — swarm patterns, workflow building, relay usage, and headless orchestration",
+      "version": "1.0.0",
+      "category": "development",
+      "tags": [
+        "multi-agent",
+        "orchestration",
+        "skills",
+        "swarm-patterns",
+        "workflow"
+      ],
+      "packages": [
+        {
+          "packageId": "using-agent-relay",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "Core skill for inter-agent messaging via Relaycast MCP tools"
+        },
+        {
+          "packageId": "choosing-swarm-patterns",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "Decision framework for selecting the right multi-agent coordination pattern"
+        },
+        {
+          "packageId": "adding-swarm-patterns",
+          "version": "^1.0.0",
+          "required": false,
+          "reason": "For implementing custom swarm patterns beyond the built-in set"
+        },
+        {
+          "packageId": "writing-agent-relay-workflows",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "WorkflowBuilder API for DAG-based multi-agent workflows"
+        },
+        {
+          "packageId": "running-headless-orchestrator",
+          "version": "^1.0.0",
+          "required": false,
+          "reason": "For autonomous orchestration without human intervention"
+        }
+      ]
+    },
+    {
+      "id": "agent-relay-plugins",
+      "name": "Agent Relay CLI Plugins",
+      "description": "Native plugins for Claude Code, OpenCode, and Gemini CLI — hooks, tools, MCP servers, and multi-agent skills for each platform",
+      "version": "0.1.0",
+      "category": "development",
+      "tags": [
+        "plugins",
+        "claude-code",
+        "opencode",
+        "gemini-cli",
+        "multi-agent",
+        "relaycast"
+      ],
+      "packages": [
+        {
+          "packageId": "claude-relay-plugin",
+          "version": "^0.1.0",
+          "required": false,
+          "reason": "Claude Code plugin with MCP, hooks, worker agents, and coordination skills"
+        },
+        {
+          "packageId": "opencode-relay-plugin",
+          "version": "^0.1.0",
+          "required": false,
+          "reason": "OpenCode plugin with native tools, idle polling, and worker spawning"
+        },
+        {
+          "packageId": "gemini-relay-extension",
+          "version": "^0.1.0",
+          "required": false,
+          "reason": "Gemini CLI extension with MCP server, lifecycle hooks, and commands"
+        }
+      ]
+    },
+    {
+      "id": "agent-relay-complete",
+      "name": "Agent Relay Complete",
+      "description": "Everything needed for multi-agent coordination — all skills, agents, snippets, and CLI plugins bundled together",
+      "version": "1.0.0",
+      "category": "development",
+      "tags": [
+        "multi-agent",
+        "complete",
+        "all-in-one",
+        "orchestration",
+        "agent-relay"
+      ],
+      "packages": [
+        {
+          "packageId": "using-agent-relay",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "Core inter-agent messaging skill"
+        },
+        {
+          "packageId": "choosing-swarm-patterns",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "Swarm pattern decision framework"
+        },
+        {
+          "packageId": "adding-swarm-patterns",
+          "version": "^1.0.0",
+          "required": false,
+          "reason": "Custom swarm pattern implementation"
+        },
+        {
+          "packageId": "writing-agent-relay-workflows",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "WorkflowBuilder API for DAG workflows"
+        },
+        {
+          "packageId": "running-headless-orchestrator",
+          "version": "^1.0.0",
+          "required": false,
+          "reason": "Autonomous headless orchestration"
+        },
+        {
+          "packageId": "agent-relay-snippet",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "AGENTS.md snippet for relay usage instructions"
+        },
+        {
+          "packageId": "agent-relay-protocol",
+          "version": "^1.0.0",
+          "required": false,
+          "reason": "Internal protocol snippet for dashboard integration"
+        },
+        {
+          "packageId": "agent-policy-snippet",
+          "version": "^1.0.0",
+          "required": false,
+          "reason": "Agent policy rules for spawn and messaging restrictions"
+        },
+        {
+          "packageId": "lead-agent",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "Lead coordinator agent for multi-agent teams"
+        },
+        {
+          "packageId": "shadow-agents",
+          "version": "^1.0.0",
+          "required": false,
+          "reason": "Shadow agents for code review, auditing, and monitoring"
+        },
+        {
+          "packageId": "claude-relay-plugin",
+          "version": "^0.1.0",
+          "required": false,
+          "reason": "Claude Code native plugin"
+        },
+        {
+          "packageId": "opencode-relay-plugin",
+          "version": "^0.1.0",
+          "required": false,
+          "reason": "OpenCode native plugin"
+        },
+        {
+          "packageId": "gemini-relay-extension",
+          "version": "^0.1.0",
+          "required": false,
+          "reason": "Gemini CLI native extension"
+        }
       ]
     }
   ]

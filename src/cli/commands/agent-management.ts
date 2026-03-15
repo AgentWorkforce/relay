@@ -2,9 +2,9 @@ import { Command } from 'commander';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { HttpAgentRelayClient } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 
-import { createAgentRelayClient } from '../lib/client-factory.js';
 import { runAgentsCommand, runAgentsLogsCommand, runWhoCommand } from '../lib/agent-management-listing.js';
 
 type ShadowMode = 'subagent' | 'process';
@@ -46,7 +46,8 @@ export interface AgentManagementClient {
 export interface AgentManagementDependencies {
   getProjectRoot: () => string;
   getDataDir: () => string;
-  createClient: (cwd: string) => AgentManagementClient;
+  createClient: (cwd: string) => AgentManagementClient | Promise<AgentManagementClient>;
+  createAutostartClient: (cwd: string) => AgentManagementClient | Promise<AgentManagementClient>;
   readTaskFromStdin: () => Promise<string | undefined>;
   fileExists: (filePath: string) => boolean;
   readFile: (filePath: string, encoding?: BufferEncoding) => string;
@@ -86,20 +87,10 @@ async function readTaskFromStdin(): Promise<string | undefined> {
   return task.length > 0 ? task : undefined;
 }
 
-function resolveRequestTimeoutMsFromEnv(): number | undefined {
-  const raw = process.env.AGENT_RELAY_REQUEST_TIMEOUT_MS;
-  if (!raw) return undefined;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return parsed;
-}
-
-function createDefaultClient(cwd: string): AgentManagementClient {
-  const requestTimeoutMs = resolveRequestTimeoutMsFromEnv();
-  return createAgentRelayClient({
-    cwd,
-    ...(requestTimeoutMs ? { requestTimeoutMs } : {}),
-  }) as unknown as AgentManagementClient;
+function createSdkClient(cwd: string, autoStart: boolean): Promise<AgentManagementClient> {
+  return HttpAgentRelayClient.discoverAndConnect({ cwd, autoStart }).then(
+    (client) => client as unknown as AgentManagementClient
+  );
 }
 
 function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): AgentManagementDependencies {
@@ -107,7 +98,8 @@ function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): Age
     getProjectRoot: () => getProjectPaths().projectRoot,
     getDataDir: () =>
       process.env.AGENT_RELAY_DATA_DIR || path.join(os.homedir(), '.local', 'share', 'agent-relay'),
-    createClient: createDefaultClient,
+    createClient: (cwd: string) => createSdkClient(cwd, false),
+    createAutostartClient: (cwd: string) => createSdkClient(cwd, true),
     readTaskFromStdin,
     fileExists: fs.existsSync,
     readFile: (filePath, encoding = 'utf-8') => fs.readFileSync(filePath, encoding),
@@ -210,7 +202,14 @@ export function registerAgentManagementCommands(
         parseShadowTriggers(options.shadowTriggers, deps);
         parseShadowTriggers(options.shadowSpeakOn, deps);
 
-        const client = deps.createClient(options.cwd || deps.getProjectRoot());
+        let client: AgentManagementClient;
+        try {
+          client = await deps.createAutostartClient(options.cwd || deps.getProjectRoot());
+        } catch (err: any) {
+          deps.error(`Failed to connect to broker: ${err?.message || String(err)}`);
+          deps.exit(1);
+          return;
+        }
         let exitCode = 0;
 
         const taskToSpawn = finalTask;
@@ -313,7 +312,14 @@ export function registerAgentManagementCommands(
     .argument('<name>', 'Agent name to release')
     .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
     .action(async (name: string) => {
-      const client = deps.createClient(deps.getProjectRoot());
+      let client: AgentManagementClient;
+      try {
+        client = await deps.createClient(deps.getProjectRoot());
+      } catch (err: any) {
+        deps.error(`Failed to connect to broker: ${err?.message || String(err)}`);
+        deps.exit(1);
+        return;
+      }
       let exitCode = 0;
       try {
         await client.release(name, 'released via cli');
@@ -336,7 +342,14 @@ export function registerAgentManagementCommands(
     .option('--timeout <ms>', 'Idle wait timeout in milliseconds', '30000')
     .action(async (name: string, model: string, options: { timeout?: string }) => {
       const timeoutMs = parseInt(options.timeout || '30000', 10);
-      const client = deps.createClient(deps.getProjectRoot());
+      let client: AgentManagementClient;
+      try {
+        client = await deps.createClient(deps.getProjectRoot());
+      } catch (err: any) {
+        deps.error(`Failed to connect to broker: ${err?.message || String(err)}`);
+        deps.exit(1);
+        return;
+      }
       let exitCode = 0;
 
       try {
@@ -364,7 +377,14 @@ export function registerAgentManagementCommands(
     .argument('<name>', 'Agent name')
     .option('--force', 'Skip graceful shutdown, kill immediately')
     .action(async (name: string, options: { force?: boolean }) => {
-      const client = deps.createClient(deps.getProjectRoot());
+      let client: AgentManagementClient;
+      try {
+        client = await deps.createClient(deps.getProjectRoot());
+      } catch (err: any) {
+        deps.error(`Failed to connect to broker: ${err?.message || String(err)}`);
+        deps.exit(1);
+        return;
+      }
       const workers = await client.listAgents().catch(() => []);
       await client.shutdown().catch(() => undefined);
       const worker = workers.find((entry) => entry.name === name);

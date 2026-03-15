@@ -1,0 +1,65 @@
+version: '1.0'
+name: validation-interactive-codex-lead-worker
+swarm:
+  pattern: dag
+  channel: validation-interactive-codex-lead-worker
+  timeoutMs: 180000
+  idleNudge:
+    nudgeAfterMs: 60000
+    escalateAfterMs: 45000
+    maxNudges: 2
+agents:
+  - name: lead
+    cli: codex
+    channels: [validation-interactive-codex-lead-worker]
+    constraints:
+      model: gpt-5.3-codex
+  - name: worker
+    cli: codex
+    preset: worker
+    interactive: true
+    channels: [validation-interactive-codex-lead-worker]
+    constraints:
+      model: gpt-5.3-codex
+workflows:
+  - name: happy-path
+    steps:
+      - name: lead-step
+        type: agent
+        agent: lead
+        task: |
+          You are the lead coordinating a single worker on #validation-interactive-codex-lead-worker.
+
+          STEP 1 — Post exactly this channel message:
+          ASSIGNMENT: Output WORKER_SIGNAL locally, then post WORKER_DONE to #validation-interactive-codex-lead-worker.
+
+          STEP 2 — Poll the channel until you see a message containing WORKER_DONE.
+
+          STEP 3 — Output exactly:
+          LEAD_DONE
+
+          Then self-terminate immediately.
+        verification:
+          type: output_contains
+          value: LEAD_DONE
+
+      - name: worker-step
+        type: agent
+        agent: worker
+        task: |
+          You are the worker on #validation-interactive-codex-lead-worker.
+
+          STEP 1 — Wait until the channel contains a message with ASSIGNMENT:.
+
+          STEP 2 — Output exactly:
+          WORKER_SIGNAL
+
+          STEP 3 — Post exactly WORKER_DONE to #validation-interactive-codex-lead-worker.
+
+          STEP 4 — Output exactly:
+          WORKER_DONE_LOCAL
+
+          Then self-terminate immediately.
+        verification:
+          type: output_contains
+          value: WORKER_DONE_LOCAL

@@ -67,17 +67,17 @@ You are an expert database specialist focusing on data modeling, schema design, 
 ### Starting Work
 
 ```
-relay_send(to: "Lead", message: "**DATABASE:** Starting [task name]\n\n**Impact:** [Schema/data impact assessment]\n**Risk level:** [Low/Medium/High]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**DATABASE:** Starting [task name]\n\n**Impact:** [Schema/data impact assessment]\n**Risk level:** [Low/Medium/High]")
 ```
 
 ### Schema Change Proposal
 
 ```
-relay_send(to: "Lead", message: "**SCHEMA CHANGE:** [Description]\n\n**Reason:** [Why this change]\n**Migration plan:**\n1. [Step 1]\n2. [Step 2]\n\n**Rollback:** [How to undo if needed]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**SCHEMA CHANGE:** [Description]\n\n**Reason:** [Why this change]\n**Migration plan:**\n1. [Step 1]\n2. [Step 2]\n\n**Rollback:** [How to undo if needed]")
 ```
 
 ### Completion
 
 ```
-relay_send(to: "Lead", message: "**DONE:** [Task name]\n\n**Changes:**\n- [Schema/query changes]\n\n**Migration file:** [Path if applicable]\n**Notes:** [Performance considerations, etc.]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**DONE:** [Task name]\n\n**Changes:**\n- [Schema/query changes]\n\n**Migration file:** [Path if applicable]\n**Notes:** [Performance considerations, etc.]")
 ```

@@ -1,6 +1,9 @@
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
+import { buildBundledRelaycastMcpCommand } from './relaycast-mcp-command.js';
 
 type UpOptions = {
   dashboard?: boolean;
@@ -10,6 +13,7 @@ type UpOptions = {
   verbose?: boolean;
   dashboardPath?: string;
   reuseExistingBroker?: boolean;
+  workspaceKey?: string;
 };
 
 type DownOptions = {
@@ -77,10 +81,8 @@ async function startBrokerWithPortFallback(
   // Resolve a free API port BEFORE spawning the broker.  This avoids
   // spawning (and flocking) multiple --persist brokers during retry,
   // which caused stale-flock "already running" errors.
-  const startApiPort = wantsDashboard ? dashboardPort + 1 : 0;
-  const apiPort = wantsDashboard
-    ? await resolveApiPortWithFallback(startApiPort, MAX_API_PORT_ATTEMPTS, deps)
-    : startApiPort;
+  const startApiPort = dashboardPort + 1;
+  const apiPort = await resolveApiPortWithFallback(startApiPort, MAX_API_PORT_ATTEMPTS, deps);
 
   const candidate = deps.createRelay(paths.projectRoot, apiPort);
   candidate.onBrokerStderr?.((line: string) => {
@@ -173,9 +175,26 @@ function isProcessRunning(pid: number, deps: CoreDependencies): boolean {
 async function killOrphanedBrokerProcesses(projectRoot: string, deps: CoreDependencies): Promise<void> {
   try {
     const shellQuote = (s: string): string => "'" + s.replace(/'/g, "'\\''") + "'";
-    const { stdout } = await deps.execCommand(
-      `ps aux | grep '[a]gent-relay-broker' | grep -F ${shellQuote(projectRoot)}`
-    );
+    const brokerName = path.basename(projectRoot) || 'project';
+    let stdout = '';
+    try {
+      const byName = await deps.execCommand(
+        `ps aux | grep '[a]gent-relay-broker' | grep -F ${shellQuote('--name ' + brokerName)}`
+      );
+      stdout = byName.stdout;
+    } catch {
+      // Name filter may not match older process invocations; try legacy path-based filter.
+    }
+    if (!stdout.trim()) {
+      try {
+        const byPath = await deps.execCommand(
+          `ps aux | grep '[a]gent-relay-broker' | grep -F ${shellQuote(projectRoot)}`
+        );
+        stdout = byPath.stdout;
+      } catch {
+        // Expected when no orphaned processes are matched by either strategy.
+      }
+    }
     const lines = stdout.trim().split('\n').filter(Boolean);
     for (const line of lines) {
       const parts = line.trim().split(/\s+/);
@@ -202,6 +221,17 @@ function cleanupBrokerPidIfStopped(brokerPidPath: string, deps: CoreDependencies
   const pid = readPidFile(brokerPidPath, deps);
   if (pid === null || !isProcessRunning(pid, deps)) {
     safeUnlink(brokerPidPath, deps);
+  }
+}
+
+function ensureBundledRelaycastMcpCommand(deps: CoreDependencies): void {
+  if (deps.env.RELAYCAST_MCP_COMMAND?.trim()) {
+    return;
+  }
+
+  const command = buildBundledRelaycastMcpCommand(deps.execPath, deps.cliScript, deps.fs.existsSync);
+  if (command) {
+    deps.env.RELAYCAST_MCP_COMMAND = command;
   }
 }
 
@@ -585,6 +615,112 @@ async function resolveStartedDashboardPort(
   });
 }
 
+/**
+ * Check if the cached dashboard UI assets match the installed dashboard-server
+ * binary version. If they are stale (or missing a version marker), re-download
+ * the latest assets from the relay-dashboard GitHub release.
+ */
+async function refreshDashboardAssetsIfStale(
+  dashboardBinary: string | null,
+  deps: CoreDependencies
+): Promise<void> {
+  if (!dashboardBinary || dashboardBinary.endsWith('.js') || dashboardBinary.endsWith('.ts')) {
+    // Dev mode or npx — skip
+    return;
+  }
+
+  // Get installed binary version (async to avoid blocking event loop)
+  let binaryVersion: string;
+  try {
+    const versionResult = await deps.execCommand(
+      `${JSON.stringify(dashboardBinary)} --version`
+    );
+    binaryVersion = versionResult.stdout.trim();
+  } catch {
+    return; // Can't determine version — skip
+  }
+
+  if (!binaryVersion) {
+    return;
+  }
+
+  const homeDir = deps.env.HOME || deps.env.USERPROFILE || os.homedir();
+  const assetsDir = path.join(homeDir, '.relay', 'dashboard', 'out');
+  const versionFile = path.join(homeDir, '.relay', 'dashboard', '.version');
+
+  // Check if assets match the binary version
+  try {
+    const cachedVersion = deps.fs.readFileSync(versionFile, 'utf-8').trim();
+    if (cachedVersion === binaryVersion) {
+      return; // Up to date
+    }
+  } catch {
+    // No version file — need to download if assets exist but are unversioned,
+    // or if assets don't exist at all
+    if (deps.fs.existsSync(assetsDir)) {
+      // Assets exist but no version marker — they're from an old install
+    } else {
+      // No assets at all — need to download
+    }
+  }
+
+  deps.log(`Updating dashboard UI assets (${binaryVersion})...`);
+
+  const uiUrl =
+    'https://github.com/AgentWorkforce/relay-dashboard/releases/latest/download/dashboard-ui.tar.gz';
+  const targetDir = path.join(homeDir, '.relay', 'dashboard');
+  let tempDir: string | undefined;
+  let tempFile: string | undefined;
+
+  try {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `dashboard-ui-${deps.pid}-`));
+    tempFile = path.join(tempDir, 'dashboard-ui.tar.gz');
+    // Download (async to avoid blocking event loop during network I/O)
+    await deps.execCommand(
+      `curl -fsSL --max-time 30 ${JSON.stringify(uiUrl)} -o ${JSON.stringify(tempFile)}`
+    );
+
+    // Verify it's a valid gzip
+    const header = Buffer.alloc(2);
+    const fd = fs.openSync(tempFile, 'r');
+    fs.readSync(fd, header, 0, 2, 0);
+    fs.closeSync(fd);
+    if (header[0] !== 0x1f || header[1] !== 0x8b) {
+      if (tempFile) deps.fs.unlinkSync(tempFile);
+      return; // Not a valid gzip file
+    }
+
+    // Remove old assets and extract (async to avoid blocking event loop)
+    deps.fs.rmSync(assetsDir, { recursive: true, force: true });
+    deps.fs.mkdirSync(targetDir, { recursive: true });
+    await deps.execCommand(
+      `tar -xzf ${JSON.stringify(tempFile)} -C ${JSON.stringify(targetDir)}`
+    );
+    if (tempFile) deps.fs.unlinkSync(tempFile);
+
+    // Write version marker only after confirming extraction succeeded
+    if (deps.fs.existsSync(path.join(assetsDir, 'index.html'))) {
+      deps.fs.writeFileSync(versionFile, binaryVersion);
+      deps.log(`Dashboard UI assets updated to ${binaryVersion}`);
+    } else {
+      deps.warn('Dashboard UI extraction may be incomplete — skipping version marker');
+    }
+  } catch {
+    // Best-effort — don't block startup
+    try {
+      if (tempFile) deps.fs.unlinkSync(tempFile);
+    } catch {
+      /* ignore */
+    }
+  } finally {
+    try {
+      if (tempDir) deps.fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 async function startDashboardWithFallback(
   paths: CoreProjectPaths,
   dashboardPort: number,
@@ -594,6 +730,7 @@ async function startDashboardWithFallback(
   relayApiKey?: string
 ): Promise<{ process: SpawnedProcess; port: number | null }> {
   const preferredBinary = deps.findDashboardBinary();
+  await refreshDashboardAssetsIfStale(preferredBinary, deps);
   let process = startDashboard(
     paths,
     dashboardPort,
@@ -697,6 +834,8 @@ async function shutdownUpResources(
 
 // eslint-disable-next-line complexity
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
+  ensureBundledRelaycastMcpCommand(deps);
+
   if (options.background) {
     const args = deps.argv.slice(2).filter((arg) => arg !== '--background');
     const child = deps.spawnProcess(deps.execPath, [deps.cliScript, ...args], {
@@ -742,7 +881,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   let ownsBroker = true;
 
   let relay: CoreRelay | null = null;
-  let apiPort = wantsDashboard ? dashboardPort + 1 : 0;
+  let apiPort = dashboardPort + 1;
   let dashboardProcess: SpawnedProcess | undefined;
   const dashboardVerbose = Boolean(options.verbose) || isDebugLikeLoggingEnabled(deps);
   let shuttingDown = false;
@@ -806,6 +945,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
           }
           deps.log(`Project: ${paths.projectRoot}`);
           deps.log('Mode: broker (stdio)');
+          deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
           deps.log('Broker already running for this project; reusing existing broker.');
 
           if (wantsDashboard) {
@@ -869,6 +1009,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       existingPid = null;
     }
 
+    // If a workspace key was explicitly provided, inject it into the environment
+    // so the Rust broker picks it up via RELAY_API_KEY.
+    if (options.workspaceKey) {
+      deps.env.RELAY_API_KEY = options.workspaceKey;
+    }
+
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agent-relay/ while broker was running).
     await killOrphanedBrokerProcesses(paths.projectRoot, deps);
@@ -882,7 +1028,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     );
     relay = started.relay;
     apiPort = started.apiPort;
-    writeBrokerPid(brokerPidPath, deps.pid, deps);
+    writeBrokerPid(brokerPidPath, relay.brokerPid ?? deps.pid, deps);
     const dashboardRelayUrl = resolveDashboardRelayUrl(apiPort, deps);
     const expectedRelayUrl = getDefaultDashboardRelayUrl(apiPort);
     if (
@@ -902,6 +1048,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 
     deps.log(`Project: ${paths.projectRoot}`);
     deps.log('Mode: broker (stdio)');
+    deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
     deps.log('Broker started.');
 
     if (wantsDashboard) {
@@ -1158,18 +1305,23 @@ export async function runStatusCommand(deps: CoreDependencies): Promise<void> {
   deps.log(`PID: ${brokerPid}`);
   deps.log(`Project: ${paths.projectRoot}`);
 
-  const relay = deps.createRelay(paths.projectRoot);
-  try {
-    const status = await relay.getStatus();
-    if (typeof status.agent_count === 'number') {
-      deps.log(`Agents: ${status.agent_count}`);
+  // Discover the existing broker's API port instead of spawning a new broker.
+  // Without an API port, createRelay spawns a fresh broker process which
+  // conflicts with the already-running one and can cause the command to fail.
+  const apiPort = await deps.findBrokerApiPort();
+
+  if (apiPort > 0) {
+    const relay = deps.createRelay(paths.projectRoot, apiPort);
+    try {
+      const status = await relay.getStatus();
+      if (typeof status.agent_count === 'number') {
+        deps.log(`Agents: ${status.agent_count}`);
+      }
+      if (typeof status.pending_delivery_count === 'number' && status.pending_delivery_count > 0) {
+        deps.log(`Pending deliveries: ${status.pending_delivery_count}`);
+      }
+    } catch {
+      // PID-based status is enough when broker query fails.
     }
-    if (typeof status.pending_delivery_count === 'number' && status.pending_delivery_count > 0) {
-      deps.log(`Pending deliveries: ${status.pending_delivery_count}`);
-    }
-  } catch {
-    // PID-based status is enough when broker query fails.
-  } finally {
-    await relay.shutdown().catch(() => undefined);
   }
 }

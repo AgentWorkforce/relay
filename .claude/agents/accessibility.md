@@ -173,19 +173,19 @@ npx pa11y https://example.com
 **Acknowledge audit request:**
 
 ```
-relay_send(to: "Sender", message: "ACK: Starting accessibility audit for [scope]")
+mcp__relaycast__message_dm_send(to: "Sender", text: "ACK: Starting accessibility audit for [scope]")
 ```
 
 **Report findings:**
 
 ```
-relay_send(to: "Sender", message: "A11Y AUDIT COMPLETE:\n- Critical: X issues\n- Serious: Y issues\n- Moderate: Z issues\nWCAG Level AA: [Pass/Fail]\nKey blocker: [if any]")
+mcp__relaycast__message_dm_send(to: "Sender", text: "A11Y AUDIT COMPLETE:\n- Critical: X issues\n- Serious: Y issues\n- Moderate: Z issues\nWCAG Level AA: [Pass/Fail]\nKey blocker: [if any]")
 ```
 
 **Recommend priority fixes:**
 
 ```
-relay_send(to: "Lead", message: "A11Y PRIORITY: [component] blocks keyboard users\nRecommend: [specific fix]\nEffort: [Low/Medium/High]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "A11Y PRIORITY: [component] blocks keyboard users\nRecommend: [specific fix]\nEffort: [Low/Medium/High]")
 ```
 
 ## Common Issues

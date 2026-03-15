@@ -137,6 +137,9 @@ export interface SpawnOptions extends SpawnLifecycleHooks {
   shadowMode?: string;
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
+  /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
+   *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
+  skipRelayPrompt?: boolean;
 }
 
 export interface SpawnAndWaitOptions extends SpawnOptions {
@@ -202,6 +205,9 @@ export interface SpawnerSpawnOptions extends SpawnLifecycleHooks {
   task?: string;
   model?: string;
   cwd?: string;
+  /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
+   *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
+  skipRelayPrompt?: boolean;
 }
 
 export type EventHook<T> = ((value: T) => void) | null;
@@ -265,6 +271,7 @@ export class AgentRelay {
   readonly codex: AgentSpawner;
   readonly claude: AgentSpawner;
   readonly gemini: AgentSpawner;
+  readonly opencode: AgentSpawner;
 
   private readonly clientOptions: AgentRelayClientOptions;
   private readonly defaultChannels: string[];
@@ -299,7 +306,7 @@ export class AgentRelay {
     this.clientOptions = {
       binaryPath: options.binaryPath,
       binaryArgs: options.binaryArgs,
-      brokerName: options.brokerName,
+      brokerName: options.brokerName ?? options.workspaceName,
       channels: this.defaultChannels,
       cwd: options.cwd,
       env: options.env,
@@ -310,6 +317,7 @@ export class AgentRelay {
     this.codex = this.createSpawner('codex', 'Codex', 'pty');
     this.claude = this.createSpawner('claude', 'Claude', 'pty');
     this.gemini = this.createSpawner('gemini', 'Gemini', 'pty');
+    this.opencode = this.createSpawner('opencode', 'OpenCode', 'headless');
   }
 
   /**
@@ -369,6 +377,7 @@ export class AgentRelay {
         shadowMode: input.shadowMode,
         idleThresholdSecs: input.idleThresholdSecs,
         restartPolicy: input.restartPolicy,
+        skipRelayPrompt: input.skipRelayPrompt,
       });
     } catch (error) {
       await this.invokeLifecycleHook(
@@ -410,6 +419,7 @@ export class AgentRelay {
       shadowMode: options?.shadowMode,
       idleThresholdSecs: options?.idleThresholdSecs,
       restartPolicy: options?.restartPolicy,
+      skipRelayPrompt: options?.skipRelayPrompt,
       onStart: options?.onStart,
       onSuccess: options?.onSuccess,
       onError: options?.onError,
@@ -774,10 +784,21 @@ export class AgentRelay {
       this.unsubEvent();
       this.unsubEvent = undefined;
     }
-    if (this.client) {
-      await this.client.shutdown();
-      this.client = undefined;
+    let client = this.client;
+    if (!client && this.startPromise) {
+      try {
+        client = await this.startPromise;
+      } catch {
+        client = undefined;
+      }
     }
+    if (client) {
+      await client.shutdown();
+      if (this.client === client) {
+        this.client = undefined;
+      }
+    }
+    this.startPromise = undefined;
     this.knownAgents.clear();
     this.readyAgents.clear();
     this.messageReadyAgents.clear();
@@ -859,7 +880,10 @@ export class AgentRelay {
    *   4. Auto-create a fresh workspace via the Relaycast REST API
    */
   private async ensureRelaycastApiKey(): Promise<void> {
-    if (this.relayApiKey) return;
+    if (this.relayApiKey) {
+      this.wireRelaycastBaseUrl();
+      return;
+    }
 
     const envKey = this.clientOptions.env?.RELAY_API_KEY ?? process.env.RELAY_API_KEY;
     if (envKey) {
@@ -874,6 +898,7 @@ export class AgentRelay {
       } else if (!this.clientOptions.env.RELAY_API_KEY) {
         this.clientOptions.env.RELAY_API_KEY = envKey;
       }
+      this.wireRelaycastBaseUrl();
       return;
     }
 
@@ -883,6 +908,15 @@ export class AgentRelay {
     // read from the broker's hello_ack response in ensureStarted().
     if (!this.clientOptions.env) {
       this.clientOptions.env = { ...process.env };
+    }
+
+    this.wireRelaycastBaseUrl();
+  }
+
+  /** Inject relaycastBaseUrl into broker env. Explicit option wins over inherited env. */
+  private wireRelaycastBaseUrl(): void {
+    if (this.relaycastBaseUrl && this.clientOptions.env) {
+      this.clientOptions.env.RELAYCAST_BASE_URL = this.relaycastBaseUrl;
     }
   }
 
@@ -1067,6 +1101,19 @@ export class AgentRelay {
           name,
           reason: releaseOptions.reason,
         };
+        if (!relay.knownAgents.has(name)) {
+          await relay.invokeLifecycleHook(
+            releaseOptions.onStart,
+            releaseContext,
+            `release("${name}") onStart`
+          );
+          await relay.invokeLifecycleHook(
+            releaseOptions.onSuccess,
+            releaseContext,
+            `release("${name}") onSuccess`
+          );
+          return;
+        }
         const client = await relay.ensureStarted();
         await relay.invokeLifecycleHook(releaseOptions.onStart, releaseContext, `release("${name}") onStart`);
         try {
@@ -1077,6 +1124,24 @@ export class AgentRelay {
             `release("${name}") onSuccess`
           );
         } catch (error) {
+          if (error instanceof AgentRelayProtocolError && error.code === 'agent_not_found') {
+            relay.exitedAgents.add(name);
+            relay.readyAgents.delete(name);
+            relay.messageReadyAgents.delete(name);
+            relay.idleAgents.delete(name);
+            relay.knownAgents.delete(name);
+            relay.outputListeners.delete(name);
+            relay.exitResolvers.get(name)?.resolve('released');
+            relay.exitResolvers.delete(name);
+            relay.idleResolvers.get(name)?.resolve('exited');
+            relay.idleResolvers.delete(name);
+            await relay.invokeLifecycleHook(
+              releaseOptions.onSuccess,
+              releaseContext,
+              `release("${name}") onSuccess`
+            );
+            return;
+          }
           await relay.invokeLifecycleHook(
             releaseOptions.onError,
             {
@@ -1225,6 +1290,7 @@ export class AgentRelay {
             task,
             model: options?.model,
             cwd: options?.cwd,
+            skipRelayPrompt: options?.skipRelayPrompt,
             onStart: options?.onStart,
             onSuccess: options?.onSuccess,
             onError: options?.onError,
@@ -1248,6 +1314,7 @@ export class AgentRelay {
             args,
             channels,
             task,
+            skipRelayPrompt: options?.skipRelayPrompt,
           });
         } catch (error) {
           await this.invokeLifecycleHook(

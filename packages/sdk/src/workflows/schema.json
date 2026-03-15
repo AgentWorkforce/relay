@@ -1,10 +1,17 @@
+Added workdir to AgentWorkflowStep
+Added workdir to DeterministicWorkflowStep
+Added workdir to WorktreeWorkflowStep
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "RelayYamlConfig",
   "title": "Relay YAML Configuration",
   "description": "Schema for relay.yaml workflow configuration files",
   "type": "object",
-  "required": ["version", "name", "swarm"],
+  "required": [
+    "version",
+    "name",
+    "swarm"
+  ],
   "additionalProperties": false,
   "properties": {
     "version": {
@@ -18,6 +25,13 @@
     "description": {
       "type": "string",
       "description": "Optional description of the configuration"
+    },
+    "paths": {
+      "type": "array",
+      "description": "Named paths to external directories. The primary working directory defaults to cwd. Use this to declare additional directories so the runner can validate them in preflight and agents can reference them via workdir.",
+      "items": {
+        "$ref": "#/definitions/PathDefinition"
+      }
     },
     "swarm": {
       "$ref": "#/definitions/SwarmConfig"
@@ -51,15 +65,46 @@
         },
         {
           "type": "boolean",
-          "enum": [false]
+          "enum": [
+            false
+          ]
         }
       ]
     }
   },
   "definitions": {
+    "PathDefinition": {
+      "type": "object",
+      "required": [
+        "name",
+        "path"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique name used to reference this project (e.g. 'relaycast', 'relay')"
+        },
+        "path": {
+          "type": "string",
+          "description": "Path to the project root, resolved relative to the YAML file. Supports env vars: $HOME/.openclaw"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of this project's role in the workflow"
+        },
+        "required": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether this project is required. If true (default), preflight fails if path doesn't exist."
+        }
+      }
+    },
     "SwarmConfig": {
       "type": "object",
-      "required": ["pattern"],
+      "required": [
+        "pattern"
+      ],
       "additionalProperties": false,
       "properties": {
         "pattern": {
@@ -81,6 +126,12 @@
         },
         "idleNudge": {
           "$ref": "#/definitions/IdleNudgeConfig"
+        },
+        "completionGracePeriodMs": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 5000,
+          "description": "Grace period (ms) after an agent exits with code 0 but without posting the expected coordination signal. During this window the runner checks verification gates and evidence before failing. Set to 0 to disable."
         }
       }
     },
@@ -136,7 +187,10 @@
     },
     "AgentDefinition": {
       "type": "object",
-      "required": ["name", "cli"],
+      "required": [
+        "name",
+        "cli"
+      ],
       "additionalProperties": false,
       "properties": {
         "name": {
@@ -156,7 +210,9 @@
         },
         "channels": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Relay channels the agent should join"
         },
         "constraints": {
@@ -167,16 +223,47 @@
           "default": true,
           "description": "When false, the agent runs as a non-interactive subprocess (no PTY, no relay messaging). It receives its task as a CLI prompt argument and returns stdout as output. Default: true."
         },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory for this agent, resolved relative to the YAML file."
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Sets this agent's working directory to a named entry from the top-level paths array. Mutually exclusive with cwd."
+        },
+        "additionalPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional paths the agent needs read/write access to."
+        },
         "preset": {
           "type": "string",
-          "enum": ["lead", "worker", "reviewer", "analyst"],
+          "enum": [
+            "lead",
+            "worker",
+            "reviewer",
+            "analyst"
+          ],
           "description": "Role preset that automatically configures interactive mode and injects appropriate task guardrails. lead: interactive PTY, relay-aware. worker/reviewer/analyst: interactive: false, no sub-agents."
         }
       }
     },
     "AgentCli": {
       "type": "string",
-      "enum": ["claude", "codex", "gemini", "aider", "goose", "opencode", "droid", "cursor", "cursor-agent", "agent"]
+      "enum": [
+        "claude",
+        "codex",
+        "gemini",
+        "aider",
+        "goose",
+        "opencode",
+        "droid",
+        "cursor",
+        "cursor-agent",
+        "agent"
+      ]
     },
     "AgentConstraints": {
       "type": "object",
@@ -232,7 +319,10 @@
     },
     "WorkflowDefinition": {
       "type": "object",
-      "required": ["name", "steps"],
+      "required": [
+        "name",
+        "steps"
+      ],
       "additionalProperties": false,
       "properties": {
         "name": {
@@ -258,14 +348,20 @@
         },
         "onError": {
           "type": "string",
-          "enum": ["fail", "skip", "retry"],
+          "enum": [
+            "fail",
+            "skip",
+            "retry"
+          ],
           "description": "Error handling strategy for this workflow"
         }
       }
     },
     "PreflightCheck": {
       "type": "object",
-      "required": ["command"],
+      "required": [
+        "command"
+      ],
       "additionalProperties": false,
       "properties": {
         "command": {
@@ -288,20 +384,34 @@
     },
     "WorkflowStep": {
       "oneOf": [
-        { "$ref": "#/definitions/AgentWorkflowStep" },
-        { "$ref": "#/definitions/DeterministicWorkflowStep" },
-        { "$ref": "#/definitions/WorktreeWorkflowStep" },
-        { "$ref": "#/definitions/CustomWorkflowStep" }
+        {
+          "$ref": "#/definitions/AgentWorkflowStep"
+        },
+        {
+          "$ref": "#/definitions/DeterministicWorkflowStep"
+        },
+        {
+          "$ref": "#/definitions/WorktreeWorkflowStep"
+        },
+        {
+          "$ref": "#/definitions/CustomWorkflowStep"
+        }
       ]
     },
     "AgentWorkflowStep": {
       "type": "object",
-      "required": ["name", "agent", "task"],
+      "required": [
+        "name",
+        "agent",
+        "task"
+      ],
       "additionalProperties": false,
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["agent"],
+          "enum": [
+            "agent"
+          ],
           "description": "Step type (optional for agent steps, defaults to 'agent')"
         },
         "name": {
@@ -318,7 +428,9 @@
         },
         "dependsOn": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Step names that must complete before this step runs"
         },
         "verification": {
@@ -336,17 +448,27 @@
           "type": "integer",
           "minimum": 1,
           "description": "Maximum iterations for steps that may need to retry"
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Sets this step's working directory to a named entry from the top-level paths array."
         }
       }
     },
     "DeterministicWorkflowStep": {
       "type": "object",
-      "required": ["name", "type", "command"],
+      "required": [
+        "name",
+        "type",
+        "command"
+      ],
       "additionalProperties": false,
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["deterministic"],
+          "enum": [
+            "deterministic"
+          ],
           "description": "Step type - must be 'deterministic' for shell command steps"
         },
         "name": {
@@ -359,7 +481,9 @@
         },
         "dependsOn": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Step names that must complete before this step runs"
         },
         "timeoutMs": {
@@ -375,17 +499,27 @@
           "type": "boolean",
           "default": true,
           "description": "Capture stdout as step output for downstream steps"
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Sets this step's working directory to a named entry from the top-level paths array."
         }
       }
     },
     "WorktreeWorkflowStep": {
       "type": "object",
-      "required": ["name", "type", "branch"],
+      "required": [
+        "name",
+        "type",
+        "branch"
+      ],
       "additionalProperties": false,
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["worktree"],
+          "enum": [
+            "worktree"
+          ],
           "description": "Step type - must be 'worktree' for git worktree setup steps"
         },
         "name": {
@@ -411,18 +545,27 @@
         },
         "dependsOn": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Step names that must complete before this step runs"
         },
         "timeoutMs": {
           "type": "integer",
           "minimum": 0
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Sets this step's working directory to a named entry from the top-level paths array."
         }
       }
     },
     "CustomWorkflowStep": {
       "type": "object",
-      "required": ["name", "use"],
+      "required": [
+        "name",
+        "use"
+      ],
       "additionalProperties": true,
       "properties": {
         "name": {
@@ -435,7 +578,9 @@
         },
         "dependsOn": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Step names that must complete before this step runs"
         },
         "timeoutMs": {
@@ -446,7 +591,9 @@
     },
     "CustomStepParam": {
       "type": "object",
-      "required": ["name"],
+      "required": [
+        "name"
+      ],
       "additionalProperties": false,
       "properties": {
         "name": {
@@ -474,12 +621,17 @@
       "properties": {
         "params": {
           "type": "array",
-          "items": { "$ref": "#/definitions/CustomStepParam" },
+          "items": {
+            "$ref": "#/definitions/CustomStepParam"
+          },
           "description": "Parameters that can be passed when using this step"
         },
         "type": {
           "type": "string",
-          "enum": ["deterministic", "worktree"],
+          "enum": [
+            "deterministic",
+            "worktree"
+          ],
           "description": "Step type"
         },
         "command": {
@@ -525,24 +677,36 @@
     },
     "CustomStepsConfig": {
       "type": "object",
-      "required": ["steps"],
+      "required": [
+        "steps"
+      ],
       "additionalProperties": false,
       "properties": {
         "steps": {
           "type": "object",
-          "additionalProperties": { "$ref": "#/definitions/CustomStepDefinition" },
+          "additionalProperties": {
+            "$ref": "#/definitions/CustomStepDefinition"
+          },
           "description": "Map of step name to step definition"
         }
       }
     },
     "VerificationCheck": {
       "type": "object",
-      "required": ["type", "value"],
+      "required": [
+        "type",
+        "value"
+      ],
       "additionalProperties": false,
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["output_contains", "exit_code", "file_exists", "custom"],
+          "enum": [
+            "output_contains",
+            "exit_code",
+            "file_exists",
+            "custom"
+          ],
           "description": "Type of verification to perform"
         },
         "value": {
@@ -573,14 +737,21 @@
         },
         "consensusStrategy": {
           "type": "string",
-          "enum": ["majority", "unanimous", "quorum"],
+          "enum": [
+            "majority",
+            "unanimous",
+            "quorum"
+          ],
           "description": "Strategy for reaching consensus among agents"
         }
       }
     },
     "Barrier": {
       "type": "object",
-      "required": ["name", "waitFor"],
+      "required": [
+        "name",
+        "waitFor"
+      ],
       "additionalProperties": false,
       "properties": {
         "name": {
@@ -589,7 +760,9 @@
         },
         "waitFor": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "minItems": 1,
           "description": "Agent or step names to wait for before proceeding"
         },
@@ -602,12 +775,18 @@
     },
     "StateConfig": {
       "type": "object",
-      "required": ["backend"],
+      "required": [
+        "backend"
+      ],
       "additionalProperties": false,
       "properties": {
         "backend": {
           "type": "string",
-          "enum": ["memory", "redis", "database"],
+          "enum": [
+            "memory",
+            "redis",
+            "database"
+          ],
           "description": "State storage backend"
         },
         "ttlMs": {
@@ -623,12 +802,18 @@
     },
     "ErrorHandlingConfig": {
       "type": "object",
-      "required": ["strategy"],
+      "required": [
+        "strategy"
+      ],
       "additionalProperties": false,
       "properties": {
         "strategy": {
           "type": "string",
-          "enum": ["fail-fast", "continue", "retry"],
+          "enum": [
+            "fail-fast",
+            "continue",
+            "retry"
+          ],
           "description": "Global error handling strategy"
         },
         "maxRetries": {

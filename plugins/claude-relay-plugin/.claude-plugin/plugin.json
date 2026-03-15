@@ -1,0 +1,12 @@
+{
+  "name": "agent-relay",
+  "description": "Relaycast MCP plus Claude Code hooks for brokerless multi-agent coordination.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Agent Relay",
+    "url": "https://agent-relay.com"
+  },
+  "homepage": "https://github.com/AgentWorkforce/relay",
+  "repository": "https://github.com/AgentWorkforce/relay",
+  "license": "MIT"
+}

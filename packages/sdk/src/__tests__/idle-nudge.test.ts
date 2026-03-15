@@ -340,6 +340,43 @@ describe('Idle Nudge Detection', () => {
       expect(run.status).toBe('failed');
       expect(run.error).toContain('timed out');
     });
+
+    it('keeps a supervising lead alive after idle nudges are exhausted', async () => {
+      let exitCallCount = 0;
+      waitForExitFn = vi.fn().mockImplementation(() => {
+        exitCallCount++;
+        return Promise.resolve(exitCallCount < 3 ? 'timeout' : 'exited');
+      });
+
+      const config = makeConfig({
+        swarm: {
+          pattern: 'hub-spoke',
+          idleNudge: { nudgeAfterMs: 50, escalateAfterMs: 50, maxNudges: 1 },
+          channel: 'lead-supervision',
+        },
+      });
+      const agentDef = { name: 'team-lead', cli: 'claude', role: 'Lead coordinator' };
+      const step = {
+        name: 'step-1',
+        agent: 'team-lead',
+        task: 'Monitor #lead-supervision for WORKER_DONE, wait for the handoff, then exit.',
+      };
+
+      (runner as any).currentConfig = config;
+      expect((runner as any).shouldPreserveIdleSupervisor(agentDef, step)).toBe(true);
+
+      const result = await (runner as any).waitForExitWithIdleNudging(
+        mockAgent,
+        agentDef,
+        step,
+        500,
+        true
+      );
+
+      expect(result).toBe('exited');
+      expect(waitForExitFn).toHaveBeenCalledTimes(3);
+      expect(mockRelease).not.toHaveBeenCalled();
+    });
   });
 
   describe('Idle = done (no idleNudge config)', () => {
@@ -366,6 +403,37 @@ describe('Idle Nudge Detection', () => {
       expect(run.status).toBe('completed');
       expect(steps).toHaveLength(1);
       expect(steps[0]?.status).toBe('completed');
+      expect(mockRelease).not.toHaveBeenCalled();
+    });
+
+    it('does not treat supervisory lead idleness as completion', async () => {
+      waitForExitFn = vi.fn().mockResolvedValue('exited');
+      waitForIdleFn = vi.fn().mockResolvedValue('idle');
+
+      const config = makeConfig({
+        swarm: { pattern: 'hub-spoke', channel: 'lead-supervision' },
+      });
+      const agentDef = { name: 'team-lead', cli: 'claude', role: 'Lead coordinator' };
+      const step = {
+        name: 'step-1',
+        agent: 'team-lead',
+        task: 'Wait on #lead-supervision for WORKER_DONE before handing off.',
+      };
+
+      (runner as any).currentConfig = config;
+      expect((runner as any).shouldPreserveIdleSupervisor(agentDef, step)).toBe(true);
+
+      const result = await (runner as any).waitForExitWithIdleNudging(
+        mockAgent,
+        agentDef,
+        step,
+        500,
+        true
+      );
+
+      expect(result).toBe('exited');
+      expect(waitForExitFn).toHaveBeenCalledTimes(1);
+      expect(waitForIdleFn).not.toHaveBeenCalled();
       expect(mockRelease).not.toHaveBeenCalled();
     });
 

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
-import { AgentRelayClient } from '../client.js';
+import { AgentRelayClient, AgentRelayProtocolError } from '../client.js';
 import { AgentRelay } from '../relay.js';
 import { PROTOCOL_VERSION, type BrokerEvent } from '../protocol.js';
 
@@ -561,6 +561,55 @@ describe('AgentRelay orchestration handles', () => {
       });
       expect(onError).not.toHaveBeenCalled();
       expect(callOrder).toEqual(['start', 'success']);
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('agent.release is a no-op success after agent_exited', async () => {
+    const { client, mock, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+
+    try {
+      const agent = await relay.spawnPty({
+        name: 'release-after-exit',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      emit({ kind: 'agent_exited', name: 'release-after-exit', code: 0, signal: undefined });
+
+      await expect(agent.release()).resolves.toBeUndefined();
+      expect(mock.release).not.toHaveBeenCalled();
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('agent.release treats broker agent_not_found as idempotent success', async () => {
+    const { client, mock } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    mock.release.mockRejectedValueOnce(
+      new AgentRelayProtocolError({
+        code: 'agent_not_found',
+        message: "unknown worker 'release-idempotent-race'",
+        retryable: false,
+      })
+    );
+
+    const relay = new AgentRelay();
+
+    try {
+      const agent = await relay.spawnPty({
+        name: 'release-idempotent-race',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      await expect(agent.release()).resolves.toBeUndefined();
+      expect(mock.release).toHaveBeenCalledWith('release-idempotent-race', undefined);
     } finally {
       await relay.shutdown();
     }

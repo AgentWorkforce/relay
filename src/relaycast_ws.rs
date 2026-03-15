@@ -5,16 +5,13 @@ use parking_lot::Mutex;
 use relaycast::{
     format_registration_error, retry_agent_registration as sdk_retry_agent_registration,
     AgentClient, AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
-    MessageListQuery, RelayCast, RelayCastOptions, RelayError, ReleaseAgentRequest,
-    WsLifecycleEvent,
+    MessageListQuery, RelayCast, RelayCastOptions, RelayError, ReleaseAgentRequest, WsClient,
+    WsClientOptions, WsLifecycleEvent,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::{
-    auth::{AuthClient, CredentialCache},
-    events::EventEmitter,
-};
+use crate::events::EventEmitter;
 
 #[derive(Debug, Clone)]
 pub enum WsControl {
@@ -27,26 +24,20 @@ pub enum WsControl {
 
 #[derive(Clone)]
 pub struct RelaycastWsClient {
-    base_url: String,
-    auth: AuthClient,
-    token: Arc<Mutex<String>>,
-    creds: Arc<Mutex<CredentialCache>>,
+    ws_base_url: String,
+    workspace_http: RelaycastHttpClient,
     subscriptions: Arc<Mutex<HashSet<String>>>,
 }
 
 impl RelaycastWsClient {
     pub fn new(
-        base_url: impl Into<String>,
-        auth: AuthClient,
-        token: String,
-        creds: CredentialCache,
+        ws_base_url: impl Into<String>,
+        workspace_http: RelaycastHttpClient,
         channels: impl IntoIterator<Item = String>,
     ) -> Self {
         Self {
-            base_url: base_url.into(),
-            auth,
-            token: Arc::new(Mutex::new(token)),
-            creds: Arc::new(Mutex::new(creds)),
+            ws_base_url: ws_base_url.into(),
+            workspace_http,
             subscriptions: Arc::new(Mutex::new(channels.into_iter().collect())),
         }
     }
@@ -64,26 +55,20 @@ impl RelaycastWsClient {
         let mut has_connected = false;
 
         loop {
-            let token = self.token.lock().clone();
-            let base_url = Some(self.base_url.clone());
+            if let Err(error) = self.workspace_http.ensure_workspace_stream_enabled().await {
+                tracing::warn!(
+                    target = "relay_broker::ws",
+                    error = %error,
+                    "failed to enable workspace stream before websocket connect"
+                );
+            }
 
-            let mut agent = match AgentClient::new(&token, base_url) {
-                Ok(agent) => agent,
-                Err(error) => {
-                    tracing::warn!(
-                        target = "relay_broker::ws",
-                        error = %error,
-                        "failed to create SDK agent client"
-                    );
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                    if let Err(error) = self.refresh_token().await {
-                        tracing::warn!(target = "relay_broker::ws", error = %error, "token refresh failed");
-                    }
-                    continue;
-                }
-            };
+            let mut ws = WsClient::new(
+                WsClientOptions::new(self.workspace_http.api_key.clone())
+                    .with_base_url(self.ws_base_url.clone()),
+            );
 
-            match agent.connect().await {
+            match ws.connect().await {
                 Ok(()) => {
                     let status = if has_connected {
                         "reconnected"
@@ -93,7 +78,7 @@ impl RelaycastWsClient {
                     has_connected = true;
                     tracing::info!(
                         target = "broker::ws",
-                        base_url = %self.base_url,
+                        base_url = %self.ws_base_url,
                         status = %status,
                         "WebSocket {status}"
                     );
@@ -105,64 +90,40 @@ impl RelaycastWsClient {
                         }))
                         .await;
 
-                    // Subscribe to channels
-                    let channels = self.active_subscriptions();
-                    if !channels.is_empty() {
-                        tracing::debug!(
-                            target = "broker::ws",
-                            channels = ?channels,
-                            "subscribing to channels"
-                        );
-                        match agent.subscribe_channels(channels.clone()).await {
-                            Ok(()) => {
-                                tracing::info!(
-                                    target = "broker::ws",
-                                    count = channels.len(),
-                                    channels = ?channels,
-                                    "subscribed to channels"
-                                );
-                                for channel in &channels {
-                                    let _ = inbound_tx
-                                        .send(json!({
-                                            "type":"broker.channel_join",
-                                            "payload":{"channel":channel}
-                                        }))
-                                        .await;
-                                }
-                            }
-                            Err(error) => {
-                                tracing::warn!(
-                                    target = "relay_broker::ws",
-                                    error = %error,
-                                    "channel subscribe failed"
-                                );
-                            }
+                    // The workspace stream delivers DMs automatically, but channel
+                    // messages still require explicit WS subscriptions. Keep local
+                    // broker channel join events so existing UI/state consumers see
+                    // the same join notifications.
+                    let active_subscriptions = self.active_subscriptions();
+                    if !active_subscriptions.is_empty() {
+                        if let Err(error) = ws.subscribe(active_subscriptions.clone()).await {
+                            tracing::warn!(
+                                target = "relay_broker::ws",
+                                channels = ?active_subscriptions,
+                                error = %error,
+                                "failed to subscribe websocket to broker channels after connect"
+                            );
+                        } else {
+                            tracing::info!(
+                                target = "broker::ws",
+                                channels = ?active_subscriptions,
+                                "subscribed websocket to broker channels after connect"
+                            );
+                        }
+
+                        for channel in &active_subscriptions {
+                            let _ = inbound_tx
+                                .send(json!({
+                                    "type":"broker.channel_join",
+                                    "payload":{"channel":channel}
+                                }))
+                                .await;
                         }
                     }
 
                     // Get event and lifecycle receivers
-                    let mut event_rx = match agent.subscribe_events() {
-                        Ok(rx) => rx,
-                        Err(error) => {
-                            tracing::warn!(
-                                target = "relay_broker::ws",
-                                error = %error,
-                                "failed to subscribe to SDK events"
-                            );
-                            continue;
-                        }
-                    };
-                    let mut lifecycle_rx = match agent.subscribe_lifecycle() {
-                        Ok(rx) => rx,
-                        Err(error) => {
-                            tracing::warn!(
-                                target = "relay_broker::ws",
-                                error = %error,
-                                "failed to subscribe to SDK lifecycle events"
-                            );
-                            continue;
-                        }
-                    };
+                    let mut event_rx = ws.subscribe_events();
+                    let mut lifecycle_rx = ws.subscribe_lifecycle();
 
                     let mut shutdown = false;
                     while !shutdown {
@@ -170,7 +131,7 @@ impl RelaycastWsClient {
                             ctrl = control_rx.recv() => {
                                 match ctrl {
                                     Some(WsControl::Shutdown) | None => {
-                                        agent.disconnect().await;
+                                        ws.disconnect().await;
                                         shutdown = true;
                                     }
                                     Some(WsControl::Publish(payload)) => {
@@ -178,22 +139,39 @@ impl RelaycastWsClient {
                                         let _ = inbound_tx.send(payload).await;
                                     }
                                     Some(WsControl::Subscribe(channels)) => {
-                                        // Re-subscribe after channels are created/joined.
+                                        let mut joined_now = Vec::new();
                                         {
                                             let mut subs = self.subscriptions.lock();
                                             for ch in &channels {
-                                                subs.insert(ch.clone());
+                                                if subs.insert(ch.clone()) {
+                                                    joined_now.push(ch.clone());
+                                                }
                                             }
                                         }
-                                        match agent.subscribe_channels(channels.clone()).await {
-                                            Ok(()) => tracing::info!(
-                                                channels = ?channels,
-                                                "re-subscribed to channels after creation"
-                                            ),
-                                            Err(error) => tracing::warn!(
-                                                error = %error,
-                                                "failed to re-subscribe to channels"
-                                            ),
+                                        if !joined_now.is_empty() {
+                                            if let Err(error) = ws.subscribe(joined_now.clone()).await {
+                                                tracing::warn!(
+                                                    target = "relay_broker::ws",
+                                                    channels = ?joined_now,
+                                                    error = %error,
+                                                    "failed to subscribe websocket to newly joined broker channels"
+                                                );
+                                            } else {
+                                                tracing::info!(
+                                                    target = "broker::ws",
+                                                    channels = ?joined_now,
+                                                    "subscribed websocket to newly joined broker channels"
+                                                );
+                                            }
+                                        }
+
+                                        for channel in &joined_now {
+                                            let _ = inbound_tx
+                                                .send(json!({
+                                                    "type":"broker.channel_join",
+                                                    "payload":{"channel":channel}
+                                                }))
+                                                .await;
                                         }
                                     }
                                 }
@@ -268,7 +246,7 @@ impl RelaycastWsClient {
                 Err(error) => {
                     tracing::warn!(
                         target = "relay_broker::ws",
-                        base_url = %self.base_url,
+                        base_url = %self.ws_base_url,
                         error = %error,
                         "SDK ws connect failed"
                     );
@@ -282,19 +260,8 @@ impl RelaycastWsClient {
                     "payload":{"status":"disconnected"}
                 }))
                 .await;
-            if let Err(error) = self.refresh_token().await {
-                tracing::warn!(target = "relay_broker::ws", error = %error, "token refresh failed");
-            }
             tokio::time::sleep(Duration::from_secs(3)).await;
         }
-    }
-
-    async fn refresh_token(&self) -> Result<()> {
-        let creds = self.creds.lock().clone();
-        let refreshed = self.auth.rotate_token(&creds).await?;
-        *self.token.lock() = refreshed.token;
-        *self.creds.lock() = refreshed.credentials;
-        Ok(())
     }
 }
 
@@ -363,6 +330,10 @@ impl RelaycastHttpClient {
         if let Some(registration) = self.registration.as_ref() {
             registration.invalidate_cached_registration(agent_name);
         }
+    }
+
+    pub fn forget_agent_registration(&self, agent_name: &str) {
+        self.invalidate_cached_registration(agent_name);
     }
 
     /// Register an agent via Relaycast spawn endpoint and cache its token.
@@ -456,6 +427,26 @@ impl RelaycastHttpClient {
             .send(channel, text, None, None, None)
             .await
             .map_err(|e| anyhow::anyhow!("relaycast send_to_channel failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Ensure workspace-wide WebSocket fanout is enabled for this workspace.
+    pub async fn ensure_workspace_stream_enabled(&self) -> Result<()> {
+        let Some(relay) = (*self.relay).as_ref() else {
+            tracing::warn!("SDK relay client not initialized; cannot enable workspace stream");
+            return Ok(());
+        };
+
+        let config = relay
+            .workspace_stream_set(true)
+            .await
+            .map_err(|error| anyhow::anyhow!("relaycast workspace_stream_set failed: {error}"))?;
+        tracing::debug!(
+            enabled = config.enabled,
+            default_enabled = config.default_enabled,
+            override = ?config.override_value,
+            "ensured workspace stream enabled"
+        );
         Ok(())
     }
 

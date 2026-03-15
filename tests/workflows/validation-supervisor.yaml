@@ -1,0 +1,54 @@
+version: '1.0'
+name: validation-supervisor
+swarm:
+  pattern: dag
+  channel: validation-supervisor
+  timeoutMs: 360000
+  maxConcurrency: 3
+agents:
+  - name: worker-a
+    cli: codex
+    preset: worker
+  - name: worker-b
+    cli: codex
+    preset: worker
+  - name: reviewer
+    cli: codex
+    preset: reviewer
+workflows:
+  - name: supervisor
+    steps:
+      - name: worker-a-step
+        type: agent
+        agent: worker-a
+        task: |
+          Output exactly:
+          ITEM_A=red
+          WORKER_A_DONE
+        verification:
+          type: output_contains
+          value: WORKER_A_DONE
+      - name: worker-b-step
+        type: agent
+        agent: worker-b
+        task: |
+          Output exactly:
+          ITEM_B=blue
+          WORKER_B_DONE
+        verification:
+          type: output_contains
+          value: WORKER_B_DONE
+      - name: review-step
+        type: agent
+        agent: reviewer
+        dependsOn: [worker-a-step, worker-b-step]
+        task: |
+          Review these outputs:
+          A: {{steps.worker-a-step.output}}
+          B: {{steps.worker-b-step.output}}
+          Output exactly:
+          OWNER_DECISION: COMPLETE
+          REASON: both worker outputs present
+        verification:
+          type: output_contains
+          value: "OWNER_DECISION: COMPLETE"

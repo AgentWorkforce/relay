@@ -79,4 +79,4 @@ export RELAY_DASHBOARD_BINARY=/Users/khaliqgant/Projects/agent-workforce/relay-d
 
 concurrently -k \
   "(cd \"$CLI_REPO_DIR\" && npm run dev:watch)" \
-  "cd \"$PROJECT_DIR\" && node --watch /Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/dist/src/cli/bootstrap.js start dashboard.js ${CLI_TOOL} --port ${DASHBOARD_PORT}"
+  "cd \"$PROJECT_DIR\" && node --watch /Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/dist/src/cli/index.js start dashboard.js ${CLI_TOOL} --port ${DASHBOARD_PORT}"

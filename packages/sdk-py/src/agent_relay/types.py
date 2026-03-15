@@ -124,6 +124,24 @@ class AgentConstraints:
 
 
 @dataclass
+class PathDefinition:
+    """A named path to an external directory for cross-repo workflows."""
+
+    name: str
+    path: str
+    description: str | None = None
+    required: bool | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"name": self.name, "path": self.path}
+        if self.description is not None:
+            result["description"] = self.description
+        if self.required is not None:
+            result["required"] = self.required
+        return result
+
+
+@dataclass
 class AgentDefinition:
     name: str
     cli: AgentCli
@@ -132,6 +150,9 @@ class AgentDefinition:
     channels: list[str] | None = None
     constraints: AgentConstraints | None = None
     interactive: bool | None = None
+    cwd: str | None = None
+    workdir: str | None = None
+    additional_paths: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -150,6 +171,12 @@ class AgentDefinition:
                 result["constraints"] = constraints
         if self.interactive is not None:
             result["interactive"] = self.interactive
+        if self.cwd is not None:
+            result["cwd"] = self.cwd
+        if self.workdir is not None:
+            result["workdir"] = self.workdir
+        if self.additional_paths is not None:
+            result["additionalPaths"] = self.additional_paths
         return result
 
 
@@ -175,6 +202,7 @@ class WorkflowStep:
     verification: VerificationCheck | None = None
     timeout_ms: int | None = None
     retries: int | None = None
+    workdir: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -190,6 +218,8 @@ class WorkflowStep:
             result["timeoutMs"] = self.timeout_ms
         if self.retries is not None:
             result["retries"] = self.retries
+        if self.workdir is not None:
+            result["workdir"] = self.workdir
         return result
 
 
@@ -285,6 +315,7 @@ class RelayYamlConfig:
     agents: list[AgentDefinition]
     version: str = "1.0"
     description: str | None = None
+    paths: list[PathDefinition] | None = None
     workflows: list[WorkflowDefinition] | None = None
     coordination: CoordinationConfig | None = None
     state: StateConfig | None = None
@@ -300,6 +331,8 @@ class RelayYamlConfig:
         }
         if self.description is not None:
             result["description"] = self.description
+        if self.paths is not None:
+            result["paths"] = [p.to_dict() for p in self.paths]
         if self.workflows is not None:
             result["workflows"] = [workflow.to_dict() for workflow in self.workflows]
         if self.coordination is not None:
@@ -458,6 +491,8 @@ class StepCompletedEvent:
     run_id: str = ""
     step_name: str = ""
     output: str | None = None
+    exit_code: int | None = None
+    exit_signal: str | None = None
 
 
 @dataclass(frozen=True)
@@ -466,6 +501,8 @@ class StepFailedEvent:
     run_id: str = ""
     step_name: str = ""
     error: str = ""
+    exit_code: int | None = None
+    exit_signal: str | None = None
 
 
 @dataclass(frozen=True)

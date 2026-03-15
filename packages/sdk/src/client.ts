@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { getProjectPaths } from '@agent-relay/config';
+
 import {
   PROTOCOL_VERSION,
   type AgentRuntime,
@@ -50,6 +52,9 @@ export interface SpawnPtyInput {
   restartPolicy?: RestartPolicy;
   /** Name of a previously released agent whose continuity context should be injected. */
   continueFrom?: string;
+  /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
+   *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
+  skipRelayPrompt?: boolean;
 }
 
 export interface SpawnHeadlessInput {
@@ -58,6 +63,9 @@ export interface SpawnHeadlessInput {
   args?: string[];
   channels?: string[];
   task?: string;
+  /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
+   *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
+  skipRelayPrompt?: boolean;
 }
 
 export type AgentTransport = 'pty' | 'headless';
@@ -77,6 +85,9 @@ export interface SpawnProviderInput {
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
   continueFrom?: string;
+  /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
+   *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
+  skipRelayPrompt?: boolean;
 }
 
 export interface SendMessageInput {
@@ -84,6 +95,8 @@ export interface SendMessageInput {
   text: string;
   from?: string;
   threadId?: string;
+  workspaceId?: string;
+  workspaceAlias?: string;
   priority?: number;
   data?: Record<string, unknown>;
 }
@@ -222,6 +235,10 @@ export class AgentRelayClient {
     };
   }
 
+  get brokerPid(): number | undefined {
+    return this.child?.pid;
+  }
+
   async start(): Promise<void> {
     if (this.child) {
       return;
@@ -272,6 +289,7 @@ export class AgentRelayClient {
       ...(input.task != null ? { initial_task: input.task } : {}),
       ...(input.idleThresholdSecs != null ? { idle_threshold_secs: input.idleThresholdSecs } : {}),
       ...(input.continueFrom != null ? { continue_from: input.continueFrom } : {}),
+      ...(input.skipRelayPrompt != null ? { skip_relay_prompt: input.skipRelayPrompt } : {}),
     });
     return result;
   }
@@ -288,6 +306,7 @@ export class AgentRelayClient {
     const result = await this.requestOk<{ name: string; runtime: AgentRuntime }>('spawn_agent', {
       agent,
       ...(input.task != null ? { initial_task: input.task } : {}),
+      ...(input.skipRelayPrompt != null ? { skip_relay_prompt: input.skipRelayPrompt } : {}),
     });
     return result;
   }
@@ -306,6 +325,7 @@ export class AgentRelayClient {
         args: input.args,
         channels: input.channels,
         task: input.task,
+        skipRelayPrompt: input.skipRelayPrompt,
       });
     }
 
@@ -323,6 +343,7 @@ export class AgentRelayClient {
       idleThresholdSecs: input.idleThresholdSecs,
       restartPolicy: input.restartPolicy,
       continueFrom: input.continueFrom,
+      skipRelayPrompt: input.skipRelayPrompt,
     });
   }
 
@@ -385,6 +406,8 @@ export class AgentRelayClient {
         text: input.text,
         from: input.from,
         thread_id: input.threadId,
+        workspace_id: input.workspaceId,
+        workspace_alias: input.workspaceAlias,
         priority: input.priority,
         data: input.data,
       });
@@ -412,28 +435,39 @@ export class AgentRelayClient {
       return;
     }
 
-    try {
-      await this.requestOk('shutdown', {});
-    } catch {
-      // Continue shutdown path if broker is already unhealthy.
-    }
+    void this.requestOk('shutdown', {}).catch(() => {
+      // Continue shutdown path if broker is already unhealthy or exits before replying.
+    });
 
     const child = this.child;
     const wait = this.exitPromise ?? Promise.resolve();
-    const timeout = setTimeout(() => {
-      if (!child.killed) {
-        child.kill('SIGTERM');
-      }
-    }, this.options.shutdownTimeoutMs);
+    const waitForExit = async (timeoutMs: number): Promise<boolean> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const result = await Promise.race([
+        wait.then(() => true),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), timeoutMs);
+        }),
+      ]);
+      if (timer !== undefined) clearTimeout(timer);
+      return result;
+    };
 
-    try {
-      await wait;
-    } finally {
-      clearTimeout(timeout);
-      if (this.child) {
-        this.child.kill('SIGKILL');
-      }
+    if (await waitForExit(this.options.shutdownTimeoutMs)) {
+      return;
     }
+
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGTERM');
+    }
+    if (await waitForExit(1_000)) {
+      return;
+    }
+
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+    }
+    await waitForExit(1_000);
   }
 
   async waitForExit(): Promise<void> {
@@ -454,13 +488,12 @@ export class AgentRelayClient {
       'init',
       '--name',
       this.options.brokerName,
-      '--channels',
-      this.options.channels.join(','),
+      ...(this.options.channels.length > 0 ? ['--channels', this.options.channels.join(',')] : []),
       ...this.options.binaryArgs,
     ];
 
-    // Ensure the SDK bin directory (containing agent-relay-broker + relay_send) is on
-    // PATH so spawned workers can find relay_send without any user setup.
+    // Ensure the SDK bin directory (containing agent-relay-broker) is on
+    // PATH so spawned workers can find it without any user setup.
     const env = { ...this.options.env };
     if (isExplicitPath(this.options.binaryPath)) {
       const binDir = path.dirname(path.resolve(resolvedBinary));
@@ -470,7 +503,7 @@ export class AgentRelayClient {
       }
     }
 
-    console.log(`[broker] Starting: ${resolvedBinary} ${args.join(' ')}`);
+    console.error(`[broker] Starting: ${resolvedBinary} ${args.join(' ')}`);
     const child = spawn(resolvedBinary, args, {
       cwd: this.options.cwd,
       env,
@@ -518,7 +551,7 @@ export class AgentRelayClient {
     });
 
     const helloAck = await this.requestHello();
-    console.log('[broker] Broker ready (hello handshake complete)');
+    console.error('[broker] Broker ready (hello handshake complete)');
     if (helloAck.workspace_key) {
       this.workspaceKey = helloAck.workspace_key;
     }
@@ -739,8 +772,10 @@ function getLatestVersionSync(): string | null {
       timeout: 15_000,
       stdio: ['pipe', 'pipe', 'pipe'],
     }).toString();
-    const match = result.match(/"tag_name"\s*:\s*"v?([^"]+)"/);
-    return match?.[1] ?? null;
+    const match = result.match(/"tag_name"\s*:\s*"([^"]+)"/);
+    if (!match?.[1]) return null;
+    // Strip tag prefixes: "openclaw-v3.1.18" -> "3.1.18", "v3.1.18" -> "3.1.18"
+    return match[1].replace(/^openclaw-/, '').replace(/^v/, '');
   } catch {
     return null;
   }
@@ -780,8 +815,16 @@ function installBrokerBinary(): string {
     });
     fs.chmodSync(targetPath, 0o755);
 
-    // macOS: re-sign to avoid Gatekeeper issues
+    // macOS: strip quarantine attribute and re-sign to avoid Gatekeeper issues
     if (process.platform === 'darwin') {
+      try {
+        execSync(`xattr -d com.apple.quarantine "${targetPath}" 2>/dev/null || true`, {
+          timeout: 10_000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      } catch {
+        // Non-fatal
+      }
       try {
         execSync(`codesign --force --sign - "${targetPath}"`, {
           timeout: 10_000,
@@ -844,4 +887,303 @@ function resolveDefaultBinaryPath(): string {
 
   // 4. Auto-install from GitHub releases
   return installBrokerBinary();
+}
+
+// ---------------------------------------------------------------------------
+// HTTP transport client — connects to an already-running broker's HTTP API
+// ---------------------------------------------------------------------------
+
+export interface HttpAgentRelayClientOptions {
+  port: number;
+  apiKey?: string;
+}
+
+export interface DiscoverAndConnectOptions {
+  cwd?: string;
+  apiKey?: string;
+  /** Auto-start the broker if not running (default: false). */
+  autoStart?: boolean;
+  /**
+   * Path to the broker binary for auto-start.
+   * If not provided, the SDK resolves it automatically via standard install locations
+   * (~/.agent-relay/bin, bundled platform binary, or Cargo release build).
+   * Only used when `autoStart: true`.
+   */
+  brokerBinaryPath?: string;
+}
+
+const DEFAULT_DASHBOARD_PORT = (() => {
+  const envPort = typeof process !== 'undefined' ? process.env.AGENT_RELAY_DASHBOARD_PORT : undefined;
+  if (envPort) {
+    const parsed = Number.parseInt(envPort, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return 3888;
+})();
+const HTTP_MAX_PORT_SCAN = 25;
+const HTTP_AUTOSTART_TIMEOUT_MS = 10_000;
+const HTTP_AUTOSTART_POLL_MS = 250;
+
+function sanitizeBrokerName(name: string): string {
+  return name.replace(/[^\p{L}\p{N}-]/gu, '-');
+}
+
+function brokerPidFilename(projectRoot: string): string {
+  const brokerName = path.basename(projectRoot) || 'project';
+  return `broker-${sanitizeBrokerName(brokerName)}.pid`;
+}
+
+export class HttpAgentRelayClient {
+  private readonly port: number;
+  private readonly apiKey?: string;
+
+  constructor(options: HttpAgentRelayClientOptions) {
+    this.port = options.port;
+    this.apiKey = options.apiKey;
+  }
+
+  /**
+   * Connect to an already-running broker on the given port.
+   */
+  static async connectHttp(
+    port: number,
+    options?: { apiKey?: string }
+  ): Promise<HttpAgentRelayClient> {
+    const client = new HttpAgentRelayClient({ port, apiKey: options?.apiKey });
+    // Verify connectivity
+    await client.healthCheck();
+    return client;
+  }
+
+  /**
+   * Discover a running broker for the current project and connect to it.
+   * Reads the broker PID file, verifies the process is alive, scans ports
+   * for the HTTP API, and returns a connected client.
+   */
+  static async discoverAndConnect(
+    options?: DiscoverAndConnectOptions
+  ): Promise<HttpAgentRelayClient> {
+    const cwd = options?.cwd ?? process.cwd();
+    const apiKey = options?.apiKey ?? process.env.RELAY_BROKER_API_KEY?.trim();
+    const autoStart = options?.autoStart ?? false;
+    const paths = getProjectPaths(cwd);
+    const preferredApiPort = DEFAULT_DASHBOARD_PORT + 1;
+
+    // Try to find a running broker via PID file
+    const pidFilePath = path.join(paths.dataDir, brokerPidFilename(paths.projectRoot));
+    const legacyPidPath = path.join(paths.dataDir, 'broker.pid');
+    let brokerRunning = false;
+
+    for (const pidPath of [pidFilePath, legacyPidPath]) {
+      if (fs.existsSync(pidPath)) {
+        const pidStr = fs.readFileSync(pidPath, 'utf-8').trim();
+        const pid = Number.parseInt(pidStr, 10);
+        if (Number.isFinite(pid) && pid > 0) {
+          try {
+            process.kill(pid, 0);
+            brokerRunning = true;
+            break;
+          } catch {
+            // Process not running
+          }
+        }
+      }
+    }
+
+    if (brokerRunning) {
+      const port = await HttpAgentRelayClient.scanForBrokerPort(preferredApiPort);
+      if (port !== null) {
+        return new HttpAgentRelayClient({ port, apiKey });
+      }
+      throw new AgentRelayProcessError(
+        'broker is running for this project, but its local API is unavailable'
+      );
+    }
+
+    if (!autoStart) {
+      throw new AgentRelayProcessError('broker is not running for this project');
+    }
+
+    // Auto-start the broker using the resolved binary path (not process.argv[1],
+    // which only works from CLI context — breaks when SDK is imported by user apps).
+    // The broker binary requires the `init` subcommand with `--api-port` and
+    // `--persist` so it writes PID files for subsequent discovery.
+    const brokerBinary = options?.brokerBinaryPath ?? resolveDefaultBinaryPath();
+
+    const child = spawn(
+      brokerBinary,
+      ['init', '--persist', '--api-port', String(preferredApiPort)],
+      {
+        cwd: paths.projectRoot,
+        env: process.env,
+        detached: true,
+        stdio: 'ignore',
+      }
+    );
+    child.unref();
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < HTTP_AUTOSTART_TIMEOUT_MS) {
+      const port = await HttpAgentRelayClient.scanForBrokerPort(preferredApiPort);
+      if (port !== null) {
+        return new HttpAgentRelayClient({ port, apiKey });
+      }
+      await new Promise((resolve) => setTimeout(resolve, HTTP_AUTOSTART_POLL_MS));
+    }
+
+    throw new AgentRelayProcessError(
+      `broker did not become ready within ${HTTP_AUTOSTART_TIMEOUT_MS}ms`
+    );
+  }
+
+  private static async scanForBrokerPort(startPort: number): Promise<number | null> {
+    for (let i = 0; i < HTTP_MAX_PORT_SCAN; i++) {
+      const port = startPort + i;
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/health`);
+        if (!res.ok) continue;
+        const payload = (await res.json().catch(() => null)) as { service?: string } | null;
+        if (payload?.service === 'agent-relay-listen') {
+          return port;
+        }
+      } catch {
+        // Keep scanning
+      }
+    }
+    return null;
+  }
+
+  private async request<T = unknown>(pathname: string, init?: RequestInit): Promise<T> {
+    const headers = new Headers(init?.headers);
+    if (this.apiKey && !headers.has('x-api-key') && !headers.has('authorization')) {
+      headers.set('x-api-key', this.apiKey);
+    }
+
+    const response = await fetch(`http://127.0.0.1:${this.port}${pathname}`, {
+      ...init,
+      headers,
+    });
+
+    const text = await response.text();
+    let payload: unknown;
+    try {
+      payload = text ? JSON.parse(text) : undefined;
+    } catch {
+      payload = text;
+    }
+
+    if (!response.ok) {
+      const msg = HttpAgentRelayClient.extractErrorMessage(response, payload);
+      throw new AgentRelayProcessError(msg);
+    }
+
+    return payload as T;
+  }
+
+  private static extractErrorMessage(response: Response, payload: unknown): string {
+    if (typeof payload === 'string' && payload.trim()) return payload.trim();
+    const p = payload as Record<string, unknown> | undefined;
+    if (typeof p?.error === 'string') return p.error;
+    if (typeof (p?.error as Record<string, unknown>)?.message === 'string')
+      return (p!.error as Record<string, unknown>).message as string;
+    if (typeof p?.message === 'string' && (p.message as string).trim())
+      return (p.message as string).trim();
+    return `${response.status} ${response.statusText}`.trim();
+  }
+
+  async healthCheck(): Promise<{ service: string }> {
+    return this.request<{ service: string }>('/health');
+  }
+
+  /** No-op — broker is already running. */
+  async start(): Promise<void> {}
+
+  /** No-op — don't kill an externally-managed broker. */
+  async shutdown(): Promise<void> {}
+
+  async spawnPty(input: SpawnPtyInput): Promise<{ name: string; runtime: AgentRuntime }> {
+    const payload = await this.request<{ name?: string }>('/api/spawn', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: input.name,
+        cli: input.cli,
+        model: input.model,
+        args: input.args ?? [],
+        task: input.task,
+        channels: input.channels ?? [],
+        cwd: input.cwd,
+        team: input.team,
+        shadowOf: input.shadowOf,
+        shadowMode: input.shadowMode,
+        continueFrom: input.continueFrom,
+        idleThresholdSecs: input.idleThresholdSecs,
+        restartPolicy: input.restartPolicy,
+        skipRelayPrompt: input.skipRelayPrompt,
+      }),
+    });
+    return {
+      name: typeof payload?.name === 'string' ? payload.name : input.name,
+      runtime: 'pty',
+    };
+  }
+
+  async sendMessage(input: SendMessageInput): Promise<{ event_id: string; targets: string[] }> {
+    return this.request<{ event_id: string; targets: string[] }>('/api/send', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        to: input.to,
+        text: input.text,
+        from: input.from,
+        threadId: input.threadId,
+        workspaceId: input.workspaceId,
+        workspaceAlias: input.workspaceAlias,
+        priority: input.priority,
+        data: input.data,
+      }),
+    });
+  }
+
+  async listAgents(): Promise<ListAgent[]> {
+    const payload = await this.request<{ agents?: ListAgent[] }>('/api/spawned', { method: 'GET' });
+    return Array.isArray(payload?.agents) ? payload.agents : [];
+  }
+
+  async release(name: string, reason?: string): Promise<{ name: string }> {
+    const payload = await this.request<{ name?: string }>(
+      `/api/spawned/${encodeURIComponent(name)}`,
+      {
+        method: 'DELETE',
+        ...(reason
+          ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }) }
+          : {}),
+      }
+    );
+    return { name: typeof payload?.name === 'string' ? payload.name : name };
+  }
+
+  async setModel(
+    name: string,
+    model: string,
+    opts?: { timeoutMs?: number }
+  ): Promise<{ name: string; model: string; success: boolean }> {
+    const payload = await this.request<{ success?: boolean; model?: string }>(
+      `/api/spawned/${encodeURIComponent(name)}/model`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model, timeoutMs: opts?.timeoutMs }),
+      }
+    );
+    return {
+      name,
+      model: typeof payload?.model === 'string' ? payload.model : model,
+      success: payload?.success !== false,
+    };
+  }
+
+  async getConfig(): Promise<{ workspace_key?: string }> {
+    return this.request<{ workspace_key?: string }>('/api/config');
+  }
 }

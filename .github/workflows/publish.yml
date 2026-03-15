@@ -690,16 +690,25 @@ jobs:
   # Verify standalone binaries on macOS
   verify-standalone-macos:
     name: Verify Standalone (macOS)
-    needs: [build-standalone]
+    needs: [build-standalone, build-broker]
     runs-on: macos-latest
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Download macOS binary
         uses: actions/download-artifact@v4
         with:
           name: agent-relay-darwin-arm64
           path: bin/
+
+      - name: Download broker binary
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-relay-broker-darwin-arm64
+          path: broker/
 
       - name: Download compressed binary
         uses: actions/download-artifact@v4
@@ -713,6 +722,11 @@ jobs:
           echo "Testing uncompressed binary..."
           ./bin/agent-relay-darwin-arm64 --version
           echo "✓ Uncompressed binary works"
+
+      - name: Smoke standalone lifecycle
+        run: |
+          chmod +x broker/agent-relay-broker-darwin-arm64
+          bash scripts/ci-standalone-smoke.sh "$PWD/bin/agent-relay-darwin-arm64" "$PWD/broker/agent-relay-broker-darwin-arm64"
 
       - name: Verify compressed binary
         run: |
@@ -1147,6 +1161,16 @@ jobs:
               fi
             fi
           fi
+          # Commit compacted trajectories so the working tree is clean for the release commit
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add .trajectories/ 2>/dev/null || true
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: compact trajectories for v${{ needs.build.outputs.new_version }}"
+          fi
+          # Discard package-lock.json changes from npx side-effects
+          # (version-bumped files and CHANGELOG must be preserved for the release commit)
+          git checkout -- package-lock.json 2>/dev/null || true
 
       - name: Commit and tag
         env:
@@ -1161,8 +1185,8 @@ jobs:
           # Stage version-bumped files (must be separate from optional paths
           # because git add fails entirely if any path doesn't exist)
           git add package.json package-lock.json packages/*/package.json packages/sdk-py/pyproject.toml CHANGELOG.md
-          # Stage optional paths that may not exist
-          git add .trajectories/compacted/ 2>/dev/null || true
+          # Stage optional paths that may not exist (trajectories already committed in prior step)
+          git add .trajectories/ 2>/dev/null || true
           if ! git diff --staged --quiet; then
             if [ "$IS_PRERELEASE" = "true" ]; then
               git commit -m "chore(prerelease): v${NEW_VERSION}"
@@ -1170,6 +1194,8 @@ jobs:
               git push origin HEAD:staging
             else
               git commit -m "chore(release): v${NEW_VERSION}"
+              # Rebase on latest main in case it advanced during the pipeline
+              git pull --rebase origin main
               git push origin HEAD:main
             fi
           fi

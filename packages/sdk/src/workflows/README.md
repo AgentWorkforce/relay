@@ -104,8 +104,8 @@ workflows:
         agent: backend
         task: "Build the REST API endpoints for user management"
         verification:
-          type: output_contains
-          value: "BUILD_COMPLETE"
+          type: file_exists
+          value: "src/api/users.ts"
         retries: 1
 
       - name: write-tests
@@ -154,21 +154,49 @@ await runWorkflow("workflow.yaml", {
 
 ### Verification Checks
 
-Each step can include a verification check that must pass for the step to be considered complete:
+Each step can include a verification check. Verification is one input to the runner's **completion decision pipeline** — when verification passes, the step completes even without a sentinel marker.
 
 | Type | Description |
 |------|-------------|
-| `output_contains` | Step output must contain the specified string |
-| `exit_code` | Agent must exit with the specified code |
+| `exit_code` | Agent must exit with the specified code (preferred for code-editing steps) |
 | `file_exists` | A file must exist at the specified path after the step |
+| `output_contains` | Step output must contain the specified string (optional accelerator) |
 | `custom` | No-op in the runner; handled by external callers |
 
 ```yaml
+# Preferred — deterministic verification
+verification:
+  type: exit_code
+  value: "0"
+  description: "Process exited successfully"
+
+# Also valid — output_contains as an optional accelerator
 verification:
   type: output_contains
   value: "IMPLEMENTATION_COMPLETE"
-  description: "Agent must confirm completion"
+  description: "Agent confirms completion (optional fast-path)"
 ```
+
+### Completion Decision Pipeline
+
+The runner uses a multi-signal pipeline to decide step completion:
+
+1. **Deterministic verification** — if a verification check passes, the step completes immediately (`completed_verified`)
+2. **Owner decision** — the step owner can issue `OWNER_DECISION: COMPLETE|INCOMPLETE_RETRY|INCOMPLETE_FAIL` (`completed_by_owner_decision`)
+3. **Evidence-based completion** — channel messages, file artifacts, and exit codes are collected as evidence (`completed_by_evidence`)
+4. **Marker fast-path** — `STEP_COMPLETE:<step-name>` still works as an accelerator but is never required
+
+| Completion State | Meaning |
+|---|---|
+| `completed_verified` | Deterministic verification passed |
+| `completed_by_owner_decision` | Owner approved the step |
+| `completed_by_evidence` | Evidence-based completion |
+| `retry_requested_by_owner` | Owner requested retry |
+| `failed_verification` | Verification explicitly failed |
+| `failed_owner_decision` | Owner rejected the step |
+| `failed_no_evidence` | No verification, no owner decision, no evidence |
+
+**Review parsing is tolerant:** The runner accepts semantically equivalent outputs like "Approved", "Complete", "LGTM" — not just exact `REVIEW_DECISION: APPROVE` strings.
 
 ## Swarm Patterns
 
@@ -639,6 +667,21 @@ The runner emits two new events for idle nudging:
 |-------|-------------|
 | `step:nudged` | Fired when a nudge message is sent to an idle agent |
 | `step:force-released` | Fired when an agent is force-released after exhausting nudges |
+
+## Automatic Step Owner and Review
+
+For interactive agent steps, the runner uses a point-person-led completion model:
+
+1. **Elects a step owner** (prefers lead/coordinator-style agents, falls back to the step agent)
+2. **Runs a completion decision pipeline** — checks deterministic verification first, then owner judgment, then evidence
+3. **Owner can issue structured decisions** via `OWNER_DECISION: COMPLETE|INCOMPLETE_RETRY|INCOMPLETE_FAIL|NEEDS_CLARIFICATION` with optional `REASON: <text>`
+4. **Review parsing is tolerant** — accepts "Approved", "Complete", "LGTM", not just exact `REVIEW_DECISION: APPROVE`
+5. **Markers are optional accelerators** — `STEP_COMPLETE:<step-name>` still works as a fast-path but is never required
+6. Stores primary output plus review output in the step artifact
+
+**Evidence-based completion:** The runner collects channel messages, file artifacts, process exit codes, and coordination signals (e.g., WORKER_DONE posted in channel) as completion evidence. When sufficient evidence exists, the step completes without requiring any sentinel marker.
+
+Deterministic and worktree steps are unchanged and do not require owner/review delegation.
 
 ## Schema Validation
 

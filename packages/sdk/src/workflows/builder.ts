@@ -4,6 +4,7 @@ import type { AgentRelayOptions } from '../relay.js';
 import type {
   AgentCli,
   AgentDefinition,
+  AgentPreset,
   DryRunReport,
   ErrorHandlingConfig,
   IdleNudgeConfig,
@@ -33,9 +34,12 @@ export interface AgentOptions {
   /** When false, the agent runs as a non-interactive subprocess (no PTY, no relay messaging).
    *  Default: true. */
   interactive?: boolean;
+  /** Agent preset: 'lead' (interactive PTY), 'worker' | 'reviewer' | 'analyst' (non-interactive subprocess). */
+  preset?: AgentPreset;
 }
 
-export interface StepOptions {
+/** Options for agent steps (default). */
+export interface AgentStepOptions {
   agent: string;
   task: string;
   dependsOn?: string[];
@@ -43,6 +47,20 @@ export interface StepOptions {
   timeoutMs?: number;
   retries?: number;
 }
+
+/** Options for deterministic (shell command) steps. */
+export interface DeterministicStepOptions {
+  type: 'deterministic';
+  command: string;
+  dependsOn?: string[];
+  /** Fail if command exit code is non-zero. Default: true. */
+  failOnError?: boolean;
+  /** Capture stdout as step output for downstream steps. Default: true. */
+  captureOutput?: boolean;
+  timeoutMs?: number;
+}
+
+export type StepOptions = AgentStepOptions | DeterministicStepOptions;
 
 export interface ErrorOptions {
   maxRetries?: number;
@@ -146,6 +164,7 @@ export class WorkflowBuilder {
     if (options.role !== undefined) def.role = options.role;
     if (options.task !== undefined) def.task = options.task;
     if (options.channels !== undefined) def.channels = options.channels;
+    if (options.preset !== undefined) def.preset = options.preset;
     if (options.interactive !== undefined) def.interactive = options.interactive;
 
     if (
@@ -168,18 +187,25 @@ export class WorkflowBuilder {
     return this;
   }
 
-  /** Add a workflow step. */
+  /** Add a workflow step (agent or deterministic). */
   step(name: string, options: StepOptions): this {
-    const step: WorkflowStep = {
-      name,
-      agent: options.agent,
-      task: options.task,
-    };
+    const step: WorkflowStep = { name };
+
+    if ('type' in options && options.type === 'deterministic') {
+      step.type = 'deterministic';
+      step.command = options.command;
+      if (options.failOnError !== undefined) step.failOnError = options.failOnError;
+      if (options.captureOutput !== undefined) step.captureOutput = options.captureOutput;
+    } else {
+      const agentOpts = options as AgentStepOptions;
+      step.agent = agentOpts.agent;
+      step.task = agentOpts.task;
+      if (agentOpts.verification !== undefined) step.verification = agentOpts.verification;
+      if (agentOpts.retries !== undefined) step.retries = agentOpts.retries;
+    }
 
     if (options.dependsOn !== undefined) step.dependsOn = options.dependsOn;
-    if (options.verification !== undefined) step.verification = options.verification;
     if (options.timeoutMs !== undefined) step.timeoutMs = options.timeoutMs;
-    if (options.retries !== undefined) step.retries = options.retries;
 
     this._steps.push(step);
     return this;
@@ -196,8 +222,9 @@ export class WorkflowBuilder {
 
   /** Build and return the RelayYamlConfig object. */
   toConfig(): RelayYamlConfig {
-    if (this._agents.length === 0) {
-      throw new Error('Workflow must have at least one agent');
+    const hasAgentSteps = this._steps.some((s) => s.type !== 'deterministic' && s.type !== 'worktree');
+    if (hasAgentSteps && this._agents.length === 0) {
+      throw new Error('Workflow must have at least one agent when using agent steps');
     }
     if (this._steps.length === 0) {
       throw new Error('Workflow must have at least one step');

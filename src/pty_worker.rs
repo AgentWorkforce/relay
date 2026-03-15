@@ -2,8 +2,8 @@ use super::*;
 use crate::helpers::{
     check_echo_in_output, current_timestamp_ms, delivery_injected_event_payload,
     delivery_queued_event_payload, detect_cli_ready, floor_char_boundary,
-    format_injection_for_worker, parse_cli_command, parse_continuity_command, ActivityDetector,
-    DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
+    format_injection_for_worker_with_workspace, parse_cli_command, parse_continuity_command,
+    ActivityDetector, DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
     ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
 };
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
@@ -152,7 +152,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut terminal_query_parser = TerminalQueryParser::default();
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(1024);
-    tokio::spawn(async move {
+    let writer_task = tokio::spawn(async move {
         while let Some(frame) = out_rx.recv().await {
             if let Ok(line) = serde_json::to_string(&frame) {
                 use std::io::Write;
@@ -166,6 +166,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut running = true;
+    let mut child_exit_detected = false;
 
     let mut pty_auto = PtyAutoState::new();
 
@@ -451,7 +452,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.handle_mcp_approval(&text, &pty).await;
                         pty_auto.handle_bypass_permissions(&text, &pty).await;
                         pty_auto.handle_codex_model_prompt(&text, &pty).await;
+                        pty_auto.handle_opencode_permission(&text, &pty).await;
                         pty_auto.handle_gemini_action(&text, &pty).await;
+                        pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
+                        pty_auto.handle_gemini_trust(&text, &pty).await;
+                        pty_auto.handle_claude_trust(&text, &pty).await;
 
                         // Accumulate echo buffer for verification matching
                         echo_buffer.push_str(&text);
@@ -634,6 +639,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             exit_payload["last_output"] = json!(trimmed);
                         }
                         let _ = send_frame(&out_tx, "agent_exit", None, exit_payload).await;
+                        child_exit_detected = true;
                         running = false;
                     }
                 }
@@ -668,7 +674,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             .map(|timestamp| timestamp.elapsed() >= MCP_REMINDER_COOLDOWN)
                             .unwrap_or(true)
                     };
-                    let injection = format_injection_for_worker(
+                    let injection = format_injection_for_worker_with_workspace(
                         &pending.delivery.from,
                         &pending.delivery.event_id,
                         &pending.delivery.body,
@@ -676,6 +682,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         include_mcp_reminder,
                         worker_pre_registered,
                         assigned_worker_name.as_deref(),
+                        pending.delivery.workspace_id.as_deref(),
+                        pending.delivery.workspace_alias.as_deref(),
                     );
                     if include_mcp_reminder {
                         last_mcp_reminder_at = Some(Instant::now());
@@ -715,6 +723,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         attempts: 1,
                         max_attempts: 1,
                         request_id: pending.request_id,
+                        workspace_id: pending.delivery.workspace_id.clone(),
+                        workspace_alias: pending.delivery.workspace_alias.clone(),
                         from: pending.delivery.from,
                         body: pending.delivery.body,
                         target: pending.delivery.target,
@@ -865,6 +875,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         exit_payload["last_output"] = json!(trimmed);
                     }
                     let _ = send_frame(&out_tx, "agent_exit", None, exit_payload).await;
+                    child_exit_detected = true;
                     running = false;
                 } else {
                     // If no PTY output for a long time, the agent is likely
@@ -890,14 +901,27 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
         }
     }
 
+    if child_exit_detected {
+        let _ = send_frame(
+            &out_tx,
+            "worker_exited",
+            None,
+            json!({"code": Value::Null, "signal": Value::Null}),
+        )
+        .await;
+    }
     let _ = pty.shutdown();
-    let _ = send_frame(
-        &out_tx,
-        "worker_exited",
-        None,
-        json!({"code": Value::Null, "signal": Value::Null}),
-    )
-    .await;
+    if !child_exit_detected {
+        let _ = send_frame(
+            &out_tx,
+            "worker_exited",
+            None,
+            json!({"code": Value::Null, "signal": Value::Null}),
+        )
+        .await;
+    }
+    drop(out_tx);
+    let _ = writer_task.await;
 
     Ok(())
 }

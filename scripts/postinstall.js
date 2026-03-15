@@ -374,6 +374,112 @@ async function installBrokerBinary() {
 }
 
 /**
+ * Install the standalone dashboard-server binary.
+ *
+ * The curl-based installer downloads this binary, but npm install does not.
+ * This brings the npm install path to parity so `agent-relay up` can start
+ * the dashboard without falling back to `npx @agent-relay/dashboard-server@latest`.
+ */
+async function installDashboardBinary() {
+  const homeDir = os.homedir();
+  const targetPath = path.join(homeDir, '.local', 'bin', 'relay-dashboard-server');
+
+  // Already installed?
+  if (fs.existsSync(targetPath)) {
+    try {
+      execSync(`"${targetPath}" --version`, { stdio: 'pipe' });
+      info('Dashboard server binary already installed');
+      return true;
+    } catch {
+      // Binary exists but broken — reinstall
+    }
+  }
+
+  const platform = os.platform();
+  const arch = os.arch();
+  const platformMap = { darwin: 'darwin', linux: 'linux' };
+  const archMap = { arm64: 'arm64', x64: 'x64' };
+  const targetPlatform = platformMap[platform];
+  const targetArch = archMap[arch];
+
+  if (!targetPlatform || !targetArch) {
+    info(`No prebuilt dashboard binary for ${platform}-${arch}`);
+    return false;
+  }
+
+  const binaryName = `relay-dashboard-server-${targetPlatform}-${targetArch}`;
+  const downloadUrl = `https://github.com/AgentWorkforce/relay-dashboard/releases/latest/download/${binaryName}`;
+
+  info(`Downloading dashboard-server binary...`);
+  try {
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    await downloadBinary(downloadUrl, targetPath);
+    fs.chmodSync(targetPath, 0o755);
+    resignBinaryForMacOS(targetPath);
+    success('Downloaded dashboard-server binary');
+    return true;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    info(`Dashboard binary not available (${message}) — will use npx fallback`);
+    return false;
+  }
+}
+
+/**
+ * Install the relay-acp binary (Zed editor integration).
+ *
+ * The curl-based installer downloads this binary, but npm install does not.
+ * This brings the npm install path to parity.
+ */
+async function installRelayAcpBinary() {
+  const homeDir = os.homedir();
+  const targetPath = path.join(homeDir, '.local', 'bin', 'relay-acp');
+
+  // Already installed and functional?
+  if (fs.existsSync(targetPath)) {
+    try {
+      execSync(`"${targetPath}" --version`, { stdio: 'pipe' });
+      info('relay-acp binary already installed');
+      return true;
+    } catch {
+      // Binary exists but broken or outdated — reinstall
+    }
+  }
+
+  const platform = os.platform();
+  const arch = os.arch();
+  const platformMap = { darwin: 'darwin', linux: 'linux' };
+  const archMap = { arm64: 'arm64', x64: 'x64' };
+  const targetPlatform = platformMap[platform];
+  const targetArch = archMap[arch];
+
+  if (!targetPlatform || !targetArch) {
+    return false;
+  }
+
+  const pkgRoot = getPackageRoot();
+  const version = getPackageVersion(pkgRoot);
+  if (!version) return false;
+
+  const binaryName = `relay-acp-${targetPlatform}-${targetArch}`;
+  const downloadUrl = `https://github.com/AgentWorkforce/relay/releases/download/v${version}/${binaryName}`;
+
+  info('Downloading relay-acp binary (Zed editor integration)...');
+  try {
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    await downloadBinary(downloadUrl, targetPath);
+    fs.chmodSync(targetPath, 0o755);
+    resignBinaryForMacOS(targetPath);
+    success('Downloaded relay-acp binary');
+    return true;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    info(`relay-acp binary not available (${message}) — Zed integration requires manual install`);
+    return false;
+  }
+}
+
+/**
  * Setup workspace package symlinks for global/bundled installs.
  *
  * When agent-relay is installed globally (npm install -g), the workspace packages
@@ -639,8 +745,19 @@ async function main() {
   // Always install dashboard dependencies (needed for build)
   installDashboardDeps();
 
+  // Install dashboard-server and relay-acp binaries for parity with curl installer
+  const hasDashboardBinary = await installDashboardBinary();
+  const hasAcpBinary = await installRelayAcpBinary();
+
   // Always print diagnostics (even in CI)
   logPostinstallDiagnostics(hasBrokerBinary, sqliteStatus, linkResult);
+
+  if (hasDashboardBinary) {
+    console.log('✓ dashboard-server binary installed');
+  }
+  if (hasAcpBinary) {
+    console.log('✓ relay-acp binary installed (Zed editor integration)');
+  }
 
   if (!hasBrokerBinary) {
     warn('agent-relay-broker binary not available');

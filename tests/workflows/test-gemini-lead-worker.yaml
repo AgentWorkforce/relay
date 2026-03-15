@@ -1,0 +1,62 @@
+version: '1.0'
+name: test-gemini-lead-worker
+
+description: Real Gemini lead/worker coordination workflow.
+
+swarm:
+  pattern: dag
+  channel: test-gemini-lead-worker
+  maxConcurrency: 2
+  timeoutMs: 420000
+  idleNudge:
+    nudgeAfterMs: 120000
+    escalateAfterMs: 60000
+    maxNudges: 2
+
+agents:
+  - name: gemini-lead
+    cli: gemini
+    preset: lead
+    channels: [test-gemini-lead-worker]
+  - name: gemini-worker
+    cli: gemini
+    preset: worker
+    channels: [test-gemini-lead-worker]
+
+workflows:
+  - name: gemini-lead-worker
+    steps:
+      - name: lead
+        type: agent
+        agent: gemini-lead
+        task: |
+          You are the lead on #test-gemini-lead-worker.
+
+          1. Post this exact assignment to the channel:
+             ASSIGNMENT: Output WORK_RESULT: pears and then post WORKER_DONE
+
+          2. Poll the channel until you see WORKER_DONE.
+
+          3. Then output exactly:
+             LEAD_DONE
+
+          4. Exit.
+        verification:
+          type: output_contains
+          value: LEAD_DONE
+
+      - name: worker
+        type: agent
+        agent: gemini-worker
+        task: |
+          You are the worker on #test-gemini-lead-worker.
+
+          1. Poll the channel until you see ASSIGNMENT:.
+          2. Output exactly:
+             WORK_RESULT: pears
+             WORKER_COMPLETE
+          3. Post exactly WORKER_DONE to the channel.
+          4. Exit.
+        verification:
+          type: output_contains
+          value: WORKER_COMPLETE

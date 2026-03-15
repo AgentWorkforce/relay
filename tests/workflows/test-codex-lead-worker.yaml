@@ -1,0 +1,63 @@
+version: '1.0'
+name: test-codex-lead-worker
+
+description: Real Codex lead/worker coordination workflow.
+
+swarm:
+  pattern: dag
+  channel: test-codex-lead-worker
+  maxConcurrency: 2
+  timeoutMs: 300000
+  idleNudge:
+    nudgeAfterMs: 90000
+    escalateAfterMs: 60000
+    maxNudges: 2
+
+agents:
+  - name: codex-lead
+    cli: codex
+    preset: lead
+    channels: [test-codex-lead-worker]
+  - name: codex-worker
+    cli: codex
+    preset: worker
+    channels: [test-codex-lead-worker]
+
+workflows:
+  - name: codex-lead-worker
+    steps:
+      - name: lead
+        type: agent
+        agent: codex-lead
+        task: |
+          You are the lead on #test-codex-lead-worker.
+
+          1. Post this exact assignment to the channel:
+             ASSIGNMENT: Output WORK_RESULT: apples and then post WORKER_DONE
+
+          2. Poll the channel until you see WORKER_DONE.
+
+          3. Then output exactly:
+             LEAD_DONE
+
+          4. Exit by outputting:
+             /exit
+        verification:
+          type: output_contains
+          value: LEAD_DONE
+
+      - name: worker
+        type: agent
+        agent: codex-worker
+        task: |
+          You are the worker on #test-codex-lead-worker.
+
+          1. Poll the channel until you see ASSIGNMENT:.
+          2. Output exactly:
+             WORK_RESULT: apples
+             WORKER_COMPLETE
+          3. Post exactly WORKER_DONE to the channel.
+          4. Exit.
+        verification:
+          type: output_contains
+          value: WORKER_COMPLETE

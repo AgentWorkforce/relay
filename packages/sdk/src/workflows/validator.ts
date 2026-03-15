@@ -11,8 +11,37 @@ export interface ValidationIssue {
 export function validateWorkflow(config: RelayYamlConfig): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const agentMap = new Map(config.agents.map((a) => [a.name, a]));
+  const hasReviewerAgent = config.agents.some((a) => {
+    const role = a.role?.toLowerCase() ?? '';
+    const name = a.name.toLowerCase();
+    return (
+      a.preset === 'reviewer' ||
+      role.includes('review') ||
+      role.includes('critic') ||
+      role.includes('verifier') ||
+      role.includes('qa') ||
+      name.includes('review')
+    );
+  });
 
   for (const workflow of config.workflows ?? []) {
+    const hasInteractiveAgentSteps = workflow.steps.some((step) => {
+      if (step.type === 'deterministic' || step.type === 'worktree') return false;
+      if (!step.agent) return false;
+      const raw = agentMap.get(step.agent);
+      if (!raw) return false;
+      return resolveForValidation(raw).interactive !== false;
+    });
+    if (hasInteractiveAgentSteps && !hasReviewerAgent) {
+      issues.push({
+        severity: 'warning',
+        code: 'NO_REVIEW_AGENT',
+        message: `Workflow "${workflow.name}" has interactive agent steps but no obvious reviewer agent. The runner can auto-fallback, but dedicated reviewers improve step hardening.`,
+        fix: `Add an agent with role/preset like \`reviewer\`, \`critic\`, or \`verifier\`.`,
+        location: `workflow:${workflow.name}`,
+      });
+    }
+
     for (const step of workflow.steps ?? []) {
       if (step.type === 'deterministic' || step.type === 'worktree') continue;
       if (!step.agent) continue;
@@ -61,22 +90,22 @@ export function validateWorkflow(config: RelayYamlConfig): ValidationIssue[] {
         task.length > 500 &&
         !task.includes('do not') &&
         !task.includes('Do NOT') &&
-        !task.includes('relay_spawn') &&
+        !task.includes('mcp__relaycast__agent_add') &&
         !task.includes('add_agent')
       ) {
         issues.push({
           severity: 'info',
           code: 'CLAUDE_NO_SPAWN_GUARD',
           message: `Step "${step.name}" uses interactive claude with a long task. Claude may spontaneously spawn sub-agents via relay MCP tools.`,
-          fix: `Add "Do NOT use relay_spawn or add_agent to spawn sub-agents." to the task, or use \`interactive: false\`.`,
+          fix: `Add "Do NOT use mcp__relaycast__agent_add or add_agent to spawn sub-agents." to the task, or use \`interactive: false\`.`,
           location: `step:${step.name}`,
         });
       }
 
-      // Check 4: non-interactive agent that references relay_send in task
+      // Check 4: non-interactive agent that references relay messaging tools in task
       if (
         def.interactive === false &&
-        (task.includes('relay_send') || task.includes('post_message') || task.includes('check_inbox'))
+        (task.includes('mcp__relaycast__message_dm_send') || task.includes('mcp__relaycast__message_post') || task.includes('mcp__relaycast__message_inbox_check'))
       ) {
         issues.push({
           severity: 'warning',

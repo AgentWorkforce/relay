@@ -49,6 +49,10 @@ pub struct AgentSpec {
 pub struct RelayDelivery {
     pub delivery_id: String,
     pub event_id: String,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub workspace_alias: Option<String>,
     pub from: String,
     pub target: String,
     pub body: String,
@@ -85,6 +89,10 @@ pub enum SdkToBroker {
         from: Option<String>,
         #[serde(default)]
         thread_id: Option<String>,
+        #[serde(default)]
+        workspace_id: Option<String>,
+        #[serde(default)]
+        workspace_alias: Option<String>,
         #[serde(default)]
         priority: Option<u8>,
     },
@@ -320,6 +328,8 @@ mod tests {
         let msg = BrokerToWorker::DeliverRelay(RelayDelivery {
             delivery_id: "del_1".into(),
             event_id: "evt_1".into(),
+            workspace_id: Some("ws_test".into()),
+            workspace_alias: Some("test".into()),
             from: "Lead".into(),
             target: "#general".into(),
             body: "hello".into(),

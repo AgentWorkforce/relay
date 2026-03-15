@@ -35,7 +35,7 @@ function makeConfig(overrides?: Partial<RelayYamlConfig>): RelayYamlConfig {
     name: 'test-swarm-errors',
     description: 'Swarm error handling integration test',
     swarm: { pattern: 'dag' },
-    agents: [{ name: 'worker', cli: 'claude' }],
+    agents: [{ name: 'worker', cli: 'claude', interactive: false }],
     workflows: [
       {
         name: 'default',
@@ -68,6 +68,20 @@ function installFlakyClaudeScript(
   const script = `#!/usr/bin/env bash
 COUNT_FILE=${JSON.stringify(counterFile)}
 FAILURES=${JSON.stringify(String(failures))}
+MARKER=""
+REVIEW_OUTPUT=""
+if [[ "\${RELAY_AGENT_NAME:-}" =~ ^(.+)-review-[A-Za-z0-9]+$ ]]; then
+  REVIEW_OUTPUT=$'REVIEW_DECISION: APPROVE\\nREVIEW_REASON: Fake reviewer approved'
+elif [[ "\${RELAY_AGENT_NAME:-}" =~ ^(.+)-(worker|owner)-[A-Za-z0-9]+$ ]]; then
+  MARKER="STEP_COMPLETE:\${BASH_REMATCH[1]}"
+elif [[ "\${RELAY_AGENT_NAME:-}" =~ ^(.+)-[A-Za-z0-9]+$ ]]; then
+  MARKER="STEP_COMPLETE:\${BASH_REMATCH[1]}"
+fi
+while IFS= read -r -t 1 line; do
+  if [[ "$line" =~ STEP_COMPLETE:([A-Za-z0-9._-]+) ]]; then
+    MARKER="STEP_COMPLETE:\${BASH_REMATCH[1]}"
+  fi
+done 2>/dev/null
 COUNT=0
 if [ -f "$COUNT_FILE" ]; then
   COUNT=$(cat "$COUNT_FILE")
@@ -77,6 +91,12 @@ printf '%s\n' "$COUNT" > "$COUNT_FILE"
 if [ "$COUNT" -le "$FAILURES" ]; then
   echo "temporary failure $COUNT" >&2
   exit 1
+fi
+if [[ -n "$MARKER" ]]; then
+  echo "$MARKER"
+fi
+if [[ -n "$REVIEW_OUTPUT" ]]; then
+  echo "$REVIEW_OUTPUT"
 fi
 echo "DONE"
 `;
@@ -117,7 +137,7 @@ test('swarm-errors: retries in strategy retry until success', { timeout: 120_000
         ],
       }),
       undefined,
-      { cwd }
+      { cwd, useRelaycast: false }
     );
 
     assertRunCompleted(result);
@@ -187,7 +207,7 @@ test('swarm-errors: fail-fast aborts workflow after first failure', { timeout: 1
         ],
       }),
       undefined,
-      { cwd }
+      { cwd, useRelaycast: false }
     );
 
     assertRunFailed(result);
@@ -232,7 +252,7 @@ test('swarm-errors: maxIterations loops until success within 3 attempts', { time
         ],
       }),
       undefined,
-      { cwd }
+      { cwd, useRelaycast: false }
     );
 
     assertRunCompleted(result);

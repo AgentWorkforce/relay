@@ -51,6 +51,7 @@ class SpawnOptions:
     shadow_mode: Optional[str] = None
     idle_threshold_secs: Optional[int] = None
     restart_policy: Optional[dict[str, Any]] = None
+    skip_relay_prompt: Optional[bool] = None
     on_start: LifecycleHook = None
     on_success: LifecycleHook = None
     on_error: LifecycleHook = None
@@ -290,10 +291,11 @@ class HumanHandle:
 class AgentSpawner:
     """Shorthand spawner for a specific CLI (e.g., relay.claude.spawn(...))."""
 
-    def __init__(self, cli: str, default_name: str, relay: AgentRelay):
+    def __init__(self, cli: str, default_name: str, relay: AgentRelay, transport: str = "pty"):
         self._cli = cli
         self._default_name = default_name
         self._relay = relay
+        self._transport = transport
 
     async def spawn(
         self,
@@ -304,6 +306,7 @@ class AgentSpawner:
         task: Optional[str] = None,
         model: Optional[str] = None,
         cwd: Optional[str] = None,
+        skip_relay_prompt: Optional[bool] = None,
         on_start: LifecycleHook = None,
         on_success: LifecycleHook = None,
         on_error: LifecycleHook = None,
@@ -324,14 +327,16 @@ class AgentSpawner:
         )
 
         try:
-            result = await client.spawn_pty(
+            result = await client.spawn_provider(
                 name=agent_name,
-                cli=self._cli,
+                provider=self._cli,
+                transport=self._transport,
                 args=args or [],
                 channels=agent_channels,
                 task=task,
                 model=model,
                 cwd=cwd,
+                skip_relay_prompt=skip_relay_prompt,
             )
         except Exception as error:
             await self._relay._invoke_lifecycle_hook(
@@ -431,9 +436,10 @@ class AgentRelay:
         self._idle_resolvers: dict[str, list[asyncio.Future[str]]] = {}
 
         # Shorthand spawners
-        self.codex = AgentSpawner("codex", "Codex", self)
-        self.claude = AgentSpawner("claude", "Claude", self)
-        self.gemini = AgentSpawner("gemini", "Gemini", self)
+        self.codex = AgentSpawner("codex", "Codex", self, transport="pty")
+        self.claude = AgentSpawner("claude", "Claude", self, transport="pty")
+        self.gemini = AgentSpawner("gemini", "Gemini", self, transport="pty")
+        self.opencode = AgentSpawner("opencode", "OpenCode", self, transport="headless")
 
     @property
     def workspace_key(self) -> Optional[str]:
@@ -512,6 +518,7 @@ class AgentRelay:
                 shadow_mode=opts.shadow_mode,
                 idle_threshold_secs=opts.idle_threshold_secs,
                 restart_policy=opts.restart_policy,
+                skip_relay_prompt=opts.skip_relay_prompt,
             )
         except Exception as error:
             await self._invoke_lifecycle_hook(

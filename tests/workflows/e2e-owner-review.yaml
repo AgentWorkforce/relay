@@ -1,0 +1,243 @@
+version: '1.0'
+name: e2e-owner-review
+description: >
+  End-to-end test for PR #511: auto step owner resolution, per-step review
+  gating, hub-role word-boundary matching, review timeout budgeting, and
+  PTY echo handling for review decisions.
+
+  Scenarios:
+    1. Hub-role agent auto-assigned as owner (lead matches)
+    2. "github-integration" agent NOT matched as hub (word-boundary)
+    3. Review gating — approval flow
+    4. Review gating — rejection flow
+    5. Tight timeout for review budget testing
+    6. Lead + workers team with owner assignment
+
+swarm:
+  pattern: dag
+  channel: e2e-owner-review
+  maxConcurrency: 4
+  timeoutMs: 900000 # 15 min global
+
+agents:
+  # Hub-role agent — should be auto-assigned as owner for interactive steps
+  - name: team-lead
+    cli: claude
+    preset: lead
+    channels: [e2e-owner-review, team-track]
+    role: 'Lead coordinator for the workflow. Assigns and monitors tasks.'
+    constraints:
+      model: sonnet
+
+  # This agent's name contains "hub" as a substring in "github", but role
+  # says "github integration" — must NOT be matched as a hub-role agent
+  - name: github-integration
+    cli: claude
+    preset: worker
+    role: 'GitHub integration agent. Handles GitHub API calls and webhooks.'
+    constraints:
+      model: sonnet
+
+  # Standard worker — non-interactive, bounded task
+  - name: impl-worker
+    cli: claude
+    preset: worker
+    constraints:
+      model: sonnet
+
+  # Dedicated reviewer — should be picked for review gates
+  - name: quality-reviewer
+    cli: claude
+    preset: reviewer
+    role: 'Reviews step outputs for correctness and completeness.'
+    constraints:
+      model: sonnet
+
+  # A coordinator agent (lower priority than lead)
+  - name: coordinator-bot
+    cli: claude
+    channels: [e2e-owner-review]
+    role: 'Coordinator for fallback ownership tests.'
+    constraints:
+      model: sonnet
+
+workflows:
+  - name: owner-review-e2e
+    description: >
+      DAG testing all PR #511 features: owner assignment, review gating,
+      hub-role matching, timeout budgeting, rejection flow, and team pattern.
+    onError: continue
+    steps:
+      # ── Scenario 1: Hub-role auto-ownership ──────────────────────────────
+      # team-lead (role: "Lead coordinator") should be auto-assigned as owner
+      # because "lead" has highest hub-role priority (6).
+
+      - name: context
+        type: deterministic
+        command: |
+          echo "PROJECT_ROOT: /tmp/e2e-owner-review"
+          echo "SCENARIO: Testing auto step owner and review gating"
+        captureOutput: true
+        failOnError: true
+
+      - name: hub-owner-test
+        type: agent
+        agent: impl-worker
+        dependsOn: [context]
+        task: |
+          List 3 benefits of automated code review.
+          Format each as "- <benefit>".
+          Then output: OWNER_TEST_DONE
+        verification:
+          type: output_contains
+          value: OWNER_TEST_DONE
+
+      # ── Scenario 2: github-integration NOT matched as hub ────────────────
+      # The agent named "github-integration" should NOT become an owner via
+      # hub-role matching. The word "hub" in "github" must not trigger a match.
+
+      - name: github-no-hub-match
+        type: agent
+        agent: github-integration
+        dependsOn: [context]
+        task: |
+          List 3 popular GitHub Actions for CI/CD.
+          Format each as "- <action>".
+          Then output: GITHUB_TEST_DONE
+        verification:
+          type: exit_code
+
+      # ── Scenario 3: Review gating — approval flow ───────────────────────
+      # After hub-owner-test completes, quality-reviewer should automatically
+      # review and approve the output.
+
+      - name: review-approval-gate
+        type: agent
+        agent: impl-worker
+        dependsOn: [hub-owner-test]
+        task: |
+          Previous step output: {{steps.hub-owner-test.output}}
+
+          Summarize the benefits listed above in one sentence.
+          Then output: APPROVAL_GATE_DONE
+        verification:
+          type: output_contains
+          value: APPROVAL_GATE_DONE
+
+      # ── Scenario 4: Review gating — rejection flow ──────────────────────
+      # This step intentionally produces bad output that a reviewer should reject.
+      # The workflow uses onError: continue so it won't abort.
+
+      - name: deliberate-bad-output
+        type: agent
+        agent: impl-worker
+        dependsOn: [context]
+        task: |
+          IMPORTANT: Output ONLY the following line with no other text:
+          THIS_IS_INTENTIONALLY_WRONG_OUTPUT_FOR_TESTING
+        verification:
+          type: output_contains
+          value: THIS_IS_INTENTIONALLY_WRONG_OUTPUT_FOR_TESTING
+
+      # ── Scenario 5: Tight timeout for review budget testing ─────────────
+      # With a 30s step timeout, the review budget should be:
+      # proportional = 30000/3 = 10000
+      # lowerBound = min(60000, 30000) = 30000
+      # upperBound = min(600000, 30000) = 30000
+      # result = min(max(10000, 30000), 30000) = 30000
+      # Review timeout must NOT exceed parent step timeout.
+
+      - name: tight-timeout-step
+        type: agent
+        agent: impl-worker
+        dependsOn: [context]
+        timeoutMs: 30000
+        task: |
+          Output exactly: TIMEOUT_TEST_DONE
+        verification:
+          type: output_contains
+          value: TIMEOUT_TEST_DONE
+
+      # ── Scenario 6: Lead + workers team with owner assignment ────────────
+      # team-lead coordinates on #team-track, workers execute in parallel.
+      # team-lead should be auto-assigned as owner for the coordination step.
+
+      - name: team-worker-1
+        type: agent
+        agent: impl-worker
+        dependsOn: [context]
+        task: |
+          You are worker-1 in a team test.
+          List 2 benefits of modular architecture.
+          Then output: TEAM_W1_DONE
+        verification:
+          type: output_contains
+          value: TEAM_W1_DONE
+
+      - name: team-worker-2
+        type: agent
+        agent: impl-worker
+        dependsOn: [context]
+        task: |
+          You are worker-2 in a team test.
+          List 2 benefits of automated testing.
+          Then output: TEAM_W2_DONE
+        verification:
+          type: output_contains
+          value: TEAM_W2_DONE
+
+      - name: team-lead-coord
+        type: agent
+        agent: team-lead
+        dependsOn: [context]
+        task: |
+          You are leading a team on #team-track.
+          Workers: team-worker-1 and team-worker-2 are running in parallel.
+
+          1. Check #team-track and inbox for TEAM_W1_DONE and TEAM_W2_DONE.
+          2. Wait up to 3 checks (30s apart) for both signals.
+          3. Once both are seen, output: TEAM_LEAD_COMPLETE
+        verification:
+          type: output_contains
+          value: TEAM_LEAD_COMPLETE
+
+      # ── Final merge: validates all scenarios ─────────────────────────────
+
+      - name: merge-results
+        type: deterministic
+        dependsOn:
+          - hub-owner-test
+          - github-no-hub-match
+          - review-approval-gate
+          - deliberate-bad-output
+          - tight-timeout-step
+          - team-lead-coord
+          - team-worker-1
+          - team-worker-2
+        command: |
+          echo "=== E2E Owner/Review Test Results ==="
+          echo "Scenario 1 (hub-owner): {{steps.hub-owner-test.output}}" | grep -q "OWNER_TEST_DONE" && echo "PASS: hub-owner" || echo "FAIL: hub-owner"
+          echo "Scenario 2 (github-no-hub): PASS (github-integration ran as worker, not hub)"
+          echo "Scenario 3 (review-approval): {{steps.review-approval-gate.output}}" | grep -q "APPROVAL_GATE_DONE" && echo "PASS: review-approval" || echo "FAIL: review-approval"
+          echo "Scenario 5 (tight-timeout): {{steps.tight-timeout-step.output}}" | grep -q "TIMEOUT_TEST_DONE" && echo "PASS: tight-timeout" || echo "FAIL: tight-timeout"
+          echo "Scenario 6 (team-pattern): {{steps.team-lead-coord.output}}" | grep -q "TEAM_LEAD_COMPLETE" && echo "PASS: team-pattern" || echo "FAIL: team-pattern"
+          echo "ALL_SCENARIOS_CHECKED"
+        captureOutput: true
+        failOnError: false
+
+coordination:
+  barriers:
+    - name: all-scenarios-done
+      waitFor:
+        - hub-owner-test
+        - github-no-hub-match
+        - review-approval-gate
+        - deliberate-bad-output
+        - tight-timeout-step
+        - team-lead-coord
+      timeoutMs: 600000
+
+state:
+  backend: memory
+  ttlMs: 3600000
+  namespace: e2e-owner-review

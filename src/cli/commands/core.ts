@@ -76,6 +76,8 @@ export interface CoreRelay {
   onBrokerStderr?: (listener: (line: string) => void) => () => void;
   /** Relaycast workspace API key, available after the hello handshake. */
   workspaceKey?: string;
+  /** PID of the underlying broker process, when available. */
+  brokerPid?: number;
 }
 
 export interface CoreFileSystem {
@@ -124,6 +126,7 @@ export interface CoreDependencies {
   holdOpen: () => Promise<void>;
   resolveTemplatesDir: () => string;
   isPortInUse: (port: number) => Promise<boolean>;
+  findBrokerApiPort: () => Promise<number>;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
@@ -259,6 +262,7 @@ function createDefaultRelay(cwd: string, apiPort = 0): CoreRelay {
     shutdown: () => client.shutdown(),
     onBrokerStderr: (listener: (line: string) => void) => client.onBrokerStderr(listener),
     get workspaceKey() { return client.workspaceKey; },
+    get brokerPid() { return client.brokerPid; },
   };
   return relay;
 }
@@ -308,7 +312,7 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     env: process.env,
     argv: process.argv,
     execPath: process.execPath,
-    cliScript: process.argv[1] || 'dist/src/cli/bootstrap.js',
+    cliScript: process.argv[1] || 'dist/src/cli/index.js',
     pid: process.pid,
     isPortInUse: (port: number) =>
       new Promise((resolve) => {
@@ -350,6 +354,21 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     warn: (...args: unknown[]) => console.warn(...args),
+    findBrokerApiPort: async () => {
+      const dp = Number.parseInt(process.env.AGENT_RELAY_DASHBOARD_PORT ?? '3888', 10);
+      const startPort = (Number.isFinite(dp) ? dp : 3888) + 1;
+      for (let i = 0; i < 25; i++) {
+        const port = startPort + i;
+        if (port > 65535) break;
+        try {
+          const res = await fetch(`http://localhost:${port}/health`);
+          if (res.ok) return port;
+        } catch {
+          // Not responding, keep scanning.
+        }
+      }
+      return 0;
+    },
     exit: defaultExit,
     ...overrides,
   };
@@ -378,6 +397,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
     .option('--background', 'Run broker in the background (detached)')
     .option('--verbose', 'Enable verbose logging')
+    .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
     .action(
       async (options: {
         dashboard?: boolean;
@@ -385,6 +405,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
         spawn?: boolean;
         background?: boolean;
         verbose?: boolean;
+        workspaceKey?: string;
       }) => {
         await runUpCommand(options, deps);
       }

@@ -61,17 +61,29 @@ export interface SpawnFromEnvResult {
 
 // ── Bypass Policy (SDK-owned, single source of truth) ──────────────────────
 
+type BypassFlagConfig = {
+  flag: string;
+  aliases?: string[];
+};
+
 /** SDK-owned bypass flag mapping. Cloud must NOT duplicate these. */
-const BYPASS_FLAGS: Record<string, string> = {
-  claude: "--dangerously-skip-permissions",
-  codex: "--full-auto",
+const BYPASS_FLAGS: Record<string, BypassFlagConfig> = {
+  claude: { flag: "--dangerously-skip-permissions" },
+  codex: {
+    flag: "--dangerously-bypass-approvals-and-sandbox",
+    aliases: ["--full-auto"],
+  },
+  gemini: {
+    flag: "--yolo",
+    aliases: ["-y"],
+  },
 };
 
 /**
- * Resolve the bypass flag for a CLI.
+ * Resolve bypass flag config for a CLI.
  * Handles `claude:model` variants (e.g. `claude:opus`).
  */
-function getBypassFlag(cli: string): string | undefined {
+function getBypassFlagConfig(cli: string): BypassFlagConfig | undefined {
   const baseCli = cli.includes(":") ? cli.split(":")[0] : cli;
   return BYPASS_FLAGS[baseCli];
 }
@@ -147,13 +159,17 @@ export function resolveSpawnPolicy(input: SpawnEnvInput): SpawnPolicyResult {
     : ["general"];
 
   const disableBypass = input.AGENT_DISABLE_DEFAULT_BYPASS === "1";
-  const bypassFlag = getBypassFlag(input.AGENT_CLI);
+  const bypassConfig = getBypassFlagConfig(input.AGENT_CLI);
 
   let bypassApplied = false;
   const args = [...extraArgs];
+  const bypassValues = bypassConfig
+    ? [bypassConfig.flag, ...(bypassConfig.aliases ?? [])]
+    : [];
+  const hasBypassAlready = bypassValues.some((value) => args.includes(value));
 
-  if (bypassFlag && !disableBypass && !args.includes(bypassFlag)) {
-    args.push(bypassFlag);
+  if (bypassConfig && !disableBypass && !hasBypassAlready) {
+    args.push(bypassConfig.flag);
     bypassApplied = true;
   }
 
@@ -179,7 +195,8 @@ export function resolveSpawnPolicy(input: SpawnEnvInput): SpawnPolicyResult {
  * the environment.
  *
  * Applies canonical bypass flags (claude -> --dangerously-skip-permissions,
- * codex -> --full-auto) unless AGENT_DISABLE_DEFAULT_BYPASS=1.
+ * codex -> --dangerously-bypass-approvals-and-sandbox, gemini -> --yolo)
+ * unless AGENT_DISABLE_DEFAULT_BYPASS=1.
  *
  * Creates a broker, spawns the agent via PTY, and waits for exit.
  * Returns the exit reason and exit code.

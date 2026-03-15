@@ -26,14 +26,14 @@ You're participating in a chat with $AGENT2 using agent-relay.
 
 Use the MCP tool:
 \`\`\`
-relay_send(to: "$AGENT2", message: "Your message")
+mcp__relaycast__message_dm_send(to: "$AGENT2", text: "Your message")
 \`\`\`
 
 ## How to check for messages
 
 Use the MCP tool:
 \`\`\`
-relay_inbox()
+mcp__relaycast__message_inbox_check()
 \`\`\`
 
 ## Start the conversation
@@ -50,14 +50,14 @@ You're participating in a chat with $AGENT1 using agent-relay.
 
 Use the MCP tool:
 \`\`\`
-relay_send(to: "$AGENT1", message: "Your message")
+mcp__relaycast__message_dm_send(to: "$AGENT1", text: "Your message")
 \`\`\`
 
 ## How to check for messages
 
 Use the MCP tool:
 \`\`\`
-relay_inbox()
+mcp__relaycast__message_inbox_check()
 \`\`\`
 
 ## Wait for $AGENT1's message

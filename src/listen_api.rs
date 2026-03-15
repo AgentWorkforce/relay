@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use relay_broker::replay_buffer::ReplayBuffer;
+use relay_broker::{multi_workspace::WorkspaceMembershipSummary, replay_buffer::ReplayBuffer};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc};
@@ -26,10 +26,23 @@ pub enum ListenApiRequest {
         model: Option<String>,
         args: Vec<String>,
         task: Option<String>,
+        channels: Vec<String>,
+        cwd: Option<String>,
+        team: Option<String>,
+        shadow_of: Option<String>,
+        shadow_mode: Option<String>,
+        continue_from: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    SetModel {
+        name: String,
+        model: String,
+        timeout_ms: Option<u64>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     Release {
         name: String,
+        reason: Option<String>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     List {
@@ -43,6 +56,8 @@ pub enum ListenApiRequest {
         text: String,
         from: Option<String>,
         thread_id: Option<String>,
+        workspace_id: Option<String>,
+        workspace_alias: Option<String>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
 }
@@ -57,6 +72,8 @@ struct ListenApiState {
     /// endpoint so the dashboard can bootstrap Relaycast calls without a
     /// relaycast.json or env var.
     workspace_key: Option<String>,
+    memberships: Vec<WorkspaceMembershipSummary>,
+    default_workspace_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -82,6 +99,8 @@ pub fn listen_api_router(
     events_tx: broadcast::Sender<String>,
     replay_buffer: ReplayBuffer,
     workspace_key: Option<String>,
+    memberships: Vec<WorkspaceMembershipSummary>,
+    default_workspace_id: Option<String>,
 ) -> axum::Router {
     listen_api_router_with_auth(
         tx,
@@ -89,6 +108,8 @@ pub fn listen_api_router(
         configured_broker_api_key(),
         replay_buffer,
         workspace_key,
+        memberships,
+        default_workspace_id,
     )
 }
 
@@ -105,6 +126,8 @@ fn listen_api_router_with_auth(
     broker_api_key: Option<String>,
     replay_buffer: ReplayBuffer,
     workspace_key: Option<String>,
+    memberships: Vec<WorkspaceMembershipSummary>,
+    default_workspace_id: Option<String>,
 ) -> axum::Router {
     use axum::{middleware, routing, Router};
 
@@ -118,11 +141,17 @@ fn listen_api_router_with_auth(
         workspace_key: workspace_key
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
+        memberships,
+        default_workspace_id,
     };
 
     let protected = Router::new()
         .route("/api/spawn", routing::post(listen_api_spawn))
         .route("/api/spawned", routing::get(listen_api_list))
+        .route(
+            "/api/spawned/{name}/model",
+            routing::post(listen_api_set_model),
+        )
         .route("/api/threads", routing::get(listen_api_threads))
         .route("/api/events/replay", routing::get(listen_api_replay))
         .route("/api/spawned/{name}", routing::delete(listen_api_release))
@@ -150,27 +179,44 @@ fn listen_api_router_with_auth(
 // Endpoints
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn listen_api_health() -> axum::Json<Value> {
+pub(crate) fn listen_api_health_payload(
+    default_workspace_id: Option<String>,
+    memberships: Vec<WorkspaceMembershipSummary>,
+) -> Value {
     let startup_error_code = std::env::var("AGENT_RELAY_STARTUP_ERROR_CODE").ok();
     let status = startup_health_status(startup_error_code.as_deref());
+    let workspace_id = default_workspace_id
+        .clone()
+        .or_else(|| {
+            memberships
+                .first()
+                .map(|membership| membership.workspace_id.clone())
+        })
+        .unwrap_or_else(|| "ws_unknown".to_string());
 
-    axum::Json(json!({
+    json!({
         "status": status,
         "service": "agent-relay-listen",
         "version": env!("CARGO_PKG_VERSION"),
         "uptimeMs": 0,
-        "workspaceId": std::env::var("RELAY_WORKSPACE_ID")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .filter(|value| value.starts_with("ws_"))
-            .unwrap_or_else(|| "ws_unknown".to_string()),
+        "workspaceId": workspace_id,
+        "defaultWorkspaceId": default_workspace_id,
+        "memberships": memberships,
         "agentCount": 0,
         "pendingDeliveryCount": 0,
         "wsConnections": 0,
         "memoryMb": 0,
         "relaycastConnected": startup_error_code.is_none(),
-    }))
+    })
+}
+
+async fn listen_api_health(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> axum::Json<Value> {
+    axum::Json(listen_api_health_payload(
+        state.default_workspace_id,
+        state.memberships,
+    ))
 }
 
 /// Authenticated endpoint that returns broker configuration, including the
@@ -181,6 +227,8 @@ async fn listen_api_config(
 ) -> axum::Json<Value> {
     axum::Json(json!({
         "workspaceKey": state.workspace_key,
+        "defaultWorkspaceId": state.default_workspace_id,
+        "memberships": state.memberships,
     }))
 }
 
@@ -282,6 +330,33 @@ async fn listen_api_spawn(
         })
         .unwrap_or_default();
     let task = body.get("task").and_then(Value::as_str).map(String::from);
+    let channels: Vec<String> = body
+        .get("channels")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    let cwd = body.get("cwd").and_then(Value::as_str).map(String::from);
+    let team = body.get("team").and_then(Value::as_str).map(String::from);
+    let shadow_of = body
+        .get("shadow_of")
+        .or_else(|| body.get("shadowOf"))
+        .and_then(Value::as_str)
+        .map(String::from);
+    let shadow_mode = body
+        .get("shadow_mode")
+        .or_else(|| body.get("shadowMode"))
+        .and_then(Value::as_str)
+        .map(String::from);
+    let continue_from = body
+        .get("continue_from")
+        .or_else(|| body.get("continueFrom"))
+        .and_then(Value::as_str)
+        .map(String::from);
 
     if name.is_empty() {
         return (
@@ -299,6 +374,12 @@ async fn listen_api_spawn(
             model,
             args,
             task,
+            channels,
+            cwd,
+            team,
+            shadow_of,
+            shadow_mode,
+            continue_from,
             reply: reply_tx,
         })
         .await
@@ -341,6 +422,57 @@ async fn listen_api_list(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct ListenApiSetModelPayload {
+    model: String,
+    #[serde(default, alias = "timeoutMs")]
+    timeout_ms: Option<u64>,
+}
+
+async fn listen_api_set_model(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<ListenApiSetModelPayload>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let model = body.model.trim().to_string();
+    if model.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "success": false, "error": "Missing required field: model" })),
+        );
+    }
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::SetModel {
+            name: name.clone(),
+            model: model.clone(),
+            timeout_ms: body.timeout_ms,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal channel closed" })),
+        );
+    }
+
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "name": name, "error": err })),
+        ),
+        Err(_) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
+        ),
+    }
+}
+
 async fn listen_api_threads(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
 ) -> axum::Json<Value> {
@@ -362,12 +494,15 @@ async fn listen_api_threads(
 async fn listen_api_release(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
+    body: Option<axum::Json<Value>>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let reason = body.and_then(|b| b.get("reason").and_then(|v| v.as_str()).map(String::from));
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
         .tx
         .send(ListenApiRequest::Release {
             name: name.clone(),
+            reason,
             reply: reply_tx,
         })
         .await
@@ -433,12 +568,28 @@ async fn listen_api_send(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let workspace_id = body
+        .get("workspaceId")
+        .or_else(|| body.get("workspace_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let workspace_alias = body
+        .get("workspaceAlias")
+        .or_else(|| body.get("workspace_alias"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     tracing::info!(
         target = "relay_broker::http_api",
         request_id = %request_id,
         to = %to,
         from = ?from,
         thread_id = ?thread_id,
+        workspace_id = ?workspace_id,
+        workspace_alias = ?workspace_alias,
         "received HTTP API send request"
     );
 
@@ -465,6 +616,8 @@ async fn listen_api_send(
             text,
             from,
             thread_id,
+            workspace_id,
+            workspace_alias,
             reply: reply_tx,
         })
         .await
@@ -494,12 +647,21 @@ async fn listen_api_send(
             (axum::http::StatusCode::OK, axum::Json(val))
         }
         Ok(Ok(Err(err))) => {
-            let error = err.to_string();
-            let status = if error.contains("Agent \"") && error.contains("not found") {
+            let raw_error = err.to_string();
+            let status = if raw_error.starts_with("ambiguous_workspace:")
+                || raw_error.starts_with("workspace_not_found:")
+            {
+                axum::http::StatusCode::BAD_REQUEST
+            } else if raw_error.contains("Agent \"") && raw_error.contains("not found") {
                 axum::http::StatusCode::NOT_FOUND
             } else {
                 axum::http::StatusCode::BAD_GATEWAY
             };
+            let error = raw_error
+                .strip_prefix("ambiguous_workspace:")
+                .or_else(|| raw_error.strip_prefix("workspace_not_found:"))
+                .unwrap_or(&raw_error)
+                .to_string();
             tracing::warn!(
                 target = "relay_broker::http_api",
                 request_id = %request_id,
@@ -877,6 +1039,8 @@ mod auth_tests {
                 broker_api_key.map(ToString::to_string),
                 replay_buffer,
                 None,
+                vec![],
+                None,
             ),
             rx,
         )
@@ -961,6 +1125,135 @@ mod auth_tests {
         assert_eq!(body["agents"][0]["name"], "worker-a");
 
         list_replier.await.expect("list replier should complete");
+    }
+
+    #[tokio::test]
+    async fn spawn_route_forwards_extended_fields() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let spawn_replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::Spawn {
+                    name,
+                    cli,
+                    model,
+                    args,
+                    task,
+                    channels,
+                    cwd,
+                    team,
+                    shadow_of,
+                    shadow_mode,
+                    continue_from,
+                    reply,
+                }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(cli, "codex");
+                    assert_eq!(model.as_deref(), Some("o3"));
+                    assert_eq!(args, vec!["--fast".to_string()]);
+                    assert_eq!(task.as_deref(), Some("Ship it"));
+                    assert_eq!(
+                        channels,
+                        vec!["general".to_string(), "engineering".to_string()]
+                    );
+                    assert_eq!(cwd.as_deref(), Some("/tmp/project"));
+                    assert_eq!(team.as_deref(), Some("core"));
+                    assert_eq!(shadow_of.as_deref(), Some("Lead"));
+                    assert_eq!(shadow_mode.as_deref(), Some("subagent"));
+                    assert_eq!(continue_from.as_deref(), Some("worker-prev"));
+                    let _ = reply.send(Ok(
+                        json!({ "success": true, "name": "worker-a", "pid": 42 }),
+                    ));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawn")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "name": "worker-a",
+                            "cli": "codex",
+                            "model": "o3",
+                            "args": ["--fast"],
+                            "task": "Ship it",
+                            "channels": ["general", "engineering"],
+                            "cwd": "/tmp/project",
+                            "team": "core",
+                            "shadowOf": "Lead",
+                            "shadowMode": "subagent",
+                            "continueFrom": "worker-prev",
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["success"], json!(true));
+
+        spawn_replier.await.expect("spawn replier should complete");
+    }
+
+    #[tokio::test]
+    async fn set_model_route_forwards_request() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let set_model_replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::SetModel {
+                    name,
+                    model,
+                    timeout_ms,
+                    reply,
+                }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(model, "sonnet");
+                    assert_eq!(timeout_ms, Some(4500));
+                    let _ = reply.send(Ok(json!({
+                        "success": true,
+                        "name": "worker-a",
+                        "model": "sonnet",
+                    })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/model")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "model": "sonnet",
+                            "timeoutMs": 4500,
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["success"], json!(true));
+        assert_eq!(body["model"], json!("sonnet"));
+
+        set_model_replier
+            .await
+            .expect("set model replier should complete");
     }
 
     #[tokio::test]

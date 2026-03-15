@@ -1,0 +1,98 @@
+version: '1.0'
+name: supervisor-validation
+description: >
+  Tests the owner-supervisor model with real agents. Validates that the lead
+  agent is auto-assigned as supervisor for worker steps, runs concurrently
+  with the specialist, and signals STEP_COMPLETE independently.
+
+swarm:
+  pattern: dag
+  maxConcurrency: 3
+  timeoutMs: 600000
+  channel: supervisor-test
+
+agents:
+  - name: lead
+    cli: claude
+    preset: lead
+    role: Team lead and supervisor
+    channels: [supervisor-test]
+    constraints:
+      model: sonnet
+
+  - name: coder
+    cli: claude
+    role: Code implementer
+    channels: [supervisor-test]
+    constraints:
+      model: sonnet
+
+  - name: reviewer
+    cli: claude
+    role: Code reviewer
+    channels: [supervisor-test]
+    constraints:
+      model: sonnet
+
+workflows:
+  - name: supervised-build
+    steps:
+      - name: implement
+        type: agent
+        agent: coder
+        task: |
+          Create a file at /tmp/supervisor-test/utils.ts with a simple
+          TypeScript utility: a function called `slugify` that converts
+          a string to a URL-safe slug. Include JSDoc comments and
+          handle edge cases (empty string, special chars, multiple spaces).
+
+          When done, output: IMPLEMENT_DONE
+        verification:
+          type: file_exists
+          value: /tmp/supervisor-test/utils.ts
+
+      - name: test-it
+        type: agent
+        agent: coder
+        dependsOn: [implement]
+        task: |
+          Create a test file at /tmp/supervisor-test/utils.test.ts
+          that tests the slugify function from utils.ts.
+          Write at least 5 test cases covering edge cases.
+          Context from implementation: {{steps.implement.output}}
+
+          When done, output: TESTS_DONE
+        verification:
+          type: file_exists
+          value: /tmp/supervisor-test/utils.test.ts
+
+      - name: review
+        type: agent
+        agent: reviewer
+        dependsOn: [implement, test-it]
+        task: |
+          Review the implementation and tests:
+          Implementation: {{steps.implement.output}}
+          Tests: {{steps.test-it.output}}
+
+          Check for: correctness, edge cases, code quality.
+          Output: REVIEW_COMPLETE
+        verification:
+          type: output_contains
+          value: REVIEW_COMPLETE
+
+      - name: final-check
+        type: deterministic
+        dependsOn: [review]
+        command: |
+          echo "=== Supervisor Validation Results ==="
+          test -f /tmp/supervisor-test/utils.ts && echo "PASS: utils.ts exists" || echo "FAIL: utils.ts missing"
+          test -f /tmp/supervisor-test/utils.test.ts && echo "PASS: utils.test.ts exists" || echo "FAIL: utils.test.ts missing"
+          echo "VALIDATION_COMPLETE"
+        captureOutput: true
+        failOnError: false
+
+state:
+  backend: memory
+  ttlMs: 3600000
+  namespace: supervisor-validation

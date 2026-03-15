@@ -16,7 +16,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { TrajectoryConfig, WorkflowStep } from './types.js';
+import type { StepCompletionDecision, TrajectoryConfig, WorkflowStep } from './types.js';
 
 // ── Trajectory file format (compatible with trail CLI) ───────────────────────
 
@@ -41,6 +41,13 @@ interface TrajectoryAgent {
   name: string;
   role: string;
   joinedAt: string;
+}
+
+interface StepParticipants {
+  role?: string;
+  owner?: string;
+  specialist?: string;
+  reviewer?: string;
 }
 
 interface TrajectoryFile {
@@ -77,6 +84,8 @@ export interface StepOutcome {
   nonInteractive?: boolean;
   /** Duration in ms. */
   durationMs?: number;
+  /** How the step completion was determined. */
+  completionMode?: StepCompletionDecision['mode'];
 }
 
 // ── Failure root-cause categories ───────────────────────────────────────────
@@ -175,7 +184,7 @@ export class WorkflowTrajectory {
       id,
       version: 1,
       task: {
-        title: `${workflowName} run #${this.runId.slice(0, 8)}`,
+        title: workflowName,
         source: { system: 'workflow-runner', id: this.runId },
       },
       status: 'active',
@@ -230,17 +239,22 @@ export class WorkflowTrajectory {
   // ── Step events ────────────────────────────────────────────────────────────
 
   /** Record step started — captures intent, not just assignment. */
-  async stepStarted(step: WorkflowStep, agent: string): Promise<void> {
+  async stepStarted(step: WorkflowStep, agent: string, participants?: StepParticipants): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
 
-    // Register agent if not seen
-    if (!this.trajectory.agents.some((a) => a.name === agent)) {
-      this.trajectory.agents.push({
-        name: agent,
-        role: step.agent ?? 'deterministic',
-        joinedAt: new Date().toISOString(),
-      });
+    await this.registerAgent(agent, participants?.role ?? step.agent ?? 'deterministic');
+    if (participants?.owner && participants.owner !== agent) {
+      await this.registerAgent(participants.owner, 'owner');
     }
+    if (participants?.specialist) {
+      await this.registerAgent(participants.specialist, 'specialist');
+    }
+    if (participants?.reviewer) {
+      await this.registerAgent(participants.reviewer, 'reviewer');
+    }
+
+    this.closeCurrentChapter();
+    this.openChapter(`Execution: ${step.name}`, agent);
 
     // Capture the step's purpose: first non-empty sentence of the task
     const intent = step.task
@@ -255,8 +269,107 @@ export class WorkflowTrajectory {
     await this.flush();
   }
 
+  async registerAgent(name: string, role: string): Promise<void> {
+    if (!this.enabled || !this.trajectory) return;
+    if (!this.trajectory.agents.some((a) => a.name === name)) {
+      this.trajectory.agents.push({
+        name,
+        role,
+        joinedAt: new Date().toISOString(),
+      });
+      await this.flush();
+    }
+  }
+
+  async stepSupervisionAssigned(
+    step: WorkflowStep,
+    supervised: { owner: { name: string }; specialist: { name: string }; reviewer?: { name: string } }
+  ): Promise<void> {
+    if (!this.enabled || !this.trajectory) return;
+
+    await this.registerAgent(supervised.owner.name, 'owner');
+    await this.registerAgent(supervised.specialist.name, 'specialist');
+    if (supervised.reviewer?.name) {
+      await this.registerAgent(supervised.reviewer.name, 'reviewer');
+    }
+
+    const reviewerNote = supervised.reviewer?.name ? `, reviewer=${supervised.reviewer.name}` : '';
+    this.addEvent(
+      'decision',
+      `"${step.name}" supervision assigned → owner=${supervised.owner.name}, specialist=${supervised.specialist.name}${reviewerNote}`,
+      'medium',
+      {
+        owner: supervised.owner.name,
+        specialist: supervised.specialist.name,
+        reviewer: supervised.reviewer?.name,
+      }
+    );
+    await this.flush();
+  }
+
+  async ownerMonitoringEvent(
+    stepName: string,
+    owner: string,
+    detail: string,
+    raw?: Record<string, unknown>
+  ): Promise<void> {
+    if (!this.enabled || !this.trajectory) return;
+
+    this.addEvent(
+      'note',
+      `"${stepName}" owner ${owner}: ${detail}`,
+      'medium',
+      raw ? { owner, ...raw } : { owner }
+    );
+    await this.flush();
+  }
+
+  async reviewCompleted(
+    stepName: string,
+    reviewerName: string,
+    decision: 'approved' | 'rejected',
+    reason?: string
+  ): Promise<void> {
+    if (!this.enabled || !this.trajectory) return;
+
+    this.addEvent('review-completed', `"${stepName}" review ${decision} by ${reviewerName}`, 'medium', {
+      stepName,
+      reviewer: reviewerName,
+      decision,
+      reason,
+    });
+    await this.flush();
+  }
+
+  async stepCompletionDecision(stepName: string, decision: StepCompletionDecision): Promise<void> {
+    if (!this.enabled || !this.trajectory) return;
+
+    const modeLabel = decision.mode === 'marker' ? 'marker-based' : `${decision.mode}-based`;
+    const reason = decision.reason ? ` — ${decision.reason}` : '';
+    const evidence = this.formatCompletionEvidenceSummary(decision.evidence);
+    const evidenceSuffix = evidence ? ` (${evidence})` : '';
+
+    this.addEvent(
+      decision.mode === 'marker' ? 'completion-marker' : 'completion-evidence',
+      `"${stepName}" ${modeLabel} completion${reason}${evidenceSuffix}`,
+      'medium',
+      {
+        stepName,
+        completionMode: decision.mode,
+        reason: decision.reason,
+        evidence: decision.evidence,
+      }
+    );
+    await this.flush();
+  }
+
   /** Record step completed — captures what was accomplished. */
-  async stepCompleted(step: WorkflowStep, output: string, attempt: number): Promise<void> {
+  async stepCompleted(
+    step: WorkflowStep,
+    output: string,
+    attempt: number,
+    decision?: StepCompletionDecision
+  ): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
 
     const suffix = attempt > 1 ? ` (after ${attempt} attempts)` : '';
@@ -273,7 +386,12 @@ export class WorkflowTrajectory {
         ? lastMeaningful
         : output.trim().slice(0, 120) || '(no output)';
 
-    this.addEvent('finding', `"${step.name}" completed${suffix} → ${completion}`, 'medium');
+    if (decision) {
+      await this.stepCompletionDecision(step.name, decision);
+    }
+
+    const modeSuffix = decision ? ` [${decision.mode}]` : '';
+    this.addEvent('finding', `"${step.name}" completed${suffix}${modeSuffix} → ${completion}`, 'medium');
     await this.flush();
   }
 
@@ -398,12 +516,29 @@ export class WorkflowTrajectory {
   }
 
   /** Abandon the trajectory. */
-  async abandon(reason: string): Promise<void> {
+  async abandon(
+    reason: string,
+    meta?: { summary?: string; confidence?: number; learnings?: string[]; challenges?: string[] }
+  ): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
 
+    const elapsed = Date.now() - this.startTime;
+    const elapsedStr =
+      elapsed > 60_000 ? `${Math.round(elapsed / 60_000)} minutes` : `${Math.round(elapsed / 1_000)} seconds`;
+    const summary = meta?.summary ?? `Workflow abandoned: ${reason}`;
+
+    this.openRetrospective();
+    this.addEvent('reflection', `${summary} (abandoned after ${elapsedStr})`, 'high');
     this.addEvent('error', `Workflow abandoned: ${reason}`, 'high');
     this.trajectory.status = 'abandoned';
     this.trajectory.completedAt = new Date().toISOString();
+    this.trajectory.retrospective = {
+      summary,
+      approach: `${this.swarmPattern} workflow (${this.trajectory.agents.filter((a) => a.role !== 'workflow-runner').length} agents)`,
+      confidence: meta?.confidence ?? 0,
+      learnings: meta?.learnings,
+      challenges: meta?.challenges,
+    };
 
     this.closeCurrentChapter();
     await this.flush();
@@ -594,6 +729,21 @@ export class WorkflowTrajectory {
     if (raw) event.raw = raw;
 
     chapter.events.push(event);
+  }
+
+  private formatCompletionEvidenceSummary(
+    evidence: StepCompletionDecision['evidence'] | undefined
+  ): string | undefined {
+    if (!evidence) return undefined;
+
+    const parts: string[] = [];
+    if (evidence.summary) parts.push(evidence.summary);
+    if (evidence.signals?.length) parts.push(`signals=${evidence.signals.join(', ')}`);
+    if (evidence.channelPosts?.length) parts.push(`channel=${evidence.channelPosts.join(' | ')}`);
+    if (evidence.files?.length) parts.push(`files=${evidence.files.join(', ')}`);
+    if (evidence.exitCode !== undefined) parts.push(`exit=${evidence.exitCode}`);
+
+    return parts.length > 0 ? parts.join('; ') : undefined;
   }
 
   private async flush(): Promise<void> {

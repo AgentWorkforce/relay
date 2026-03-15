@@ -89,17 +89,17 @@ You are an expert API designer specializing in RESTful and GraphQL API design. Y
 ### Starting Work
 
 ```
-relay_send(to: "Lead", message: "**API:** Designing [endpoint/feature]\n\n**Scope:** [What the API needs to do]\n**Consumers:** [Who will use this]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**API:** Designing [endpoint/feature]\n\n**Scope:** [What the API needs to do]\n**Consumers:** [Who will use this]")
 ```
 
 ### Design Proposal
 
 ```
-relay_send(to: "Lead", message: "**API DESIGN:** [Feature name]\n\n**Endpoints:**\n- `GET /resource` - [Description]\n- `POST /resource` - [Description]\n\n**Request/Response:**\n[Brief schema outline]\n\n**Questions:**\n- [Any decisions needed]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**API DESIGN:** [Feature name]\n\n**Endpoints:**\n- `GET /resource` - [Description]\n- `POST /resource` - [Description]\n\n**Request/Response:**\n[Brief schema outline]\n\n**Questions:**\n- [Any decisions needed]")
 ```
 
 ### Completion
 
 ```
-relay_send(to: "Lead", message: "**DONE:** [API feature]\n\n**Endpoints added:**\n- [List endpoints]\n\n**Documentation:** [Location of API docs]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**DONE:** [API feature]\n\n**Endpoints added:**\n- [List endpoints]\n\n**Documentation:** [Location of API docs]")
 ```
