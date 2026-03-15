@@ -29,6 +29,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.2.3] - 2026-03-15
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add HTTP transport mode; route all CLI commands through SDK**
+
+#### User-Impacting Fixes
+- Use correct broker init subcommand and --api-port flag (#569)
+- Use broker binary path instead of process.argv[1] for auto-start (#569)
+- Add RELAY_SKIP_BOOTSTRAP to Codex, Opencode, and Gemini/Droid config paths
+- Auto-accept droid/opencode permission prompts with --cwd
+- Set RELAY_SKIP_BOOTSTRAP when agent token is pre-registered (#85)
+- Auto-accept droid/opencode permission prompts with --cwd
+- Address review feedback on HTTP client and listing commands
+- Auto-accept Claude Code folder trust prompt for spawned agents
+
+### Technical Perspective
+#### Performance & Reliability
+- Add tests for droid/opencode auto-accept permission detection
+- Add tests for droid/opencode auto-accept permission detection
+
+#### Releases
+- v3.2.3
+
+---
+
 ## [3.2.2] - 2026-03-14
 
 ### Product Perspective
