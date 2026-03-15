@@ -15,10 +15,11 @@ mod swarm_tui;
 mod wrap;
 
 use helpers::{
-    detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
-    detect_gemini_trust_prompt, detect_gemini_untrusted_banner, detect_opencode_permission_prompt,
-    floor_char_boundary, is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode,
-    normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
+    detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
+    detect_gemini_action_required, detect_gemini_trust_prompt, detect_gemini_untrusted_banner,
+    detect_opencode_permission_prompt, floor_char_boundary, is_auto_suggestion,
+    is_bypass_selection_menu, is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi,
+    TerminalQueryParser,
 };
 use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiRequest};
 use routing::display_target_for_dashboard;
@@ -6253,8 +6254,8 @@ mod tests {
     use super::{
         build_agent_state_transition_event, build_thread_infos, channels_from_csv, continuity_dir,
         delivery_retry_interval, derive_ws_base_url_from_http, detect_bypass_permissions_prompt,
-        display_target_for_dashboard, drop_pending_for_worker, extract_mcp_message_ids,
-        http_api_event_emit_timeout, http_api_local_delivery_timeout,
+        detect_claude_trust_prompt, display_target_for_dashboard, drop_pending_for_worker,
+        extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
         http_api_relaycast_send_timeout, is_auto_suggestion, is_bypass_selection_menu,
         is_in_editor_mode, is_relaycast_self_control_target, is_unknown_worker_error_message,
         normalize_channel, normalize_initial_task, normalize_sender,
@@ -7263,6 +7264,53 @@ mod tests {
         let clean = strip_ansi(raw);
         let (has_ref, has_confirm) = detect_bypass_permissions_prompt(&clean);
         assert!(has_ref && has_confirm);
+    }
+
+    // ==================== detect_claude_trust_prompt tests ====================
+
+    #[test]
+    fn claude_trust_prompt_full_match() {
+        let output = "take a moment to review what's in this folder first.\n\
+                       Claude Code'll be able to read, edit, and execute files here.\n\
+                       Security guide\n\
+                       ❯ 1. Yes, I trust this folder\n\
+                         2. No, exit\n\
+                       Enter to confirm · Esc to cancel";
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
+        assert!(has_trust_ref);
+        assert!(has_confirmation);
+    }
+
+    #[test]
+    fn claude_trust_prompt_stripped_spaces() {
+        let output = "Yes,Itrustthisfolder\nNo,exit";
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
+        assert!(has_trust_ref);
+        assert!(has_confirmation);
+    }
+
+    #[test]
+    fn claude_trust_prompt_no_match_normal_output() {
+        let output = "I'll help you fix that bug. Let me read the file first.";
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
+        assert!(!has_trust_ref);
+        assert!(!has_confirmation);
+    }
+
+    #[test]
+    fn claude_trust_prompt_partial_no_exit() {
+        let output = "Yes, I trust this folder";
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
+        assert!(has_trust_ref);
+        assert!(!has_confirmation, "should not match without exit option");
+    }
+
+    #[test]
+    fn claude_trust_prompt_with_ansi() {
+        let raw = "\x1b[1m❯ 1. Yes, I trust this folder\x1b[0m\n  2. No, exit";
+        let clean = strip_ansi(raw);
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(&clean);
+        assert!(has_trust_ref && has_confirmation);
     }
 
     // ==================== is_in_editor_mode tests ====================

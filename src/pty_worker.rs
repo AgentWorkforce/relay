@@ -456,6 +456,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.handle_gemini_action(&text, &pty).await;
                         pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
                         pty_auto.handle_gemini_trust(&text, &pty).await;
+                        pty_auto.handle_claude_trust(&text, &pty).await;
 
                         // Accumulate echo buffer for verification matching
                         echo_buffer.push_str(&text);
