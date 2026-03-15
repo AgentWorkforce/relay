@@ -63,13 +63,16 @@ function collectLeafCommandPaths(program: Command): string[] {
 }
 
 describe('bootstrap CLI', () => {
-  it('uses the expected program name', () => {
-    const program = createProgram();
+  // Pass --help to createProgram so all command modules are loaded
+  const helpArgv = ['node', 'agent-relay', '--help'];
+
+  it('uses the expected program name', async () => {
+    const program = await createProgram(helpArgv);
     expect(program.name()).toBe('agent-relay');
   });
 
-  it('registers all expected command groups and leaves out create-agent', () => {
-    const program = createProgram();
+  it('registers all expected command groups and leaves out create-agent', async () => {
+    const program = await createProgram(helpArgv);
     const topLevelCommands = program.commands.map((command) => command.name());
 
     expect(topLevelCommands).toEqual(
@@ -110,8 +113,8 @@ describe('bootstrap CLI', () => {
     expect(topLevelCommands).not.toContain('create-agent');
   });
 
-  it('registers the expected number of executable commands', () => {
-    const program = createProgram();
+  it('registers the expected number of executable commands', async () => {
+    const program = await createProgram(helpArgv);
     const leafCommandPaths = collectLeafCommandPaths(program);
 
     expect(leafCommandPaths).toHaveLength(38);

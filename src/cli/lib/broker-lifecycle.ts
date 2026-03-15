@@ -721,17 +721,22 @@ async function refreshDashboardAssetsIfStale(
   }
 }
 
-async function startDashboardWithFallback(
+function startDashboardWithFallback(
   paths: CoreProjectPaths,
   dashboardPort: number,
   apiPort: number,
   deps: CoreDependencies,
   enableVerboseLogging: boolean,
-  relayApiKey?: string
-): Promise<{ process: SpawnedProcess; port: number | null }> {
+  relayApiKey: string | undefined,
+  isShuttingDown: () => boolean,
+  onProcessChange?: (process: SpawnedProcess) => void
+): { process: SpawnedProcess; settled: Promise<{ process: SpawnedProcess; port: number | null }> } {
   const preferredBinary = deps.findDashboardBinary();
-  await refreshDashboardAssetsIfStale(preferredBinary, deps);
-  let process = startDashboard(
+  // Defer asset refresh to background — don't block dashboard spawn.
+  // Assets are only stale on version upgrades; the dashboard can still
+  // serve with the previous version's assets while the refresh completes.
+  refreshDashboardAssetsIfStale(preferredBinary, deps).catch(() => {});
+  const initialProcess = startDashboard(
     paths,
     dashboardPort,
     apiPort,
@@ -740,23 +745,83 @@ async function startDashboardWithFallback(
     preferredBinary,
     relayApiKey
   );
-  let port = await resolveStartedDashboardPort(
-    process as DashboardStartupProcess,
-    dashboardPort,
-    deps
-  );
 
-  if (port === null && preferredBinary) {
-    deps.warn('Retrying dashboard startup using npx @agent-relay/dashboard-server@latest');
-    process = startDashboard(paths, dashboardPort, apiPort, deps, enableVerboseLogging, null, relayApiKey);
-    port = await resolveStartedDashboardPort(
+  const settled = (async (): Promise<{ process: SpawnedProcess; port: number | null }> => {
+    let process = initialProcess;
+    let port = await resolveStartedDashboardPort(
       process as DashboardStartupProcess,
       dashboardPort,
       deps
     );
-  }
 
-  return { process, port };
+    if (port === null && preferredBinary) {
+      if (isShuttingDown()) {
+        return { process, port: null };
+      }
+      deps.warn('Retrying dashboard startup using npx @agent-relay/dashboard-server@latest');
+      process = startDashboard(paths, dashboardPort, apiPort, deps, enableVerboseLogging, null, relayApiKey);
+      onProcessChange?.(process);
+      if (isShuttingDown()) {
+        try {
+          process.kill('SIGTERM');
+        } catch {
+          // Best-effort cleanup.
+        }
+        return { process, port: null };
+      }
+      port = await resolveStartedDashboardPort(
+        process as DashboardStartupProcess,
+        dashboardPort,
+        deps
+      );
+    }
+
+    return { process, port };
+  })();
+
+  return { process: initialProcess, settled };
+}
+
+function monitorDashboardStartup(
+  startedDashboard: { process: SpawnedProcess; settled: Promise<{ process: SpawnedProcess; port: number | null }> },
+  requestedDashboardPort: number,
+  options: Pick<UpOptions, 'dashboardPath'>,
+  deps: CoreDependencies,
+  isShuttingDown: () => boolean
+): void {
+  const requestedDashboardPath = normalizeDashboardPath(options.dashboardPath);
+  const requestedDashboardUrl = requestedDashboardPath
+    ? `http://localhost:${requestedDashboardPort}${requestedDashboardPath}`
+    : `http://localhost:${requestedDashboardPort}`;
+  deps.log(`Dashboard: ${requestedDashboardUrl}`);
+
+  startedDashboard.settled
+    .then(({ process, port }) => {
+      if (isShuttingDown()) {
+        return;
+      }
+      if (port === null) {
+        deps.warn('Dashboard failed to start. Check dashboard error logs above.');
+        return;
+      }
+
+      if (port !== requestedDashboardPort) {
+        deps.warn(
+          `Dashboard port ${requestedDashboardPort} was already in use, so dashboard started on ${port}`
+        );
+        const resolvedDashboardUrl = requestedDashboardPath
+          ? `http://localhost:${port}${requestedDashboardPath}`
+          : `http://localhost:${port}`;
+        deps.log(`Dashboard: ${resolvedDashboardUrl}`);
+      }
+
+      waitForDashboard(port, process, deps, isShuttingDown).catch(() => {});
+    })
+    .catch(() => {
+      if (!isShuttingDown()) {
+        deps.warn('Dashboard failed to start. Check dashboard error logs above.');
+      }
+    });
 }
 
 async function waitForDashboard(
@@ -765,8 +830,11 @@ async function waitForDashboard(
   deps: Pick<CoreDependencies, 'warn'>,
   isShuttingDown: () => boolean
 ): Promise<void> {
+  // Use exponential backoff: start at 100ms, cap at 500ms.
+  // This reduces the average wait time when the dashboard starts quickly.
   for (let i = 0; i < 20; i++) {
-    await new Promise((r) => setTimeout(r, 500));
+    const delay = Math.min(100 * Math.pow(1.3, i), 500);
+    await new Promise((r) => setTimeout(r, delay));
     if (process.killed) {
       if (!isShuttingDown()) {
         deps.warn(`Warning: Dashboard process exited before becoming ready on port ${port}`);
@@ -949,34 +1017,20 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
           deps.log('Broker already running for this project; reusing existing broker.');
 
           if (wantsDashboard) {
-            const dashboardStart = await startDashboardWithFallback(
+            const startedDashboard = startDashboardWithFallback(
               paths,
               dashboardPort,
               apiPort,
               deps,
               dashboardVerbose,
-              relay?.workspaceKey
-            );
-            dashboardProcess = dashboardStart.process;
-            const startedDashboardPort = dashboardStart.port;
-            if (startedDashboardPort === null) {
-              deps.warn('Dashboard failed to start. Check dashboard error logs above.');
-            } else {
-              if (startedDashboardPort !== dashboardPort) {
-                deps.warn(
-                  `Dashboard port ${dashboardPort} was already in use, so dashboard started on ${startedDashboardPort}`
-                );
+              relay?.workspaceKey,
+              () => shuttingDown,
+              (process) => {
+                dashboardProcess = process;
               }
-              const dashboardPath = normalizeDashboardPath(options.dashboardPath);
-              const dashboardUrl = dashboardPath
-                ? `http://localhost:${startedDashboardPort}${dashboardPath}`
-                : `http://localhost:${startedDashboardPort}`;
-              deps.log(`Dashboard: ${dashboardUrl}`);
-
-              waitForDashboard(startedDashboardPort, dashboardProcess, deps, () => shuttingDown).catch(
-                () => {}
-              );
-            }
+            );
+            dashboardProcess = startedDashboard.process;
+            monitorDashboardStartup(startedDashboard, dashboardPort, options, deps, () => shuttingDown);
           }
 
           deps.onSignal('SIGINT', async () => {
@@ -1052,33 +1106,20 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.log('Broker started.');
 
     if (wantsDashboard) {
-      const dashboardStart = await startDashboardWithFallback(
+      const startedDashboard = startDashboardWithFallback(
         paths,
         dashboardPort,
         apiPort,
         deps,
         dashboardVerbose,
-        relay?.workspaceKey
-      );
-      dashboardProcess = dashboardStart.process;
-      const startedDashboardPort = dashboardStart.port;
-      if (startedDashboardPort === null) {
-        deps.warn('Dashboard failed to start. Check dashboard error logs above.');
-      } else {
-        if (startedDashboardPort !== dashboardPort) {
-          deps.warn(
-            `Dashboard port ${dashboardPort} was already in use, so dashboard started on ${startedDashboardPort}`
-          );
+        relay?.workspaceKey,
+        () => shuttingDown,
+        (process) => {
+          dashboardProcess = process;
         }
-        const dashboardPath = normalizeDashboardPath(options.dashboardPath);
-        const dashboardUrl = dashboardPath
-          ? `http://localhost:${startedDashboardPort}${dashboardPath}`
-          : `http://localhost:${startedDashboardPort}`;
-        deps.log(`Dashboard: ${dashboardUrl}`);
-
-        // Verify the dashboard is actually reachable (non-blocking)
-        waitForDashboard(startedDashboardPort, dashboardProcess, deps, () => shuttingDown).catch(() => {});
-      }
+      );
+      dashboardProcess = startedDashboard.process;
+      monitorDashboardStartup(startedDashboard, dashboardPort, options, deps, () => shuttingDown);
     }
 
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
