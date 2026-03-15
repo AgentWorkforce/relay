@@ -452,6 +452,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.handle_mcp_approval(&text, &pty).await;
                         pty_auto.handle_bypass_permissions(&text, &pty).await;
                         pty_auto.handle_codex_model_prompt(&text, &pty).await;
+                        pty_auto.handle_opencode_permission(&text, &pty).await;
                         pty_auto.handle_gemini_action(&text, &pty).await;
                         pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
                         pty_auto.handle_gemini_trust(&text, &pty).await;
