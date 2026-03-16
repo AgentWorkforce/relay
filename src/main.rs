@@ -558,6 +558,13 @@ struct SendInputPayload {
 }
 
 #[derive(Debug, Deserialize)]
+struct ResizePtyPayload {
+    name: String,
+    rows: u16,
+    cols: u16,
+}
+
+#[derive(Debug, Deserialize)]
 struct SetModelPayload {
     name: String,
     model: String,
@@ -4431,6 +4438,47 @@ async fn handle_sdk_frame(
                 json!({
                     "name": payload.name,
                     "bytes_written": bytes.len(),
+                }),
+            )
+            .await?;
+            Ok(false)
+        }
+        "resize_pty" => {
+            let payload: ResizePtyPayload = serde_json::from_value(frame.payload)
+                .context("resize_pty payload must contain `name`, `rows`, and `cols`")?;
+
+            if !workers.has_worker(&payload.name) {
+                send_error(
+                    out_tx,
+                    frame.request_id,
+                    "agent_not_found",
+                    format!("unknown worker '{}'", payload.name),
+                    false,
+                    None,
+                )
+                .await?;
+                return Ok(false);
+            }
+
+            workers
+                .send_to_worker(
+                    &payload.name,
+                    "resize_pty",
+                    None,
+                    json!({
+                        "rows": payload.rows,
+                        "cols": payload.cols,
+                    }),
+                )
+                .await?;
+
+            send_ok(
+                out_tx,
+                frame.request_id,
+                json!({
+                    "name": payload.name,
+                    "rows": payload.rows,
+                    "cols": payload.cols,
                 }),
             )
             .await?;

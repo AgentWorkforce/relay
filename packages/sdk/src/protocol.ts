@@ -104,6 +104,11 @@ export type SdkToBroker =
        *  the cache instead of waiting on individual HTTP registrations. */
       type: 'preflight_agents';
       payload: { agents: Array<{ name: string; cli: string }> };
+    }
+  | {
+      /** Resize a PTY agent's terminal dimensions. */
+      type: 'resize_pty';
+      payload: { name: string; rows: number; cols: number };
     };
 
 export interface PendingDeliveryInfo {
@@ -365,6 +370,10 @@ export type BrokerToWorker =
   | {
       type: 'ping';
       payload: { ts_ms: number };
+    }
+  | {
+      type: 'resize_pty';
+      payload: { rows: number; cols: number };
     };
 
 export type WorkerToBroker =

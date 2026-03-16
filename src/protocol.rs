@@ -254,6 +254,10 @@ pub enum BrokerToWorker {
     Ping {
         ts_ms: u64,
     },
+    ResizePty {
+        rows: u16,
+        cols: u16,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

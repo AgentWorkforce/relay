@@ -367,6 +367,19 @@ export class AgentRelayClient {
     return this.requestOk<{ name: string; bytes_written: number }>('send_input', { name, data });
   }
 
+  async resizePty(
+    name: string,
+    rows: number,
+    cols: number
+  ): Promise<{ name: string; rows: number; cols: number }> {
+    await this.start();
+    return this.requestOk<{ name: string; rows: number; cols: number }>('resize_pty', {
+      name,
+      rows,
+      cols,
+    });
+  }
+
   async setModel(
     name: string,
     model: string,

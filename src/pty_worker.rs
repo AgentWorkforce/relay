@@ -338,6 +338,17 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             "shutdown_worker" => {
                                 running = false;
                             }
+                            "resize_pty" => {
+                                let rows = frame.payload.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
+                                let cols = frame.payload.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
+                                if let Err(e) = pty.resize(rows, cols) {
+                                    tracing::warn!(
+                                        target = "agent_relay::worker::pty",
+                                        rows, cols, error = %e,
+                                        "failed to resize pty"
+                                    );
+                                }
+                            }
                             "ping" => {
                                 let ts = frame.payload.get("ts_ms").and_then(Value::as_u64).unwrap_or_default();
                                 let _ = send_frame(&out_tx, "pong", frame.request_id, json!({"ts_ms": ts})).await;
