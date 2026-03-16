@@ -36,7 +36,7 @@ class FakeRelay {
   }
 }
 
-function createAgent(instructions = 'You are a helpful agent.') {
+function createAgent(instructions: string | ((...args: unknown[]) => string | Promise<string>) = 'You are a helpful agent.') {
   return {
     name: 'TestAgent',
     instructions,
@@ -96,7 +96,7 @@ test('incoming relay messages are appended to instructions', async () => {
 
   await relay.emit({ sender: 'Lead', text: 'Need status', messageId: 'msg-1' });
 
-  const instructions = await agent.instructions();
+  const instructions = await (agent.instructions as (...args: unknown[]) => Promise<string>)();
   assert.match(instructions, /Base instructions\./);
   assert.match(instructions, /Lead/);
   assert.match(instructions, /Need status/);
@@ -111,10 +111,10 @@ test('pending messages are drained after instructions call', async () => {
 
   await relay.emit({ sender: 'Worker', text: 'Done', messageId: 'msg-2' });
 
-  const first = await agent.instructions();
+  const first = await (agent.instructions as (...args: unknown[]) => Promise<string>)();
   assert.match(first, /Worker/);
 
-  const second = await agent.instructions();
+  const second = await (agent.instructions as (...args: unknown[]) => Promise<string>)();
   assert.ok(!second.includes('Worker'), 'Messages should be drained after first read');
   assert.equal(second, 'Base.');
 });

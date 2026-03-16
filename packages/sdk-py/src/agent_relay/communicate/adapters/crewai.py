@@ -47,9 +47,18 @@ class _RelayBackstory:
     def _resolve_sync(self) -> str:
         messages = self._drain_buffer()
         try:
-            asyncio.get_running_loop()
+            loop = asyncio.get_running_loop()
         except RuntimeError:
+            loop = None
+
+        if loop is None:
             messages.extend(self._relay.inbox_sync())
+        else:
+            # Running inside an event loop — use a thread to avoid blocking
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                polled = pool.submit(asyncio.run, self._relay.inbox()).result()
+                messages.extend(polled)
         return _format_backstory(self._dedupe(messages), self._base_backstory)
 
     async def _resolve_async(self) -> str:

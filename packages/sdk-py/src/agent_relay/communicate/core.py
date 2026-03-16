@@ -173,6 +173,7 @@ class Relay:
 
             self._connected = True
             self._connect_future.set_result(None)
+            self._connect_future = None
         except Exception as exc:
             # Ensure future is always resolved so waiters don't hang
             if not self._connect_future.done():

@@ -190,6 +190,8 @@ class RelayTransport:
             "/v1/dm",
             payload={"to": recipient, "text": text},
         )
+        if payload is None:
+            return ""
         data = payload.get("data", payload)
         return data.get("id", data.get("message_id", ""))
 
@@ -202,6 +204,8 @@ class RelayTransport:
             f"/v1/channels/{quote(channel, safe='')}/messages",
             payload={"text": text},
         )
+        if payload is None:
+            return ""
         data = payload.get("data", payload)
         return data.get("id", data.get("message_id", ""))
 
@@ -214,6 +218,8 @@ class RelayTransport:
             f"/v1/messages/{quote(message_id, safe='')}/replies",
             payload={"text": text},
         )
+        if payload is None:
+            return ""
         data = payload.get("data", payload)
         return data.get("id", data.get("message_id", ""))
 

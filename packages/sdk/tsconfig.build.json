@@ -22,6 +22,7 @@
     "src/__tests__/orchestration-upgrades.test.ts",
     "src/__tests__/yaml-validation.test.ts",
     "src/__tests__/completion-pipeline.test.ts",
-    "src/__tests__/e2e-owner-review.test.ts"
+    "src/__tests__/e2e-owner-review.test.ts",
+    "src/__tests__/communicate/**/*.test.ts"
   ]
 }

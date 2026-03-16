@@ -176,10 +176,8 @@ describe('A2ABridge', () => {
 
   describe('integration with A2AServer', () => {
     let a2aServer: A2AServer;
-    let serverPort: number;
-
     beforeEach(async () => {
-      a2aServer = new A2AServer('billing-specialist', 0, [
+      a2aServer = new A2AServer('billing-specialist', 0, '0.0.0.0', [
         { id: 'billing', name: 'Billing', description: 'Handles billing queries' },
       ]);
       a2aServer.onMessage(async (msg) => {
@@ -189,7 +187,7 @@ describe('A2ABridge', () => {
           parts: [{ text: `Processed: ${text}` }],
         };
       });
-      serverPort = await a2aServer.start();
+      await a2aServer.start();
     });
 
     afterEach(async () => {
@@ -199,7 +197,7 @@ describe('A2ABridge', () => {
     it('bridge discovers and communicates with A2AServer', async () => {
       const bridge = new A2ABridge(
         mockRelayConfig,
-        `http://localhost:${serverPort}`,
+        a2aServer.url,
         'billing-proxy',
       );
 

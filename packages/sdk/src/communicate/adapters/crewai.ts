@@ -94,16 +94,19 @@ export function onRelay(
   const unsubscribe = relayInstance.onMessage(async (message) => {
     const formatted = formatRelayMessage(message);
 
-    // If there's a step_callback, route through it
-    if (agent.step_callback) {
-      agent.step_callback({ relay_message: formatted });
+    // Route relay messages through the original callback if one exists
+    if (originalCallback) {
+      originalCallback({ relay_message: formatted });
     }
   });
 
-  // Preserve original step_callback
+  // Compose original callback with relay step forwarding
   if (originalCallback) {
     agent.step_callback = (step: any) => {
-      originalCallback(step);
+      // Forward non-relay steps to original callback
+      if (!step?.relay_message) {
+        originalCallback(step);
+      }
     };
   }
 
