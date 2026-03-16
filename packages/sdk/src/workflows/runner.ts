@@ -40,6 +40,7 @@ import type {
   WorkflowRunRow,
   WorkflowRunStatus,
   WorkflowStep,
+  WorkflowExecuteOptions,
   WorkflowStepRow,
   WorkflowStepStatus,
 } from './types.js';
@@ -1163,7 +1164,8 @@ export class WorkflowRunner {
   async execute(
     config: RelayYamlConfig,
     workflowName?: string,
-    vars?: VariableContext
+    vars?: VariableContext,
+    executeOptions?: WorkflowExecuteOptions
   ): Promise<WorkflowRunRow> {
     // Set up abort controller early so callers can abort() even during setup
     this.abortController = new AbortController();
@@ -1244,6 +1246,45 @@ export class WorkflowRunner {
       };
       await this.db.insertStep(stepRow);
       stepStates.set(step.name, { row: stepRow });
+    }
+
+    // Handle startFrom: skip all transitive dependencies of the target step
+    if (executeOptions?.startFrom) {
+      const startFromName = executeOptions.startFrom;
+      const stepNames = new Set(resolvedWorkflow.steps.map((s) => s.name));
+      if (!stepNames.has(startFromName)) {
+        throw new Error(
+          `startFrom step "${startFromName}" not found in workflow. Available steps: ${[...stepNames].join(', ')}`
+        );
+      }
+
+      const transitiveDeps = this.collectTransitiveDeps(startFromName, resolvedWorkflow.steps);
+      const skippedCount = transitiveDeps.size;
+
+      for (const depName of transitiveDeps) {
+        const state = stepStates.get(depName);
+        if (!state) continue;
+
+        // Load cached output from disk if available
+        const cachedOutput = this.loadStepOutput(runId, depName);
+        if (!cachedOutput) {
+          this.log(`[startFrom] No cached output for skipped step "${depName}" — using empty string`);
+        }
+
+        state.row.status = 'completed';
+        state.row.output = cachedOutput ?? '';
+        state.row.completedAt = now;
+        await this.db.updateStep(state.row.id, {
+          status: 'completed',
+          output: state.row.output,
+          completedAt: now,
+          updatedAt: now,
+        });
+      }
+
+      if (skippedCount > 0) {
+        this.log(`[startFrom] Skipping ${skippedCount} steps, starting from "${startFromName}"`);
+      }
     }
 
     return this.runWorkflowCore({
@@ -4009,6 +4050,35 @@ export class WorkflowRunner {
         }
       }
     }
+  }
+
+  // ── startFrom dependency resolution ─────────────────────────────────
+
+  /**
+   * Walk the dependsOn graph backwards from a target step to collect ALL
+   * transitive dependencies (i.e. every step that must complete before
+   * the target step can run). The target step itself is NOT included.
+   */
+  private collectTransitiveDeps(targetStep: string, steps: WorkflowStep[]): Set<string> {
+    const stepMap = new Map<string, WorkflowStep>();
+    for (const s of steps) stepMap.set(s.name, s);
+
+    const deps = new Set<string>();
+    const queue = [...(stepMap.get(targetStep)?.dependsOn ?? [])];
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (deps.has(current)) continue;
+      deps.add(current);
+      const step = stepMap.get(current);
+      if (step?.dependsOn) {
+        for (const dep of step.dependsOn) {
+          if (!deps.has(dep)) queue.push(dep);
+        }
+      }
+    }
+
+    return deps;
   }
 
   // ── Control flow helpers ──────────────────────────────────────────────

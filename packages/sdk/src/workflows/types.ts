@@ -373,6 +373,15 @@ export interface DryRunReport {
   estimatedTotalAgentSteps?: number;
 }
 
+// ── Workflow execution options ───────────────────────────────────────────────
+
+/** Options that control how a workflow run executes. */
+export interface WorkflowExecuteOptions {
+  /** Start execution from a specific step, skipping all predecessor steps.
+   *  Predecessor outputs are loaded from cached step-outputs on disk when available. */
+  startFrom?: string;
+}
+
 // ── Database row types ──────────────────────────────────────────────────────
 
 export type WorkflowRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';

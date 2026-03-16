@@ -4,13 +4,18 @@ import type { AgentRelayOptions } from '../relay.js';
 import type {
   AgentCli,
   AgentDefinition,
+  Barrier,
+  CoordinationConfig,
   DryRunReport,
   ErrorHandlingConfig,
   IdleNudgeConfig,
   RelayYamlConfig,
+  StateConfig,
   SwarmPattern,
+  TrajectoryConfig,
   VerificationCheck,
   WorkflowDefinition,
+  WorkflowExecuteOptions,
   WorkflowRunRow,
   WorkflowStep,
 } from './types.js';
@@ -35,7 +40,7 @@ export interface AgentOptions {
   interactive?: boolean;
 }
 
-export interface StepOptions {
+export interface AgentStepOptions {
   agent: string;
   task: string;
   dependsOn?: string[];
@@ -43,6 +48,28 @@ export interface StepOptions {
   timeoutMs?: number;
   retries?: number;
 }
+
+export interface DeterministicStepOptions {
+  type: 'deterministic';
+  command: string;
+  captureOutput?: boolean;
+  failOnError?: boolean;
+  dependsOn?: string[];
+  verification?: VerificationCheck;
+  timeoutMs?: number;
+}
+
+export interface WorktreeStepOptions {
+  type: 'worktree';
+  branch: string;
+  baseBranch?: string;
+  path?: string;
+  createBranch?: boolean;
+  dependsOn?: string[];
+  timeoutMs?: number;
+}
+
+export type StepOptions = AgentStepOptions | DeterministicStepOptions | WorktreeStepOptions;
 
 export interface ErrorOptions {
   maxRetries?: number;
@@ -65,6 +92,8 @@ export interface WorkflowRunOptions {
   dryRun?: boolean;
   /** External step executor (e.g. Daytona sandbox backend). */
   executor?: StepExecutor;
+  /** Start from a specific step, skipping all predecessors. */
+  startFrom?: string;
 }
 
 // ── WorkflowBuilder ─────────────────────────────────────────────────────────
@@ -95,6 +124,10 @@ export class WorkflowBuilder {
   private _agents: AgentDefinition[] = [];
   private _steps: WorkflowStep[] = [];
   private _errorHandling?: ErrorHandlingConfig;
+  private _coordination?: CoordinationConfig;
+  private _state?: StateConfig;
+  private _trajectories?: TrajectoryConfig | false;
+  private _startFrom?: string;
 
   constructor(name: string) {
     this._name = name;
@@ -136,6 +169,30 @@ export class WorkflowBuilder {
     return this;
   }
 
+  /** Set workflow coordination settings (barriers, voting threshold, consensus strategy). */
+  coordination(config: CoordinationConfig): this {
+    this._coordination = config;
+    return this;
+  }
+
+  /** Configure shared workflow state backend settings. */
+  state(config: StateConfig): this {
+    this._state = config;
+    return this;
+  }
+
+  /** Configure trajectory recording, or pass `false` to disable it. */
+  trajectories(config: TrajectoryConfig | false): this {
+    this._trajectories = config;
+    return this;
+  }
+
+  /** Start execution from a specific step, skipping all predecessor steps. */
+  startFrom(stepName: string): this {
+    this._startFrom = stepName;
+    return this;
+  }
+
   /** Add an agent definition. */
   agent(name: string, options: AgentOptions): this {
     const def: AgentDefinition = {
@@ -170,16 +227,46 @@ export class WorkflowBuilder {
 
   /** Add a workflow step. */
   step(name: string, options: StepOptions): this {
-    const step: WorkflowStep = {
-      name,
-      agent: options.agent,
-      task: options.task,
-    };
+    const step: WorkflowStep = { name };
 
-    if (options.dependsOn !== undefined) step.dependsOn = options.dependsOn;
-    if (options.verification !== undefined) step.verification = options.verification;
-    if (options.timeoutMs !== undefined) step.timeoutMs = options.timeoutMs;
-    if (options.retries !== undefined) step.retries = options.retries;
+    if ('type' in options && options.type === 'deterministic') {
+      if (!options.command) {
+        throw new Error('deterministic steps must have a command');
+      }
+      if ('agent' in options || 'task' in options) {
+        throw new Error('deterministic steps must not have agent or task');
+      }
+      step.type = 'deterministic';
+      step.command = options.command;
+      if (options.captureOutput !== undefined) step.captureOutput = options.captureOutput;
+      if (options.failOnError !== undefined) step.failOnError = options.failOnError;
+      if (options.dependsOn !== undefined) step.dependsOn = options.dependsOn;
+      if (options.verification !== undefined) step.verification = options.verification;
+      if (options.timeoutMs !== undefined) step.timeoutMs = options.timeoutMs;
+    } else if ('type' in options && options.type === 'worktree') {
+      if ('agent' in options || 'task' in options) {
+        throw new Error('worktree steps must not have agent or task');
+      }
+      step.type = 'worktree';
+      step.branch = options.branch;
+      if (options.baseBranch !== undefined) step.baseBranch = options.baseBranch;
+      if (options.path !== undefined) step.path = options.path;
+      if (options.createBranch !== undefined) step.createBranch = options.createBranch;
+      if (options.dependsOn !== undefined) step.dependsOn = options.dependsOn;
+      if (options.timeoutMs !== undefined) step.timeoutMs = options.timeoutMs;
+    } else {
+      // Agent step
+      const agentOpts = options as AgentStepOptions;
+      if (!agentOpts.agent || !agentOpts.task) {
+        throw new Error('Agent steps must have both agent and task');
+      }
+      step.agent = agentOpts.agent;
+      step.task = agentOpts.task;
+      if (agentOpts.dependsOn !== undefined) step.dependsOn = agentOpts.dependsOn;
+      if (agentOpts.verification !== undefined) step.verification = agentOpts.verification;
+      if (agentOpts.timeoutMs !== undefined) step.timeoutMs = agentOpts.timeoutMs;
+      if (agentOpts.retries !== undefined) step.retries = agentOpts.retries;
+    }
 
     this._steps.push(step);
     return this;
@@ -196,11 +283,13 @@ export class WorkflowBuilder {
 
   /** Build and return the RelayYamlConfig object. */
   toConfig(): RelayYamlConfig {
-    if (this._agents.length === 0) {
-      throw new Error('Workflow must have at least one agent');
-    }
     if (this._steps.length === 0) {
       throw new Error('Workflow must have at least one step');
+    }
+
+    const hasAgentSteps = this._steps.some(s => s.type !== 'deterministic' && s.type !== 'worktree');
+    if (hasAgentSteps && this._agents.length === 0) {
+      throw new Error('Workflow must have at least one agent when using agent steps');
     }
 
     const wfDef: WorkflowDefinition = {
@@ -224,6 +313,9 @@ export class WorkflowBuilder {
     if (this._channel !== undefined) config.swarm.channel = this._channel;
     if (this._idleNudge !== undefined) config.swarm.idleNudge = this._idleNudge;
     if (this._errorHandling !== undefined) config.errorHandling = this._errorHandling;
+    if (this._coordination !== undefined) config.coordination = this._coordination;
+    if (this._state !== undefined) config.state = this._state;
+    if (this._trajectories !== undefined) config.trajectories = this._trajectories;
 
     return config;
   }
@@ -258,7 +350,12 @@ export class WorkflowBuilder {
       runner.on(options.onEvent);
     }
 
-    return runner.execute(config, options.workflow, options.vars);
+    const startFrom = this._startFrom ?? options.startFrom;
+    const executeOptions: WorkflowExecuteOptions | undefined = startFrom
+      ? { startFrom }
+      : undefined;
+
+    return runner.execute(config, options.workflow, options.vars, executeOptions);
   }
 }
 

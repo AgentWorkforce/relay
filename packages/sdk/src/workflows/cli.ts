@@ -28,6 +28,7 @@ Arguments:
 Options:
   --workflow <name>        Run a specific workflow by name (default: first)
   --resume <run-id>        Resume a failed or interrupted run by its run ID
+  --start-from <step>      Start from a specific step, skipping predecessors
   --validate               Validate workflow YAML for common issues without running
   --help                   Show this help message
 
@@ -136,6 +137,12 @@ async function main(): Promise<void> {
     workflowName = args[workflowIdx + 1];
   }
 
+  let startFromStep: string | undefined;
+  const startFromIdx = args.indexOf('--start-from');
+  if (startFromIdx !== -1 && args[startFromIdx + 1]) {
+    startFromStep = args[startFromIdx + 1];
+  }
+
   const isValidate = args.includes('--validate');
 
   console.log(`Running workflow from ${yamlPath}...`);
@@ -157,7 +164,8 @@ async function main(): Promise<void> {
   }
 
   runner.on((event) => console.log(formatEvent(event)));
-  const result = await runner.execute(config, workflowName);
+  const executeOptions = startFromStep ? { startFrom: startFromStep } : undefined;
+  const result = await runner.execute(config, workflowName, undefined, executeOptions);
 
   if (result.status === 'completed') {
     console.log(`\nWorkflow completed successfully.`);
