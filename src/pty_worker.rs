@@ -700,7 +700,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 let should_block = pending_worker_injections
                     .front()
                     .map(|pending| {
-                        pty_auto.auto_suggestion_visible && pending.queued_at.elapsed() < AUTO_SUGGESTION_BLOCK_TIMEOUT
+                        pty_auto.auto_suggestion_visible
+                            && !matches!(pending.delivery.injection_mode, MessageInjectionMode::Steer)
+                            && pending.queued_at.elapsed() < AUTO_SUGGESTION_BLOCK_TIMEOUT
                     })
                     .unwrap_or(false);
                 if should_block {
