@@ -360,6 +360,24 @@ mod tests {
     }
 
     #[test]
+    fn relay_delivery_defaults_injection_mode_to_wait_when_omitted() {
+        let payload = json!({
+            "delivery_id": "del_1",
+            "event_id": "evt_1",
+            "workspace_id": "ws_test",
+            "workspace_alias": "test",
+            "from": "Lead",
+            "target": "#general",
+            "body": "hello",
+            "thread_id": "thr_1",
+            "priority": 2
+        });
+
+        let decoded: RelayDelivery = serde_json::from_value(payload).unwrap();
+        assert!(matches!(decoded.injection_mode, MessageInjectionMode::Wait));
+    }
+
+    #[test]
     fn worker_to_broker_ack_round_trip() {
         let msg = WorkerToBroker::DeliveryAck {
             delivery_id: "del_9".into(),
