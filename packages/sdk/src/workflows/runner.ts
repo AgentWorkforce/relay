@@ -1998,10 +1998,16 @@ export class WorkflowRunner {
           this.log('Resolving Relaycast API key...');
           await this.ensureRelaycastApiKey(channel);
           this.log('API key resolved');
-          if (this.relayApiKeyAutoCreated && this.relayApiKey) {
-            this.log(`Workspace created — follow this run in Relaycast:`);
-            this.log(`  Observer: https://agentrelay.dev/observer?key=${this.relayApiKey}`);
-            this.log(`  Channel: ${channel}`);
+          if (this.relayApiKey) {
+            const observerUrl = `https://agentrelay.dev/observer?key=${this.relayApiKey}`;
+            const workspaceNote = this.relayApiKeyAutoCreated ? ' (new workspace)' : '';
+            console.log('');
+            console.log('  ┌─────────────────────────────────────────────────────────────────┐');
+            console.log(`  │  Follow this run in Relaycast${workspaceNote}`);
+            console.log(`  │  ${observerUrl}`);
+            console.log(`  │  Channel: ${channel}`);
+            console.log('  └─────────────────────────────────────────────────────────────────┘');
+            console.log('');
           }
         }
 
@@ -5963,11 +5969,14 @@ export class WorkflowRunner {
       }
     }
 
-    // Point to detailed output files
+    // Point to detailed output files and observer
     const outputDir = this.getStepOutputDir(runId);
     const logsDir = path.join(this.cwd, '.agent-relay', 'team', 'worker-logs');
     console.log('');
     console.log('  ' + '─'.repeat(68));
+    if (this.relayApiKey) {
+      console.log(`  Observer:    https://agentrelay.dev/observer?key=${this.relayApiKey}`);
+    }
     console.log(`  Step output: ${outputDir}`);
     console.log(`  Agent logs:  ${logsDir}`);
     console.log('━'.repeat(70));
