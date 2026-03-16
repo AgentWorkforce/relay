@@ -339,14 +339,32 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 running = false;
                             }
                             "resize_pty" => {
-                                let rows = frame.payload.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
-                                let cols = frame.payload.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
-                                if let Err(e) = pty.resize(rows, cols) {
-                                    tracing::warn!(
-                                        target = "agent_relay::worker::pty",
-                                        rows, cols, error = %e,
-                                        "failed to resize pty"
-                                    );
+                                #[derive(serde::Deserialize)]
+                                struct ResizePtyPayload { rows: u16, cols: u16 }
+                                match serde_json::from_value::<ResizePtyPayload>(frame.payload) {
+                                    Ok(p) if p.rows > 0 && p.cols > 0 => {
+                                        if let Err(e) = pty.resize(p.rows, p.cols) {
+                                            tracing::warn!(
+                                                target = "agent_relay::worker::pty",
+                                                rows = p.rows, cols = p.cols, error = %e,
+                                                "failed to resize pty"
+                                            );
+                                        }
+                                    }
+                                    Ok(_) => {
+                                        let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
+                                            "code": "invalid_dimensions",
+                                            "message": "rows and cols must be >= 1",
+                                            "retryable": false
+                                        })).await;
+                                    }
+                                    Err(e) => {
+                                        let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
+                                            "code": "invalid_payload",
+                                            "message": e.to_string(),
+                                            "retryable": false
+                                        })).await;
+                                    }
                                 }
                             }
                             "ping" => {

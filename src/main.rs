@@ -4447,12 +4447,38 @@ async fn handle_sdk_frame(
             let payload: ResizePtyPayload = serde_json::from_value(frame.payload)
                 .context("resize_pty payload must contain `name`, `rows`, and `cols`")?;
 
-            if !workers.has_worker(&payload.name) {
+            if payload.rows == 0 || payload.cols == 0 {
+                send_error(
+                    out_tx,
+                    frame.request_id,
+                    "invalid_dimensions",
+                    "rows and cols must be >= 1".to_string(),
+                    false,
+                    None,
+                )
+                .await?;
+                return Ok(false);
+            }
+
+            let Some(handle) = workers.workers.get(&payload.name) else {
                 send_error(
                     out_tx,
                     frame.request_id,
                     "agent_not_found",
                     format!("unknown worker '{}'", payload.name),
+                    false,
+                    None,
+                )
+                .await?;
+                return Ok(false);
+            };
+
+            if handle.spec.runtime != AgentRuntime::Pty {
+                send_error(
+                    out_tx,
+                    frame.request_id,
+                    "unsupported_operation",
+                    format!("resize_pty is only supported for PTY agents, '{}' is {:?}", payload.name, handle.spec.runtime),
                     false,
                     None,
                 )
