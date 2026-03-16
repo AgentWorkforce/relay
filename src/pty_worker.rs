@@ -708,7 +708,16 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 }
                 if let Some(pending) = pending_worker_injections.pop_front() {
                     tokio::time::sleep(throttle.delay()).await;
-                    if pty_auto.auto_suggestion_visible {
+
+                    if matches!(pending.delivery.injection_mode, MessageInjectionMode::Steer) {
+                        tracing::debug!(
+                            delivery_id = %pending.delivery.delivery_id,
+                            "steer mode: sending ESC ESC before message injection"
+                        );
+                        let _ = pty.write_all(b"\x1b\x1b");
+                        tokio::time::sleep(Duration::from_millis(120)).await;
+                        pty_auto.auto_suggestion_visible = false;
+                    } else if pty_auto.auto_suggestion_visible {
                         tracing::warn!(
                             delivery_id = %pending.delivery.delivery_id,
                             "auto-suggestion visible; sending Escape to dismiss before injection"

@@ -25,6 +25,8 @@ export interface AgentSpec {
   restart_policy?: RestartPolicy;
 }
 
+export type MessageInjectionMode = 'wait' | 'steer';
+
 export interface RelayDelivery {
   delivery_id: string;
   event_id: string;
@@ -35,6 +37,7 @@ export interface RelayDelivery {
   body: string;
   thread_id?: string;
   priority?: number;
+  injection_mode?: MessageInjectionMode;
 }
 
 export interface ProtocolEnvelope<TPayload> {
@@ -64,6 +67,7 @@ export type SdkToBroker =
         workspace_alias?: string;
         priority?: number;
         data?: Record<string, unknown>;
+        mode?: MessageInjectionMode;
       };
     }
   | {

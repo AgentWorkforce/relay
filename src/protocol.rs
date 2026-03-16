@@ -46,6 +46,19 @@ pub struct AgentSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageInjectionMode {
+    Wait,
+    Steer,
+}
+
+impl Default for MessageInjectionMode {
+    fn default() -> Self {
+        Self::Wait
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayDelivery {
     pub delivery_id: String,
     pub event_id: String,
@@ -60,6 +73,8 @@ pub struct RelayDelivery {
     pub thread_id: Option<String>,
     #[serde(default)]
     pub priority: Option<u8>,
+    #[serde(default)]
+    pub injection_mode: MessageInjectionMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,6 +110,8 @@ pub enum SdkToBroker {
         workspace_alias: Option<String>,
         #[serde(default)]
         priority: Option<u8>,
+        #[serde(default)]
+        mode: MessageInjectionMode,
     },
     ReleaseAgent {
         name: String,
@@ -339,6 +356,7 @@ mod tests {
             body: "hello".into(),
             thread_id: Some("thr_1".into()),
             priority: Some(2),
+            injection_mode: MessageInjectionMode::Wait,
         });
 
         let encoded = serde_json::to_string(&msg).unwrap();
