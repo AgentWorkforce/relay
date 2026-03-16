@@ -7,8 +7,7 @@
 use std::time::{Duration, Instant};
 
 use relay_broker::{
-    multi_workspace::WorkspaceMembershipSummary,
-    protocol::MessageInjectionMode,
+    multi_workspace::WorkspaceMembershipSummary, protocol::MessageInjectionMode,
     replay_buffer::ReplayBuffer,
 };
 use serde::Deserialize;
@@ -1280,7 +1279,10 @@ mod auth_tests {
         let send_replier = tokio::spawn(async move {
             match rx.recv().await {
                 Some(ListenApiRequest::Send { mode, reply, .. }) => {
-                    assert!(matches!(mode, relay_broker::protocol::MessageInjectionMode::Wait));
+                    assert!(matches!(
+                        mode,
+                        relay_broker::protocol::MessageInjectionMode::Wait
+                    ));
                     let _ = reply.send(Ok(json!({ "success": true, "event_id": "evt_1" })));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
@@ -1294,7 +1296,9 @@ mod auth_tests {
                     .method("POST")
                     .header("x-api-key", "secret")
                     .header("content-type", "application/json")
-                    .body(Body::from(json!({ "to": "worker-a", "text": "hi" }).to_string()))
+                    .body(Body::from(
+                        json!({ "to": "worker-a", "text": "hi" }).to_string(),
+                    ))
                     .expect("request should build"),
             )
             .await
@@ -1310,7 +1314,10 @@ mod auth_tests {
         let send_replier = tokio::spawn(async move {
             match rx.recv().await {
                 Some(ListenApiRequest::Send { mode, reply, .. }) => {
-                    assert!(matches!(mode, relay_broker::protocol::MessageInjectionMode::Steer));
+                    assert!(matches!(
+                        mode,
+                        relay_broker::protocol::MessageInjectionMode::Steer
+                    ));
                     let _ = reply.send(Ok(json!({ "success": true, "event_id": "evt_2" })));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
@@ -1325,7 +1332,8 @@ mod auth_tests {
                     .header("x-api-key", "secret")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        json!({ "to": "worker-a", "text": "interrupt", "mode": "steer" }).to_string(),
+                        json!({ "to": "worker-a", "text": "interrupt", "mode": "steer" })
+                            .to_string(),
                     ))
                     .expect("request should build"),
             )

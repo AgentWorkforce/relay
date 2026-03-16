@@ -44,8 +44,8 @@ use relay_broker::{
     message_bridge::{map_ws_broker_command, map_ws_event},
     multi_workspace::{MultiWorkspaceSession, WorkspaceInboundMessage, WorkspaceMembershipSummary},
     protocol::{
-        AgentRuntime, AgentSpec, HeadlessProvider as ProtocolHeadlessProvider, MessageInjectionMode,
-        ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION,
+        AgentRuntime, AgentSpec, HeadlessProvider as ProtocolHeadlessProvider,
+        MessageInjectionMode, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION,
     },
     pty::PtySession,
     relaycast_ws::{

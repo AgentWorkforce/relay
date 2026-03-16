@@ -45,17 +45,12 @@ pub struct AgentSpec {
     pub restart_policy: Option<RestartPolicy>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageInjectionMode {
+    #[default]
     Wait,
     Steer,
-}
-
-impl Default for MessageInjectionMode {
-    fn default() -> Self {
-        Self::Wait
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
