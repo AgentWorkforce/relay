@@ -45,8 +45,11 @@ def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
 
     agent.tools.extend([relay_send, relay_inbox, relay_post, relay_agents])
 
-    # 2. Wrap instructions
+    # 2. Wrap instructions with a local buffer so we don't starve relay_inbox tool
     orig_instructions = agent.instructions
+    pending_messages: list[Any] = []
+
+    relay.on_message(lambda msg: pending_messages.append(msg))
 
     async def instructions_wrapper(*args: Any, **kwargs: Any) -> str:
         if callable(orig_instructions):
@@ -60,10 +63,11 @@ def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
             base = orig_instructions
 
         base = base or ""
-        messages = await relay.inbox()
-        if not messages:
+        if not pending_messages:
             return base
 
+        messages = list(pending_messages)
+        pending_messages.clear()
         return _format_instructions_with_inbox(messages, base)
 
     agent.instructions = instructions_wrapper

@@ -15,7 +15,7 @@ class Message:
     text: str
     channel: str | None = None
     thread_id: str | None = None
-    timestamp: float | None = None
+    timestamp: str | float | None = None
     message_id: str | None = None
 
 

@@ -136,7 +136,8 @@ def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
     def _buffer_message(message: Any) -> None:
         backstory_buffer.append(message)
 
-    relay.on_message(_buffer_message)
+    unsubscribe = relay.on_message(_buffer_message)
     agent.backstory = _RelayBackstory(relay, agent.backstory or "", backstory_buffer)
+    agent._relay_unsubscribe = unsubscribe  # type: ignore[attr-defined]
 
     return agent

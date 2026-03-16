@@ -475,14 +475,15 @@ export class RelayTransport {
   }
 
   private async errorMessage(response: Response): Promise<string> {
+    const text = await response.text().catch(() => '');
     try {
-      const payload = (await response.json()) as { message?: string; error?: { message?: string } };
+      const payload = JSON.parse(text) as { message?: string; error?: { message?: string } };
       if (typeof payload.error === 'object' && payload.error?.message) {
         return payload.error.message;
       }
       return payload.message ?? response.statusText ?? 'Request failed';
     } catch {
-      return (await response.text()) || response.statusText || 'Request failed';
+      return text || response.statusText || 'Request failed';
     }
   }
 }
