@@ -1,147 +1,132 @@
 /**
  * Tests for deterministic and worktree step support in WorkflowBuilder.
- *
- * Run:
- *   npm run build -w packages/sdk && node --test dist/__tests__/builder-deterministic.test.js
  */
-import assert from 'node:assert/strict';
-import test from 'node:test';
-
+import { describe, it, expect } from 'vitest';
 import { workflow } from '../workflows/builder.js';
 
-test('deterministic step emits correct config', () => {
-  const config = workflow('test')
-    .agent('worker', { cli: 'claude' })
-    .step('read-files', {
-      type: 'deterministic',
-      command: 'cat src/index.ts',
-      verification: { type: 'exit_code', value: '0' },
-    })
-    .step('build', { agent: 'worker', task: 'Build the project' })
-    .toConfig();
+describe('deterministic/worktree steps in builder', () => {
+  it('deterministic step emits correct config', () => {
+    const config = workflow('test')
+      .agent('worker', { cli: 'claude' })
+      .step('read-files', {
+        type: 'deterministic',
+        command: 'cat src/index.ts',
+        verification: { type: 'exit_code', value: '0' },
+      })
+      .step('build', { agent: 'worker', task: 'Build the project' })
+      .toConfig();
 
-  const steps = config.workflows![0].steps;
-  assert.equal(steps.length, 2);
+    const steps = config.workflows![0].steps;
+    expect(steps).toHaveLength(2);
 
-  // Deterministic step
-  assert.equal(steps[0].name, 'read-files');
-  assert.equal(steps[0].type, 'deterministic');
-  assert.equal(steps[0].command, 'cat src/index.ts');
-  assert.equal(steps[0].agent, undefined);
-  assert.equal(steps[0].task, undefined);
-  assert.deepEqual(steps[0].verification, { type: 'exit_code', value: '0' });
+    // Deterministic step
+    expect(steps[0].name).toBe('read-files');
+    expect(steps[0].type).toBe('deterministic');
+    expect(steps[0].command).toBe('cat src/index.ts');
+    expect(steps[0].agent).toBeUndefined();
+    expect(steps[0].task).toBeUndefined();
+    expect(steps[0].verification).toEqual({ type: 'exit_code', value: '0' });
 
-  // Agent step
-  assert.equal(steps[1].name, 'build');
-  assert.equal(steps[1].agent, 'worker');
-  assert.equal(steps[1].task, 'Build the project');
-  assert.equal(steps[1].type, undefined);
-});
+    // Agent step
+    expect(steps[1].name).toBe('build');
+    expect(steps[1].agent).toBe('worker');
+    expect(steps[1].task).toBe('Build the project');
+    expect(steps[1].type).toBeUndefined();
+  });
 
-test('deterministic step with all options', () => {
-  const config = workflow('test')
-    .agent('worker', { cli: 'claude' })
-    .step('run-cmd', {
-      type: 'deterministic',
-      command: 'npm test',
-      captureOutput: true,
-      failOnError: false,
-      dependsOn: ['build'],
-      timeoutMs: 30000,
-    })
-    .step('final', { agent: 'worker', task: 'Finalize' })
-    .toConfig();
+  it('deterministic step with all options', () => {
+    const config = workflow('test')
+      .agent('worker', { cli: 'claude' })
+      .step('run-cmd', {
+        type: 'deterministic',
+        command: 'npm test',
+        captureOutput: true,
+        failOnError: false,
+        dependsOn: ['build'],
+        timeoutMs: 30000,
+      })
+      .step('final', { agent: 'worker', task: 'Finalize' })
+      .toConfig();
 
-  const step = config.workflows![0].steps[0];
-  assert.equal(step.captureOutput, true);
-  assert.equal(step.failOnError, false);
-  assert.deepEqual(step.dependsOn, ['build']);
-  assert.equal(step.timeoutMs, 30000);
-});
+    const step = config.workflows![0].steps[0];
+    expect(step.captureOutput).toBe(true);
+    expect(step.failOnError).toBe(false);
+    expect(step.dependsOn).toEqual(['build']);
+    expect(step.timeoutMs).toBe(30000);
+  });
 
-test('worktree step emits correct config', () => {
-  const config = workflow('test')
-    .agent('worker', { cli: 'claude' })
-    .step('setup-worktree', {
-      type: 'worktree',
-      branch: 'feature/new',
-      baseBranch: 'main',
-      path: '.worktrees/feature-new',
-      createBranch: true,
-    })
-    .step('work', { agent: 'worker', task: 'Do work', dependsOn: ['setup-worktree'] })
-    .toConfig();
+  it('worktree step emits correct config', () => {
+    const config = workflow('test')
+      .agent('worker', { cli: 'claude' })
+      .step('setup-worktree', {
+        type: 'worktree',
+        branch: 'feature/new',
+        baseBranch: 'main',
+        path: '.worktrees/feature-new',
+        createBranch: true,
+      })
+      .step('work', { agent: 'worker', task: 'Do work', dependsOn: ['setup-worktree'] })
+      .toConfig();
 
-  const step = config.workflows![0].steps[0];
-  assert.equal(step.type, 'worktree');
-  assert.equal(step.branch, 'feature/new');
-  assert.equal(step.baseBranch, 'main');
-  assert.equal(step.path, '.worktrees/feature-new');
-  assert.equal(step.createBranch, true);
-  assert.equal(step.agent, undefined);
-  assert.equal(step.command, undefined);
-});
+    const step = config.workflows![0].steps[0];
+    expect(step.type).toBe('worktree');
+    expect(step.branch).toBe('feature/new');
+    expect(step.baseBranch).toBe('main');
+    expect(step.path).toBe('.worktrees/feature-new');
+    expect(step.createBranch).toBe(true);
+    expect(step.agent).toBeUndefined();
+    expect(step.command).toBeUndefined();
+  });
 
-test('deterministic-only workflow does not require agents', () => {
-  const config = workflow('infra')
-    .step('lint', { type: 'deterministic', command: 'npm run lint' })
-    .step('test', {
-      type: 'deterministic',
-      command: 'npm test',
-      dependsOn: ['lint'],
-    })
-    .toConfig();
+  it('deterministic-only workflow does not require agents', () => {
+    const config = workflow('infra')
+      .step('lint', { type: 'deterministic', command: 'npm run lint' })
+      .step('test', {
+        type: 'deterministic',
+        command: 'npm test',
+        dependsOn: ['lint'],
+      })
+      .toConfig();
 
-  assert.equal(config.agents.length, 0);
-  assert.equal(config.workflows![0].steps.length, 2);
-});
+    expect(config.agents).toHaveLength(0);
+    expect(config.workflows![0].steps).toHaveLength(2);
+  });
 
-test('deterministic step without command throws', () => {
-  assert.throws(
-    () => {
+  it('deterministic step without command throws', () => {
+    expect(() => {
       workflow('test')
         .step('bad', { type: 'deterministic' } as any);
-    },
-    { message: 'deterministic steps must have a command' },
-  );
-});
+    }).toThrow('deterministic steps must have a command');
+  });
 
-test('deterministic step with agent throws', () => {
-  assert.throws(
-    () => {
+  it('deterministic step with agent throws', () => {
+    expect(() => {
       workflow('test')
         .step('bad', { type: 'deterministic', command: 'ls', agent: 'x', task: 'y' } as any);
-    },
-    { message: 'deterministic steps must not have agent or task' },
-  );
-});
+    }).toThrow('deterministic steps must not have agent or task');
+  });
 
-test('agent step without agent/task throws', () => {
-  assert.throws(
-    () => {
+  it('agent step without agent/task throws', () => {
+    expect(() => {
       workflow('test')
         .step('bad', {} as any);
-    },
-    { message: 'Agent steps must have both agent and task' },
-  );
-});
+    }).toThrow('Agent steps must have both agent and task');
+  });
 
-test('agent steps without any agent definition throws', () => {
-  assert.throws(
-    () => {
+  it('agent steps without any agent definition throws', () => {
+    expect(() => {
       workflow('test')
         .step('work', { agent: 'worker', task: 'Do work' })
         .toConfig();
-    },
-    { message: 'Workflow must have at least one agent when using agent steps' },
-  );
-});
+    }).toThrow('Workflow must have at least one agent when using agent steps');
+  });
 
-test('toYaml includes deterministic steps', () => {
-  const yamlStr = workflow('test')
-    .step('check', { type: 'deterministic', command: 'echo hello' })
-    .toYaml();
+  it('toYaml includes deterministic steps', () => {
+    const yamlStr = workflow('test')
+      .step('check', { type: 'deterministic', command: 'echo hello' })
+      .toYaml();
 
-  assert.ok(yamlStr.includes('type: deterministic'));
-  assert.ok(yamlStr.includes('command: echo hello'));
+    expect(yamlStr).toContain('type: deterministic');
+    expect(yamlStr).toContain('command: echo hello');
+  });
 });
