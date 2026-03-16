@@ -6258,7 +6258,7 @@ mod tests {
     };
 
     use crate::helpers::{format_injection, terminal_query_responses};
-    use relay_broker::protocol::RelayDelivery;
+    use relay_broker::protocol::{MessageInjectionMode, RelayDelivery};
     use serde_json::{json, Value};
 
     use super::{
