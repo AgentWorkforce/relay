@@ -6,7 +6,7 @@
 
 import { spawn as cpSpawn, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import type { WriteStream } from 'node:fs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -1261,12 +1261,16 @@ export class WorkflowRunner {
       const transitiveDeps = this.collectTransitiveDeps(startFromName, resolvedWorkflow.steps);
       const skippedCount = transitiveDeps.size;
 
+      // Determine which run ID to load cached outputs from
+      const cacheRunId = executeOptions.previousRunId
+        ?? this.findMostRecentRunWithSteps(transitiveDeps);
+
       for (const depName of transitiveDeps) {
         const state = stepStates.get(depName);
         if (!state) continue;
 
-        // Load cached output from disk if available
-        const cachedOutput = this.loadStepOutput(runId, depName);
+        // Load cached output from a previous run if available
+        const cachedOutput = cacheRunId ? this.loadStepOutput(cacheRunId, depName) : undefined;
         if (!cachedOutput) {
           this.log(`[startFrom] No cached output for skipped step "${depName}" — using empty string`);
         }
@@ -4538,6 +4542,41 @@ export class WorkflowRunner {
     const maxMsg = 2000;
     const preview = scrubbed.length > maxMsg ? scrubbed.slice(-maxMsg) : scrubbed;
     this.postToChannel(`**[${stepName}] Output:**\n\`\`\`\n${preview}\n\`\`\``);
+  }
+
+  /** Scan .agent-relay/step-outputs/ for the most recent run directory containing the needed steps. */
+  private findMostRecentRunWithSteps(stepNames: Set<string>): string | undefined {
+    try {
+      const baseDir = path.join(this.cwd, '.agent-relay', 'step-outputs');
+      if (!existsSync(baseDir)) return undefined;
+
+      const entries = readdirSync(baseDir);
+      let best: { name: string; mtime: number } | undefined;
+
+      for (const entry of entries) {
+        const dirPath = path.join(baseDir, entry);
+        try {
+          const stat = statSync(dirPath);
+          if (!stat.isDirectory()) continue;
+
+          // Check if this directory has at least one of the needed step files
+          const hasAny = [...stepNames].some(name =>
+            existsSync(path.join(dirPath, `${name}.md`))
+          );
+          if (!hasAny) continue;
+
+          if (!best || stat.mtimeMs > best.mtime) {
+            best = { name: entry, mtime: stat.mtimeMs };
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      return best?.name;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Load persisted step output from disk. */

@@ -94,6 +94,8 @@ export interface WorkflowRunOptions {
   executor?: StepExecutor;
   /** Start from a specific step, skipping all predecessors. */
   startFrom?: string;
+  /** Previous run ID whose cached outputs are used with startFrom. */
+  previousRunId?: string;
 }
 
 // ── WorkflowBuilder ─────────────────────────────────────────────────────────
@@ -128,6 +130,7 @@ export class WorkflowBuilder {
   private _state?: StateConfig;
   private _trajectories?: TrajectoryConfig | false;
   private _startFrom?: string;
+  private _previousRunId?: string;
 
   constructor(name: string) {
     this._name = name;
@@ -190,6 +193,12 @@ export class WorkflowBuilder {
   /** Start execution from a specific step, skipping all predecessor steps. */
   startFrom(stepName: string): this {
     this._startFrom = stepName;
+    return this;
+  }
+
+  /** Set the previous run ID whose cached step outputs should be used with startFrom. */
+  previousRunId(id: string): this {
+    this._previousRunId = id;
     return this;
   }
 
@@ -351,8 +360,9 @@ export class WorkflowBuilder {
     }
 
     const startFrom = this._startFrom ?? options.startFrom;
+    const previousRunId = this._previousRunId ?? options.previousRunId;
     const executeOptions: WorkflowExecuteOptions | undefined = startFrom
-      ? { startFrom }
+      ? { startFrom, previousRunId }
       : undefined;
 
     return runner.execute(config, options.workflow, options.vars, executeOptions);

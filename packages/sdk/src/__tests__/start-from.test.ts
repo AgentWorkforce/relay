@@ -264,20 +264,19 @@ describe('startFrom', () => {
     expect(step1Completion).toBeDefined();
   });
 
-  it('should load cached output when available on disk', async () => {
+  it('should load cached output when available on disk via previousRunId', async () => {
     const config = makeLinearConfig();
 
-    // Chain additional logic onto the existing insertRun mock to write cached output
-    const origImpl = (db.insertRun as any).getMockImplementation();
-    (db.insertRun as any).mockImplementation(async (run: WorkflowRunRow) => {
-      await origImpl(run);
-      // Write cached output for step-1 so startFrom can find it
-      const outputDir = path.join(tmpDir, '.agent-relay', 'step-outputs', run.id);
-      mkdirSync(outputDir, { recursive: true });
-      writeFileSync(path.join(outputDir, 'step-1.md'), 'cached-output-from-step-1');
-    });
+    // Write cached output for step-1 under a known previous run ID
+    const prevRunId = 'prev-run-abc123';
+    const outputDir = path.join(tmpDir, '.agent-relay', 'step-outputs', prevRunId);
+    mkdirSync(outputDir, { recursive: true });
+    writeFileSync(path.join(outputDir, 'step-1.md'), 'cached-output-from-step-1');
 
-    const run = await runner.execute(config, 'default', undefined, { startFrom: 'step-2' });
+    const run = await runner.execute(config, 'default', undefined, {
+      startFrom: 'step-2',
+      previousRunId: prevRunId,
+    });
     expect(run.status, run.error).toBe('completed');
 
     // Verify step-1 was marked completed with the cached output

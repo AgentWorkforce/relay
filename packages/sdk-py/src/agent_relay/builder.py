@@ -282,6 +282,8 @@ class WorkflowBuilder:
         elif type == "worktree":
             if agent is not None or task is not None:
                 raise ValueError("worktree steps must not have agent or task")
+            if not branch:
+                raise ValueError("worktree steps must have a branch")
             step_def = {"name": name, "type": "worktree", "branch": branch}
             if base_branch is not None:
                 step_def["baseBranch"] = base_branch

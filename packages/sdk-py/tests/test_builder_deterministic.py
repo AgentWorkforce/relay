@@ -102,6 +102,11 @@ def test_agent_steps_without_agent_definition_raises():
         workflow("test").step("work", agent="worker", task="Do work").to_config()
 
 
+def test_worktree_step_without_branch_raises():
+    with pytest.raises(ValueError, match="worktree steps must have a branch"):
+        workflow("test").step("bad", type="worktree")
+
+
 def test_to_yaml_includes_deterministic_steps():
     yaml_str = (
         workflow("test")
