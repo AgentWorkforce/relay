@@ -124,9 +124,16 @@ export class Relay {
     }
 
     if (!this.connectPromise) {
-      this.connectPromise = this.transport.connect().then(() => {
-        this.connected = true;
-      });
+      this.connectPromise = this.transport.connect().then(
+        () => {
+          this.connected = true;
+        },
+        (err) => {
+          // Clear cached promise so the next call can retry
+          this.connectPromise = undefined;
+          throw err;
+        },
+      );
     }
 
     await this.connectPromise;

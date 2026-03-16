@@ -176,7 +176,7 @@ export function a2aMessageToDict(msg: A2AMessage): Record<string, unknown> {
 }
 
 export function a2aMessageFromDict(d: Record<string, unknown>): A2AMessage {
-  const parts = (d.parts as Record<string, unknown>[] | undefined ?? []).map(a2aPartFromDict);
+  const parts = ((d.parts as Record<string, unknown>[] | undefined) ?? []).map(a2aPartFromDict);
   return {
     role: d.role as 'user' | 'agent',
     parts,
