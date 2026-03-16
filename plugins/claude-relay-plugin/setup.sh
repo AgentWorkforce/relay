@@ -10,7 +10,9 @@
 set -euo pipefail
 
 SETTINGS_DIR=".claude"
-PERMISSION="mcp__plugin_agent-relay_relaycast"
+PERMISSIONS=(
+  "mcp__plugin_agent-relay_relaycast"
+)
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "Error: jq is required. Install it with: brew install jq (macOS) or apt install jq (Linux)"
@@ -20,44 +22,45 @@ fi
 # Create .claude dir if needed
 mkdir -p "$SETTINGS_DIR"
 
-ensure_permission() {
+# Build a JSON array of all permissions
+PERMS_JSON=$(printf '%s\n' "${PERMISSIONS[@]}" | jq -R . | jq -s .)
+
+ensure_permissions() {
   local file="$1"
 
   if [ ! -f "$file" ]; then
-    cat > "$file" <<EOF
-{
-  "permissions": {
-    "allow": [
-      "$PERMISSION"
-    ]
-  }
-}
-EOF
+    echo "{\"permissions\":{\"allow\":$PERMS_JSON}}" | jq . > "$file"
     echo "Created $file with Relaycast MCP permissions."
     return
   fi
 
-  # Already configured — nothing to do
-  if jq -e ".permissions.allow // [] | index(\"$PERMISSION\")" "$file" >/dev/null 2>&1; then
+  # Check if all permissions are already present
+  local missing
+  missing=$(jq --argjson perms "$PERMS_JSON" '
+    (.permissions.allow // []) as $existing |
+    [$perms[] | select(. as $p | $existing | index($p) | not)]
+  ' "$file")
+
+  if [ "$missing" = "[]" ]; then
     echo "Relaycast MCP permissions already configured in $file."
     return
   fi
 
-  # Add the permission, preserving existing settings
+  # Add missing permissions, preserving existing settings
   local tmp
   tmp=$(mktemp)
-  jq '
+  jq --argjson perms "$PERMS_JSON" '
     .permissions //= {} |
     .permissions.allow //= [] |
-    .permissions.allow += ["'"$PERMISSION"'"] |
+    .permissions.allow += $perms |
     .permissions.allow |= unique
   ' "$file" > "$tmp" && mv "$tmp" "$file"
 
   echo "Added Relaycast MCP permissions to $file."
 }
 
-ensure_permission "$SETTINGS_DIR/settings.json"
-ensure_permission "$SETTINGS_DIR/settings.local.json"
+ensure_permissions "$SETTINGS_DIR/settings.json"
+ensure_permissions "$SETTINGS_DIR/settings.local.json"
 
 echo ""
 echo "Done! Background workers can now use relay tools."
