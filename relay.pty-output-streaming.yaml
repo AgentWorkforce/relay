@@ -3,31 +3,21 @@ name: pty-output-streaming
 description: >
   PTY output streaming improvements for GitHub issue #390.
 
-  STATUS: The core feature is ALREADY IMPLEMENTED. The full pipeline exists:
-    - Rust: src/pty_worker.rs emits `worker_stream` frames (lines 441-444, 836-839)
-    - Protocol: packages/sdk/src/protocol.ts defines `worker_stream` BrokerEvent
-      and `WorkerToBroker` types
-    - SDK: packages/sdk/src/relay.ts handles `worker_stream` events, provides
-      agent.onOutput() callback with per-agent filtering and unsubscribe
-    - Tests: packages/sdk/src/__tests__/orchestration-upgrades.test.ts covers
-      onOutput, per-agent filtering, unsubscribe, and idle-resume on output
-
-  The existing push model works end-to-end:
+  The core worker_stream pipeline is ALREADY IMPLEMENTED end-to-end:
     Rust pty_worker → send_frame("worker_stream") → Broker → SDK event handler
-    → onWorkerOutput global hook + dispatchOutput() → agent.onOutput(callback)
+    → onWorkerOutput + agent.onOutput()
 
-  REMAINING GAP: The Rust side emits worker_stream on EVERY PTY read chunk with
-  no rate-limiting or buffering. High-frequency output (e.g. streaming compilation
-  logs) floods the broker with small frames. Adding 100ms batched buffering in
-  src/pty_worker.rs would reduce frame rate to ~10/sec max while preserving
-  real-time feel. SDK-level output filtering by stream type (stdout vs stderr)
-  could also be added as a convenience.
+  REMAINING GAP: PTY emits worker_stream on every read chunk with no batching.
+  This workflow adds 100ms rate-limited buffering in Rust and optional stream
+  filtering in the SDK's onOutput API.
+
+  2 phases: parallel implementation → verification + fix.
 
 swarm:
   pattern: dag
-  maxConcurrency: 2
+  maxConcurrency: 3
   timeoutMs: 3600000
-  channel: pty-streaming
+  channel: wf-pty-streaming
   idleNudge:
     nudgeAfterMs: 300000
     escalateAfterMs: 300000
@@ -36,285 +26,214 @@ swarm:
 agents:
   - name: rust-dev
     cli: claude
-    channels: [pty-streaming]
-    role: >
-      Rust backend developer. Modifies src/pty_worker.rs to add rate-limited
-      buffering for worker_stream frame emission. Familiar with the PTY event
-      loop, tokio async, and the existing send_frame helper.
+    preset: worker
+    role: 'Rust backend — adds rate-limited buffering to worker_stream emission in pty_worker.rs'
     constraints:
-      model: opus
+      model: sonnet
 
   - name: sdk-dev
     cli: claude
-    channels: [pty-streaming]
-    role: >
-      TypeScript SDK developer. Adds optional stream filtering to the
-      agent.onOutput() API in packages/sdk/src/relay.ts. Writes tests in
-      packages/sdk/src/__tests__/orchestration-upgrades.test.ts.
+    preset: worker
+    role: 'TypeScript SDK — adds stream filtering to agent.onOutput() and writes tests'
+    constraints:
+      model: sonnet
+
+  - name: fixer
+    cli: claude
+    preset: worker
+    role: 'Fixes type errors and test failures'
     constraints:
       model: sonnet
 
 workflows:
-  - name: improve-pty-output-streaming
-    description: >
-      Add rate-limited buffering on the Rust side and optional stream filtering
-      on the SDK side. The core worker_stream pipeline already works end-to-end.
+  - name: default
+    description: 'Add rate-limited buffering on Rust side and stream filtering on SDK side.'
     onError: retry
+
     preflight:
-      - command: '[ "$(git rev-parse --abbrev-ref HEAD)" != "main" ]'
-        description: 'Not on main branch — prevents accidental pushes to main'
       - command: test -f src/pty_worker.rs
         description: 'Rust PTY worker source exists'
       - command: test -f packages/sdk/src/relay.ts
         description: 'SDK relay source exists'
       - command: grep -q worker_stream src/pty_worker.rs
-        description: 'worker_stream emission already exists in pty_worker'
+        description: 'worker_stream emission already exists'
       - command: grep -q worker_stream packages/sdk/src/protocol.ts
         description: 'worker_stream protocol type already defined'
-      - command: git status --porcelain
-        failIf: non-empty
-        description: 'Working directory is clean'
 
     steps:
-      # ── Wave 1: Parallel — Rust buffering + SDK filtering ─────────────
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 1: Context reads + parallel implementation
+      # ════════════════════════════════════════════════════════════════════════
+
+      - name: read-pty-worker
+        type: deterministic
+        command: |
+          echo "=== worker_stream emission site ==="
+          grep -n -B5 -A10 'worker_stream' src/pty_worker.rs
+          echo ""
+          echo "=== buffer declarations area (lines 220-260) ==="
+          sed -n '220,260p' src/pty_worker.rs
+          echo ""
+          echo "=== verification_tick select arm ==="
+          grep -n -B2 -A10 'verification_tick' src/pty_worker.rs
+          echo ""
+          echo "=== imports ==="
+          head -30 src/pty_worker.rs
+        captureOutput: true
+
+      - name: read-sdk-relay
+        type: deterministic
+        command: |
+          echo "=== onOutput method ==="
+          grep -n -B5 -A20 'onOutput' packages/sdk/src/relay.ts
+          echo ""
+          echo "=== AgentOutputCallback type ==="
+          grep -n -B2 -A5 'AgentOutputCallback' packages/sdk/src/relay.ts
+          echo ""
+          echo "=== Agent interface output section ==="
+          grep -n -B2 -A5 'onOutput' packages/sdk/src/relay.ts | head -30
+          echo ""
+          echo "=== dispatchOutput ==="
+          grep -n -B2 -A15 'dispatchOutput' packages/sdk/src/relay.ts
+        captureOutput: true
+
+      - name: read-existing-tests
+        type: deterministic
+        command: |
+          echo "=== onOutput test patterns ==="
+          grep -n -B2 -A15 'onOutput\|worker_stream' packages/sdk/src/__tests__/orchestration-upgrades.test.ts | head -60
+        captureOutput: true
+
+      # ── Wave 1: Rust buffering + SDK filtering (parallel) ──────────────────
 
       - name: rust-output-buffering
-        type: agent
         agent: rust-dev
+        dependsOn: [read-pty-worker]
         task: |
-          Add 100ms rate-limited buffering to worker_stream emission in
-          src/pty_worker.rs.
+          Add 100ms rate-limited buffering to worker_stream emission in src/pty_worker.rs.
 
           CONTEXT:
-          The PTY event loop in run_pty_worker() already emits worker_stream
-          frames at line 441-444:
-            let _ = send_frame(&out_tx, "worker_stream", None, json!({
-                "stream": "stdout",
-                "chunk": text,
-            })).await;
+          {{steps.read-pty-worker.output}}
 
-          This fires on EVERY PTY read chunk with no batching. High-frequency
-          output floods the broker with many small frames.
+          Changes:
+          1. Add an output buffer (String) and last-flush Instant near existing buffer declarations
+          2. Replace direct send_frame("worker_stream") with buffer accumulation
+          3. Flush when: 100ms elapsed since last flush OR buffer exceeds 4096 bytes
+          4. Add flush check on the verification_tick interval for quiet periods
+          5. Keep the watchdog late-output emission as-is
 
-          TASK:
-          1. Add an output buffer (String) and a last-flush Instant near the
-             existing `echo_buffer` and `continuity_buffer` declarations
-             (around line 229).
+          Constraints: anyhow::Result (no unwrap), tracing macros, no new crate deps,
+          std::time::Instant (already imported), match existing code style.
 
-          2. Replace the direct send_frame("worker_stream") call at line 441-444
-             with buffer accumulation:
-             - Append the chunk text to the output buffer
-             - Only flush (send the frame) when:
-               a) 100ms have elapsed since last flush, OR
-               b) buffer exceeds 4096 bytes
-             - On flush: send the accumulated buffer as one worker_stream frame,
-               clear the buffer, reset the flush timestamp
-             - Skip sending if buffer is empty after trim
+          After implementing, run: cargo build 2>&1 | tail -10
 
-          3. Add a flush check on the existing verification_tick interval
-             (line 234, fires every 200ms) so buffered output is flushed even
-             during quiet periods. Look for the `_ = verification_tick.tick()`
-             arm in the select! loop and add a buffer flush there.
-
-          4. Keep the watchdog late-output emission at line 836-839 as-is
-             (it already handles the drain-on-exit case).
-
-          CONSTRAINTS:
-          - Use anyhow::Result, not unwrap() in production paths
-          - Use tracing macros for debug logging
-          - Do not add new crate dependencies
-          - Use std::time::Instant for timestamps (already imported)
-          - Follow existing code style in the file
-
-          After implementing, run:
-            cargo build 2>&1 | tail -10
-            cargo clippy -- -D warnings 2>&1 | tail -10
-
-          Do NOT use relay_spawn or add_agent.
-          Print exactly: RUST_BUFFERING_DONE
+          Write the file to disk.
         verification:
-          type: output_contains
-          value: RUST_BUFFERING_DONE
+          type: exit_code
         retries: 2
 
       - name: sdk-stream-filtering
-        type: agent
         agent: sdk-dev
+        dependsOn: [read-sdk-relay, read-existing-tests]
         task: |
-          Add optional stream-type filtering to agent.onOutput() in the SDK.
+          Add optional stream-type filtering to agent.onOutput() in packages/sdk/src/relay.ts.
 
           CONTEXT:
-          packages/sdk/src/relay.ts already has a working onOutput() API
-          (line 1190-1204) that receives all worker_stream events for an agent.
-          The worker_stream event includes a `stream` field ("stdout" or
-          potentially "stderr") but there's no way to filter by stream type.
+          {{steps.read-sdk-relay.output}}
 
-          The AgentOutputCallback type (line 148) supports two modes:
-            type AgentOutputCallback =
-              | ((chunk: string) => void)
-              | ((data: AgentOutputPayload) => void);
+          EXISTING TEST PATTERNS:
+          {{steps.read-existing-tests.output}}
 
-          TASK:
-          1. In packages/sdk/src/relay.ts, update the onOutput method signature
-             to accept an optional filter parameter:
-               onOutput(callback: AgentOutputCallback, options?: { stream?: string }): () => void
+          Changes:
+          1. Update onOutput signature: onOutput(callback, options?: { stream?: string }): () => void
+          2. When options.stream is provided, only invoke callback when event stream field matches
+          3. Update Agent interface to include the options param
+          4. Add tests in orchestration-upgrades.test.ts:
+             - onOutput with { stream: 'stdout' } only receives stdout
+             - onOutput without filter receives all streams
+             - onOutput with { stream: 'stderr' } ignores stdout
 
-          2. In the implementation (around line 1190-1204), when options.stream
-             is provided, only invoke the callback when the event's stream field
-             matches the filter.
+          Keep backward compatibility — no options = receive all.
 
-          3. Add tests in packages/sdk/src/__tests__/orchestration-upgrades.test.ts:
-             - Test that onOutput with { stream: 'stdout' } only receives stdout
-             - Test that onOutput without filter receives all streams
-             - Test that onOutput with { stream: 'stderr' } ignores stdout
+          After implementing, run: npx tsc --noEmit 2>&1 | tail -10
 
-          4. Update the Agent interface (line 180) to include the options param.
-
-          CONSTRAINTS:
-          - Follow existing code patterns in relay.ts
-          - Keep backward compatibility — no options = receive all (existing behavior)
-          - Use type-only imports where appropriate
-          - Run existing tests to ensure no regressions
-
-          After implementing, run:
-            npx tsc --noEmit 2>&1 | tail -10
-            npx vitest run packages/sdk/src/__tests__/orchestration-upgrades.test.ts 2>&1 | tail -20
-
-          Do NOT use relay_spawn or add_agent.
-          Print exactly: SDK_FILTERING_DONE
+          Write all files to disk.
         verification:
-          type: output_contains
-          value: SDK_FILTERING_DONE
+          type: exit_code
         retries: 2
 
-      # ── Wave 2: Build gate ───────────────────────────────────────────
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 2: Verification + fix
+      # ════════════════════════════════════════════════════════════════════════
+
+      - name: verify-files
+        type: deterministic
+        dependsOn: [rust-output-buffering, sdk-stream-filtering]
+        command: |
+          errors=0
+          grep -q "output_buffer\|flush" src/pty_worker.rs || { echo "FAIL: pty_worker.rs missing buffering"; errors=$((errors+1)); }
+          grep -q "stream.*filter\|options.*stream" packages/sdk/src/relay.ts || { echo "FAIL: relay.ts missing stream filtering"; errors=$((errors+1)); }
+          [ $errors -gt 0 ] && exit 1
+          echo "All implementation files verified"
+        captureOutput: true
+        failOnError: true
 
       - name: build-check
         type: deterministic
-        dependsOn: [rust-output-buffering, sdk-stream-filtering]
-        command: >
-          set -o pipefail;
-          cargo build 2>&1 | tail -10 &&
-          cargo clippy -- -D warnings 2>&1 | tail -10 &&
-          npx tsc --noEmit 2>&1 | tail -10 &&
-          echo "BUILD_OK" || echo "BUILD_FAILED"
+        dependsOn: [verify-files]
+        command: |
+          echo "=== Cargo build ==="
+          cargo build 2>&1 | tail -10
+          cargo_exit=$?
+          echo ""
+          echo "=== Clippy ==="
+          cargo clippy -- -D warnings 2>&1 | tail -10
+          clippy_exit=$?
+          echo ""
+          echo "=== TypeScript ==="
+          cd packages/sdk && npx tsc --noEmit 2>&1 | tail -10
+          tsc_exit=$?
+          echo ""
+          [ $cargo_exit -eq 0 ] && [ $clippy_exit -eq 0 ] && [ $tsc_exit -eq 0 ] && echo "BUILD_OK" || echo "BUILD_FAILED"
+          [ $cargo_exit -eq 0 ] && [ $clippy_exit -eq 0 ] && [ $tsc_exit -eq 0 ]
         captureOutput: true
         failOnError: false
 
-      # ── Wave 3: Fix any failures ─────────────────────────────────────
-
-      - name: fix-build-failures
-        type: agent
-        agent: sdk-dev
+      - name: fix-failures
+        agent: fixer
         dependsOn: [build-check]
         task: |
-          Build result: {{steps.build-check.output}}
+          Build results:
+          {{steps.build-check.output}}
 
-          If it shows BUILD_OK, there is nothing to fix. Output BUILD_ALL_GREEN.
+          If BUILD_OK, there's nothing to fix. Just confirm all clear.
 
-          Otherwise, fix any type errors, lint errors, or compilation failures.
-          The relevant files are:
-          - src/pty_worker.rs (Rust buffering changes)
-          - packages/sdk/src/relay.ts (SDK filtering changes)
-          - packages/sdk/src/__tests__/orchestration-upgrades.test.ts (new tests)
+          Otherwise, fix type errors, lint errors, or compilation failures in:
+          - src/pty_worker.rs (Rust buffering)
+          - packages/sdk/src/relay.ts (SDK filtering)
+          - packages/sdk/src/__tests__/orchestration-upgrades.test.ts (tests)
 
-          After fixing, re-run the failing build commands to verify.
-
-          Do NOT use relay_spawn or add_agent.
-          Print exactly: BUILD_ALL_GREEN
+          After fixing, re-run the failing commands to verify.
+          Write files to disk.
         verification:
-          type: output_contains
-          value: BUILD_ALL_GREEN
+          type: exit_code
         retries: 2
 
-      # ── Wave 4: Run tests ────────────────────────────────────────────
-
-      - name: run-tests
+      - name: final-tests
         type: deterministic
-        dependsOn: [fix-build-failures]
-        command: >
-          set -o pipefail;
-          cargo test 2>&1 | tail -20 &&
-          npx vitest run packages/sdk/src/__tests__/orchestration-upgrades.test.ts 2>&1 | tail -20 &&
-          echo "TESTS_PASSED" || echo "TESTS_FAILED"
+        dependsOn: [fix-failures]
+        command: |
+          set -o pipefail
+          echo "=== Cargo test ==="
+          cargo test 2>&1 | tail -20
+          echo ""
+          echo "=== SDK tests ==="
+          cd packages/sdk && npx vitest run src/__tests__/orchestration-upgrades.test.ts 2>&1 | tail -20
         captureOutput: true
         failOnError: true
-
-      # ── Wave 5: Commit ───────────────────────────────────────────────
-
-      - name: create-branch
-        type: deterministic
-        dependsOn: [run-tests]
-        command: >
-          git rev-parse --verify feature/390-pty-output-streaming >/dev/null 2>&1 &&
-          git checkout feature/390-pty-output-streaming ||
-          git checkout -b feature/390-pty-output-streaming &&
-          echo "BRANCH_READY"
-        captureOutput: true
-        failOnError: true
-
-      - name: commit-changes
-        type: deterministic
-        dependsOn: [create-branch]
-        command: >
-          set -e;
-          BRANCH="$(git rev-parse --abbrev-ref HEAD)";
-          if [ "$BRANCH" = "main" ]; then echo "ERROR: refusing to commit on main" && exit 1; fi;
-          git add src/pty_worker.rs packages/sdk/src/relay.ts packages/sdk/src/__tests__/orchestration-upgrades.test.ts &&
-          git commit -m "feat: add 100ms output buffering and SDK stream filtering (#390)" &&
-          git push -u origin HEAD 2>&1 &&
-          echo "COMMIT_DONE" || echo "COMMIT_FAILED"
-        captureOutput: true
-        failOnError: false
-
-      # ── Wave 6: Summary ──────────────────────────────────────────────
-
-      - name: summary
-        type: agent
-        agent: sdk-dev
-        dependsOn: [commit-changes]
-        task: |
-          The PTY output streaming improvement workflow has completed.
-
-          Rust buffering: {{steps.rust-output-buffering.output}}
-          SDK filtering: {{steps.sdk-stream-filtering.output}}
-          Build: {{steps.build-check.output}}
-          Tests: {{steps.run-tests.output}}
-          Commit: {{steps.commit-changes.output}}
-
-          Summarize:
-          1. What was changed and why
-          2. What already existed (the full worker_stream pipeline)
-          3. What was added (buffering + filtering)
-          4. Test results
-
-          Do NOT use relay_spawn or add_agent.
-          Print exactly: WORKFLOW_SUMMARY_DONE
-        verification:
-          type: output_contains
-          value: WORKFLOW_SUMMARY_DONE
-
-coordination:
-  barriers:
-    - name: implementation-complete
-      waitFor: [rust-output-buffering, sdk-stream-filtering]
-      timeoutMs: 1800000
-    - name: builds-green
-      waitFor: [build-check]
-      timeoutMs: 600000
-
-state:
-  backend: memory
-  ttlMs: 86400000
-  namespace: pty-streaming
 
 errorHandling:
   strategy: retry
   maxRetries: 2
   retryDelayMs: 5000
-  notifyChannel: pty-streaming
-
-trajectories:
-  enabled: true
-  reflectOnBarriers: true
-  autoDecisions: true
+  notifyChannel: wf-pty-streaming
