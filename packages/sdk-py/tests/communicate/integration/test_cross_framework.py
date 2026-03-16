@@ -218,7 +218,7 @@ async def test_swarms_sender_reaches_claude_sdk_hook_system_message(relay_server
     receiver_options = SimpleNamespace(mcp_servers=[], hooks=Hooks())
 
     swarms_adapter.on_relay(sender_agent, sender_relay)
-    claude_adapter.on_relay(receiver_options, relay=receiver_relay, name="ClaudeReceiver")
+    claude_adapter.on_relay("ClaudeReceiver", receiver_options, relay=receiver_relay)
 
     try:
         await _prime_claude_receiver(
@@ -266,7 +266,7 @@ async def test_multiple_framework_agents_post_to_the_same_channel(relay_server, 
     openai_adapter.on_relay(openai_agent, openai_relay)
     google_adapter.on_relay(google_agent, google_relay)
     swarms_adapter.on_relay(swarms_agent, swarms_relay)
-    claude_adapter.on_relay(receiver_options, relay=receiver_relay, name="ClaudeChannelReader")
+    claude_adapter.on_relay("ClaudeChannelReader", receiver_options, relay=receiver_relay)
 
     try:
         await _prime_claude_receiver(

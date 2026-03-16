@@ -254,6 +254,10 @@ def on_relay(agent: Any, relay: Relay | None = None) -> Any:
         relay = Relay(getattr(agent, "name", "Agent"))
 
     cls_module = type(agent).__module__
+    if cls_module.startswith("claude_agent_sdk"):
+        agent_name = getattr(agent, "name", "Agent")
+        from .adapters.claude_sdk import on_relay as _adapt
+        return _adapt(agent_name, agent, relay)
     if cls_module.startswith("agents"):
         from .adapters.openai_agents import on_relay as _adapt
         return _adapt(agent, relay)
@@ -272,8 +276,8 @@ def on_relay(agent: Any, relay: Relay | None = None) -> Any:
 
     raise TypeError(
         f"on_relay() doesn't recognize {type(agent).__name__} from {cls_module}. "
-        "Supported frameworks: OpenAI Agents, Google ADK, Agno, Swarms, CrewAI (Python). "
-        "For Claude Agent SDK, import the adapter directly: "
+        "Supported frameworks: Claude Agent SDK, OpenAI Agents, Google ADK, Agno, Swarms, CrewAI (Python). "
+        "For Claude Agent SDK, you can also import directly: "
         "from agent_relay.communicate.adapters.claude_sdk import on_relay"
     )
 

@@ -48,7 +48,7 @@ def mock_options():
 def test_on_relay_injects_mcp_server(mock_relay, mock_options):
     adapter = _adapter_module()
 
-    result = adapter.on_relay(mock_options, relay=mock_relay, name="TestAgent")
+    result = adapter.on_relay("TestAgent", mock_options, relay=mock_relay)
 
     assert result is mock_options
     assert len(mock_options.mcp_servers) == 1
@@ -66,7 +66,7 @@ async def test_post_tool_use_hook_drains_inbox(mock_relay, mock_options):
         Message(sender="Other", text="Hello", message_id="1")
     ]
 
-    adapter.on_relay(mock_options, relay=mock_relay, name="TestAgent")
+    adapter.on_relay("TestAgent", mock_options, relay=mock_relay)
     post_tool_use = mock_options.hooks.post_tool_use
 
     assert post_tool_use is not None
@@ -84,7 +84,7 @@ async def test_post_tool_use_hook_returns_none_if_inbox_empty(mock_relay, mock_o
     adapter = _adapter_module()
     mock_relay.inbox.return_value = []
 
-    adapter.on_relay(mock_options, relay=mock_relay, name="TestAgent")
+    adapter.on_relay("TestAgent", mock_options, relay=mock_relay)
     hook_result = await mock_options.hooks.post_tool_use()
 
     assert hook_result is None
@@ -98,7 +98,7 @@ async def test_stop_hook_drains_inbox_and_continues(mock_relay, mock_options):
         Message(sender="Other", text="Wait!", message_id="2")
     ]
 
-    adapter.on_relay(mock_options, relay=mock_relay, name="TestAgent")
+    adapter.on_relay("TestAgent", mock_options, relay=mock_relay)
     stop_hook = mock_options.hooks.stop
 
     assert stop_hook is not None
@@ -114,7 +114,7 @@ async def test_stop_hook_returns_none_if_inbox_empty(mock_relay, mock_options):
     adapter = _adapter_module()
     mock_relay.inbox.return_value = []
 
-    adapter.on_relay(mock_options, relay=mock_relay, name="TestAgent")
+    adapter.on_relay("TestAgent", mock_options, relay=mock_relay)
     hook_result = await mock_options.hooks.stop()
 
     assert hook_result is None
@@ -126,7 +126,7 @@ async def test_hooks_chaining(mock_relay, mock_options):
     original_post_tool_use = AsyncMock(return_value=MagicMock(system_message="Original"))
     mock_options.hooks.post_tool_use = original_post_tool_use
 
-    adapter.on_relay(mock_options, relay=mock_relay, name="TestAgent")
+    adapter.on_relay("TestAgent", mock_options, relay=mock_relay)
 
     # When inbox is empty, it should return original result
     mock_relay.inbox.return_value = []

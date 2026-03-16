@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from ..core import Relay
 
 
-def on_relay(options: Any, relay: "Relay | None" = None, *, name: str | None = None) -> Any:
+def on_relay(name: str, options: Any, relay: "Relay | None" = None) -> Any:
     """Wrap Claude Agent SDK query options to connect them to the relay."""
     try:
         from claude_agent_sdk.types import HookResult
@@ -24,8 +24,10 @@ def on_relay(options: Any, relay: "Relay | None" = None, *, name: str | None = N
         from ..core import Relay
         relay = Relay(agent_name)
 
-    if getattr(options, "hooks", None) is None:
-        options.hooks = SimpleNamespace(post_tool_use=None, stop=None)
+    hooks = getattr(options, "hooks", None)
+    if hooks is None:
+        hooks = SimpleNamespace(post_tool_use=None, stop=None)
+        options.hooks = hooks
 
     # 1. Inject Relaycast MCP server
     mcp_config = {"name": "relaycast", "command": "agent-relay", "args": ["mcp"]}
@@ -44,8 +46,8 @@ def on_relay(options: Any, relay: "Relay | None" = None, *, name: str | None = N
         return content
 
     # 3. Hook wrappers
-    orig_post = options.hooks.post_tool_use if hasattr(options.hooks, "post_tool_use") else None
-    orig_stop = options.hooks.stop if hasattr(options.hooks, "stop") else None
+    orig_post = getattr(hooks, "post_tool_use", None)
+    orig_stop = getattr(hooks, "stop", None)
 
     async def post_tool_use_hook(*args, **kwargs):
         res = None
