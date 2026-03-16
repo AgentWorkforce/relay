@@ -10,7 +10,7 @@ from inspect import isawaitable
 from typing import Any, Callable
 
 from .transport import RelayTransport
-from .types import Message, MessageCallback, RelayConfig
+from .types import Message, MessageCallback, RelayConfig, RelayConfigError, RelayAuthError
 
 MAX_PENDING_MESSAGES = 10_000
 
