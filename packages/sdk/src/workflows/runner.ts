@@ -2000,10 +2000,7 @@ export class WorkflowRunner {
           this.log('API key resolved');
           if (this.relayApiKeyAutoCreated && this.relayApiKey) {
             this.log(`Workspace created — follow this run in Relaycast:`);
-            const masked = this.relayApiKey!.length > 8
-              ? this.relayApiKey!.slice(0, 8) + '...'
-              : '***';
-            this.log(`  Observer: https://agentrelay.dev/observer?key=${masked}`);
+            this.log(`  Observer: https://agentrelay.dev/observer?key=${this.relayApiKey}`);
             this.log(`  Channel: ${channel}`);
           }
         }
