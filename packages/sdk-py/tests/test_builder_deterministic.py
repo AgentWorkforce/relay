@@ -1,7 +1,7 @@
 """Tests for deterministic and worktree step support in the Python workflow builder."""
 
 import pytest
-from src.agent_relay import workflow, VerificationCheck
+from agent_relay import workflow, VerificationCheck
 
 
 def test_deterministic_step_emits_correct_config():
