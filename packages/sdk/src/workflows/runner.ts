@@ -13,6 +13,7 @@ import path from 'node:path';
 
 import { parse as parseYaml } from 'yaml';
 import { stripAnsi as stripAnsiFn } from '../pty.js';
+import { ensureRelaycastMcpConfig } from '../client.js';
 import type { BrokerEvent } from '../protocol.js';
 
 import {
@@ -3290,6 +3291,13 @@ export class WorkflowRunner {
   ): Promise<SpawnResult> {
     const agentName = `${step.name}-${this.generateShortId()}`;
     const modelArgs = agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [];
+
+    // Inject --mcp-config for claude non-interactive agents (same config as PTY path via client.ts)
+    const cli = (agentDef.cli ?? 'claude').split(':')[0].trim().toLowerCase();
+    if (cli === 'claude') {
+      const mcpPath = ensureRelaycastMcpConfig(this.cwd);
+      if (mcpPath) modelArgs.push('--mcp-config', mcpPath);
+    }
 
     // Append strict deliverable enforcement — non-interactive agents MUST produce
     // clear, structured output since there's no opportunity for follow-up or clarification.

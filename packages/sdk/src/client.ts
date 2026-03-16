@@ -268,7 +268,8 @@ export class AgentRelayClient {
 
   async spawnPty(input: SpawnPtyInput): Promise<{ name: string; runtime: AgentRuntime }> {
     await this.start();
-    const args = buildPtyArgsWithModel(input.cli, input.args ?? [], input.model);
+    const agentCwd = input.cwd ?? this.options.cwd;
+    const args = buildPtyArgsWithModel(input.cli, input.args ?? [], input.model, agentCwd);
     const agent: AgentSpec = {
       name: input.name,
       runtime: 'pty',
@@ -709,10 +710,68 @@ const CLI_DEFAULT_ARGS: Record<string, string[]> = {
   codex: ['-c', 'check_for_update_on_startup=false'],
 };
 
-function buildPtyArgsWithModel(cli: string, args: string[], model?: string): string[] {
+/** Cached path to the auto-generated relaycast MCP config file. */
+let _mcpConfigPath: string | null = null;
+
+/** Reset the cached MCP config path (for testing). */
+export function _resetMcpConfigCache(): void {
+  _mcpConfigPath = null;
+}
+
+/**
+ * Ensure a relaycast MCP config file exists and return its path.
+ * Written once per process, reused by all agent spawns.
+ *
+ * Claude Code reads MCP server definitions from `--mcp-config <path>`.
+ * By injecting this at the SDK level, every claude agent spawned via
+ * the SDK (dashboard, CLI, workflow, or direct API) automatically gets
+ * relaycast MCP tools (message.inbox.check, message.send, register, etc.).
+ */
+export function ensureRelaycastMcpConfig(cwd?: string): string | null {
+  if (_mcpConfigPath && fs.existsSync(_mcpConfigPath)) {
+    return _mcpConfigPath;
+  }
+
+  try {
+    const configDir = path.join(cwd ?? process.cwd(), '.agent-relay');
+    if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+
+    const configPath = path.join(configDir, 'mcp-config.json');
+    const baseUrl = process.env.RELAYCAST_BASE_URL ?? process.env.RELAY_BASE_URL ?? 'https://api.relaycast.dev';
+
+    const mcpConfig = {
+      mcpServers: {
+        relaycast: {
+          command: 'npx',
+          args: ['-y', '@relaycast/mcp'],
+          env: {
+            ...(baseUrl !== 'https://api.relaycast.dev' ? { RELAY_BASE_URL: baseUrl } : {}),
+          },
+        },
+      },
+    };
+
+    fs.writeFileSync(configPath, JSON.stringify(mcpConfig, null, 2));
+    _mcpConfigPath = configPath;
+    return configPath;
+  } catch {
+    return null;
+  }
+}
+
+function buildPtyArgsWithModel(cli: string, args: string[], model?: string, cwd?: string): string[] {
   const cliName = cli.split(':')[0].trim().toLowerCase();
   const defaultArgs = CLI_DEFAULT_ARGS[cliName] ?? [];
   const baseArgs = [...defaultArgs, ...args];
+
+  // Inject --mcp-config for claude agents (single code path for all spawns)
+  if (cliName === 'claude' && !baseArgs.some(a => a === '--mcp-config')) {
+    const mcpPath = ensureRelaycastMcpConfig(cwd);
+    if (mcpPath) {
+      baseArgs.push('--mcp-config', mcpPath);
+    }
+  }
+
   if (!model) {
     return baseArgs;
   }
