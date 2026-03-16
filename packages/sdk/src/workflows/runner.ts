@@ -1998,16 +1998,13 @@ export class WorkflowRunner {
           this.log('Resolving Relaycast API key...');
           await this.ensureRelaycastApiKey(channel);
           this.log('API key resolved');
-          if (this.relayApiKey) {
-            const observerUrl = `https://agentrelay.dev/observer?key=${this.relayApiKey}`;
-            const workspaceNote = this.relayApiKeyAutoCreated ? ' (new workspace)' : '';
-            console.log('');
-            console.log('  ┌─────────────────────────────────────────────────────────────────┐');
-            console.log(`  │  Follow this run in Relaycast${workspaceNote}`);
-            console.log(`  │  ${observerUrl}`);
-            console.log(`  │  Channel: ${channel}`);
-            console.log('  └─────────────────────────────────────────────────────────────────┘');
-            console.log('');
+          if (this.relayApiKeyAutoCreated && this.relayApiKey) {
+            this.log(`Workspace created — follow this run in Relaycast:`);
+            const masked = this.relayApiKey!.length > 8
+              ? this.relayApiKey!.slice(0, 8) + '...'
+              : '***';
+            this.log(`  Observer: https://agentrelay.dev/observer?key=${masked}`);
+            this.log(`  Channel: ${channel}`);
           }
         }
 
@@ -5932,51 +5929,36 @@ export class WorkflowRunner {
     const failed = outcomes.filter((o) => o.status === 'failed');
     const skipped = outcomes.filter((o) => o.status === 'skipped');
 
-    const statusLabel = failed.length === 0 ? 'COMPLETED' : 'FAILED';
-    const counts = [
-      completed.length > 0 ? `${completed.length} passed` : null,
-      failed.length > 0 ? `${failed.length} failed` : null,
-      skipped.length > 0 ? `${skipped.length} skipped` : null,
-    ]
-      .filter(Boolean)
-      .join(', ');
-
     console.log('');
     console.log('━'.repeat(70));
-    console.log(`  Workflow "${workflowName}" — ${statusLabel}  (${counts})`);
+    console.log(`  Workflow "${workflowName}" — ${failed.length === 0 ? 'COMPLETED' : 'FAILED'}`);
+    console.log(`  ${completed.length} passed, ${failed.length} failed, ${skipped.length} skipped`);
     console.log('━'.repeat(70));
 
     for (const outcome of outcomes) {
       const icon = outcome.status === 'completed' ? '✓' : outcome.status === 'failed' ? '✗' : '⊘';
       const retryNote = outcome.attempts > 1 ? ` (${outcome.attempts} attempts)` : '';
-      const isDeterministic = outcome.agent === 'deterministic';
-      const agentLabel = isDeterministic ? 'shell' : outcome.agent;
-      console.log('');
-      console.log(`  ${icon} ${outcome.name}  [${agentLabel}]${retryNote}`);
+      console.log(`  ${icon} ${outcome.name} [${outcome.agent}]${retryNote}`);
 
       if (outcome.error) {
-        console.log(`    ! ${outcome.error}`);
+        console.log(`    Error: ${outcome.error}`);
       }
 
-      // Show a brief excerpt of the step's output
+      // Extract last meaningful lines from raw PTY output
       if (outcome.output) {
-        const excerpt = this.extractOutputExcerpt(outcome.output, isDeterministic);
+        const excerpt = this.extractOutputExcerpt(outcome.output);
         if (excerpt) {
           for (const line of excerpt.split('\n')) {
-            console.log(`      ${line}`);
+            console.log(`    ${line}`);
           }
         }
       }
     }
 
-    // Point to detailed output files and observer
+    // Point to detailed output files
     const outputDir = this.getStepOutputDir(runId);
     const logsDir = path.join(this.cwd, '.agent-relay', 'team', 'worker-logs');
     console.log('');
-    console.log('  ' + '─'.repeat(68));
-    if (this.relayApiKey) {
-      console.log(`  Observer:    https://agentrelay.dev/observer?key=${this.relayApiKey}`);
-    }
     console.log(`  Step output: ${outputDir}`);
     console.log(`  Agent logs:  ${logsDir}`);
     console.log('━'.repeat(70));
@@ -5987,7 +5969,7 @@ export class WorkflowRunner {
    * Extract a useful excerpt from raw PTY output.
    * Looks for the agent's final text output (ignoring ANSI, system prompts, tool calls).
    */
-  private extractOutputExcerpt(rawOutput: string, isDeterministic = false): string {
+  private extractOutputExcerpt(rawOutput: string): string {
     const stripped = WorkflowRunner.stripAnsi(rawOutput);
 
     // Split into lines, filter out noise
@@ -6011,13 +5993,10 @@ export class WorkflowRunner {
 
     if (lines.length === 0) return '';
 
-    // Deterministic steps: show just the last 2 lines (shell output is often noisy/verbose)
-    // Agent steps: show last 8 lines (more context for what the agent concluded)
-    const tailCount = isDeterministic ? 2 : 8;
-    const tail = lines.slice(-tailCount);
-    // Use wider line limit so meaningful content isn't cut off mid-sentence
-    const excerpt = tail.map((l) => l.trim().slice(0, 160)).join('\n');
-    return excerpt;
+    // Take the last few meaningful lines (agent's final words)
+    const tail = lines.slice(-5);
+    const excerpt = tail.map((l) => l.trim().slice(0, 120)).join('\n');
+    return excerpt.length > 0 ? `...\n${excerpt}` : '';
   }
 
   // ── Trajectory helpers ────────────────────────────────────────────────

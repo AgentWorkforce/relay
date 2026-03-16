@@ -52,7 +52,7 @@ Background workers can't prompt for tool approval interactively — MCP calls si
 bash .claude-plugin/setup.sh
 ```
 
-This adds `mcp__relaycast` to your `.claude/settings.json` permissions, allowing background workers to use relay tools (register, send messages, check inbox) without being blocked.
+This adds `mcp__plugin_agent-relay_relaycast` to your `.claude/settings.json` permissions, allowing background workers to use relay tools (register, send messages, check inbox) without being blocked.
 
 If you prefer to do it manually, add this to `.claude/settings.json`:
 
@@ -60,7 +60,7 @@ If you prefer to do it manually, add this to `.claude/settings.json`:
 {
   "permissions": {
     "allow": [
-      "mcp__relaycast"
+      "mcp__plugin_agent-relay_relaycast"
     ]
   }
 }
@@ -245,7 +245,7 @@ Background subagents can't get interactive approval for tool calls. You need to 
 ```json
 {
   "permissions": {
-    "allow": ["mcp__relaycast"]
+    "allow": ["mcp__plugin_agent-relay_relaycast"]
   }
 }
 ```
