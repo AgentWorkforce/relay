@@ -1,7 +1,11 @@
-import { z } from 'zod';
-
 import { Relay } from '../core.js';
 import { formatRelayInbox, formatRelayMessage, type Message, type MessageCallback } from '../types.js';
+
+type JsonObjectSchema = {
+  type: 'object';
+  properties: Record<string, Record<string, unknown>>;
+  required: string[];
+};
 
 type FunctionToolLike = {
   name: string;
@@ -54,13 +58,13 @@ function createRelayFunctionTools(relay: RelayLike): FunctionToolLike[] {
   const toolDefs: Array<{
     name: string;
     description: string;
-    parameters: unknown;
+    parameters: JsonObjectSchema;
     execute: (input: Record<string, string>) => Promise<Record<string, unknown>>;
   }> = [
     {
       name: 'relay_send',
       description: 'Send a direct message to another relay agent.',
-      parameters: z.object({ to: z.string(), text: z.string() }),
+      parameters: { type: 'object', properties: { to: { type: 'string' }, text: { type: 'string' } }, required: ['to', 'text'] },
       async execute(input) {
         await relay.send(input.to, input.text);
         return { result: `Sent relay message to ${input.to}.` };
@@ -69,7 +73,7 @@ function createRelayFunctionTools(relay: RelayLike): FunctionToolLike[] {
     {
       name: 'relay_inbox',
       description: 'Drain and inspect newly received relay messages.',
-      parameters: z.object({}),
+      parameters: { type: 'object', properties: {}, required: [] },
       async execute() {
         return { result: formatRelayInbox(await relay.inbox()) };
       },
@@ -77,7 +81,7 @@ function createRelayFunctionTools(relay: RelayLike): FunctionToolLike[] {
     {
       name: 'relay_post',
       description: 'Post a message to a relay channel.',
-      parameters: z.object({ channel: z.string(), text: z.string() }),
+      parameters: { type: 'object', properties: { channel: { type: 'string' }, text: { type: 'string' } }, required: ['channel', 'text'] },
       async execute(input) {
         await relay.post(input.channel, input.text);
         return { result: `Posted relay message to #${input.channel}.` };
@@ -86,7 +90,7 @@ function createRelayFunctionTools(relay: RelayLike): FunctionToolLike[] {
     {
       name: 'relay_agents',
       description: 'List currently online relay agents.',
-      parameters: z.object({}),
+      parameters: { type: 'object', properties: {}, required: [] },
       async execute() {
         return { result: (await relay.agents()).join('\n') };
       },

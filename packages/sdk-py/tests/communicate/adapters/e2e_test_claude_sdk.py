@@ -71,7 +71,7 @@ class TestClaudeSdkAdapterE2E:
         options = _make_mock_options(agent_name)
 
         try:
-            result = on_relay(options, relay, name=agent_name)
+            result = on_relay(agent_name, options, relay)
 
             assert result is options
             mcp_names = [s["name"] for s in options.mcp_servers]
@@ -99,7 +99,7 @@ class TestClaudeSdkAdapterE2E:
         )
 
         try:
-            on_relay(options, relay, name=agent_name)
+            on_relay(agent_name, options, relay)
 
             assert len(options.mcp_servers) == 2
             names = [s["name"] for s in options.mcp_servers]
@@ -224,7 +224,7 @@ class TestHooksE2E:
         options = _make_mock_options(agent_name)
 
         try:
-            on_relay(options, relay, name=agent_name)
+            on_relay(agent_name, options, relay)
             await relay.agents()
 
             # Drain any pre-existing messages
@@ -248,7 +248,7 @@ class TestHooksE2E:
         options = _make_mock_options(agent_name)
 
         try:
-            on_relay(options, relay, name=agent_name)
+            on_relay(agent_name, options, relay)
             await relay.agents()
             await relay.inbox()
 
@@ -376,7 +376,7 @@ class TestHooksE2E:
         )
 
         try:
-            on_relay(options, relay, name=agent_name)
+            on_relay(agent_name, options, relay)
             await relay.agents()
             await relay.inbox()
 

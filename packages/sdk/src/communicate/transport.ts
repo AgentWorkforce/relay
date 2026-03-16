@@ -52,10 +52,13 @@ export class RelayTransport {
     this.wsConnectPromise = undefined;
 
     if (socket && socket.readyState !== WebSocket.CLOSED) {
-      await new Promise<void>((resolve) => {
-        socket.once('close', () => resolve());
-        socket.close();
-      });
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          socket.once('close', () => resolve());
+          socket.close();
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+      ]);
     }
 
     if (this.agentId) {
