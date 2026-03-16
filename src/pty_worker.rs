@@ -88,6 +88,15 @@ fn startup_gate_ready(
     }
 }
 
+fn should_block_pending_injection(
+    auto_suggestion_visible: bool,
+    pending: &PendingWorkerInjection,
+) -> bool {
+    auto_suggestion_visible
+        && !matches!(pending.delivery.injection_mode, MessageInjectionMode::Steer)
+        && pending.queued_at.elapsed() < AUTO_SUGGESTION_BLOCK_TIMEOUT
+}
+
 async fn try_emit_worker_ready(
     out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     worker_name: &str,
@@ -648,11 +657,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             _ = pending_injection_interval.tick() => {
                 let should_block = pending_worker_injections
                     .front()
-                    .map(|pending| {
-                        pty_auto.auto_suggestion_visible
-                            && !matches!(pending.delivery.injection_mode, MessageInjectionMode::Steer)
-                            && pending.queued_at.elapsed() < AUTO_SUGGESTION_BLOCK_TIMEOUT
-                    })
+                    .map(|pending| should_block_pending_injection(pty_auto.auto_suggestion_visible, pending))
                     .unwrap_or(false);
                 if should_block {
                     continue;
@@ -665,7 +670,15 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             delivery_id = %pending.delivery.delivery_id,
                             "steer mode: sending ESC ESC before message injection"
                         );
-                        let _ = pty.write_all(b"\x1b\x1b");
+                        if let Err(error) = pty.write_all(b"\x1b\x1b") {
+                            tracing::warn!(
+                                delivery_id = %pending.delivery.delivery_id,
+                                error = %error,
+                                "steer mode ESC ESC write failed, re-queuing delivery"
+                            );
+                            pending_worker_injections.push_front(pending);
+                            continue;
+                        }
                         tokio::time::sleep(Duration::from_millis(120)).await;
                         pty_auto.auto_suggestion_visible = false;
                     } else if pty_auto.auto_suggestion_visible {
@@ -1006,5 +1019,50 @@ mod tests {
             false,
             "",
         ));
+    }
+
+    #[test]
+    fn should_block_pending_injection_wait_mode_when_suggestion_visible() {
+        let pending = PendingWorkerInjection {
+            delivery: RelayDelivery {
+                delivery_id: "del_1".into(),
+                event_id: "evt_1".into(),
+                workspace_id: None,
+                workspace_alias: None,
+                from: "Lead".into(),
+                target: "Worker".into(),
+                body: "hello".into(),
+                thread_id: None,
+                priority: None,
+                injection_mode: MessageInjectionMode::Wait,
+            },
+            request_id: None,
+            queued_at: Instant::now(),
+        };
+
+        assert!(should_block_pending_injection(true, &pending));
+        assert!(!should_block_pending_injection(false, &pending));
+    }
+
+    #[test]
+    fn should_not_block_pending_injection_for_steer_mode() {
+        let pending = PendingWorkerInjection {
+            delivery: RelayDelivery {
+                delivery_id: "del_2".into(),
+                event_id: "evt_2".into(),
+                workspace_id: None,
+                workspace_alias: None,
+                from: "Lead".into(),
+                target: "Worker".into(),
+                body: "interrupt".into(),
+                thread_id: None,
+                priority: None,
+                injection_mode: MessageInjectionMode::Steer,
+            },
+            request_id: None,
+            queued_at: Instant::now(),
+        };
+
+        assert!(!should_block_pending_injection(true, &pending));
     }
 }
