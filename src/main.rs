@@ -4478,7 +4478,10 @@ async fn handle_sdk_frame(
                     out_tx,
                     frame.request_id,
                     "unsupported_operation",
-                    format!("resize_pty is only supported for PTY agents, '{}' is {:?}", payload.name, handle.spec.runtime),
+                    format!(
+                        "resize_pty is only supported for PTY agents, '{}' is {:?}",
+                        payload.name, handle.spec.runtime
+                    ),
                     false,
                     None,
                 )
