@@ -95,7 +95,11 @@ await worker.release(
 
 ```python
 human = relay.system()
-await human.send_message(to="Agent1", text="Please start the analysis")
+await human.send_message(
+    to="Agent1",
+    text="Please start the analysis",
+    mode="wait",   # or "steer"
+)
 ```
 
 ### Event Hooks

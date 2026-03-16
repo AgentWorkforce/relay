@@ -10,6 +10,7 @@ from .protocol import (
     AgentRuntime,
     AgentSpec,
     BrokerEvent,
+    MessageInjectionMode,
     ProtocolEnvelope,
     RestartPolicy as ProtocolRestartPolicy,
 )
@@ -84,6 +85,7 @@ __all__ = [
     "AgentRuntime",
     "AgentSpec",
     "BrokerEvent",
+    "MessageInjectionMode",
     "ProtocolEnvelope",
     "ProtocolRestartPolicy",
     # Workflow builder (backward compat)
