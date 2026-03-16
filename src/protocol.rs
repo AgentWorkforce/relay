@@ -317,7 +317,7 @@ mod tests {
 
     use super::{
         AgentRuntime, AgentSpec, BrokerEvent, BrokerToSdk, BrokerToWorker, HeadlessProvider,
-        ProtocolEnvelope, RelayDelivery, WorkerToBroker, PROTOCOL_VERSION,
+        MessageInjectionMode, ProtocolEnvelope, RelayDelivery, WorkerToBroker, PROTOCOL_VERSION,
     };
 
     #[test]
