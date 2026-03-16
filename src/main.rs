@@ -44,8 +44,8 @@ use relay_broker::{
     message_bridge::{map_ws_broker_command, map_ws_event},
     multi_workspace::{MultiWorkspaceSession, WorkspaceInboundMessage, WorkspaceMembershipSummary},
     protocol::{
-        AgentRuntime, AgentSpec, HeadlessProvider as ProtocolHeadlessProvider, ProtocolEnvelope,
-        RelayDelivery, PROTOCOL_VERSION,
+        AgentRuntime, AgentSpec, HeadlessProvider as ProtocolHeadlessProvider, MessageInjectionMode,
+        ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION,
     },
     pty::PtySession,
     relaycast_ws::{
@@ -550,6 +550,8 @@ struct SendMessagePayload {
     workspace_alias: Option<String>,
     #[serde(default)]
     priority: Option<u8>,
+    #[serde(default)]
+    mode: MessageInjectionMode,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1966,6 +1968,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             thread_id,
                             workspace_id,
                             workspace_alias,
+                            mode,
                             reply,
                         } => {
                             let normalized_to = to.trim().to_string();
@@ -2085,6 +2088,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         Some(selected_workspace_id.clone()),
                                         selected_workspace_alias.clone(),
                                         priority,
+                                        mode.clone(),
                                         delivery_retry_interval,
                                     ),
                                 )
@@ -3133,6 +3137,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             None,
                                             None,
                                             2,
+                                            MessageInjectionMode::Wait,
                                             delivery_retry_interval,
                                         ).await {
                                             tracing::warn!(worker = %name, error = %e, "failed to deliver initial_task");
@@ -3290,6 +3295,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                                 None,
                                                                 None,
                                                                 2,
+                                                                MessageInjectionMode::Wait,
                                                                 delivery_retry_interval,
                                                             ).await {
                                                                 tracing::warn!(
@@ -4306,6 +4312,7 @@ async fn handle_sdk_frame(
                     Some(selected_workspace.workspace_id.clone()),
                     selected_workspace.workspace_alias.clone(),
                     priority,
+                    payload.mode,
                     delivery_retry_interval(),
                 )
                 .await?;
@@ -4818,6 +4825,7 @@ async fn queue_and_try_delivery(
         Some(mapped.workspace_id.clone()),
         mapped.workspace_alias.clone(),
         mapped.priority.as_u8(),
+        MessageInjectionMode::Wait,
         retry_interval,
     )
     .await
@@ -4836,6 +4844,7 @@ async fn queue_and_try_delivery_raw(
     workspace_id: Option<String>,
     workspace_alias: Option<String>,
     priority: u8,
+    injection_mode: MessageInjectionMode,
     retry_interval: Duration,
 ) -> Result<()> {
     let delivery = RelayDelivery {
@@ -4848,6 +4857,7 @@ async fn queue_and_try_delivery_raw(
         body: body.to_string(),
         thread_id,
         priority: Some(priority),
+        injection_mode,
     };
     let delivery_id = delivery.delivery_id.clone();
     pending_deliveries.insert(
@@ -7002,6 +7012,7 @@ mod tests {
                     body: "hello".to_string(),
                     thread_id: None,
                     priority: None,
+                    injection_mode: MessageInjectionMode::Wait,
                 },
                 attempts: 1,
                 next_retry_at: Instant::now(),
@@ -7021,6 +7032,7 @@ mod tests {
                     body: "world".to_string(),
                     thread_id: None,
                     priority: None,
+                    injection_mode: MessageInjectionMode::Wait,
                 },
                 attempts: 1,
                 next_retry_at: Instant::now(),
@@ -7047,6 +7059,7 @@ mod tests {
                 body: "hello".to_string(),
                 thread_id: None,
                 priority: None,
+                injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 1,
             next_retry_at: Instant::now(),
@@ -7076,6 +7089,7 @@ mod tests {
                 body: "hello".to_string(),
                 thread_id: None,
                 priority: None,
+                injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 1,
             next_retry_at: Instant::now(),

@@ -180,6 +180,29 @@ describe('AgentRelayClient orchestration payloads', () => {
     );
   });
 
+  it('sendMessage forwards mode for injection behavior', async () => {
+    const client = new AgentRelayClient();
+    vi.spyOn(client, 'start').mockResolvedValue(undefined);
+    const requestOk = vi
+      .spyOn(client as any, 'requestOk')
+      .mockResolvedValue({ event_id: 'evt_mode', targets: ['worker'] });
+
+    await client.sendMessage({
+      to: 'worker',
+      text: 'urgent update',
+      mode: 'steer',
+    });
+
+    expect(requestOk).toHaveBeenCalledWith(
+      'send_message',
+      expect.objectContaining({
+        to: 'worker',
+        text: 'urgent update',
+        mode: 'steer',
+      })
+    );
+  });
+
   it('release forwards optional reason', async () => {
     const client = new AgentRelayClient();
     vi.spyOn(client, 'start').mockResolvedValue(undefined);

@@ -33,7 +33,14 @@ import {
   type SendMessageInput,
   type SpawnPtyInput,
 } from './client.js';
-import type { AgentRuntime, BrokerEvent, BrokerStatus, HeadlessProvider, RestartPolicy } from './protocol.js';
+import type {
+  AgentRuntime,
+  BrokerEvent,
+  BrokerStatus,
+  HeadlessProvider,
+  MessageInjectionMode,
+  RestartPolicy,
+} from './protocol.js';
 import {
   followLogs as followLogsFromFile,
   getLogs as getLogsFromFile,
@@ -49,7 +56,13 @@ function isUnsupportedOperation(error: unknown): error is AgentRelayProtocolErro
 
 function buildUnsupportedOperationMessage(
   from: string,
-  input: { to: string; text: string; threadId?: string; data?: Record<string, unknown> }
+  input: {
+    to: string;
+    text: string;
+    threadId?: string;
+    data?: Record<string, unknown>;
+    mode?: MessageInjectionMode;
+  }
 ): Message {
   return {
     eventId: 'unsupported_operation',
@@ -58,6 +71,7 @@ function buildUnsupportedOperationMessage(
     text: input.text,
     threadId: input.threadId,
     data: input.data,
+    mode: input.mode,
   };
 }
 
@@ -70,6 +84,7 @@ export interface Message {
   text: string;
   threadId?: string;
   data?: Record<string, unknown>;
+  mode?: MessageInjectionMode;
 }
 
 export type AgentStatus = 'spawning' | 'ready' | 'idle' | 'exited';
@@ -178,6 +193,7 @@ export interface Agent {
     threadId?: string;
     priority?: number;
     data?: Record<string, unknown>;
+    mode?: MessageInjectionMode;
   }): Promise<Message>;
   /** Register a callback for PTY output from this agent. Returns an unsubscribe function. */
   onOutput(callback: AgentOutputCallback): () => void;
@@ -191,6 +207,7 @@ export interface HumanHandle {
     threadId?: string;
     priority?: number;
     data?: Record<string, unknown>;
+    mode?: MessageInjectionMode;
   }): Promise<Message>;
 }
 
@@ -451,6 +468,7 @@ export class AgentRelay {
             threadId: input.threadId,
             priority: input.priority,
             data: input.data,
+            mode: input.mode,
           });
         } catch (error) {
           if (isUnsupportedOperation(error)) {
@@ -470,6 +488,7 @@ export class AgentRelay {
           text: input.text,
           threadId: input.threadId,
           data: input.data,
+          mode: input.mode,
         };
         this.onMessageSent?.(msg);
         return msg;
@@ -1230,6 +1249,7 @@ export class AgentRelay {
             threadId: input.threadId,
             priority: input.priority,
             data: input.data,
+            mode: input.mode,
           });
         } catch (error) {
           if (isUnsupportedOperation(error)) {
@@ -1248,6 +1268,7 @@ export class AgentRelay {
           text: input.text,
           threadId: input.threadId,
           data: input.data,
+          mode: input.mode,
         };
         relay.onMessageSent?.(msg);
         return msg;
