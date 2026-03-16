@@ -586,17 +586,26 @@ async fn listen_api_send(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let mode = match body
+    let mode_input = body
         .get("mode")
         .or_else(|| body.get("injectionMode"))
         .or_else(|| body.get("injection_mode"))
         .and_then(Value::as_str)
         .map(str::trim)
-        .map(|value| value.to_ascii_lowercase())
-        .as_deref()
-    {
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+    let mode = match mode_input.as_deref() {
+        Some("wait") | None => MessageInjectionMode::Wait,
         Some("steer") => MessageInjectionMode::Steer,
-        _ => MessageInjectionMode::Wait,
+        Some(other) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({
+                    "success": false,
+                    "error": format!("invalid mode '{other}'. expected 'wait' or 'steer'"),
+                })),
+            );
+        }
     };
     tracing::info!(
         target = "relay_broker::http_api",
@@ -1342,6 +1351,33 @@ mod auth_tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         send_replier.await.expect("send replier should complete");
+    }
+
+    #[tokio::test]
+    async fn send_route_rejects_invalid_mode() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/send")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "to": "worker-a", "text": "interrupt", "mode": "steeer" })
+                            .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            rx.try_recv().is_err(),
+            "invalid mode should not enqueue request"
+        );
     }
 
     #[tokio::test]
