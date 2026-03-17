@@ -16,7 +16,17 @@ This plugin connects Claude Code agents to [Agent Relay](https://agent-relay.com
 
 ### 1. Install the plugin
 
-Copy or symlink the plugin into your project:
+The easiest way to install is via the Claude Code plugin marketplace:
+
+```
+/plugin marketplace add Agentworkforce/relay
+```
+
+This downloads and configures the plugin automatically.
+
+**Alternative: manual install**
+
+If you prefer, you can copy or symlink the plugin into your project:
 
 ```bash
 cp -r plugins/claude-relay-plugin /path/to/your/project/.claude-plugin
