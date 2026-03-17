@@ -57,6 +57,9 @@ impl Spawner {
         cmd.arg("wrap").arg(&resolved_cli);
 
         // Inject MCP config for CLIs that support dynamic MCP configuration.
+        // Pass the original CLI name (not resolved_cli) so CLI-specific config
+        // logic is triggered correctly (e.g. "cursor" → cursor-specific MCP path).
+        // resolved_cli may differ (parse_cli_command maps "cursor" → "agent").
         let api_key = env_vars
             .iter()
             .find(|(k, _)| k == "RELAY_API_KEY")
@@ -67,7 +70,7 @@ impl Spawner {
             .map(|(_, v)| v.as_str());
         let cwd = std::env::current_dir().unwrap_or_default();
         let mcp_args = configure_relaycast_mcp_with_token(
-            &resolved_cli,
+            cli,
             child_name,
             api_key,
             base_url,

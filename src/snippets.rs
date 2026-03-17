@@ -286,13 +286,20 @@ fn merge_relaycast_with_project_mcp_inner(
     let mut servers = Map::new();
 
     // Collect MCP config paths in precedence order (lowest first).
-    // Later entries override earlier ones, matching Claude's own loading order.
+    // Later entries override earlier ones, matching Claude's own loading order:
+    //   1. ~/.claude/settings.json        (user-global)
+    //   2. ~/.claude/settings.local.json  (user-global local)
+    //   3. <cwd>/.mcp.json                (project legacy)
+    //   4. <cwd>/.claude/settings.json    (project)
+    //   5. <cwd>/.claude/settings.local.json (project local)
     let mut config_paths: Vec<std::path::PathBuf> = Vec::new();
     if let Some(home) = home {
         config_paths.push(home.join(".claude").join("settings.json"));
         config_paths.push(home.join(".claude").join("settings.local.json"));
     }
     config_paths.push(cwd.join(MCP_FILE));
+    config_paths.push(cwd.join(".claude").join("settings.json"));
+    config_paths.push(cwd.join(".claude").join("settings.local.json"));
 
     for path in &config_paths {
         if let Ok(content) = fs::read_to_string(path) {
@@ -405,6 +412,42 @@ fn relaycast_server_config(
     }
 
     Value::Object(server)
+}
+
+/// Inject RELAY_API_KEY into the relaycast server's env block within a merged
+/// MCP config JSON string.  The shared `relaycast_server_config()` omits it
+/// (codex strips API keys from .mcp.json env), but for Claude's inline
+/// `--mcp-config` arg this is safe and necessary — Claude Code does not
+/// reliably inherit parent process env vars into MCP server subprocesses.
+fn inject_api_key_into_mcp_json(mcp_json: &str, api_key: Option<&str>) -> String {
+    let api_key = match api_key.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(key) => key,
+        None => return mcp_json.to_string(),
+    };
+    let mut parsed: Value = match serde_json::from_str(mcp_json) {
+        Ok(v) => v,
+        Err(_) => return mcp_json.to_string(),
+    };
+    if let Some(env_obj) = parsed
+        .pointer_mut("/mcpServers/relaycast/env")
+        .and_then(Value::as_object_mut)
+    {
+        env_obj.insert(
+            "RELAY_API_KEY".into(),
+            Value::String(api_key.to_string()),
+        );
+    } else if let Some(server) = parsed
+        .pointer_mut("/mcpServers/relaycast")
+        .and_then(Value::as_object_mut)
+    {
+        let mut env_map = Map::new();
+        env_map.insert(
+            "RELAY_API_KEY".into(),
+            Value::String(api_key.to_string()),
+        );
+        server.insert("env".into(), Value::Object(env_map));
+    }
+    serde_json::to_string(&parsed).unwrap_or_else(|_| mcp_json.to_string())
 }
 
 const OPENCODE_CONFIG: &str = "opencode.json";
@@ -688,6 +731,12 @@ pub async fn configure_relaycast_mcp_with_token(
         // broker-injected credentials.
         let mcp_json =
             merge_relaycast_with_project_mcp(api_key, base_url, Some(agent_name), agent_token, cwd);
+        // Claude Code does not reliably pass parent process env vars to MCP server
+        // subprocesses when using --mcp-config + --strict-mcp-config, so RELAY_API_KEY
+        // must be injected directly into the config (same approach as Cursor, see below).
+        // The shared relaycast_server_config() omits it because codex strips API keys
+        // from .mcp.json env, but --mcp-config is an inline JSON arg, not .mcp.json.
+        let mcp_json = inject_api_key_into_mcp_json(&mcp_json, api_key);
         args.push("--mcp-config".to_string());
         args.push(mcp_json);
         // Use strict mode so only the merged config is used (no double-loading
@@ -1465,7 +1514,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
     }
 
     #[tokio::test]
-    async fn claude_omits_api_key_from_mcp_config() {
+    async fn claude_includes_api_key_in_mcp_config() {
         let temp = tempdir().expect("tempdir");
         let args = super::configure_relaycast_mcp(
             "claude",
@@ -1481,8 +1530,9 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
         assert_eq!(
             json["mcpServers"]["relaycast"]["env"]["RELAY_API_KEY"].as_str(),
-            None,
-            "RELAY_API_KEY must not appear in Claude --mcp-config"
+            Some("rk_live_secret"),
+            "RELAY_API_KEY must appear in Claude --mcp-config (Claude Code does not reliably \
+             inherit parent env vars to MCP server subprocesses)"
         );
     }
 
@@ -2512,6 +2562,12 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         assert_eq!(
             servers["relaycast"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
             Some("tok_abc")
+        );
+        // RELAY_API_KEY is injected for Claude (not omitted like for .mcp.json)
+        assert_eq!(
+            servers["relaycast"]["env"]["RELAY_API_KEY"].as_str(),
+            Some("rk_live_test"),
+            "RELAY_API_KEY must be present in Claude --mcp-config"
         );
     }
 
