@@ -11,6 +11,7 @@ export {
   CLIs,
   CLIVersions,
   CLIRegistry,
+  ReasoningEfforts,
   // Model constants
   ClaudeModels,
   CodexModels,
@@ -23,7 +24,11 @@ export {
   CODEX_MODEL_OPTIONS,
   GEMINI_MODEL_OPTIONS,
   CURSOR_MODEL_OPTIONS,
+  ModelMetadata,
   ModelOptions,
+  getDefaultReasoningEffort,
+  getModelMetadata,
+  getSupportedReasoningEfforts,
   // Swarm patterns (type is in workflows/types.ts)
   SwarmPatterns,
   // Types
@@ -33,4 +38,5 @@ export {
   type GeminiModel,
   type CursorModel,
   type ModelOption,
+  type ReasoningEffort,
 } from '@agent-relay/config';

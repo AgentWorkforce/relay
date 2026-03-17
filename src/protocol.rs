@@ -266,6 +266,10 @@ pub enum BrokerToWorker {
     Ping {
         ts_ms: u64,
     },
+    ResizePty {
+        rows: u16,
+        cols: u16,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -476,5 +480,22 @@ mod tests {
         let encoded = serde_json::to_string(&spec).unwrap();
         let decoded: AgentSpec = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.provider, Some(HeadlessProvider::Opencode));
+    }
+
+    #[test]
+    fn broker_to_worker_resize_pty_round_trip() {
+        let msg = BrokerToWorker::ResizePty {
+            rows: 40,
+            cols: 120,
+        };
+        let encoded = serde_json::to_string(&msg).unwrap();
+        let decoded: BrokerToWorker = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+
+        // Verify wire format uses snake_case tag
+        let raw: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(raw["type"], "resize_pty");
+        assert_eq!(raw["payload"]["rows"], 40);
+        assert_eq!(raw["payload"]["cols"], 120);
     }
 }

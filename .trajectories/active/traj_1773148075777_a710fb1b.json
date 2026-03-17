@@ -1,0 +1,48 @@
+{
+  "id": "traj_1773148075777_a710fb1b",
+  "version": 1,
+  "task": {
+    "title": "test-force-release run #e2a54a64",
+    "source": {
+      "system": "workflow-runner",
+      "id": "e2a54a647d51b01453059568"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-03-10T13:07:55.777Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-10T13:07:55.777Z"
+    },
+    {
+      "name": "idle-worker",
+      "role": "specialist",
+      "joinedAt": "2026-03-10T13:07:59.239Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_310b1c03",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-10T13:07:55.777Z",
+      "events": [
+        {
+          "ts": 1773148075777,
+          "type": "note",
+          "content": "Approach: 1-step sequential workflow — Parsed 1 steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1773148079242,
+          "type": "note",
+          "content": "\"idle-step\": Just sit here",
+          "raw": {
+            "agent": "idle-worker"
+          }
+        }
+      ]
+    }
+  ]
+}

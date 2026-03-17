@@ -561,6 +561,13 @@ struct SendInputPayload {
 }
 
 #[derive(Debug, Deserialize)]
+struct ResizePtyPayload {
+    name: String,
+    rows: u16,
+    cols: u16,
+}
+
+#[derive(Debug, Deserialize)]
 struct SetModelPayload {
     name: String,
     model: String,
@@ -4348,7 +4355,7 @@ async fn handle_sdk_frame(
                     send_error(
                         out_tx,
                         frame.request_id,
-                        "unsupported_operation",
+                        "steer_not_supported",
                         "mode=steer is only supported for local PTY delivery; target was relaycast-only"
                             .to_string(),
                         false,
@@ -4465,6 +4472,76 @@ async fn handle_sdk_frame(
                 json!({
                     "name": payload.name,
                     "bytes_written": bytes.len(),
+                }),
+            )
+            .await?;
+            Ok(false)
+        }
+        "resize_pty" => {
+            let payload: ResizePtyPayload = serde_json::from_value(frame.payload)
+                .context("resize_pty payload must contain `name`, `rows`, and `cols`")?;
+
+            if payload.rows == 0 || payload.cols == 0 {
+                send_error(
+                    out_tx,
+                    frame.request_id,
+                    "invalid_dimensions",
+                    "rows and cols must be >= 1".to_string(),
+                    false,
+                    None,
+                )
+                .await?;
+                return Ok(false);
+            }
+
+            let Some(handle) = workers.workers.get(&payload.name) else {
+                send_error(
+                    out_tx,
+                    frame.request_id,
+                    "agent_not_found",
+                    format!("unknown worker '{}'", payload.name),
+                    false,
+                    None,
+                )
+                .await?;
+                return Ok(false);
+            };
+
+            if handle.spec.runtime != AgentRuntime::Pty {
+                send_error(
+                    out_tx,
+                    frame.request_id,
+                    "unsupported_operation",
+                    format!(
+                        "resize_pty is only supported for PTY agents, '{}' is {:?}",
+                        payload.name, handle.spec.runtime
+                    ),
+                    false,
+                    None,
+                )
+                .await?;
+                return Ok(false);
+            }
+
+            workers
+                .send_to_worker(
+                    &payload.name,
+                    "resize_pty",
+                    None,
+                    json!({
+                        "rows": payload.rows,
+                        "cols": payload.cols,
+                    }),
+                )
+                .await?;
+
+            send_ok(
+                out_tx,
+                frame.request_id,
+                json!({
+                    "name": payload.name,
+                    "rows": payload.rows,
+                    "cols": payload.cols,
                 }),
             )
             .await?;

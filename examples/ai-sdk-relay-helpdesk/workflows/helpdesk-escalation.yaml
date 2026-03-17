@@ -1,0 +1,55 @@
+version: '1.0'
+name: helpdesk-escalation
+swarm:
+  pattern: hub-spoke
+  channel: wf-helpdesk-escalation
+  maxConcurrency: 2
+agents:
+  - name: lead
+    cli: claude
+    role: Customer-facing helpdesk lead. Keeps the final answer crisp.
+  - name: specialist
+    cli: codex
+    role: Technical implementation specialist. Produces the concrete plan.
+  - name: reviewer
+    cli: claude
+    role: Reviews the plan for completeness and user clarity.
+workflows:
+  - name: helpdesk-escalation
+    description: Escalated support or implementation request handled by a lead, specialist, and reviewer.
+    steps:
+      - name: scope
+        agent: lead
+        task: |
+          Review the user request below and turn it into a compact execution brief.
+
+          User request:
+          {{request}}
+
+          Post a short status update to the workflow channel, then output /exit.
+      - name: plan
+        agent: specialist
+        dependsOn: [scope]
+        task: |
+          Create a concrete plan for this escalated request:
+          {{steps.scope.output}}
+
+          Include:
+          - likely files or systems involved
+          - risks and unknowns
+          - the smallest useful next step
+
+          When done, output /exit.
+      - name: review
+        agent: reviewer
+        dependsOn: [plan]
+        task: |
+          Review the proposed plan for clarity, missing risks, and whether it is ready to send back to the user.
+
+          Plan:
+          {{steps.plan.output}}
+
+          If acceptable, say Approved and output /exit.
+        verification:
+          type: exit_code
+          value: '0'

@@ -1,0 +1,53 @@
+{
+  "id": "traj_1773150874252_08ec23ea",
+  "version": 1,
+  "task": {
+    "title": "test run #ebaecc98",
+    "source": {
+      "system": "workflow-runner",
+      "id": "ebaecc98b1200ac4d1eaf96c"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-03-10T13:54:34.252Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-10T13:54:34.252Z"
+    },
+    {
+      "name": "coder",
+      "role": "specialist",
+      "joinedAt": "2026-03-10T13:54:38.105Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_6a7dbabc",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-10T13:54:34.252Z",
+      "events": [
+        {
+          "ts": 1773150874252,
+          "type": "note",
+          "content": "Purpose: Simple test to verify PTY output streaming works end-to-end"
+        },
+        {
+          "ts": 1773150874252,
+          "type": "note",
+          "content": "Approach: 1-step sequential workflow — Parsed 1 steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1773150878108,
+          "type": "note",
+          "content": "\"generate-code\": Create a file at /tmp/pty-stream-test.ts with a simple TypeScript",
+          "raw": {
+            "agent": "coder"
+          }
+        }
+      ]
+    }
+  ]
+}

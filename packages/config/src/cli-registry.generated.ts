@@ -318,10 +318,22 @@ export const OpencodeModels = {
 
 export type OpencodeModel = (typeof OpencodeModels)[keyof typeof OpencodeModels];
 
-/** Model option type for UI dropdowns */
+/** Reasoning effort levels supported by model providers. */
+export const ReasoningEfforts = {
+  LOW: 'low',
+  MEDIUM: 'medium',
+  HIGH: 'high',
+  XHIGH: 'xhigh',
+} as const;
+
+export type ReasoningEffort = (typeof ReasoningEfforts)[keyof typeof ReasoningEfforts];
+
+/** Model option type for UI dropdowns and model capability metadata. */
 export interface ModelOption {
   value: string;
   label: string;
+  reasoningEfforts?: ReasoningEffort[];
+  defaultReasoningEffort?: ReasoningEffort;
 }
 
 /**
@@ -337,13 +349,13 @@ export const CLAUDE_MODEL_OPTIONS: ModelOption[] = [
  * Codex CLI model options for UI dropdowns.
  */
 export const CODEX_MODEL_OPTIONS: ModelOption[] = [
-  { value: 'gpt-5.4', label: 'GPT-5.4 — Latest frontier agentic coding model' },
-  { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex — Frontier agentic coding model' },
-  { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark — Ultra-fast coding model' },
-  { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex — Frontier agentic coding model' },
-  { value: 'gpt-5.2', label: 'GPT-5.2 — Frontier model, knowledge & reasoning' },
-  { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max — Deep and fast reasoning' },
-  { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini — Cheaper, faster' },
+  { value: 'gpt-5.4', label: 'GPT-5.4 — Latest frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark — Ultra-fast coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  { value: 'gpt-5.2', label: 'GPT-5.2 — Frontier model, knowledge & reasoning', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max — Deep and fast reasoning', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini — Cheaper, faster', reasoningEfforts: ["medium","high"], defaultReasoningEffort: 'high' },
 ];
 
 /**
@@ -473,6 +485,154 @@ export const OPENCODE_MODEL_OPTIONS: ModelOption[] = [
 ];
 
 /**
+ * Claude Code model metadata keyed by model id.
+ */
+export const CLAUDE_MODEL_METADATA: Record<ClaudeModel, ModelOption> = {
+  'sonnet': { value: 'sonnet', label: 'Sonnet' },
+  'opus': { value: 'opus', label: 'Opus' },
+  'haiku': { value: 'haiku', label: 'Haiku' },
+};
+
+/**
+ * Codex CLI model metadata keyed by model id.
+ */
+export const CODEX_MODEL_METADATA: Record<CodexModel, ModelOption> = {
+  'gpt-5.4': { value: 'gpt-5.4', label: 'GPT-5.4 — Latest frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  'gpt-5.3-codex': { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  'gpt-5.3-codex-spark': { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark — Ultra-fast coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  'gpt-5.2-codex': { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  'gpt-5.2': { value: 'gpt-5.2', label: 'GPT-5.2 — Frontier model, knowledge & reasoning', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  'gpt-5.1-codex-max': { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max — Deep and fast reasoning', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  'gpt-5.1-codex-mini': { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini — Cheaper, faster', reasoningEfforts: ["medium","high"], defaultReasoningEffort: 'high' },
+};
+
+/**
+ * Gemini CLI model metadata keyed by model id.
+ */
+export const GEMINI_MODEL_METADATA: Record<GeminiModel, ModelOption> = {
+  'gemini-3.1-pro-preview': { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview' },
+  'gemini-3-flash-preview': { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash Preview' },
+  'gemini-2.5-pro': { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+  'gemini-2.5-flash': { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+  'gemini-2.5-flash-lite': { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite' },
+};
+
+/**
+ * Cursor model metadata keyed by model id.
+ */
+export const CURSOR_MODEL_METADATA: Record<CursorModel, ModelOption> = {
+  'opus-4.6-thinking': { value: 'opus-4.6-thinking', label: 'Claude 4.6 Opus (Thinking)' },
+  'opus-4.6': { value: 'opus-4.6', label: 'Claude 4.6 Opus' },
+  'opus-4.5': { value: 'opus-4.5', label: 'Claude 4.5 Opus' },
+  'opus-4.5-thinking': { value: 'opus-4.5-thinking', label: 'Claude 4.5 Opus (Thinking)' },
+  'sonnet-4.6': { value: 'sonnet-4.6', label: 'Claude 4.6 Sonnet' },
+  'sonnet-4.6-thinking': { value: 'sonnet-4.6-thinking', label: 'Claude 4.6 Sonnet (Thinking)' },
+  'sonnet-4.5': { value: 'sonnet-4.5', label: 'Claude 4.5 Sonnet' },
+  'sonnet-4.5-thinking': { value: 'sonnet-4.5-thinking', label: 'Claude 4.5 Sonnet (Thinking)' },
+  'composer-1.5': { value: 'composer-1.5', label: 'Composer 1.5' },
+  'composer-1': { value: 'composer-1', label: 'Composer 1' },
+  'gpt-5.4-xhigh': { value: 'gpt-5.4-xhigh', label: 'GPT-5.4 Extra High' },
+  'gpt-5.4-xhigh-fast': { value: 'gpt-5.4-xhigh-fast', label: 'GPT-5.4 Extra High Fast' },
+  'gpt-5.4-high': { value: 'gpt-5.4-high', label: 'GPT-5.4 High' },
+  'gpt-5.4-high-fast': { value: 'gpt-5.4-high-fast', label: 'GPT-5.4 High Fast' },
+  'gpt-5.4-medium': { value: 'gpt-5.4-medium', label: 'GPT-5.4' },
+  'gpt-5.4-medium-fast': { value: 'gpt-5.4-medium-fast', label: 'GPT-5.4 Fast' },
+  'gpt-5.4-low': { value: 'gpt-5.4-low', label: 'GPT-5.4 Low' },
+  'gpt-5.3-codex-xhigh': { value: 'gpt-5.3-codex-xhigh', label: 'GPT-5.3 Codex Extra High' },
+  'gpt-5.3-codex-xhigh-fast': { value: 'gpt-5.3-codex-xhigh-fast', label: 'GPT-5.3 Codex Extra High Fast' },
+  'gpt-5.3-codex-high': { value: 'gpt-5.3-codex-high', label: 'GPT-5.3 Codex High' },
+  'gpt-5.3-codex-high-fast': { value: 'gpt-5.3-codex-high-fast', label: 'GPT-5.3 Codex High Fast' },
+  'gpt-5.3-codex': { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+  'gpt-5.3-codex-fast': { value: 'gpt-5.3-codex-fast', label: 'GPT-5.3 Codex Fast' },
+  'gpt-5.3-codex-low': { value: 'gpt-5.3-codex-low', label: 'GPT-5.3 Codex Low' },
+  'gpt-5.3-codex-low-fast': { value: 'gpt-5.3-codex-low-fast', label: 'GPT-5.3 Codex Low Fast' },
+  'gpt-5.3-codex-spark-preview': { value: 'gpt-5.3-codex-spark-preview', label: 'GPT-5.3 Codex Spark' },
+  'gpt-5.2-codex-xhigh': { value: 'gpt-5.2-codex-xhigh', label: 'GPT-5.2 Codex Extra High' },
+  'gpt-5.2-codex-xhigh-fast': { value: 'gpt-5.2-codex-xhigh-fast', label: 'GPT-5.2 Codex Extra High Fast' },
+  'gpt-5.2-codex-high': { value: 'gpt-5.2-codex-high', label: 'GPT-5.2 Codex High' },
+  'gpt-5.2-codex-high-fast': { value: 'gpt-5.2-codex-high-fast', label: 'GPT-5.2 Codex High Fast' },
+  'gpt-5.2-codex': { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
+  'gpt-5.2-codex-fast': { value: 'gpt-5.2-codex-fast', label: 'GPT-5.2 Codex Fast' },
+  'gpt-5.2-codex-low': { value: 'gpt-5.2-codex-low', label: 'GPT-5.2 Codex Low' },
+  'gpt-5.2-codex-low-fast': { value: 'gpt-5.2-codex-low-fast', label: 'GPT-5.2 Codex Low Fast' },
+  'gpt-5.2': { value: 'gpt-5.2', label: 'GPT-5.2' },
+  'gpt-5.2-high': { value: 'gpt-5.2-high', label: 'GPT-5.2 High' },
+  'gpt-5.1-codex-max': { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
+  'gpt-5.1-codex-max-high': { value: 'gpt-5.1-codex-max-high', label: 'GPT-5.1 Codex Max High' },
+  'gpt-5.1-codex-mini': { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini' },
+  'gpt-5.1-high': { value: 'gpt-5.1-high', label: 'GPT-5.1 High' },
+  'gemini-3.1-pro': { value: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
+  'gemini-3-pro': { value: 'gemini-3-pro', label: 'Gemini 3 Pro' },
+  'gemini-3-flash': { value: 'gemini-3-flash', label: 'Gemini 3 Flash' },
+  'grok': { value: 'grok', label: 'Grok' },
+  'kimi-k2.5': { value: 'kimi-k2.5', label: 'Kimi K2.5' },
+};
+
+/**
+ * Droid model metadata keyed by model id.
+ */
+export const DROID_MODEL_METADATA: Record<DroidModel, ModelOption> = {
+  'opus-4.6-fast': { value: 'opus-4.6-fast', label: 'Opus 4.6 Fast Mode (12x)' },
+  'opus-4.5': { value: 'opus-4.5', label: 'Opus 4.5 (2x)' },
+  'sonnet-4.5': { value: 'sonnet-4.5', label: 'Sonnet 4.5 (1.2x)' },
+  'haiku-4.5': { value: 'haiku-4.5', label: 'Haiku 4.5 (0.4x)' },
+  'gpt-5.2': { value: 'gpt-5.2', label: 'GPT-5.2 (0.7x)' },
+  'gpt-5.2-codex': { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex (0.7x)' },
+  'gemini-3-flash': { value: 'gemini-3-flash', label: 'Gemini 3 Flash (0.2x)' },
+  'droid-core-glm-4.7': { value: 'droid-core-glm-4.7', label: 'Droid Core (GLM-4.7) (0.25x)' },
+};
+
+/**
+ * OpenCode model metadata keyed by model id.
+ */
+export const OPENCODE_MODEL_METADATA: Record<OpencodeModel, ModelOption> = {
+  'opencode/big-pickle': { value: 'opencode/big-pickle', label: 'Big Pickle' },
+  'opencode/gpt-5-nano': { value: 'opencode/gpt-5-nano', label: 'GPT-5 Nano (OpenCode)' },
+  'opencode/mimo-v2-flash-free': { value: 'opencode/mimo-v2-flash-free', label: 'Mimo V2 Flash Free' },
+  'opencode/minimax-m2.5-free': { value: 'opencode/minimax-m2.5-free', label: 'MiniMax M2.5 Free' },
+  'openai/codex-mini-latest': { value: 'openai/codex-mini-latest', label: 'Codex Mini Latest' },
+  'openai/gpt-3.5-turbo': { value: 'openai/gpt-3.5-turbo', label: 'GPT-3.5 Turbo' },
+  'openai/gpt-4': { value: 'openai/gpt-4', label: 'GPT-4' },
+  'openai/gpt-4-turbo': { value: 'openai/gpt-4-turbo', label: 'GPT-4 Turbo' },
+  'openai/gpt-4.1': { value: 'openai/gpt-4.1', label: 'GPT-4.1' },
+  'openai/gpt-4.1-mini': { value: 'openai/gpt-4.1-mini', label: 'GPT-4.1 Mini' },
+  'openai/gpt-4.1-nano': { value: 'openai/gpt-4.1-nano', label: 'GPT-4.1 Nano' },
+  'openai/gpt-4o': { value: 'openai/gpt-4o', label: 'GPT-4o' },
+  'openai/gpt-4o-2024-05-13': { value: 'openai/gpt-4o-2024-05-13', label: 'GPT-4o (2024-05-13)' },
+  'openai/gpt-4o-2024-08-06': { value: 'openai/gpt-4o-2024-08-06', label: 'GPT-4o (2024-08-06)' },
+  'openai/gpt-4o-2024-11-20': { value: 'openai/gpt-4o-2024-11-20', label: 'GPT-4o (2024-11-20)' },
+  'openai/gpt-4o-mini': { value: 'openai/gpt-4o-mini', label: 'GPT-4o Mini' },
+  'openai/gpt-5': { value: 'openai/gpt-5', label: 'GPT-5' },
+  'openai/gpt-5-codex': { value: 'openai/gpt-5-codex', label: 'GPT-5 Codex' },
+  'openai/gpt-5-mini': { value: 'openai/gpt-5-mini', label: 'GPT-5 Mini' },
+  'openai/gpt-5-nano': { value: 'openai/gpt-5-nano', label: 'GPT-5 Nano' },
+  'openai/gpt-5-pro': { value: 'openai/gpt-5-pro', label: 'GPT-5 Pro' },
+  'openai/gpt-5.1': { value: 'openai/gpt-5.1', label: 'GPT-5.1' },
+  'openai/gpt-5.1-chat-latest': { value: 'openai/gpt-5.1-chat-latest', label: 'GPT-5.1 Chat Latest' },
+  'openai/gpt-5.1-codex': { value: 'openai/gpt-5.1-codex', label: 'GPT-5.1 Codex' },
+  'openai/gpt-5.1-codex-max': { value: 'openai/gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
+  'openai/gpt-5.1-codex-mini': { value: 'openai/gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini' },
+  'openai/gpt-5.2': { value: 'openai/gpt-5.2', label: 'GPT-5.2' },
+  'openai/gpt-5.2-chat-latest': { value: 'openai/gpt-5.2-chat-latest', label: 'GPT-5.2 Chat Latest' },
+  'openai/gpt-5.2-codex': { value: 'openai/gpt-5.2-codex', label: 'GPT-5.2 Codex' },
+  'openai/gpt-5.2-pro': { value: 'openai/gpt-5.2-pro', label: 'GPT-5.2 Pro' },
+  'openai/gpt-5.3-codex': { value: 'openai/gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+  'openai/gpt-5.3-codex-spark': { value: 'openai/gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
+  'openai/gpt-5.4': { value: 'openai/gpt-5.4', label: 'GPT-5.4' },
+  'openai/gpt-5.4-pro': { value: 'openai/gpt-5.4-pro', label: 'GPT-5.4 Pro' },
+  'openai/o1': { value: 'openai/o1', label: 'O1' },
+  'openai/o1-mini': { value: 'openai/o1-mini', label: 'O1 Mini' },
+  'openai/o1-preview': { value: 'openai/o1-preview', label: 'O1 Preview' },
+  'openai/o1-pro': { value: 'openai/o1-pro', label: 'O1 Pro' },
+  'openai/o3': { value: 'openai/o3', label: 'O3' },
+  'openai/o3-deep-research': { value: 'openai/o3-deep-research', label: 'O3 Deep Research' },
+  'openai/o3-mini': { value: 'openai/o3-mini', label: 'O3 Mini' },
+  'openai/o3-pro': { value: 'openai/o3-pro', label: 'O3 Pro' },
+  'openai/o4-mini': { value: 'openai/o4-mini', label: 'O4 Mini' },
+  'openai/o4-mini-deep-research': { value: 'openai/o4-mini-deep-research', label: 'O4 Mini Deep Research' },
+};
+
+/**
  * All models grouped by CLI tool.
  *
  * @example
@@ -512,6 +672,56 @@ export const ModelOptions = {
   Droid: DROID_MODEL_OPTIONS,
   Opencode: OPENCODE_MODEL_OPTIONS,
 } as const;
+
+/**
+ * All model metadata grouped by CLI tool and keyed by model id.
+ */
+export const ModelMetadata = {
+  Claude: CLAUDE_MODEL_METADATA,
+  Codex: CODEX_MODEL_METADATA,
+  Gemini: GEMINI_MODEL_METADATA,
+  Cursor: CURSOR_MODEL_METADATA,
+  Droid: DROID_MODEL_METADATA,
+  Opencode: OPENCODE_MODEL_METADATA,
+} as const;
+
+const MODEL_METADATA_BY_CLI: Record<CLI, Record<string, ModelOption>> = {
+  claude: CLAUDE_MODEL_METADATA,
+  codex: CODEX_MODEL_METADATA,
+  gemini: GEMINI_MODEL_METADATA,
+  cursor: CURSOR_MODEL_METADATA,
+  droid: DROID_MODEL_METADATA,
+  opencode: OPENCODE_MODEL_METADATA,
+  aider: {},
+  goose: {},
+};
+
+/**
+ * Look up metadata for a specific CLI/model pair.
+ */
+export function getModelMetadata(cli: CLI, model: string): ModelOption | undefined {
+  return MODEL_METADATA_BY_CLI[cli]?.[model];
+}
+
+/**
+ * Supported reasoning effort values for a specific CLI/model pair.
+ */
+export function getSupportedReasoningEfforts(
+  cli: CLI,
+  model: string
+): ReasoningEffort[] | undefined {
+  return getModelMetadata(cli, model)?.reasoningEfforts;
+}
+
+/**
+ * Default reasoning effort for a specific CLI/model pair.
+ */
+export function getDefaultReasoningEffort(
+  cli: CLI,
+  model: string
+): ReasoningEffort | undefined {
+  return getModelMetadata(cli, model)?.defaultReasoningEffort;
+}
 
 /**
  * Swarm patterns for multi-agent workflows.

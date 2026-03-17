@@ -1,0 +1,108 @@
+{
+  "id": "traj_1773303582218_b8e9a399",
+  "version": 1,
+  "task": {
+    "title": "codex-failure",
+    "source": {
+      "system": "workflow-runner",
+      "id": "a817ac1b0c8054a6f025d506"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-03-12T08:19:42.218Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-12T08:19:42.218Z"
+    },
+    {
+      "name": "codex-fail",
+      "role": "specialist",
+      "joinedAt": "2026-03-12T08:19:46.559Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_652edbe4",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-12T08:19:42.218Z",
+      "events": [
+        {
+          "ts": 1773303582218,
+          "type": "note",
+          "content": "Purpose: Intentional failure case to verify workflow failure handling."
+        },
+        {
+          "ts": 1773303582218,
+          "type": "note",
+          "content": "Approach: 1-step pipeline workflow — Parsed 1 steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-12T08:19:46.562Z"
+    },
+    {
+      "id": "ch_613ede5d",
+      "title": "Execution: fail-step",
+      "agentName": "codex-fail",
+      "startedAt": "2026-03-12T08:19:46.562Z",
+      "events": [
+        {
+          "ts": 1773303586562,
+          "type": "note",
+          "content": "\"fail-step\": Output exactly THIS_WILL_NOT_MATCH",
+          "raw": {
+            "agent": "codex-fail"
+          }
+        },
+        {
+          "ts": 1773303592610,
+          "type": "error",
+          "content": "\"fail-step\" failed [verification_mismatch]: Agent completed but did not output the expected sentinel \"EXPECTED_SENTINEL\". The task prompt may not clearly specify the required output format, or the agent produced correct work but did not emit the signal.",
+          "significance": "high",
+          "raw": {
+            "cause": "verification_mismatch",
+            "rawError": "Verification failed for \"fail-step\": output does not contain \"EXPECTED_SENTINEL\"",
+            "attempt": 1,
+            "maxRetries": 0
+          }
+        }
+      ],
+      "endedAt": "2026-03-12T08:19:52.614Z"
+    },
+    {
+      "id": "ch_a8f254eb",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-12T08:19:52.614Z",
+      "events": [
+        {
+          "ts": 1773303592614,
+          "type": "reflection",
+          "content": "Failed at \"fail-step\" [verification_mismatch] after 10s. 0/1 steps completed before failure. (abandoned after 10 seconds)",
+          "significance": "high"
+        },
+        {
+          "ts": 1773303592614,
+          "type": "error",
+          "content": "Workflow abandoned: Step \"fail-step\" failed: Step \"fail-step\" failed after 0 retries: Verification failed for \"fail-step\": output does not contain \"EXPECTED_SENTINEL\"",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-12T08:19:52.614Z"
+    }
+  ],
+  "completedAt": "2026-03-12T08:19:52.614Z",
+  "retrospective": {
+    "summary": "Failed at \"fail-step\" [verification_mismatch] after 10s. 0/1 steps completed before failure.",
+    "approach": "pipeline workflow (1 agents)",
+    "confidence": 0,
+    "learnings": [
+      "Verification mismatch on: \"fail-step\" (expected \"?\"). Make the required output format more explicit in the task prompt."
+    ],
+    "challenges": [
+      "Agent completed but did not output the expected sentinel \"(unknown)\". The task prompt may not clearly specify the required output format, or the agent produced correct work but did not emit the signal."
+    ]
+  }
+}

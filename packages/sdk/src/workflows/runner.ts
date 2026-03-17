@@ -59,6 +59,7 @@ import type {
   WorkflowRunRow,
   WorkflowRunStatus,
   WorkflowStep,
+  WorkflowExecuteOptions,
   WorkflowStepCompletionReason,
   WorkflowStepRow,
   WorkflowStepStatus,
@@ -1778,7 +1779,8 @@ export class WorkflowRunner {
   async execute(
     config: RelayYamlConfig,
     workflowName?: string,
-    vars?: VariableContext
+    vars?: VariableContext,
+    executeOptions?: WorkflowExecuteOptions
   ): Promise<WorkflowRunRow> {
     // Set up abort controller early so callers can abort() even during setup
     this.abortController = new AbortController();
@@ -1859,6 +1861,49 @@ export class WorkflowRunner {
       };
       await this.db.insertStep(stepRow);
       stepStates.set(step.name, { row: stepRow });
+    }
+
+    // Handle startFrom: skip all transitive dependencies of the target step
+    if (executeOptions?.startFrom) {
+      const startFromName = executeOptions.startFrom;
+      const stepNames = new Set(resolvedWorkflow.steps.map((s) => s.name));
+      if (!stepNames.has(startFromName)) {
+        throw new Error(
+          `startFrom step "${startFromName}" not found in workflow. Available steps: ${[...stepNames].join(', ')}`
+        );
+      }
+
+      const transitiveDeps = this.collectTransitiveDeps(startFromName, resolvedWorkflow.steps);
+      const skippedCount = transitiveDeps.size;
+
+      // Determine which run ID to load cached outputs from
+      const cacheRunId = executeOptions.previousRunId
+        ?? this.findMostRecentRunWithSteps(transitiveDeps);
+
+      for (const depName of transitiveDeps) {
+        const state = stepStates.get(depName);
+        if (!state) continue;
+
+        // Load cached output from a previous run if available
+        const cachedOutput = cacheRunId ? this.loadStepOutput(cacheRunId, depName) : undefined;
+        if (!cachedOutput) {
+          this.log(`[startFrom] No cached output for skipped step "${depName}" — using empty string`);
+        }
+
+        state.row.status = 'completed';
+        state.row.output = cachedOutput ?? '';
+        state.row.completedAt = now;
+        await this.db.updateStep(state.row.id, {
+          status: 'completed',
+          output: state.row.output,
+          completedAt: now,
+          updatedAt: now,
+        });
+      }
+
+      if (skippedCount > 0) {
+        this.log(`[startFrom] Skipping ${skippedCount} steps, starting from "${startFromName}"`);
+      }
     }
 
     return this.runWorkflowCore({
@@ -5719,6 +5764,35 @@ export class WorkflowRunner {
     }
   }
 
+  // ── startFrom dependency resolution ─────────────────────────────────
+
+  /**
+   * Walk the dependsOn graph backwards from a target step to collect ALL
+   * transitive dependencies (i.e. every step that must complete before
+   * the target step can run). The target step itself is NOT included.
+   */
+  private collectTransitiveDeps(targetStep: string, steps: WorkflowStep[]): Set<string> {
+    const stepMap = new Map<string, WorkflowStep>();
+    for (const s of steps) stepMap.set(s.name, s);
+
+    const deps = new Set<string>();
+    const queue = [...(stepMap.get(targetStep)?.dependsOn ?? [])];
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (deps.has(current)) continue;
+      deps.add(current);
+      const step = stepMap.get(current);
+      if (step?.dependsOn) {
+        for (const dep of step.dependsOn) {
+          if (!deps.has(dep)) queue.push(dep);
+        }
+      }
+    }
+
+    return deps;
+  }
+
   // ── Control flow helpers ──────────────────────────────────────────────
 
   private checkAborted(): void {
@@ -6201,6 +6275,41 @@ export class WorkflowRunner {
     const maxMsg = 2000;
     const preview = scrubbed.length > maxMsg ? scrubbed.slice(-maxMsg) : scrubbed;
     this.postToChannel(`**[${stepName}] Output:**\n\`\`\`\n${preview}\n\`\`\``, { stepName });
+  }
+
+  /** Scan .agent-relay/step-outputs/ for the most recent run directory containing the needed steps. */
+  private findMostRecentRunWithSteps(stepNames: Set<string>): string | undefined {
+    try {
+      const baseDir = path.join(this.cwd, '.agent-relay', 'step-outputs');
+      if (!existsSync(baseDir)) return undefined;
+
+      const entries = readdirSync(baseDir);
+      let best: { name: string; mtime: number } | undefined;
+
+      for (const entry of entries) {
+        const dirPath = path.join(baseDir, entry);
+        try {
+          const stat = statSync(dirPath);
+          if (!stat.isDirectory()) continue;
+
+          // Check if this directory has at least one of the needed step files
+          const hasAny = [...stepNames].some(name =>
+            existsSync(path.join(dirPath, `${name}.md`))
+          );
+          if (!hasAny) continue;
+
+          if (!best || stat.mtimeMs > best.mtime) {
+            best = { name: entry, mtime: stat.mtimeMs };
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      return best?.name;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Load persisted step output from disk. */
