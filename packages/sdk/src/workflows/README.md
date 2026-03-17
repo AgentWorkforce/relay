@@ -67,6 +67,61 @@ result = (
 )
 ```
 
+## Consumer-Facing Apps + AI SDK Communicate Flows
+
+A good production split is:
+
+1. **AI SDK app** handles the user conversation and streaming UI
+2. **Communicate / `onRelay()`** lets that point-person coordinate with specialists over Relay
+3. **Workflows / `runWorkflow()`** take over when a request needs multi-step execution, verification, or handoffs
+
+```typescript
+import { streamText, wrapLanguageModel } from 'ai';
+import { openai } from '@ai-sdk/openai';
+import { Relay } from '@agent-relay/sdk/communicate';
+import { onRelay } from '@agent-relay/sdk/communicate/adapters/ai-sdk';
+import { runWorkflow } from '@agent-relay/sdk/workflows';
+
+export async function POST(req: Request) {
+  const { prompt, escalate, repo } = await req.json();
+
+  const relay = new Relay('AppLead');
+  const relaySession = onRelay({
+    name: 'AppLead',
+    instructions: 'You are the customer-facing lead. Keep the user updated and delegate implementation via Relay when needed.',
+  }, relay);
+
+  const model = wrapLanguageModel({
+    model: openai('gpt-4o-mini'),
+    middleware: relaySession.middleware,
+  });
+
+  if (escalate) {
+    const workflow = await runWorkflow('workflows/feature-dev.yaml', {
+      vars: { task: prompt, repo },
+    });
+
+    return Response.json({ status: workflow.status, runId: workflow.runId });
+  }
+
+  return streamText({
+    model,
+    tools: relaySession.tools,
+    system: 'Answer directly when possible; coordinate internally when the task needs specialists.',
+    prompt,
+  }).toUIMessageStreamResponse({
+    onFinish() {
+      relaySession.cleanup();
+      void relay.close();
+    },
+  });
+}
+```
+
+That pattern keeps the user experience snappy while still letting longer Relay workflows run with proper ownership, retries, and verification.
+
+A compact end-to-end example app for this pattern lives in `examples/ai-sdk-relay-helpdesk/`.
+
 ## YAML Format
 
 Workflows are defined as `relay.yaml` files:
