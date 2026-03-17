@@ -78,7 +78,10 @@ async fn e2e_project_level_mcp_merge_preserves_user_servers() {
     .expect("configure_relaycast_mcp_with_token");
 
     // Must have --mcp-config and --strict-mcp-config
-    assert!(args.contains(&"--mcp-config".to_string()), "must have --mcp-config");
+    assert!(
+        args.contains(&"--mcp-config".to_string()),
+        "must have --mcp-config"
+    );
     assert!(
         args.contains(&"--strict-mcp-config".to_string()),
         "must have --strict-mcp-config"
@@ -99,7 +102,10 @@ async fn e2e_project_level_mcp_merge_preserves_user_servers() {
     );
 
     // Relaycast is present with broker-injected credentials
-    assert!(servers.contains_key("relaycast"), "relaycast must be injected");
+    assert!(
+        servers.contains_key("relaycast"),
+        "relaycast must be injected"
+    );
     let relaycast = &servers["relaycast"];
     assert_eq!(
         relaycast["env"]["RELAY_AGENT_NAME"].as_str(),
@@ -154,7 +160,10 @@ async fn e2e_global_settings_are_merged_from_real_home() {
     .expect("configure");
 
     let servers = extract_servers(&args);
-    assert!(servers.contains_key("relaycast"), "relaycast must always be present");
+    assert!(
+        servers.contains_key("relaycast"),
+        "relaycast must always be present"
+    );
 
     // If the real ~/.claude/settings.json has MCP servers, they should appear
     let home = dirs::home_dir().expect("home dir");
@@ -247,7 +256,10 @@ async fn e2e_global_settings_with_fake_home() {
         servers.contains_key("filesystem"),
         "project filesystem MCP must be merged"
     );
-    assert!(servers.contains_key("relaycast"), "relaycast must always be present");
+    assert!(
+        servers.contains_key("relaycast"),
+        "relaycast must always be present"
+    );
     assert_eq!(
         servers["database"]["env"]["DB_URL"].as_str(),
         Some("postgres://localhost/test")
@@ -505,7 +517,10 @@ async fn e2e_local_settings_override_global() {
 async fn e2e_respects_existing_mcp_config_flag() {
     let temp = tempdir().expect("tempdir");
 
-    let existing_args = vec!["--mcp-config".to_string(), r#"{"mcpServers":{}}"#.to_string()];
+    let existing_args = vec![
+        "--mcp-config".to_string(),
+        r#"{"mcpServers":{}}"#.to_string(),
+    ];
     let args = configure_relaycast_mcp_with_token(
         "claude",
         "agent",
