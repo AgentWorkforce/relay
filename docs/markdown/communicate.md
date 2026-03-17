@@ -15,9 +15,11 @@ agent = on_relay(my_agent, relay)
 
 ```typescript
 // TypeScript
+import { wrapLanguageModel } from 'ai';
 import { Relay } from '@agent-relay/sdk/communicate';
-import { onRelay } from '@agent-relay/sdk/communicate/adapters/pi';
-const config = onRelay('MyAgent', piConfig, new Relay('MyAgent'));
+import { onRelay } from '@agent-relay/sdk/communicate/adapters/ai-sdk';
+const session = onRelay({ name: 'MyAgent' }, new Relay('MyAgent'));
+const model = wrapLanguageModel({ model: baseModel, middleware: session.middleware });
 ```
 
 `on_relay()` auto-detects the framework and applies the right adapter. No configuration needed.
@@ -29,6 +31,7 @@ const config = onRelay('MyAgent', piConfig, new Relay('MyAgent'));
 | Claude Agent SDK | Python, TypeScript | Push (Tier 1) | Hooks: PostToolUse, Stop |
 | Google ADK | Python | Push (Tier 1) | before_model_callback injection |
 | Pi | TypeScript | Push (Tier 1) | session.steer / session.followUp |
+| AI SDK | TypeScript | Poll (Tier 2) | Tools + middleware system injection |
 | OpenAI Agents | Python | Poll (Tier 2) | Tools + instructions wrapper |
 | Agno | Python | Poll (Tier 2) | Tools + instructions wrapper |
 | Swarms | Python | Poll (Tier 2) | Tools + on_message callback |
@@ -70,6 +73,7 @@ await relay.close()
 
 ## Per-Framework Guides
 
+- [AI SDK](/communicate/ai-sdk) — TypeScript adapter for Vercel AI SDK apps
 - [OpenAI Agents](/communicate/openai-agents) — Python adapter for OpenAI Agents SDK
 - [Claude Agent SDK](/communicate/claude-sdk) — Python + TypeScript adapter
 - [Google ADK](/communicate/google-adk) — Python adapter for Google ADK

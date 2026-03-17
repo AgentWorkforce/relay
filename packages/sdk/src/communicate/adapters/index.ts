@@ -4,3 +4,4 @@ export { onRelay as onCrewAIRelay, onCrewRelay } from './crewai.js';
 export { onRelay as onOpenAIAgentsRelay } from './openai-agents.js';
 export { onRelay as onLangGraphRelay } from './langgraph.js';
 export { onRelay as onGoogleAdkRelay } from './google-adk.js';
+export { onRelay as onAiSdkRelay } from './ai-sdk.js';

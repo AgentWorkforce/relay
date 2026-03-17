@@ -64,6 +64,11 @@
       "types": "./dist/communicate/adapters/claude-sdk.d.ts",
       "import": "./dist/communicate/adapters/claude-sdk.js",
       "default": "./dist/communicate/adapters/claude-sdk.js"
+    },
+    "./communicate/adapters/ai-sdk": {
+      "types": "./dist/communicate/adapters/ai-sdk.d.ts",
+      "import": "./dist/communicate/adapters/ai-sdk.js",
+      "default": "./dist/communicate/adapters/ai-sdk.js"
     }
   },
   "files": [
@@ -109,6 +114,7 @@
     "@langchain/langgraph": ">=1.2.0",
     "@mariozechner/pi-coding-agent": ">=0.50.0",
     "@openai/agents": ">=0.7.0",
+    "ai": ">=5.0.0",
     "crewai": ">=1.0.0"
   },
   "peerDependenciesMeta": {
@@ -125,6 +131,9 @@
       "optional": true
     },
     "@openai/agents": {
+      "optional": true
+    },
+    "ai": {
       "optional": true
     },
     "crewai": {

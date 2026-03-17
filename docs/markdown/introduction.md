@@ -5,7 +5,7 @@ Spawn, coordinate, and connect AI agents from TypeScript or Python.
 The Agent Relay SDK has two modes:
 
 - **Orchestrate** — Spawn and manage AI agents (Claude, Codex, Gemini, OpenCode) from code. Send messages, listen for responses, and shut them down when done.
-- **Communicate** — Put an existing framework agent "on the relay" with a single `on_relay()` call. Works with OpenAI Agents, Claude Agent SDK, Google ADK, Pi, Agno, Swarms, and CrewAI.
+- **Communicate** — Put an existing framework agent "on the relay" with a single `on_relay()` / `onRelay()` call. Works with AI SDK, OpenAI Agents, Claude Agent SDK, Google ADK, Pi, Agno, Swarms, and CrewAI.
 
 ## Install
 
