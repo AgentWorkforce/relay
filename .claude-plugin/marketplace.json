@@ -1,0 +1,34 @@
+{
+  "name": "agent-relay",
+  "owner": {
+    "name": "Agent Relay",
+    "email": "hello@agent-relay.com"
+  },
+  "metadata": {
+    "description": "Let Claude Code sub-agents talk to each other - real-time messaging, shared channels, and team coordination between parallel agents",
+    "version": "1.0.0",
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "claude-relay-plugin",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/AgentWorkforce/relay.git",
+        "path": "plugins/claude-relay-plugin"
+      },
+      "description": "Lets your Claude Code sub-agents communicate with each other in real time - send messages, coordinate in shared channels, and work as a team instead of in isolation",
+      "version": "0.1.0",
+      "author": {
+        "name": "Agent Relay",
+        "email": "hello@agent-relay.com"
+      },
+      "homepage": "https://github.com/AgentWorkforce/relay/tree/main/plugins/claude-relay-plugin",
+      "repository": "https://github.com/AgentWorkforce/relay",
+      "license": "MIT",
+      "keywords": ["sub-agents", "agent-communication", "inter-agent-messaging", "mcp", "relaycast", "coordination"],
+      "category": "agent-communication",
+      "tags": ["sub-agents", "messaging", "channels", "team-coordination", "mcp-server"]
+    }
+  ]
+}

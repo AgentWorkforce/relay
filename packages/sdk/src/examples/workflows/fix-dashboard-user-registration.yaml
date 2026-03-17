@@ -1,0 +1,182 @@
+version: '1.0'
+name: fix-dashboard-user-registration
+description: >
+  Fixes the dashboard agent registration so the user registers as the current
+  system user (whoami / os.userInfo().username) instead of the cwd directory name.
+
+  Currently, both relaycast-provider.ts and proxy-server.ts in relay-dashboard
+  derive projectIdentity from path.basename(path.resolve(dataDir, '..')) — which
+  gives the working directory name. This workflow changes both to use
+  os.userInfo().username so the registered name reflects the actual user.
+
+swarm:
+  pattern: pipeline
+  channel: wf-fix-dashboard-user-reg
+  maxConcurrency: 3
+  timeoutMs: 1200000 # 20 min
+
+agents:
+  - name: implementer
+    cli: claude
+    preset: worker
+    role: 'Makes targeted edits to two dashboard-server files to use os.userInfo().username instead of path.basename(cwd).'
+    constraints:
+      model: sonnet
+
+  - name: reviewer
+    cli: claude
+    preset: reviewer
+    role: 'Reviews the diff to confirm correctness and no unintended side effects.'
+    constraints:
+      model: sonnet
+
+workflows:
+  - name: default
+    onError: fail-fast
+
+    steps:
+      # ── Phase 1: Capture current code for context injection ──────────────────
+
+      - name: read-relaycast-provider
+        type: deterministic
+        command: >
+          sed -n '1,15p' ../relay-dashboard/packages/dashboard-server/src/relaycast-provider.ts &&
+          echo "---" &&
+          sed -n '80,100p' ../relay-dashboard/packages/dashboard-server/src/relaycast-provider.ts
+        captureOutput: true
+        failOnError: true
+
+      - name: read-proxy-server
+        type: deterministic
+        command: >
+          grep -n "^import" ../relay-dashboard/packages/dashboard-server/src/proxy-server.ts | head -20 &&
+          echo "---" &&
+          sed -n '205,220p' ../relay-dashboard/packages/dashboard-server/src/proxy-server.ts
+        captureOutput: true
+        failOnError: true
+
+      # ── Phase 2: Implement the fix ───────────────────────────────────────────
+
+      - name: implement
+        type: agent
+        agent: implementer
+        dependsOn: [read-relaycast-provider, read-proxy-server]
+        task: |
+          Fix two files in the relay-dashboard package so the dashboard user registers
+          with the system username instead of the cwd directory name.
+
+          ── File 1: ../relay-dashboard/packages/dashboard-server/src/relaycast-provider.ts ──
+
+          Current imports and loadRelaycastConfig function:
+          {{steps.read-relaycast-provider.output}}
+
+          Changes required:
+          1. Add `import os from 'node:os';` after the existing `import path from 'path';` line.
+          2. In the `loadRelaycastConfig` function, replace:
+               const projectDir = path.basename(path.resolve(dataDir, '..'));
+             with:
+               const projectIdentity = os.userInfo().username;
+          3. Remove the line `const projectIdentity = projectDir.trim();` (it's now set above).
+          4. The return statement `return { apiKey: envApiKey, baseUrl, projectIdentity };` stays the same.
+
+          ── File 2: ../relay-dashboard/packages/dashboard-server/src/proxy-server.ts ──
+
+          Current imports and resolveRelaycastConfig function:
+          {{steps.read-proxy-server.output}}
+
+          Changes required:
+          1. Add `import os from 'node:os';` near the top of the file with the other imports.
+          2. In the `resolveRelaycastConfig` function, replace:
+               const projectDir = path.basename(path.resolve(dataDir, '..'));
+             with:
+               const projectIdentity = os.userInfo().username;
+          3. Update the `applyCachedAgentIdentity` call: change `projectIdentity: projectDir`
+             to `projectIdentity: projectIdentity` (variable is already named correctly).
+
+          IMPORTANT:
+          - Write both files to disk using your file-writing tools.
+          - Use `import os from 'node:os'` (Node.js built-in with node: prefix).
+          - Do not change anything else in either file.
+          - Preserve all existing imports, logic, and formatting.
+        verification:
+          type: exit_code
+
+      # ── Phase 3: Verify the changes look correct ─────────────────────────────
+
+      - name: verify-changes
+        type: deterministic
+        dependsOn: [implement]
+        command: |
+          echo "=== relaycast-provider.ts: os import ==="
+          grep -n "import os\|node:os" ../relay-dashboard/packages/dashboard-server/src/relaycast-provider.ts || echo "MISSING: os import"
+
+          echo ""
+          echo "=== relaycast-provider.ts: loadRelaycastConfig ==="
+          sed -n '85,96p' ../relay-dashboard/packages/dashboard-server/src/relaycast-provider.ts
+
+          echo ""
+          echo "=== proxy-server.ts: os import ==="
+          grep -n "import os\|node:os" ../relay-dashboard/packages/dashboard-server/src/proxy-server.ts || echo "MISSING: os import"
+
+          echo ""
+          echo "=== proxy-server.ts: resolveRelaycastConfig ==="
+          grep -n -A8 "const resolveRelaycastConfig" ../relay-dashboard/packages/dashboard-server/src/proxy-server.ts | head -15
+
+          echo ""
+          echo "=== Confirm no remaining path.basename(.*dataDir) calls ==="
+          grep -n "path.basename.*dataDir\|basename.*resolve.*dataDir" \
+            ../relay-dashboard/packages/dashboard-server/src/relaycast-provider.ts \
+            ../relay-dashboard/packages/dashboard-server/src/proxy-server.ts && echo "WARN: stale cwd reference found" || echo "OK: no stale cwd references"
+        captureOutput: true
+        failOnError: false
+
+      # ── Phase 4: Capture diff for review ─────────────────────────────────────
+
+      - name: capture-diff
+        type: deterministic
+        dependsOn: [verify-changes]
+        command: >
+          cd ../relay-dashboard &&
+          git diff packages/dashboard-server/src/relaycast-provider.ts
+          packages/dashboard-server/src/proxy-server.ts
+        captureOutput: true
+        failOnError: false
+
+      # ── Phase 5: Code review ──────────────────────────────────────────────────
+
+      - name: review
+        type: agent
+        agent: reviewer
+        dependsOn: [capture-diff, verify-changes]
+        task: |
+          Review this change to the relay-dashboard dashboard-server package.
+
+          The goal: dashboard user now registers with os.userInfo().username (the system user
+          running the process) instead of path.basename(cwd) (the working directory name).
+
+          Verification output:
+          {{steps.verify-changes.output}}
+
+          Diff:
+          {{steps.capture-diff.output}}
+
+          Review checklist:
+          1. Both files now import `os` from `'node:os'` — correct prefix?
+          2. `os.userInfo().username` is used in both `loadRelaycastConfig` and
+             `resolveRelaycastConfig` — no leftover `path.basename` / `projectDir` references?
+          3. The `projectIdentity` variable name is preserved in both call sites?
+          4. No unintended whitespace, import order, or formatting changes?
+          5. The `path` import in relaycast-provider.ts is still present if used elsewhere in the file?
+
+errorHandling:
+  strategy: fail-fast
+  maxRetries: 1
+  retryDelayMs: 5000
+
+state:
+  backend: memory
+  ttlMs: 3600000 # 1 hour
+
+trajectories:
+  enabled: true
+  autoDecisions: true
