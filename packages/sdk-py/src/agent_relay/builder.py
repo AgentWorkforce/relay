@@ -243,36 +243,71 @@ class WorkflowBuilder:
         self,
         name: str,
         *,
-        agent: str,
-        task: str,
+        type: str | None = None,
+        # Agent step fields
+        agent: str | None = None,
+        task: str | None = None,
+        # Common fields
         depends_on: list[str] | None = None,
         verification: VerificationCheck | None = None,
         timeout_ms: int | None = None,
         retries: int | None = None,
+        # Deterministic step fields
+        command: str | None = None,
+        capture_output: bool | None = None,
+        fail_on_error: bool | None = None,
+        # Worktree step fields
+        branch: str | None = None,
+        base_branch: str | None = None,
+        path: str | None = None,
+        create_branch: bool | None = None,
     ) -> WorkflowBuilder:
         """Add a workflow step."""
-        opts = StepOptions(
-            agent=agent,
-            task=task,
-            depends_on=depends_on,
-            verification=verification,
-            timeout_ms=timeout_ms,
-            retries=retries,
-        )
-        step_def: dict[str, Any] = {
-            "name": name,
-            "agent": opts.agent,
-            "task": opts.task,
-        }
-
-        if opts.depends_on is not None:
-            step_def["dependsOn"] = opts.depends_on
-        if opts.verification is not None:
-            step_def["verification"] = opts.verification.to_dict()
-        if opts.timeout_ms is not None:
-            step_def["timeoutMs"] = opts.timeout_ms
-        if opts.retries is not None:
-            step_def["retries"] = opts.retries
+        if type == "deterministic":
+            if not command:
+                raise ValueError("deterministic steps must have a command")
+            if agent is not None or task is not None:
+                raise ValueError("deterministic steps must not have agent or task")
+            step_def: dict[str, Any] = {"name": name, "type": "deterministic", "command": command}
+            if capture_output is not None:
+                step_def["captureOutput"] = capture_output
+            if fail_on_error is not None:
+                step_def["failOnError"] = fail_on_error
+            if depends_on is not None:
+                step_def["dependsOn"] = depends_on
+            if verification is not None:
+                step_def["verification"] = verification.to_dict()
+            if timeout_ms is not None:
+                step_def["timeoutMs"] = timeout_ms
+        elif type == "worktree":
+            if agent is not None or task is not None:
+                raise ValueError("worktree steps must not have agent or task")
+            if not branch:
+                raise ValueError("worktree steps must have a branch")
+            step_def = {"name": name, "type": "worktree", "branch": branch}
+            if base_branch is not None:
+                step_def["baseBranch"] = base_branch
+            if path is not None:
+                step_def["path"] = path
+            if create_branch is not None:
+                step_def["createBranch"] = create_branch
+            if depends_on is not None:
+                step_def["dependsOn"] = depends_on
+            if timeout_ms is not None:
+                step_def["timeoutMs"] = timeout_ms
+        else:
+            # Agent step
+            if not agent or not task:
+                raise ValueError("Agent steps must have both agent and task")
+            step_def = {"name": name, "agent": agent, "task": task}
+            if depends_on is not None:
+                step_def["dependsOn"] = depends_on
+            if verification is not None:
+                step_def["verification"] = verification.to_dict()
+            if timeout_ms is not None:
+                step_def["timeoutMs"] = timeout_ms
+            if retries is not None:
+                step_def["retries"] = retries
 
         self._steps.append(step_def)
         return self
@@ -302,10 +337,14 @@ class WorkflowBuilder:
 
     def to_config(self) -> dict[str, Any]:
         """Build and return the config as a dictionary (RelayYamlConfig shape)."""
-        if not self._agents:
-            raise ValueError("Workflow must have at least one agent")
         if not self._steps:
             raise ValueError("Workflow must have at least one step")
+
+        has_agent_steps = any(
+            s.get("type") not in ("deterministic", "worktree") for s in self._steps
+        )
+        if has_agent_steps and not self._agents:
+            raise ValueError("Workflow must have at least one agent when using agent steps")
 
         swarm: dict[str, Any] = {"pattern": self._pattern}
         if self._max_concurrency is not None:

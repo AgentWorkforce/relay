@@ -1,0 +1,230 @@
+{
+  "id": "traj_1773678567544_28b8c06b",
+  "version": 1,
+  "task": {
+    "title": "sdk-feature-parity-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "1110c9372a2d18c98ca060f8"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-03-16T16:29:27.544Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-16T16:29:27.544Z"
+    },
+    {
+      "name": "start-from-dev",
+      "role": "specialist",
+      "joinedAt": "2026-03-16T16:29:31.126Z"
+    },
+    {
+      "name": "parity-dev",
+      "role": "specialist",
+      "joinedAt": "2026-03-16T16:29:31.126Z"
+    },
+    {
+      "name": "reviewer",
+      "role": "reviewer",
+      "joinedAt": "2026-03-16T16:29:31.129Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_fc0d51ae",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-16T16:29:27.544Z",
+      "events": [
+        {
+          "ts": 1773678567544,
+          "type": "note",
+          "content": "Purpose: Add startFrom + deterministic/worktree step support to TS and Python builders"
+        },
+        {
+          "ts": 1773678567544,
+          "type": "note",
+          "content": "Approach: 3-step dag workflow — Parsed 3 steps, 2 parallel tracks, 1 dependent steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-16T16:29:31.122Z"
+    },
+    {
+      "id": "ch_694935ee",
+      "title": "Execution: start-from, builder-parity",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-16T16:29:31.122Z",
+      "events": [],
+      "endedAt": "2026-03-16T16:29:31.129Z"
+    },
+    {
+      "id": "ch_8c5d6310",
+      "title": "Execution: start-from",
+      "agentName": "start-from-dev",
+      "startedAt": "2026-03-16T16:29:31.129Z",
+      "events": [
+        {
+          "ts": 1773678571130,
+          "type": "note",
+          "content": "\"start-from\": Add a startFrom feature to the workflow runner",
+          "raw": {
+            "agent": "start-from-dev"
+          }
+        }
+      ],
+      "endedAt": "2026-03-16T16:29:31.130Z"
+    },
+    {
+      "id": "ch_af114bc3",
+      "title": "Execution: builder-parity",
+      "agentName": "parity-dev",
+      "startedAt": "2026-03-16T16:29:31.130Z",
+      "events": [
+        {
+          "ts": 1773678571130,
+          "type": "note",
+          "content": "\"builder-parity\": Add deterministic and worktree step support to the TS and Python builders",
+          "raw": {
+            "agent": "parity-dev"
+          }
+        },
+        {
+          "ts": 1773679029834,
+          "type": "note",
+          "content": "\"builder-parity\" retrying (attempt 1/2)"
+        }
+      ],
+      "endedAt": "2026-03-16T16:37:10.837Z"
+    },
+    {
+      "id": "ch_dd366e8b",
+      "title": "Execution: builder-parity",
+      "agentName": "parity-dev",
+      "startedAt": "2026-03-16T16:37:10.837Z",
+      "events": [
+        {
+          "ts": 1773679030838,
+          "type": "note",
+          "content": "\"builder-parity\": Add deterministic and worktree step support to the TS and Python builders",
+          "raw": {
+            "agent": "parity-dev"
+          }
+        },
+        {
+          "ts": 1773679453533,
+          "type": "error",
+          "content": "\"builder-parity\" failed [unknown]: Unexpected failure. Review the error and step definition.",
+          "significance": "high",
+          "raw": {
+            "cause": "unknown",
+            "rawError": "Step \"builder-parity\" review response malformed from \"reviewer\" (missing REVIEW_DECISION)",
+            "attempt": 2,
+            "maxRetries": 1
+          }
+        },
+        {
+          "ts": 1773679791358,
+          "type": "note",
+          "content": "\"start-from\" retrying (attempt 1/2)"
+        }
+      ],
+      "endedAt": "2026-03-16T16:49:52.363Z"
+    },
+    {
+      "id": "ch_a54c5262",
+      "title": "Execution: start-from",
+      "agentName": "start-from-dev",
+      "startedAt": "2026-03-16T16:49:52.363Z",
+      "events": [
+        {
+          "ts": 1773679792364,
+          "type": "note",
+          "content": "\"start-from\": Add a startFrom feature to the workflow runner",
+          "raw": {
+            "agent": "start-from-dev"
+          }
+        },
+        {
+          "ts": 1773680020822,
+          "type": "error",
+          "content": "\"start-from\" failed [unknown]: Unexpected failure. Review the error and step definition.",
+          "significance": "high",
+          "raw": {
+            "cause": "unknown",
+            "rawError": "Step \"start-from\" review response malformed from \"reviewer\" (missing REVIEW_DECISION)",
+            "attempt": 2,
+            "maxRetries": 1
+          }
+        },
+        {
+          "ts": 1773680020825,
+          "type": "note",
+          "content": "\"review\" skipped — Upstream dependency \"start-from\" failed"
+        },
+        {
+          "ts": 1773680020828,
+          "type": "decision",
+          "content": "Whether to skip review → skip: Upstream dependency \"start-from\" failed",
+          "significance": "medium",
+          "raw": {
+            "question": "Whether to skip review",
+            "chosen": "skip",
+            "reasoning": "Upstream dependency \"start-from\" failed"
+          }
+        }
+      ],
+      "endedAt": "2026-03-16T16:53:40.829Z"
+    },
+    {
+      "id": "ch_44d8d971",
+      "title": "Convergence: start-from + builder-parity",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-16T16:53:40.829Z",
+      "events": [
+        {
+          "ts": 1773680020829,
+          "type": "reflection",
+          "content": "start-from + builder-parity resolved. 0/2 steps completed. 2 step(s) failed: start-from, builder-parity.",
+          "significance": "high",
+          "raw": {
+            "confidence": 0,
+            "focalPoints": [
+              "start-from: failed",
+              "builder-parity: failed"
+            ]
+          }
+        }
+      ],
+      "endedAt": "2026-03-16T16:53:40.830Z"
+    },
+    {
+      "id": "ch_0624e50a",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-16T16:53:40.830Z",
+      "events": [
+        {
+          "ts": 1773680020830,
+          "type": "reflection",
+          "content": "Failed at \"start-from\" [unknown] after 24min. Caused 1 downstream step(s) to be skipped: review. 0/3 steps completed before failure. (completed in 24 minutes)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-16T16:53:40.830Z"
+    }
+  ],
+  "completedAt": "2026-03-16T16:53:40.830Z",
+  "retrospective": {
+    "summary": "Failed at \"start-from\" [unknown] after 24min. Caused 1 downstream step(s) to be skipped: review. 0/3 steps completed before failure.",
+    "approach": "dag workflow (3 agents)",
+    "confidence": 0,
+    "learnings": [],
+    "challenges": [
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition."
+    ]
+  }
+}

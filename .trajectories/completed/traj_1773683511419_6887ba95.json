@@ -1,0 +1,212 @@
+{
+  "id": "traj_1773683511419_6887ba95",
+  "version": 1,
+  "task": {
+    "title": "fix-communicate-sdk-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "b897a67d8dc857c18a98ad85"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-03-16T17:51:51.419Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-16T17:51:51.419Z"
+    },
+    {
+      "name": "python-fixer",
+      "role": "specialist",
+      "joinedAt": "2026-03-16T17:51:55.972Z"
+    },
+    {
+      "name": "ts-fixer",
+      "role": "specialist",
+      "joinedAt": "2026-03-16T17:51:55.972Z"
+    },
+    {
+      "name": "reviewer",
+      "role": "reviewer",
+      "joinedAt": "2026-03-16T17:51:55.976Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_bacce972",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-16T17:51:51.419Z",
+      "events": [
+        {
+          "ts": 1773683511419,
+          "type": "note",
+          "content": "Purpose: Fix PR #565 review feedback — Communicate Mode SDK"
+        },
+        {
+          "ts": 1773683511419,
+          "type": "note",
+          "content": "Approach: 3-step dag workflow — Parsed 3 steps, 2 parallel tracks, 1 dependent steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-16T17:51:55.968Z"
+    },
+    {
+      "id": "ch_a1821681",
+      "title": "Execution: fix-python, fix-typescript",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-16T17:51:55.968Z",
+      "events": [],
+      "endedAt": "2026-03-16T17:51:55.976Z"
+    },
+    {
+      "id": "ch_4e3d0283",
+      "title": "Execution: fix-typescript",
+      "agentName": "ts-fixer",
+      "startedAt": "2026-03-16T17:51:55.976Z",
+      "events": [
+        {
+          "ts": 1773683515976,
+          "type": "note",
+          "content": "\"fix-typescript\": Fix TypeScript Communicate SDK review feedback for PR #565",
+          "raw": {
+            "agent": "ts-fixer"
+          }
+        }
+      ],
+      "endedAt": "2026-03-16T17:51:55.976Z"
+    },
+    {
+      "id": "ch_aea27842",
+      "title": "Execution: fix-python",
+      "agentName": "python-fixer",
+      "startedAt": "2026-03-16T17:51:55.976Z",
+      "events": [
+        {
+          "ts": 1773683515976,
+          "type": "note",
+          "content": "\"fix-python\": Fix Python Communicate SDK review feedback for PR #565",
+          "raw": {
+            "agent": "python-fixer"
+          }
+        },
+        {
+          "ts": 1773683909980,
+          "type": "review-completed",
+          "content": "\"fix-python\" review approved by reviewer",
+          "significance": "medium",
+          "raw": {
+            "stepName": "fix-python",
+            "reviewer": "reviewer",
+            "decision": "approved"
+          }
+        },
+        {
+          "ts": 1773683913935,
+          "type": "finding",
+          "content": "\"fix-python\" completed → ╰─────────────────────────────────────────────────────�",
+          "significance": "medium"
+        },
+        {
+          "ts": 1773684035281,
+          "type": "note",
+          "content": "\"fix-typescript\" retrying (attempt 1/2)"
+        }
+      ],
+      "endedAt": "2026-03-16T18:00:36.448Z"
+    },
+    {
+      "id": "ch_2ad4a495",
+      "title": "Execution: fix-typescript",
+      "agentName": "ts-fixer",
+      "startedAt": "2026-03-16T18:00:36.463Z",
+      "events": [
+        {
+          "ts": 1773684036469,
+          "type": "note",
+          "content": "\"fix-typescript\": Fix TypeScript Communicate SDK review feedback for PR #565",
+          "raw": {
+            "agent": "ts-fixer"
+          }
+        },
+        {
+          "ts": 1773684359405,
+          "type": "error",
+          "content": "\"fix-typescript\" failed [unknown]: Unexpected failure. Review the error and step definition.",
+          "significance": "high",
+          "raw": {
+            "cause": "unknown",
+            "rawError": "Step \"fix-typescript\" review response malformed from \"reviewer\" (missing REVIEW_DECISION)",
+            "attempt": 2,
+            "maxRetries": 1
+          }
+        },
+        {
+          "ts": 1773684359411,
+          "type": "note",
+          "content": "\"review\" skipped — Upstream dependency \"fix-typescript\" failed"
+        },
+        {
+          "ts": 1773684359413,
+          "type": "decision",
+          "content": "Whether to skip review → skip: Upstream dependency \"fix-typescript\" failed",
+          "significance": "medium",
+          "raw": {
+            "question": "Whether to skip review",
+            "chosen": "skip",
+            "reasoning": "Upstream dependency \"fix-typescript\" failed"
+          }
+        }
+      ],
+      "endedAt": "2026-03-16T18:05:59.414Z"
+    },
+    {
+      "id": "ch_f66e4798",
+      "title": "Convergence: fix-python + fix-typescript",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-16T18:05:59.414Z",
+      "events": [
+        {
+          "ts": 1773684359415,
+          "type": "reflection",
+          "content": "fix-python + fix-typescript resolved. 1/2 steps completed. 1 step(s) failed: fix-typescript.",
+          "significance": "high",
+          "raw": {
+            "confidence": 0.375,
+            "focalPoints": [
+              "fix-python: completed",
+              "fix-typescript: failed"
+            ]
+          }
+        }
+      ],
+      "endedAt": "2026-03-16T18:05:59.416Z"
+    },
+    {
+      "id": "ch_63d0d10a",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-16T18:05:59.416Z",
+      "events": [
+        {
+          "ts": 1773684359416,
+          "type": "reflection",
+          "content": "Failed at \"fix-typescript\" [unknown] after 14min. Caused 1 downstream step(s) to be skipped: review. 1/3 steps completed before failure. (completed in 14 minutes)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-16T18:05:59.416Z"
+    }
+  ],
+  "completedAt": "2026-03-16T18:05:59.416Z",
+  "retrospective": {
+    "summary": "Failed at \"fix-typescript\" [unknown] after 14min. Caused 1 downstream step(s) to be skipped: review. 1/3 steps completed before failure.",
+    "approach": "dag workflow (3 agents)",
+    "confidence": 0.25,
+    "learnings": [],
+    "challenges": [
+      "Unexpected failure. Review the error and step definition."
+    ]
+  }
+}
