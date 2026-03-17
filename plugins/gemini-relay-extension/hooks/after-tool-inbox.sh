@@ -4,7 +4,7 @@ set -eu
 
 EMPTY_OUTPUT='{}'
 TOKEN_FILE="${HOME}/.relay/token"
-BASE_URL="${RELAY_BASE_URL:-https://www.relaycast.dev/api}"
+BASE_URL="${RELAY_BASE_URL:-https://api.relaycast.dev}"
 INBOX_URL="${BASE_URL}/v1/inbox/check"
 
 if ! command -v jq >/dev/null 2>&1; then

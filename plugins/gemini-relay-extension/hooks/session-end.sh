@@ -6,10 +6,11 @@ EMPTY_OUTPUT='{}'
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 EXTENSION_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 ENV_FILE="${EXTENSION_DIR}/.env"
+KEY_FILE="${HOME}/.relay/workspace-key"
 TOKEN_FILE="${HOME}/.relay/token"
 STATE_FILE="${HOME}/.relay/gemini-session.json"
 WORKERS_FILE="${HOME}/.relay/gemini-workers.json"
-BASE_URL="https://www.relaycast.dev/api"
+BASE_URL="https://api.relaycast.dev"
 AFTER_AGENT_DIR="${TMPDIR:-/tmp}/relay-afteragent"
 BEFORE_MODEL_DIR="${TMPDIR:-/tmp}/relay-beforemodel"
 
@@ -40,13 +41,18 @@ if [ -n "$SESSION_ID" ]; then
   rm -f "${BEFORE_MODEL_DIR}/${SAFE_SESSION_ID}.last-check"
 fi
 
-if [ -s "$WORKERS_FILE" ] && command -v jq >/dev/null 2>&1 && [ -n "${RELAY_API_KEY:-}" ]; then
+WORKSPACE_KEY="${RELAY_API_KEY:-}"
+if [ -z "$WORKSPACE_KEY" ] && [ -s "$KEY_FILE" ]; then
+  WORKSPACE_KEY=$(cat "$KEY_FILE" 2>/dev/null || true)
+fi
+
+if [ -s "$WORKERS_FILE" ] && command -v jq >/dev/null 2>&1 && [ -n "${WORKSPACE_KEY:-}" ]; then
   jq -r '.[]? | if type == "string" then . else .name // empty end' "$WORKERS_FILE" 2>/dev/null | while IFS= read -r worker; do
     if [ -z "$worker" ]; then
       continue
     fi
     curl -fsS -X POST \
-      -H "Authorization: Bearer ${RELAY_API_KEY}" \
+      -H "Authorization: Bearer ${WORKSPACE_KEY}" \
       -H "Content-Type: application/json" \
       -d "$(jq -nc --arg name "$worker" '{name: $name, reason: "Gemini session ended", delete_agent: false}')" \
       "${BASE_URL}/v1/agents/release" >/dev/null 2>&1 || true
