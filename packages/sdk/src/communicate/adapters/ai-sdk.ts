@@ -177,8 +177,10 @@ export function onRelay(
     middleware: {
       async transformParams({ params }): Promise<AiSdkCallParams> {
         const liveMessages = pendingMessages.splice(0, pendingMessages.length);
+        const hasMessages = Array.isArray(params.messages);
+        const baseSystem = typeof params.system === 'string' ? params.system : undefined;
         const nextMessages = injectSyntheticSystemMessage(
-          Array.isArray(params.messages) ? [...params.messages] : params.messages,
+          hasMessages ? [...(params.messages ?? [])] : params.messages,
           liveMessages,
           options,
         );
@@ -186,7 +188,7 @@ export function onRelay(
         return {
           ...params,
           messages: nextMessages,
-          system: composeSystemPrompt(typeof params.system === 'string' ? params.system : undefined, liveMessages, options),
+          system: hasMessages ? baseSystem : composeSystemPrompt(baseSystem, liveMessages, options),
         };
       },
     },

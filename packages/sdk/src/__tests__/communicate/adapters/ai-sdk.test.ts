@@ -102,6 +102,7 @@ test('AI SDK middleware prepends a synthetic system message for message-array ca
 
   const result = await session.middleware.transformParams?.({
     params: {
+      system: 'Base system.',
       messages: [{ role: 'user', content: 'Can you ship this?' }],
     },
   });
@@ -112,6 +113,9 @@ test('AI SDK middleware prepends a synthetic system message for message-array ca
   assert.match(String(result?.messages?.[0]?.content), /Escalate blockers quickly\./);
   assert.match(String(result?.messages?.[0]?.content), /Need approval on the fix/);
   assert.equal(result?.messages?.[1]?.role, 'user');
+  assert.equal(result?.system, 'Base system.');
+  assert.doesNotMatch(String(result?.system), /Use relay_send/);
+  assert.doesNotMatch(String(result?.system), /Need approval on the fix/);
 });
 
 test('AI SDK cleanup unsubscribes from live relay messages', async () => {
