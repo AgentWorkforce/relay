@@ -1,10 +1,13 @@
 prompt = """Spawn a coordinated team of relay agents for: {{args}}
 
 Follow this protocol:
-1. Set up the workspace. If RELAY_API_KEY is set, call mcp_relaycast_register. If not, call mcp_relaycast_create_workspace first.
-2. IMPORTANT: Tell the user they can follow along with the conversation. Read the RELAY_API_KEY environment variable (or use the key returned by create_workspace) and print the full observer URL with the real key value substituted in: https://agentrelay.dev/observer?key=<the actual key>. Do not print a placeholder — print the real clickable URL. This is mandatory.
-3. Analyze the task and choose the simplest coordination pattern that fits it
-4. Determine how many workers are needed (max 5) and give each worker a bounded responsibility
-5. For each worker, call mcp_relaycast_add_agent with a clear name and task
-6. Monitor ACK messages via mcp_relaycast_check_inbox and relay missing context or corrections
+1. Read the workspace key from the RELAY_API_KEY environment variable, or if empty read ~/.relay/workspace-key. Print the observer URL so the user can follow along: https://agentrelay.dev/observer?key=<the actual key>. This is mandatory.
+2. Analyze the task and choose the simplest coordination pattern that fits it
+3. Determine how many workers are needed (max 5) and assign each a bounded responsibility
+4. Choose the right sub-agent type for each task:
+   - @relay-worker for general implementation tasks
+   - @relay-researcher for investigation and analysis
+   - @relay-reviewer for code review and quality checks
+5. Delegate each task to the appropriate sub-agent. Tell each worker your agent name so they can send ACK/DONE messages back to you via mcp_relaycast_message_dm_send.
+6. Monitor ACK messages via mcp_relaycast_message_inbox_check and relay missing context or corrections
 7. Track DONE messages, resolve blockers, and synthesize the final result when the critical work is complete"""

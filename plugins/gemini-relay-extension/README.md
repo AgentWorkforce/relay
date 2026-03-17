@@ -1,81 +1,72 @@
 # Gemini CLI Relay Extension
 
-Multi-agent coordination for Gemini CLI via Relaycast MCP and lifecycle hooks.
+Lets your Gemini CLI sub-agents communicate with each other in real time via Relaycast.
 
 ## What it does
 
-This extension connects Gemini CLI sessions to [Agent Relay](https://agent-relay.com) so multiple agents can communicate and coordinate in real time. It adds:
+This extension connects Gemini CLI sessions to [Agent Relay](https://agent-relay.com) so multiple agents can message each other and coordinate work. It adds:
 
-- **Relaycast MCP server** — gives Gemini tools for messaging, channels, agent spawning, and more
+- **Relaycast MCP server** — gives Gemini tools for messaging, channels, inbox, and agent discovery
+- **Sub-agents** — delegate tasks to `@relay-worker`, `@relay-researcher`, and `@relay-reviewer` that communicate via Relay
 - **Inbox polling** — automatically checks for new messages after every tool call
 - **Stop guard** — blocks the agent from finishing while unread messages exist (max 3 retries)
 - **Model injection** — prepends inbox messages directly into the LLM request (5s rate limit)
 - **Session lifecycle** — auto-connects on start, cleans up workers on end
 - **Custom commands** — `/relay:status`, `/relay:team`, `/relay:fanout`
-- **Sub-agents** — pre-built worker, researcher, and reviewer agent definitions
 
 ## Installation
 
-### 1. Install the extension
-
 ```bash
-gemini extensions install <path-or-url-to-extension>
+gemini extensions install AgentWorkforce/relay
 ```
 
-### 2. Configure your workspace key
+That's it. A workspace is auto-created on first use — no API key or configuration needed. Start Gemini and run `/relay:status` to confirm:
 
-The extension uses Gemini's settings system. When prompted, provide your Relay workspace key (`rk_live_...`). You can also set it via environment variable:
+```
+> /relay:status
+```
+
+To join an existing workspace instead, set the key via Gemini settings or environment:
 
 ```bash
 export RELAY_API_KEY="rk_live_your_key_here"
 ```
 
-### 3. Verify
-
-Start Gemini CLI. The `SessionStart` hook will auto-connect to the relay. Run `/relay:status` to confirm:
-
-```
-> /relay:status
-```
-
-This shows connected agents and any unread messages.
-
 ## Usage
 
-### Send messages
-
-Ask Gemini to use the Relaycast MCP tools directly:
-
-```
-> Send a DM to worker-1 saying "start the migration"
-> Post "deploy complete" to the #releases channel
-> Check my inbox for new messages
-```
-
-### Commands
-
-| Command | What it does |
-|---------|--------------|
-| `/relay:status` | Show connected agents and unread messages |
-| `/relay:team [task]` | Spawn a coordinated team of workers for a task |
-| `/relay:fanout [task]` | Fan out independent subtasks across parallel workers |
-
-#### Examples
+### Spawn a team
 
 ```
 > /relay:team Refactor the auth module — split middleware, update tests, update docs
+```
 
+Gemini analyzes the task, spawns parallel workers (each a separate `gemini -p` process), and coordinates them via Relay messaging. Each worker automatically has the extension loaded and connected.
+
+### Fan out independent work
+
+```
 > /relay:fanout Run lint fixes across all packages in the monorepo
+```
 
+### Check status
+
+```
 > /relay:status
 ```
 
-- **`/relay:team`** — Analyzes the task, spawns up to 5 workers with bounded responsibilities, monitors ACKs and DONE signals, and synthesizes the result.
-- **`/relay:fanout`** — Splits work into independent subtasks, spawns one worker per subtask, and merges results when all workers finish. Use when subtasks have no dependencies on each other.
+### How sub-agents work
+
+When you use `/agent-relay:team` or `/agent-relay:fanout`, Gemini delegates tasks to sub-agents that run in isolated context loops within your session. Each sub-agent:
+
+1. Gets the Relaycast MCP tools automatically
+2. Sends ACK/DONE messages back via Relay
+3. Reports results to the main agent when complete
+
+You can also delegate directly: `@relay-worker implement the auth middleware`
+
+Requires `experimental.enableAgents: true` in your Gemini settings.
 
 ### What happens automatically
-
-Once installed, the extension runs in the background:
 
 1. **On session start**, Gemini auto-connects to the relay workspace
 2. **After every tool call**, Gemini polls the inbox for new messages from other agents
@@ -83,7 +74,7 @@ Once installed, the extension runs in the background:
 4. **When Gemini tries to stop**, the stop guard checks for unread messages and retries up to 3 times
 5. **On session end**, spawned workers are released and state is cleaned up
 
-### Running multiple agents
+### Running agents manually
 
 Open separate terminals with different agent names:
 
@@ -93,30 +84,15 @@ RELAY_AGENT_NAME="lead" gemini
 
 # Terminal 2 — worker
 RELAY_AGENT_NAME="worker-1" gemini
-
-# Terminal 3 — another worker
-RELAY_AGENT_NAME="worker-2" gemini
 ```
 
 Each agent registers with the relay and can message the others.
-
-### Sub-agents
-
-The extension includes pre-built agent definitions that can be spawned as workers:
-
-| Agent | Model | Purpose |
-|-------|-------|---------|
-| `relay-worker` | gemini-2.5-flash | Generic task worker — fast and cost-effective |
-| `relay-researcher` | gemini-2.5-pro | Research-focused — deeper analysis and investigation |
-| `relay-reviewer` | gemini-2.5-pro | Code review — reads diffs and provides feedback |
-
-All sub-agents follow the relay protocol: check inbox on start, send `ACK:` with their understanding, complete the work, and send `DONE:` with a summary.
 
 ## Prerequisites
 
 - Gemini CLI
 - Node.js >= 18
-- `bash`, `curl`, and `jq` (for shell hooks)
+- `curl` and `jq` (for shell hooks)
 
 ## Environment variables
 
@@ -124,15 +100,19 @@ All sub-agents follow the relay protocol: check inbox on start, send `ACK:` with
 |----------|----------|---------|-------------|
 | `RELAY_API_KEY` | Yes | — | Workspace key (`rk_live_...`) |
 | `RELAY_AGENT_NAME` | No | auto-generated | Stable agent identity |
-| `RELAY_BASE_URL` | No | `https://www.relaycast.dev` | API base URL override |
+| `RELAY_BASE_URL` | No | `https://api.relaycast.dev` | API base URL override |
 
 ## Extension structure
 
 ```
 gemini-relay-extension/
   gemini-extension.json        # Extension manifest
-  GEMINI.md                    # Context file injected into Gemini sessions
-  relay-server.js              # Relaycast MCP server
+  GEMINI.md                    # Context file — protocol, spawn instructions, orchestration
+  relay-server.js              # Relaycast MCP server (auto-registers, starts stdio)
+  agents/
+    relay-worker.md            # General task worker sub-agent
+    relay-researcher.md        # Research-focused sub-agent
+    relay-reviewer.md          # Code review sub-agent
   hooks/
     hooks.json                 # Hook definitions
     after-tool-inbox.sh        # Polls inbox after each tool call
@@ -144,13 +124,6 @@ gemini-relay-extension/
     status/status.toml         # /relay:status command
     team/team.toml             # /relay:team command
     fanout/fanout.toml         # /relay:fanout command
-  agents/
-    relay-worker.md            # Worker agent definition
-    relay-researcher.md        # Researcher agent definition
-    relay-reviewer.md          # Reviewer agent definition
-  skills/
-    relay-orchestration/       # Orchestration skill
-    relay-protocol/            # Protocol skill
 ```
 
 ## Hooks

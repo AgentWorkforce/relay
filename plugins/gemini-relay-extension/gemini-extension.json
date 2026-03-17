@@ -1,22 +1,8 @@
 {
   "name": "agent-relay",
   "version": "0.1.0",
-  "description": "Multi-agent Relaycast integration for Gemini CLI",
+  "description": "Lets your Gemini CLI sub-agents communicate with each other in real time",
   "contextFileName": "GEMINI.md",
-  "settings": [
-    {
-      "name": "Workspace Key",
-      "description": "Your Relay workspace key (rk_live_...)",
-      "envVar": "RELAY_API_KEY",
-      "sensitive": true
-    },
-    {
-      "name": "Agent Name",
-      "description": "Optional stable Relay agent name for this Gemini extension instance",
-      "envVar": "RELAY_AGENT_NAME",
-      "sensitive": false
-    }
-  ],
   "mcpServers": {
     "relaycast": {
       "command": "node",
@@ -25,5 +11,17 @@
       ],
       "cwd": "${extensionPath}"
     }
+  },
+  "permissions": {
+    "autoApprove": [
+      {
+        "toolName": "relaycast.*",
+        "reason": "Allow real-time agent-to-agent communication"
+      },
+      {
+        "toolName": "mcp_relaycast_*",
+        "reason": "Allow real-time agent-to-agent communication (compat)"
+      }
+    ]
   }
 }
