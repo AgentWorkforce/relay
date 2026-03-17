@@ -543,11 +543,11 @@ agents:
       expect(run.status, run.error).toBe('completed');
     });
 
-    it('should fail when owner response does not include completion marker', async () => {
+    it('should fail when owner response provides no decision, marker, or evidence', async () => {
       mockSpawnOutputs = ['Owner completed work but forgot sentinel\n'];
       const run = await runner.execute(makeConfig(), 'default');
       expect(run.status).toBe('failed');
-      expect(run.error).toContain('owner completion marker');
+      expect(run.error).toContain('owner completion decision missing');
     });
 
     it('should run specialist work in a separate process and mirror worker output to the channel', async () => {
@@ -564,14 +564,123 @@ agents:
       expect(spawnCalls[0][0].name).toContain('step-1-worker');
       expect(spawnCalls[1][0].name).toContain('step-1-owner');
       expect(spawnCalls[0][0].task).not.toContain('STEP_COMPLETE:step-1');
+      expect(spawnCalls[0][0].task).toContain('WORKER COMPLETION CONTRACT');
+      expect(spawnCalls[0][0].task).toContain('WORKER_DONE: <brief summary>');
       expect(spawnCalls[1][0].task).toContain('You are the step owner/supervisor for step "step-1".');
       expect(spawnCalls[1][0].task).toContain('runtime: step-1-worker');
+      expect(spawnCalls[1][0].task).toContain('LEAD_DONE: <brief summary>');
 
       const channelMessages = (mockRelaycastAgent.send as any).mock.calls.map(
         ([, text]: [string, string]) => text
       );
       expect(channelMessages.some((text: string) => text.includes('Worker `step-1-worker'))).toBe(true);
       expect(channelMessages.some((text: string) => text.includes('worker finished'))).toBe(true);
+    });
+
+    it('should apply verification fallback for self-owned interactive steps', async () => {
+      mockSpawnOutputs = [
+        'LEAD_DONE\n',
+        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: verified\n',
+      ];
+
+      const run = await runner.execute(
+        makeConfig({
+          agents: [{ name: 'team-lead', cli: 'claude', role: 'Lead coordinator' }],
+          workflows: [
+            {
+              name: 'default',
+              steps: [
+                {
+                  name: 'lead-step',
+                  agent: 'team-lead',
+                  task: 'Output exactly:\nLEAD_DONE\n/exit',
+                  verification: { type: 'exit_code', value: 0 },
+                },
+              ],
+            },
+          ],
+        }),
+        'default'
+      );
+
+      expect(run.status, run.error).toBe('completed');
+      const steps = await db.getStepsByRunId(run.id);
+      expect(steps[0]?.completionReason).toBe('completed_verified');
+    });
+
+    it('should keep explicit interactive workers self-owned without extra supervisor/reviewer spawns', async () => {
+      const ownerAssignments: Array<{ owner: string; specialist: string }> = [];
+      runner.on((event) => {
+        if (event.type === 'step:owner-assigned') {
+          ownerAssignments.push({ owner: event.ownerName, specialist: event.specialistName });
+        }
+      });
+
+      mockSpawnOutputs = ['STEP_COMPLETE:worker-step\nWORKER_DONE_LOCAL\n'];
+
+      const run = await runner.execute(
+        makeConfig({
+          agents: [
+            { name: 'team-lead', cli: 'claude', role: 'Lead coordinator', preset: 'lead' },
+            { name: 'relay-worker', cli: 'codex', preset: 'worker', interactive: true },
+          ],
+          workflows: [
+            {
+              name: 'default',
+              steps: [
+                {
+                  name: 'worker-step',
+                  agent: 'relay-worker',
+                  task: 'Output exactly:\nWORKER_DONE_LOCAL\n/exit',
+                  verification: { type: 'output_contains', value: 'WORKER_DONE_LOCAL' },
+                },
+              ],
+            },
+          ],
+        }),
+        'default'
+      );
+
+      expect(ownerAssignments).toContainEqual({ owner: 'relay-worker', specialist: 'relay-worker' });
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('verification failed');
+
+      const spawnCalls = (mockRelayInstance.spawnPty as any).mock.calls;
+      expect(spawnCalls).toHaveLength(1);
+      expect(spawnCalls[0][0].task).toContain('STEP OWNER CONTRACT');
+      expect(spawnCalls[0][0].name).not.toContain('-owner-');
+      expect(spawnCalls[0][0].name).not.toContain('-review-');
+    });
+
+    it('should pass canonical bypass args to interactive codex PTY spawns', async () => {
+      mockSpawnOutputs = [
+        'LEAD_DONE\n',
+        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: verified\n',
+      ];
+
+      const run = await runner.execute(
+        makeConfig({
+          agents: [{ name: 'lead', cli: 'codex', role: 'Lead coordinator' }],
+          workflows: [
+            {
+              name: 'default',
+              steps: [
+                {
+                  name: 'lead-step',
+                  agent: 'lead',
+                  task: 'Output exactly:\nLEAD_DONE\n/exit',
+                  verification: { type: 'exit_code', value: 0 },
+                },
+              ],
+            },
+          ],
+        }),
+        'default'
+      );
+
+      expect(run.status, run.error).toBe('completed');
+      const spawnCalls = (mockRelayInstance.spawnPty as any).mock.calls;
+      expect(spawnCalls[0][0].args).toEqual(['--dangerously-bypass-approvals-and-sandbox']);
     });
 
     it('should let the owner complete after checking file-based artifacts', async () => {
@@ -615,8 +724,8 @@ agents:
       expect(stepRows[0].output).not.toContain('Worker already exited; artifacts look correct');
     });
 
-    it('should fail closed when review response is malformed', async () => {
-      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'REVIEW_REASON: looks fine\n'];
+    it('should fail when review response lacks any usable decision signal', async () => {
+      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'I need more context before deciding.\n'];
       const run = await runner.execute(makeConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review response malformed');

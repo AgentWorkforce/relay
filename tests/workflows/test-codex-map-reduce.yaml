@@ -1,0 +1,66 @@
+version: '1.0'
+name: test-codex-map-reduce
+
+description: Real Codex map-reduce/scatter-gather workflow.
+
+swarm:
+  pattern: dag
+  channel: test-codex-map-reduce
+  maxConcurrency: 3
+  timeoutMs: 360000
+
+agents:
+  - name: codex-map-a
+    cli: codex
+    preset: worker
+  - name: codex-map-b
+    cli: codex
+    preset: worker
+  - name: codex-reducer
+    cli: codex
+    preset: worker
+
+workflows:
+  - name: codex-map-reduce
+    steps:
+      - name: map-a
+        type: agent
+        agent: codex-map-a
+        task: |
+          Output exactly:
+          FRUIT=apple
+          MAP_A_DONE
+        verification:
+          type: output_contains
+          value: MAP_A_DONE
+
+      - name: map-b
+        type: agent
+        agent: codex-map-b
+        task: |
+          Output exactly:
+          FRUIT=banana
+          MAP_B_DONE
+        verification:
+          type: output_contains
+          value: MAP_B_DONE
+
+      - name: reduce
+        type: agent
+        agent: codex-reducer
+        dependsOn: [map-a, map-b]
+        task: |
+          Combine these two outputs into a single result.
+
+          A:
+          {{steps.map-a.output}}
+
+          B:
+          {{steps.map-b.output}}
+
+          Output exactly:
+          REDUCE_RESULT=apple,banana
+          REDUCE_DONE
+        verification:
+          type: output_contains
+          value: REDUCE_DONE

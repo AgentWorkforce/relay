@@ -1,0 +1,4 @@
+prompt = """Check the relay status:
+1. Call mcp_relaycast_agent_list to see who's online
+2. Call mcp_relaycast_inbox_check to see unread messages
+3. Report a summary of agents and any pending messages"""

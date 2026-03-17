@@ -1,0 +1,49 @@
+version: '1.0'
+name: validation-wrong-sender-lead-posts-worker-done
+swarm:
+  pattern: dag
+  channel: validation-wrong-sender-lead-posts-worker-done
+  timeoutMs: 420000
+  maxConcurrency: 2
+  idleNudge:
+    nudgeAfterMs: 90000
+    escalateAfterMs: 60000
+    maxNudges: 1
+agents:
+  - name: lead
+    cli: codex
+    preset: lead
+    channels: [validation-wrong-sender-lead-posts-worker-done]
+  - name: worker
+    cli: codex
+    preset: worker
+    channels: [validation-wrong-sender-lead-posts-worker-done]
+workflows:
+  - name: wrong-sender-strict
+    steps:
+      - name: lead-step
+        type: agent
+        agent: lead
+        task: |
+          You are the lead on #validation-wrong-sender-lead-posts-worker-done.
+          1. Post exactly: ASSIGNMENT: worker must post WORKER_DONE in channel.
+          2. Do not post WORKER_DONE yourself.
+          3. If worker never posts WORKER_DONE, output exactly:
+             OWNER_DECISION: INCOMPLETE_FAIL
+             REASON: missing worker-authored channel signal
+             /exit
+        verification:
+          type: output_contains
+          value: "OWNER_DECISION: INCOMPLETE_FAIL"
+      - name: worker-step
+        type: agent
+        agent: worker
+        task: |
+          You are the worker on #validation-wrong-sender-lead-posts-worker-done.
+          1. Wait until you see ASSIGNMENT: in the channel.
+          2. Do not post WORKER_DONE.
+          3. Output exactly:
+             WORKER_LOCAL_DONE
+        verification:
+          type: output_contains
+          value: WORKER_LOCAL_DONE

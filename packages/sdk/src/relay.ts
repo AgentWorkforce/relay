@@ -271,6 +271,7 @@ export class AgentRelay {
   readonly codex: AgentSpawner;
   readonly claude: AgentSpawner;
   readonly gemini: AgentSpawner;
+  readonly opencode: AgentSpawner;
 
   private readonly clientOptions: AgentRelayClientOptions;
   private readonly defaultChannels: string[];
@@ -316,6 +317,7 @@ export class AgentRelay {
     this.codex = this.createSpawner('codex', 'Codex', 'pty');
     this.claude = this.createSpawner('claude', 'Claude', 'pty');
     this.gemini = this.createSpawner('gemini', 'Gemini', 'pty');
+    this.opencode = this.createSpawner('opencode', 'OpenCode', 'headless');
   }
 
   /**

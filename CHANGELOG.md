@@ -29,6 +29,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.2.3] - 2026-03-15
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add HTTP transport mode; route all CLI commands through SDK**
+
+#### User-Impacting Fixes
+- Use correct broker init subcommand and --api-port flag (#569)
+- Use broker binary path instead of process.argv[1] for auto-start (#569)
+- Add RELAY_SKIP_BOOTSTRAP to Codex, Opencode, and Gemini/Droid config paths
+- Auto-accept droid/opencode permission prompts with --cwd
+- Set RELAY_SKIP_BOOTSTRAP when agent token is pre-registered (#85)
+- Auto-accept droid/opencode permission prompts with --cwd
+- Address review feedback on HTTP client and listing commands
+- Auto-accept Claude Code folder trust prompt for spawned agents
+
+### Technical Perspective
+#### Performance & Reliability
+- Add tests for droid/opencode auto-accept permission detection
+- Add tests for droid/opencode auto-accept permission detection
+
+#### Releases
+- v3.2.3
+
+---
+
+## [3.2.2] - 2026-03-14
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Package plugins as proper platform formats and PRPM collections**
+- **Implement CLI native plugins for OpenCode, Claude Code, and Gemini CLI**
+- **Add deterministic step support to WorkflowBuilder**
+
+#### User-Impacting Fixes
+- Suppress codex update prompt in spawned workers
+- Remove relay.shutdown() that killed the running broker in status command
+- Add jq availability check in before-model-inject.sh
+- Make broker API port discovery injectable for testability
+- Status command spawns new broker instead of connecting to existing one
+- Address Devin review round 2 — error handling, state mutation order, message limit
+- Address Devin PR review comments
+- Address minor verification gaps across all 3 plugins
+- Idle verification loop handles single-fire agent_idle events
+- Idle verification loop mirrors runVerification double-occurrence guard
+- Non-lead agents in hub-spoke should use idle-as-complete
+- Address Devin review feedback on PR #566 (#566)
+- Use ref-counted Map for activeReviewers instead of Set
+- WorkflowBuilder drops preset field and reviewer double-booking
+
+### Technical Perspective
+#### Dependencies & Tooling
+- Update MCP tool name references to 3-level hierarchy (#564) (#564)
+
+#### Releases
+- v3.2.2
+
+---
+
+## [3.2.1] - 2026-03-13
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Point-person-led completion pipeline (#552)** (#552)
+
+### Technical Perspective
+#### Releases
+- v3.2.1
+
+---
+
+## [3.2.0] - 2026-03-13
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Deterministic workspace key from user + directory (#549)** (#549)
+
+#### User-Impacting Fixes
+- Pass --model flag to spawned CLI processes (#559) (#559)
+- Rebind relaycast tokens after workspace switch (#558) (#558)
+- Update MCP tool name references to dot-notation hierarchy (#555) (#555)
+- Inject inter-agent DMs via workspace WebSocket (#553) (#553)
+- Exact flag matching for --mcp-config guard (#550) (#550)
+
+### Technical Perspective
+#### Architecture & API Changes
+- Move skills to dedicated directory with symlinks (#561) (#561)
+
+#### Performance & Reliability
+- Add workflow smoke matrix for codex and gemini (#544) (#544)
+
+#### Releases
+- v3.2.0
+
+---
+
 ## [3.1.23] - 2026-03-12
 
 ### Technical Perspective

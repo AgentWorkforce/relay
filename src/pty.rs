@@ -27,6 +27,16 @@ pub struct PtySession {
     no_pid_alive_checks: std::sync::atomic::AtomicU32,
 }
 
+fn needs_sane_term_override() -> bool {
+    match env::var("TERM") {
+        Ok(term) => {
+            let trimmed = term.trim();
+            trimmed.is_empty() || trimmed.eq_ignore_ascii_case("dumb")
+        }
+        Err(_) => true,
+    }
+}
+
 fn canonicalize_display(path: &Path) -> String {
     std::fs::canonicalize(path)
         .ok()
@@ -83,6 +93,9 @@ impl PtySession {
         let resolved_command = resolve_command_path(command);
         let mut cmd = CommandBuilder::new(&resolved_command);
         cmd.cwd(std::env::current_dir().context("failed to get current directory")?);
+        if needs_sane_term_override() {
+            cmd.env("TERM", "xterm-256color");
+        }
         for arg in args {
             cmd.arg(arg);
         }
@@ -325,6 +338,7 @@ impl PtySession {
 #[cfg(test)]
 mod tests {
     use super::PtySession;
+    use std::env;
     use tokio::time::{timeout, Duration};
 
     #[tokio::test]
@@ -387,5 +401,37 @@ mod tests {
         // After shutdown, receiver should eventually close
         let result = timeout(Duration::from_secs(2), rx.recv()).await;
         assert!(result.is_ok()); // timeout didn't fire; channel closed
+    }
+
+    #[tokio::test]
+    async fn spawn_overrides_dumb_term_for_pty_children() {
+        let original_term = env::var_os("TERM");
+        unsafe {
+            env::set_var("TERM", "dumb");
+        }
+
+        let (pty, mut rx) =
+            PtySession::spawn("sh", &["-c".into(), "printf '%s' \"$TERM\"".into()], 24, 80)
+                .unwrap();
+
+        let mut collected = Vec::new();
+        while let Ok(Some(chunk)) = timeout(Duration::from_secs(2), rx.recv()).await {
+            collected.extend_from_slice(&chunk);
+            if String::from_utf8_lossy(&collected).contains("xterm-256color") {
+                break;
+            }
+        }
+
+        let _ = pty.shutdown();
+        match original_term {
+            Some(term) => unsafe {
+                env::set_var("TERM", term);
+            },
+            None => unsafe {
+                env::remove_var("TERM");
+            },
+        }
+
+        assert_eq!(String::from_utf8_lossy(&collected), "xterm-256color");
     }
 }

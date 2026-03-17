@@ -15,10 +15,11 @@ mod swarm_tui;
 mod wrap;
 
 use helpers::{
-    detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
-    detect_gemini_trust_prompt, detect_gemini_untrusted_banner, floor_char_boundary,
-    is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode, normalize_cli_name,
-    parse_cli_command, strip_ansi, TerminalQueryParser,
+    detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
+    detect_gemini_action_required, detect_gemini_trust_prompt, detect_gemini_untrusted_banner,
+    detect_opencode_permission_prompt, floor_char_boundary, is_auto_suggestion,
+    is_bypass_selection_menu, is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi,
+    TerminalQueryParser,
 };
 use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiRequest};
 use routing::display_target_for_dashboard;
@@ -805,12 +806,31 @@ impl WorkerRegistry {
                     .await?
                 };
 
-                let has_extra =
-                    bypass_flag.is_some() || !effective_args.is_empty() || !mcp_args.is_empty();
+                // Inject --model flag when spec.model is set and not already in args.
+                let model_flag = spec.model.as_deref().and_then(|m| {
+                    if m.is_empty()
+                        || effective_args
+                            .iter()
+                            .any(|a| a == "--model" || a.starts_with("--model=") || a == "-m")
+                    {
+                        None
+                    } else {
+                        Some(m.to_string())
+                    }
+                });
+
+                let has_extra = bypass_flag.is_some()
+                    || model_flag.is_some()
+                    || !effective_args.is_empty()
+                    || !mcp_args.is_empty();
                 if has_extra {
                     command.arg("--");
                     if let Some(flag) = bypass_flag {
                         command.arg(flag);
+                    }
+                    if let Some(ref model) = model_flag {
+                        command.arg("--model");
+                        command.arg(model);
                     }
                     for arg in &mcp_args {
                         command.arg(arg);
@@ -6234,8 +6254,8 @@ mod tests {
     use super::{
         build_agent_state_transition_event, build_thread_infos, channels_from_csv, continuity_dir,
         delivery_retry_interval, derive_ws_base_url_from_http, detect_bypass_permissions_prompt,
-        display_target_for_dashboard, drop_pending_for_worker, extract_mcp_message_ids,
-        http_api_event_emit_timeout, http_api_local_delivery_timeout,
+        detect_claude_trust_prompt, display_target_for_dashboard, drop_pending_for_worker,
+        extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
         http_api_relaycast_send_timeout, is_auto_suggestion, is_bypass_selection_menu,
         is_in_editor_mode, is_relaycast_self_control_target, is_unknown_worker_error_message,
         normalize_channel, normalize_initial_task, normalize_sender,
@@ -6849,14 +6869,14 @@ mod tests {
     fn injection_format_preserved() {
         let rendered = format_injection("alice", "evt_1", "hello", "bob");
         assert!(rendered.contains("<system-reminder>"));
-        assert!(rendered.contains("mcp__relaycast__send_dm"));
+        assert!(rendered.contains("mcp__relaycast__message_dm_send"));
         assert!(rendered.contains("Relay message from alice [evt_1]: hello"));
     }
 
     #[test]
     fn injection_format_includes_channel() {
         let rendered = format_injection("alice", "evt_1", "hello", "#general");
-        assert!(rendered.contains("mcp__relaycast__post_message"));
+        assert!(rendered.contains("mcp__relaycast__message_post"));
         assert!(rendered.contains("channel: \"general\""));
         assert!(rendered.contains("Relay message from alice in #general [evt_1]: hello"));
     }
@@ -7246,6 +7266,53 @@ mod tests {
         assert!(has_ref && has_confirm);
     }
 
+    // ==================== detect_claude_trust_prompt tests ====================
+
+    #[test]
+    fn claude_trust_prompt_full_match() {
+        let output = "take a moment to review what's in this folder first.\n\
+                       Claude Code'll be able to read, edit, and execute files here.\n\
+                       Security guide\n\
+                       ❯ 1. Yes, I trust this folder\n\
+                         2. No, exit\n\
+                       Enter to confirm · Esc to cancel";
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
+        assert!(has_trust_ref);
+        assert!(has_confirmation);
+    }
+
+    #[test]
+    fn claude_trust_prompt_stripped_spaces() {
+        let output = "Yes,Itrustthisfolder\nNo,exit";
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
+        assert!(has_trust_ref);
+        assert!(has_confirmation);
+    }
+
+    #[test]
+    fn claude_trust_prompt_no_match_normal_output() {
+        let output = "I'll help you fix that bug. Let me read the file first.";
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
+        assert!(!has_trust_ref);
+        assert!(!has_confirmation);
+    }
+
+    #[test]
+    fn claude_trust_prompt_partial_no_exit() {
+        let output = "Yes, I trust this folder";
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
+        assert!(has_trust_ref);
+        assert!(!has_confirmation, "should not match without exit option");
+    }
+
+    #[test]
+    fn claude_trust_prompt_with_ansi() {
+        let raw = "\x1b[1m❯ 1. Yes, I trust this folder\x1b[0m\n  2. No, exit";
+        let clean = strip_ansi(raw);
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(&clean);
+        assert!(has_trust_ref && has_confirmation);
+    }
+
     // ==================== is_in_editor_mode tests ====================
 
     #[test]
@@ -7595,5 +7662,92 @@ mod tests {
         let state_path = std::path::Path::new(".agent-relay/state.json");
         let result = continuity_dir(state_path);
         assert_eq!(result, std::path::PathBuf::from(".agent-relay/continuity"));
+    }
+
+    // ==================== model flag injection tests ====================
+    // Tests for the --model flag injection logic used in WorkerRegistry::spawn().
+    // When spec.model is set and non-empty, the broker should inject --model <value>
+    // into the spawned CLI's argv, unless the user already specified --model.
+
+    /// Mirror of the model flag logic in WorkerRegistry::spawn().
+    fn compute_model_flag(model: Option<&str>, existing_args: &[String]) -> Option<String> {
+        model.and_then(|m| {
+            if m.is_empty()
+                || existing_args
+                    .iter()
+                    .any(|a| a == "--model" || a.starts_with("--model=") || a == "-m")
+            {
+                None
+            } else {
+                Some(m.to_string())
+            }
+        })
+    }
+
+    #[test]
+    fn model_flag_injected_when_present() {
+        assert_eq!(
+            compute_model_flag(Some("haiku"), &[]),
+            Some("haiku".to_string()),
+            "model should be injected when set and args are empty"
+        );
+    }
+
+    #[test]
+    fn model_flag_not_injected_when_none() {
+        assert_eq!(
+            compute_model_flag(None, &[]),
+            None,
+            "model should not be injected when not set"
+        );
+    }
+
+    #[test]
+    fn model_flag_not_injected_when_empty() {
+        assert_eq!(
+            compute_model_flag(Some(""), &[]),
+            None,
+            "model should not be injected when empty string"
+        );
+    }
+
+    #[test]
+    fn model_flag_not_injected_when_already_in_args() {
+        let args = vec!["--model".to_string(), "opus".to_string()];
+        assert_eq!(
+            compute_model_flag(Some("haiku"), &args),
+            None,
+            "model should not be injected when --model already in args"
+        );
+    }
+
+    #[test]
+    fn model_flag_not_injected_when_short_flag_in_args() {
+        let args = vec!["-m".to_string(), "opus".to_string()];
+        assert_eq!(
+            compute_model_flag(Some("haiku"), &args),
+            None,
+            "model should not be injected when -m already in args"
+        );
+    }
+
+    #[test]
+    fn model_flag_not_injected_when_equals_format_in_args() {
+        let args = vec!["--model=opus".to_string()];
+        assert_eq!(
+            compute_model_flag(Some("haiku"), &args),
+            None,
+            "model should not be injected when --model=value already in args"
+        );
+    }
+
+    #[test]
+    fn model_flag_injected_with_other_args() {
+        let args = vec!["--verbose".to_string()];
+        assert_eq!(
+            compute_model_flag(Some("gpt-4o"), &args),
+            Some("gpt-4o".to_string()),
+            "model should be injected when other unrelated args exist"
+        );
     }
 }

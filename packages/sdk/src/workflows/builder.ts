@@ -4,6 +4,7 @@ import type { AgentRelayOptions } from '../relay.js';
 import type {
   AgentCli,
   AgentDefinition,
+  AgentPreset,
   Barrier,
   CoordinationConfig,
   DryRunReport,
@@ -38,8 +39,11 @@ export interface AgentOptions {
   /** When false, the agent runs as a non-interactive subprocess (no PTY, no relay messaging).
    *  Default: true. */
   interactive?: boolean;
+  /** Agent preset: 'lead' (interactive PTY), 'worker' | 'reviewer' | 'analyst' (non-interactive subprocess). */
+  preset?: AgentPreset;
 }
 
+/** Options for agent steps (default). */
 export interface AgentStepOptions {
   agent: string;
   task: string;
@@ -49,16 +53,20 @@ export interface AgentStepOptions {
   retries?: number;
 }
 
+/** Options for deterministic (shell command) steps. */
 export interface DeterministicStepOptions {
   type: 'deterministic';
   command: string;
+  /** Capture stdout as step output for downstream steps. Default: true. */
   captureOutput?: boolean;
+  /** Fail if command exit code is non-zero. Default: true. */
   failOnError?: boolean;
   dependsOn?: string[];
   verification?: VerificationCheck;
   timeoutMs?: number;
 }
 
+/** Options for worktree steps (create/checkout git worktrees). */
 export interface WorktreeStepOptions {
   type: 'worktree';
   branch: string;
@@ -212,6 +220,7 @@ export class WorkflowBuilder {
     if (options.role !== undefined) def.role = options.role;
     if (options.task !== undefined) def.task = options.task;
     if (options.channels !== undefined) def.channels = options.channels;
+    if (options.preset !== undefined) def.preset = options.preset;
     if (options.interactive !== undefined) def.interactive = options.interactive;
 
     if (
@@ -234,7 +243,7 @@ export class WorkflowBuilder {
     return this;
   }
 
-  /** Add a workflow step. */
+  /** Add a workflow step (agent or deterministic). */
   step(name: string, options: StepOptions): this {
     const step: WorkflowStep = { name };
 
@@ -292,6 +301,10 @@ export class WorkflowBuilder {
 
   /** Build and return the RelayYamlConfig object. */
   toConfig(): RelayYamlConfig {
+    const hasAgentSteps = this._steps.some((s) => s.type !== 'deterministic' && s.type !== 'worktree');
+    if (hasAgentSteps && this._agents.length === 0) {
+      throw new Error('Workflow must have at least one agent when using agent steps');
+    }
     if (this._steps.length === 0) {
       throw new Error('Workflow must have at least one step');
     }

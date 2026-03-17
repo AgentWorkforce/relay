@@ -12,26 +12,6 @@
       "sourceSubtype": "skill",
       "installedPath": ".claude/skills/creating-claude-hooks-skill/SKILL.md"
     },
-    "@anthropic/frontend-design#agents.md": {
-      "version": "1.0.0",
-      "resolved": "https://registry.prpm.dev/api/v1/packages/%40anthropic%2Ffrontend-design/1.0.0.tar.gz",
-      "integrity": "sha256-404d3d731beb8feaf0d7fff7fa967538686246cd930da612db753fa76e5fb057",
-      "format": "agents.md",
-      "subtype": "skill",
-      "sourceFormat": "claude",
-      "sourceSubtype": "skill",
-      "installedPath": ".openskills/frontend-design/SKILL.md",
-      "progressiveDisclosure": {
-        "mode": "progressive",
-        "resourceDir": ".openskills/frontend-design",
-        "manifestPath": "AGENTS.md",
-        "resourceName": "frontend-design",
-        "resourceType": "skill",
-        "skillsDir": ".openskills/frontend-design",
-        "skillName": "frontend-design",
-        "eager": false
-      }
-    },
     "@prpm/creating-skills-skill#claude": {
       "version": "1.0.4",
       "resolved": "https://registry.prpm.dev/api/v1/packages/%40prpm%2Fcreating-skills-skill/1.0.4.tar.gz",
@@ -82,23 +62,6 @@
       "sourceSubtype": "skill",
       "installedPath": ".claude/skills/implementing-command-palettes/SKILL.md"
     },
-    "@agent-relay/agent-relay-snippet#agents.md": {
-      "version": "1.0.0",
-      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fagent-relay-snippet/1.0.0.tar.gz",
-      "integrity": "sha256-e002400917acf3e15e5fbe649ccfd9c7a0752ba663b528ff42999a00c1b7b4b1",
-      "format": "agents.md",
-      "subtype": "snippet",
-      "sourceFormat": "generic",
-      "sourceSubtype": "snippet",
-      "installedPath": "AGENTS.md",
-      "snippetMetadata": {
-        "targetPath": "AGENTS.md",
-        "config": {
-          "target": "AGENTS.md",
-          "position": "append"
-        }
-      }
-    },
     "@agent-workforce/trail-snippet#agents.md": {
       "version": "1.0.0",
       "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-workforce%2Ftrail-snippet/1.0.0.tar.gz",
@@ -125,23 +88,6 @@
       "sourceFormat": "claude",
       "sourceSubtype": "skill",
       "installedPath": ".claude/skills/github-oauth-nango-integration/SKILL.md"
-    },
-    "@agent-relay/agent-relay-snippet#agents.md:AGENTS.md": {
-      "version": "1.1.4",
-      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fagent-relay-snippet/1.1.4.tar.gz",
-      "integrity": "sha256-8ef5f570144dc7d6861e0714458ff64c579205404e6e4a348fc2d32dba58d1af",
-      "format": "agents.md",
-      "subtype": "snippet",
-      "sourceFormat": "generic",
-      "sourceSubtype": "snippet",
-      "installedPath": "AGENTS.md",
-      "snippetMetadata": {
-        "targetPath": "AGENTS.md",
-        "config": {
-          "target": "AGENTS.md",
-          "position": "append"
-        }
-      }
     },
     "@agent-relay/agent-relay-protocol#agents.md:AGENTS.md": {
       "version": "1.1.0",
@@ -171,9 +117,9 @@
       "installedPath": ".claude/skills/browser-testing-with-screenshots/SKILL.md"
     },
     "@agent-workforce/trail-snippet#agents.md:AGENTS.md": {
-      "version": "1.0.1",
-      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-workforce%2Ftrail-snippet/1.0.1.tar.gz",
-      "integrity": "sha256-a7b8d388e19158b1dd4644f2786291e7c90e4b56411c41d4ede1a7d45e7568c9",
+      "version": "1.1.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-workforce%2Ftrail-snippet/1.1.0.tar.gz",
+      "integrity": "sha256-8d8824b5236660e18c780b3574ee756737401d9a77e843411cdd509ceb9e0668",
       "format": "agents.md",
       "subtype": "snippet",
       "sourceFormat": "generic",
@@ -186,7 +132,17 @@
           "position": "append"
         }
       }
+    },
+    "@prpm/creating-agent-skills-skill#codex": {
+      "version": "1.0.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40prpm%2Fcreating-agent-skills-skill/1.0.0.tar.gz",
+      "integrity": "sha256-0d80deb1fe8860d7da2b3eb9bcab8db3cf7437c1306ff61dacc92eb4987337d5",
+      "format": "codex",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".agents/skills/creating-agent-skills-skill/SKILL.md"
     }
   },
-  "generated": "2026-02-05T08:20:36.768Z"
+  "generated": "2026-03-13T09:55:30.873Z"
 }

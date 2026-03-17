@@ -1,0 +1,74 @@
+version: '1.0'
+name: test-gemini-supervisor
+
+description: Real Gemini supervisor workflow with two workers and a merge.
+
+swarm:
+  pattern: dag
+  channel: test-gemini-supervisor
+  maxConcurrency: 3
+  timeoutMs: 420000
+
+agents:
+  - name: gemini-worker-a
+    cli: gemini
+    preset: worker
+  - name: gemini-worker-b
+    cli: gemini
+    preset: worker
+  - name: gemini-reviewer
+    cli: gemini
+    preset: reviewer
+
+workflows:
+  - name: gemini-supervisor
+    steps:
+      - name: worker-a
+        type: agent
+        agent: gemini-worker-a
+        task: |
+          Output exactly:
+          ITEM_A=green
+          WORKER_A_DONE
+        verification:
+          type: output_contains
+          value: WORKER_A_DONE
+
+      - name: worker-b
+        type: agent
+        agent: gemini-worker-b
+        task: |
+          Output exactly:
+          ITEM_B=yellow
+          WORKER_B_DONE
+        verification:
+          type: output_contains
+          value: WORKER_B_DONE
+
+      - name: supervisor
+        type: agent
+        agent: gemini-reviewer
+        dependsOn: [worker-a, worker-b]
+        task: |
+          Review these worker outputs.
+
+          A:
+          {{steps.worker-a.output}}
+
+          B:
+          {{steps.worker-b.output}}
+
+          If both outputs are present, output exactly:
+          SUPERVISOR_OK
+          ITEMS=2
+        verification:
+          type: output_contains
+          value: SUPERVISOR_OK
+
+      - name: merge
+        type: deterministic
+        dependsOn: [supervisor]
+        command: |
+          echo "{{steps.supervisor.output}}" | grep -q "SUPERVISOR_OK" && echo "MERGE_OK" || (echo "MERGE_FAIL" >&2; exit 1)
+        captureOutput: true
+        failOnError: true

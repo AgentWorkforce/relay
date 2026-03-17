@@ -4,10 +4,10 @@ Advanced features for session continuity and trajectory tracking.
 
 ## Session Continuity
 
-Use `relay_send` with a continuity message to save state for session recovery:
+Use `mcp__relaycast__message_dm_send` with a continuity message to save state for session recovery:
 
 ```
-relay_send(to: "system", message: "KIND: continuity\nACTION: save\n\nCurrent task: Implementing user authentication\nCompleted: User model, JWT utils\nIn progress: Login endpoint")
+mcp__relaycast__message_dm_send(to: "system", text: "KIND: continuity\nACTION: save\n\nCurrent task: Implementing user authentication\nCompleted: User model, JWT utils\nIn progress: Login endpoint")
 ```
 
 ### When to Save
@@ -51,10 +51,10 @@ trail abandon --reason "Blocked by missing credentials"
 
 ## Cross-Project Messaging
 
-In bridge mode, use `project:agent` format with `relay_send`:
+In bridge mode, use `project:agent` format with `mcp__relaycast__message_dm_send`:
 
 ```
-relay_send(to: "frontend:Designer", message: "Please update the login UI.")
+mcp__relaycast__message_dm_send(to: "frontend:Designer", text: "Please update the login UI.")
 ```
 
 Special targets:

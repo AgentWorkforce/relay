@@ -23,12 +23,12 @@ const MCP_SECTION: &str = r#"## MCP-First Workflow (Preferred)
 
 MCP is configured for this workspace/CLI. Use MCP tools first:
 
-- `relay_send(to, message)`
-- `relay_spawn(name, cli, task)`
-- `relay_inbox()`
-- `relay_who()`
-- `relay_release(name)`
-- `relay_status()`
+- `mcp__relaycast__message_dm_send(to, text)` — Send a DM
+- `mcp__relaycast__message_post(channel, text)` — Post to channel
+- `mcp__relaycast__agent_add(name, cli, task)` — Spawn agent
+- `mcp__relaycast__message_inbox_check()` — Check messages
+- `mcp__relaycast__agent_list()` — List agents
+- `mcp__relaycast__agent_remove(name)` — Release agent
 
 Use MCP/skills only; do not use filesystem protocols.
 
@@ -373,6 +373,12 @@ fn relaycast_server_config(
     }
     if let Some(token) = relay_agent_token.map(str::trim).filter(|s| !s.is_empty()) {
         env.insert("RELAY_AGENT_TOKEN".into(), Value::String(token.to_string()));
+        // Skip bootstrap when the broker has already pre-registered the agent —
+        // prevents blocking HTTP calls during MCP initialize handshake.
+        env.insert(
+            "RELAY_SKIP_BOOTSTRAP".into(),
+            Value::String("1".to_string()),
+        );
     }
     // Forward multi-workspace context so spawned child agents can connect to
     // the correct workspaces via their MCP configuration.
@@ -447,6 +453,12 @@ pub fn ensure_opencode_config(
     }
     if let Some(v) = relay_agent_token.map(str::trim).filter(|s| !s.is_empty()) {
         env.insert("RELAY_AGENT_TOKEN".into(), Value::String(v.to_string()));
+        // Skip bootstrap when the broker has already pre-registered the agent —
+        // prevents blocking HTTP calls during MCP initialize handshake.
+        env.insert(
+            "RELAY_SKIP_BOOTSTRAP".into(),
+            Value::String("1".to_string()),
+        );
     }
     // Forward multi-workspace context to opencode child agents.
     if let Ok(wj) = std::env::var("RELAY_WORKSPACES_JSON") {
@@ -743,6 +755,11 @@ pub async fn configure_relaycast_mcp_with_token(
                 "--config".to_string(),
                 format!("mcp_servers.relaycast.env.RELAY_AGENT_TOKEN=\"{token}\""),
             ]);
+            // Skip bootstrap when the broker has already pre-registered the agent.
+            args.extend([
+                "--config".to_string(),
+                "mcp_servers.relaycast.env.RELAY_SKIP_BOOTSTRAP=\"1\"".to_string(),
+            ]);
         }
         // Forward multi-workspace context to codex child agents.
         // JSON values must have inner quotes escaped for TOML basic-string parsing.
@@ -883,6 +900,9 @@ fn gemini_droid_mcp_add_args(
     if let Some(token) = agent_token.map(str::trim).filter(|s| !s.is_empty()) {
         args.push(env_flag.to_string());
         args.push(format!("RELAY_AGENT_TOKEN={token}"));
+        // Skip bootstrap when the broker has already pre-registered the agent.
+        args.push(env_flag.to_string());
+        args.push("RELAY_SKIP_BOOTSTRAP=1".to_string());
     }
     // Forward multi-workspace context to gemini/droid child agents.
     if let Ok(wj) = std::env::var("RELAY_WORKSPACES_JSON") {

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
+import { buildBundledRelaycastMcpCommand } from './relaycast-mcp-command.js';
 
 type UpOptions = {
   dashboard?: boolean;
@@ -220,6 +221,17 @@ function cleanupBrokerPidIfStopped(brokerPidPath: string, deps: CoreDependencies
   const pid = readPidFile(brokerPidPath, deps);
   if (pid === null || !isProcessRunning(pid, deps)) {
     safeUnlink(brokerPidPath, deps);
+  }
+}
+
+function ensureBundledRelaycastMcpCommand(deps: CoreDependencies): void {
+  if (deps.env.RELAYCAST_MCP_COMMAND?.trim()) {
+    return;
+  }
+
+  const command = buildBundledRelaycastMcpCommand(deps.execPath, deps.cliScript, deps.fs.existsSync);
+  if (command) {
+    deps.env.RELAYCAST_MCP_COMMAND = command;
   }
 }
 
@@ -822,6 +834,8 @@ async function shutdownUpResources(
 
 // eslint-disable-next-line complexity
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
+  ensureBundledRelaycastMcpCommand(deps);
+
   if (options.background) {
     const args = deps.argv.slice(2).filter((arg) => arg !== '--background');
     const child = deps.spawnProcess(deps.execPath, [deps.cliScript, ...args], {
@@ -1291,18 +1305,23 @@ export async function runStatusCommand(deps: CoreDependencies): Promise<void> {
   deps.log(`PID: ${brokerPid}`);
   deps.log(`Project: ${paths.projectRoot}`);
 
-  const relay = deps.createRelay(paths.projectRoot);
-  try {
-    const status = await relay.getStatus();
-    if (typeof status.agent_count === 'number') {
-      deps.log(`Agents: ${status.agent_count}`);
+  // Discover the existing broker's API port instead of spawning a new broker.
+  // Without an API port, createRelay spawns a fresh broker process which
+  // conflicts with the already-running one and can cause the command to fail.
+  const apiPort = await deps.findBrokerApiPort();
+
+  if (apiPort > 0) {
+    const relay = deps.createRelay(paths.projectRoot, apiPort);
+    try {
+      const status = await relay.getStatus();
+      if (typeof status.agent_count === 'number') {
+        deps.log(`Agents: ${status.agent_count}`);
+      }
+      if (typeof status.pending_delivery_count === 'number' && status.pending_delivery_count > 0) {
+        deps.log(`Pending deliveries: ${status.pending_delivery_count}`);
+      }
+    } catch {
+      // PID-based status is enough when broker query fails.
     }
-    if (typeof status.pending_delivery_count === 'number' && status.pending_delivery_count > 0) {
-      deps.log(`Pending deliveries: ${status.pending_delivery_count}`);
-    }
-  } catch {
-    // PID-based status is enough when broker query fails.
-  } finally {
-    await relay.shutdown().catch(() => undefined);
   }
 }

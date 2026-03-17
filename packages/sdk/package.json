@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/sdk",
-  "version": "3.1.23",
+  "version": "3.2.3",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -49,6 +49,21 @@
       "types": "./dist/workflows/index.d.ts",
       "import": "./dist/workflows/index.js",
       "default": "./dist/workflows/index.js"
+    },
+    "./communicate": {
+      "types": "./dist/communicate/index.d.ts",
+      "import": "./dist/communicate/index.js",
+      "default": "./dist/communicate/index.js"
+    },
+    "./communicate/adapters/pi": {
+      "types": "./dist/communicate/adapters/pi.d.ts",
+      "import": "./dist/communicate/adapters/pi.js",
+      "default": "./dist/communicate/adapters/pi.js"
+    },
+    "./communicate/adapters/claude-sdk": {
+      "types": "./dist/communicate/adapters/claude-sdk.d.ts",
+      "import": "./dist/communicate/adapters/claude-sdk.js",
+      "default": "./dist/communicate/adapters/claude-sdk.js"
     }
   },
   "files": [
@@ -78,11 +93,42 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
+    "@types/ws": "^8.5.10",
     "typescript": "^5.7.3"
   },
   "dependencies": {
-    "@agent-relay/config": "3.1.23",
+    "@agent-relay/config": "3.2.3",
     "@relaycast/sdk": "^0.4.0",
+    "@sinclair/typebox": "^0.34.48",
+    "ws": "^8.18.3",
     "yaml": "^2.7.0"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/claude-agent-sdk": ">=0.1.0",
+    "@google/adk": ">=0.5.0",
+    "@langchain/langgraph": ">=1.2.0",
+    "@mariozechner/pi-coding-agent": ">=0.50.0",
+    "@openai/agents": ">=0.7.0",
+    "crewai": ">=1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/claude-agent-sdk": {
+      "optional": true
+    },
+    "@google/adk": {
+      "optional": true
+    },
+    "@langchain/langgraph": {
+      "optional": true
+    },
+    "@mariozechner/pi-coding-agent": {
+      "optional": true
+    },
+    "@openai/agents": {
+      "optional": true
+    },
+    "crewai": {
+      "optional": true
+    }
   }
 }

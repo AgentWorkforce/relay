@@ -126,6 +126,7 @@ export interface CoreDependencies {
   holdOpen: () => Promise<void>;
   resolveTemplatesDir: () => string;
   isPortInUse: (port: number) => Promise<boolean>;
+  findBrokerApiPort: () => Promise<number>;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
@@ -353,6 +354,21 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     warn: (...args: unknown[]) => console.warn(...args),
+    findBrokerApiPort: async () => {
+      const dp = Number.parseInt(process.env.AGENT_RELAY_DASHBOARD_PORT ?? '3888', 10);
+      const startPort = (Number.isFinite(dp) ? dp : 3888) + 1;
+      for (let i = 0; i < 25; i++) {
+        const port = startPort + i;
+        if (port > 65535) break;
+        try {
+          const res = await fetch(`http://localhost:${port}/health`);
+          if (res.ok) return port;
+        } catch {
+          // Not responding, keep scanning.
+        }
+      }
+      return 0;
+    },
     exit: defaultExit,
     ...overrides,
   };

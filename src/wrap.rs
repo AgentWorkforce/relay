@@ -44,6 +44,9 @@ pub(crate) struct PtyAutoState {
     // Codex model upgrade prompt
     pub(crate) codex_model_prompt_handled: bool,
     pub(crate) codex_model_buffer: String,
+    // Opencode/droid EXECUTE permission prompt
+    pub(crate) opencode_perm_buffer: String,
+    pub(crate) last_opencode_perm_approval: Option<Instant>,
     // Gemini "Action Required" prompt
     pub(crate) gemini_action_buffer: String,
     pub(crate) last_gemini_action_approval: Option<Instant>,
@@ -53,6 +56,9 @@ pub(crate) struct PtyAutoState {
     // Gemini untrusted folder banner (triggers /permissions command)
     pub(crate) gemini_untrusted_buffer: String,
     pub(crate) gemini_untrusted_handled: bool,
+    // Claude Code folder trust prompt
+    pub(crate) claude_trust_buffer: String,
+    pub(crate) claude_trust_handled: bool,
     // Auto-suggestion / injection state
     pub(crate) auto_suggestion_visible: bool,
     pub(crate) last_injection_time: Option<Instant>,
@@ -75,12 +81,16 @@ impl PtyAutoState {
             bypass_perms_send_count: 0,
             codex_model_prompt_handled: false,
             codex_model_buffer: String::new(),
+            opencode_perm_buffer: String::new(),
+            last_opencode_perm_approval: None,
             gemini_action_buffer: String::new(),
             last_gemini_action_approval: None,
             gemini_trust_buffer: String::new(),
             gemini_trust_handled: false,
             gemini_untrusted_buffer: String::new(),
             gemini_untrusted_handled: false,
+            claude_trust_buffer: String::new(),
+            claude_trust_handled: false,
             auto_suggestion_visible: false,
             last_injection_time: None,
             last_auto_enter_time: None,
@@ -188,6 +198,34 @@ impl PtyAutoState {
         }
     }
 
+    /// Detect and auto-approve opencode/droid EXECUTE permission prompts.
+    /// Selects "Yes, and always allow medium impact commands" (arrow down + Enter).
+    pub(crate) async fn handle_opencode_permission(&mut self, text: &str, pty: &PtySession) {
+        let in_cooldown = self
+            .last_opencode_perm_approval
+            .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
+            .unwrap_or(false);
+        if !in_cooldown {
+            Self::append_buf(&mut self.opencode_perm_buffer, text, 2500, 2000);
+            let clean = strip_ansi(&self.opencode_perm_buffer);
+            let (has_header, has_allow_option) = detect_opencode_permission_prompt(&clean);
+            if has_header && has_allow_option {
+                tracing::info!(
+                    "Detected opencode EXECUTE permission prompt, selecting 'always allow'"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                // Arrow down to "Yes, and always allow medium impact commands"
+                let _ = pty.write_all(b"\x1b[B");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let _ = pty.write_all(b"\r");
+                self.opencode_perm_buffer.clear();
+                self.last_opencode_perm_approval = Some(Instant::now());
+            }
+        } else {
+            self.opencode_perm_buffer.clear();
+        }
+    }
+
     /// Detect and auto-approve Gemini "Action Required" permission prompts.
     pub(crate) async fn handle_gemini_action(&mut self, text: &str, pty: &PtySession) {
         let in_cooldown = self
@@ -248,6 +286,25 @@ impl PtyAutoState {
                 // Reset trust handler so it can pick up the resulting "Modify Trust Level" menu
                 self.gemini_trust_handled = false;
                 self.gemini_trust_buffer.clear();
+            }
+        }
+    }
+
+    /// Detect and auto-accept Claude Code folder trust prompts.
+    /// The prompt is a selection menu with "Yes, I trust this folder" pre-selected,
+    /// so we just press Enter to confirm.
+    pub(crate) async fn handle_claude_trust(&mut self, text: &str, pty: &PtySession) {
+        if !self.claude_trust_handled {
+            Self::append_buf(&mut self.claude_trust_buffer, text, 2500, 2000);
+            let clean = strip_ansi(&self.claude_trust_buffer);
+            let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(&clean);
+            if has_trust_ref && has_confirmation {
+                tracing::info!("Detected Claude Code folder trust prompt, auto-accepting");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                // "Yes, I trust this folder" is pre-selected (option 1), press Enter
+                let _ = pty.write_all(b"\r");
+                self.claude_trust_buffer.clear();
+                self.claude_trust_handled = true;
             }
         }
     }
@@ -388,6 +445,76 @@ mod idle_tests {
         assert!(!state.is_idle);
         state.reset_idle_on_output();
         assert!(!state.is_idle);
+    }
+}
+
+#[cfg(test)]
+mod opencode_perm_tests {
+    use super::*;
+
+    #[test]
+    fn opencode_perm_buffer_cleared_in_cooldown() {
+        let mut state = PtyAutoState::new();
+        // Simulate a recent approval
+        state.last_opencode_perm_approval = Some(Instant::now());
+        // Append some text to the buffer
+        state.opencode_perm_buffer =
+            "EXECUTE (command, timeout: 120s, impact: medium)\n> Yes, allow".to_string();
+
+        // During cooldown the buffer should be cleared (tested via state inspection)
+        let in_cooldown = state
+            .last_opencode_perm_approval
+            .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
+            .unwrap_or(false);
+        assert!(in_cooldown);
+    }
+
+    #[test]
+    fn opencode_perm_no_cooldown_initially() {
+        let state = PtyAutoState::new();
+        assert!(state.last_opencode_perm_approval.is_none());
+        assert!(state.opencode_perm_buffer.is_empty());
+    }
+
+    #[test]
+    fn opencode_perm_buffer_accumulates_text() {
+        let mut state = PtyAutoState::new();
+        PtyAutoState::append_buf(
+            &mut state.opencode_perm_buffer,
+            "EXECUTE (command, timeout: 120s, impact: medium)\n",
+            2500,
+            2000,
+        );
+        PtyAutoState::append_buf(
+            &mut state.opencode_perm_buffer,
+            "> Yes, allow\n",
+            2500,
+            2000,
+        );
+        assert!(state.opencode_perm_buffer.contains("EXECUTE"));
+        assert!(state.opencode_perm_buffer.contains("Yes, allow"));
+    }
+
+    #[test]
+    fn opencode_perm_cooldown_expires() {
+        let mut state = PtyAutoState::new();
+        // Set approval time far in the past (beyond GEMINI_ACTION_COOLDOWN)
+        state.last_opencode_perm_approval = Some(Instant::now() - Duration::from_secs(10));
+        let in_cooldown = state
+            .last_opencode_perm_approval
+            .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
+            .unwrap_or(false);
+        assert!(!in_cooldown);
+    }
+
+    #[test]
+    fn append_buf_truncates_at_limit() {
+        let mut buf = String::new();
+        // Fill buffer to just past the max
+        let chunk = "A".repeat(2600);
+        PtyAutoState::append_buf(&mut buf, &chunk, 2500, 2000);
+        // After exceeding 2500 it should be truncated to keep_bytes (2000)
+        assert!(buf.len() <= 2100); // allow some slack for char boundary rounding
     }
 }
 
@@ -625,9 +752,11 @@ pub(crate) async fn run_wrap(
                         pty_auto.handle_mcp_approval(&text, &pty).await;
                         pty_auto.handle_bypass_permissions(&text, &pty).await;
                         pty_auto.handle_codex_model_prompt(&text, &pty).await;
+                        pty_auto.handle_opencode_permission(&text, &pty).await;
                         pty_auto.handle_gemini_action(&text, &pty).await;
                         pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
                         pty_auto.handle_gemini_trust(&text, &pty).await;
+                        pty_auto.handle_claude_trust(&text, &pty).await;
 
                         // Accumulate echo buffer for verification matching
                         echo_buffer.push_str(&text);

@@ -14,12 +14,6 @@
   },
   "include": ["src/**/*.ts"],
   "exclude": [
-    "src/__tests__/workflow-runner.test.ts",
-    "src/__tests__/workflow-trajectory.test.ts",
-    "src/__tests__/swarm-coordinator.test.ts",
-    "src/__tests__/error-scenarios.test.ts",
-    "src/__tests__/idle-nudge.test.ts",
-    "src/__tests__/orchestration-upgrades.test.ts",
-    "src/__tests__/yaml-validation.test.ts"
+    "src/__tests__/**"
   ]
 }

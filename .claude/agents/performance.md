@@ -102,23 +102,23 @@ You are an expert performance engineer specializing in identifying bottlenecks, 
 ### Starting Investigation
 
 ```
-relay_send(to: "Lead", message: "**PERF:** Investigating [area/endpoint]\n\n**Symptom:** [What's slow/resource-heavy]\n**Target:** [Performance goal]\n**Approach:** [How I'll profile]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**PERF:** Investigating [area/endpoint]\n\n**Symptom:** [What's slow/resource-heavy]\n**Target:** [Performance goal]\n**Approach:** [How I'll profile]")
 ```
 
 ### Profiling Results
 
 ```
-relay_send(to: "Lead", message: "**PERF ANALYSIS:** [Area]\n\n**Baseline:** [Current metrics]\n**Bottleneck:** [Where time/resources go]\n**Breakdown:**\n- [Component 1]: X ms (Y%)\n- [Component 2]: X ms (Y%)\n\n**Recommended fix:** [What to optimize]\n**Expected improvement:** [Target metrics]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**PERF ANALYSIS:** [Area]\n\n**Baseline:** [Current metrics]\n**Bottleneck:** [Where time/resources go]\n**Breakdown:**\n- [Component 1]: X ms (Y%)\n- [Component 2]: X ms (Y%)\n\n**Recommended fix:** [What to optimize]\n**Expected improvement:** [Target metrics]")
 ```
 
 ### Optimization Complete
 
 ```
-relay_send(to: "Lead", message: "**PERF DONE:** [Area]\n\n**Before:** [Baseline metrics]\n**After:** [New metrics]\n**Improvement:** [X% faster / Y% less memory]\n\n**Changes:**\n- [What was optimized]\n\n**Tradeoffs:** [Any downsides]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**PERF DONE:** [Area]\n\n**Before:** [Baseline metrics]\n**After:** [New metrics]\n**Improvement:** [X% faster / Y% less memory]\n\n**Changes:**\n- [What was optimized]\n\n**Tradeoffs:** [Any downsides]")
 ```
 
 ### Performance Concern
 
 ```
-relay_send(to: "Lead", message: "**PERF WARNING:** [Concern]\n\n**Found:** [What I discovered]\n**Impact:** [How bad is it]\n**Recommendation:** [What should be done]\n**Priority:** [Now/Soon/Later]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**PERF WARNING:** [Concern]\n\n**Found:** [What I discovered]\n**Impact:** [How bad is it]\n**Recommendation:** [What should be done]\n**Priority:** [Now/Soon/Later]")
 ```

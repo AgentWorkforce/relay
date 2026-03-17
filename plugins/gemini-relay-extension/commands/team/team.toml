@@ -1,0 +1,8 @@
+prompt = """Spawn a coordinated team of relay agents for: {{args}}
+
+Follow this protocol:
+1. Analyze the task and choose the simplest coordination pattern that fits it
+2. Determine how many workers are needed (max 5) and give each worker a bounded responsibility
+3. For each worker, call mcp_relaycast_agent_add with a clear name and task
+4. Monitor ACK messages via mcp_relaycast_inbox_check and relay missing context or corrections
+5. Track DONE messages, resolve blockers, and synthesize the final result when the critical work is complete"""

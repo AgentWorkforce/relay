@@ -211,7 +211,7 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
   io.log('    1. Open Claude Code (or Cursor)');
   io.log('');
   io.log('    2. The relay tools are ready! Try asking Claude:');
-  io.log('       "Use relay_who to see online agents"');
+  io.log('       "Use mcp__relaycast__agent_list to see online agents"');
   io.log('');
   io.log('    3. Spawn a worker agent:');
   io.log('       "Spawn a worker named TestRunner to run the tests"');

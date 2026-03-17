@@ -79,23 +79,23 @@ You are an expert debugger specializing in systematic bug investigation and root
 ### Starting Investigation
 
 ```
-relay_send(to: "Lead", message: "**DEBUG:** Investigating [bug description]\n\n**Symptoms:** [What's happening]\n**Initial hypothesis:** [Where I'll start looking]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**DEBUG:** Investigating [bug description]\n\n**Symptoms:** [What's happening]\n**Initial hypothesis:** [Where I'll start looking]")
 ```
 
 ### Progress Update
 
 ```
-relay_send(to: "Lead", message: "**DEBUG STATUS:** [Bug name]\n\n**Investigated:**\n- [What I've checked]\n- [What I've ruled out]\n\n**Current hypothesis:** [Where I'm looking now]\n**Confidence:** [Low/Medium/High]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**DEBUG STATUS:** [Bug name]\n\n**Investigated:**\n- [What I've checked]\n- [What I've ruled out]\n\n**Current hypothesis:** [Where I'm looking now]\n**Confidence:** [Low/Medium/High]")
 ```
 
 ### Root Cause Found
 
 ```
-relay_send(to: "Lead", message: "**ROOT CAUSE:** [Bug name]\n\n**Location:** [File:line]\n**Cause:** [Explanation]\n**Evidence:** [How I confirmed this]\n\n**Proposed fix:** [Brief description]\n**Risk:** [Low/Medium/High]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**ROOT CAUSE:** [Bug name]\n\n**Location:** [File:line]\n**Cause:** [Explanation]\n**Evidence:** [How I confirmed this]\n\n**Proposed fix:** [Brief description]\n**Risk:** [Low/Medium/High]")
 ```
 
 ### Fix Complete
 
 ```
-relay_send(to: "Lead", message: "**FIXED:** [Bug name]\n\n**Root cause:** [Brief explanation]\n**Fix:** [What was changed]\n**Files:** [Modified files]\n**Verification:** [How I confirmed the fix]")
+mcp__relaycast__message_dm_send(to: "Lead", text: "**FIXED:** [Bug name]\n\n**Root cause:** [Brief explanation]\n**Fix:** [What was changed]\n**Files:** [Modified files]\n**Verification:** [How I confirmed the fix]")
 ```

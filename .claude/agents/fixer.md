@@ -117,25 +117,25 @@ You are a rapid response specialist focused on quick fixes, hotfixes, and urgent
 Acknowledging issue:
 
 ```
-relay_send(to: "Lead", message: "ACK: On the login failure issue\n- Reproducing now\n- ETA for diagnosis: 10 min")
+mcp__relaycast__message_dm_send(to: "Lead", text: "ACK: On the login failure issue\n- Reproducing now\n- ETA for diagnosis: 10 min")
 ```
 
 Diagnosis update:
 
 ```
-relay_send(to: "Lead", message: "STATUS: Found root cause\n- Issue: Null pointer in session validation\n- Cause: Missing null check after DB timeout\n- Fix: Add defensive check\n- ETA: 15 min to deploy")
+mcp__relaycast__message_dm_send(to: "Lead", text: "STATUS: Found root cause\n- Issue: Null pointer in session validation\n- Cause: Missing null check after DB timeout\n- Fix: Add defensive check\n- ETA: 15 min to deploy")
 ```
 
 Fix deployed:
 
 ```
-relay_send(to: "Lead", message: "DONE: Hotfix deployed\n- Change: Added null check in session.validate()\n- Commit: abc123\n- Deployed: Production\n- Monitoring: Error rate dropping\n- Follow-up: Proper timeout handling ticket created")
+mcp__relaycast__message_dm_send(to: "Lead", text: "DONE: Hotfix deployed\n- Change: Added null check in session.validate()\n- Commit: abc123\n- Deployed: Production\n- Monitoring: Error rate dropping\n- Follow-up: Proper timeout handling ticket created")
 ```
 
 Escalation:
 
 ```
-relay_send(to: "Lead", message: "ESCALATE: Need help with database issue\n- Problem: Can't reproduce locally\n- Tried: [list of attempts]\n- Need: DBA access / More context\n- Impact: Users still affected")
+mcp__relaycast__message_dm_send(to: "Lead", text: "ESCALATE: Need help with database issue\n- Problem: Can't reproduce locally\n- Tried: [list of attempts]\n- Need: DBA access / More context\n- Impact: Users still affected")
 ```
 
 ## Hotfix Checklist

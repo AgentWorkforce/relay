@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-relay-sdk"
-version = "3.1.23"
+version = "3.2.3"
 description = "Python SDK for Agent Relay workflows"
 readme = "README.md"
 license = "Apache-2.0"
@@ -14,9 +14,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+communicate = [
+    "aiohttp>=3.9",
+]
+openai-agents = ["openai-agents>=0.1"]
+claude-sdk = ["claude-agent-sdk>=0.1"]
+google-adk = ["google-adk>=0.1"]
+agno = ["agno>=0.1"]
+swarms = ["swarms>=0.1"]
+crewai = ["crewai>=0.1"]
 dev = [
+    "aiohttp>=3.9",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
 ]
 
 [tool.hatch.build.targets.wheel]

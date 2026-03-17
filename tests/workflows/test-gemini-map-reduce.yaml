@@ -1,0 +1,66 @@
+version: '1.0'
+name: test-gemini-map-reduce
+
+description: Real Gemini map-reduce/scatter-gather workflow.
+
+swarm:
+  pattern: dag
+  channel: test-gemini-map-reduce
+  maxConcurrency: 3
+  timeoutMs: 420000
+
+agents:
+  - name: gemini-map-a
+    cli: gemini
+    preset: worker
+  - name: gemini-map-b
+    cli: gemini
+    preset: worker
+  - name: gemini-reducer
+    cli: gemini
+    preset: worker
+
+workflows:
+  - name: gemini-map-reduce
+    steps:
+      - name: map-a
+        type: agent
+        agent: gemini-map-a
+        task: |
+          Output exactly:
+          FRUIT=kiwi
+          MAP_A_DONE
+        verification:
+          type: output_contains
+          value: MAP_A_DONE
+
+      - name: map-b
+        type: agent
+        agent: gemini-map-b
+        task: |
+          Output exactly:
+          FRUIT=mango
+          MAP_B_DONE
+        verification:
+          type: output_contains
+          value: MAP_B_DONE
+
+      - name: reduce
+        type: agent
+        agent: gemini-reducer
+        dependsOn: [map-a, map-b]
+        task: |
+          Combine these two outputs into a single result.
+
+          A:
+          {{steps.map-a.output}}
+
+          B:
+          {{steps.map-b.output}}
+
+          Output exactly:
+          REDUCE_RESULT=kiwi,mango
+          REDUCE_DONE
+        verification:
+          type: output_contains
+          value: REDUCE_DONE

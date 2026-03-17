@@ -43,6 +43,8 @@ const relay = new AgentRelay(options?: AgentRelayOptions);
 // Spawn by CLI type
 const agent = await relay.claude.spawn(options?)
 const agent = await relay.codex.spawn(options?)
+const agent = await relay.gemini.spawn(options?)
+const agent = await relay.opencode.spawn(options?)
 ```
 
 **Spawn options:**
@@ -265,11 +267,16 @@ Models.Claude.SONNET; // 'sonnet'
 Models.Claude.HAIKU; // 'haiku'
 
 // Codex
+Models.Codex.GPT_5_4; // 'gpt-5.4' (default)
 Models.Codex.GPT_5_3_CODEX; // 'gpt-5.3-codex'
-Models.Codex.GPT_5_2_CODEX; // 'gpt-5.2-codex' (default)
-Models.Codex.GPT_5_3_CODEX_SPARK; // 'gpt-5.3-codex-spark'
-Models.Codex.GPT_5_1_CODEX_MAX; // 'gpt-5.1-codex-max'
-Models.Codex.GPT_5_1_CODEX_MINI; // 'gpt-5.1-codex-mini'
+
+// Gemini
+Models.Gemini.GEMINI_3_1_PRO_PREVIEW; // 'gemini-3.1-pro-preview' (default)
+Models.Gemini.GEMINI_2_5_PRO; // 'gemini-2.5-pro'
+
+// OpenCode
+Models.Opencode.OPENAI_GPT_5_2; // 'openai/gpt-5.2' (default)
+Models.Opencode.OPENCODE_GPT_5_NANO; // 'opencode/gpt-5-nano'
 ```
 
 ---

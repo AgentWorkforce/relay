@@ -127,19 +127,19 @@ apt-get install --only-upgrade $(apt-get --just-print upgrade 2>&1 | grep -i sec
 When reporting system status:
 
 ```
-relay_send(to: "Lead", message: "STATUS: Server audit complete\n- Servers: 12 assessed\n- Security: 2 need patching (CVE-2024-xxxx)\n- Disk: 1 server at 85% capacity\n- Backups: All verified within 24h\n- Action needed: Patch 2 servers, expand disk on web-03")
+mcp__relaycast__message_dm_send(to: "Lead", text: "STATUS: Server audit complete\n- Servers: 12 assessed\n- Security: 2 need patching (CVE-2024-xxxx)\n- Disk: 1 server at 85% capacity\n- Backups: All verified within 24h\n- Action needed: Patch 2 servers, expand disk on web-03")
 ```
 
 When implementing changes:
 
 ```
-relay_send(to: "Lead", message: "CHANGE: Applying security hardening to prod-db-01\n- SSH: Disabling password auth\n- Firewall: Restricting to app servers only\n- Users: Removing unused accounts\n- Rollback: SSH keys verified, console access available\n- ETA: 15 min")
+mcp__relaycast__message_dm_send(to: "Lead", text: "CHANGE: Applying security hardening to prod-db-01\n- SSH: Disabling password auth\n- Firewall: Restricting to app servers only\n- Users: Removing unused accounts\n- Rollback: SSH keys verified, console access available\n- ETA: 15 min")
 ```
 
 Completion:
 
 ```
-relay_send(to: "Lead", message: "DONE: Security hardening applied\n- SSH hardened: password auth disabled\n- Firewall configured: 3 rules active\n- Users cleaned: 4 unused accounts removed\n- Verification: All services healthy, SSH working")
+mcp__relaycast__message_dm_send(to: "Lead", text: "DONE: Security hardening applied\n- SSH hardened: password auth disabled\n- Firewall configured: 3 rules active\n- Users cleaned: 4 unused accounts removed\n- Verification: All services healthy, SSH working")
 ```
 
 ## Maintenance Windows

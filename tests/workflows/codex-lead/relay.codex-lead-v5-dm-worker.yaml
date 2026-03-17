@@ -3,7 +3,7 @@ name: codex-lead-v5-dm-worker
 description: >
   CODEX LEAD EXPERIMENT #5: Codex lead uses direct messaging (DM) to assign
   work to a specific claude worker, rather than broadcasting to a channel.
-  Tests whether codex can use relay_send with a worker name (not a channel)
+  Tests whether codex can use mcp__relaycast__message_dm_send with a worker name (not a channel)
   and whether claude correctly reads its inbox for the DM assignment.
   This is the pattern needed when the lead must send different tasks to
   different workers without cross-contaminating their channels.
@@ -51,11 +51,11 @@ workflows:
           You are the lead. Send a task directly to claude-worker via DM.
 
           STEP 1 — Find the claude-worker's registered name:
-          Call relay_who() or list_agents to find the agent whose name starts
+          Call mcp__relaycast__list_agents() to find the agent whose name starts
           with "worker-" (it will be registered as "worker-<id>").
 
           STEP 2 — Send a DM to that agent:
-            relay_send(to: "<worker-agent-name>", message: "DM_TASK: Output the string 'DM_RECEIVED_AND_DONE' to your terminal, then post WORKER_DM_DONE to #codex-lead-v5.")
+            mcp__relaycast__message_dm_send(to: "<worker-agent-name>", text: "DM_TASK: Output the string 'DM_RECEIVED_AND_DONE' to your terminal, then post WORKER_DM_DONE to #codex-lead-v5.")
 
           STEP 3 — Poll #codex-lead-v5 until you see "WORKER_DM_DONE".
 

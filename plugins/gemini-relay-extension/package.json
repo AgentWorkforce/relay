@@ -1,0 +1,40 @@
+{
+  "name": "gemini-relay-extension",
+  "version": "0.1.0",
+  "description": "Agent Relay extension for Gemini CLI - multi-agent coordination via Relaycast",
+  "type": "module",
+  "author": "Agent Relay <hello@agent-relay.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/AgentWorkforce/relay/tree/main/plugins/gemini-relay-extension",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AgentWorkforce/relay.git",
+    "directory": "plugins/gemini-relay-extension"
+  },
+  "keywords": [
+    "gemini-cli-extension",
+    "agent-relay",
+    "multi-agent",
+    "relaycast",
+    "agent-communication"
+  ],
+  "files": [
+    "agents",
+    "commands",
+    "gemini-extension.json",
+    "GEMINI.md",
+    "hooks",
+    "relay-server.js",
+    "skills",
+    "README.md"
+  ],
+  "scripts": {
+    "check": "node --check relay-server.js && sh -n hooks/after-tool-inbox.sh && sh -n hooks/after-agent-inbox.sh && sh -n hooks/before-model-inject.sh && sh -n hooks/session-start.sh && sh -n hooks/session-end.sh"
+  },
+  "dependencies": {
+    "@relaycast/mcp": "^0.5.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

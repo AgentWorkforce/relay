@@ -121,6 +121,7 @@ function createHarness(options?: {
     pid: 4242,
     now: vi.fn(() => Date.now()),
     isPortInUse: vi.fn(async () => false),
+    findBrokerApiPort: vi.fn(async () => 3889),
     sleep: vi.fn(async () => undefined),
     onSignal: vi.fn(() => undefined),
     holdOpen: vi.fn(async () => undefined),
@@ -652,6 +653,30 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(env.RELAY_API_KEY).toBeUndefined();
+  });
+
+  it('up configures a bundled Relaycast MCP command when the wrapper script exists', async () => {
+    const env: NodeJS.ProcessEnv = {};
+    const fs = createFsMock({ '/tmp/relaycast-mcp.js': '' });
+    const relay = createRelayMock();
+    const { program } = createHarness({ relay, env, fs });
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+
+    expect(exitCode).toBeUndefined();
+    expect(env.RELAYCAST_MCP_COMMAND).toBe('/usr/bin/node /tmp/relaycast-mcp.js');
+  });
+
+  it('up preserves an explicit RELAYCAST_MCP_COMMAND override', async () => {
+    const env: NodeJS.ProcessEnv = { RELAYCAST_MCP_COMMAND: 'node /custom/relaycast-mcp.js' };
+    const fs = createFsMock({ '/tmp/relaycast-mcp.js': '' });
+    const relay = createRelayMock();
+    const { program } = createHarness({ relay, env, fs });
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+
+    expect(exitCode).toBeUndefined();
+    expect(env.RELAYCAST_MCP_COMMAND).toBe('node /custom/relaycast-mcp.js');
   });
 
   it('up logs "unknown" when workspace key is unexpectedly missing', async () => {
