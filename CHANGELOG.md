@@ -29,6 +29,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.2.4] - 2026-03-17
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **StartFrom + deterministic/worktree step parity (#574)** (#574)
+- **A2A protocol transport layer — Python (89 tests ✅) + TypeScript**
+- **Add OpenClaw orchestrator skill for headless multi-agent sessions**
+- **Add TS adapters for OpenAI Agents, LangGraph, Google ADK, CrewAI + review fixes**
+- **Add Pi RPC adapter for Python SDK + verify TS Pi adapter exports**
+- **Add Communicate Mode SDK (on_relay) for Python and TypeScript**
+
+#### User-Impacting Fixes
+- Address latest Devin review findings
+- Move framework adapters from dependencies to optional peerDependencies
+- Update TS test mock servers to match actual Relaycast API paths
+- Address remaining Devin review findings
+- Exclude all test files from SDK tsconfig.json too
+- Exclude all test files from SDK build config
+- Address Devin review findings on Communicate SDK
+- Address Barry review feedback on Communicate SDK
+- Address Will + Devin review feedback on Communicate SDK
+- Address PR #565 review — remove onRelay auto-detect, fix ReDoS regex (#565)
+- RegisterOrRotate for 409, ws.close timeout, add @sinclair/typebox dep for Pi adapter
+- Align Python SDK transport with real Relaycast API surface
+- Address Devin review findings
+- Exclude vitest test files from SDK build config
+- Add @sinclair/typebox to root dependencies for global install
+- Address PR #565 review feedback (#565)
+- Communicate mode spec compliance — adapters, tests, infra
+- Critical spec compliance issues from deep review
+- Spec compliance — ping/pong, auto-detect module matching
+- Add per-adapter subpath exports and withRelay alias
+- Sync package-lock.json with package.json
+
+### Technical Perspective
+#### Performance & Reliability
+- Add 13 e2e tests for all TS + Python adapters against live Relaycast
+
+#### Dependencies & Tooling
+- Hide communicate pages from public docs until tested
+- Sync package-lock.json after config version bump
+
+#### Releases
+- v3.2.4
+
+---
+
 ## [3.2.3] - 2026-03-15
 
 ### Product Perspective
