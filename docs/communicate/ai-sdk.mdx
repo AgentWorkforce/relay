@@ -25,7 +25,7 @@ const result = await streamText({
   model,
   system: 'You coordinate support specialists and keep the user informed.',
   tools: relaySession.tools,
-  prompt: 'Triage the latest onboarding issue.',
+  messages: [{ role: 'user', content: 'Triage the latest onboarding issue.' }],
 });
 ```
 
@@ -34,8 +34,10 @@ const result = await streamText({
 `onRelay()` returns a session object with:
 
 - `tools` — AI SDK-compatible relay tools for `generateText()` / `streamText()`
-- `middleware` — language model middleware that injects newly received relay messages into the `system` prompt before each call
+- `middleware` — language model middleware that injects newly received relay messages into the next model call
 - `cleanup()` — unsubscribes from live relay delivery and clears buffered injections
+
+For string-style call sites, relay context is appended to `system`. For message-array-heavy call sites, the middleware also prepends a synthetic `system` message so `messages`-driven flows get the same relay context without needing a separate top-level `system` string.
 
 This fits the AI SDK model cleanly: tool calls remain explicit, while incoming relay messages show up as fresh coordination context on the next model turn.
 
@@ -98,7 +100,7 @@ export async function POST(req: Request) {
     model,
     tools: relaySession.tools,
     system: 'You are the point person for the user. Coordinate internally via Relay when needed.',
-    prompt,
+    messages: [{ role: 'user', content: prompt }],
   });
 
   return result.toUIMessageStreamResponse({
@@ -109,6 +111,17 @@ export async function POST(req: Request) {
   });
 }
 ```
+
+## Example App
+
+A small end-to-end example lives at `examples/ai-sdk-relay-helpdesk/`.
+
+It shows:
+
+- a tiny Next.js UI
+- an AI SDK route using `onRelay()`
+- `messages`-based model calls
+- a simple escalation gate into `workflows/helpdesk-escalation.yaml`
 
 ## API
 

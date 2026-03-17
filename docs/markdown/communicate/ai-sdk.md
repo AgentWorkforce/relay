@@ -22,7 +22,7 @@ const result = await streamText({
   model,
   system: 'You coordinate support specialists and keep the user informed.',
   tools: relaySession.tools,
-  prompt: 'Triage the latest onboarding issue.',
+  messages: [{ role: 'user', content: 'Triage the latest onboarding issue.' }],
 });
 ```
 
@@ -31,8 +31,10 @@ const result = await streamText({
 `onRelay()` returns:
 
 - `tools` for `generateText()` / `streamText()`
-- `middleware` that injects live relay messages into `system`
+- `middleware` that injects live relay messages into the next model call
 - `cleanup()` to unsubscribe and clear buffered injections
+
+For string-style call sites, relay context is appended to `system`. For message-array call sites, the middleware also prepends a synthetic `system` message so chat-heavy flows get the same relay context.
 
 ## Workflow-Friendly Pattern
 
@@ -64,21 +66,20 @@ export async function POST(req: Request) {
     return Response.json({ status: workflow.status, runId: workflow.runId });
   }
 
-  const result = streamText({
+  const result = await streamText({
     model,
     tools: relaySession.tools,
     system: 'You are the point person for the user. Coordinate internally via Relay when needed.',
-    prompt,
+    messages: [{ role: 'user', content: prompt }],
   });
 
-  return result.toUIMessageStreamResponse({
-    onFinish() {
-      relaySession.cleanup();
-      void relay.close();
-    },
-  });
+  return Response.json({ mode: 'chat', text: await result.text });
 }
 ```
+
+## Example App
+
+See `examples/ai-sdk-relay-helpdesk/` for a compact Next.js example that pairs AI SDK chat with Relay workflow escalation.
 
 ## API
 

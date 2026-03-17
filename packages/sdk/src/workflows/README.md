@@ -120,6 +120,8 @@ export async function POST(req: Request) {
 
 That pattern keeps the user experience snappy while still letting longer Relay workflows run with proper ownership, retries, and verification.
 
+A compact end-to-end example app for this pattern lives in `examples/ai-sdk-relay-helpdesk/`.
+
 ## YAML Format
 
 Workflows are defined as `relay.yaml` files:

@@ -93,6 +93,27 @@ test('AI SDK middleware appends relay instructions and pending messages to syste
   assert.equal(second?.system?.includes('Need an update'), false);
 });
 
+test('AI SDK middleware prepends a synthetic system message for message-array calls', async () => {
+  const { onRelay } = await loadModule();
+  const relay = new FakeRelay();
+  const session = onRelay({ name: 'AiSdkTester', instructions: 'Escalate blockers quickly.' }, relay);
+
+  await relay.emit({ sender: 'Reviewer', text: 'Need approval on the fix', messageId: 'msg-4' });
+
+  const result = await session.middleware.transformParams?.({
+    params: {
+      messages: [{ role: 'user', content: 'Can you ship this?' }],
+    },
+  });
+
+  assert.equal(Array.isArray(result?.messages), true);
+  assert.equal(result?.messages?.[0]?.role, 'system');
+  assert.match(String(result?.messages?.[0]?.content), /Use relay_send/);
+  assert.match(String(result?.messages?.[0]?.content), /Escalate blockers quickly\./);
+  assert.match(String(result?.messages?.[0]?.content), /Need approval on the fix/);
+  assert.equal(result?.messages?.[1]?.role, 'user');
+});
+
 test('AI SDK cleanup unsubscribes from live relay messages', async () => {
   const { onRelay } = await loadModule();
   const relay = new FakeRelay();
