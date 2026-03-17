@@ -98,6 +98,24 @@ Use the built-in skills to orchestrate multi-agent work:
 - **`/relay-fanout`** — Best for embarrassingly parallel work (same task across different targets). Workers run independently with no inter-dependencies.
 - **`/relay-pipeline`** — Best for sequential work where each stage depends on the previous one's output. Stages run one at a time with explicit handoffs.
 
+These slash commands are prompt templates — they load orchestration instructions into Claude's context as a convenience. They are not the only way to trigger relay coordination. You can also describe what you want in plain language and Claude will set up the workspace, spawn relay-workers, and coordinate them. The plugin's hooks and agent definitions handle the infrastructure automatically regardless of how the request is phrased.
+
+### Natural language usage
+
+You don't need slash commands to coordinate agents. Any prompt that describes multi-agent work will trigger the same coordination machinery:
+
+```
+> Use relay fan-out to lint all packages in parallel
+
+> Split the migration into three relay workers — one for the database schema,
+  one for the API routes, and one for the frontend types
+
+> Set up a relay pipeline: first gather all TODO comments in the codebase,
+  then categorize them by priority, then open GitHub issues for the top 10
+```
+
+Claude recognizes these requests because the plugin's skills, hooks, and agent definitions are already loaded. The slash commands are simply a shortcut for loading the same instructions.
+
 ### How agent spawning works
 
 The plugin uses two separate mechanisms — **Claude Code's Agent tool** for spawning processes, and **Relay** for communication between them:
