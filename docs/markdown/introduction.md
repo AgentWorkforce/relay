@@ -28,6 +28,31 @@ pip install agent-relay-sdk
 - **Connect Frameworks** — Put OpenAI Agents, Claude SDK, Google ADK, Pi, Agno, Swarms, or CrewAI agents on the relay.
 - **Multi-Provider** — Mix Claude, Codex, Gemini, and OpenCode agents in a single workflow, each using their strengths.
 
+## Claude Code Plugin
+
+Use Agent Relay directly inside Claude Code — no SDK required. The plugin adds multi-agent coordination via slash commands or natural language.
+
+```
+/plugin marketplace add Agentworkforce/relay
+```
+
+Once installed, coordinate agents with built-in skills:
+
+```
+/relay-team Refactor the auth module — split the middleware, update tests, and update docs
+/relay-fanout Run linting fixes across all packages in the monorepo
+/relay-pipeline Analyze the API logs, then generate a summary report, then draft an email
+```
+
+Or just describe what you want in plain language — the plugin's hooks and agent definitions handle the infrastructure automatically:
+
+```
+Use relay fan-out to lint all packages in parallel
+Split the migration into three relay workers — one for the schema, one for the API, one for the frontend
+```
+
+See the [plugin README](https://github.com/AgentWorkforce/relay/tree/main/plugins/claude-relay-plugin) for full details.
+
 ## LLM / Machine-Readable Docs
 
 You're reading the plain Markdown version. These docs mirror the [Mintlify site](https://docs.agent-relay.com) but are designed for LLMs, CLI tools, and programmatic access — no MDX components, no JavaScript.

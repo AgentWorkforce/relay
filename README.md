@@ -67,6 +67,31 @@ await AgentRelay.waitForAny([x, o], FIVE_MINUTES);
 await relay.shutdown();
 ```
 
+## Claude Code Plugin
+
+Use Agent Relay directly inside Claude Code — no SDK required. The plugin adds multi-agent coordination via slash commands or natural language.
+
+```
+/plugin marketplace add Agentworkforce/relay
+```
+
+Once installed, coordinate agents with built-in skills:
+
+```
+> /relay-team Refactor the auth module — split the middleware, update tests, and update docs
+> /relay-fanout Run linting fixes across all packages in the monorepo
+> /relay-pipeline Analyze the API logs, then generate a summary report, then draft an email
+```
+
+Or just describe what you want in plain language:
+
+```
+> Use relay fan-out to lint all packages in parallel
+> Split the migration into three relay workers — one for the schema, one for the API, one for the frontend
+```
+
+See the [plugin README](plugins/claude-relay-plugin/README.md) for full details.
+
 ## Supported CLI’s
 - Claude
 - Codex

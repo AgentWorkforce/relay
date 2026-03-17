@@ -75,6 +75,29 @@ const config = onRelay('MyAgent', piConfig, new Relay('MyAgent'));
   </Card>
 </CardGroup>
 
+## Claude Code Plugin
+
+Use Agent Relay directly inside Claude Code — no SDK required. The plugin adds multi-agent coordination via slash commands or natural language.
+
+```
+/plugin marketplace add Agentworkforce/relay
+```
+
+Once installed, coordinate agents with built-in skills:
+
+```
+/relay-team Refactor the auth module — split the middleware, update tests, and update docs
+/relay-fanout Run linting fixes across all packages in the monorepo
+/relay-pipeline Analyze the API logs, then generate a summary report, then draft an email
+```
+
+Or just describe what you want in plain language — the plugin's hooks and agent definitions handle the infrastructure automatically:
+
+```
+Use relay fan-out to lint all packages in parallel
+Split the migration into three relay workers — one for the schema, one for the API, one for the frontend
+```
+
 ## LLM / Machine-Readable Docs
 
 These docs are also available as plain Markdown for LLMs, CLI tools, and programmatic access:
