@@ -309,11 +309,6 @@ export class WorkflowBuilder {
       throw new Error('Workflow must have at least one step');
     }
 
-    const hasAgentSteps = this._steps.some(s => s.type !== 'deterministic' && s.type !== 'worktree');
-    if (hasAgentSteps && this._agents.length === 0) {
-      throw new Error('Workflow must have at least one agent when using agent steps');
-    }
-
     const wfDef: WorkflowDefinition = {
       name: `${this._name}-workflow`,
       steps: [...this._steps],
