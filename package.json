@@ -185,7 +185,7 @@
     "@agent-relay/utils": "3.2.3",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@relaycast/mcp": "^0.5.1",
-    "@relaycast/sdk": "^0.4.0",
+    "@relaycast/sdk": "^0.6.0",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",
     "compare-versions": "^6.1.1",
