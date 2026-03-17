@@ -25,6 +25,19 @@ function toConstantCase(str) {
   return str.toUpperCase().replace(/-/g, '_');
 }
 
+function formatModelOption(modelConfig) {
+  const parts = [`value: '${modelConfig.id}'`, `label: '${modelConfig.label || modelConfig.id}'`];
+
+  if (Array.isArray(modelConfig.reasoning_efforts) && modelConfig.reasoning_efforts.length > 0) {
+    parts.push(`reasoningEfforts: ${JSON.stringify(modelConfig.reasoning_efforts)}`);
+  }
+  if (modelConfig.default_reasoning_effort) {
+    parts.push(`defaultReasoningEffort: '${modelConfig.default_reasoning_effort}'`);
+  }
+
+  return `{ ${parts.join(', ')} }`;
+}
+
 let output = `/**
  * CLI Registry - AUTO-GENERATED FILE - DO NOT EDIT
  * Generated from packages/shared/cli-registry.yaml
@@ -91,10 +104,22 @@ export type ${pascalCli}Model = (typeof ${pascalCli}Models)[keyof typeof ${pasca
 }
 
 // Generate model options per CLI (for dashboard dropdowns)
-output += `/** Model option type for UI dropdowns */
+output += `/** Reasoning effort levels supported by model providers. */
+export const ReasoningEfforts = {
+  LOW: 'low',
+  MEDIUM: 'medium',
+  HIGH: 'high',
+  XHIGH: 'xhigh',
+} as const;
+
+export type ReasoningEffort = (typeof ReasoningEfforts)[keyof typeof ReasoningEfforts];
+
+/** Model option type for UI dropdowns and model capability metadata. */
 export interface ModelOption {
   value: string;
   label: string;
+  reasoningEfforts?: ReasoningEffort[];
+  defaultReasoningEffort?: ReasoningEffort;
 }
 
 `;
@@ -110,10 +135,30 @@ for (const [cli, config] of Object.entries(registry.clis)) {
 export const ${constantCli}_MODEL_OPTIONS: ModelOption[] = [
 `;
     for (const [, modelConfig] of Object.entries(models)) {
-      const label = modelConfig.label || modelConfig.id;
-      output += `  { value: '${modelConfig.id}', label: '${label}' },\n`;
+      output += `  ${formatModelOption(modelConfig)},\n`;
     }
     output += `];
+
+`;
+  }
+}
+
+// Generate model metadata per CLI (keyed by model id)
+for (const [cli, config] of Object.entries(registry.clis)) {
+  const pascalCli = toPascalCase(cli);
+  const constantCli = toConstantCase(cli);
+  const models = config.models || {};
+
+  if (Object.keys(models).length > 0) {
+    output += `/**
+ * ${config.name} model metadata keyed by model id.
+ */
+export const ${constantCli}_MODEL_METADATA: Record<${pascalCli}Model, ModelOption> = {
+`;
+    for (const [, modelConfig] of Object.entries(models)) {
+      output += `  '${modelConfig.id}': ${formatModelOption(modelConfig)},\n`;
+    }
+    output += `};
 
 `;
   }
@@ -168,6 +213,63 @@ for (const [cli, config] of Object.entries(registry.clis)) {
   }
 }
 output += `} as const;
+
+`;
+
+output += `/**
+ * All model metadata grouped by CLI tool and keyed by model id.
+ */
+export const ModelMetadata = {
+`;
+for (const [cli, config] of Object.entries(registry.clis)) {
+  const pascalCli = toPascalCase(cli);
+  const constantCli = toConstantCase(cli);
+  const models = config.models || {};
+  if (Object.keys(models).length > 0) {
+    output += `  ${pascalCli}: ${constantCli}_MODEL_METADATA,\n`;
+  }
+}
+output += `} as const;
+
+const MODEL_METADATA_BY_CLI: Record<CLI, Record<string, ModelOption>> = {
+`;
+for (const [cli, config] of Object.entries(registry.clis)) {
+  const constantCli = toConstantCase(cli);
+  const models = config.models || {};
+  if (Object.keys(models).length > 0) {
+    output += `  ${cli}: ${constantCli}_MODEL_METADATA,\n`;
+  } else {
+    output += `  ${cli}: {},\n`;
+  }
+}
+output += `};
+
+/**
+ * Look up metadata for a specific CLI/model pair.
+ */
+export function getModelMetadata(cli: CLI, model: string): ModelOption | undefined {
+  return MODEL_METADATA_BY_CLI[cli]?.[model];
+}
+
+/**
+ * Supported reasoning effort values for a specific CLI/model pair.
+ */
+export function getSupportedReasoningEfforts(
+  cli: CLI,
+  model: string
+): ReasoningEffort[] | undefined {
+  return getModelMetadata(cli, model)?.reasoningEfforts;
+}
+
+/**
+ * Default reasoning effort for a specific CLI/model pair.
+ */
+export function getDefaultReasoningEffort(
+  cli: CLI,
+  model: string
+): ReasoningEffort | undefined {
+  return getModelMetadata(cli, model)?.defaultReasoningEffort;
+}
 
 `;
 

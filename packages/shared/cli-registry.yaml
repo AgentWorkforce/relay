@@ -37,24 +37,38 @@ clis:
         id: "gpt-5.4"
         label: "GPT-5.4 — Latest frontier agentic coding model"
         default: true
+        reasoning_efforts: ["low", "medium", "high", "xhigh"]
+        default_reasoning_effort: "xhigh"
       gpt_5_3_codex:
         id: "gpt-5.3-codex"
         label: "GPT-5.3 Codex — Frontier agentic coding model"
+        reasoning_efforts: ["low", "medium", "high", "xhigh"]
+        default_reasoning_effort: "xhigh"
       gpt_5_3_codex_spark:
         id: "gpt-5.3-codex-spark"
         label: "GPT-5.3 Codex Spark — Ultra-fast coding model"
+        reasoning_efforts: ["low", "medium", "high", "xhigh"]
+        default_reasoning_effort: "xhigh"
       gpt_5_2_codex:
         id: "gpt-5.2-codex"
         label: "GPT-5.2 Codex — Frontier agentic coding model"
+        reasoning_efforts: ["low", "medium", "high", "xhigh"]
+        default_reasoning_effort: "xhigh"
       gpt_5_2:
         id: "gpt-5.2"
         label: "GPT-5.2 — Frontier model, knowledge & reasoning"
+        reasoning_efforts: ["low", "medium", "high", "xhigh"]
+        default_reasoning_effort: "xhigh"
       gpt_5_1_codex_max:
         id: "gpt-5.1-codex-max"
         label: "GPT-5.1 Codex Max — Deep and fast reasoning"
+        reasoning_efforts: ["low", "medium", "high", "xhigh"]
+        default_reasoning_effort: "xhigh"
       gpt_5_1_codex_mini:
         id: "gpt-5.1-codex-mini"
         label: "GPT-5.1 Codex Mini — Cheaper, faster"
+        reasoning_efforts: ["medium", "high"]
+        default_reasoning_effort: "high"
 
   gemini:
     name: "Gemini CLI"
