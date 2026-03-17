@@ -432,19 +432,13 @@ fn inject_api_key_into_mcp_json(mcp_json: &str, api_key: Option<&str>) -> String
         .pointer_mut("/mcpServers/relaycast/env")
         .and_then(Value::as_object_mut)
     {
-        env_obj.insert(
-            "RELAY_API_KEY".into(),
-            Value::String(api_key.to_string()),
-        );
+        env_obj.insert("RELAY_API_KEY".into(), Value::String(api_key.to_string()));
     } else if let Some(server) = parsed
         .pointer_mut("/mcpServers/relaycast")
         .and_then(Value::as_object_mut)
     {
         let mut env_map = Map::new();
-        env_map.insert(
-            "RELAY_API_KEY".into(),
-            Value::String(api_key.to_string()),
-        );
+        env_map.insert("RELAY_API_KEY".into(), Value::String(api_key.to_string()));
         server.insert("env".into(), Value::Object(env_map));
     }
     serde_json::to_string(&parsed).unwrap_or_else(|_| mcp_json.to_string())
