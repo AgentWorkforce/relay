@@ -1834,6 +1834,7 @@ export class WorkflowRunner {
     };
 
     await this.db.insertRun(run);
+    this.persistRunIdHint(runId);
 
     // Build step rows
     const stepStates = new Map<string, StepState>();
@@ -1922,6 +1923,7 @@ export class WorkflowRunner {
     this.paused = false;
 
     const run = await this.db.getRun(runId);
+    this.persistRunIdHint(runId);
     if (!run) {
       throw new Error(`Run "${runId}" not found`);
     }
@@ -6115,6 +6117,17 @@ export class WorkflowRunner {
   }
 
   // ── ID generation ─────────────────────────────────────────────────────
+
+  private persistRunIdHint(runId: string): void {
+    const target = process.env.AGENT_RELAY_RUN_ID_FILE?.trim();
+    if (!target) return;
+    try {
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, runId + '\n', 'utf8');
+    } catch {
+      // Ignore hint persistence failures.
+    }
+  }
 
   private generateId(): string {
     return randomBytes(12).toString('hex');
