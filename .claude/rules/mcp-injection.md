@@ -14,10 +14,27 @@ When agents are spawned, the broker dynamically injects Relaycast MCP server con
 
 ```
 spawn_wrap() (spawner.rs)
-  → configure_relaycast_mcp() (snippets.rs)
+  → configure_relaycast_mcp() (snippets.rs)   ← pass original CLI name, NOT resolved_cli
+    → merge_relaycast_with_project_mcp()       ← merges user MCP servers + relaycast
+    → inject_api_key_into_mcp_json()           ← Claude-only: embeds RELAY_API_KEY
     → CLI-specific injection mechanism
       → Agent spawns with MCP tools available
 ```
+
+## MCP Config Merge Order (Claude)
+
+`merge_relaycast_with_project_mcp_inner()` loads MCP servers in precedence order (lowest first, later overrides earlier):
+
+1. `~/.claude/settings.json` — user-global
+2. `~/.claude/settings.local.json` — user-global local
+3. `<cwd>/.mcp.json` — project legacy
+4. `<cwd>/.claude/settings.json` — project
+5. `<cwd>/.claude/settings.local.json` — project local
+6. Relaycast server entry — always added last (highest precedence)
+
+## Important: CLI Name in Spawner
+
+In `spawner.rs`, always pass the **original CLI name** (e.g. `"claude"`, `"cursor"`) to `configure_relaycast_mcp_with_token()`, not `resolved_cli`. `parse_cli_command()` resolves aliases (e.g. `"cursor"` → `"agent"`), which would bypass CLI-specific config logic.
 
 ## CLI Provider Support Matrix
 
@@ -43,7 +60,7 @@ When adding MCP injection for a new CLI:
    - `RELAY_AGENT_TYPE` — always `"agent"`
    - `RELAY_STRICT_AGENT_NAME` — always `"1"`
    - `RELAY_AGENT_TOKEN` — if available (pre-registered agents)
-5. **Do NOT include `RELAY_API_KEY`** in Claude's `--mcp-config` — the MCP server reads credentials from `~/.agent-relay/relaycast.json` at startup. Other CLIs (Codex, Opencode) do include it since they don't share that credential file mechanism.
+5. **Include `RELAY_API_KEY`** in Claude's `--mcp-config` — Claude Code does not reliably inherit parent process env vars into MCP server subprocesses when using `--mcp-config` + `--strict-mcp-config`, so the key must be embedded directly in the JSON config. The `inject_api_key_into_mcp_json()` helper handles this after the merge step. Other CLIs (Codex, Cursor, Opencode) also include it via their own mechanisms.
 
 ## Opt-Out Detection
 
