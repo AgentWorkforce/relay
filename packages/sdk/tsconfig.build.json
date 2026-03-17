@@ -3,6 +3,11 @@
     "target": "ES2022",
     "module": "ES2022",
     "moduleResolution": "Bundler",
+    "baseUrl": ".",
+    "paths": {
+      "@agent-relay/config": ["../config/dist/index.d.ts"],
+      "@agent-relay/config/*": ["../config/dist/*"]
+    },
     "strict": true,
     "declaration": true,
     "declarationMap": true,
