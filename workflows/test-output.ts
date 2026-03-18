@@ -31,7 +31,7 @@ const [result] = await Promise.all([
   })
   .step('check-sdk', {
     type: 'deterministic',
-    command: 'node -e "import(\'./packages/sdk/package.json\', {assert:{type:\'json\'}}).then(m=>console.log(\'sdk v\'+m.default.version))"',
+    command: 'node -p "JSON.parse(require(\'fs\').readFileSync(\'packages/sdk/package.json\',\'utf8\')).version"',
     captureOutput: true,
   })
 

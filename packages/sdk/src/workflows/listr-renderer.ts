@@ -86,6 +86,9 @@ export function createWorkflowRenderer(): WorkflowRenderer {
           resolveStep = resolve;
           rejectStep = reject;
         });
+        // Prevent unhandled rejection if the step fails before the listr
+        // task function has started and reached `await done`.
+        done.catch(() => {});
 
         stepHandles.set(event.stepName, {
           resolve: resolveStep,
