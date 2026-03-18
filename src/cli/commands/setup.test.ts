@@ -1,7 +1,12 @@
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
-import { registerSetupCommands, type SetupDependencies } from './setup.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import * as childProcess from 'node:child_process';
+
+import { ensureLocalSdkWorkflowRuntime, findLocalSdkWorkspace, registerSetupCommands, type SetupDependencies } from './setup.js';
 
 class ExitSignal extends Error {
   constructor(public readonly code: number) {
@@ -42,6 +47,50 @@ async function runCommand(program: Command, args: string[]): Promise<number | un
     throw err;
   }
 }
+
+describe('local SDK workflow runtime bootstrapping', () => {
+  it('finds the agent-relay workspace root from a nested directory', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-workspace-'));
+    const nestedDir = path.join(tempRoot, 'workflows', 'nested');
+    const sdkDir = path.join(tempRoot, 'packages', 'sdk');
+    fs.mkdirSync(nestedDir, { recursive: true });
+    fs.mkdirSync(sdkDir, { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'package.json'), JSON.stringify({ name: 'agent-relay' }));
+    fs.writeFileSync(path.join(sdkDir, 'package.json'), JSON.stringify({ name: '@agent-relay/sdk' }));
+
+    expect(findLocalSdkWorkspace(nestedDir)).toEqual({ rootDir: tempRoot, sdkDir });
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('builds the local sdk when the workflows dist entry is missing', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-build-'));
+    const nestedDir = path.join(tempRoot, 'workflows');
+    const sdkDir = path.join(tempRoot, 'packages', 'sdk');
+    const workflowsDistDir = path.join(sdkDir, 'dist', 'workflows');
+    fs.mkdirSync(nestedDir, { recursive: true });
+    fs.mkdirSync(sdkDir, { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'package.json'), JSON.stringify({ name: 'agent-relay' }));
+    fs.writeFileSync(path.join(sdkDir, 'package.json'), JSON.stringify({ name: '@agent-relay/sdk' }));
+
+    const execSpy = vi.spyOn(childProcess, 'execFileSync').mockImplementation(() => {
+      fs.mkdirSync(workflowsDistDir, { recursive: true });
+      fs.writeFileSync(path.join(workflowsDistDir, 'index.js'), 'export {}\n');
+      return Buffer.from('');
+    });
+
+    ensureLocalSdkWorkflowRuntime(nestedDir);
+
+    expect(execSpy).toHaveBeenCalledWith(
+      'npm',
+      ['run', 'build:sdk'],
+      expect.objectContaining({ cwd: tempRoot, stdio: 'inherit' }),
+    );
+
+    execSpy.mockRestore();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+});
 
 describe('registerSetupCommands', () => {
   it('registers setup commands on the program', () => {
