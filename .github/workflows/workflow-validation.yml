@@ -47,19 +47,22 @@ jobs:
         id: changed
         run: |
           files=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- 'workflows/**' \
-            | grep -E '\.(ts|yaml|yml)$' \
-            | tr '\n' ' ')
-          echo "files=$files" >> "$GITHUB_OUTPUT"
+            | grep -E '\.(ts|yaml|yml)$' || true)
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$files" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
           echo "Found: $files"
 
       - name: Validate & dry run workflows
         if: steps.changed.outputs.files != ''
+        env:
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
         run: |
-          for f in ${{ steps.changed.outputs.files }}; do
+          for f in $CHANGED_FILES; do
             echo "=== $f ==="
             if [[ "$f" == *.yaml || "$f" == *.yml ]]; then
-              node dist/src/cli/index.js run --validate "$f"
+              npx tsx packages/sdk/src/workflows/cli.ts --validate "$f"
+              DRY_RUN=1 npx tsx packages/sdk/src/workflows/cli.ts "$f"
             fi
-            DRY_RUN=1 node dist/src/cli/index.js run "$f"
             echo ""
           done

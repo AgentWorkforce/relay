@@ -15,7 +15,7 @@ function installOutputFilter(): () => void {
       return;
     }
     // Block [broker] lines and [workflow HH:MM] timing lines
-    if (str.startsWith('[broker]') || /^\[workflow \d{2}:\d{2}\]/.test(str)) return;
+    if (/\[broker\]/.test(str) || /\[workflow\s+\d{2}:\d{2}\]/.test(str)) return;
     orig(...args);
   };
   return () => {

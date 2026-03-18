@@ -74,7 +74,7 @@ function installOutputFilter(): () => void {
       orig(...args);
       return;
     }
-    if (str.startsWith('[broker]') || /^\[workflow \d{2}:\d{2}\]/.test(str)) return;
+    if (/\[broker\]/.test(str) || /\[workflow\s+\d{2}:\d{2}\]/.test(str)) return;
     orig(...args);
   };
   return () => { console.log = orig; };
@@ -320,6 +320,25 @@ async function main(): Promise<void> {
     }
 
     console.log(chalk.dim(`Resuming run ${runId}...`));
+    runner.on((event: WorkflowEvent) => {
+      const ts = new Date().toISOString().slice(11, 19);
+      switch (event.type) {
+        case 'step:started':
+          console.log(chalk.dim(`[${ts}]`), chalk.white(event.stepName), chalk.dim('started'));
+          break;
+        case 'step:completed':
+          console.log(chalk.dim(`[${ts}]`), chalk.green('✔'), event.stepName);
+          break;
+        case 'step:failed':
+          console.log(chalk.dim(`[${ts}]`), chalk.red('✗'), event.stepName, chalk.red(event.error ?? ''));
+          break;
+        case 'step:skipped':
+          console.log(chalk.dim(`[${ts}]`), chalk.dim('⊘'), chalk.dim(event.stepName));
+          break;
+        default:
+          break;
+      }
+    });
     const result = await runner.resume(runId);
 
     if (result.status === 'completed') {

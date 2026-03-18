@@ -106,9 +106,8 @@ beautiful CLI experience.
    - \`logRunSummary()\` method (~line 6000): color ✓ green, ✗ red, ⊘ dim,
      and the ━━━ header/footer lines in dim
 
-**IMPORTANT — chalk version:** The project uses CommonJS (no \`"type": "module"\`
-in package.json). Use \`chalk\` v4.x (last CJS-compatible version) NOT chalk v5+
-which is ESM-only and will fail to import.
+**IMPORTANT — module format:** The SDK package is ESM (\`"type": "module"\` in
+package.json). Use the latest chalk version (v5+) with standard ESM imports.
 
 **Current cli.ts:**
 {{steps.read-cli.output}}
@@ -224,6 +223,21 @@ TypeScript build output:
    commit the changes with a concise commit message.
 
 Approve when the implementation is complete and working.`,
+    })
+
+    // ── Phase 7: Final type-check gate ─────────────────────────────────────
+    .step('verify-build-final', {
+      type: 'deterministic',
+      dependsOn: ['review'],
+      command: [
+        'cd packages/sdk',
+        'npx tsc --noEmit 2>&1',
+        'TSC_EXIT=$?',
+        'echo "tsc exit code: $TSC_EXIT"',
+        'exit $TSC_EXIT',
+      ].join('\n'),
+      captureOutput: true,
+      failOnError: true,
     })
 
     .onError('retry', { maxRetries: 2, retryDelayMs: 10000 })
