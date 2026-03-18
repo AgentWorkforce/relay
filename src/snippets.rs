@@ -1047,10 +1047,15 @@ async fn configure_gemini_droid_mcp(
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
 ) -> Result<()> {
-    let manual_cmd = gemini_droid_manual_mcp_add_cmd(cli, is_gemini);
+    // Extract the executable from cli which may contain inline args
+    // (e.g. "gemini --model foo"). Command::new needs just the binary.
+    let exe = shlex::split(cli)
+        .and_then(|parts| parts.first().cloned())
+        .unwrap_or_else(|| cli.trim().to_string());
+    let manual_cmd = gemini_droid_manual_mcp_add_cmd(&exe, is_gemini);
 
     // Remove first for idempotency (ignore errors — may not exist yet).
-    let _ = std::process::Command::new(cli)
+    let _ = std::process::Command::new(&exe)
         .args(["mcp", "remove", "relaycast"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1058,7 +1063,7 @@ async fn configure_gemini_droid_mcp(
         .spawn()
         .and_then(|mut c| c.wait());
 
-    let mut mcp_cmd = Command::new(cli);
+    let mut mcp_cmd = Command::new(&exe);
     mcp_cmd.args(gemini_droid_mcp_add_args(
         api_key,
         base_url,
