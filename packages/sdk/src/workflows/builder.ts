@@ -367,8 +367,14 @@ export class WorkflowBuilder {
       runner.on(options.onEvent);
     }
 
-    const startFrom = this._startFrom ?? options.startFrom;
-    const previousRunId = this._previousRunId ?? options.previousRunId;
+    // Auto-detect RESUME_RUN_ID env var for resuming failed runs
+    const resumeRunId = process.env.RESUME_RUN_ID;
+    if (resumeRunId) {
+      return runner.resume(resumeRunId, options.vars);
+    }
+
+    const startFrom = this._startFrom ?? options.startFrom ?? process.env.START_FROM;
+    const previousRunId = this._previousRunId ?? options.previousRunId ?? process.env.PREVIOUS_RUN_ID;
     const executeOptions: WorkflowExecuteOptions | undefined = startFrom
       ? { startFrom, previousRunId }
       : undefined;
