@@ -30,7 +30,7 @@ export interface SetupDependencies {
   runTelemetry: (action?: string) => Promise<void> | void;
   runYamlWorkflow: (
     filePath: string,
-    options: { workflow?: string; dryRun?: boolean; resume?: string; onEvent: (event: WorkflowEvent) => void }
+    options: { workflow?: string; dryRun?: boolean; resume?: string; startFrom?: string; previousRunId?: string; onEvent: (event: WorkflowEvent) => void }
   ) => Promise<WorkflowRunResult>;
   runScriptWorkflow: (
     filePath: string,
@@ -73,7 +73,7 @@ function logWorkflowEvent(event: WorkflowEvent, log: (...args: unknown[]) => voi
 }
 async function runYamlWorkflowDefault(
   filePath: string,
-  options: { workflow?: string; dryRun?: boolean; resume?: string; onEvent: (event: WorkflowEvent) => void }
+  options: { workflow?: string; dryRun?: boolean; resume?: string; startFrom?: string; previousRunId?: string; onEvent: (event: WorkflowEvent) => void }
 ): Promise<WorkflowRunResult> {
   const result = await runWorkflow(filePath, options);
   // DryRunReport has 'valid' instead of 'status'
@@ -93,7 +93,11 @@ function runScriptFile(
   }
   const ext = path.extname(resolved).toLowerCase();
   const runIdFile = path.join(process.cwd(), '.agent-relay', `script-run-id-${process.pid}-${Date.now()}.txt`);
-  fs.mkdirSync(path.dirname(runIdFile), { recursive: true });
+  try {
+    fs.mkdirSync(path.dirname(runIdFile), { recursive: true });
+  } catch {
+    // Run-id hint is optional — don't abort if directory is not writable
+  }
   const childEnv: NodeJS.ProcessEnv = { ...process.env, AGENT_RELAY_RUN_ID_FILE: runIdFile };
   if (options.dryRun) childEnv.DRY_RUN = 'true';
   if (options.resume) childEnv.RESUME_RUN_ID = options.resume;
@@ -385,6 +389,9 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
           const result = await deps.runYamlWorkflow(filePath, {
             workflow: options.workflow,
             dryRun: options.dryRun,
+            resume: options.resume,
+            startFrom: options.startFrom,
+            previousRunId: options.previousRunId,
             onEvent: (event: WorkflowEvent) => logWorkflowEvent(event, deps.log),
           });
           if (options.dryRun) {
