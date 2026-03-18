@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -50,21 +52,14 @@ jobs:
           echo "files=$files" >> "$GITHUB_OUTPUT"
           echo "Found: $files"
 
-      - name: Validate workflows (YAML only)
+      - name: Validate & dry run workflows
         if: steps.changed.outputs.files != ''
         run: |
           for f in ${{ steps.changed.outputs.files }}; do
+            echo "=== $f ==="
             if [[ "$f" == *.yaml || "$f" == *.yml ]]; then
-              echo "=== Validating $f ==="
               node dist/src/cli/index.js run --validate "$f"
             fi
-          done
-
-      - name: Dry run workflows
-        if: steps.changed.outputs.files != ''
-        run: |
-          for f in ${{ steps.changed.outputs.files }}; do
-            echo "=== Dry run: $f ==="
             DRY_RUN=1 node dist/src/cli/index.js run "$f"
             echo ""
           done
