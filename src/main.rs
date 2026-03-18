@@ -4351,24 +4351,11 @@ async fn handle_sdk_frame(
                 )
                 .await?;
             } else if let Some(_http) = relaycast_http {
-                if matches!(payload.mode, MessageInjectionMode::Steer) {
-                    send_error(
-                        out_tx,
-                        frame.request_id,
-                        "steer_not_supported",
-                        "mode=steer is only supported for local PTY delivery; target was relaycast-only"
-                            .to_string(),
-                        false,
-                        None,
-                    )
-                    .await?;
-                    return Ok(false);
-                }
                 let to = payload.to.clone();
                 let eid = event_id.clone();
                 match selected_workspace
                     .http_client
-                    .send(&to, &payload.text)
+                    .send_with_mode(&to, &payload.text, payload.mode)
                     .await
                 {
                     Ok(()) => {
