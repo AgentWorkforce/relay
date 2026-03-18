@@ -468,6 +468,8 @@ pub fn ensure_opencode_config(
     relay_base_url: Option<&str>,
     relay_agent_name: Option<&str>,
     relay_agent_token: Option<&str>,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
 ) -> io::Result<bool> {
     let path = root.join(OPENCODE_CONFIG);
 
@@ -510,23 +512,17 @@ pub fn ensure_opencode_config(
         );
     }
     // Forward multi-workspace context to opencode child agents.
-    if let Ok(wj) = std::env::var("RELAY_WORKSPACES_JSON") {
-        let wj = wj.trim();
-        if !wj.is_empty() {
-            env.insert(
-                "RELAY_WORKSPACES_JSON".into(),
-                Value::String(wj.to_string()),
-            );
-        }
+    if let Some(wj) = workspaces_json.map(str::trim).filter(|s| !s.is_empty()) {
+        env.insert(
+            "RELAY_WORKSPACES_JSON".into(),
+            Value::String(wj.to_string()),
+        );
     }
-    if let Ok(dw) = std::env::var("RELAY_DEFAULT_WORKSPACE") {
-        let dw = dw.trim();
-        if !dw.is_empty() {
-            env.insert(
-                "RELAY_DEFAULT_WORKSPACE".into(),
-                Value::String(dw.to_string()),
-            );
-        }
+    if let Some(dw) = default_workspace.map(str::trim).filter(|s| !s.is_empty()) {
+        env.insert(
+            "RELAY_DEFAULT_WORKSPACE".into(),
+            Value::String(dw.to_string()),
+        );
     }
     if !env.is_empty() {
         mcp_server.insert("environment".into(), Value::Object(env));
@@ -841,25 +837,19 @@ pub async fn configure_relaycast_mcp_with_token(
         }
         // Forward multi-workspace context to codex child agents.
         // JSON values must have inner quotes escaped for TOML basic-string parsing.
-        if let Ok(wj) = std::env::var("RELAY_WORKSPACES_JSON") {
-            let wj = wj.trim();
-            if !wj.is_empty() {
-                let escaped = wj.replace('\\', "\\\\").replace('"', "\\\"");
-                args.extend([
-                    "--config".to_string(),
-                    format!("mcp_servers.relaycast.env.RELAY_WORKSPACES_JSON=\"{escaped}\""),
-                ]);
-            }
+        if let Some(wj) = workspaces_json.map(str::trim).filter(|s| !s.is_empty()) {
+            let escaped = wj.replace('\\', "\\\\").replace('"', "\\\"");
+            args.extend([
+                "--config".to_string(),
+                format!("mcp_servers.relaycast.env.RELAY_WORKSPACES_JSON=\"{escaped}\""),
+            ]);
         }
-        if let Ok(dw) = std::env::var("RELAY_DEFAULT_WORKSPACE") {
-            let dw = dw.trim();
-            if !dw.is_empty() {
-                let escaped = dw.replace('\\', "\\\\").replace('"', "\\\"");
-                args.extend([
-                    "--config".to_string(),
-                    format!("mcp_servers.relaycast.env.RELAY_DEFAULT_WORKSPACE=\"{escaped}\""),
-                ]);
-            }
+        if let Some(dw) = default_workspace.map(str::trim).filter(|s| !s.is_empty()) {
+            let escaped = dw.replace('\\', "\\\\").replace('"', "\\\"");
+            args.extend([
+                "--config".to_string(),
+                format!("mcp_servers.relaycast.env.RELAY_DEFAULT_WORKSPACE=\"{escaped}\""),
+            ]);
         }
     } else if is_gemini || is_droid {
         if is_gemini {
@@ -872,10 +862,12 @@ pub async fn configure_relaycast_mcp_with_token(
             Some(agent_name),
             agent_token,
             is_gemini,
+            workspaces_json,
+            default_workspace,
         )
         .await?;
     } else if is_opencode && !existing_args.iter().any(|a| a == "--agent") {
-        ensure_opencode_config(cwd, api_key, base_url, Some(agent_name), agent_token)
+        ensure_opencode_config(cwd, api_key, base_url, Some(agent_name), agent_token, workspaces_json, default_workspace)
             .with_context(|| {
                 "failed to write opencode.json for relaycast MCP. \
              Please configure the relaycast MCP server manually in opencode.json"
@@ -956,6 +948,8 @@ fn gemini_droid_mcp_add_args(
     agent_name: Option<&str>,
     agent_token: Option<&str>,
     is_gemini: bool,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
 ) -> Vec<String> {
     let env_flag = gemini_droid_mcp_env_flag(is_gemini);
     let mut args = vec!["mcp".to_string(), "add".to_string()];
@@ -983,19 +977,13 @@ fn gemini_droid_mcp_add_args(
         args.push("RELAY_SKIP_BOOTSTRAP=1".to_string());
     }
     // Forward multi-workspace context to gemini/droid child agents.
-    if let Ok(wj) = std::env::var("RELAY_WORKSPACES_JSON") {
-        let wj = wj.trim();
-        if !wj.is_empty() {
-            args.push(env_flag.to_string());
-            args.push(format!("RELAY_WORKSPACES_JSON={wj}"));
-        }
+    if let Some(wj) = workspaces_json.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push(env_flag.to_string());
+        args.push(format!("RELAY_WORKSPACES_JSON={wj}"));
     }
-    if let Ok(dw) = std::env::var("RELAY_DEFAULT_WORKSPACE") {
-        let dw = dw.trim();
-        if !dw.is_empty() {
-            args.push(env_flag.to_string());
-            args.push(format!("RELAY_DEFAULT_WORKSPACE={dw}"));
-        }
+    if let Some(dw) = default_workspace.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push(env_flag.to_string());
+        args.push(format!("RELAY_DEFAULT_WORKSPACE={dw}"));
     }
     args.push("relaycast".to_string());
     // Droid's CLI parser continues parsing options after positional args.
@@ -1016,6 +1004,8 @@ async fn configure_gemini_droid_mcp(
     agent_name: Option<&str>,
     agent_token: Option<&str>,
     is_gemini: bool,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
 ) -> Result<()> {
     let manual_cmd = gemini_droid_manual_mcp_add_cmd(cli, is_gemini);
 
@@ -1035,6 +1025,8 @@ async fn configure_gemini_droid_mcp(
         agent_name,
         agent_token,
         is_gemini,
+        workspaces_json,
+        default_workspace,
     ));
     mcp_cmd
         .stdin(Stdio::null())
@@ -1690,6 +1682,8 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
             None,
             None,
             false,
+            None,
+            None,
         );
 
         let relaycast_idx = args
@@ -1714,6 +1708,8 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
             Some("GeminiWorker"),
             Some("tok_gem_123"),
             true,
+            None,
+            None,
         );
 
         assert!(args.contains(&"-e".to_string()));
@@ -1753,6 +1749,8 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
             Some("DroidWorker"),
             Some("tok_droid_123"),
             false,
+            None,
+            None,
         );
 
         assert!(args.contains(&"--env".to_string()));
@@ -2312,6 +2310,8 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
             Some("https://api.relaycast.dev"),
             Some("Agent"),
             None,
+            None,
+            None,
         )
         .expect("create opencode config");
 
@@ -2344,7 +2344,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         }"#;
         fs::write(temp.path().join("opencode.json"), existing).expect("write existing");
 
-        super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"), None)
+        super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"), None, None, None)
             .expect("upsert opencode config");
 
         let contents =
@@ -2517,13 +2517,13 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
 
         // First call creates
         let created =
-            super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"), None)
+            super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"), None, None, None)
                 .expect("create opencode config");
         assert!(created, "first call should create the file");
 
         // Second call with same MCP (agent entry already exists)
         let changed =
-            super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"), None)
+            super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"), None, None, None)
                 .expect("second opencode config");
         // MCP is always upserted (changed=true) because we unconditionally insert mcp.relaycast,
         // but agent.relaycast is only inserted if missing.
