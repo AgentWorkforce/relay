@@ -68,6 +68,14 @@ impl Spawner {
             .iter()
             .find(|(k, _)| k == "RELAY_BASE_URL")
             .map(|(_, v)| v.as_str());
+        let workspaces_json = env_vars
+            .iter()
+            .find(|(k, _)| k == "RELAY_WORKSPACES_JSON")
+            .map(|(_, v)| v.as_str());
+        let default_workspace = env_vars
+            .iter()
+            .find(|(k, _)| k == "RELAY_DEFAULT_WORKSPACE")
+            .map(|(_, v)| v.as_str());
         let cwd = std::env::current_dir().unwrap_or_default();
         let mcp_args = configure_relaycast_mcp_with_token(
             cli,
@@ -77,6 +85,8 @@ impl Spawner {
             &combined_args,
             &cwd,
             agent_token,
+            workspaces_json,
+            default_workspace,
         )
         .await?;
         for arg in &mcp_args {

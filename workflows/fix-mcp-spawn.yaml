@@ -1,0 +1,318 @@
+version: '1.0'
+name: fix-mcp-spawn
+description: >
+  Fix relaycast MCP access for agents spawned via agent-relay up.
+  PR #581 injected RELAY_API_KEY into --mcp-config JSON, but RELAY_WORKSPACES_JSON
+  and RELAY_DEFAULT_WORKSPACE are not forwarded because relaycast_server_config reads
+  them via std::env::var, but the broker process does not have them in its own env
+  (only in worker_env passed to child processes). This workflow diagnoses, fixes,
+  and verifies the issue comprehensively.
+
+swarm:
+  pattern: dag
+  channel: wf-fix-mcp-spawn
+  maxConcurrency: 3
+  timeoutMs: 3600000
+
+agents:
+  - name: lead
+    cli: claude
+    role: >
+      Senior Rust engineer who investigates the root cause and coordinates the fix.
+
+  - name: fixer
+    cli: claude
+    role: Implements the Rust code changes to fix MCP workspace forwarding.
+    preset: worker
+
+  - name: reviewer
+    cli: claude
+    role: Reviews the implemented fix for correctness and completeness.
+    preset: reviewer
+
+workflows:
+  - name: default
+    steps:
+
+      # ── Read relevant source code ─────────────────────────────────────────
+      - name: read-snippets
+        type: deterministic
+        command: >
+          echo "=== relaycast_server_config ===" &&
+          sed -n '327,415p' src/snippets.rs &&
+          echo "" &&
+          echo "=== configure_relaycast_mcp_with_token ===" &&
+          sed -n '679,745p' src/snippets.rs &&
+          echo "" &&
+          echo "=== merge_relaycast_with_project_mcp ===" &&
+          sed -n '253,326p' src/snippets.rs
+        captureOutput: true
+        failOnError: true
+
+      - name: read-callers
+        type: deterministic
+        command: >
+          echo "=== WorkerRegistry::spawn PTY path ===" &&
+          sed -n '749,860p' src/main.rs &&
+          echo "" &&
+          echo "=== worker_env setup (up mode) ===" &&
+          sed -n '1512,1530p' src/main.rs &&
+          echo "" &&
+          echo "=== Spawner::spawn_wrap_with_token ===" &&
+          sed -n '36,90p' src/spawner.rs &&
+          echo "" &&
+          echo "=== spawn_env_vars ===" &&
+          sed -n '208,250p' src/spawner.rs
+        captureOutput: true
+        failOnError: true
+
+      # ── Lead diagnoses and plans the fix ─────────────────────────────────
+      - name: diagnose
+        agent: lead
+        dependsOn: [read-snippets, read-callers]
+        task: |
+          You are diagnosing why spawned claude agents via `agent-relay up` still
+          don't have full relaycast MCP access after PR #581 injected RELAY_API_KEY.
+
+          ## Relevant source code
+
+          ### snippets.rs (key functions):
+          {{steps.read-snippets.output}}
+
+          ### Callers (main.rs WorkerRegistry::spawn, spawner.rs):
+          {{steps.read-callers.output}}
+
+          ## Key question to answer
+
+          In `relaycast_server_config` (snippets.rs), RELAY_WORKSPACES_JSON and
+          RELAY_DEFAULT_WORKSPACE are read via `std::env::var`. But when called from
+          `WorkerRegistry::spawn` (the "up" mode broker), the broker's OWN process env
+          does NOT contain these values - they are only in `worker_env` which is passed
+          to child processes via `cmd.env()`.
+
+          So spawned agents' --mcp-config JSON is missing RELAY_WORKSPACES_JSON and
+          RELAY_DEFAULT_WORKSPACE, even though these are available in the child process
+          via env inheritance.
+
+          ## Produce a fix plan
+
+          Analyze the code and produce a precise, complete fix plan. Include:
+
+          1. Exact function signature changes needed for:
+             - `relaycast_server_config`
+             - `merge_relaycast_with_project_mcp` / `merge_relaycast_with_project_mcp_inner`
+             - `configure_relaycast_mcp_with_token`
+             - Public `configure_relaycast_mcp` wrapper
+
+          2. Where to extract workspace values from in each caller:
+             - `WorkerRegistry::spawn` → from `self.worker_env`
+             - `Spawner::spawn_wrap_with_token` → from `env_vars`
+             - Any other callers of `configure_relaycast_mcp_with_token`
+
+          3. What tests to add in snippets.rs
+
+          Format:
+          ## Diagnosis
+          [findings]
+
+          ## Fix Plan
+          [numbered list with exact code snippets]
+
+          ## Tests to Add
+          [test names and assertions]
+        verification:
+          type: output_contains
+          value: '## Fix Plan'
+
+      # ── Implement the fix ─────────────────────────────────────────────────
+      - name: implement
+        agent: fixer
+        dependsOn: [diagnose]
+        task: |
+          Implement the fix for relaycast MCP workspace forwarding in the Rust broker.
+
+          ## Fix plan from lead:
+          {{steps.diagnose.output}}
+
+          ## Implementation guide
+
+          The goal: thread RELAY_WORKSPACES_JSON and RELAY_DEFAULT_WORKSPACE explicitly
+          through the MCP config building chain instead of reading from std::env::var.
+
+          ### In src/snippets.rs:
+
+          **Step 1**: Add params to `relaycast_server_config`:
+          ```rust
+          fn relaycast_server_config(
+              relay_api_key: Option<&str>,
+              relay_base_url: Option<&str>,
+              relay_agent_name: Option<&str>,
+              relay_agent_token: Option<&str>,
+              workspaces_json: Option<&str>,   // NEW: replaces std::env::var("RELAY_WORKSPACES_JSON")
+              default_workspace: Option<&str>, // NEW: replaces std::env::var("RELAY_DEFAULT_WORKSPACE")
+          ) -> Value
+          ```
+          Replace the two `std::env::var` reads at the bottom of the function with
+          direct use of the new params.
+
+          **Step 2**: Update `merge_relaycast_with_project_mcp_inner` to accept and pass them:
+          ```rust
+          fn merge_relaycast_with_project_mcp_inner(
+              relay_api_key: Option<&str>,
+              relay_base_url: Option<&str>,
+              relay_agent_name: Option<&str>,
+              relay_agent_token: Option<&str>,
+              cwd: &Path,
+              home: Option<PathBuf>,
+              workspaces_json: Option<&str>,   // NEW
+              default_workspace: Option<&str>, // NEW
+          ) -> String
+          ```
+          Forward to `relaycast_server_config`.
+
+          **Step 3**: Update `merge_relaycast_with_project_mcp` to accept and pass them.
+
+          **Step 4**: Update `configure_relaycast_mcp_with_token` public API:
+          ```rust
+          pub async fn configure_relaycast_mcp_with_token(
+              cli: &str,
+              agent_name: &str,
+              api_key: Option<&str>,
+              base_url: Option<&str>,
+              existing_args: &[String],
+              cwd: &Path,
+              agent_token: Option<&str>,
+              workspaces_json: Option<&str>,   // NEW
+              default_workspace: Option<&str>, // NEW
+          ) -> Result<Vec<String>>
+          ```
+          Pass them through to `merge_relaycast_with_project_mcp`.
+
+          **Step 5**: Update the public `configure_relaycast_mcp` wrapper to pass `None, None`:
+          ```rust
+          pub async fn configure_relaycast_mcp(
+              cli: &str, agent_name: &str, api_key: Option<&str>, base_url: Option<&str>,
+              existing_args: &[String], cwd: &Path,
+          ) -> Result<Vec<String>> {
+              configure_relaycast_mcp_with_token(cli, agent_name, api_key, base_url,
+                  existing_args, cwd, None, None, None)
+          }
+          ```
+
+          **Step 6**: Add new tests:
+          - `claude_includes_workspaces_json_when_provided` - verify RELAY_WORKSPACES_JSON
+            appears in --mcp-config JSON env block when workspaces_json param is Some
+          - `claude_includes_default_workspace_when_provided` - verify RELAY_DEFAULT_WORKSPACE
+            appears in --mcp-config JSON env block when default_workspace param is Some
+          - `claude_omits_workspaces_json_when_not_provided` - verify RELAY_WORKSPACES_JSON
+            is absent when param is None AND std::env::var is not set
+
+          ### In src/main.rs (WorkerRegistry::spawn, PTY path ~line 797-814):
+
+          Extract workspace vars from worker_env before calling configure_relaycast_mcp_with_token:
+          ```rust
+          let workspaces_json = self.env_value("RELAY_WORKSPACES_JSON");
+          let default_workspace = self.env_value("RELAY_DEFAULT_WORKSPACE");
+          configure_relaycast_mcp_with_token(
+              cli, &spec.name,
+              self.env_value("RELAY_API_KEY"),
+              self.env_value("RELAY_BASE_URL"),
+              &effective_args, Path::new(cwd),
+              worker_relay_api_key.as_deref(),
+              workspaces_json,     // NEW
+              default_workspace,   // NEW
+          ).await?
+          ```
+          Do the same for the Headless path (~line 863-872).
+
+          ### In src/spawner.rs (spawn_wrap_with_token ~line 63-81):
+
+          Extract workspace vars from env_vars:
+          ```rust
+          let workspaces_json = env_vars
+              .iter()
+              .find(|(k, _)| k == "RELAY_WORKSPACES_JSON")
+              .map(|(_, v)| v.as_str());
+          let default_workspace = env_vars
+              .iter()
+              .find(|(k, _)| k == "RELAY_DEFAULT_WORKSPACE")
+              .map(|(_, v)| v.as_str());
+          let mcp_args = configure_relaycast_mcp_with_token(
+              cli, child_name, api_key, base_url,
+              &combined_args, &cwd, agent_token,
+              workspaces_json,     // NEW
+              default_workspace,   // NEW
+          ).await?;
+          ```
+
+          ### Also check wrap.rs for any direct calls to configure_relaycast_mcp_with_token
+          and update those too if they exist.
+
+          After implementing, verify with:
+          ```
+          cargo build 2>&1 | head -30
+          cargo test --lib -- snippets 2>&1 | tail -20
+          ```
+
+          IMPORTANT: Make all the code changes, then run build and tests to verify.
+        verification:
+          type: exit_code
+
+      # ── Build check ────────────────────────────────────────────────────────
+      - name: build-check
+        type: deterministic
+        dependsOn: [implement]
+        command: cargo build 2>&1 | tail -10
+        captureOutput: true
+        failOnError: true
+
+      # ── Run tests ──────────────────────────────────────────────────────────
+      - name: run-tests
+        type: deterministic
+        dependsOn: [build-check]
+        command: cargo test --lib -- snippets 2>&1 | tail -30
+        captureOutput: true
+        failOnError: true
+
+      # ── Review ────────────────────────────────────────────────────────────
+      - name: review
+        agent: reviewer
+        dependsOn: [run-tests]
+        task: |
+          Review the implemented fix for relaycast MCP workspace forwarding.
+
+          ## Build result:
+          {{steps.build-check.output}}
+
+          ## Test results:
+          {{steps.run-tests.output}}
+
+          ## What was changed
+
+          The fix threads RELAY_WORKSPACES_JSON and RELAY_DEFAULT_WORKSPACE explicitly
+          through configure_relaycast_mcp_with_token → merge_relaycast_with_project_mcp
+          → relaycast_server_config, replacing the std::env::var reads.
+
+          Callers:
+          - WorkerRegistry::spawn: extracts from worker_env
+          - Spawner::spawn_wrap_with_token: extracts from env_vars
+
+          ## Read the changed files and verify:
+
+          1. src/snippets.rs - does relaycast_server_config use params instead of std::env::var?
+          2. src/main.rs - does WorkerRegistry::spawn forward workspace vars?
+          3. src/spawner.rs - does spawn_wrap_with_token forward workspace vars?
+          4. New tests exist and pass?
+
+          Output:
+
+          ## Review Result: APPROVED
+          [findings]
+
+          OR
+
+          ## Review Result: NEEDS_CHANGES
+          [specific issues]
+        verification:
+          type: output_contains
+          value: '## Review Result:'
