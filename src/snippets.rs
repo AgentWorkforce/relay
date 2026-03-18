@@ -98,8 +98,14 @@ pub fn ensure_relaycast_mcp_config(
 ) -> io::Result<McpInstallReport> {
     let mut report = McpInstallReport::default();
     let path = root.join(MCP_FILE);
-    let relaycast_server =
-        relaycast_server_config(relay_api_key, relay_base_url, relay_agent_name, None, None, None);
+    let relaycast_server = relaycast_server_config(
+        relay_api_key,
+        relay_base_url,
+        relay_agent_name,
+        None,
+        None,
+        None,
+    );
 
     if !path.exists() {
         let mut servers = Map::new();
@@ -2908,14 +2914,8 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
 
     #[test]
     fn relaycast_server_config_includes_workspace_vars() {
-        let server = super::relaycast_server_config(
-            None,
-            None,
-            None,
-            None,
-            Some("wj-json"),
-            Some("ws-id"),
-        );
+        let server =
+            super::relaycast_server_config(None, None, None, None, Some("wj-json"), Some("ws-id"));
         let env = &server["env"];
         assert_eq!(
             env["RELAY_WORKSPACES_JSON"].as_str(),
