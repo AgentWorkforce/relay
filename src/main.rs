@@ -809,6 +809,8 @@ impl WorkerRegistry {
                         &effective_args,
                         Path::new(cwd),
                         worker_relay_api_key.as_deref(),
+                        self.env_value("RELAY_WORKSPACES_JSON"),
+                        self.env_value("RELAY_DEFAULT_WORKSPACE"),
                     )
                     .await?
                 };
@@ -868,6 +870,8 @@ impl WorkerRegistry {
                         &spec.args,
                         Path::new(spec.cwd.as_deref().unwrap_or(".")),
                         worker_relay_api_key.as_deref(),
+                        self.env_value("RELAY_WORKSPACES_JSON"),
+                        self.env_value("RELAY_DEFAULT_WORKSPACE"),
                     )
                     .await?
                 };
