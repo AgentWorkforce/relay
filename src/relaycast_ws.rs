@@ -3,6 +3,7 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 use anyhow::Result;
 use parking_lot::Mutex;
 use relaycast::{
+    agent::DmOptions,
     format_registration_error, retry_agent_registration as sdk_retry_agent_registration,
     AgentClient, AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
     MessageListQuery, RelayCast, RelayCastOptions, RelayError, ReleaseAgentRequest, WsClient,
@@ -736,8 +737,27 @@ impl RelaycastHttpClient {
             return Ok(());
         }
 
-        // DM path: relaycast dm() currently owns delivery semantics.
-        self.send_dm(to, text).await
+        // DM path: forward mode through relaycast DM options.
+        let token = self.ensure_token().await?;
+        let agent_client = AgentClient::new(&token, Some(self.base_url.clone()))
+            .map_err(|e| anyhow::anyhow!("failed to create agent client: {e}"))?;
+        let relay_mode = match mode {
+            MessageInjectionMode::Wait => relaycast::MessageInjectionMode::Wait,
+            MessageInjectionMode::Steer => relaycast::MessageInjectionMode::Steer,
+        };
+        agent_client
+            .dm(
+                to,
+                text,
+                Some(DmOptions {
+                    mode: relay_mode,
+                    attachments: None,
+                    idempotency_key: None,
+                }),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("relaycast send_dm failed: {e}"))?;
+        Ok(())
     }
 }
 
