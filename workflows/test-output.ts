@@ -16,7 +16,7 @@ const [result] = await Promise.all([
   .maxConcurrency(4)
   .timeout(300000)
 
-  .agent('lead', { cli: 'claude', role: 'Verifies the output looks good.' })
+  .agent('verifier', { cli: 'claude', preset: 'worker', role: 'Confirms env details look healthy.' })
 
   // Fast parallel deterministic steps — exercises concurrent spinner rendering
   .step('check-node', {
@@ -37,15 +37,14 @@ const [result] = await Promise.all([
 
   // One agent step — exercises the spinner + owner-assigned rendering
   .step('verify', {
-    agent: 'lead',
+    agent: 'verifier',
     dependsOn: ['check-node', 'check-git', 'check-sdk'],
-    task: `You are verifying the test run looks healthy.
+    task: `Confirm the following environment details look healthy and print a one-line summary.
 
 Node version: {{steps.check-node.output}}
 Current branch: {{steps.check-git.output}}
-SDK version: {{steps.check-sdk.output}}
-
-Confirm everything looks normal in one sentence.`,
+SDK version: {{steps.check-sdk.output}}`,
+    verification: { type: 'exit_code' },
   })
 
   .run({ onEvent: renderer.onEvent }),

@@ -2,6 +2,16 @@ import chalk from 'chalk';
 import { Listr, type ListrTask } from 'listr2';
 import type { WorkflowEvent, WorkflowEventListener } from './runner.js';
 
+// Suppress console.log while listr owns the terminal to prevent interleaving.
+// Runner's [workflow HH:MM] and [broker] lines are already surfaced via events.
+function muteConsole(): () => void {
+  const orig = console.log.bind(console);
+  console.log = () => {};
+  return () => {
+    console.log = orig;
+  };
+}
+
 interface RenderableTask {
   title: string;
   output: string;
@@ -203,9 +213,11 @@ export function createWorkflowRenderer(): WorkflowRenderer {
 
   return {
     onEvent,
-    start: () =>
-      listr.run().catch(() => {
+    start: () => {
+      const unmute = muteConsole();
+      return listr.run().catch(() => {
         // Step failures are already represented in the workflow result.
-      }),
+      }).finally(unmute);
+    },
   };
 }
