@@ -736,11 +736,7 @@ pub async fn configure_relaycast_mcp_with_token(
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
 ) -> Result<Vec<String>> {
-    let cli_for_detection = Path::new(cli)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(cli);
-    let cli_lower = cli_for_detection.to_lowercase();
+    let cli_lower = detect_cli_name(cli).to_lowercase();
     let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
     let is_codex = cli_lower == "codex";
     let is_gemini = cli_lower == "gemini";
@@ -916,6 +912,18 @@ pub async fn configure_relaycast_mcp_with_token(
     Ok(args)
 }
 
+fn detect_cli_name(cli: &str) -> String {
+    let command = shlex::split(cli)
+        .and_then(|parts| parts.first().cloned())
+        .unwrap_or_else(|| cli.trim().to_string());
+
+    Path::new(&command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(command.as_str())
+        .to_string()
+}
+
 /// Pre-trust a folder in Gemini's `~/.gemini/trustedFolders.json` so that project
 /// settings, MCP servers, and GEMINI.md are applied when Gemini starts.
 fn ensure_gemini_folder_trusted(cwd: &Path) {
@@ -1039,10 +1047,15 @@ async fn configure_gemini_droid_mcp(
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
 ) -> Result<()> {
-    let manual_cmd = gemini_droid_manual_mcp_add_cmd(cli, is_gemini);
+    // Extract the executable from cli which may contain inline args
+    // (e.g. "gemini --model foo"). Command::new needs just the binary.
+    let exe = shlex::split(cli)
+        .and_then(|parts| parts.first().cloned())
+        .unwrap_or_else(|| cli.trim().to_string());
+    let manual_cmd = gemini_droid_manual_mcp_add_cmd(&exe, is_gemini);
 
     // Remove first for idempotency (ignore errors — may not exist yet).
-    let _ = std::process::Command::new(cli)
+    let _ = std::process::Command::new(&exe)
         .args(["mcp", "remove", "relaycast"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1050,7 +1063,7 @@ async fn configure_gemini_droid_mcp(
         .spawn()
         .and_then(|mut c| c.wait());
 
-    let mut mcp_cmd = Command::new(cli);
+    let mut mcp_cmd = Command::new(&exe);
     mcp_cmd.args(gemini_droid_mcp_add_args(
         api_key,
         base_url,
@@ -1702,6 +1715,23 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
             super::configure_relaycast_mcp("claude:latest", "Worker", None, None, &[], temp.path())
                 .await
                 .expect("configure claude:latest");
+
+        assert_eq!(args[0], "--mcp-config");
+    }
+
+    #[tokio::test]
+    async fn claude_with_inline_args_still_injects_mcp_config() {
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp(
+            "claude --model sonnet",
+            "Worker",
+            None,
+            None,
+            &[],
+            temp.path(),
+        )
+        .await
+        .expect("configure claude with inline args");
 
         assert_eq!(args[0], "--mcp-config");
     }
