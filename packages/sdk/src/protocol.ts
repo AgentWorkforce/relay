@@ -225,6 +225,8 @@ export type BrokerEvent =
       target: string;
       body: string;
       thread_id?: string;
+      mode?: MessageInjectionMode;
+      injection_mode?: MessageInjectionMode;
     }
   | {
       kind: 'worker_stream';
