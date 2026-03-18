@@ -1,6 +1,9 @@
-import { workflow } from '@agent-relay/sdk/workflows';
+import { workflow, createWorkflowRenderer } from '@agent-relay/sdk/workflows';
 
-const result = await workflow('polish-workflow-output')
+const renderer = createWorkflowRenderer();
+
+const [result] = await Promise.all([
+  workflow('polish-workflow-output')
     .description('Replace plain console.log workflow output with listr2 + chalk for a polished CLI experience')
     .pattern('dag')
     .channel('wf-polish-workflow-output')
@@ -224,6 +227,8 @@ Approve when the implementation is complete and working.`,
     })
 
     .onError('retry', { maxRetries: 2, retryDelayMs: 10000 })
-    .run({ onEvent: (e: { type: string }) => console.log(`[${e.type}]`) });
+    .run({ onEvent: renderer.onEvent }),
+  renderer.start(),
+]);
 
 console.log('Result:', result.status);

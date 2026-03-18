@@ -1,4 +1,4 @@
-import { workflow } from '@agent-relay/sdk/workflows';
+import { workflow, createWorkflowRenderer } from '@agent-relay/sdk/workflows';
 
 /**
  * Minimal smoke test for the listr2 + chalk workflow output.
@@ -6,7 +6,10 @@ import { workflow } from '@agent-relay/sdk/workflows';
  * see spinners, completions, and the final summary table in action.
  */
 
-const result = await workflow('test-output')
+const renderer = createWorkflowRenderer();
+
+const [result] = await Promise.all([
+  workflow('test-output')
   .description('Smoke test for polished workflow output (listr2 + chalk)')
   .pattern('dag')
   .channel('wf-test-output')
@@ -45,6 +48,8 @@ SDK version: {{steps.check-sdk.output}}
 Confirm everything looks normal in one sentence.`,
   })
 
-  .run({ onEvent: (e: { type: string }) => console.log(`[${e.type}]`) });
+  .run({ onEvent: renderer.onEvent }),
+  renderer.start(),
+]);
 
 console.log('Result:', result.status);
