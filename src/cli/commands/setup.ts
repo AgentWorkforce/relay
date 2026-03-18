@@ -120,26 +120,16 @@ Run ID: ${runId}`;
     }
     throw err;
   };
+  const cleanupRunIdFile = () => {
+    try { fs.rmSync(runIdFile, { force: true }); } catch { /* ignore */ }
+  };
+
   if (ext === '.ts' || ext === '.tsx') {
     const runners = ['tsx', 'ts-node'];
     for (const runner of runners) {
       try {
         execFileSync(runner, [resolved], { stdio: 'inherit', env: childEnv });
-        return;
-      } catch (err: any) {
-        if (err?.code !== 'ENOENT') {
-          return augmentErrorWithRunId(err);
-        }
-      }
-    }
-    execFileSync('npx', ['tsx', resolved], { stdio: 'inherit', env: childEnv });
-    return;
-  }
-  if (ext === '.py') {
-    const runners = ['python3', 'python'];
-    for (const runner of runners) {
-      try {
-        execFileSync(runner, [resolved], { stdio: 'inherit', env: childEnv });
+        cleanupRunIdFile();
         return;
       } catch (err: any) {
         if (err?.code !== 'ENOENT') {
@@ -148,10 +138,27 @@ Run ID: ${runId}`;
       }
     }
     try {
-      fs.rmSync(runIdFile, { force: true });
-    } catch {
-      // Ignore cleanup failure.
+      execFileSync('npx', ['tsx', resolved], { stdio: 'inherit', env: childEnv });
+      cleanupRunIdFile();
+    } catch (err: any) {
+      return augmentErrorWithRunId(err);
     }
+    return;
+  }
+  if (ext === '.py') {
+    const runners = ['python3', 'python'];
+    for (const runner of runners) {
+      try {
+        execFileSync(runner, [resolved], { stdio: 'inherit', env: childEnv });
+        cleanupRunIdFile();
+        return;
+      } catch (err: any) {
+        if (err?.code !== 'ENOENT') {
+          return augmentErrorWithRunId(err);
+        }
+      }
+    }
+    cleanupRunIdFile();
     throw new Error('Python not found. Install Python 3.10+ to run .py workflow files.');
   }
   try {
