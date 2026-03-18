@@ -1923,10 +1923,10 @@ export class WorkflowRunner {
     this.paused = false;
 
     const run = await this.db.getRun(runId);
-    this.persistRunIdHint(runId);
     if (!run) {
       throw new Error(`Run "${runId}" not found`);
     }
+    this.persistRunIdHint(runId);
 
     if (run.status !== 'running' && run.status !== 'failed') {
       throw new Error(`Run "${runId}" is in status "${run.status}" and cannot be resumed`);
