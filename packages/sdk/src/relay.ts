@@ -979,6 +979,7 @@ export class AgentRelay {
             to: event.target,
             text: event.body,
             threadId: event.thread_id,
+            mode: event.injection_mode ?? event.mode,
           };
           this.onMessageReceived?.(msg);
           break;
