@@ -4,7 +4,6 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import * as childProcess from 'node:child_process';
 
 import { ensureLocalSdkWorkflowRuntime, findLocalSdkWorkspace, registerSetupCommands, type SetupDependencies } from './setup.js';
 
@@ -73,21 +72,19 @@ describe('local SDK workflow runtime bootstrapping', () => {
     fs.writeFileSync(path.join(tempRoot, 'package.json'), JSON.stringify({ name: 'agent-relay' }));
     fs.writeFileSync(path.join(sdkDir, 'package.json'), JSON.stringify({ name: '@agent-relay/sdk' }));
 
-    const execSpy = vi.spyOn(childProcess, 'execFileSync').mockImplementation(() => {
+    const execRunner = vi.fn(() => {
       fs.mkdirSync(workflowsDistDir, { recursive: true });
       fs.writeFileSync(path.join(workflowsDistDir, 'index.js'), 'export {}\n');
       return Buffer.from('');
     });
 
-    ensureLocalSdkWorkflowRuntime(nestedDir);
+    ensureLocalSdkWorkflowRuntime(nestedDir, execRunner as never);
 
-    expect(execSpy).toHaveBeenCalledWith(
+    expect(execRunner).toHaveBeenCalledWith(
       'npm',
       ['run', 'build:sdk'],
       expect.objectContaining({ cwd: tempRoot, stdio: 'inherit' }),
     );
-
-    execSpy.mockRestore();
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 });

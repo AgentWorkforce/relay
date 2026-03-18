@@ -30,6 +30,8 @@ type LocalSdkWorkspace = {
   rootDir: string;
   sdkDir: string;
 };
+
+type ExecFileSyncLike = typeof execFileSync;
 export interface SetupDependencies {
   runInit: (options: RunInitOptions) => Promise<void>;
   runTelemetry: (action?: string) => Promise<void> | void;
@@ -114,7 +116,7 @@ export function findLocalSdkWorkspace(startDir: string): LocalSdkWorkspace | nul
   }
 }
 
-export function ensureLocalSdkWorkflowRuntime(startDir: string): void {
+export function ensureLocalSdkWorkflowRuntime(startDir: string, execRunner: ExecFileSyncLike = execFileSync): void {
   const workspace = findLocalSdkWorkspace(startDir);
   if (!workspace) return;
 
@@ -122,16 +124,14 @@ export function ensureLocalSdkWorkflowRuntime(startDir: string): void {
   if (fs.existsSync(workflowsEntry)) return;
 
   console.log('[agent-relay] Detected local @agent-relay/sdk workspace without built workflows runtime; building packages/sdk...');
-  execFileSync('npm', ['run', 'build:sdk'], {
+  execRunner('npm', ['run', 'build:sdk'], {
     cwd: workspace.rootDir,
     stdio: 'inherit',
     env: process.env,
   });
 
   if (!fs.existsSync(workflowsEntry)) {
-    throw new Error(
-      `Local SDK workflows runtime is still missing after build: ${workflowsEntry}`,
-    );
+    throw new Error(`Local SDK workflows runtime is still missing after build: ${workflowsEntry}`);
   }
 }
 
