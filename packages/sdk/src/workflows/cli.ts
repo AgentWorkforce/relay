@@ -64,6 +64,22 @@ interface StepHandle {
   markSkipped: () => void;
 }
 
+// Filter [broker] and [workflow HH:MM] noise while listr owns the terminal,
+// but let the observer URL and channel name through.
+function installOutputFilter(): () => void {
+  const orig = console.log.bind(console);
+  console.log = (...args: unknown[]) => {
+    const str = String(args[0] ?? '');
+    if (str.includes('Observer:') || str.includes('agentrelay.dev') || str.includes('Channel: wf-')) {
+      orig(...args);
+      return;
+    }
+    if (str.startsWith('[broker]') || /^\[workflow \d{2}:\d{2}\]/.test(str)) return;
+    orig(...args);
+  };
+  return () => { console.log = orig; };
+}
+
 async function runWithListr(
   runner: WorkflowRunner,
   config: RunnerConfig,
@@ -71,6 +87,7 @@ async function runWithListr(
   executeOptions: ExecuteOptions | undefined,
 ): Promise<RunnerResult> {
   const stepHandles = new Map<string, StepHandle>();
+  const restoreConsole = installOutputFilter();
 
   let resolveWorkflow!: () => void;
   let rejectWorkflow!: (error: Error) => void;
@@ -78,6 +95,7 @@ async function runWithListr(
     resolveWorkflow = resolve;
     rejectWorkflow = reject;
   });
+  workflowDone.catch(() => {});
 
   let setHeader: (text: string) => void = () => {};
 
@@ -120,6 +138,7 @@ async function runWithListr(
           resolveStep = resolve;
           rejectStep = reject;
         });
+        done.catch(() => {});
 
         stepHandles.set(event.stepName, {
           resolve: resolveStep,
@@ -258,6 +277,7 @@ async function runWithListr(
     }),
   ]);
 
+  restoreConsole();
   return result;
 }
 

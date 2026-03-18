@@ -56,6 +56,7 @@ export interface WorkflowRenderer {
  *   workflow('my-workflow').step(...).run({ onEvent: renderer.onEvent }),
  *   renderer.start(),
  * ]);
+ * renderer.unmount();
  * ```
  */
 export function createWorkflowRenderer(): WorkflowRenderer {
@@ -67,6 +68,9 @@ export function createWorkflowRenderer(): WorkflowRenderer {
     resolveWorkflow = resolve;
     rejectWorkflow = reject;
   });
+  // Prevent unhandled rejection if run:failed fires before the header task
+  // reaches `await workflowDone`.
+  workflowDone.catch(() => {});
 
   let setHeader: (text: string) => void = () => {};
 
