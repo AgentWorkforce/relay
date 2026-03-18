@@ -73,6 +73,8 @@ async fn e2e_project_level_mcp_merge_preserves_user_servers() {
         &[],
         project,
         Some("tok_abc"),
+        None,
+        None,
     )
     .await
     .expect("configure_relaycast_mcp_with_token");
@@ -155,6 +157,8 @@ async fn e2e_global_settings_are_merged_from_real_home() {
         &[],
         temp.path(),
         None,
+        None,
+        None,
     )
     .await
     .expect("configure");
@@ -236,6 +240,8 @@ async fn e2e_global_settings_with_fake_home() {
         &[],
         &project,
         None,
+        None,
+        None,
     )
     .await
     .expect("configure");
@@ -305,6 +311,8 @@ async fn e2e_stale_relaycast_is_overridden_by_broker_credentials() {
         &[],
         project,
         Some("tok_new_valid"),
+        None,
+        None,
     )
     .await
     .expect("configure");
@@ -422,6 +430,8 @@ async fn e2e_project_level_overrides_global_for_same_server_name() {
         &[],
         &project,
         None,
+        None,
+        None,
     )
     .await
     .expect("configure");
@@ -496,6 +506,8 @@ async fn e2e_local_settings_override_global() {
         &[],
         &project,
         None,
+        None,
+        None,
     )
     .await
     .expect("configure");
@@ -529,6 +541,8 @@ async fn e2e_respects_existing_mcp_config_flag() {
         &existing_args,
         temp.path(),
         None,
+        None,
+        None,
     )
     .await
     .expect("configure");
@@ -558,6 +572,8 @@ async fn e2e_only_claude_gets_mcp_config_flag() {
         None,
         &[],
         temp.path(),
+        None,
+        None,
         None,
     )
     .await

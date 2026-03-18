@@ -19,8 +19,9 @@ The relay broker-sdk workflow system orchestrates multiple AI agents (Claude, Co
 ## Quick Reference
 
 ```typescript
-import { workflow } from '../workflows/builder.js';
+const { workflow } = require('@agent-relay/sdk/workflows');
 
+async function main() {
 const result = await workflow('my-workflow')
   .description('What this workflow does')
   .pattern('dag') // or 'pipeline', 'fan-out', etc.
@@ -46,6 +47,9 @@ const result = await workflow('my-workflow')
 
   .onError('retry', { maxRetries: 2, retryDelayMs: 10_000 })
   .run({ onEvent: (e) => console.log(e.type), vars: { task: 'Add auth' } });
+}
+
+main().catch(console.error);
 ```
 
 ## Key Concepts
@@ -604,6 +608,10 @@ But if the owner doesn't post either format, the runner still resolves completio
 | Using `_` in YAML numbers (e.g., `timeoutMs: 1_200_000`)   | YAML doesn't support `_` as a numeric separator — use `1200000`. TypeScript separators don't work in YAML |
 | Setting workflow timeout under 30 minutes for complex workflows | Claude leads reading large codebases take 5-15 min per step. Use `3600000` (1 hour) as a safe default |
 | Passing too much context in `read-context` deterministic steps | Trim to only the relevant code. Use `grep`, `sed -n`, `head` instead of full `cat`. Large context slows lead design |
+| Using `import { workflow }` (ESM) in TypeScript workflows     | Use `const { workflow } = require('@agent-relay/sdk/workflows')` — most projects default to CJS and `tsx` will fail with top-level await or ESM-only imports |
+| Top-level `await` in TypeScript workflow files                | Wrap in `async function main() { ... } main().catch(console.error)` — CJS mode does not support top-level await |
+| Using `import` path `'../workflows/builder.js'` (relative)   | Use `require('@agent-relay/sdk/workflows')` — the package export, not internal file paths |
+| Not validating with `--dry-run` before running                | Always run `agent-relay run --dry-run workflow.ts` first to catch import errors, deadlocks, and missing deps |
 
 ## Verification Tokens with Non-Interactive Workers
 
@@ -703,6 +711,54 @@ workflows:
 ```
 
 Run with: `agent-relay run path/to/workflow.yaml`
+
+## TypeScript Workflow Setup
+
+TypeScript workflows use the fluent builder API via `@agent-relay/sdk/workflows`.
+
+**Critical rules for TypeScript workflows:**
+
+1. **Use `require()`, not `import`** — most projects default to CJS (`"type"` is not `"module"` in package.json), and `tsx` will fail with ESM imports
+2. **Wrap in `async function main()`** — CJS does not support top-level `await`
+3. **Validate with `--dry-run`** before running: `agent-relay run --dry-run workflow.ts`
+
+**Template:**
+```typescript
+const { workflow } = require('@agent-relay/sdk/workflows');
+
+async function main() {
+  const result = await workflow('my-workflow')
+    .description('What this workflow does')
+    .pattern('dag')
+    .channel('wf-my-workflow')
+    .maxConcurrency(4)
+    .timeout(3_600_000)
+
+    .agent('lead', { cli: 'claude', role: 'Architect' })
+    .agent('worker', { cli: 'claude', preset: 'worker', role: 'Implementer' })
+
+    .step('plan', {
+      agent: 'lead',
+      task: 'Produce a plan.',
+      verification: { type: 'output_contains', value: 'PLAN_COMPLETE' },
+    })
+    .step('implement', {
+      agent: 'worker',
+      dependsOn: ['plan'],
+      task: 'Implement: {{steps.plan.output}}',
+      verification: { type: 'exit_code' },
+    })
+
+    .onError('retry', { maxRetries: 2, retryDelayMs: 10_000 })
+    .run({ onEvent: (e) => console.log(`[${e.type}] ${e.step ?? ''}`) });
+
+  console.log('Result:', result.status);
+}
+
+main().catch(console.error);
+```
+
+Run with: `agent-relay run path/to/workflow.ts`
 
 ## Workflow Authoring Rules
 

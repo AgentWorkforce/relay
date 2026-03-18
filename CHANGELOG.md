@@ -29,6 +29,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.2.8] - 2026-03-18
+
+### Product Perspective
+#### User-Impacting Fixes
+- Detect claude CLI with inline args for MCP injection (#584) (#584)
+
+### Technical Perspective
+#### Releases
+- v3.2.8
+
+---
+
+## [3.2.7] - 2026-03-18
+
+### Product Perspective
+#### User-Impacting Fixes
+- Forward RELAY_WORKSPACES_JSON and RELAY_DEFAULT_WORKSPACE to spawned agent MCP config (#583) (#583)
+
+### Technical Perspective
+#### Releases
+- v3.2.7
+
+---
+
+## [3.2.6] - 2026-03-17
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add reasoning effort metadata to model registry (#579)** (#579)
+- **Add resize_pty protocol message for remote PTY resize**
+
+#### User-Impacting Fixes
+- Ensure spawned Claude agents get proper MCP config (#581) (#581)
+- Address PR review feedback for resize_pty
+
+### Technical Perspective
+#### Releases
+- v3.2.6
+
+---
+
 ## [3.2.5] - 2026-03-17
 
 ### Technical Perspective

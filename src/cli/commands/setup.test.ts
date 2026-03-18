@@ -79,13 +79,49 @@ describe('registerSetupCommands', () => {
     const { program, deps } = createHarness();
 
     await runCommand(program, ['run', 'workflow.yaml', '--workflow', 'main']);
-    await runCommand(program, ['run', 'workflow.py']);
+    await runCommand(program, ['run', 'workflow.py', '--resume', 'run-123', '--start-from', 'step-a', '--previous-run-id', 'run-122']);
 
     expect(deps.runYamlWorkflow).toHaveBeenCalledWith('workflow.yaml', {
       workflow: 'main',
       onEvent: expect.any(Function),
     });
-    expect(deps.runScriptWorkflow).toHaveBeenCalledWith('workflow.py');
+    expect(deps.runScriptWorkflow).toHaveBeenCalledWith('workflow.py', {
+      dryRun: undefined,
+      resume: 'run-123',
+      startFrom: 'step-a',
+      previousRunId: 'run-122',
+    });
+  });
+
+  it('prints resume hints when a script workflow fails', async () => {
+    const { program, deps } = createHarness({
+      runScriptWorkflow: vi.fn(() => {
+        throw new Error('script failed');
+      }),
+    });
+
+    const exitCode = await runCommand(program, ['run', 'workflow.ts']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('Error: script failed');
+    expect(deps.error).toHaveBeenCalledWith(
+      expect.stringContaining('agent-relay run workflow.ts --resume <run-id>')
+    );
+  });
+
+  it('prints a copy-pasteable resume command when the script error includes a run id', async () => {
+    const { program, deps } = createHarness({
+      runScriptWorkflow: vi.fn(() => {
+        throw new Error('script failed\nRun ID: run-456');
+      }),
+    });
+
+    const exitCode = await runCommand(program, ['run', 'workflow.ts']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      'Run ID: run-456 — resume with: agent-relay run workflow.ts --resume run-456'
+    );
   });
 
   it('exits with code 1 for unsupported run file extension', async () => {
