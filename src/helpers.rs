@@ -46,14 +46,16 @@ pub(crate) fn parse_cli_command(raw: &str) -> Result<(String, Vec<String>)> {
         command
     };
     let normalized = normalize_cli_name(&command).to_lowercase();
-    if normalized == "agent" || normalized == "cursor-agent" {
+    if normalized == "agent" || normalized == "cursor-agent" || normalized == "claude" {
         // --approve-mcps: skip the interactive MCP server approval dialog so
         // task injection isn't blocked waiting for user input at startup.
         if !args.iter().any(|arg| arg == "--approve-mcps") {
             args.insert(0, "--approve-mcps".to_string());
         }
-        // --force: auto-approve command execution (equivalent to --yolo).
-        if !args.iter().any(|arg| arg == "--force") {
+        // Cursor agent also needs --force to auto-approve command execution.
+        if (normalized == "agent" || normalized == "cursor-agent")
+            && !args.iter().any(|arg| arg == "--force")
+        {
             args.insert(0, "--force".to_string());
         }
     }
@@ -1822,7 +1824,14 @@ mod tests {
     fn parse_cli_command_supports_inline_args() {
         let (cli, args) = parse_cli_command("claude --model haiku").unwrap();
         assert_eq!(cli, "claude");
-        assert_eq!(args, vec!["--model".to_string(), "haiku".to_string()]);
+        assert_eq!(
+            args,
+            vec![
+                "--approve-mcps".to_string(),
+                "--model".to_string(),
+                "haiku".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -1879,6 +1888,27 @@ mod tests {
                 "--approve-mcps".to_string(),
                 "--model".to_string(),
                 "opus".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_cli_command_adds_approve_mcps_for_claude() {
+        let (cli, args) = parse_cli_command("claude").unwrap();
+        assert_eq!(cli, "claude");
+        assert_eq!(args, vec!["--approve-mcps".to_string()]);
+    }
+
+    #[test]
+    fn parse_cli_command_dedups_approve_mcps_for_claude() {
+        let (cli, args) = parse_cli_command("claude --approve-mcps --model sonnet").unwrap();
+        assert_eq!(cli, "claude");
+        assert_eq!(
+            args,
+            vec![
+                "--approve-mcps".to_string(),
+                "--model".to_string(),
+                "sonnet".to_string()
             ]
         );
     }
