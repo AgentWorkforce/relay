@@ -289,6 +289,7 @@ fn merge_relaycast_with_project_mcp(
 }
 
 /// Inner implementation that accepts an explicit home directory for testability.
+#[allow(clippy::too_many_arguments)]
 fn merge_relaycast_with_project_mcp_inner(
     relay_api_key: Option<&str>,
     relay_base_url: Option<&str>,
@@ -723,6 +724,7 @@ pub async fn configure_relaycast_mcp(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn configure_relaycast_mcp_with_token(
     cli: &str,
     agent_name: &str,
@@ -1026,6 +1028,7 @@ fn gemini_droid_mcp_add_args(
     args
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn configure_gemini_droid_mcp(
     cli: &str,
     api_key: Option<&str>,
