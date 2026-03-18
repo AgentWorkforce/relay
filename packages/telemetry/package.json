@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/telemetry",
-  "version": "3.2.7",
+  "version": "3.2.8",
   "description": "Anonymous telemetry for Agent Relay usage analytics",
   "type": "module",
   "main": "dist/index.js",
