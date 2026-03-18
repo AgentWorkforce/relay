@@ -42,6 +42,7 @@ In `spawner.rs`, always pass the **original CLI name** (e.g. `"claude"`, `"curso
 |-----|-------------|-----------|--------------|
 | **Claude** | Full | `--mcp-config '{json}'` flag | `configure_relaycast_mcp()` |
 | **Codex** | Full | Multiple `--config key=value` flags | `configure_relaycast_mcp()` |
+| **Cursor** | Full | Writes `.cursor/mcp.json` | `ensure_cursor_mcp_config()` |
 | **Opencode** | Full | Writes `opencode.json` + `--agent relaycast` | `ensure_opencode_config()` |
 | **Gemini** | Conditional | Pre-spawn `gemini mcp add` command | `configure_gemini_droid_mcp()` |
 | **Droid** | Conditional | Pre-spawn `droid mcp add` command | `configure_gemini_droid_mcp()` |
@@ -60,7 +61,26 @@ When adding MCP injection for a new CLI:
    - `RELAY_AGENT_TYPE` — always `"agent"`
    - `RELAY_STRICT_AGENT_NAME` — always `"1"`
    - `RELAY_AGENT_TOKEN` — if available (pre-registered agents)
+   - `RELAY_WORKSPACES_JSON` — multi-workspace context (if provided)
+   - `RELAY_DEFAULT_WORKSPACE` — default workspace selection (if provided)
 5. **Include `RELAY_API_KEY`** in Claude's `--mcp-config` — Claude Code does not reliably inherit parent process env vars into MCP server subprocesses when using `--mcp-config` + `--strict-mcp-config`, so the key must be embedded directly in the JSON config. The `inject_api_key_into_mcp_json()` helper handles this after the merge step. Other CLIs (Codex, Cursor, Opencode) also include it via their own mechanisms.
+
+## Workspace Variable Forwarding
+
+Multi-workspace vars (`RELAY_WORKSPACES_JSON`, `RELAY_DEFAULT_WORKSPACE`) must be threaded through **function parameters**, never read from `std::env::var()`. The broker's `up` mode sets these in `worker_env`, not in the broker's own process environment.
+
+All CLI paths accept `workspaces_json: Option<&str>` and `default_workspace: Option<&str>`:
+
+| Function | Role |
+|----------|------|
+| `configure_relaycast_mcp_with_token()` | Top-level entry; receives params, passes to each CLI path |
+| `merge_relaycast_with_project_mcp()` | Claude path; threads to `relaycast_server_config()` |
+| `ensure_opencode_config()` | OpenCode; inserts into `environment` block |
+| `ensure_cursor_mcp_config()` | Cursor; chains through `relaycast_mcp_config_json_with_token()` |
+| `gemini_droid_mcp_add_args()` | Gemini/Droid; appends as `--env`/`-e` flags |
+| `relaycast_mcp_config_json_with_token()` | Shared JSON builder; forwards to `relaycast_server_config()` |
+
+**Rule:** When adding a new CLI path, always accept and forward these two params. Never fall back to `std::env::var()`.
 
 ## Opt-Out Detection
 
