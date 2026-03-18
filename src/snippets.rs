@@ -226,7 +226,14 @@ pub fn relaycast_mcp_config_json(
     relay_base_url: Option<&str>,
     relay_agent_name: Option<&str>,
 ) -> String {
-    relaycast_mcp_config_json_with_token(relay_api_key, relay_base_url, relay_agent_name, None, None, None)
+    relaycast_mcp_config_json_with_token(
+        relay_api_key,
+        relay_base_url,
+        relay_agent_name,
+        None,
+        None,
+        None,
+    )
 }
 
 pub fn relaycast_mcp_config_json_with_token(
@@ -889,11 +896,19 @@ pub async fn configure_relaycast_mcp_with_token(
         args.push("--agent".to_string());
         args.push("relaycast".to_string());
     } else if is_cursor {
-        ensure_cursor_mcp_config(cwd, api_key, base_url, Some(agent_name), agent_token, workspaces_json, default_workspace)
-            .with_context(|| {
-                "failed to write .cursor/mcp.json for relaycast MCP. \
+        ensure_cursor_mcp_config(
+            cwd,
+            api_key,
+            base_url,
+            Some(agent_name),
+            agent_token,
+            workspaces_json,
+            default_workspace,
+        )
+        .with_context(|| {
+            "failed to write .cursor/mcp.json for relaycast MCP. \
                  Please configure the relaycast MCP server manually in .cursor/mcp.json"
-            })?;
+        })?;
     }
 
     Ok(args)
@@ -2211,7 +2226,14 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
 
     #[test]
     fn mcp_config_json_with_no_token_omits_token_field() {
-        let json_str = super::relaycast_mcp_config_json_with_token(None, None, Some("Agent"), None, None, None);
+        let json_str = super::relaycast_mcp_config_json_with_token(
+            None,
+            None,
+            Some("Agent"),
+            None,
+            None,
+            None,
+        );
         let json: Value = serde_json::from_str(&json_str).expect("parse JSON");
 
         assert!(
