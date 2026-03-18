@@ -28,7 +28,7 @@ const result = await workflow('test-output')
   })
   .step('check-sdk', {
     type: 'deterministic',
-    command: 'cat packages/sdk/package.json | node -e "const d=require(\'/dev/stdin\'); console.log(\'sdk v\' + d.version)"',
+    command: 'node -e "import(\'./packages/sdk/package.json\', {assert:{type:\'json\'}}).then(m=>console.log(\'sdk v\'+m.default.version))"',
     captureOutput: true,
   })
 
