@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { Listr, type ListrTask } from 'listr2';
+import type { ListrTask } from 'listr2';
 import type { WorkflowEvent, WorkflowEventListener } from './runner.js';
 
 // Filter console.log while listr owns the terminal.
@@ -73,28 +73,35 @@ export function createWorkflowRenderer(): WorkflowRenderer {
   workflowDone.catch(() => {});
 
   let setHeader: (text: string) => void = () => {};
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let listr: any = null;
 
-  const listr = new Listr(
-    [
+  async function ensureListr(): Promise<any> {
+    if (listr) return listr;
+    const { Listr } = await import('listr2');
+    listr = new (Listr as any)(
+      [
+        {
+          title: chalk.dim('Workflow starting...'),
+          task: async (_ctx, task): Promise<void> => {
+            setHeader = (text: string): void => {
+              task.title = text;
+            };
+            await workflowDone;
+          },
+        } as ListrTask,
+      ],
       {
-        title: chalk.dim('Workflow starting...'),
-        task: async (_ctx, task): Promise<void> => {
-          setHeader = (text: string): void => {
-            task.title = text;
-          };
-          await workflowDone;
-        },
-      } as ListrTask,
-    ],
-    {
-      concurrent: true,
-      renderer: process.stdout.isTTY ? 'default' : 'verbose',
-      rendererOptions: {
-        collapseErrors: false,
-        showErrorMessage: true,
+        concurrent: true,
+        renderer: process.stdout.isTTY ? 'default' : 'verbose',
+        rendererOptions: {
+          collapseErrors: false,
+          showErrorMessage: true,
       },
     },
-  );
+    );
+    return listr;
+  }
 
   const onEvent: WorkflowEventListener = (event: WorkflowEvent) => {
     switch (event.type) {
@@ -129,7 +136,7 @@ export function createWorkflowRenderer(): WorkflowRenderer {
           },
         });
 
-        listr.add({
+        listr?.add({
           title: chalk.white(event.stepName),
           task: async (_ctx, task): Promise<void> => {
             taskRef = task as RenderableTask;
@@ -191,6 +198,13 @@ export function createWorkflowRenderer(): WorkflowRenderer {
         if (handle) {
           handle.markSkipped();
           handle.resolve();
+        } else {
+          // Step was skipped without ever being started (downstream of a failure).
+          listr?.add({
+            title: chalk.dim(`${event.stepName} (skipped)`),
+            task: async (): Promise<void> => {},
+            rendererOptions: { persistentOutput: true },
+          } as ListrTask);
         }
         break;
       }
@@ -232,9 +246,10 @@ export function createWorkflowRenderer(): WorkflowRenderer {
 
   return {
     onEvent,
-    start: () => {
+    start: async () => {
       restoreConsole = installOutputFilter();
-      return listr.run().catch(() => {
+      const l = await ensureListr();
+      return l.run().catch(() => {
         // Step failures are already represented in the workflow result.
       });
     },

@@ -11,7 +11,7 @@
 
 import path from 'node:path';
 import chalk from 'chalk';
-import { Listr } from 'listr2';
+
 import type { WorkflowEvent } from './runner.js';
 import { WorkflowRunner } from './runner.js';
 import { JsonFileWorkflowDb } from './file-db.js';
@@ -99,11 +99,13 @@ async function runWithListr(
 
   let setHeader: (text: string) => void = () => {};
 
-  const listr = new Listr(
+  const { Listr } = await import('listr2');
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const listr = new (Listr as any)(
     [
       {
         title: chalk.dim('Workflow starting...'),
-        task: async (_ctx, task): Promise<void> => {
+        task: async (_ctx: unknown, task: any): Promise<void> => {
           setHeader = (text: string): void => {
             task.title = text;
           };
@@ -158,7 +160,7 @@ async function runWithListr(
 
         listr.add({
           title: chalk.white(event.stepName),
-          task: async (_ctx, task): Promise<void> => {
+          task: async (_ctx: unknown, task: any): Promise<void> => {
             taskRef = task as RenderableTask;
             if (skipped) {
               taskRef.title = chalk.dim(`${event.stepName} (skipped)`);
@@ -233,6 +235,14 @@ async function runWithListr(
         if (handle) {
           handle.markSkipped();
           handle.resolve();
+        } else {
+          // Step was skipped without ever being started (downstream of a failure).
+          // Add an already-resolved task so it shows in the listr output.
+          listr.add({
+            title: chalk.dim(`${event.stepName} (skipped)`),
+            task: async (): Promise<void> => {},
+            rendererOptions: { persistentOutput: true },
+          });
         }
         break;
       }
