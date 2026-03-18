@@ -867,11 +867,19 @@ pub async fn configure_relaycast_mcp_with_token(
         )
         .await?;
     } else if is_opencode && !existing_args.iter().any(|a| a == "--agent") {
-        ensure_opencode_config(cwd, api_key, base_url, Some(agent_name), agent_token, workspaces_json, default_workspace)
-            .with_context(|| {
-                "failed to write opencode.json for relaycast MCP. \
+        ensure_opencode_config(
+            cwd,
+            api_key,
+            base_url,
+            Some(agent_name),
+            agent_token,
+            workspaces_json,
+            default_workspace,
+        )
+        .with_context(|| {
+            "failed to write opencode.json for relaycast MCP. \
              Please configure the relaycast MCP server manually in opencode.json"
-            })?;
+        })?;
         args.push("--agent".to_string());
         args.push("relaycast".to_string());
     } else if is_cursor {
@@ -2344,8 +2352,16 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         }"#;
         fs::write(temp.path().join("opencode.json"), existing).expect("write existing");
 
-        super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"), None, None, None)
-            .expect("upsert opencode config");
+        super::ensure_opencode_config(
+            temp.path(),
+            Some("rk_test"),
+            None,
+            Some("Agent"),
+            None,
+            None,
+            None,
+        )
+        .expect("upsert opencode config");
 
         let contents =
             fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
@@ -2516,15 +2532,29 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         let temp = tempdir().expect("tempdir");
 
         // First call creates
-        let created =
-            super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"), None, None, None)
-                .expect("create opencode config");
+        let created = super::ensure_opencode_config(
+            temp.path(),
+            Some("rk_test"),
+            None,
+            Some("Agent"),
+            None,
+            None,
+            None,
+        )
+        .expect("create opencode config");
         assert!(created, "first call should create the file");
 
         // Second call with same MCP (agent entry already exists)
-        let changed =
-            super::ensure_opencode_config(temp.path(), Some("rk_test"), None, Some("Agent"), None, None, None)
-                .expect("second opencode config");
+        let changed = super::ensure_opencode_config(
+            temp.path(),
+            Some("rk_test"),
+            None,
+            Some("Agent"),
+            None,
+            None,
+            None,
+        )
+        .expect("second opencode config");
         // MCP is always upserted (changed=true) because we unconditionally insert mcp.relaycast,
         // but agent.relaycast is only inserted if missing.
         // The function returns true because mcp upsert always sets changed=true.
