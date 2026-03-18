@@ -42,7 +42,7 @@ jobs:
           cache: "npm"
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci --omit=optional
 
       - name: Validate script syntax
         run: bash -n scripts/build-bun.sh
@@ -120,7 +120,7 @@ jobs:
           cache: "npm"
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci --omit=optional
 
       - name: Validate script syntax
         run: bash -n scripts/build-openclaw-bun.sh
