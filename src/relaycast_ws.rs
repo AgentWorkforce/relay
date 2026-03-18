@@ -3,11 +3,10 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 use anyhow::Result;
 use parking_lot::Mutex;
 use relaycast::{
-    agent::DmOptions,
-    format_registration_error, retry_agent_registration as sdk_retry_agent_registration,
-    AgentClient, AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
-    MessageListQuery, RelayCast, RelayCastOptions, RelayError, ReleaseAgentRequest, WsClient,
-    WsClientOptions, WsLifecycleEvent,
+    agent::DmOptions, format_registration_error,
+    retry_agent_registration as sdk_retry_agent_registration, AgentClient, AgentRegistrationClient,
+    AgentRegistrationError, AgentRegistrationRetryOutcome, MessageListQuery, RelayCast,
+    RelayCastOptions, RelayError, ReleaseAgentRequest, WsClient, WsClientOptions, WsLifecycleEvent,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -712,7 +711,8 @@ impl RelaycastHttpClient {
 
     /// Smart send: routes to channel or DM based on `#` prefix.
     pub async fn send(&self, to: &str, text: &str) -> Result<()> {
-        self.send_with_mode(to, text, MessageInjectionMode::Wait).await
+        self.send_with_mode(to, text, MessageInjectionMode::Wait)
+            .await
     }
 
     /// Smart send with explicit injection mode.
