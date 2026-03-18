@@ -230,5 +230,6 @@ Approve when the implementation is complete and working.`,
     .run({ onEvent: renderer.onEvent }),
   renderer.start(),
 ]);
+renderer.unmount();
 
 console.log('Result:', result.status);

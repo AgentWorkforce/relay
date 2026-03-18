@@ -2,11 +2,22 @@ import chalk from 'chalk';
 import { Listr, type ListrTask } from 'listr2';
 import type { WorkflowEvent, WorkflowEventListener } from './runner.js';
 
-// Suppress console.log while listr owns the terminal to prevent interleaving.
-// Runner's [workflow HH:MM] and [broker] lines are already surfaced via events.
-function muteConsole(): () => void {
+// Filter console.log while listr owns the terminal.
+// Blocks [broker] noise and [workflow HH:MM] timing lines, but lets the
+// observer URL and channel name through so users can track the run.
+function installOutputFilter(): () => void {
   const orig = console.log.bind(console);
-  console.log = () => {};
+  console.log = (...args: unknown[]) => {
+    const str = String(args[0] ?? '');
+    // Always show the observer URL and channel so users can follow the run
+    if (str.includes('Observer:') || str.includes('agentrelay.dev') || str.includes('Channel: wf-')) {
+      orig(...args);
+      return;
+    }
+    // Block [broker] lines and [workflow HH:MM] timing lines
+    if (str.startsWith('[broker]') || /^\[workflow \d{2}:\d{2}\]/.test(str)) return;
+    orig(...args);
+  };
   return () => {
     console.log = orig;
   };
@@ -29,6 +40,8 @@ export interface WorkflowRenderer {
   onEvent: WorkflowEventListener;
   /** Start the listr renderer. Run this concurrently with your workflow. */
   start: () => Promise<void>;
+  /** Restore console.log after the workflow finishes. */
+  unmount: () => void;
 }
 
 /**
@@ -211,13 +224,19 @@ export function createWorkflowRenderer(): WorkflowRenderer {
     }
   };
 
+  let restoreConsole: (() => void) | undefined;
+
   return {
     onEvent,
     start: () => {
-      const unmute = muteConsole();
+      restoreConsole = installOutputFilter();
       return listr.run().catch(() => {
         // Step failures are already represented in the workflow result.
-      }).finally(unmute);
+      });
+    },
+    unmount: () => {
+      restoreConsole?.();
+      restoreConsole = undefined;
     },
   };
 }

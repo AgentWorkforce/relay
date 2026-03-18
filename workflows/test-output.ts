@@ -50,5 +50,6 @@ SDK version: {{steps.check-sdk.output}}`,
   .run({ onEvent: renderer.onEvent }),
   renderer.start(),
 ]);
+renderer.unmount();
 
 console.log('Result:', result.status);
