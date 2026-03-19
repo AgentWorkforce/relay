@@ -120,11 +120,12 @@ const [result] = await Promise.all([
     .step('read-msd-reference', {
       type: 'deterministic',
       dependsOn: ['create-branch'],
-      // MSD's RelayConnection.swift is a real working WebSocket client for the
-      // same broker — invaluable reference for wire types and reconnect logic.
+      // Optional local reference path for a real Swift broker client.
+      // Set SWIFT_RELAY_REFERENCE_PATH to enable this extra context.
       command:
-        'cat "/Users/khaliqgant/Projects/My Senior Dev/app/packages/desktop/' +
-        'MSDReview/Sources/Data/RelayConnection.swift" 2>/dev/null',
+        'if [ -n "$SWIFT_RELAY_REFERENCE_PATH" ] && [ -f "$SWIFT_RELAY_REFERENCE_PATH" ]; then ' +
+        'cat "$SWIFT_RELAY_REFERENCE_PATH"; ' +
+        'else echo "No local Swift relay reference configured"; fi',
       captureOutput: true,
       failOnError: false,
     })
