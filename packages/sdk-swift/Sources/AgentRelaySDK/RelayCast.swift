@@ -49,17 +49,18 @@ actor RelayCore {
     let decoder = JSONDecoder()
 
     private var handshakeInFlight = false
-    private var handshakeContinuation: CheckedContinuation<Void, Error>?
+    private var handshakeContinuations: [CheckedContinuation<Void, Error>] = []
     private var routerTask: Task<Void, Never>?
     private var channelContinuations: [String: [AsyncStream<RelayChannelEvent>.Continuation]] = [:]
 
     init(apiKey: String, transport: RelayTransport) {
         self.apiKey = apiKey
         self.transport = transport
-        Task { [weak self] in
-            await transport.setOnConnect {
-                await self?.transportDidConnect()
-            }
+    }
+
+    func configureTransportCallbacks() async {
+        await transport.setOnConnect { [weak self] in
+            await self?.transportDidConnect()
         }
     }
 
@@ -77,9 +78,10 @@ actor RelayCore {
     }
 
     func transportDidConnect() async {
+        if handshakeInFlight {
+            finishHandshake(with: RelayError.connectionFailed("Transport reconnected before previous handshake completed"))
+        }
         handshakeInFlight = true
-        handshakeContinuation?.resume(throwing: RelayError.connectionFailed("Transport reconnected before previous handshake completed"))
-        handshakeContinuation = nil
         do {
             try await send(.hello(HelloPayload(clientName: "AgentRelaySDK.Swift", clientVersion: "0.1.0")))
         } catch {
@@ -125,7 +127,7 @@ actor RelayCore {
 
     private func waitForHandshake() async throws {
         try await withCheckedThrowingContinuation { continuation in
-            handshakeContinuation = continuation
+            handshakeContinuations.append(continuation)
             Task {
                 try? await Task.sleep(for: .seconds(10))
                 await self.failHandshakeIfPending(with: RelayError.timeout("Timed out waiting for hello_ack"))
@@ -135,14 +137,20 @@ actor RelayCore {
 
     private func finishHandshake() {
         handshakeInFlight = false
-        handshakeContinuation?.resume(returning: ())
-        handshakeContinuation = nil
+        let continuations = handshakeContinuations
+        handshakeContinuations.removeAll()
+        for continuation in continuations {
+            continuation.resume(returning: ())
+        }
     }
 
     private func finishHandshake(with error: Error) {
         handshakeInFlight = false
-        handshakeContinuation?.resume(throwing: error)
-        handshakeContinuation = nil
+        let continuations = handshakeContinuations
+        handshakeContinuations.removeAll()
+        for continuation in continuations {
+            continuation.resume(throwing: error)
+        }
     }
 
     private func failHandshakeIfPending(with error: Error) {
@@ -190,7 +198,11 @@ public final class RelayCast: @unchecked Sendable {
         self.apiKey = apiKey
         let resolved = Self.resolveBaseURL(from: baseURL)
         self.baseURL = resolved
-        self.core = RelayCore(apiKey: apiKey, transport: RelayTransport(baseURL: resolved, authToken: apiKey))
+        let transport = RelayTransport(baseURL: resolved, authToken: apiKey)
+        self.core = RelayCore(apiKey: apiKey, transport: transport)
+        Task {
+            await self.core.configureTransportCallbacks()
+        }
     }
 
     public func channel(_ name: String) -> Channel {
