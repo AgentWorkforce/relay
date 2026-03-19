@@ -4,7 +4,7 @@
   "task": {
     "title": "Code review for assigned workflow changes"
   },
-  "status": "active",
+  "status": "abandoned",
   "startedAt": "2026-03-12T08:38:19.960Z",
   "agents": [],
   "chapters": [],
@@ -15,5 +15,6 @@
   "_trace": {
     "startRef": "4ce7ccf5e297e46ededaf74c2a997cfe0d2f88af",
     "endRef": "4ce7ccf5e297e46ededaf74c2a997cfe0d2f88af"
-  }
+  },
+  "completedAt": "2026-03-19T13:58:52.857Z"
 }
