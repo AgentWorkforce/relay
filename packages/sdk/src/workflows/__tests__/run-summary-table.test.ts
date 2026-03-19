@@ -79,7 +79,7 @@ describe('formatRunSummaryTable', () => {
             model: 'gpt-5',
             provider: 'openai',
             durationMs: 1_500,
-            cost: 0,
+            cost: 0.01,
             tokens: { input: 10, output: 5, cacheRead: 0 },
             turns: 1,
             toolCalls: [],
@@ -103,6 +103,39 @@ describe('formatRunSummaryTable', () => {
 
     expect(output).toContain('lint                  pass    --');
     expect(output).toContain('--');
+    // No reports means no cost column
+    expect(output).not.toContain('Cost');
+  });
+
+  it('hides Cost column when no report has reliable cost data', () => {
+    const output = formatRunSummaryTable(
+      [
+        { name: 'gen-code', agent: 'worker', status: 'completed', attempts: 1, durationMs: 5_000 },
+      ],
+      new Map([
+        [
+          'gen-code',
+          {
+            cli: 'claude',
+            sessionId: 's1',
+            model: 'claude-sonnet-4',
+            provider: 'anthropic',
+            durationMs: 5_000,
+            cost: null,
+            tokens: { input: 200, output: 80, cacheRead: 0 },
+            turns: 3,
+            toolCalls: [],
+            errors: [],
+            finalStatus: 'completed',
+            summary: 'done',
+          },
+        ],
+      ]),
+    );
+
+    expect(output).not.toContain('Cost');
+    expect(output).toContain('Tokens');
+    expect(output).toContain('280');
   });
 });
 

@@ -42,21 +42,22 @@ export function formatRunSummaryTable(
   outcomes: StepOutcome[],
   reports: Map<string, CliSessionReport>
 ): string {
-  const headers = ['Step', 'Status', 'Model', 'Cost', 'Tokens', 'Duration', 'Errors'];
-  const widths = [20, 6, 16, 8, 10, 10, 10];
+  // Only show the Cost column when at least one report has reliable cost data
+  // (currently only OpenCode populates cost; Claude and Codex return null)
+  const hasCost = Array.from(reports.values()).some((r) => typeof r.cost === 'number' && r.cost > 0);
+
+  const headers = hasCost
+    ? ['Step', 'Status', 'Model', 'Cost', 'Tokens', 'Duration', 'Errors']
+    : ['Step', 'Status', 'Model', 'Tokens', 'Duration', 'Errors'];
+  const widths = hasCost
+    ? [20, 6, 16, 8, 10, 10, 10]
+    : [20, 6, 16, 10, 10, 10];
   const lines: string[] = [];
 
-  lines.push(
-    [
-      pad(headers[0], widths[0]),
-      pad(headers[1], widths[1]),
-      pad(headers[2], widths[2]),
-      pad(headers[3], widths[3], 'right'),
-      pad(headers[4], widths[4], 'right'),
-      pad(headers[5], widths[5], 'right'),
-      pad(headers[6], widths[6], 'right'),
-    ].join('  ')
-  );
+  lines.push(headers.map((h, i) => {
+    const align = i <= 2 ? 'left' : 'right';
+    return pad(h, widths[i], align);
+  }).join('  '));
 
   let totalCost = 0;
   let totalTokens = 0;
@@ -73,17 +74,18 @@ export function formatRunSummaryTable(
     totalTokens += reportTokens;
     if (typeof reportDuration === 'number') totalDurationMs += reportDuration;
 
-    lines.push(
-      [
-        pad(truncate(outcome.name, widths[0]), widths[0]),
-        pad(outcome.status === 'failed' ? 'FAIL' : outcome.status === 'completed' ? 'pass' : 'skip', widths[1]),
-        pad(truncate(report?.model ?? '--', widths[2]), widths[2]),
-        pad(formatCurrency(report?.cost), widths[3], 'right'),
-        pad(formatTokens(report), widths[4], 'right'),
-        pad(formatDuration(reportDuration), widths[5], 'right'),
-        pad(formatErrors(outcome, report), widths[6], 'right'),
-      ].join('  ')
-    );
+    const cols: string[] = [
+      pad(truncate(outcome.name, widths[0]), widths[0]),
+      pad(outcome.status === 'failed' ? 'FAIL' : outcome.status === 'completed' ? 'pass' : 'skip', widths[1]),
+      pad(truncate(report?.model ?? '--', widths[2]), widths[2]),
+    ];
+    if (hasCost) cols.push(pad(formatCurrency(report?.cost), widths[3], 'right'));
+    const tokenIdx = hasCost ? 4 : 3;
+    cols.push(pad(formatTokens(report), widths[tokenIdx], 'right'));
+    cols.push(pad(formatDuration(reportDuration), widths[tokenIdx + 1], 'right'));
+    cols.push(pad(formatErrors(outcome, report), widths[tokenIdx + 2], 'right'));
+
+    lines.push(cols.join('  '));
 
     if (outcome.status === 'failed') {
       const firstError = report?.errors[0];
@@ -95,15 +97,14 @@ export function formatRunSummaryTable(
 
   const totalLabelWidth = widths[0] + widths[1] + widths[2] + 4;
   lines.push('─'.repeat(lines[0].length));
-  lines.push(
-    [
-      pad('Total', totalLabelWidth),
-      pad(formatCurrency(totalCost), widths[3], 'right'),
-      pad(totalTokens > 0 ? totalTokens.toLocaleString('en-US') : '--', widths[4], 'right'),
-      pad(formatDuration(totalDurationMs), widths[5], 'right'),
-      pad('', widths[6], 'right'),
-    ].join('  ')
-  );
+
+  const totalCols: string[] = [pad('Total', totalLabelWidth)];
+  if (hasCost) totalCols.push(pad(formatCurrency(totalCost), widths[3], 'right'));
+  const tokenIdx = hasCost ? 4 : 3;
+  totalCols.push(pad(totalTokens > 0 ? totalTokens.toLocaleString('en-US') : '--', widths[tokenIdx], 'right'));
+  totalCols.push(pad(formatDuration(totalDurationMs), widths[tokenIdx + 1], 'right'));
+  totalCols.push(pad('', widths[tokenIdx + 2], 'right'));
+  lines.push(totalCols.join('  '));
 
   return lines.map((line) => `  ${line}`).join('\n');
 }
