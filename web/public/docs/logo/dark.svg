@@ -1,0 +1,6 @@
+<svg width="120" height="30" viewBox="0 0 120 30" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="15" cy="15" r="12" stroke="#818cf8" stroke-width="2" fill="none"/>
+  <circle cx="15" cy="15" r="4" fill="#818cf8"/>
+  <path d="M27 15h8M35 15l-3-3M35 15l-3 3" stroke="#818cf8" stroke-width="2" stroke-linecap="round"/>
+  <text x="48" y="20" font-family="system-ui, sans-serif" font-size="14" font-weight="600" fill="#f9fafb">Agent Relay</text>
+</svg>

@@ -1,0 +1,311 @@
+/* ── Layout ── */
+
+.docsLayout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 1.5rem 1rem;
+  border-right: 1px solid var(--line);
+  background: var(--background);
+}
+
+.sidebarLogo {
+  display: block;
+  margin-bottom: 1.5rem;
+  text-decoration: none;
+}
+
+.sidebarLogo img {
+  height: 1.25rem;
+  width: auto;
+}
+
+.content {
+  max-width: 52rem;
+  padding: 2.5rem 3rem 5rem;
+}
+
+/* ── Navigation ── */
+
+.navGroup {
+  margin-bottom: 1.25rem;
+}
+
+.navGroupTitle {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.4rem;
+  padding-left: 0.5rem;
+}
+
+.navList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.navLink {
+  display: block;
+  padding: 0.3rem 0.5rem;
+  border-radius: 0.4rem;
+  font-size: 0.88rem;
+  color: var(--muted-strong);
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s;
+}
+
+.navLink:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--foreground);
+}
+
+.navLinkActive {
+  background: rgba(0, 217, 255, 0.08);
+  color: var(--accent);
+}
+
+/* ── Article prose ── */
+
+.article {
+  line-height: 1.7;
+  color: var(--foreground);
+}
+
+.article h1 {
+  font-size: clamp(1.8rem, 4vw, 2.4rem);
+  letter-spacing: -0.04em;
+  margin: 0 0 0.5rem;
+}
+
+.articleDescription {
+  color: var(--muted);
+  font-size: 1.05rem;
+  margin: 0 0 2rem;
+}
+
+.article h2 {
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
+  margin: 2.5rem 0 0.75rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.article h3 {
+  font-size: 1.1rem;
+  margin: 1.8rem 0 0.5rem;
+}
+
+.article p {
+  margin: 0.75rem 0;
+}
+
+.article a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.article a:hover {
+  text-decoration: underline;
+}
+
+.article ul,
+.article ol {
+  margin: 0.75rem 0;
+  padding-left: 1.5rem;
+}
+
+.article li {
+  margin: 0.3rem 0;
+}
+
+.article strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.article table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 0.9rem;
+}
+
+.article th,
+.article td {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.article th {
+  font-weight: 600;
+  color: var(--muted-strong);
+}
+
+.article td {
+  color: var(--muted-strong);
+}
+
+.article code {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.85em;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0.15em 0.35em;
+  border-radius: 0.3rem;
+}
+
+.article pre {
+  margin: 1rem 0;
+  padding: 1rem 1.25rem;
+  border-radius: 0.75rem;
+  background: rgba(24, 24, 27, 0.88);
+  border: 1px solid var(--line);
+  overflow-x: auto;
+  line-height: 1.5;
+}
+
+.article pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.85rem;
+  color: var(--muted-strong);
+}
+
+/* ── CodeGroup ── */
+
+.codeGroup {
+  margin: 1rem 0;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.codeGroupTabs {
+  display: flex;
+  gap: 0;
+  background: rgba(24, 24, 27, 0.6);
+  border-bottom: 1px solid var(--line);
+}
+
+.codeGroupTab {
+  padding: 0.5rem 1rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.codeGroupTab:hover {
+  color: var(--foreground);
+}
+
+.codeGroupTabActive {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.codeGroupPanel pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+}
+
+/* ── Cards ── */
+
+.cardGroup {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.card {
+  display: block;
+  padding: 1rem 1.15rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.02);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.card:hover {
+  border-color: var(--accent);
+  background: rgba(0, 217, 255, 0.03);
+}
+
+.cardTitle {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0 0 0.3rem;
+}
+
+.cardBody {
+  font-size: 0.88rem;
+  color: var(--muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* ── Note / Callout ── */
+
+.note {
+  margin: 1rem 0;
+  padding: 0.85rem 1rem;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 0.5rem 0.5rem 0;
+  background: rgba(0, 217, 255, 0.04);
+  font-size: 0.92rem;
+  color: var(--muted-strong);
+}
+
+.note p {
+  margin: 0.3rem 0;
+}
+
+.note p:first-child {
+  margin-top: 0;
+}
+
+.note p:last-child {
+  margin-bottom: 0;
+}
+
+/* ── Responsive ── */
+
+@media (max-width: 900px) {
+  .docsLayout {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    position: relative;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .content {
+    padding: 1.5rem 1rem 3rem;
+  }
+
+  .cardGroup {
+    grid-template-columns: 1fr !important;
+  }
+}
