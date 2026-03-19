@@ -1555,7 +1555,11 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         .await
         .expect("configure claude mcp");
 
-        assert_eq!(args.len(), 2, "should be --mcp-config <json> (no --strict-mcp-config)");
+        assert_eq!(
+            args.len(),
+            2,
+            "should be --mcp-config <json> (no --strict-mcp-config)"
+        );
         assert_eq!(args[0], "--mcp-config");
         assert!(
             !args.iter().any(|a| a == "--strict-mcp-config"),

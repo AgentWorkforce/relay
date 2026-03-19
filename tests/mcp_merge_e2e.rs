@@ -137,11 +137,7 @@ async fn e2e_global_settings_are_merged_from_real_home() {
 
     let servers = extract_servers(&args);
     // Only relaycast — global servers are loaded by Claude, not merged into --mcp-config
-    assert_eq!(
-        servers.len(),
-        1,
-        "only relaycast in --mcp-config"
-    );
+    assert_eq!(servers.len(), 1, "only relaycast in --mcp-config");
     assert!(
         servers.contains_key("relaycast"),
         "relaycast must always be present"
