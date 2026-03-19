@@ -754,32 +754,24 @@ pub async fn configure_relaycast_mcp_with_token(
             .iter()
             .any(|a| a == "--mcp-config" || a.starts_with("--mcp-config="))
     {
-        // Build relaycast MCP config, then merge with the user's project-level
-        // .mcp.json so other MCP servers (filesystem, database, etc.) are preserved.
-        // Relaycast entry takes priority to prevent stale configs from overriding
-        // broker-injected credentials.
-        let mcp_json = merge_relaycast_with_project_mcp(
+        // Build relaycast-only MCP config and pass via --mcp-config (additive).
+        // Claude will also load .mcp.json normally, preserving user-configured
+        // MCP servers (filesystem, database, etc.).
+        // We do NOT pass --strict-mcp-config — that would block .mcp.json loading
+        // and prevent child agents from inheriting MCP servers.
+        let mcp_json = relaycast_mcp_config_json_with_token(
             api_key,
             base_url,
             Some(agent_name),
             agent_token,
-            cwd,
             workspaces_json,
             default_workspace,
         );
         // Claude Code does not reliably pass parent process env vars to MCP server
-        // subprocesses when using --mcp-config + --strict-mcp-config, so RELAY_API_KEY
-        // must be injected directly into the config (same approach as Cursor, see below).
-        // The shared relaycast_server_config() omits it because codex strips API keys
-        // from .mcp.json env, but --mcp-config is an inline JSON arg, not .mcp.json.
+        // subprocesses, so RELAY_API_KEY must be injected directly into the config.
         let mcp_json = inject_api_key_into_mcp_json(&mcp_json, api_key);
         args.push("--mcp-config".to_string());
         args.push(mcp_json);
-        // Use strict mode so only the merged config is used (no double-loading
-        // of .mcp.json which would re-introduce stale relaycast entries).
-        if !existing_args.iter().any(|a| a == "--strict-mcp-config") {
-            args.push("--strict-mcp-config".to_string());
-        }
     }
 
     // Codex: always disable interactive update prompt (independent of relaycast config).
@@ -1563,9 +1555,12 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         .await
         .expect("configure claude mcp");
 
-        assert_eq!(args.len(), 3);
+        assert_eq!(args.len(), 2, "should be --mcp-config <json> (no --strict-mcp-config)");
         assert_eq!(args[0], "--mcp-config");
-        assert_eq!(args[2], "--strict-mcp-config");
+        assert!(
+            !args.iter().any(|a| a == "--strict-mcp-config"),
+            "must not include --strict-mcp-config"
+        );
 
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
         assert_eq!(
@@ -2629,12 +2624,13 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
     // -----------------------------------------------------------------------
 
     /// Test A: End-to-end MCP config generation for Claude spawns.
-    /// A project .mcp.json with extra servers should produce merged output
-    /// containing BOTH relaycast AND the user's servers, plus --strict-mcp-config.
+    /// --mcp-config is additive (no --strict-mcp-config) — only relaycast is
+    /// passed inline; Claude loads the user's .mcp.json servers itself.
     #[tokio::test]
-    async fn merge_mcp_e2e_claude_spawn_with_user_servers() {
+    async fn mcp_e2e_claude_spawn_relaycast_only() {
         let temp = tempdir().expect("tempdir");
-        // User has filesystem and github MCP servers
+        // User has filesystem and github MCP servers in .mcp.json — Claude
+        // will load these independently; we should NOT merge them into --mcp-config.
         fs::write(
             temp.path().join(".mcp.json"),
             r#"{
@@ -2667,33 +2663,22 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         .await
         .expect("configure claude mcp");
 
-        // Must have --mcp-config <json> --strict-mcp-config
-        assert_eq!(args.len(), 3);
+        // Only --mcp-config <json> — no --strict-mcp-config
+        assert_eq!(args.len(), 2, "should be --mcp-config <json> only");
         assert_eq!(args[0], "--mcp-config");
-        assert_eq!(args[2], "--strict-mcp-config");
+        assert!(
+            !args.iter().any(|a| a == "--strict-mcp-config"),
+            "must not include --strict-mcp-config"
+        );
 
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
         let servers = json["mcpServers"].as_object().expect("mcpServers object");
 
-        // All three servers present
+        // Only relaycast — user servers loaded separately by Claude from .mcp.json
+        assert_eq!(servers.len(), 1, "only relaycast server in --mcp-config");
         assert!(
             servers.contains_key("relaycast"),
             "relaycast must be present"
-        );
-        assert!(
-            servers.contains_key("filesystem"),
-            "user's filesystem server must be preserved"
-        );
-        assert!(
-            servers.contains_key("github"),
-            "user's github server must be preserved"
-        );
-
-        // User server config preserved correctly
-        assert_eq!(
-            servers["github"]["env"]["GITHUB_TOKEN"].as_str(),
-            Some("ghp_test123"),
-            "user's env vars must be preserved"
         );
 
         // Relaycast has broker-injected credentials
@@ -2705,7 +2690,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
             servers["relaycast"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
             Some("tok_abc")
         );
-        // RELAY_API_KEY is injected for Claude (not omitted like for .mcp.json)
+        // RELAY_API_KEY is injected for Claude --mcp-config
         assert_eq!(
             servers["relaycast"]["env"]["RELAY_API_KEY"].as_str(),
             Some("rk_live_test"),
