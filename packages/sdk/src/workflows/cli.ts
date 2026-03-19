@@ -61,6 +61,8 @@ function formatEvent(event: WorkflowEvent): string {
       return `[step] ${event.stepName} review ${event.decision} by ${event.reviewerName}`;
     case 'step:owner-timeout':
       return `[step] ${event.stepName} owner ${event.ownerName} timed out`;
+    case 'step:agent-report':
+      return `[step] ${event.stepName} report collected (${event.report.cli}${event.report.model ? `:${event.report.model}` : ''})`;
     case 'step:failed':
       return `[step] ${event.stepName} failed: ${event.error}`;
     case 'step:skipped':

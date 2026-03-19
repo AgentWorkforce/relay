@@ -32,7 +32,9 @@ import {
   CustomStepsParseError,
   CustomStepResolutionError,
 } from './custom-steps.js';
+import { collectCliSession, type CliSessionReport } from './cli-session-collector.js';
 import { InMemoryWorkflowDb } from './memory-db.js';
+import { formatRunSummaryTable } from './run-summary-table.js';
 import type {
   AgentCli,
   AgentDefinition,
@@ -157,6 +159,7 @@ export type WorkflowEvent =
       decision: 'approved' | 'rejected';
     }
   | { type: 'step:owner-timeout'; runId: string; stepName: string; ownerName: string }
+  | { type: 'step:agent-report'; runId: string; stepName: string; report: CliSessionReport }
   | { type: 'step:failed'; runId: string; stepName: string; error: string; exitCode?: number; exitSignal?: string }
   | { type: 'step:skipped'; runId: string; stepName: string }
   | { type: 'step:retrying'; runId: string; stepName: string; attempt: number }
@@ -360,6 +363,8 @@ export class WorkflowRunner {
   private resolvedPaths = new Map<string, string>();
   /** Tracks agent names currently assigned as reviewers (ref-counted to handle concurrent usage). */
   private readonly activeReviewers = new Map<string, number>();
+  /** Structured CLI session reports captured during the current run, keyed by step name. */
+  private readonly agentReports = new Map<string, CliSessionReport>();
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -452,6 +457,13 @@ export class WorkflowRunner {
       );
     }
     return resolved;
+  }
+
+  private resolveEffectiveCwd(step: WorkflowStep, agentDef?: AgentDefinition): string {
+    if (step.cwd) {
+      return path.resolve(this.cwd, step.cwd);
+    }
+    return this.resolveStepWorkdir(step) ?? (agentDef ? this.resolveAgentCwd(agentDef) : this.cwd);
   }
 
   private static readonly EVIDENCE_IGNORED_DIRS = new Set([
@@ -1993,6 +2005,7 @@ export class WorkflowRunner {
     this.runStartTime = Date.now();
     this.runtimeStepAgents.clear();
     this.stepCompletionEvidence.clear();
+    this.agentReports.clear();
 
     this.log(`Starting workflow "${workflow.name}" (${workflow.steps.length} steps)`);
 
@@ -2771,7 +2784,7 @@ export class WorkflowRunner {
       });
 
       // Resolve step workdir (named path reference) for deterministic steps
-      const stepCwd = this.resolveStepWorkdir(step) ?? this.cwd;
+      const stepCwd = this.resolveEffectiveCwd(step);
       this.beginStepEvidence(step.name, [stepCwd], state.row.startedAt);
 
       try {
@@ -3245,6 +3258,9 @@ export class WorkflowRunner {
     let lastExitCode: number | undefined;
     let lastExitSignal: string | undefined;
     let lastCompletionReason: WorkflowStepCompletionReason | undefined;
+    let lastAttemptStartedAt: number | undefined;
+    let lastEffectiveAgentDef: AgentDefinition | undefined;
+    let lastEffectiveCwd: string | undefined;
 
     // OWNER_DECISION: INCOMPLETE_RETRY is enforced here at the attempt-loop level so every
     // interactive execution path shares the same contract:
@@ -3276,6 +3292,7 @@ export class WorkflowRunner {
       }
 
       try {
+        lastAttemptStartedAt = Date.now();
         // Mark step as running
         state.row.status = 'running';
         state.row.error = undefined;
@@ -3334,7 +3351,10 @@ export class WorkflowRunner {
         }
 
         // Apply step-level workdir override to agent definitions if present
-        const applyStepWorkdir = (def: AgentDefinition): AgentDefinition => {
+        const applyStepCwd = (def: AgentDefinition): AgentDefinition => {
+          if (step.cwd) {
+            return { ...def, cwd: step.cwd, workdir: undefined };
+          }
           if (step.workdir) {
             const stepWorkdir = this.resolveStepWorkdir(step);
             if (stepWorkdir) {
@@ -3343,9 +3363,11 @@ export class WorkflowRunner {
           }
           return def;
         };
-        const effectiveSpecialist = applyStepWorkdir(specialistDef);
-        const effectiveOwner = applyStepWorkdir(ownerDef);
-        const effectiveReviewer = reviewDef ? applyStepWorkdir(reviewDef) : undefined;
+        const effectiveSpecialist = applyStepCwd(specialistDef);
+        const effectiveOwner = applyStepCwd(ownerDef);
+        const effectiveReviewer = reviewDef ? applyStepCwd(reviewDef) : undefined;
+        lastEffectiveAgentDef = effectiveSpecialist;
+        lastEffectiveCwd = this.resolveAgentCwd(effectiveSpecialist);
         this.beginStepEvidence(
           step.name,
           [
@@ -3518,6 +3540,15 @@ export class WorkflowRunner {
           }
         }
 
+        await this.captureAgentReport(
+          runId,
+          step.name,
+          lastEffectiveAgentDef,
+          lastEffectiveCwd,
+          lastAttemptStartedAt,
+          Date.now()
+        );
+
         // Mark completed
         state.row.status = 'completed';
         state.row.output = combinedOutput;
@@ -3570,6 +3601,14 @@ export class WorkflowRunner {
       typeof step.verification === 'object' && 'value' in step.verification
         ? String(step.verification.value)
         : undefined;
+    await this.captureAgentReport(
+      runId,
+      step.name,
+      lastEffectiveAgentDef,
+      lastEffectiveCwd,
+      lastAttemptStartedAt,
+      Date.now()
+    );
     await this.trajectory?.stepFailed(step, lastError ?? 'Unknown error', maxRetries + 1, maxRetries, {
       agent: agentName,
       nonInteractive,
@@ -4856,7 +4895,7 @@ export class WorkflowRunner {
       const { stdout: output, exitCode, exitSignal } = await new Promise<{ stdout: string; exitCode?: number; exitSignal?: string }>((resolve, reject) => {
         const child = cpSpawn(cmd, args, {
           stdio: ['ignore', 'pipe', 'pipe'],
-          cwd: this.resolveAgentCwd(agentDef),
+          cwd: this.resolveEffectiveCwd(step, agentDef),
           env: this.getRelayEnv() ?? { ...process.env },
         });
 
@@ -5728,6 +5767,35 @@ export class WorkflowRunner {
     this.finalizeStepEvidence(state.row.stepName, 'failed', state.row.completedAt, completionReason);
   }
 
+  private async captureAgentReport(
+    runId: string,
+    stepName: string,
+    agentDef: AgentDefinition | undefined,
+    cwd: string | undefined,
+    startedAt: number | undefined,
+    completedAt: number
+  ): Promise<void> {
+    if (!agentDef || !cwd || !startedAt) return;
+
+    try {
+      const report = await collectCliSession({
+        cli: agentDef.cli,
+        cwd,
+        startedAt,
+        completedAt,
+      });
+      if (!report) return;
+
+      this.agentReports.set(stepName, report);
+      this.emit({ type: 'step:agent-report', runId, stepName, report });
+      await this.persistAgentReport(runId, stepName, report);
+    } catch (error) {
+      this.log(
+        `[${stepName}] CLI session collection failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
   private async markDownstreamSkipped(
     failedStepName: string,
     allSteps: WorkflowStep[],
@@ -6007,22 +6075,25 @@ export class WorkflowRunner {
     console.log(`  Workflow "${workflowName}" — ${failed.length === 0 ? 'COMPLETED' : 'FAILED'}`);
     console.log(`  ${completed.length} passed, ${failed.length} failed, ${skipped.length} skipped`);
     console.log('━'.repeat(70));
+    if (this.agentReports.size > 0) {
+      console.log(formatRunSummaryTable(outcomes, this.agentReports));
+    } else {
+      for (const outcome of outcomes) {
+        const icon = outcome.status === 'completed' ? '✓' : outcome.status === 'failed' ? '✗' : '⊘';
+        const retryNote = outcome.attempts > 1 ? ` (${outcome.attempts} attempts)` : '';
+        console.log(`  ${icon} ${outcome.name} [${outcome.agent}]${retryNote}`);
 
-    for (const outcome of outcomes) {
-      const icon = outcome.status === 'completed' ? '✓' : outcome.status === 'failed' ? '✗' : '⊘';
-      const retryNote = outcome.attempts > 1 ? ` (${outcome.attempts} attempts)` : '';
-      console.log(`  ${icon} ${outcome.name} [${outcome.agent}]${retryNote}`);
+        if (outcome.error) {
+          console.log(`    Error: ${outcome.error}`);
+        }
 
-      if (outcome.error) {
-        console.log(`    Error: ${outcome.error}`);
-      }
-
-      // Extract last meaningful lines from raw PTY output
-      if (outcome.output) {
-        const excerpt = this.extractOutputExcerpt(outcome.output);
-        if (excerpt) {
-          for (const line of excerpt.split('\n')) {
-            console.log(`    ${line}`);
+        // Extract last meaningful lines from raw PTY output
+        if (outcome.output) {
+          const excerpt = this.extractOutputExcerpt(outcome.output);
+          if (excerpt) {
+            for (const line of excerpt.split('\n')) {
+              console.log(`    ${line}`);
+            }
           }
         }
       }
@@ -6095,6 +6166,12 @@ export class WorkflowRunner {
     const stepsWithVerification = new Set(steps?.filter((s) => s.verification).map((s) => s.name) ?? []);
     const outcomes: StepOutcome[] = [];
     for (const [name, state] of stepStates) {
+      const startedAtMs = state.row.startedAt ? Date.parse(state.row.startedAt) : Number.NaN;
+      const completedAtMs = state.row.completedAt ? Date.parse(state.row.completedAt) : Number.NaN;
+      const durationMs =
+        Number.isFinite(startedAtMs) && Number.isFinite(completedAtMs)
+          ? Math.max(0, completedAtMs - startedAtMs)
+          : undefined;
       outcomes.push({
         name,
         agent: state.row.agentName ?? 'deterministic',
@@ -6108,6 +6185,7 @@ export class WorkflowRunner {
         output: state.row.output,
         error: state.row.error,
         verificationPassed: state.row.status === 'completed' && stepsWithVerification.has(name),
+        durationMs,
         completionMode: state.row.completionReason
           ? this.buildStepCompletionDecision(name, state.row.completionReason)?.mode
           : undefined,
@@ -6288,6 +6366,16 @@ export class WorkflowRunner {
     const maxMsg = 2000;
     const preview = scrubbed.length > maxMsg ? scrubbed.slice(-maxMsg) : scrubbed;
     this.postToChannel(`**[${stepName}] Output:**\n\`\`\`\n${preview}\n\`\`\``, { stepName });
+  }
+
+  private async persistAgentReport(runId: string, stepName: string, report: CliSessionReport): Promise<void> {
+    const reportPath = path.join(this.getStepOutputDir(runId), `${stepName}.report.json`);
+    try {
+      mkdirSync(this.getStepOutputDir(runId), { recursive: true });
+      await writeFile(reportPath, JSON.stringify(report, null, 2), 'utf8');
+    } catch {
+      // Non-critical
+    }
   }
 
   /** Scan .agent-relay/step-outputs/ for the most recent run directory containing the needed steps. */
