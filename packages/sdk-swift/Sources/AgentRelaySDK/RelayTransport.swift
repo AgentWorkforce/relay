@@ -57,6 +57,7 @@ public actor RelayTransport {
         manuallyDisconnected = false
         state = reconnectAttempt == 0 ? .connecting : .reconnecting
 
+        let isReconnect = reconnectAttempt > 0
         let request = websocketRequest()
         let task = session.webSocketTask(with: request)
         webSocketTask = task
@@ -67,7 +68,7 @@ public actor RelayTransport {
 
         startReceiveLoop()
         startPingLoop()
-        if let onConnect {
+        if isReconnect, let onConnect {
             await onConnect()
         }
     }
