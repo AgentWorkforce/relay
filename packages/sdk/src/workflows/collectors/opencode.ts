@@ -204,6 +204,9 @@ export class OpenCodeCollector implements CliSessionCollector {
         { input: 0, output: 0, cacheRead: 0 },
       );
 
+      const hasCostData = parsedMessages.some(
+        (message) => typeof message.parsed?.cost === 'number' && Number.isFinite(message.parsed.cost),
+      );
       const totalCost = parsedMessages.reduce((sum, message) => sum + toNumber(message.parsed?.cost), 0);
 
       const toolCallCounts = new Map<string, number>();
@@ -254,7 +257,7 @@ export class OpenCodeCollector implements CliSessionCollector {
           parsedMessages.length > 0
             ? Math.max(0, parsedMessages[parsedMessages.length - 1].time_created - session.time_created)
             : null,
-        cost: totalCost > 0 ? totalCost : 0,
+        cost: hasCostData ? totalCost : null,
         tokens: tokenTotals,
         turns,
         toolCalls: [...toolCallCounts.entries()].map(([name, count]) => ({ name, count })),
