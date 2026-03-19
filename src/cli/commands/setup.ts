@@ -25,6 +25,13 @@ type WorkflowRunResult = {
   status: string;
   error?: string;
 };
+
+type LocalSdkWorkspace = {
+  rootDir: string;
+  sdkDir: string;
+};
+
+type ExecFileSyncLike = typeof execFileSync;
 export interface SetupDependencies {
   runInit: (options: RunInitOptions) => Promise<void>;
   runTelemetry: (action?: string) => Promise<void> | void;
@@ -83,6 +90,51 @@ async function runYamlWorkflowDefault(
   }
   return result;
 }
+export function findLocalSdkWorkspace(startDir: string): LocalSdkWorkspace | null {
+  let current = path.resolve(startDir);
+  const root = path.parse(current).root;
+
+  while (true) {
+    const packageJsonPath = path.join(current, 'package.json');
+    const sdkDir = path.join(current, 'packages', 'sdk');
+    const sdkPackageJsonPath = path.join(sdkDir, 'package.json');
+
+    try {
+      if (fs.existsSync(packageJsonPath) && fs.existsSync(sdkPackageJsonPath)) {
+        const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as { name?: string };
+        const sdkPkg = JSON.parse(fs.readFileSync(sdkPackageJsonPath, 'utf8')) as { name?: string };
+        if (pkg.name === 'agent-relay' && sdkPkg.name === '@agent-relay/sdk') {
+          return { rootDir: current, sdkDir };
+        }
+      }
+    } catch {
+      // Ignore parse/read errors and continue walking upward.
+    }
+
+    if (current === root) return null;
+    current = path.dirname(current);
+  }
+}
+
+export function ensureLocalSdkWorkflowRuntime(startDir: string, execRunner: ExecFileSyncLike = execFileSync): void {
+  const workspace = findLocalSdkWorkspace(startDir);
+  if (!workspace) return;
+
+  const workflowsEntry = path.join(workspace.sdkDir, 'dist', 'workflows', 'index.js');
+  if (fs.existsSync(workflowsEntry)) return;
+
+  console.log('[agent-relay] Detected local @agent-relay/sdk workspace without built workflows runtime; building packages/sdk...');
+  execRunner('npm', ['run', 'build:sdk'], {
+    cwd: workspace.rootDir,
+    stdio: 'inherit',
+    env: process.env,
+  });
+
+  if (!fs.existsSync(workflowsEntry)) {
+    throw new Error(`Local SDK workflows runtime is still missing after build: ${workflowsEntry}`);
+  }
+}
+
 function runScriptFile(
   filePath: string,
   options: { dryRun?: boolean; resume?: string; startFrom?: string; previousRunId?: string } = {}
@@ -129,6 +181,8 @@ Run ID: ${runId}`;
   };
 
   if (ext === '.ts' || ext === '.tsx') {
+    ensureLocalSdkWorkflowRuntime(path.dirname(resolved));
+
     const runners = ['tsx', 'ts-node'];
     for (const runner of runners) {
       try {
