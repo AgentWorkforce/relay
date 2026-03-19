@@ -6103,6 +6103,7 @@ export class WorkflowRunner {
     const outputDir = this.getStepOutputDir(runId);
     const logsDir = path.join(this.cwd, '.agent-relay', 'team', 'worker-logs');
     console.log('');
+    console.log(`  Run ID:      ${runId}`);
     console.log(`  Step output: ${outputDir}`);
     console.log(`  Agent logs:  ${logsDir}`);
     console.log('━'.repeat(70));
