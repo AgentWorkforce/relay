@@ -75,6 +75,7 @@ export function createWorkflowRenderer(): WorkflowRenderer {
   let setHeader: (text: string) => void = () => {};
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let listr: any = null;
+  const pendingAdds: ListrTask[] = [];
 
   async function ensureListr(): Promise<any> {
     if (listr) return listr;
@@ -100,8 +101,15 @@ export function createWorkflowRenderer(): WorkflowRenderer {
       },
     },
     );
+    for (const task of pendingAdds) listr.add(task);
+    pendingAdds.length = 0;
     return listr;
   }
+
+  const addTask = (task: ListrTask): void => {
+    if (listr) listr.add(task);
+    else pendingAdds.push(task);
+  };
 
   const onEvent: WorkflowEventListener = (event: WorkflowEvent) => {
     switch (event.type) {
@@ -136,7 +144,7 @@ export function createWorkflowRenderer(): WorkflowRenderer {
           },
         });
 
-        listr?.add({
+        addTask({
           title: chalk.white(event.stepName),
           task: async (_ctx, task): Promise<void> => {
             taskRef = task as RenderableTask;
@@ -200,7 +208,7 @@ export function createWorkflowRenderer(): WorkflowRenderer {
           handle.resolve();
         } else {
           // Step was skipped without ever being started (downstream of a failure).
-          listr?.add({
+          addTask({
             title: chalk.dim(`${event.stepName} (skipped)`),
             task: async (): Promise<void> => {},
             rendererOptions: { persistentOutput: true },
