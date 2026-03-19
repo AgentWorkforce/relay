@@ -225,6 +225,15 @@ async function runWithListr(
         break;
       }
 
+      case 'step:agent-report': {
+        const handle = stepHandles.get(event.stepName);
+        if (handle) {
+          const model = event.report.model ? `:${event.report.model}` : '';
+          handle.setOutput(chalk.dim(`> Report collected (${event.report.cli}${model})`));
+        }
+        break;
+      }
+
       case 'step:completed': {
         stepHandles.get(event.stepName)?.resolve();
         break;

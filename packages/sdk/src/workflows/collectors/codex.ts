@@ -29,7 +29,7 @@ type DatabaseConstructor = new (
 interface DatabaseSyncModule {
   DatabaseSync: new (
     filename: string,
-    options?: { readonly?: boolean; open?: boolean },
+    options?: { readOnly?: boolean; open?: boolean },
   ) => DatabaseInstance;
 }
 
@@ -81,7 +81,7 @@ async function openDatabase(dbPath: string): Promise<DatabaseInstance | null> {
 
   try {
     const sqlite = (await import('node:sqlite')) as DatabaseSyncModule;
-    return new sqlite.DatabaseSync(dbPath, { readonly: true, open: true });
+    return new sqlite.DatabaseSync(dbPath, { readOnly: true, open: true });
   } catch {
     return null;
   }
