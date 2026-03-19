@@ -1,6 +1,8 @@
 export * from './types.js';
 export * from './runner.js';
 export * from './custom-steps.js';
+export * from './cli-session-collector.js';
+export * from './run-summary-table.js';
 export {
   Models,
   ClaudeModels,
