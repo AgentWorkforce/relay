@@ -30,7 +30,7 @@
   },
   "dependencies": {
     "@agent-relay/sdk": "3.2.8",
-    "@relaycast/sdk": "^0.4.0",
+    "@relaycast/sdk": "^1.0.0",
     "ws": "^8.0.0"
   },
   "optionalDependencies": {
