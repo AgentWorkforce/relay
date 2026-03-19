@@ -7,8 +7,10 @@ Native Swift SDK for the Agent Relay broker.
 Add the package in Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/AgentWorkforce/relay.git", branch: "feature/swift-sdk")
+.package(url: "https://github.com/AgentWorkforce/relay.git", revision: "0a2c878748dc34af8b617c8da5ce70af447dfa37")
 ```
+
+> Temporary until the SDK is released under a stable tag.
 
 Then depend on `AgentRelaySDK`.
 

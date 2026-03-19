@@ -48,21 +48,42 @@ actor RelayCore {
     let encoder = JSONEncoder()
     let decoder = JSONDecoder()
 
-    private var handshakeComplete = false
+    private var handshakeInFlight = false
+    private var handshakeContinuation: CheckedContinuation<Void, Error>?
     private var routerTask: Task<Void, Never>?
     private var channelContinuations: [String: [AsyncStream<RelayChannelEvent>.Continuation]] = [:]
 
     init(apiKey: String, transport: RelayTransport) {
         self.apiKey = apiKey
         self.transport = transport
+        Task { [weak self] in
+            await transport.setOnConnect {
+                await self?.transportDidConnect()
+            }
+        }
     }
 
     func ensureConnected() async throws {
-        if !handshakeComplete {
-            try await transport.connect()
-            try await send(.hello(HelloPayload(clientName: "AgentRelaySDK.Swift", clientVersion: "0.1.0")))
+        if routerTask == nil || routerTask?.isCancelled == true {
             routerTask = Task { [weak self] in await self?.routeFrames() }
-            handshakeComplete = true
+        }
+        if handshakeInFlight {
+            return try await waitForHandshake()
+        }
+        handshakeInFlight = true
+        try await transport.connect()
+        try await send(.hello(HelloPayload(clientName: "AgentRelaySDK.Swift", clientVersion: "0.1.0")))
+        try await waitForHandshake()
+    }
+
+    func transportDidConnect() async {
+        handshakeInFlight = true
+        handshakeContinuation?.resume(throwing: RelayError.connectionFailed("Transport reconnected before previous handshake completed"))
+        handshakeContinuation = nil
+        do {
+            try await send(.hello(HelloPayload(clientName: "AgentRelaySDK.Swift", clientVersion: "0.1.0")))
+        } catch {
+            finishHandshake(with: error)
         }
     }
 
@@ -102,11 +123,40 @@ actor RelayCore {
         }
     }
 
+    private func waitForHandshake() async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            handshakeContinuation = continuation
+            Task {
+                try? await Task.sleep(for: .seconds(10))
+                await self.failHandshakeIfPending(with: RelayError.timeout("Timed out waiting for hello_ack"))
+            }
+        }
+    }
+
+    private func finishHandshake() {
+        handshakeInFlight = false
+        handshakeContinuation?.resume(returning: ())
+        handshakeContinuation = nil
+    }
+
+    private func finishHandshake(with error: Error) {
+        handshakeInFlight = false
+        handshakeContinuation?.resume(throwing: error)
+        handshakeContinuation = nil
+    }
+
+    private func failHandshakeIfPending(with error: Error) {
+        guard handshakeInFlight else { return }
+        finishHandshake(with: error)
+    }
+
     private func routeFrames() async {
         for await data in transport.inbound {
             do {
                 let inbound = try decoder.decode(InboundMessage.self, from: data)
                 switch inbound {
+                case .helloAck:
+                    finishHandshake()
                 case .event(let event):
                     if case .relayInbound(let relayEvent) = event {
                         let message = RelayChannelEvent(from: relayEvent.from, body: relayEvent.body, threadId: relayEvent.threadId)
@@ -114,8 +164,13 @@ actor RelayCore {
                             continuation.yield(message)
                         }
                     }
+                case .deliverRelay(let relayEvent):
+                    let message = RelayChannelEvent(from: relayEvent.from, body: relayEvent.body, threadId: relayEvent.threadId)
+                    for continuation in channelContinuations[relayEvent.target] ?? [] {
+                        continuation.yield(message)
+                    }
                 case .error(let error):
-                    _ = error
+                    finishHandshake(with: RelayError.protocolError(code: error.code, message: error.message, retryable: error.retryable))
                 default:
                     break
                 }
@@ -133,9 +188,9 @@ public final class RelayCast: @unchecked Sendable {
 
     public init(apiKey: String, baseURL: URL? = nil) {
         self.apiKey = apiKey
-        let resolved = Self.resolveWebSocketURL(from: baseURL)
+        let resolved = Self.resolveBaseURL(from: baseURL)
         self.baseURL = resolved
-        self.core = RelayCore(apiKey: apiKey, transport: RelayTransport(url: resolved))
+        self.core = RelayCore(apiKey: apiKey, transport: RelayTransport(baseURL: resolved, authToken: apiKey))
     }
 
     public func channel(_ name: String) -> Channel {
@@ -146,46 +201,38 @@ public final class RelayCast: @unchecked Sendable {
         try await core.registerOrRotate(name: name)
     }
 
-    public func `as`(_ agentToken: String) -> AgentClient {
-        AgentClient(core: core, agentName: agentToken, token: agentToken)
+    public func `as`(agentName: String, token: String) -> AgentClient {
+        AgentClient(core: core, agentName: agentName, token: token)
     }
 
-    private static func resolveWebSocketURL(from baseURL: URL?) -> URL {
+    private static func resolveBaseURL(from baseURL: URL?) -> URL {
         if let baseURL {
-            if baseURL.scheme == "ws" || baseURL.scheme == "wss" {
-                return baseURL
-            }
-            if baseURL.scheme == "http" || baseURL.scheme == "https" {
-                var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
-                components?.scheme = baseURL.scheme == "https" ? "wss" : "ws"
-                if components?.path.isEmpty ?? true {
-                    components?.path = "/ws"
-                }
-                return components?.url ?? URL(string: "ws://localhost:3889/ws")!
-            }
+            return baseURL
         }
-        return URL(string: "ws://localhost:3889/ws")!
+        return URL(string: "http://localhost:3889")!
     }
 }
 
 public final class Channel: @unchecked Sendable {
     public let name: String
     private let core: RelayCore
+    private let continuationRef: AsyncStream<RelayChannelEvent>.Continuation?
     public let events: AsyncStream<RelayChannelEvent>
 
     init(name: String, core: RelayCore) {
         self.name = name
         self.core = core
-        var continuationRef: AsyncStream<RelayChannelEvent>.Continuation?
-        self.events = AsyncStream<RelayChannelEvent> { continuation in
-            continuationRef = continuation
+        var continuation: AsyncStream<RelayChannelEvent>.Continuation?
+        self.events = AsyncStream<RelayChannelEvent> { incoming in
+            continuation = incoming
         }
-        if let continuationRef {
-            Task { await core.registerChannelContinuation(continuationRef, for: name) }
-        }
+        self.continuationRef = continuation
     }
 
     public func subscribe() async throws {
+        if let continuationRef {
+            await core.registerChannelContinuation(continuationRef, for: name)
+        }
         try await core.ensureConnected()
     }
 

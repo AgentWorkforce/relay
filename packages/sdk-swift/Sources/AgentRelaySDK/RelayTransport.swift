@@ -17,8 +17,9 @@ public actor RelayTransport {
 
     public nonisolated let inbound: AsyncStream<Data>
 
-    private let url: URL
+    private let baseURL: URL
     private let session: URLSession
+    private let authToken: String
     private var webSocketTask: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var pingTask: Task<Void, Never>?
@@ -28,15 +29,21 @@ public actor RelayTransport {
     private var manuallyDisconnected = false
     private var reconnectAttempt = 0
     private var lastPongAt = Date()
+    private var onConnect: (@Sendable () async -> Void)?
 
-    public init(url: URL, session: URLSession = .shared) {
-        self.url = url
+    public init(baseURL: URL, authToken: String, session: URLSession = .shared) {
+        self.baseURL = baseURL
+        self.authToken = authToken
         self.session = session
         var continuationRef: AsyncStream<Data>.Continuation?
         self.inbound = AsyncStream<Data> { continuation in
             continuationRef = continuation
         }
         self.inboundContinuation = continuationRef
+    }
+
+    public func setOnConnect(_ handler: @escaping @Sendable () async -> Void) {
+        self.onConnect = handler
     }
 
     public func connect() async throws {
@@ -50,7 +57,8 @@ public actor RelayTransport {
         manuallyDisconnected = false
         state = reconnectAttempt == 0 ? .connecting : .reconnecting
 
-        let task = session.webSocketTask(with: url)
+        let request = websocketRequest()
+        let task = session.webSocketTask(with: request)
         webSocketTask = task
         task.resume()
         state = .connected
@@ -59,6 +67,9 @@ public actor RelayTransport {
 
         startReceiveLoop()
         startPingLoop()
+        if let onConnect {
+            await onConnect()
+        }
     }
 
     public func disconnect() {
@@ -84,6 +95,22 @@ public actor RelayTransport {
         } catch {
             throw TransportError.sendFailed(String(describing: error))
         }
+    }
+
+    private func websocketRequest() -> URLRequest {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        if components?.scheme == "http" { components?.scheme = "ws" }
+        if components?.scheme == "https" { components?.scheme = "wss" }
+        if components?.path.isEmpty ?? true { components?.path = "/v1/ws" }
+        if !(components?.path.hasSuffix("/v1/ws") ?? false) && !(components?.path.hasSuffix("/ws") ?? false) {
+            components?.path = "/v1/ws"
+        }
+        components?.queryItems = (components?.queryItems ?? []) + [URLQueryItem(name: "token", value: authToken)]
+
+        var request = URLRequest(url: components?.url ?? baseURL)
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(authToken, forHTTPHeaderField: "X-API-Key")
+        return request
     }
 
     private func startReceiveLoop() {
@@ -163,8 +190,8 @@ public actor RelayTransport {
         }
 
         state = .reconnecting
-        reconnectAttempt += 1
         let delay = reconnectDelay(for: reconnectAttempt)
+        reconnectAttempt += 1
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
             guard let self else { return }
