@@ -53,20 +53,37 @@ npx agent-relay --version
 
 ### Step 1: Start Infrastructure
 
-```bash
-# Start broker in background (no dashboard needed for headless)
-agent-relay up --background --no-dashboard
+Prefer a **foreground stdio broker** first. Background mode can be flaky in some environments and may report "started" while `agent-relay status` still shows `STOPPED`.
 
-# Verify it's running
+```bash
+# Preferred: run broker in foreground/stdin mode and keep the session open
+agent-relay up --no-dashboard --verbose
+```
+
+In another terminal/session, verify it is ready before spawning workers:
+
+```bash
+agent-relay status
+# Optional: confirm API/broker readiness from startup logs before spawning
+```
+
+Only use background mode if you have confirmed it stays healthy in this project:
+
+```bash
+agent-relay up --background --no-dashboard
 agent-relay status
 ```
+
+If background mode says it started but status still shows `STOPPED`, fall back to foreground mode.
 
 The broker:
 - Auto-creates a Relaycast workspace if `RELAY_API_KEY` not set
 - Removes `CLAUDECODE` env var when spawning (fixes nested session error)
 - Persists state to `.agent-relay/`
 
-### Step 2: Spawn Workers via MCP
+### Step 2: Spawn Workers via MCP or CLI
+
+Start conservatively: spawn **one worker first**, confirm it connects, then add more workers gradually. Spawning several immediately after broker startup can cause dropped internal replies or relay registration timeouts.
 
 ```
 mcp__relaycast__agent_add(
@@ -74,6 +91,12 @@ mcp__relaycast__agent_add(
   cli: "claude",
   task: "Implement the authentication module following the existing patterns"
 )
+```
+
+CLI equivalent:
+
+```bash
+agent-relay spawn Worker1 claude "Implement the authentication module following the existing patterns"
 ```
 
 ### Step 3: Monitor and Coordinate
@@ -121,8 +144,8 @@ agent-relay release Worker1
 ### Monitoring Workers (Essential)
 
 ```bash
-# List all active agents with status
-agent-relay agents
+# Show currently active agents
+agent-relay who
 
 # View real-time output from a worker (critical for debugging)
 agent-relay agents:logs Worker1
@@ -204,8 +227,10 @@ The broker emits these events (available via SDK subscriptions):
 |---------|-----|
 | `agent-relay: command not found` | Install with `npm i -g agent-relay` or use `npx agent-relay` |
 | "Nested session" error | Broker handles this automatically; if running manually, unset `CLAUDECODE` env var |
-| Broker not starting | Check `agent-relay status`; may need `agent-relay down` first |
-| Workers not connecting | Ensure broker started; check `agent-relay agents` |
+| Broker not starting | Try `agent-relay down` first, then use foreground `agent-relay up --no-dashboard --verbose` to see readiness logs |
+| Background broker says started but status is STOPPED | Prefer foreground mode for that project/session; background mode may have detached incorrectly |
+| Spawn fails with `internal reply dropped` | Broker likely is not fully ready yet; wait for readiness, then spawn one worker first |
+| Workers not connecting | Ensure broker started; check `agent-relay who` and worker logs |
 | Not monitoring workers | Use `agent-relay agents:logs <name>` frequently to track progress |
 | Workers seem stuck | Check logs with `agent-relay agents:logs <name>` for errors |
 | Messages not delivered | Check `agent-relay history` to verify message flow |
