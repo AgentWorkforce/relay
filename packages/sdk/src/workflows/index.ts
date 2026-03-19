@@ -24,3 +24,4 @@ export * from './state.js';
 export * from './templates.js';
 export { WorkflowTrajectory, type StepOutcome } from './trajectory.js';
 export { formatDryRunReport } from './dry-run-format.js';
+export { createWorkflowRenderer, type WorkflowRenderer } from './listr-renderer.js';

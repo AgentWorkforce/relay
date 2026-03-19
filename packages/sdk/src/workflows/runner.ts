@@ -19,6 +19,7 @@ import {
 import type { Dirent, WriteStream } from 'node:fs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import chalk from 'chalk';
 
 import { parse as parseYaml } from 'yaml';
 import { stripAnsi as stripAnsiFn } from '../pty.js';
@@ -1002,7 +1003,7 @@ export class WorkflowRunner {
       mins > 0
         ? `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
         : `00:${String(secs).padStart(2, '0')}`;
-    console.log(`[workflow ${ts}] ${msg}`);
+    console.log(`${chalk.dim.cyan('[workflow')} ${chalk.dim.cyan(ts)}${chalk.dim.cyan(']')} ${msg}`);
   }
 
   // ── Relaycast auto-provisioning ────────────────────────────────────────
@@ -2248,7 +2249,7 @@ export class WorkflowRunner {
 
         // Wire broker stderr to console for observability
         this.unsubBrokerStderr = this.relay.onBrokerStderr((line: string) => {
-          console.log(`[broker] ${line}`);
+          console.log(`${chalk.dim.yellow('[broker]')} ${line}`);
         });
 
         if (!relaycastDisabled) {
@@ -6071,15 +6072,19 @@ export class WorkflowRunner {
     const skipped = outcomes.filter((o) => o.status === 'skipped');
 
     console.log('');
-    console.log('━'.repeat(70));
-    console.log(`  Workflow "${workflowName}" — ${failed.length === 0 ? 'COMPLETED' : 'FAILED'}`);
-    console.log(`  ${completed.length} passed, ${failed.length} failed, ${skipped.length} skipped`);
-    console.log('━'.repeat(70));
+    console.log(chalk.dim('━'.repeat(70)));
+    console.log(`  Workflow "${workflowName}" — ${failed.length === 0 ? chalk.green('COMPLETED') : chalk.red('FAILED')}`);
+    console.log(
+      `  ${chalk.green(`${completed.length} passed`)}, ${chalk.red(`${failed.length} failed`)}, ${chalk.dim(`${skipped.length} skipped`)}`
+    );
+    console.log(chalk.dim('━'.repeat(70)));
+
     if (this.agentReports.size > 0) {
       console.log(formatRunSummaryTable(outcomes, this.agentReports));
     } else {
       for (const outcome of outcomes) {
-        const icon = outcome.status === 'completed' ? '✓' : outcome.status === 'failed' ? '✗' : '⊘';
+        const icon =
+          outcome.status === 'completed' ? chalk.green('✓') : outcome.status === 'failed' ? chalk.red('✗') : chalk.dim('⊘');
         const retryNote = outcome.attempts > 1 ? ` (${outcome.attempts} attempts)` : '';
         console.log(`  ${icon} ${outcome.name} [${outcome.agent}]${retryNote}`);
 
@@ -6106,7 +6111,7 @@ export class WorkflowRunner {
     console.log(`  Run ID:      ${runId}`);
     console.log(`  Step output: ${outputDir}`);
     console.log(`  Agent logs:  ${logsDir}`);
-    console.log('━'.repeat(70));
+    console.log(chalk.dim('━'.repeat(70)));
     console.log('');
   }
 
