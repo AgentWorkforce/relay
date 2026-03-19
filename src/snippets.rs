@@ -267,6 +267,7 @@ pub fn relaycast_mcp_config_json_with_token(
 ///
 /// Later sources override earlier ones (matching Claude's own precedence).
 /// The relaycast entry always wins (prevents stale entries from overriding broker creds).
+#[allow(dead_code)]
 fn merge_relaycast_with_project_mcp(
     relay_api_key: Option<&str>,
     relay_base_url: Option<&str>,
@@ -289,6 +290,7 @@ fn merge_relaycast_with_project_mcp(
 }
 
 /// Inner implementation that accepts an explicit home directory for testability.
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 fn merge_relaycast_with_project_mcp_inner(
     relay_api_key: Option<&str>,
