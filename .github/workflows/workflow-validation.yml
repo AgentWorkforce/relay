@@ -1,0 +1,68 @@
+name: Workflow Validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'workflows/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate & Dry Run
+    runs-on: ubuntu-latest
+    env:
+      NPM_CONFIG_FUND: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Cache node_modules
+        id: cache-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: modules-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.cache-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Build packages
+        run: npm run build
+
+      - name: Find changed workflow files
+        id: changed
+        run: |
+          files=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- 'workflows/**' \
+            | grep -E '\.(ts|yaml|yml)$' || true)
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$files" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "Found: $files"
+
+      - name: Validate & dry run workflows
+        if: steps.changed.outputs.files != ''
+        env:
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+        run: |
+          for f in $CHANGED_FILES; do
+            echo "=== $f ==="
+            if [[ "$f" == *.yaml || "$f" == *.yml ]]; then
+              npx tsx packages/sdk/src/workflows/cli.ts "$f" --validate
+              DRY_RUN=1 npx tsx packages/sdk/src/workflows/cli.ts "$f"
+            fi
+            echo ""
+          done

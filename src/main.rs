@@ -2569,13 +2569,45 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 let spec_for_state = spec.clone();
                                 let effective_task = normalize_initial_task(task.clone());
 
-                                let worker_relay_key = relaycast_ws_spawn_token(&ws_value);
-                                if worker_relay_key.is_none() {
-                                    tracing::debug!(
-                                        worker = %name,
-                                        "relaycast WS spawn request did not include agent token; spawning without pre-registration"
-                                    );
-                                }
+                                // Pre-register the agent so its MCP server starts
+                                // with a valid token (same as the SDK spawn_agent path).
+                                // The WS event may include a token, but often doesn't —
+                                // fall back to broker-side registration.
+                                let worker_relay_key = {
+                                    let ws_token = relaycast_ws_spawn_token(&ws_value);
+                                    if ws_token.is_some() {
+                                        ws_token
+                                    } else {
+                                        const REG_TIMEOUT: Duration = Duration::from_secs(15);
+                                        match tokio::time::timeout(
+                                            REG_TIMEOUT,
+                                            workspace_http.register_agent_token(&name, Some(cli.as_str())),
+                                        ).await {
+                                            Ok(Ok(token)) => {
+                                                tracing::info!(
+                                                    worker = %name,
+                                                    "pre-registered agent via broker for WS spawn"
+                                                );
+                                                Some(token)
+                                            }
+                                            Ok(Err(error)) => {
+                                                tracing::warn!(
+                                                    worker = %name,
+                                                    error = %error,
+                                                    "WS spawn pre-registration failed; agent will self-register"
+                                                );
+                                                None
+                                            }
+                                            Err(_) => {
+                                                tracing::warn!(
+                                                    worker = %name,
+                                                    "WS spawn pre-registration timed out; agent will self-register"
+                                                );
+                                                None
+                                            }
+                                        }
+                                    }
+                                };
 
                                 match workers.spawn(
                                     spec,
@@ -2724,7 +2756,33 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     let task_opt = Some(task).filter(|v| !v.trim().is_empty());
                                     let effective_task = normalize_initial_task(task_opt.clone());
 
-                                    let worker_relay_key = relaycast_ws_spawn_token(&ws_value);
+                                    // Pre-register (same as primary WS spawn path above).
+                                    let worker_relay_key = {
+                                        let ws_token = relaycast_ws_spawn_token(&ws_value);
+                                        if ws_token.is_some() {
+                                            ws_token
+                                        } else {
+                                            const REG_TIMEOUT: Duration = Duration::from_secs(15);
+                                            match tokio::time::timeout(
+                                                REG_TIMEOUT,
+                                                workspace_http.register_agent_token(&name, Some(cli.as_str())),
+                                            ).await {
+                                                Ok(Ok(token)) => Some(token),
+                                                Ok(Err(error)) => {
+                                                    tracing::warn!(
+                                                        worker = %name,
+                                                        error = %error,
+                                                        "WS spawn fallback pre-registration failed"
+                                                    );
+                                                    None
+                                                }
+                                                Err(_) => {
+                                                    tracing::warn!(worker = %name, "WS spawn fallback pre-registration timed out");
+                                                    None
+                                                }
+                                            }
+                                        }
+                                    };
 
                                     match workers.spawn(
                                         spec,
