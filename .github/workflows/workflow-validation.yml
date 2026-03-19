@@ -61,7 +61,7 @@ jobs:
           for f in $CHANGED_FILES; do
             echo "=== $f ==="
             if [[ "$f" == *.yaml || "$f" == *.yml ]]; then
-              npx tsx packages/sdk/src/workflows/cli.ts --validate "$f"
+              npx tsx packages/sdk/src/workflows/cli.ts "$f" --validate
               DRY_RUN=1 npx tsx packages/sdk/src/workflows/cli.ts "$f"
             fi
             echo ""
