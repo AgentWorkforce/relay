@@ -13,7 +13,7 @@ export function Card({ title, href, children }: CardProps) {
   const inner = (
     <>
       <h3 className={styles.cardTitle}>{title}</h3>
-      {children && <p className={styles.cardBody}>{children}</p>}
+      {children && <div className={styles.cardBody}>{children}</div>}
     </>
   );
 
