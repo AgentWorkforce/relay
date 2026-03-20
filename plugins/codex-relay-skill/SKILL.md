@@ -14,6 +14,10 @@ Use this skill when Codex needs real-time coordination across multiple agents. I
 
 Relay fills the peer-to-peer gap in Codex sub-agent workflows. Codex can spawn and collect worker results, but Relaycast gives those workers a shared message bus so they can talk to the lead and to each other.
 
+## Auto-setup
+
+On first activation, this skill auto-configures Codex by running `scripts/setup.sh`. This adds the Relaycast MCP server to `.codex/config.toml`, enables hooks, installs `hooks.json`, and copies the `relay-worker.toml` agent definition. No manual setup is required after installing the skill.
+
 ## Startup protocol
 
 Every relay-connected Codex agent must complete these steps before substantive work:
@@ -49,9 +53,8 @@ Use the `relay-worker` custom agent definition for execution-focused tasks that 
 
 Before spawning workers:
 
-1. Make sure the Relaycast MCP server is configured in `.codex/config.toml` or `~/.codex/config.toml`.
-2. Make sure `.codex/agents/relay-worker.toml` is installed for the project or user.
-3. Pass the worker everything it needs up front: relay name, lead name, workspace-key source, exact scope, and completion criteria.
+1. Verify auto-setup has run (the Relaycast MCP server and `relay-worker.toml` are installed automatically on first skill activation).
+2. Pass the worker everything it needs up front: relay name, lead name, workspace-key source, exact scope, and completion criteria.
 
 Good worker handoff pattern:
 
