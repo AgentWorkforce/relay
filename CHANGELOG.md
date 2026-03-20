@@ -29,6 +29,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.2.10] - 2026-03-20
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Workflow to polish CLI output with listr2 + chalk (#585)** (#585)
+- **CLI session collectors, step-level cwd, and run summary table (#592)** (#592)
+
+#### User-Impacting Fixes
+- Auto-build local sdk workflows runtime (#588) (#588)
+- MCP tools unavailable for agents spawned via agent_add (#591) (#591)
+
+### Technical Perspective
+#### Releases
+- v3.2.10
+
+---
+
 ## [3.2.9] - 2026-03-19
 
 ### Technical Perspective
