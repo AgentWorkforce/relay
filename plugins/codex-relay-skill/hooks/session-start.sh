@@ -5,7 +5,15 @@ set -euo pipefail
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PLUGIN_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 ENV_FILE="${PLUGIN_DIR}/.env"
-RELAY_DIR="${HOME}/.relay"
+BASE_RELAY_DIR="${HOME}/.relay"
+# Per-agent namespacing: use RELAY_AGENT_NAME to avoid concurrent agents
+# overwriting each other's state files
+_agent_ns=$(printf '%s' "${RELAY_AGENT_NAME:-}" | tr -c 'A-Za-z0-9._-' '-' | sed 's/^-*//; s/-*$//' | cut -c1-64)
+if [ -n "$_agent_ns" ]; then
+  RELAY_DIR="${BASE_RELAY_DIR}/agents/${_agent_ns}"
+else
+  RELAY_DIR="${BASE_RELAY_DIR}"
+fi
 KEY_FILE="${RELAY_DIR}/workspace-key"
 TOKEN_FILE="${RELAY_DIR}/token"
 STATE_FILE="${RELAY_DIR}/codex-session.json"
@@ -192,6 +200,14 @@ main() {
   [ -z "$workspace_key" ] && exit 0
 
   agent_name=$(derive_agent_name)
+
+  # Re-namespace state directory now that we know the agent name
+  RELAY_DIR="${BASE_RELAY_DIR}/agents/${agent_name}"
+  KEY_FILE="${RELAY_DIR}/workspace-key"
+  TOKEN_FILE="${RELAY_DIR}/token"
+  STATE_FILE="${RELAY_DIR}/codex-session.json"
+  mkdir -p "$RELAY_DIR"
+
   registration=$(register_v1_agents "$base_url" "$workspace_key" "$agent_name")
   if [ -z "$registration" ]; then
     registration=$(register_v1_register "$base_url" "$workspace_key" "$agent_name")

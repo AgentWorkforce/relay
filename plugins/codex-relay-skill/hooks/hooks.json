@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash plugins/codex-relay-skill/hooks/session-start.sh",
+            "command": "bash .agents/skills/agent-relay/hooks/session-start.sh",
             "timeoutSec": 15,
             "statusMessage": "Connecting Relaycast"
           }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash plugins/codex-relay-skill/hooks/prompt-inbox.sh",
+            "command": "bash .agents/skills/agent-relay/hooks/prompt-inbox.sh",
             "timeoutSec": 5,
             "statusMessage": "Checking relay inbox"
           }
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash plugins/codex-relay-skill/hooks/stop-inbox.sh",
+            "command": "bash .agents/skills/agent-relay/hooks/stop-inbox.sh",
             "timeoutSec": 5,
             "statusMessage": "Verifying relay inbox"
           }
