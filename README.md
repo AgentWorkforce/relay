@@ -90,7 +90,7 @@ Or just describe what you want in plain language:
 > Split the migration into three relay workers — one for the schema, one for the API, one for the frontend
 ```
 
-See the [plugin README](https://github.com/AgentWorkforce/skills/plugins/claude-relay-plugin/README.md) for full details.
+See the [plugin README](https://github.com/AgentWorkforce/skills/tree/main/plugins/claude-relay-plugin) for full details.
 
 ## Supported CLI’s
 - Claude
