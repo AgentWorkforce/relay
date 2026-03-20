@@ -65,6 +65,30 @@
             "reasoning": "Official Codex docs support project skills in .agents/skills and custom agents in .codex/agents with mcp_servers and skills.config today. Hooks landed in PR #13276 but remain experimental, limited to SessionStart/Stop, and are not the best primary integration point for peer messaging."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1774037318747,
+          "type": "decision",
+          "content": "Add canonical metadata to legacy OpenClaw redirect routes: Add canonical metadata to legacy OpenClaw redirect routes",
+          "raw": {
+            "question": "Add canonical metadata to legacy OpenClaw redirect routes",
+            "chosen": "Add canonical metadata to legacy OpenClaw redirect routes",
+            "alternatives": [],
+            "reasoning": "All user-facing web routes should emit a canonical URL at agentrelay.dev; the only missing route modules are the legacy OpenClaw redirect pages."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1774037562266,
+          "type": "decision",
+          "content": "Make /openclaw/skill the primary hosted skill route: Make /openclaw/skill the primary hosted skill route",
+          "raw": {
+            "question": "Make /openclaw/skill the primary hosted skill route",
+            "chosen": "Make /openclaw/skill the primary hosted skill route",
+            "alternatives": [],
+            "reasoning": "The site copy, sitemap, and robots rules already use /openclaw/skill as the public URL. The current redirects invert that intent, so the content and invite pages should live under /openclaw/skill and /skill should redirect there as a legacy alias."
+          },
+          "significance": "high"
         }
       ]
     }
