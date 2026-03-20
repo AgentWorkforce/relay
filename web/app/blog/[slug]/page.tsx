@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import { evaluate } from '@mdx-js/mdx';
 import { Fragment } from 'react';
 import { jsx, jsxs } from 'react/jsx-runtime';
+import remarkGfm from 'remark-gfm';
 
 import styles from '../../../components/blog/blog.module.css';
 import { SiteNav } from '../../../components/SiteNav';
@@ -55,6 +56,7 @@ export default async function BlogPostPage({ params }: PageProps) {
     Fragment,
     jsx,
     jsxs,
+    remarkPlugins: [remarkGfm],
   } as Parameters<typeof evaluate>[1]);
 
   return (

@@ -29,8 +29,69 @@
 .sidebarLogo { display: none; }
 
 .content {
-  max-width: 52rem;
+  min-width: 0;
   padding: 2rem 3rem 5rem;
+}
+
+/* ── Article + TOC wrapper ── */
+
+.articleWrapper {
+  display: grid;
+  grid-template-columns: 1fr 200px;
+  gap: 32px;
+  max-width: 56rem;
+}
+
+.tocSidebar {
+  position: relative;
+}
+
+.toc {
+  position: sticky;
+  top: 80px;
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+  padding-top: 0.5rem;
+}
+
+.tocTitle {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  margin: 0 0 8px;
+}
+
+.tocList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.tocLink {
+  display: block;
+  padding: 3px 0;
+  font-size: 0.76rem;
+  line-height: 1.4;
+  color: var(--fg-faint);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+  padding-left: 10px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.tocLink:hover {
+  color: var(--primary);
+}
+
+.tocIndent {
+  padding-left: 20px;
+}
+
+.tocActive {
+  color: var(--primary);
+  border-left-color: var(--primary);
 }
 
 .navGroup { margin-bottom: 1.25rem; }
@@ -130,7 +191,7 @@
   padding: 1rem 1.25rem;
   border-radius: 0.75rem;
   background: var(--code-bg);
-  border: none;
+  border: 1px solid var(--line);
   overflow-x: auto;
   line-height: 1.5;
 }
@@ -206,6 +267,11 @@
 .note p:last-child { margin-bottom: 0; }
 
 /* ── Responsive ── */
+
+@media (max-width: 1100px) {
+  .articleWrapper { grid-template-columns: 1fr; }
+  .tocSidebar { display: none; }
+}
 
 @media (max-width: 900px) {
   .docsBody { grid-template-columns: 1fr; }

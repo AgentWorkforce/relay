@@ -1,18 +1,16 @@
-/* Light mode (default) */
 .codeBlock {
   border-radius: 12px;
   overflow: hidden;
   background: var(--code-bg);
   border: 1px solid var(--line);
-  box-shadow: 0 4px 24px color-mix(in srgb, var(--primary) 8%, transparent);
 }
 
 .tabs {
   display: flex;
   gap: 0;
   padding: 0 16px;
-  background: color-mix(in srgb, var(--code-bg) 90%, black);
-  border-bottom: 1px solid color-mix(in srgb, var(--code-fg) 10%, transparent);
+  background: color-mix(in srgb, var(--code-bg) 85%, var(--fg));
+  border-bottom: 1px solid var(--line);
 }
 
 .tab {
@@ -20,7 +18,7 @@
   font-family: var(--font-geist-sans), sans-serif;
   font-size: 0.82rem;
   font-weight: 500;
-  color: color-mix(in srgb, var(--code-fg) 50%, transparent);
+  color: var(--fg-faint);
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
@@ -29,12 +27,12 @@
 }
 
 .tab:hover {
-  color: var(--code-fg);
+  color: var(--fg);
 }
 
 .tabActive {
-  color: var(--code-fg);
-  border-bottom-color: var(--primary);
+  color: #2D4F3E;
+  border-bottom-color: #2D4F3E;
 }
 
 .pre {
@@ -50,24 +48,29 @@
   border-radius: 0;
 }
 
-/* Syntax highlighting — works on both light/dark code-bg */
+/* Light mode syntax colors (matching screenshot) */
 .keyword {
-  color: #5bbaa7;
+  color: #2D4F3E;
 }
 
 .string {
-  color: #c4876e;
+  color: #b45309;
 }
 
 .type {
-  color: #6aab9a;
+  color: #2D4F3E;
 }
 
 .method {
-  color: #c9b87c;
+  color: #6b21a8;
 }
 
-/* Dark theme overrides */
+/* Dark mode overrides */
+:global([data-theme='dark']) .tabActive {
+  color: #5bbaa7;
+  border-bottom-color: #5bbaa7;
+}
+
 :global([data-theme='dark']) .keyword {
   color: #5bbaa7;
 }

@@ -13,10 +13,10 @@
   padding: 14px 40px;
 }
 
-.navLeft {
+.navRight {
   display: flex;
   align-items: center;
-  gap: 36px;
+  gap: 28px;
 }
 
 .logo {
@@ -34,7 +34,7 @@
 }
 
 .logoWordmark {
-  height: 24px;
+  height: 20px;
   width: auto;
   color: var(--primary);
 }

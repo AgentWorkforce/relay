@@ -30,9 +30,16 @@ export interface DocFrontmatter {
   description: string;
 }
 
+export interface TocItem {
+  id: string;
+  text: string;
+  level: number;
+}
+
 export interface DocContent {
   frontmatter: DocFrontmatter;
   content: string;
+  toc: TocItem[];
 }
 
 /**
@@ -67,12 +74,27 @@ export function getDoc(slug: string): DocContent | null {
 
   const raw = fs.readFileSync(filePath, 'utf8');
   const { data, content } = matter(raw);
+  const processed = preprocessMdx(content);
+
+  // Extract h2 and h3 headings for table of contents
+  const toc: TocItem[] = [];
+  const headingRegex = /^(#{2,3})\s+(.+)$/gm;
+  let match;
+  while ((match = headingRegex.exec(content)) !== null) {
+    const text = match[2].replace(/`([^`]+)`/g, '$1').trim();
+    const id = text
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+    toc.push({ id, text, level: match[1].length });
+  }
 
   return {
     frontmatter: {
       title: (data.title as string) || slug,
       description: (data.description as string) || '',
     },
-    content: preprocessMdx(content),
+    content: processed,
+    toc,
   };
 }

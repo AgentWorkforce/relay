@@ -10,8 +10,8 @@
   --primary-hover: #243f31;
   --line: rgba(45, 79, 62, 0.10);
   --surface: #eae6dd;
-  --code-bg: #1e2028;
-  --code-fg: #c9d1d9;
+  --code-bg: #f6f5f2;
+  --code-fg: #3b3f46;
   --inline-code-bg: rgba(45, 79, 62, 0.06);
   --inline-code-fg: #2D4F3E;
   --card-bg: rgba(255, 255, 255, 0.88);
@@ -80,6 +80,21 @@ code,
 pre {
   font-family: var(--font-geist-mono), monospace;
 }
+
+/* ── Syntax highlighting (light mode) ── */
+.syn-keyword { color: #2D4F3E; }
+.syn-string { color: #b45309; }
+.syn-type { color: #2D4F3E; }
+.syn-method { color: #6b21a8; }
+.syn-comment { color: #9ca3af; font-style: italic; }
+.syn-number { color: #2D4F3E; }
+
+[data-theme='dark'] .syn-keyword { color: #5bbaa7; }
+[data-theme='dark'] .syn-string { color: #ce9178; }
+[data-theme='dark'] .syn-type { color: #4ec9b0; }
+[data-theme='dark'] .syn-method { color: #dcdcaa; }
+[data-theme='dark'] .syn-comment { color: #6a737d; font-style: italic; }
+[data-theme='dark'] .syn-number { color: #b5cea8; }
 
 .skill-page {
   max-width: 1040px;

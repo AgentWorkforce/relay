@@ -1,22 +1,42 @@
 import type { Metadata } from 'next';
+import type React from 'react';
 import { notFound } from 'next/navigation';
 import { evaluate } from '@mdx-js/mdx';
 import { Fragment } from 'react';
 import { jsx, jsxs } from 'react/jsx-runtime';
+import remarkGfm from 'remark-gfm';
 
 import { Card } from '../../../components/docs/Card';
 import { CardGroup } from '../../../components/docs/CardGroup';
 import { CodeGroup } from '../../../components/docs/CodeGroup';
+import { HighlightedPre } from '../../../components/docs/HighlightedCode';
 import { Note } from '../../../components/docs/Note';
+import { TableOfContents } from '../../../components/docs/TableOfContents';
 import styles from '../../../components/docs/docs.module.css';
 import { getDoc } from '../../../lib/docs';
 import { getAllDocSlugs } from '../../../lib/docs-nav';
+
+function slugify(text: string): string {
+  return text.toLowerCase().replace(/`([^`]+)`/g, '$1').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+function HeadingWithId(level: 2 | 3) {
+  return function Heading({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
+    const text = typeof children === 'string' ? children : String(children);
+    const id = slugify(text);
+    const Tag = `h${level}` as const;
+    return <Tag id={id} {...props}>{children}</Tag>;
+  };
+}
 
 const components = {
   CodeGroup,
   Card,
   CardGroup,
   Note,
+  pre: HighlightedPre,
+  h2: HeadingWithId(2),
+  h3: HeadingWithId(3),
 };
 
 type PageProps = {
@@ -77,15 +97,23 @@ export default async function DocsPage({ params }: PageProps) {
     Fragment,
     jsx,
     jsxs,
+    remarkPlugins: [remarkGfm],
   } as Parameters<typeof evaluate>[1]);
 
   return (
-    <article className={styles.article}>
-      <h1>{doc.frontmatter.title}</h1>
-      {doc.frontmatter.description && (
-        <p className={styles.articleDescription}>{doc.frontmatter.description}</p>
+    <div className={styles.articleWrapper}>
+      <article className={styles.article}>
+        <h1>{doc.frontmatter.title}</h1>
+        {doc.frontmatter.description && (
+          <p className={styles.articleDescription}>{doc.frontmatter.description}</p>
+        )}
+        <MDXContent components={components} />
+      </article>
+      {doc.toc.length > 0 && (
+        <aside className={styles.tocSidebar}>
+          <TableOfContents items={doc.toc} />
+        </aside>
       )}
-      <MDXContent components={components} />
-    </article>
+    </div>
   );
 }
