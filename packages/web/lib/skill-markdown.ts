@@ -10,7 +10,9 @@ function resolveSkillPath(): string {
     path.resolve(process.cwd(), 'packages/openclaw/skill/SKILL.md'),
     path.resolve(process.cwd(), '../packages/openclaw/skill/SKILL.md'),
     path.resolve(process.cwd(), '../../packages/openclaw/skill/SKILL.md'),
+    path.resolve(process.cwd(), '../openclaw/skill/SKILL.md'),
     path.resolve(__dirname, '../../packages/openclaw/skill/SKILL.md'),
+    path.resolve(__dirname, '../../../packages/openclaw/skill/SKILL.md'),
   ];
 
   for (const candidate of candidates) {

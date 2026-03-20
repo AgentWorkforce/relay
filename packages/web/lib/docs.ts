@@ -11,7 +11,9 @@ function resolveDocsDir(): string {
   const candidates = [
     path.resolve(process.cwd(), 'docs'),
     path.resolve(process.cwd(), '../docs'),
+    path.resolve(process.cwd(), '../../docs'),
     path.resolve(__dirname, '../../docs'),
+    path.resolve(__dirname, '../../../docs'),
   ];
 
   for (const candidate of candidates) {

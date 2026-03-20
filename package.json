@@ -69,8 +69,7 @@
     "agent-relay": "dist/src/cli/index.js"
   },
   "workspaces": [
-    "packages/*",
-    "web"
+    "packages/*"
   ],
   "bundledDependencies": [
     "@agent-relay/sdk",
@@ -141,7 +140,7 @@
     "codegen:models:ts": "node packages/shared/codegen-ts.mjs",
     "codegen:models:py": "node packages/shared/codegen-py.mjs",
     "prepare": "node scripts/prepare-husky.cjs",
-    "dev:web": "cd web && ../node_modules/.bin/next dev"
+    "dev:web": "cd packages/web && ../../node_modules/.bin/next dev"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
