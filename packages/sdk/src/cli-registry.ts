@@ -75,7 +75,7 @@ const CLI_REGISTRY: Record<AgentCli, CliDefinition> = {
   },
   opencode: {
     binaries: ['opencode'],
-    nonInteractiveArgs: (task, extra = []) => ['--prompt', task, ...extra],
+    nonInteractiveArgs: (task, extra = []) => ['run', task, ...extra],
     searchPaths: ['~/.opencode/bin'],
   },
   droid: {

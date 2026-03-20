@@ -1,0 +1,40 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .agents/skills/agent-relay/hooks/session-start.sh",
+            "timeoutSec": 15,
+            "statusMessage": "Connecting Relaycast"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .agents/skills/agent-relay/hooks/prompt-inbox.sh",
+            "timeoutSec": 5,
+            "statusMessage": "Checking relay inbox"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .agents/skills/agent-relay/hooks/stop-inbox.sh",
+            "timeoutSec": 5,
+            "statusMessage": "Verifying relay inbox"
+          }
+        ]
+      }
+    ]
+  }
+}
