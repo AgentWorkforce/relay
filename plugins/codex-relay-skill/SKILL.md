@@ -39,6 +39,10 @@ Every relay-connected Codex agent must complete these steps IN ORDER before subs
 
 If workspace creation or registration fails, retry once, then report the failure to the user — do not proceed without a relay connection.
 
+## Critical rule
+
+**Do not assume the current MCP session already has an active Relaycast workspace.** Always check with `workspace.list` first and create or set one if missing.
+
 ## Working rules
 
 - Include `as: "<agent-name>"` on relay calls that support explicit attribution.
@@ -56,30 +60,66 @@ If workspace creation or registration fails, retry once, then report the failure
 - `BLOCKED: I cannot continue because <blocker>.`
 - `DONE: Completed <scope>. Evidence: <files changed, commands run, tests, or decisions>.`
 
-## Spawning relay workers with Codex sub-agents
+## Two kinds of workers
 
-Use the `relay-worker` custom agent definition for execution-focused tasks that need relay signaling.
+There are two ways to create workers. Use the right one for the job:
 
-Before spawning workers:
+### Relaycast workspace agents (preferred for messaging tasks)
 
-1. Verify auto-setup has run (the Relaycast MCP server and `relay-worker.toml` are installed automatically on first skill activation).
-2. Pass the worker everything it needs up front: relay name, lead name, workspace-key source, exact scope, and completion criteria.
+Use `agent.add` to create a Relaycast-native agent. Best for tasks that are primarily about messaging, inbox checks, coordination, or lightweight work that doesn't need a full Codex sub-agent runtime.
 
-Good worker handoff pattern:
+**Lead steps:**
+1. Ensure workspace exists (call `workspace.list`, then `workspace.create` if needed).
+2. Register the lead (`agent.register`).
+3. Add the worker with `agent.add(name: "worker-name", type: "agent")`.
+4. Send the assignment via `dm.send(to: "worker-name", text: "...")`.
+5. Poll lead inbox for ACK (`inbox.check`).
 
-- assign one bounded scope per worker
-- tell the worker who to ACK
-- tell the worker when to send STATUS
-- require DONE with evidence before exit
+**Worker steps:**
+1. Check inbox (`inbox.check`).
+2. Send ACK to lead via `dm.send`.
+3. Perform the assigned scope.
+4. Send DONE to lead via `dm.send`.
 
-Example delegation:
+### Codex sub-agents (for code-heavy tasks)
+
+Use `spawn_agent` with the `relay-worker` agent definition for tasks that need full code editing, file access, and tool use. The worker gets its own Codex runtime with Relaycast MCP tools available.
+
+**Lead steps:**
+1. Ensure workspace exists and lead is registered (same as above).
+2. Spawn the worker: include relay name, lead name, workspace key, exact scope, and completion criteria in the task prompt.
+3. Poll lead inbox for ACK.
+
+**Worker steps:**
+1. Call `workspace.set_key` with the workspace key from the task prompt.
+2. Register with `agent.register`.
+3. Check inbox, send ACK, do work, send DONE.
+
+## Worker ACK fallback
+
+If a worker does not ACK within 30 seconds:
+
+1. Check whether the worker appears in `agent.list`.
+2. If not listed, register or add the worker directly with `agent.add`.
+3. Send (or re-send) the assignment via `dm.send`.
+4. Poll the lead inbox again for ACK.
+5. If still no ACK after a second attempt, report the exact failed step to the user.
+
+## Handoff template
 
 ```text
-Spawn a Codex relay-worker for this task.
-Relay name: auth-worker
+Worker: api-worker
+Type: relay workspace agent (use agent.add, not spawn_agent)
 Lead: lead
-Scope: update the auth middleware tests only
-Protocol: check inbox, ACK me in Relaycast, send STATUS after the first passing test run, then send DONE with files changed and tests executed.
+Scope: check the Relaycast inbox and confirm connectivity
+Protocol:
+  1. Check inbox
+  2. DM lead with ACK
+  3. Perform scope
+  4. DM lead with DONE
 ```
 
-For independent work, spawn multiple `relay-worker` sub-agents in parallel. For dependent work, use one relay worker at a time and hand off results through Relaycast before starting the next worker.
+For code-heavy tasks, change the type line to:
+```text
+Type: Codex sub-agent (use spawn_agent with relay-worker)
+```
