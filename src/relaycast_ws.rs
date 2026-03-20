@@ -711,7 +711,8 @@ impl RelaycastHttpClient {
 
     /// Smart send: routes to channel or DM based on `#` prefix.
     pub async fn send(&self, to: &str, text: &str) -> Result<()> {
-        self.send_with_mode(to, text, MessageInjectionMode::Wait).await
+        self.send_with_mode(to, text, MessageInjectionMode::Wait)
+            .await
     }
 
     /// Smart send with explicit injection mode.
@@ -734,6 +735,12 @@ impl RelaycastHttpClient {
                 .await
                 .map_err(|e| anyhow::anyhow!("relaycast send_to_channel failed: {e}"))?;
             return Ok(());
+        }
+
+        if matches!(mode, MessageInjectionMode::Steer) {
+            return Err(anyhow::anyhow!(
+                "mode=steer is only supported for local PTY delivery; target was relaycast-only"
+            ));
         }
 
         // DM path: relaycast dm() currently owns delivery semantics.
