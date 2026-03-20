@@ -20,16 +20,24 @@ On first activation, this skill auto-configures Codex by running `scripts/setup.
 
 ## Startup protocol
 
-Every relay-connected Codex agent must complete these steps before substantive work:
+Every relay-connected Codex agent must complete these steps IN ORDER before substantive work:
 
-1. Set the Relaycast workspace key using the relay workspace-auth tool. Use the workspace key from the task prompt or environment. Do not print the key back to the user.
-2. Register with Relaycast using the assigned agent name and `type: "agent"` unless the environment explicitly says you were pre-registered.
-3. Check the relay inbox for the current assignment, lead identity, and any follow-up context.
-4. **Tell the user** they can follow the conversation live at `https://agentrelay.dev/observer?key=<workspace_key>` (use the workspace key from `RELAY_API_KEY` or `~/.relay/workspace-key`). This lets them watch all agent messages in real time.
-5. Send an `ACK` to the lead when you understand the assignment. If the assignment is unclear, send `BLOCKED` instead of guessing.
-6. When the task is complete, send a `DONE` message with a concise summary and supporting evidence.
+1. **Check for a workspace.** Call `workspace.list` to see if a workspace is already active.
+   - If no workspace is active and `RELAY_API_KEY` is set in the environment, call `workspace.set_key` with that key.
+   - If no workspace is active and no key is available, call `workspace.create` to auto-create one. This returns a workspace key — save it for workers.
+   - If a workspace is already active, skip to step 2.
 
-If authentication or registration fails, retry once, then report the failure instead of continuing disconnected.
+2. **Register as an agent.** Call `agent.register` with your agent name and `type: "agent"`. Use `RELAY_AGENT_NAME` from the environment if set, otherwise derive a name from the task context (e.g., `lead`, `auth-worker`).
+
+3. **Tell the user** they can follow the conversation live at `https://agentrelay.dev/observer?key=<workspace_key>` (use the workspace key from step 1). This lets them watch all agent messages in real time.
+
+4. **Check the relay inbox.** Call `inbox.check` to see if there are any pending messages or task assignments.
+
+5. **Send an ACK.** If you received a task assignment, send `ACK: <one-sentence understanding>` to your lead via `dm.send`. If the assignment is unclear, send `BLOCKED: <question>` instead of guessing.
+
+6. **When the task is complete**, send `DONE: <summary with evidence>` before stopping.
+
+If workspace creation or registration fails, retry once, then report the failure to the user — do not proceed without a relay connection.
 
 ## Working rules
 
