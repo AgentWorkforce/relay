@@ -22,64 +22,61 @@ With these pieces installed, Codex can:
 
 ## Installation
 
-### 1. Install the skill
-
-Copy or symlink this directory into a Codex skill discovery path. For a project install:
-
 ```bash
 mkdir -p .agents/skills
 cp -R plugins/codex-relay-skill .agents/skills/agent-relay
 ```
 
-You can also install it at `$HOME/.agents/skills/agent-relay` for user-wide availability.
+That's it. Everything else is automatic.
 
-### 2. Add the Relaycast MCP server config
+On first use, the skill self-installs by running `scripts/setup.sh`, which:
 
-Merge the template from `codex-config/config.toml` into `.codex/config.toml` or `~/.codex/config.toml`:
+- adds the Relaycast MCP server to `.codex/config.toml`
+- enables `features.codex_hooks = true`
+- writes `.codex/hooks.json` with SessionStart, UserPromptSubmit, and Stop hooks
+- installs `.codex/agents/relay-worker.toml`
 
+All of this is idempotent — safe to run multiple times, and it merges with existing config rather than overwriting.
+
+For user-wide availability, install to `$HOME/.agents/skills/agent-relay` instead.
+
+### Optional: join an existing workspace
+
+Set `RELAY_API_KEY` before launching Codex to join a specific Relaycast workspace:
+
+```bash
+export RELAY_API_KEY="rk_live_your_key_here"
+```
+
+If unset, a new workspace is auto-created on the first session.
+
+<details>
+<summary>Manual setup (advanced)</summary>
+
+If you prefer to configure everything manually instead of using the auto-installer:
+
+1. Add to `.codex/config.toml`:
 ```toml
+features.codex_hooks = true
+
 [mcp_servers.relaycast]
 command = "npx"
 args = ["-y", "@relaycast/mcp"]
 env = { RELAY_API_KEY = "", RELAY_BASE_URL = "https://api.relaycast.dev", RELAY_AGENT_TYPE = "agent" }
 ```
 
-Set `RELAY_API_KEY` to an existing workspace key when you want Codex to join a known Relaycast workspace automatically.
-
-### 3. Enable hooks
-
-The lifecycle hooks (auto-connect, inbox polling, stop guard) require the Codex hooks engine to be enabled.
-
-Add to `.codex/config.toml`:
-
-```toml
-features.codex_hooks = true
-```
-
-Then copy the hooks config:
-
+2. Copy hooks config:
 ```bash
 cp .agents/skills/agent-relay/hooks/hooks.json .codex/hooks.json
 ```
 
-If the skill is installed somewhere other than `.agents/skills/agent-relay/`, update the command paths in `.codex/hooks.json` to match the actual location:
-
-```json
-"command": "bash <path-to-skill>/hooks/session-start.sh"
-```
-
-Without this step, the Relaycast MCP tools still work but auto-connect, inbox injection, and the stop guard won't fire automatically.
-
-### 4. Install the relay worker agent
-
-If you want a reusable Codex sub-agent for relay work, copy the worker template into `.codex/agents/`:
-
+3. Install the worker agent:
 ```bash
 mkdir -p .codex/agents
 cp .agents/skills/agent-relay/codex-config/relay-worker.toml .codex/agents/relay-worker.toml
 ```
 
-Restart Codex after changing `config.toml` or installing new agent files if they do not appear immediately.
+</details>
 
 ## Usage
 
@@ -139,6 +136,8 @@ codex-relay-skill/
   codex-config/
     config.toml              # Template MCP server config for .codex/config.toml
     relay-worker.toml        # Template custom worker agent for .codex/agents/
+  scripts/
+    setup.sh                 # Auto-installer (runs on first skill activation)
   hooks/
     hooks.json               # Hook definitions (SessionStart, Stop, UserPromptSubmit)
     session-start.sh         # Auto-connect and state persistence
