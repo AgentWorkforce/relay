@@ -4,7 +4,7 @@
  * persists state to DB, and supports pause/resume/abort with retries.
  */
 
-import { spawn as cpSpawn, execFileSync } from 'node:child_process';
+import { spawn as cpSpawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
   createWriteStream,
@@ -25,6 +25,8 @@ import { parse as parseYaml } from 'yaml';
 import { stripAnsi as stripAnsiFn } from '../pty.js';
 import type { BrokerEvent } from '../protocol.js';
 import { resolveSpawnPolicy } from '../spawn-from-env.js';
+import { getCliDefinition } from '../cli-registry.js';
+import { resolveCliSync } from '../cli-resolver.js';
 
 import {
   loadCustomSteps,
@@ -278,25 +280,12 @@ interface ChannelEvidenceOptions {
 
 /**
  * Resolve `cursor` to the concrete cursor agent binary available in PATH.
- * Prefers `cursor-agent` over `agent`. Falls back to `agent` if neither
- * `cursor-agent` nor a real cursor IDE CLI is found.
- * Result is memoized after the first call to avoid repeated sync PATH lookups.
+ * Delegates to the consolidated cli-resolver which checks PATH + well-known
+ * install directories. Falls back to `agent` if nothing found.
  */
-let _resolvedCursorCli: 'cursor-agent' | 'agent' | undefined;
 function resolveCursorCli(): 'cursor-agent' | 'agent' {
-  if (_resolvedCursorCli !== undefined) return _resolvedCursorCli;
-  const candidates: Array<'cursor-agent' | 'agent'> = ['cursor-agent', 'agent'];
-  for (const candidate of candidates) {
-    try {
-      execFileSync('which', [candidate], { stdio: 'ignore' });
-      _resolvedCursorCli = candidate;
-      return candidate;
-    } catch {
-      // not in PATH, try next
-    }
-  }
-  _resolvedCursorCli = 'agent'; // last-resort default
-  return _resolvedCursorCli;
+  const resolved = resolveCliSync('cursor');
+  return (resolved?.binary as 'cursor-agent' | 'agent') ?? 'agent';
 }
 
 // ── WorkflowRunner ──────────────────────────────────────────────────────────
@@ -4738,38 +4727,22 @@ export class WorkflowRunner {
 
   /**
    * Build the CLI command and arguments for a non-interactive agent execution.
-   * Each CLI has a specific flag for one-shot prompt mode.
+   * Delegates to the consolidated CLI registry for per-CLI arg formats.
    */
   static buildNonInteractiveCommand(
     cli: AgentCli,
     task: string,
     extraArgs: string[] = []
   ): { cmd: string; args: string[] } {
-    switch (cli) {
-      case 'claude':
-        // --dangerously-skip-permissions prevents any tool-use permission prompt
-        // from blocking the process when stdio is piped (no TTY available).
-        return { cmd: 'claude', args: ['-p', '--dangerously-skip-permissions', task, ...extraArgs] };
-      case 'codex':
-        return { cmd: 'codex', args: ['exec', task, ...extraArgs] };
-      case 'gemini':
-        return { cmd: 'gemini', args: ['-p', task, ...extraArgs] };
-      case 'opencode':
-        return { cmd: 'opencode', args: ['--prompt', task, ...extraArgs] };
-      case 'droid':
-        return { cmd: 'droid', args: ['exec', task, ...extraArgs] };
-      case 'aider':
-        return { cmd: 'aider', args: ['--message', task, '--yes-always', '--no-git', ...extraArgs] };
-      case 'goose':
-        return { cmd: 'goose', args: ['run', '--text', task, '--no-session', ...extraArgs] };
-      case 'cursor-agent':
-      case 'agent':
-        return { cmd: cli, args: ['--force', '-p', task, ...extraArgs] };
-      case 'cursor':
-        // Should not reach here after resolveAgentDef resolves to agent/cursor-agent,
-        // but handle as fallback.
-        return { cmd: resolveCursorCli(), args: ['--force', '-p', task, ...extraArgs] };
+    const resolvedCli: AgentCli = cli === 'cursor' ? resolveCursorCli() : cli;
+    const def = getCliDefinition(resolvedCli);
+    if (!def) {
+      throw new Error(`Unknown CLI: ${resolvedCli}`);
     }
+    return {
+      cmd: def.binaries[0],
+      args: def.nonInteractiveArgs(task, extraArgs),
+    };
   }
 
   /**
