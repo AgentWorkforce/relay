@@ -33,6 +33,7 @@ const RELAYCAST_BOOT_MARKER: &str = "booting mcp server: relaycast";
 /// different boot messages:
 /// - Claude: "booting mcp server: relaycast"
 /// - Codex:  "Starting MCP servers (0/2): relay, relaycast"
+///
 /// Returns the byte offset of the end of the marker, or None if not found.
 fn find_relaycast_boot_marker(lower_output: &str) -> Option<usize> {
     // Claude-style marker
