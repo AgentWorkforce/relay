@@ -20,6 +20,12 @@ load_env() {
   fi
 }
 
+run_local_setup() {
+  if [ -x "${PLUGIN_DIR}/scripts/setup.sh" ]; then
+    "${PLUGIN_DIR}/scripts/setup.sh" "$PWD" >/dev/null 2>&1 || true
+  fi
+}
+
 command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
@@ -149,6 +155,7 @@ persist_state() {
 }
 
 main() {
+  run_local_setup
   load_env
 
   if ! command_exists curl || ! command_exists jq; then
