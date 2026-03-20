@@ -353,6 +353,18 @@
   border: 1px solid var(--line);
 }
 
+.chatNameRow {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.chatIcon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
 .chatName {
   font-size: 0.68rem;
   font-weight: 700;
@@ -375,13 +387,48 @@
   color: var(--fg-faint);
 }
 
+/* Preview: Gemini accent (reverse L — flush bottom-left) */
+.previewAccentGemini {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(315deg, #4285F4 0%, #34A853 35%, #FBBC05 65%, #EA4335 100%);
+  z-index: 0;
+}
+
+.previewAccentGemini::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 40% 50% at 80% 70%, rgba(255, 255, 255, 0.15) 0%, transparent 70%),
+    radial-gradient(ellipse 35% 40% at 25% 35%, rgba(255, 255, 255, 0.1) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 30% at 50% 90%, rgba(255, 255, 255, 0.12) 0%, transparent 60%);
+}
+
+.previewAccentGemini::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 320'%3E%3Cpath d='M420,80 Q300,20 150,120 T-100,90' fill='none' stroke='rgba(255,255,255,0.25)' stroke-width='2'/%3E%3Cpath d='M420,140 Q280,70 120,170 T-80,140' fill='none' stroke='rgba(255,255,255,0.18)' stroke-width='1.5'/%3E%3Cpath d='M420,200 Q320,140 200,220 T-80,190' fill='none' stroke='rgba(255,255,255,0.12)' stroke-width='1.5'/%3E%3Cpath d='M420,260 Q300,200 140,280 T-100,250' fill='none' stroke='rgba(255,255,255,0.08)' stroke-width='1'/%3E%3C/svg%3E");
+  background-size: cover;
+}
+
 /* Preview: Dashboard */
 .previewDashboard {
-  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 14px;
+  bottom: 14px;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   padding: 16px;
   gap: 0;
+  background: var(--surface);
+  border-radius: 10px 10px 10px 10px;
+  box-shadow: 4px 4px 24px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
 }
 
 .dashRow {
@@ -396,6 +443,12 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dashIcon {
+  width: 12px;
+  height: 12px;
   flex-shrink: 0;
 }
 
@@ -504,8 +557,42 @@
 /* ---- BYOH SECTION ---- */
 
 .byohWrapper {
-  background: var(--bg);
+  background: #F2EFE9;
+  position: relative;
+  overflow: hidden;
   transition: background 0.3s ease;
+}
+
+:global([data-theme='dark']) .byohWrapper {
+  background: #1a1e1c;
+}
+
+.byohWrapper::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 40% 50% at 20% 30%, rgba(255, 255, 255, 0.4) 0%, transparent 70%),
+    radial-gradient(ellipse 35% 40% at 75% 65%, rgba(255, 255, 255, 0.25) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 30% at 50% 10%, rgba(255, 255, 255, 0.3) 0%, transparent 60%),
+    radial-gradient(ellipse 30% 45% at 85% 20%, rgba(255, 255, 255, 0.2) 0%, transparent 65%),
+    radial-gradient(ellipse 45% 35% at 10% 80%, rgba(255, 255, 255, 0.2) 0%, transparent 60%);
+  pointer-events: none;
+}
+
+.byohWrapper::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 400'%3E%3Cpath d='M-20,60 Q200,0 500,90 T1000,50 T1220,70' fill='none' stroke='rgba(255,255,255,0.35)' stroke-width='4'/%3E%3Cpath d='M-20,130 Q250,50 550,140 T1050,100 T1220,130' fill='none' stroke='rgba(255,255,255,0.25)' stroke-width='3.5'/%3E%3Cpath d='M-20,200 Q180,130 480,210 T980,170 T1220,200' fill='none' stroke='rgba(255,255,255,0.2)' stroke-width='3'/%3E%3Cpath d='M-20,270 Q220,200 520,280 T1020,240 T1220,270' fill='none' stroke='rgba(255,255,255,0.15)' stroke-width='2.5'/%3E%3Cpath d='M-20,340 Q280,280 580,350 T1080,310 T1220,340' fill='none' stroke='rgba(255,255,255,0.1)' stroke-width='2'/%3E%3C/svg%3E");
+  background-size: cover;
+  background-position: center;
+  pointer-events: none;
+}
+
+.byohWrapper > * {
+  position: relative;
+  z-index: 1;
 }
 
 .byohSection {
@@ -573,6 +660,14 @@
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--fg-muted);
+}
+
+.byohFootnote {
+  width: 100%;
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--fg-faint);
+  margin: 16px 0 0;
 }
 
 /* ---- LOCAL / CLOUD SECTION ---- */

@@ -1,4 +1,7 @@
+'use client';
+
 import type React from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 
 import { GitHubStarsBadge } from './GitHubStars';
@@ -41,9 +44,18 @@ export function LogoWordmark() {
 }
 
 export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
+  const [scrolled, setScrolled] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 20);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
   return (
     <div className={s.navOuter}>
-    <header className={s.navBar}>
+    <header className={`${s.navBar} ${scrolled ? s.navBarScrolled : ''}`}>
     <nav className={s.nav}>
       <Link href="/" className={s.logo}>
         <LogoIcon />

@@ -12,7 +12,7 @@ export function SiteFooter() {
             <LogoIcon />
             <LogoWordmark />
           </Link>
-          <p className={s.tagline}>Orchestrate AI agents like a symphony.</p>
+          <p className={s.tagline}>The future is multi-agent. Build it with Relay.</p>
         </div>
 
         <div className={s.columns}>

@@ -8,13 +8,26 @@
 .navBar {
   max-width: 1280px;
   margin: 0 auto;
-  background: color-mix(in srgb, var(--nav-bg) 72%, transparent);
-  backdrop-filter: blur(16px) saturate(1.8);
-  -webkit-backdrop-filter: blur(16px) saturate(1.8);
-  border: 1px solid color-mix(in srgb, var(--nav-bg) 20%, transparent);
+  background: var(--nav-bg);
+  border: 1px solid transparent;
   border-radius: 14px;
-  transition: background 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, backdrop-filter 0.3s ease;
   color: var(--nav-fg);
+}
+
+.navBarScrolled {
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--nav-bg) 55%, transparent) 0%,
+      color-mix(in srgb, var(--nav-bg) 65%, transparent) 100%
+    );
+  backdrop-filter: blur(24px) saturate(2) brightness(1.05);
+  -webkit-backdrop-filter: blur(24px) saturate(2) brightness(1.05);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 4px 24px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
 .nav {
