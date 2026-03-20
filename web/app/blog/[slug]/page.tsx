@@ -5,6 +5,7 @@ import { Fragment } from 'react';
 import { jsx, jsxs } from 'react/jsx-runtime';
 
 import styles from '../../../components/blog/blog.module.css';
+import { SiteNav } from '../../../components/SiteNav';
 import { getAllPosts, getPost } from '../../../lib/blog';
 
 type PageProps = {
@@ -57,22 +58,25 @@ export default async function BlogPostPage({ params }: PageProps) {
   } as Parameters<typeof evaluate>[1]);
 
   return (
-    <div className={styles.blogLayout}>
-      <header className={styles.postHeader}>
-        <a href="/blog" className={styles.backLink}>
-          &larr; Back to blog
-        </a>
-        <h1 className={styles.postHeaderTitle}>{post.frontmatter.title}</h1>
-        <div className={styles.postHeaderMeta}>
-          <span className={styles.postHeaderCategory}>{post.frontmatter.category}</span>
-          <span>{formatDate(post.frontmatter.date)}</span>
-          <span>{post.frontmatter.author}</span>
-        </div>
-      </header>
+    <div className={styles.blogPage}>
+      <SiteNav />
+      <div className={styles.blogLayout}>
+        <header className={styles.postHeader}>
+          <a href="/blog" className={styles.backLink}>
+            &larr; Back to blog
+          </a>
+          <h1 className={styles.postHeaderTitle}>{post.frontmatter.title}</h1>
+          <div className={styles.postHeaderMeta}>
+            <span className={styles.postHeaderCategory}>{post.frontmatter.category}</span>
+            <span>{formatDate(post.frontmatter.date)}</span>
+            <span>{post.frontmatter.author}</span>
+          </div>
+        </header>
 
-      <article className={styles.article}>
-        <MDXContent />
-      </article>
+        <article className={styles.article}>
+          <MDXContent />
+        </article>
+      </div>
     </div>
   );
 }

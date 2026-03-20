@@ -1,9 +1,29 @@
+/* ── Docs — oatmeal + moss theme ── */
+
+.docsPage {
+  --bg: #F2EFE9;
+  --fg: #1a1a1a;
+  --primary: #2D4F3E;
+  --secondary: #6C7A71;
+  --muted: #8a907e;
+  --line: rgba(45, 79, 62, 0.10);
+  --surface: #eae6dd;
+
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-geist-sans), sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
 /* ── Layout ── */
 
-.docsLayout {
+.docsBody {
   display: grid;
   grid-template-columns: 260px 1fr;
-  min-height: 100vh;
+  max-width: 1280px;
+  margin: 0 auto;
+  min-height: calc(100vh - 70px);
 }
 
 .sidebar {
@@ -11,25 +31,17 @@
   top: 0;
   height: 100vh;
   overflow-y: auto;
-  padding: 1.5rem 1rem;
+  padding: 1.25rem 1rem 2rem;
   border-right: 1px solid var(--line);
-  background: var(--background);
 }
 
 .sidebarLogo {
-  display: block;
-  margin-bottom: 1.5rem;
-  text-decoration: none;
-}
-
-.sidebarLogo img {
-  height: 1.25rem;
-  width: auto;
+  display: none;
 }
 
 .content {
   max-width: 52rem;
-  padding: 2.5rem 3rem 5rem;
+  padding: 2rem 3rem 5rem;
 }
 
 /* ── Navigation ── */
@@ -59,36 +71,39 @@
   padding: 0.3rem 0.5rem;
   border-radius: 0.4rem;
   font-size: 0.88rem;
-  color: var(--muted-strong);
+  color: var(--secondary);
   text-decoration: none;
   transition: background 0.15s, color 0.15s;
 }
 
 .navLink:hover {
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--foreground);
+  background: rgba(45, 79, 62, 0.06);
+  color: var(--primary);
 }
 
 .navLinkActive {
-  background: rgba(0, 217, 255, 0.08);
-  color: var(--accent);
+  background: rgba(45, 79, 62, 0.08);
+  color: var(--primary);
+  font-weight: 600;
 }
 
 /* ── Article prose ── */
 
 .article {
   line-height: 1.7;
-  color: var(--foreground);
+  color: var(--fg);
 }
 
 .article h1 {
   font-size: clamp(1.8rem, 4vw, 2.4rem);
   letter-spacing: -0.04em;
+  font-weight: 800;
+  color: var(--primary);
   margin: 0 0 0.5rem;
 }
 
 .articleDescription {
-  color: var(--muted);
+  color: var(--secondary);
   font-size: 1.05rem;
   margin: 0 0 2rem;
 }
@@ -96,6 +111,8 @@
 .article h2 {
   font-size: 1.35rem;
   letter-spacing: -0.02em;
+  font-weight: 700;
+  color: var(--fg);
   margin: 2.5rem 0 0.75rem;
   padding-bottom: 0.4rem;
   border-bottom: 1px solid var(--line);
@@ -103,6 +120,8 @@
 
 .article h3 {
   font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--fg);
   margin: 1.8rem 0 0.5rem;
 }
 
@@ -111,12 +130,15 @@
 }
 
 .article a {
-  color: var(--accent);
-  text-decoration: none;
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-color: rgba(45, 79, 62, 0.3);
+  text-underline-offset: 2px;
+  transition: text-decoration-color 0.15s;
 }
 
 .article a:hover {
-  text-decoration: underline;
+  text-decoration-color: var(--primary);
 }
 
 .article ul,
@@ -130,7 +152,7 @@
 }
 
 .article strong {
-  color: var(--foreground);
+  color: var(--fg);
   font-weight: 600;
 }
 
@@ -150,17 +172,18 @@
 
 .article th {
   font-weight: 600;
-  color: var(--muted-strong);
+  color: var(--primary);
 }
 
 .article td {
-  color: var(--muted-strong);
+  color: var(--secondary);
 }
 
 .article code {
   font-family: var(--font-geist-mono), monospace;
   font-size: 0.85em;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(45, 79, 62, 0.06);
+  color: var(--primary);
   padding: 0.15em 0.35em;
   border-radius: 0.3rem;
 }
@@ -169,8 +192,8 @@
   margin: 1rem 0;
   padding: 1rem 1.25rem;
   border-radius: 0.75rem;
-  background: rgba(24, 24, 27, 0.88);
-  border: 1px solid var(--line);
+  background: #2D4F3E;
+  border: none;
   overflow-x: auto;
   line-height: 1.5;
 }
@@ -179,7 +202,7 @@
   background: none;
   padding: 0;
   font-size: 0.85rem;
-  color: var(--muted-strong);
+  color: #d4ddd6;
 }
 
 /* ── CodeGroup ── */
@@ -194,7 +217,7 @@
 .codeGroupTabs {
   display: flex;
   gap: 0;
-  background: rgba(24, 24, 27, 0.6);
+  background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
 
@@ -212,12 +235,12 @@
 }
 
 .codeGroupTab:hover {
-  color: var(--foreground);
+  color: var(--fg);
 }
 
 .codeGroupTabActive {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
+  color: var(--primary);
+  border-bottom-color: var(--primary);
 }
 
 .codeGroupPanel pre {
@@ -239,26 +262,27 @@
   padding: 1rem 1.15rem;
   border: 1px solid var(--line);
   border-radius: 0.75rem;
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--surface);
   text-decoration: none;
   color: inherit;
-  transition: border-color 0.15s, background 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .card:hover {
-  border-color: var(--accent);
-  background: rgba(0, 217, 255, 0.03);
+  border-color: rgba(45, 79, 62, 0.25);
+  box-shadow: 0 2px 12px rgba(45, 79, 62, 0.06);
 }
 
 .cardTitle {
   font-size: 0.95rem;
   font-weight: 600;
+  color: var(--primary);
   margin: 0 0 0.3rem;
 }
 
 .cardBody {
   font-size: 0.88rem;
-  color: var(--muted);
+  color: var(--secondary);
   margin: 0;
   line-height: 1.5;
 }
@@ -268,11 +292,11 @@
 .note {
   margin: 1rem 0;
   padding: 0.85rem 1rem;
-  border-left: 3px solid var(--accent);
+  border-left: 3px solid var(--primary);
   border-radius: 0 0.5rem 0.5rem 0;
-  background: rgba(0, 217, 255, 0.04);
+  background: rgba(45, 79, 62, 0.05);
   font-size: 0.92rem;
-  color: var(--muted-strong);
+  color: var(--secondary);
 }
 
 .note p {
@@ -290,7 +314,7 @@
 /* ── Responsive ── */
 
 @media (max-width: 900px) {
-  .docsLayout {
+  .docsBody {
     grid-template-columns: 1fr;
   }
 

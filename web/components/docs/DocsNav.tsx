@@ -10,9 +10,6 @@ export function DocsNav() {
 
   return (
     <nav className={styles.sidebar} aria-label="Documentation">
-      <a href="/docs" className={styles.sidebarLogo}>
-        <img src="/agent-relay-logo-white.svg" alt="Agent Relay" width={120} height={20} />
-      </a>
       {docsNav.map((group) => (
         <div key={group.title} className={styles.navGroup}>
           <h4 className={styles.navGroupTitle}>{group.title}</h4>
