@@ -22,6 +22,7 @@ import type {
 } from './types.js';
 import { WorkflowRunner, type WorkflowEventListener, type VariableContext, type StepExecutor } from './runner.js';
 import { formatDryRunReport } from './dry-run-format.js';
+import { createDefaultEventLogger, type LogLevel } from './default-logger.js';
 
 // ── Option types for the builder API ────────────────────────────────────────
 
@@ -106,6 +107,10 @@ export interface WorkflowRunOptions {
   startFrom?: string;
   /** Previous run ID whose cached outputs are used with startFrom. */
   previousRunId?: string;
+  /** Console log verbosity: "verbose" | "normal" (default) | "quiet" | false (silent). */
+  logLevel?: LogLevel;
+  /** Renderer: "listr" for listr2 UI, "default" for console logger, false to disable. */
+  renderer?: 'listr' | 'default' | false;
 }
 
 // ── WorkflowBuilder ─────────────────────────────────────────────────────────
@@ -333,7 +338,11 @@ export class WorkflowBuilder {
     if (this._timeoutMs !== undefined) config.swarm.timeoutMs = this._timeoutMs;
     if (this._channel !== undefined) config.swarm.channel = this._channel;
     if (this._idleNudge !== undefined) config.swarm.idleNudge = this._idleNudge;
-    if (this._errorHandling !== undefined) config.errorHandling = this._errorHandling;
+    config.errorHandling = this._errorHandling ?? {
+      strategy: 'retry',
+      maxRetries: 2,
+      retryDelayMs: 10_000,
+    };
     if (this._coordination !== undefined) config.coordination = this._coordination;
     if (this._state !== undefined) config.state = this._state;
     if (this._trajectories !== undefined) config.trajectories = this._trajectories;
@@ -367,21 +376,52 @@ export class WorkflowBuilder {
       return report;
     }
 
+    // Wire up default console logger unless explicitly disabled
+    // renderer: "listr" owns the terminal — skip console logger to avoid garbled output
+    // renderer: false implies no output at all
+    const logLevel = options.renderer === 'listr' || options.renderer === false
+      ? false
+      : (options.logLevel ?? 'normal');
+    if (logLevel !== false) {
+      runner.on(createDefaultEventLogger(logLevel));
+    }
+
+    // Wire up user-provided event handler (additive — does not replace the default logger)
     if (options.onEvent) {
       runner.on(options.onEvent);
     }
 
     // Auto-detect RESUME_RUN_ID env var for resuming failed runs
     const resumeRunId = process.env.RESUME_RUN_ID;
-    if (resumeRunId) {
-      return runner.resume(resumeRunId, options.vars);
-    }
 
     const startFrom = this._startFrom ?? options.startFrom ?? process.env.START_FROM;
     const previousRunId = this._previousRunId ?? options.previousRunId ?? process.env.PREVIOUS_RUN_ID;
     const executeOptions: WorkflowExecuteOptions | undefined = startFrom
       ? { startFrom, previousRunId }
       : undefined;
+
+    // If listr renderer requested, wire it up and run concurrently
+    // Must be set up BEFORE the resume check so resume runs also get event output
+    if (options.renderer === 'listr') {
+      const { createWorkflowRenderer } = await import('./listr-renderer.js');
+      const renderer = createWorkflowRenderer();
+      runner.on(renderer.onEvent);
+
+      const runPromise = resumeRunId
+        ? runner.resume(resumeRunId, options.vars)
+        : runner.execute(config, options.workflow, options.vars, executeOptions);
+
+      try {
+        const [result] = await Promise.all([runPromise, renderer.start()]);
+        return result;
+      } finally {
+        renderer.unmount();
+      }
+    }
+
+    if (resumeRunId) {
+      return runner.resume(resumeRunId, options.vars);
+    }
 
     return runner.execute(config, options.workflow, options.vars, executeOptions);
   }
