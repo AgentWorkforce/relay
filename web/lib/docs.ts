@@ -70,6 +70,50 @@ function preprocessMdx(source: string): string {
   );
 }
 
+function stripInlineMarkdown(text: string): string {
+  return text
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/[>*_~#-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildSearchSnippet(content: string): string {
+  const lines = content.split(/\r?\n/);
+  const textLines: string[] = [];
+  let inCodeFence = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith('```')) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
+
+    if (inCodeFence) continue;
+    if (!trimmed) continue;
+
+    if (
+      trimmed.startsWith('<') ||
+      trimmed.endsWith('/>') ||
+      trimmed === '</CodeGroup>' ||
+      trimmed === '</Note>'
+    ) {
+      continue;
+    }
+
+    const plain = stripInlineMarkdown(trimmed);
+    if (plain) {
+      textLines.push(plain);
+    }
+  }
+
+  return textLines.join(' ').slice(0, 500);
+}
+
 /**
  * Load and parse an MDX doc by slug.
  * @param slug - e.g. "quickstart" or "reference/sdk"
@@ -119,17 +163,7 @@ export function getSearchIndex(): SearchEntry[] {
     const filePath = path.join(DOCS_DIR, `${slug}.mdx`);
     const raw = fs.readFileSync(filePath, 'utf8');
     const { data, content } = matter(raw);
-
-    // Strip MDX components and code blocks for plain text
-    const body = content
-      .replace(/<[^>]+>/g, '')
-      .replace(/```[\s\S]*?```/g, '')
-      .replace(/`[^`]+`/g, '')
-      .replace(/#+\s/g, '')
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-      .replace(/\n{2,}/g, '\n')
-      .trim()
-      .slice(0, 500);
+    const body = buildSearchSnippet(content);
 
     const headings: string[] = [];
     const hRegex = /^#{2,3}\s+(.+)$/gm;

@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 
 import styles from '../../components/blog/blog.module.css';
 import { SiteNav } from '../../components/SiteNav';
@@ -34,7 +35,7 @@ export default function BlogIndexPage() {
 
         <div className={styles.postList}>
           {posts.map((post) => (
-            <a key={post.slug} href={`/blog/${post.slug}`} className={styles.postCard}>
+            <Link key={post.slug} href={`/blog/${encodeURIComponent(post.slug)}`} className={styles.postCard}>
               <div className={styles.postMeta}>
                 <span className={styles.postCategory}>{post.frontmatter.category}</span>
                 <span>{formatDate(post.frontmatter.date)}</span>
@@ -42,7 +43,7 @@ export default function BlogIndexPage() {
               </div>
               <h2 className={styles.postCardTitle}>{post.frontmatter.title}</h2>
               <p className={styles.postCardDescription}>{post.frontmatter.description}</p>
-            </a>
+            </Link>
           ))}
         </div>
       </div>
