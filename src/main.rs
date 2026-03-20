@@ -2552,16 +2552,17 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 let spec_for_state = spec.clone();
                                 let effective_task = normalize_initial_task(task.clone());
 
-                                // Pre-register the agent so its MCP server starts
-                                // with a valid token (same as the SDK spawn_agent path).
-                                // The WS event may include a token, but often doesn't —
-                                // fall back to broker-side registration.
+                                // Try to get the token from the WS event first (instant).
+                                // If unavailable, attempt a quick registration with a short
+                                // timeout. Previously this used a 15s timeout which blocked
+                                // the WS event loop and delayed agent spawn significantly.
+                                // On failure, the agent will self-register via its MCP server.
                                 let worker_relay_key = {
                                     let ws_token = relaycast_ws_spawn_token(&ws_value);
                                     if ws_token.is_some() {
                                         ws_token
                                     } else {
-                                        const REG_TIMEOUT: Duration = Duration::from_secs(15);
+                                        const REG_TIMEOUT: Duration = Duration::from_secs(3);
                                         match tokio::time::timeout(
                                             REG_TIMEOUT,
                                             workspace_http.register_agent_token(&name, Some(cli.as_str())),
@@ -2584,7 +2585,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             Err(_) => {
                                                 tracing::warn!(
                                                     worker = %name,
-                                                    "WS spawn pre-registration timed out; agent will self-register"
+                                                    "WS spawn pre-registration timed out (3s); agent will self-register"
                                                 );
                                                 None
                                             }
@@ -2739,13 +2740,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     let task_opt = Some(task).filter(|v| !v.trim().is_empty());
                                     let effective_task = normalize_initial_task(task_opt.clone());
 
-                                    // Pre-register (same as primary WS spawn path above).
+                                    // Pre-register with short timeout (same as primary WS spawn path).
                                     let worker_relay_key = {
                                         let ws_token = relaycast_ws_spawn_token(&ws_value);
                                         if ws_token.is_some() {
                                             ws_token
                                         } else {
-                                            const REG_TIMEOUT: Duration = Duration::from_secs(15);
+                                            const REG_TIMEOUT: Duration = Duration::from_secs(3);
                                             match tokio::time::timeout(
                                                 REG_TIMEOUT,
                                                 workspace_http.register_agent_token(&name, Some(cli.as_str())),
@@ -2760,7 +2761,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                     None
                                                 }
                                                 Err(_) => {
-                                                    tracing::warn!(worker = %name, "WS spawn fallback pre-registration timed out");
+                                                    tracing::warn!(worker = %name, "WS spawn fallback pre-registration timed out (3s)");
                                                     None
                                                 }
                                             }
@@ -4142,6 +4143,19 @@ async fn handle_sdk_frame(
                 None
             };
 
+            // Seed the dedup cache BEFORE spawning so that a Relaycast WS echo
+            // arriving while the spawn is in progress is correctly deduplicated.
+            note_local_spawn_control_dedup(
+                dedup,
+                default_workspace_id.or_else(|| {
+                    workspaces
+                        .first()
+                        .map(|workspace| workspace.workspace_id.as_str())
+                }),
+                &name,
+                worker_relay_key.as_deref(),
+            );
+
             workers
                 .spawn(
                     payload.agent.clone(),
@@ -4175,17 +4189,6 @@ async fn handle_sdk_frame(
                         .await;
                 }
             }
-
-            note_local_spawn_control_dedup(
-                dedup,
-                default_workspace_id.or_else(|| {
-                    workspaces
-                        .first()
-                        .map(|workspace| workspace.workspace_id.as_str())
-                }),
-                &name,
-                worker_relay_key.as_deref(),
-            );
             if let Some(task) = effective_task.clone() {
                 workers.initial_tasks.insert(name.clone(), task);
             }
