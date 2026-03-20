@@ -78,6 +78,24 @@
   list-style: none;
 }
 
+.agentLink {
+  font-family: var(--font-geist-sans), sans-serif;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: inherit;
+  text-decoration: none;
+  opacity: 0.85;
+  padding: 5px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 6px;
+  transition: opacity 0.2s, border-color 0.2s;
+}
+
+.agentLink:hover {
+  opacity: 1;
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
 .link {
   font-family: var(--font-geist-sans), sans-serif;
   font-size: 0.78rem;
