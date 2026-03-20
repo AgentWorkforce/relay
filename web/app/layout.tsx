@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Geist_Mono, Inter, Space_Grotesk } from 'next/font/google';
+import { Geist_Mono, Inter, Sora } from 'next/font/google';
 import type { ReactNode } from 'react';
 
 import { ThemeProvider } from '../components/ThemeProvider';
@@ -11,8 +11,8 @@ const inter = Inter({
   subsets: ['latin'],
 });
 
-const spaceGrotesk = Space_Grotesk({
-  variable: '--font-space-grotesk',
+const sora = Sora({
+  variable: '--font-heading',
   subsets: ['latin'],
 });
 
@@ -57,8 +57,8 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" data-theme="light" suppressHydrationWarning>
-      <body className={`${inter.variable} ${geistMono.variable} ${spaceGrotesk.variable}`}>
+    <html lang="en" data-theme="carolina" suppressHydrationWarning>
+      <body className={`${inter.variable} ${geistMono.variable} ${sora.variable}`}>
         <ThemeProvider>
           {children}
           <ThemeToggle />

@@ -118,11 +118,11 @@
 :global([data-theme='dark']) .cardName { color: #c8d0ca; }
 :global([data-theme='dark']) .cardModel { color: #5a6b62; }
 :global([data-theme='dark']) .statusText { color: #5a6b62; }
-:global([data-theme='dark']) .statusActive { color: #8ec9a4; }
+:global([data-theme='dark']) .statusActive { color: #6fcfa0; }
 
 :global([data-theme='dark']) .statusDot {
-  background: #4ade80;
-  box-shadow: 0 0 4px rgba(74, 222, 128, 0.4);
+  background: #6fcfa0;
+  box-shadow: 0 0 4px rgba(111, 207, 160, 0.4);
 }
 
 /* ── Responsive ── */

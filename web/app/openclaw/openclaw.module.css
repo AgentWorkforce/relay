@@ -30,7 +30,7 @@
 }
 
 .headline {
-  font-family: var(--font-space-grotesk), sans-serif;
+  font-family: var(--font-heading), sans-serif;
   font-size: clamp(2.4rem, 6vw, 3.8rem);
   font-weight: 700;
   letter-spacing: -0.04em;
@@ -161,7 +161,7 @@
 }
 
 .sectionTitle {
-  font-family: var(--font-space-grotesk), sans-serif;
+  font-family: var(--font-heading), sans-serif;
   text-align: center;
   font-size: clamp(1.6rem, 4vw, 2.2rem);
   font-weight: 700;

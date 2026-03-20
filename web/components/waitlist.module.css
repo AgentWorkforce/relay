@@ -87,7 +87,7 @@
 }
 
 .successTitle {
-  font-family: var(--font-space-grotesk), sans-serif;
+  font-family: var(--font-heading), sans-serif;
   font-size: 1.2rem;
   font-weight: 700;
   color: var(--primary);

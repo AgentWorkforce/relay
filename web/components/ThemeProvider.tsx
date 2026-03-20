@@ -2,11 +2,18 @@
 
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 
-type Theme = 'light' | 'dark';
+export type Theme = 'light' | 'ocean' | 'carolina' | 'dark';
 
-const ThemeContext = createContext<{ theme: Theme; toggle: () => void }>({
+export const THEMES: { id: Theme; label: string; swatch: string }[] = [
+  { id: 'light', label: 'Moss', swatch: '#2D4F3E' },
+  { id: 'ocean', label: 'Ocean', swatch: '#264653' },
+  { id: 'carolina', label: 'Carolina', swatch: '#4A90C2' },
+  { id: 'dark', label: 'Dark', swatch: '#0c0f0e' },
+];
+
+const ThemeContext = createContext<{ theme: Theme; setTheme: (t: Theme) => void }>({
   theme: 'light',
-  toggle: () => {},
+  setTheme: () => {},
 });
 
 export function useTheme() {
@@ -14,12 +21,12 @@ export function useTheme() {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useState<Theme>('light');
+  const [theme, setThemeState] = useState<Theme>('carolina');
 
   useEffect(() => {
     const saved = localStorage.getItem('theme') as Theme | null;
-    if (saved === 'dark' || saved === 'light') {
-      setTheme(saved);
+    if (saved && THEMES.some((t) => t.id === saved)) {
+      setThemeState(saved);
     }
   }, []);
 
@@ -27,16 +34,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
-  const toggle = useCallback(() => {
-    setTheme((prev) => {
-      const next = prev === 'light' ? 'dark' : 'light';
-      localStorage.setItem('theme', next);
-      return next;
-    });
+  const setTheme = useCallback((next: Theme) => {
+    setThemeState(next);
+    localStorage.setItem('theme', next);
   }, []);
 
   return (
-    <ThemeContext.Provider value={{ theme, toggle }}>
+    <ThemeContext.Provider value={{ theme, setTheme }}>
       {children}
     </ThemeContext.Provider>
   );

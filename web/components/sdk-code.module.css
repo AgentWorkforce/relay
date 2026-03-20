@@ -9,8 +9,8 @@
   display: flex;
   gap: 0;
   padding: 0 16px;
-  background: color-mix(in srgb, var(--code-bg) 85%, var(--fg));
-  border-bottom: 1px solid var(--line);
+  background: var(--nav-bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--nav-bg) 80%, black);
 }
 
 .tab {
@@ -18,21 +18,22 @@
   font-family: var(--font-geist-sans), sans-serif;
   font-size: 0.82rem;
   font-weight: 500;
-  color: var(--fg-faint);
+  color: var(--nav-fg);
+  opacity: 0.55;
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
   cursor: pointer;
-  transition: color 0.2s, border-color 0.2s;
+  transition: opacity 0.2s, border-color 0.2s;
 }
 
 .tab:hover {
-  color: var(--fg);
+  opacity: 0.8;
 }
 
 .tabActive {
-  color: #2D4F3E;
-  border-bottom-color: #2D4F3E;
+  opacity: 1;
+  border-bottom-color: var(--nav-fg);
 }
 
 .pre {
@@ -48,41 +49,14 @@
   border-radius: 0;
 }
 
-/* Light mode syntax colors (matching screenshot) */
-.keyword {
-  color: #2D4F3E;
-}
+/* Syntax — uses primary for keywords/types */
+.keyword { color: var(--primary); }
+.string { color: #b45309; }
+.type { color: var(--primary); }
+.method { color: #6b21a8; }
 
-.string {
-  color: #b45309;
-}
 
-.type {
-  color: #2D4F3E;
-}
-
-.method {
-  color: #6b21a8;
-}
-
-/* Dark mode overrides */
-:global([data-theme='dark']) .tabActive {
-  color: #5bbaa7;
-  border-bottom-color: #5bbaa7;
-}
-
-:global([data-theme='dark']) .keyword {
-  color: #5bbaa7;
-}
-
-:global([data-theme='dark']) .string {
-  color: #ce9178;
-}
-
-:global([data-theme='dark']) .type {
-  color: #4ec9b0;
-}
-
-:global([data-theme='dark']) .method {
-  color: #dcdcaa;
-}
+:global([data-theme='dark']) .keyword { color: #6fcfa0; }
+:global([data-theme='dark']) .string { color: #d4a373; }
+:global([data-theme='dark']) .type { color: #6fcfa0; }
+:global([data-theme='dark']) .method { color: #e0c97f; }

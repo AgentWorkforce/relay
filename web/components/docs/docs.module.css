@@ -213,8 +213,8 @@
 
 .codeGroupTabs {
   display: flex;
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
+  background: var(--nav-bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--nav-bg) 80%, black);
 }
 
 .codeGroupTab {
@@ -222,15 +222,16 @@
   font-size: 0.8rem;
   font-weight: 600;
   font-family: inherit;
-  color: var(--fg-faint);
+  color: var(--nav-fg);
+  opacity: 0.55;
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  transition: opacity 0.15s, border-color 0.15s;
 }
-.codeGroupTab:hover { color: var(--fg); }
-.codeGroupTabActive { color: var(--primary); border-bottom-color: var(--primary); }
+.codeGroupTab:hover { opacity: 0.8; }
+.codeGroupTabActive { opacity: 1; border-bottom-color: var(--nav-fg); }
 .codeGroupPanel pre { margin: 0; border: none; border-radius: 0; }
 
 /* ── Cards ── */
