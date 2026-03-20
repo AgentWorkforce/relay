@@ -1,4 +1,4 @@
-name: Deploy OpenClaw Page (SST)
+name: Deploy Web (SST)
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
       - packages/web/**
       - docs/**/*.mdx
       - packages/openclaw/skill/SKILL.md
-      - .github/workflows/deploy-openclaw-page.yml
+      - .github/workflows/deploy-web.yml
   workflow_dispatch:
     inputs:
       region:
@@ -18,7 +18,7 @@ on:
         default: us-east-1
 
 concurrency:
-  group: sst-openclaw-production
+  group: sst-web-production
   cancel-in-progress: false
 
 permissions:
