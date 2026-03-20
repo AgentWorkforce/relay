@@ -27,7 +27,8 @@ export interface ResolvedCli {
 
 // ── Memoization ────────────────────────────────────────────────────────────
 
-const resolveCache = new Map<string, ResolvedCli>();
+// null sentinel means "looked up, not found" — avoids repeating expensive searches
+const resolveCache = new Map<string, ResolvedCli | null>();
 
 /**
  * Clear the resolution cache. Useful for testing or after PATH changes.
@@ -54,8 +55,9 @@ function expandHome(p: string): string {
  * Results are memoized. Returns `undefined` if the binary cannot be found.
  */
 export async function resolveCli(cli: AgentCli): Promise<ResolvedCli | undefined> {
-  const cached = resolveCache.get(cli);
-  if (cached) return cached;
+  if (resolveCache.has(cli)) {
+    return resolveCache.get(cli) ?? undefined;
+  }
 
   const def = getCliDefinition(cli);
   if (!def) return undefined;
@@ -94,6 +96,7 @@ export async function resolveCli(cli: AgentCli): Promise<ResolvedCli | undefined
     }
   }
 
+  resolveCache.set(cli, null);
   return undefined;
 }
 
@@ -104,8 +107,9 @@ export async function resolveCli(cli: AgentCli): Promise<ResolvedCli | undefined
  * and synchronous fs.accessSync. Prefer the async version when possible.
  */
 export function resolveCliSync(cli: AgentCli): ResolvedCli | undefined {
-  const cached = resolveCache.get(cli);
-  if (cached) return cached;
+  if (resolveCache.has(cli)) {
+    return resolveCache.get(cli) ?? undefined;
+  }
 
   const def = getCliDefinition(cli);
   if (!def) return undefined;
@@ -146,5 +150,6 @@ export function resolveCliSync(cli: AgentCli): ResolvedCli | undefined {
     }
   }
 
+  resolveCache.set(cli, null);
   return undefined;
 }
