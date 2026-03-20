@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/config",
-  "version": "3.2.11",
+  "version": "3.2.12",
   "description": "Shared configuration schemas and loaders for Agent Relay",
   "type": "module",
   "main": "dist/index.js",
