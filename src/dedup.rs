@@ -54,6 +54,11 @@ impl DedupCache {
         }
     }
 
+    pub fn remove(&mut self, id: &str) {
+        self.seen.remove(id);
+        self.order.retain(|(key, _)| key != id);
+    }
+
     pub fn len(&self) -> usize {
         self.seen.len()
     }

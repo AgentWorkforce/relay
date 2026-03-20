@@ -4153,19 +4153,9 @@ async fn handle_sdk_frame(
                 None
             };
 
-            workers
-                .spawn(
-                    payload.agent.clone(),
-                    None,
-                    payload.idle_threshold_secs,
-                    worker_relay_key.clone(),
-                    payload.skip_relay_prompt,
-                    None,
-                )
-                .await?;
-
-            // Seed the dedup cache AFTER successful spawn so that a failed
-            // spawn does not block retries for the 5-minute dedup window.
+            // Seed the dedup cache BEFORE spawning so that a Relaycast WS echo
+            // arriving while the spawn is in progress is correctly deduplicated.
+            // If spawn fails we remove the entry so retries are not blocked.
             note_local_spawn_control_dedup(
                 dedup,
                 default_workspace_id.or_else(|| {
@@ -4176,6 +4166,32 @@ async fn handle_sdk_frame(
                 &name,
                 worker_relay_key.as_deref(),
             );
+
+            if let Err(err) = workers
+                .spawn(
+                    payload.agent.clone(),
+                    None,
+                    payload.idle_threshold_secs,
+                    worker_relay_key.clone(),
+                    payload.skip_relay_prompt,
+                    None,
+                )
+                .await
+            {
+                // Spawn failed — remove the dedup entry so WS retries are not
+                // blocked for the 5-minute dedup window.
+                remove_local_spawn_control_dedup(
+                    dedup,
+                    default_workspace_id.or_else(|| {
+                        workspaces
+                            .first()
+                            .map(|workspace| workspace.workspace_id.as_str())
+                    }),
+                    &name,
+                    worker_relay_key.as_deref(),
+                );
+                return Err(err);
+            }
 
             // Subscribe the broker's WebSocket to any custom channels the
             // spawned agent needs so cloud-routed messages reach the broker.
@@ -5667,6 +5683,26 @@ fn note_local_spawn_control_dedup(
     if let Some(relay_key) = relay_key.map(str::trim).filter(|value| !value.is_empty()) {
         let key = relaycast_spawn_control_dedup_key(workspace_id, relay_key);
         dedup.insert_if_new(&key, Instant::now());
+    }
+}
+
+fn remove_local_spawn_control_dedup(
+    dedup: &mut DedupCache,
+    workspace_id: Option<&str>,
+    agent_name: &str,
+    relay_key: Option<&str>,
+) {
+    let Some(workspace_id) = workspace_id else {
+        return;
+    };
+    let agent_name = agent_name.trim();
+    if !agent_name.is_empty() {
+        let key = relaycast_spawn_control_dedup_key(workspace_id, agent_name);
+        dedup.remove(&key);
+    }
+    if let Some(relay_key) = relay_key.map(str::trim).filter(|value| !value.is_empty()) {
+        let key = relaycast_spawn_control_dedup_key(workspace_id, relay_key);
+        dedup.remove(&key);
     }
 }
 
