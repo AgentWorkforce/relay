@@ -2556,7 +2556,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 // bakes the API key into --mcp-config JSON and self-registers.
                                 // Non-Claude CLIs need the token injected into their CLI args
                                 // at spawn time, so we do a quick (3s) registration attempt.
-                                let cli_name_lower = normalize_cli_name(&cli).to_lowercase();
+                                let cli_command = parse_cli_command(&cli).map(|(cmd, _)| cmd).unwrap_or_else(|_| cli.clone());
+                                let cli_name_lower = normalize_cli_name(&cli_command).to_lowercase();
                                 let is_claude = cli_name_lower == "claude" || cli_name_lower.starts_with("claude:");
                                 let worker_relay_key = {
                                     let ws_token = relaycast_ws_spawn_token(&ws_value);
@@ -2745,7 +2746,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     let effective_task = normalize_initial_task(task_opt.clone());
 
                                     // Pre-register (same logic as primary WS spawn path).
-                                    let cli_name_lower = normalize_cli_name(&cli).to_lowercase();
+                                    let cli_command = parse_cli_command(&cli).map(|(cmd, _)| cmd).unwrap_or_else(|_| cli.clone());
+                                    let cli_name_lower = normalize_cli_name(&cli_command).to_lowercase();
                                     let is_claude = cli_name_lower == "claude" || cli_name_lower.starts_with("claude:");
                                     let worker_relay_key = {
                                         let ws_token = relaycast_ws_spawn_token(&ws_value);
@@ -4151,19 +4153,6 @@ async fn handle_sdk_frame(
                 None
             };
 
-            // Seed the dedup cache BEFORE spawning so that a Relaycast WS echo
-            // arriving while the spawn is in progress is correctly deduplicated.
-            note_local_spawn_control_dedup(
-                dedup,
-                default_workspace_id.or_else(|| {
-                    workspaces
-                        .first()
-                        .map(|workspace| workspace.workspace_id.as_str())
-                }),
-                &name,
-                worker_relay_key.as_deref(),
-            );
-
             workers
                 .spawn(
                     payload.agent.clone(),
@@ -4174,6 +4163,19 @@ async fn handle_sdk_frame(
                     None,
                 )
                 .await?;
+
+            // Seed the dedup cache AFTER successful spawn so that a failed
+            // spawn does not block retries for the 5-minute dedup window.
+            note_local_spawn_control_dedup(
+                dedup,
+                default_workspace_id.or_else(|| {
+                    workspaces
+                        .first()
+                        .map(|workspace| workspace.workspace_id.as_str())
+                }),
+                &name,
+                worker_relay_key.as_deref(),
+            );
 
             // Subscribe the broker's WebSocket to any custom channels the
             // spawned agent needs so cloud-routed messages reach the broker.
