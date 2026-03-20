@@ -4949,7 +4949,8 @@ export class WorkflowRunner {
             return;
           }
 
-          if (code !== 0 && code !== null) {
+          const cliDef = getCliDefinition(agentDef.cli);
+          if (code !== 0 && code !== null && !cliDef?.ignoreExitCode) {
             const stderr = stderrChunks.join('');
             reject(
               new SpawnExitError(

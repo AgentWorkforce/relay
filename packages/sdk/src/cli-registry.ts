@@ -26,6 +26,8 @@ export interface CliDefinition {
   bypassAliases?: string[];
   /** Extra install paths to check beyond PATH (resolved relative to $HOME) */
   searchPaths?: string[];
+  /** When true, non-zero exit codes are not treated as failures (some CLIs exit non-zero on success) */
+  ignoreExitCode?: boolean;
 }
 
 // ── Well-known install paths ───────────────────────────────────────────────
@@ -77,6 +79,7 @@ const CLI_REGISTRY: Record<AgentCli, CliDefinition> = {
     binaries: ['opencode'],
     nonInteractiveArgs: (task, extra = []) => ['run', task, ...extra],
     searchPaths: ['~/.opencode/bin'],
+    ignoreExitCode: true,
   },
   droid: {
     binaries: ['droid'],
