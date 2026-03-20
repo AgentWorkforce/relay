@@ -3,6 +3,7 @@
   width: 100%;
   height: 100%;
   min-height: 420px;
+  background: transparent;
 }
 
 .canvas {
@@ -12,81 +13,72 @@
   pointer-events: none;
 }
 
-/* ── Agent Node Card ── */
+/* ══════════════════════════════════════
+   Terminal Card — Light mode (default)
+   ══════════════════════════════════════ */
 
 .card {
   position: absolute;
   z-index: 1;
-  width: 185px;
-  padding: 12px 14px 10px;
-  background: rgba(242, 239, 233, 0.82);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(45, 79, 62, 0.08);
-  border-radius: 14px;
+  width: 140px;
+  height: 78px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(45, 79, 62, 0.10);
+  border-radius: 8px;
+  overflow: hidden;
   transition:
-    box-shadow 0.6s ease,
-    opacity 0.8s ease,
-    transform 0.8s ease,
-    border-color 0.4s ease;
+    box-shadow 0.4s ease,
+    opacity 0.2s ease-out,
+    transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
+    border-color 0.3s ease,
+    background 0.3s ease;
 }
 
 .cardActive {
-  border-color: rgba(45, 79, 62, 0.18);
+  border-color: rgba(45, 79, 62, 0.22);
 }
 
 .cardHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  padding: 5px 8px;
+  background: rgba(245, 243, 238, 0.95);
+  border-bottom: 1px solid rgba(45, 79, 62, 0.08);
   gap: 4px;
+  transition: background 0.3s ease, border-color 0.3s ease;
 }
 
-.cardIdentity {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
+.cardIdentity { display: flex; align-items: center; gap: 5px; }
 
-.providerLogo {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-}
+.providerLogo { width: 12px; height: 12px; flex-shrink: 0; }
 
 .cardName {
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: #2D4F3E;
-  white-space: nowrap;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.62rem; font-weight: 600; letter-spacing: 0.02em;
+  color: #2D4F3E; white-space: nowrap;
+  transition: color 0.3s ease;
 }
 
 .cardModel {
   font-family: var(--font-geist-mono), monospace;
-  font-size: 0.56rem;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  color: #8a907e;
-  white-space: nowrap;
+  font-size: 0.5rem; font-weight: 400; letter-spacing: 0.02em;
+  color: #8a907e; white-space: nowrap;
+  transition: color 0.3s ease;
 }
 
-/* ── Status Line ── */
-
 .cardStatus {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 16px;
+  display: flex; align-items: flex-start; gap: 5px;
+  padding: 8px 8px 10px; min-height: 36px;
 }
 
 .statusDot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #3a8c62;
-  flex-shrink: 0;
-  animation: statusPulse 1.2s ease-in-out infinite;
+  width: 4px; height: 4px; margin-top: 3px;
+  border-radius: 50%; background: #3a8c62; flex-shrink: 0;
+  animation: statusPulse 1s ease-in-out infinite;
+  box-shadow: 0 0 4px rgba(58, 140, 98, 0.4);
 }
 
 @keyframes statusPulse {
@@ -96,71 +88,60 @@
 
 .statusText {
   font-family: var(--font-geist-mono), monospace;
-  font-size: 0.58rem;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  color: #a3a899;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  transition: color 0.3s;
+  font-size: 0.55rem; font-weight: 400; letter-spacing: 0.01em;
+  line-height: 1.4; color: #8a907e;
+  overflow: hidden; text-overflow: ellipsis;
+  transition: color 0.3s ease;
 }
 
-.statusActive {
-  color: #2D4F3E;
+.statusActive { color: #2D4F3E; }
+
+/* ══════════════════════════════════════
+   Terminal Card — Dark mode
+   ══════════════════════════════════════ */
+
+:global([data-theme='dark']) .card {
+  background: #1a1e1c;
+  backdrop-filter: none;
+  border-color: #2a3130;
+}
+
+:global([data-theme='dark']) .cardActive {
+  border-color: #3a5548;
+}
+
+:global([data-theme='dark']) .cardHeader {
+  background: #141816;
+  border-bottom-color: #2a3130;
+}
+
+:global([data-theme='dark']) .cardName { color: #c8d0ca; }
+:global([data-theme='dark']) .cardModel { color: #5a6b62; }
+:global([data-theme='dark']) .statusText { color: #5a6b62; }
+:global([data-theme='dark']) .statusActive { color: #8ec9a4; }
+
+:global([data-theme='dark']) .statusDot {
+  background: #4ade80;
+  box-shadow: 0 0 4px rgba(74, 222, 128, 0.4);
 }
 
 /* ── Responsive ── */
 
 @media (max-width: 1100px) {
-  .card {
-    width: 160px;
-    padding: 10px 12px 8px;
-  }
-
-  .cardName {
-    font-size: 0.66rem;
-  }
-
-  .cardModel {
-    font-size: 0.52rem;
-  }
-
-  .statusText {
-    font-size: 0.54rem;
-  }
+  .card { width: 125px; height: 70px; }
+  .cardName { font-size: 0.58rem; }
+  .cardModel { font-size: 0.46rem; }
+  .statusText { font-size: 0.5rem; }
 }
 
 @media (max-width: 900px) {
-  .container {
-    min-height: 340px;
-  }
-
-  .card {
-    width: 135px;
-    padding: 8px 10px 6px;
-    border-radius: 10px;
-  }
-
-  .providerLogo {
-    width: 13px;
-    height: 13px;
-  }
-
-  .cardName {
-    font-size: 0.6rem;
-  }
-
-  .cardModel {
-    font-size: 0.48rem;
-  }
-
-  .statusText {
-    font-size: 0.5rem;
-  }
-
-  .statusDot {
-    width: 4px;
-    height: 4px;
-  }
+  .container { min-height: 340px; }
+  .card { width: 110px; height: 62px; border-radius: 6px; }
+  .providerLogo { width: 10px; height: 10px; }
+  .cardName { font-size: 0.54rem; }
+  .cardModel { font-size: 0.42rem; }
+  .cardHeader { padding: 4px 6px; }
+  .cardStatus { padding: 5px 6px 7px; min-height: 28px; }
+  .statusText { font-size: 0.46rem; }
+  .statusDot { width: 3px; height: 3px; margin-top: 2px; }
 }

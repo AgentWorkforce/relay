@@ -1,15 +1,52 @@
-:root {
-  --background: #09090b;
-  --background-elevated: rgba(24, 24, 27, 0.72);
-  --foreground: #fafafa;
-  --muted: #a1a1aa;
-  --muted-strong: #d4d4d8;
+/* ── Light theme (default) ── */
+:root,
+[data-theme='light'] {
+  --bg: #F2EFE9;
+  --bg-elevated: rgba(255, 255, 255, 0.7);
+  --fg: #1a1a1a;
+  --fg-muted: #6C7A71;
+  --fg-faint: #8a907e;
+  --primary: #2D4F3E;
+  --primary-hover: #243f31;
+  --line: rgba(45, 79, 62, 0.10);
+  --surface: #eae6dd;
+  --code-bg: #1e2028;
+  --code-fg: #c9d1d9;
+  --inline-code-bg: rgba(45, 79, 62, 0.06);
+  --inline-code-fg: #2D4F3E;
+  --card-bg: rgba(255, 255, 255, 0.88);
+  --card-border: rgba(45, 79, 62, 0.10);
+  --card-hover-border: rgba(45, 79, 62, 0.22);
+  --note-bg: rgba(45, 79, 62, 0.05);
+  --link-underline: rgba(45, 79, 62, 0.3);
+  --nav-bg: #f7f5f0;
+  --hero-gradient: linear-gradient(180deg, var(--bg) 0%, #ebe7df 100%);
+  --section-bg: #ffffff;
+}
+
+/* ── Dark theme ── */
+[data-theme='dark'] {
+  --bg: #09090b;
+  --bg-elevated: rgba(24, 24, 27, 0.72);
+  --fg: #fafafa;
+  --fg-muted: #a1a1aa;
+  --fg-faint: #71717a;
+  --primary: #5bbaa7;
+  --primary-hover: #4ca898;
   --line: #27272a;
-  --line-soft: rgba(63, 63, 70, 0.55);
-  --accent: #00d9ff;
-  --accent-hover: #00b8d9;
-  --success: #5bbaa7;
-  --warning: #e87461;
+  --surface: rgba(24, 24, 27, 0.88);
+  --code-bg: rgba(24, 24, 27, 0.88);
+  --code-fg: #d4d4d8;
+  --inline-code-bg: rgba(255, 255, 255, 0.06);
+  --inline-code-fg: #d4d4d8;
+  --card-bg: rgba(255, 255, 255, 0.02);
+  --card-border: #27272a;
+  --card-hover-border: #5bbaa7;
+  --note-bg: rgba(91, 186, 167, 0.06);
+  --link-underline: rgba(91, 186, 167, 0.3);
+  --nav-bg: #131518;
+  --hero-gradient: linear-gradient(180deg, var(--bg) 0%, #0f1114 100%);
+  --section-bg: #111318;
 }
 
 *,
@@ -21,16 +58,18 @@
 }
 
 html {
-  background: var(--background);
+  background: var(--bg);
+  transition: background 0.3s ease;
 }
 
 body {
   min-height: 100vh;
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--bg);
+  color: var(--fg);
   font-family: var(--font-geist-sans), sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  transition: background 0.3s ease, color 0.3s ease;
 }
 
 a {
@@ -47,7 +86,7 @@ pre {
   margin: 0 auto;
   padding: 40px 16px 56px;
   min-height: 100vh;
-  color: var(--foreground);
+  color: var(--fg);
 }
 
 .skill-page__header {
@@ -55,7 +94,7 @@ pre {
   padding: 24px;
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: var(--background-elevated);
+  background: var(--bg-elevated);
   backdrop-filter: blur(10px);
 }
 
@@ -71,14 +110,14 @@ pre {
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--primary);
 }
 
 .skill-page__lead {
   margin: 0;
   max-width: 70ch;
   line-height: 1.7;
-  color: var(--muted);
+  color: var(--fg-muted);
 }
 
 .skill-page pre {
@@ -88,8 +127,8 @@ pre {
   line-height: 1.55;
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: rgba(24, 24, 27, 0.88);
-  color: var(--muted-strong);
+  background: var(--surface);
+  color: var(--fg-muted);
   padding: 24px;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.15);
 }

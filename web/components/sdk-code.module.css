@@ -1,0 +1,85 @@
+/* Light mode (default) */
+.codeBlock {
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  box-shadow: 0 4px 24px color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+.tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--code-bg) 90%, black);
+  border-bottom: 1px solid color-mix(in srgb, var(--code-fg) 10%, transparent);
+}
+
+.tab {
+  padding: 10px 16px;
+  font-family: var(--font-geist-sans), sans-serif;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--code-fg) 50%, transparent);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.tab:hover {
+  color: var(--code-fg);
+}
+
+.tabActive {
+  color: var(--code-fg);
+  border-bottom-color: var(--primary);
+}
+
+.pre {
+  margin: 0;
+  padding: 24px;
+  overflow-x: auto;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.85rem;
+  line-height: 1.7;
+  color: var(--code-fg);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+/* Syntax highlighting — works on both light/dark code-bg */
+.keyword {
+  color: #5bbaa7;
+}
+
+.string {
+  color: #c4876e;
+}
+
+.type {
+  color: #6aab9a;
+}
+
+.method {
+  color: #c9b87c;
+}
+
+/* Dark theme overrides */
+:global([data-theme='dark']) .keyword {
+  color: #5bbaa7;
+}
+
+:global([data-theme='dark']) .string {
+  color: #ce9178;
+}
+
+:global([data-theme='dark']) .type {
+  color: #4ec9b0;
+}
+
+:global([data-theme='dark']) .method {
+  color: #dcdcaa;
+}

@@ -1,0 +1,29 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 14px;
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--line);
+  border-radius: 100px;
+  text-decoration: none;
+  font-size: 0.82rem;
+  font-weight: 500;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.badge:hover {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
+.divider {
+  width: 1px;
+  height: 14px;
+  background: var(--line);
+}
+
+.count {
+  font-variant-numeric: tabular-nums;
+}

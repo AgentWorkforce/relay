@@ -1,11 +1,18 @@
 import type { Metadata } from 'next';
-import { Geist, Geist_Mono } from 'next/font/google';
+import { Geist_Mono, Inter, Space_Grotesk } from 'next/font/google';
 import type { ReactNode } from 'react';
 
+import { ThemeProvider } from '../components/ThemeProvider';
+import { ThemeToggle } from '../components/ThemeToggle';
 import './globals.css';
 
-const geistSans = Geist({
+const inter = Inter({
   variable: '--font-geist-sans',
+  subsets: ['latin'],
+});
+
+const spaceGrotesk = Space_Grotesk({
+  variable: '--font-space-grotesk',
   subsets: ['latin'],
 });
 
@@ -50,8 +57,13 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className="dark">
-      <body className={`${geistSans.variable} ${geistMono.variable}`}>{children}</body>
+    <html lang="en" data-theme="light" suppressHydrationWarning>
+      <body className={`${inter.variable} ${geistMono.variable} ${spaceGrotesk.variable}`}>
+        <ThemeProvider>
+          {children}
+          <ThemeToggle />
+        </ThemeProvider>
+      </body>
     </html>
   );
 }

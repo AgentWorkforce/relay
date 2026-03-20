@@ -1,0 +1,251 @@
+.page {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-geist-sans), sans-serif;
+  -webkit-font-smoothing: antialiased;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+.main {
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: 2.5rem 1rem 5rem;
+}
+
+/* ── Hero ── */
+
+.hero {
+  text-align: center;
+  padding: 2rem 0 3rem;
+}
+
+.eyebrow {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--primary);
+  margin: 0 0 12px;
+}
+
+.headline {
+  font-family: var(--font-space-grotesk), sans-serif;
+  font-size: clamp(2.4rem, 6vw, 3.8rem);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  color: var(--primary);
+  margin: 0 0 16px;
+}
+
+.lead {
+  max-width: 36rem;
+  margin: 0 auto;
+  color: var(--fg-muted);
+  font-size: 1.02rem;
+  line-height: 1.7;
+}
+
+.instructionStrip {
+  width: fit-content;
+  max-width: 100%;
+  margin: 1.7rem auto 0;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem;
+  border-radius: 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.instructionStrip code {
+  display: block;
+  padding: 0 0.65rem;
+  color: var(--primary);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.stripButton {
+  min-height: 2.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.55rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  gap: 0.45rem;
+  border: none;
+  background: var(--primary);
+  color: var(--bg);
+  cursor: pointer;
+  padding: 0 0.9rem;
+  white-space: nowrap;
+  transition: background 0.2s;
+}
+
+.stripButton:hover {
+  background: var(--primary-hover);
+}
+
+.stripButton svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: 0 0 auto;
+}
+
+.helper {
+  margin-top: 0.6rem;
+  color: var(--fg-faint);
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+/* ── Features ── */
+
+.features {
+  margin-top: 3rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.featureCard {
+  padding: 1.15rem;
+  border: 1px solid var(--line);
+  border-radius: 0.95rem;
+  background: var(--card-bg);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.featureCard:hover {
+  border-color: var(--card-hover-border);
+  box-shadow: 0 2px 12px color-mix(in srgb, var(--primary) 6%, transparent);
+}
+
+.featureIcon {
+  display: inline-flex;
+  width: 1.8rem;
+  height: 1.8rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+  color: var(--primary);
+  margin-bottom: 0.8rem;
+}
+
+.featureCard h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--fg);
+  margin: 0 0 0.45rem;
+}
+
+.featureCard p {
+  color: var(--fg-muted);
+  line-height: 1.6;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+/* ── Steps ── */
+
+.stepsSection {
+  margin-top: 3.5rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--line);
+}
+
+.sectionTitle {
+  font-family: var(--font-space-grotesk), sans-serif;
+  text-align: center;
+  font-size: clamp(1.6rem, 4vw, 2.2rem);
+  font-weight: 700;
+  color: var(--primary);
+  margin: 0 0 2rem;
+  letter-spacing: -0.03em;
+}
+
+.steps {
+  max-width: 42rem;
+  margin: 0 auto;
+  display: grid;
+  gap: 1rem;
+}
+
+.step {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.95rem;
+  background: var(--card-bg);
+}
+
+.stepHeader {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.85rem;
+  align-items: start;
+}
+
+.stepNumber {
+  width: 1.55rem;
+  height: 1.55rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.step h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--fg);
+  margin: 0 0 0.2rem;
+}
+
+.step p {
+  color: var(--fg-muted);
+  line-height: 1.6;
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.step code {
+  display: block;
+  margin-top: 0.85rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 0.6rem;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+/* ── Responsive ── */
+
+@media (max-width: 800px) {
+  .features {
+    grid-template-columns: 1fr;
+  }
+
+  .instructionStrip {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .instructionStrip code {
+    padding: 0;
+    text-align: center;
+  }
+}

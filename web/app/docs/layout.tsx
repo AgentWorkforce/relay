@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 
 import { DocsNav } from '../../components/docs/DocsNav';
+import { SiteFooter } from '../../components/SiteFooter';
 import { SiteNav } from '../../components/SiteNav';
 import styles from '../../components/docs/docs.module.css';
 
@@ -12,6 +13,7 @@ export default function DocsLayout({ children }: { children: ReactNode }) {
         <DocsNav />
         <main className={styles.content}>{children}</main>
       </div>
+      <SiteFooter />
     </div>
   );
 }

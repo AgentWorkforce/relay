@@ -62,29 +62,105 @@ const RELAYING_TEXTS: Record<ModelProvider, string[]> = {
   opencode: ['$ relaying output...', '$ syncing...'],
 };
 
-const NODE_DEFS: { name: string; provider: ModelProvider; model: string }[] = [
-  { name: 'Lead', provider: 'claude', model: 'Opus' },
-  { name: 'Reviewer', provider: 'claude', model: 'Sonnet' },
-  { name: 'Planner', provider: 'gemini', model: '2.5 Pro' },
-  { name: 'Coder', provider: 'codex', model: 'Codex-1' },
-  { name: 'Assistant', provider: 'copilot', model: 'GPT-4.1' },
-  { name: 'Writer', provider: 'opencode', model: 'Gemini' },
-  { name: 'Tester', provider: 'claude', model: 'Haiku' },
+// Indices: 0=Lead, 1=Planner, 2=Coder, 3=Reviewer, 4=Frontend, 5=Backend, 6=Marketer, ...
+const NODE_POOL: { name: string; provider: ModelProvider; model: string }[] = [
+  { name: 'Lead', provider: 'claude', model: 'Opus' },         // 0
+  { name: 'Planner', provider: 'gemini', model: '2.5 Pro' },   // 1
+  { name: 'Coder', provider: 'codex', model: 'Codex-1' },      // 2
+  { name: 'Reviewer', provider: 'claude', model: 'Sonnet' },    // 3
+  { name: 'Frontend', provider: 'copilot', model: 'GPT-4.1' }, // 4
+  { name: 'Backend', provider: 'opencode', model: 'Gemini' },   // 5
+  { name: 'Marketer', provider: 'gemini', model: '2.5 Flash' }, // 6
+  { name: 'Tester', provider: 'claude', model: 'Haiku' },       // 7
+  { name: 'DevOps', provider: 'codex', model: 'Codex-1' },      // 8
+  { name: 'Docs', provider: 'copilot', model: 'GPT-4.1' },     // 9
+  { name: 'Security', provider: 'claude', model: 'Opus' },      // 10
+  { name: 'Analyst', provider: 'opencode', model: 'Gemini' },   // 11
 ];
 
-const NODE_POSITIONS = [
-  { x: 0.10, y: 0.10 },
-  { x: 0.42, y: 0.05 },
-  { x: 0.08, y: 0.44 },
-  { x: 0.44, y: 0.38 },
-  { x: 0.24, y: 0.72 },
-  { x: 0.55, y: 0.68 },
-  { x: 0.70, y: 0.40 },
+// Scripted spawn/message sequence: { tick, type, from, to }
+// tick = which state-machine tick to fire on
+type ScriptEvent =
+  | { tick: number; type: 'spawn'; from: number; to: number }
+  | { tick: number; type: 'message'; from: number; to: number };
+
+const SCRIPT: ScriptEvent[] = [
+  // Lead spawns Planner and Coder
+  { tick: 3, type: 'spawn', from: 0, to: 1 },
+  { tick: 5, type: 'spawn', from: 0, to: 2 },
+  // Lead spawns Reviewer
+  { tick: 9, type: 'spawn', from: 0, to: 3 },
+  // Planner talks with Coder
+  { tick: 12, type: 'message', from: 1, to: 2 },
+  { tick: 15, type: 'message', from: 2, to: 1 },
+  // Coder spawns Frontend and Backend
+  { tick: 18, type: 'spawn', from: 2, to: 4 },
+  { tick: 21, type: 'spawn', from: 2, to: 5 },
+  // Lead spawns Marketer
+  { tick: 24, type: 'spawn', from: 0, to: 6 },
+  // Some chatter
+  { tick: 27, type: 'message', from: 4, to: 3 },
+  { tick: 29, type: 'message', from: 5, to: 3 },
+  { tick: 31, type: 'message', from: 3, to: 0 },
+  { tick: 33, type: 'message', from: 0, to: 6 },
+  // More spawns from various nodes
+  { tick: 36, type: 'spawn', from: 3, to: 7 },
+  { tick: 40, type: 'spawn', from: 5, to: 8 },
+  { tick: 44, type: 'spawn', from: 0, to: 9 },
+  { tick: 48, type: 'spawn', from: 4, to: 10 },
+  { tick: 52, type: 'spawn', from: 6, to: 11 },
 ];
 
-const CONNECTIONS: [number, number][] = [
-  [0, 1], [0, 2], [1, 3], [2, 3], [2, 4], [2, 5], [3, 5], [3, 6], [4, 5], [5, 6],
-];
+const MIN_NODES = 7;
+const MAX_NODES = 12;
+
+// Spiral layout: index 0 = dead center, then concentric rings sorted by angle
+// (right → bottom → left → top). Card is ~140px wide so we need ~0.25 spacing
+// at typical 600px container width.
+const NODE_POSITIONS = (() => {
+  const cx = 0.38; // center X (slightly left to avoid clipping right edge)
+  const cy = 0.40; // center Y
+
+  // Ring 1: 6 nodes at radius 0.22 (the first 7 = center + ring1, no overlap)
+  // Ring 2: 8 nodes at radius 0.40
+  // Ring 3: 5 nodes at radius 0.56
+  const positions: { x: number; y: number }[] = [{ x: cx, y: cy }]; // index 0 = center
+
+  const rings = [
+    { count: 6, radius: 0.24 },
+    { count: 5, radius: 0.42 },
+  ];
+
+  for (const ring of rings) {
+    for (let i = 0; i < ring.count; i++) {
+      const angle = (i / ring.count) * Math.PI * 2 - Math.PI * 0.1; // start slightly right of 0
+      const jx = Math.sin(positions.length * 7.3) * 0.01;
+      const jy = Math.cos(positions.length * 5.1) * 0.008;
+      positions.push({
+        x: cx + Math.cos(angle) * ring.radius + jx,
+        y: cy + Math.sin(angle) * ring.radius * 0.85 + jy, // squash Y slightly for wider containers
+      });
+    }
+  }
+
+  return positions;
+})();
+
+// Build connections: connect to nearest neighbors by distance
+function buildConnections(count: number): [number, number][] {
+  const conns: [number, number][] = [];
+  const threshold = 0.28;
+  for (let i = 0; i < count; i++) {
+    for (let j = i + 1; j < count; j++) {
+      const dx = NODE_POSITIONS[i].x - NODE_POSITIONS[j].x;
+      const dy = NODE_POSITIONS[i].y - NODE_POSITIONS[j].y;
+      if (Math.sqrt(dx * dx + dy * dy) < threshold) {
+        conns.push([i, j]);
+      }
+    }
+  }
+  return conns;
+}
 
 function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t;
@@ -147,18 +223,16 @@ function OpenCodeLogo() {
 
 function GeminiLogo() {
   return (
-    <svg className={s.providerLogo} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <svg className={s.providerLogo} viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="#3186FF" />
+      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="url(#ngf0)" />
+      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="url(#ngf1)" />
+      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="url(#ngf2)" />
       <defs>
-        <clipPath id="gemini-clip">
-          <path d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81" />
-        </clipPath>
+        <linearGradient gradientUnits="userSpaceOnUse" id="ngf0" x1="7" x2="11" y1="15.5" y2="12"><stop stopColor="#08B962" /><stop offset="1" stopColor="#08B962" stopOpacity="0" /></linearGradient>
+        <linearGradient gradientUnits="userSpaceOnUse" id="ngf1" x1="8" x2="11.5" y1="5.5" y2="11"><stop stopColor="#F94543" /><stop offset="1" stopColor="#F94543" stopOpacity="0" /></linearGradient>
+        <linearGradient gradientUnits="userSpaceOnUse" id="ngf2" x1="3.5" x2="17.5" y1="13.5" y2="12"><stop stopColor="#FABC12" /><stop offset=".46" stopColor="#FABC12" stopOpacity="0" /></linearGradient>
       </defs>
-      <g clipPath="url(#gemini-clip)">
-        <path d="M12 0 24 12H0L12 0Z" fill="#EA4335" />
-        <path d="M24 12 12 24V0l12 12Z" fill="#FBBC05" />
-        <path d="M12 24 0 12h24L12 24Z" fill="#34A853" />
-        <path d="M0 12 12 0v24L0 12Z" fill="#4285F4" />
-      </g>
     </svg>
   );
 }
@@ -176,14 +250,15 @@ export function NodeRelayAnimation() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const nodesRef = useRef<AgentNode[]>([]);
   const messagesRef = useRef<Message[]>([]);
+  const connectionsRef = useRef<[number, number][]>([]);
   const rafRef = useRef(0);
   const tickRef = useRef(0);
   const timeRef = useRef(0);
   const [renderNodes, setRenderNodes] = useState<AgentNode[]>([]);
 
   const initNodes = useCallback(() => {
-    // Start with only the Lead (node 0) active — others spawn in via messages
-    const created: AgentNode[] = NODE_DEFS.map((def, i) => ({
+    // Start with only the center node (index 0 = Lead) active
+    const created: AgentNode[] = NODE_POOL.map((def, i) => ({
       id: `node-${i}`,
       name: def.name,
       provider: def.provider,
@@ -198,12 +273,13 @@ export function NodeRelayAnimation() {
       y: NODE_POSITIONS[i].y,
       driftPhase: Math.random() * Math.PI * 2,
       driftSpeed: 0.0003 + Math.random() * 0.0004,
-      driftAmplitudeX: 0.01 + Math.random() * 0.015,
-      driftAmplitudeY: 0.008 + Math.random() * 0.012,
+      driftAmplitudeX: 0.008 + Math.random() * 0.01,
+      driftAmplitudeY: 0.006 + Math.random() * 0.008,
       active: i === 0,
       opacity: i === 0 ? 1 : 0,
     }));
     nodesRef.current = created;
+    connectionsRef.current = buildConnections(MAX_NODES);
     messagesRef.current = [];
     setRenderNodes([...created]);
   }, []);
@@ -220,52 +296,49 @@ export function NodeRelayAnimation() {
       const ms = messagesRef.current;
       const activeIndices = ns.map((n, i) => (n.active ? i : -1)).filter((i) => i >= 0);
 
-      // --- Spawn: an active node sends a spawn message to an inactive neighbor ---
-      if (tick % 10 === 3 && activeIndices.length < ns.length) {
-        // Pick an active sender
-        const senderIdx = activeIndices[Math.floor(Math.random() * activeIndices.length)];
-        // Find inactive neighbors via connections
-        const inactiveNeighbors = CONNECTIONS
-          .filter(([a, b]) => a === senderIdx || b === senderIdx)
-          .map(([a, b]) => (a === senderIdx ? b : a))
-          .filter((i) => !ns[i].active);
+      const conns = connectionsRef.current;
+      const scriptDone = tick > (SCRIPT.length > 0 ? SCRIPT[SCRIPT.length - 1].tick + 5 : 0);
 
-        if (inactiveNeighbors.length > 0) {
-          const targetIdx = inactiveNeighbors[Math.floor(Math.random() * inactiveNeighbors.length)];
-          ns[senderIdx].state = 'RELAYING';
-          ns[senderIdx].statusText = `Spawning ${ns[targetIdx].name}...`;
-          ns[senderIdx].glowing = true;
+      // --- Scripted events ---
+      for (const evt of SCRIPT) {
+        if (evt.tick !== tick) continue;
+        if (evt.type === 'spawn') {
+          ns[evt.from].state = 'RELAYING';
+          ns[evt.from].statusText = `Spawning ${ns[evt.to].name}...`;
+          ns[evt.from].glowing = true;
           ms.push({
-            from: senderIdx,
-            to: targetIdx,
+            from: evt.from,
+            to: evt.to,
             t: 0,
-            speed: 0.01 + Math.random() * 0.005,
+            speed: 0.02 + Math.random() * 0.008,
             trail: [],
             isSpawn: true,
           });
+        } else {
+          // message between active nodes
+          if (ns[evt.from].active && ns[evt.from].opacity >= 0.9) {
+            ns[evt.from].state = 'RELAYING';
+            ns[evt.from].statusText = pick(RELAYING_TEXTS[ns[evt.from].provider]);
+            ns[evt.from].glowing = true;
+            ms.push({
+              from: evt.from,
+              to: evt.to,
+              t: 0,
+              speed: 0.015 + Math.random() * 0.01,
+              trail: [],
+            });
+          }
         }
       }
 
-      // --- Deactivation: occasionally retire an idle node (keep >= 3) ---
-      if (tick % 20 === 0 && activeIndices.length > 3) {
-        const candidates = activeIndices.filter(
-          (i) => ns[i].state === 'AWAITING TASK' || ns[i].state === 'COMPLETE'
-        );
-        if (candidates.length > 0 && Math.random() < 0.35) {
-          const idx = candidates[Math.floor(Math.random() * candidates.length)];
-          ns[idx].active = false;
-          ns[idx].state = 'IDLE';
-          ns[idx].statusText = '';
-        }
-      }
-
-      // --- Relay chains between active nodes (with branching) ---
-      if (tick % 5 === 0 && activeIndices.length >= 2) {
-        const senderIdx = activeIndices[Math.floor(Math.random() * activeIndices.length)];
-        const activeNeighbors = CONNECTIONS
+      // --- After script: random relay chains between active nodes ---
+      const readyIndices = activeIndices.filter((i) => ns[i].opacity >= 0.9);
+      if (scriptDone && tick % 3 === 0 && readyIndices.length >= 2) {
+        const senderIdx = readyIndices[Math.floor(Math.random() * readyIndices.length)];
+        const activeNeighbors = conns
           .filter(([a, b]) => a === senderIdx || b === senderIdx)
           .map(([a, b]) => (a === senderIdx ? b : a))
-          .filter((i) => ns[i].active && i !== senderIdx);
+          .filter((i) => ns[i].active && ns[i].opacity >= 0.9 && i !== senderIdx);
 
         if (activeNeighbors.length > 0) {
           ns[senderIdx].state = 'RELAYING';
@@ -285,9 +358,9 @@ export function NodeRelayAnimation() {
               from: senderIdx,
               to: target,
               t: 0,
-              speed: 0.008 + Math.random() * 0.007,
+              speed: 0.015 + Math.random() * 0.012,
               trail: [],
-              branches: Math.random() < 0.25 ? [activeIndices[Math.floor(Math.random() * activeIndices.length)]] : undefined,
+              branches: Math.random() < 0.25 && readyIndices.length > 1 ? [readyIndices[Math.floor(Math.random() * readyIndices.length)]] : undefined,
             });
           }
         }
@@ -309,7 +382,7 @@ export function NodeRelayAnimation() {
       }
 
       setRenderNodes([...ns]);
-    }, 400);
+    }, 250);
 
     return () => clearInterval(interval);
   }, []);
@@ -335,8 +408,8 @@ export function NodeRelayAnimation() {
     resize();
     window.addEventListener('resize', resize);
 
-    const CARD_W = 180;
-    const CARD_H = 68;
+    const CARD_W = 140;
+    const CARD_H = 72;
 
     const draw = () => {
       const rect = container.getBoundingClientRect();
@@ -355,9 +428,9 @@ export function NodeRelayAnimation() {
         node.y = node.baseY + Math.cos(t * 1.3) * node.driftAmplitudeY + Math.sin(t * 0.5) * node.driftAmplitudeY * 0.4;
 
         if (node.active) {
-          node.opacity = Math.min(node.opacity + 0.02, 1);
+          node.opacity = Math.min(node.opacity + 0.08, 1); // fast pop-in
         } else {
-          node.opacity = Math.max(node.opacity - 0.015, 0);
+          node.opacity = Math.max(node.opacity - 0.03, 0);
         }
 
         if (node.glowing) {
@@ -377,7 +450,7 @@ export function NodeRelayAnimation() {
       }));
 
       // Connection lines
-      for (const [i, j] of CONNECTIONS) {
+      for (const [i, j] of connectionsRef.current) {
         const ci = centers[i];
         const cj = centers[j];
         if (!ci || !cj) continue;
@@ -443,8 +516,8 @@ export function NodeRelayAnimation() {
         if (msg.t > 1) {
           const receiver = ns[msg.to];
           if (receiver) {
-            // Spawn message activates the node
             if (msg.isSpawn && !receiver.active) {
+              // Spawn arrival: activate node — it will pop in via fast opacity ramp
               receiver.active = true;
               receiver.state = 'AWAITING TASK';
               receiver.statusText = pick(IDLE_TEXTS[receiver.provider]);
@@ -458,7 +531,7 @@ export function NodeRelayAnimation() {
             if (msg.branches && receiver.active) {
               for (const bt of msg.branches) {
                 if (bt !== msg.to && bt !== msg.from && ns[bt]?.active) {
-                  ms.push({ from: msg.to, to: bt, t: 0, speed: 0.006 + Math.random() * 0.006, trail: [] });
+                  ms.push({ from: msg.to, to: bt, t: 0, speed: 0.014 + Math.random() * 0.01, trail: [] });
                   receiver.state = 'RELAYING';
                   receiver.statusText = pick(RELAYING_TEXTS[receiver.provider]);
                 }
@@ -513,8 +586,8 @@ export function NodeRelayAnimation() {
               opacity: node.opacity,
               transform: `scale(${0.92 + node.opacity * 0.08})`,
               boxShadow: node.glowOpacity > 0
-                ? `0 0 ${24 * node.glowOpacity}px rgba(45, 79, 62, ${0.15 * node.glowOpacity}), 0 2px 12px rgba(0,0,0,0.05)`
-                : '0 2px 8px rgba(0,0,0,0.04)',
+                ? `0 0 ${18 * node.glowOpacity}px rgba(45, 79, 62, ${0.15 * node.glowOpacity}), 0 2px 10px rgba(0,0,0,0.08)`
+                : '0 2px 8px rgba(0,0,0,0.06)',
               pointerEvents: node.opacity < 0.1 ? 'none' : undefined,
             }}
           >

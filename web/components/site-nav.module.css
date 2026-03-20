@@ -1,17 +1,20 @@
+.navBar {
+  background: var(--nav-bg);
+  border-bottom: 1px solid var(--line);
+  transition: background 0.3s ease, border-color 0.3s ease;
+}
+
 .nav {
   display: flex;
   align-items: center;
   justify-content: space-between;
   max-width: 1280px;
   margin: 0 auto;
-  padding: 20px 40px;
+  padding: 14px 40px;
 }
 
 .logo {
-  font-weight: 700;
-  font-size: 1.05rem;
-  letter-spacing: -0.03em;
-  color: #2D4F3E;
+  color: var(--primary);
   text-decoration: none;
   display: flex;
   align-items: center;
@@ -19,59 +22,45 @@
 }
 
 .logoIcon {
-  width: 30px;
+  width: 34px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.logoWordmark {
   height: 24px;
+  width: auto;
+  color: var(--primary);
 }
 
 .links {
   display: flex;
   align-items: center;
-  gap: 36px;
+  gap: 40px;
   list-style: none;
 }
 
 .link {
+  font-family: var(--font-geist-sans), sans-serif;
   font-size: 0.78rem;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #6C7A71;
+  color: var(--fg-muted);
   text-decoration: none;
-  transition: color 0.2s;
+  padding-bottom: 4px;
+  border-bottom: 2.5px solid transparent;
+  transition: color 0.2s, border-color 0.2s;
 }
 
 .link:hover {
-  color: #2D4F3E;
-}
-
-.linkGh {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.cta {
-  font-size: 0.82rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  padding: 10px 22px;
-  background: #2D4F3E;
-  color: #fff;
-  border: none;
-  border-radius: 100px;
-  text-decoration: none;
-  transition: background 0.2s, transform 0.15s;
-  cursor: pointer;
-}
-
-.cta:hover {
-  background: #243f31;
-  transform: translateY(-1px);
+  color: var(--primary);
+  border-bottom-color: var(--primary);
 }
 
 @media (max-width: 960px) {
   .nav {
-    padding: 16px 24px;
+    padding: 12px 24px;
   }
 
   .links {
