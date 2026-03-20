@@ -47,6 +47,7 @@ export interface AgentOptions {
 export interface AgentStepOptions {
   agent: string;
   task: string;
+  cwd?: string;
   dependsOn?: string[];
   verification?: VerificationCheck;
   timeoutMs?: number;
@@ -57,6 +58,7 @@ export interface AgentStepOptions {
 export interface DeterministicStepOptions {
   type: 'deterministic';
   command: string;
+  cwd?: string;
   /** Capture stdout as step output for downstream steps. Default: true. */
   captureOutput?: boolean;
   /** Fail if command exit code is non-zero. Default: true. */
@@ -256,6 +258,7 @@ export class WorkflowBuilder {
       }
       step.type = 'deterministic';
       step.command = options.command;
+      if (options.cwd !== undefined) step.cwd = options.cwd;
       if (options.captureOutput !== undefined) step.captureOutput = options.captureOutput;
       if (options.failOnError !== undefined) step.failOnError = options.failOnError;
       if (options.dependsOn !== undefined) step.dependsOn = options.dependsOn;
@@ -280,6 +283,7 @@ export class WorkflowBuilder {
       }
       step.agent = agentOpts.agent;
       step.task = agentOpts.task;
+      if (agentOpts.cwd !== undefined) step.cwd = agentOpts.cwd;
       if (agentOpts.dependsOn !== undefined) step.dependsOn = agentOpts.dependsOn;
       if (agentOpts.verification !== undefined) step.verification = agentOpts.verification;
       if (agentOpts.timeoutMs !== undefined) step.timeoutMs = agentOpts.timeoutMs;

@@ -1,6 +1,11 @@
+import { execSync } from 'node:child_process';
 import { workflow, createWorkflowRenderer } from '@agent-relay/sdk/workflows';
 
 const renderer = createWorkflowRenderer();
+
+try {
+  execSync('npx trail start "Polish workflow output with listr2 + chalk"', { stdio: 'ignore' });
+} catch {}
 
 const [result] = await Promise.all([
   workflow('polish-workflow-output')
@@ -119,10 +124,10 @@ package.json). Use the latest chalk version (v5+) with standard ESM imports.
 {{steps.read-package-json.output}}
 
 Produce a detailed implementation plan covering:
-1. Exact npm install command (listr2 version, chalk@4 pinned)
+1. Exact npm install command (listr2 version, latest chalk with ESM imports)
 2. Complete new implementation for \`cli.ts\` (write the full file)
 3. Exact before/after replacements for the 3 runner.ts locations
-4. TypeScript import style for chalk and listr2 in CJS context
+4. TypeScript import style for chalk and listr2 in ESM context
 5. How the listr2 task map is keyed (stepName → task) and updated per event
 6. How step:owner-assigned, step:retrying, step:nudged events render as
    subtask output lines rather than top-level tasks
@@ -135,7 +140,7 @@ PLAN_COMPLETE`,
     .step('install-deps', {
       type: 'deterministic',
       dependsOn: ['plan'],
-      command: 'cd packages/sdk && npm install listr2 chalk@4 2>&1 && echo "exit=0"',
+      command: 'cd packages/sdk && npm install listr2 chalk 2>&1 && echo "exit=0"',
       captureOutput: true,
       failOnError: true,
     })
@@ -245,5 +250,13 @@ Approve when the implementation is complete and working.`,
   renderer.start(),
 ]);
 renderer.unmount();
+
+try {
+  if (result.status === 'completed') {
+    execSync('npx trail complete --summary "Polished workflow output with listr2 + chalk" --confidence 0.88', { stdio: 'ignore' });
+  } else {
+    execSync(`npx trail abandon --reason "Workflow ended with status: ${result.status}"`, { stdio: 'ignore' });
+  }
+} catch {}
 
 console.log('Result:', result.status);

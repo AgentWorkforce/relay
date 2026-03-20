@@ -13,6 +13,7 @@
  */
 
 import { AgentRelay } from "./relay.js";
+import { getCliDefinition } from "./cli-registry.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -59,33 +60,21 @@ export interface SpawnFromEnvResult {
   exitCode?: number;
 }
 
-// ── Bypass Policy (SDK-owned, single source of truth) ──────────────────────
+// ── Bypass Policy (delegated to cli-registry) ──────────────────────────────
 
 type BypassFlagConfig = {
   flag: string;
   aliases?: string[];
 };
 
-/** SDK-owned bypass flag mapping. Cloud must NOT duplicate these. */
-const BYPASS_FLAGS: Record<string, BypassFlagConfig> = {
-  claude: { flag: "--dangerously-skip-permissions" },
-  codex: {
-    flag: "--dangerously-bypass-approvals-and-sandbox",
-    aliases: ["--full-auto"],
-  },
-  gemini: {
-    flag: "--yolo",
-    aliases: ["-y"],
-  },
-};
-
 /**
- * Resolve bypass flag config for a CLI.
+ * Resolve bypass flag config for a CLI from the consolidated registry.
  * Handles `claude:model` variants (e.g. `claude:opus`).
  */
 function getBypassFlagConfig(cli: string): BypassFlagConfig | undefined {
-  const baseCli = cli.includes(":") ? cli.split(":")[0] : cli;
-  return BYPASS_FLAGS[baseCli];
+  const def = getCliDefinition(cli);
+  if (!def?.bypassFlag) return undefined;
+  return { flag: def.bypassFlag, aliases: def.bypassAliases };
 }
 
 // ── Env Parsing ────────────────────────────────────────────────────────────

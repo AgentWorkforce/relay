@@ -8,7 +8,6 @@
       ],
       "env": {
         "RELAY_API_KEY": "${RELAY_API_KEY}",
-        "RELAY_BASE_URL": "${RELAY_BASE_URL}",
         "RELAY_AGENT_TYPE": "agent"
       }
     }
