@@ -42,7 +42,7 @@ fn find_relaycast_boot_marker(lower_output: &str) -> Option<usize> {
     // Codex-style marker: "starting mcp server" with "relaycast" nearby
     if let Some(idx) = lower_output.find("starting mcp server") {
         // Look for "relaycast" within the same line (next ~200 chars)
-        let search_end = (idx + 200).min(lower_output.len());
+        let search_end = floor_char_boundary(lower_output, (idx + 200).min(lower_output.len()));
         if let Some(rc_idx) = lower_output[idx..search_end].find("relaycast") {
             return Some(idx + rc_idx + "relaycast".len());
         }
