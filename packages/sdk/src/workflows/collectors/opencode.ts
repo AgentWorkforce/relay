@@ -74,6 +74,32 @@ function loadDatabaseConstructor(): DatabaseConstructor | null {
   try {
     return require('better-sqlite3') as DatabaseConstructor;
   } catch {
+    // fall through
+  }
+
+  // Fall back to Node 22+ native node:sqlite (experimental)
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { DatabaseSync } = require('node:sqlite');
+    return function NativeSqliteWrapper(filename: string, options?: { readonly?: boolean; fileMustExist?: boolean }) {
+      const db = new DatabaseSync(filename, { open: true, readOnly: options?.readonly ?? false });
+      return {
+        prepare(sql: string) {
+          const stmt = db.prepare(sql);
+          return {
+            get<T>(params?: unknown): T | undefined {
+              return params != null ? stmt.get(params) as T | undefined : stmt.get() as T | undefined;
+            },
+            all<T>(params?: unknown): T[] {
+              return (params != null ? stmt.all(params) : stmt.all()) as T[];
+            },
+          };
+        },
+        pragma(source: string) { db.exec(`PRAGMA ${source}`); return undefined; },
+        close() { db.close(); },
+      };
+    } as unknown as DatabaseConstructor;
+  } catch {
     return null;
   }
 }
