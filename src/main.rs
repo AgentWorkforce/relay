@@ -2552,15 +2552,19 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 let spec_for_state = spec.clone();
                                 let effective_task = normalize_initial_task(task.clone());
 
-                                // Try to get the token from the WS event first (instant).
-                                // If unavailable, attempt a quick registration with a short
-                                // timeout. Previously this used a 15s timeout which blocked
-                                // the WS event loop and delayed agent spawn significantly.
-                                // On failure, the agent will self-register via its MCP server.
+                                // Pre-register agent token. Claude doesn't need this — it
+                                // bakes the API key into --mcp-config JSON and self-registers.
+                                // Non-Claude CLIs need the token injected into their CLI args
+                                // at spawn time, so we do a quick (3s) registration attempt.
+                                let cli_name_lower = normalize_cli_name(&cli).to_lowercase();
+                                let is_claude = cli_name_lower == "claude" || cli_name_lower.starts_with("claude:");
                                 let worker_relay_key = {
                                     let ws_token = relaycast_ws_spawn_token(&ws_value);
                                     if ws_token.is_some() {
                                         ws_token
+                                    } else if is_claude {
+                                        // Claude self-registers via its MCP server — skip blocking call
+                                        None
                                     } else {
                                         const REG_TIMEOUT: Duration = Duration::from_secs(3);
                                         match tokio::time::timeout(
@@ -2740,11 +2744,15 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     let task_opt = Some(task).filter(|v| !v.trim().is_empty());
                                     let effective_task = normalize_initial_task(task_opt.clone());
 
-                                    // Pre-register with short timeout (same as primary WS spawn path).
+                                    // Pre-register (same logic as primary WS spawn path).
+                                    let cli_name_lower = normalize_cli_name(&cli).to_lowercase();
+                                    let is_claude = cli_name_lower == "claude" || cli_name_lower.starts_with("claude:");
                                     let worker_relay_key = {
                                         let ws_token = relaycast_ws_spawn_token(&ws_value);
                                         if ws_token.is_some() {
                                             ws_token
+                                        } else if is_claude {
+                                            None
                                         } else {
                                             const REG_TIMEOUT: Duration = Duration::from_secs(3);
                                             match tokio::time::timeout(
