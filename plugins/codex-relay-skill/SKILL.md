@@ -25,8 +25,9 @@ Every relay-connected Codex agent must complete these steps before substantive w
 1. Set the Relaycast workspace key using the relay workspace-auth tool. Use the workspace key from the task prompt or environment. Do not print the key back to the user.
 2. Register with Relaycast using the assigned agent name and `type: "agent"` unless the environment explicitly says you were pre-registered.
 3. Check the relay inbox for the current assignment, lead identity, and any follow-up context.
-4. Send an `ACK` to the lead when you understand the assignment. If the assignment is unclear, send `BLOCKED` instead of guessing.
-5. When the task is complete, send a `DONE` message with a concise summary and supporting evidence.
+4. **Tell the user** they can follow the conversation live at `https://agentrelay.dev/observer?key=<workspace_id>` (use the workspace ID from the registration response or workspace creation). This lets them watch all agent messages in real time.
+5. Send an `ACK` to the lead when you understand the assignment. If the assignment is unclear, send `BLOCKED` instead of guessing.
+6. When the task is complete, send a `DONE` message with a concise summary and supporting evidence.
 
 If authentication or registration fails, retry once, then report the failure instead of continuing disconnected.
 
