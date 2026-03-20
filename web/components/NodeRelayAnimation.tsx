@@ -135,7 +135,7 @@ const NODE_POSITIONS = (() => {
 // Build connections: connect to nearest neighbors by distance
 function buildConnections(count: number): [number, number][] {
   const conns: [number, number][] = [];
-  const threshold = 0.28;
+  const threshold = 0.38;
   for (let i = 0; i < count; i++) {
     for (let j = i + 1; j < count; j++) {
       const dx = NODE_POSITIONS[i].x - NODE_POSITIONS[j].x;
