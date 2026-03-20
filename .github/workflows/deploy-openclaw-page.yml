@@ -5,7 +5,8 @@ on:
     branches:
       - main
     paths:
-      - openclaw-web/**
+      - web/**
+      - docs/**/*.mdx
       - packages/openclaw/skill/SKILL.md
       - .github/workflows/deploy-openclaw-page.yml
   workflow_dispatch:
@@ -58,7 +59,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION_INPUT }}
 
       - name: Deploy SST app
-        working-directory: openclaw-web
+        working-directory: web
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_DEFAULT_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

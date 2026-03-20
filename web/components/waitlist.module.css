@@ -1,0 +1,134 @@
+.form {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  max-width: 520px;
+  margin: 0 auto;
+  background: var(--card-bg);
+  border: 1px solid var(--line);
+  border-radius: 100px;
+  padding: 5px 5px 5px 24px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.form:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 10%, transparent);
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--font-geist-sans), sans-serif;
+  font-size: 0.92rem;
+  outline: none;
+  padding: 10px 0;
+}
+
+.input::placeholder {
+  color: var(--fg-faint);
+}
+
+.button {
+  flex-shrink: 0;
+  padding: 10px 24px;
+  background: var(--primary);
+  color: var(--bg);
+  border: none;
+  border-radius: 100px;
+  font-family: var(--font-geist-sans), sans-serif;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.15s;
+  white-space: nowrap;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.successCard {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 32px 28px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--primary) 15%, transparent);
+  background: color-mix(in srgb, var(--primary) 5%, transparent);
+  text-align: center;
+  animation: popIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes popIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: none; }
+}
+
+.successIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  color: var(--primary);
+  margin: 0 auto 16px;
+}
+
+.successTitle {
+  font-family: var(--font-heading), sans-serif;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--primary);
+  margin: 0 0 8px;
+}
+
+.successText {
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--fg-muted);
+  margin: 0;
+}
+
+.successText strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.error {
+  position: absolute;
+  bottom: -28px;
+  left: 24px;
+  font-size: 0.78rem;
+  color: #c44;
+  margin: 0;
+}
+
+@media (max-width: 500px) {
+  .form {
+    flex-direction: column;
+    border-radius: 16px;
+    padding: 12px;
+    gap: 8px;
+  }
+
+  .input {
+    width: 100%;
+    text-align: center;
+  }
+
+  .button {
+    width: 100%;
+  }
+}

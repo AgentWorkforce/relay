@@ -1,0 +1,120 @@
+.navOuter {
+  position: sticky;
+  top: 12px;
+  z-index: 50;
+  padding: 0 24px;
+}
+
+.navBar {
+  max-width: 1280px;
+  margin: 0 auto;
+  background: var(--nav-bg);
+  border: 1px solid transparent;
+  border-radius: 14px;
+  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, backdrop-filter 0.3s ease;
+  color: var(--nav-fg);
+}
+
+.navBarScrolled {
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--nav-bg) 55%, transparent) 0%,
+      color-mix(in srgb, var(--nav-bg) 65%, transparent) 100%
+    );
+  backdrop-filter: blur(24px) saturate(2) brightness(1.05);
+  -webkit-backdrop-filter: blur(24px) saturate(2) brightness(1.05);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 4px 24px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 24px;
+}
+
+.navCenter {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  max-width: 360px;
+  margin: 0 auto;
+}
+
+.navRight {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+
+.logo {
+  color: inherit;
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logoIcon {
+  width: 34px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.logoWordmark {
+  height: 24px;
+  width: auto;
+  color: inherit;
+}
+
+.links {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  list-style: none;
+}
+
+.link {
+  font-family: var(--font-geist-sans), sans-serif;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: inherit;
+  text-decoration: none;
+  padding-bottom: 4px;
+  border-bottom: 2.5px solid transparent;
+  transition: opacity 0.2s, border-color 0.2s;
+  opacity: 1;
+}
+
+.link:hover {
+  color: #c8e2ff;
+  border-bottom-color: #c8e2ff;
+}
+
+@media (max-width: 960px) {
+  .navOuter {
+    padding: 0 12px;
+  }
+
+  .navBar {
+    border-radius: 12px;
+  }
+
+  .nav {
+    padding: 10px 16px;
+  }
+
+  .links {
+    display: none;
+  }
+
+  .navCenter {
+    display: none;
+  }
+}

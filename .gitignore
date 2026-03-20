@@ -80,4 +80,5 @@ __pycache__/
 .agent-relay/
 
 .sst
-openclaw-web/sst-env.d.ts
+web/sst-env.d.ts
+web/waitlist.json
