@@ -133,7 +133,9 @@ persist_state() {
   local token="$6"
 
   write_file "$KEY_FILE" "$workspace_key"
+  chmod 600 "$KEY_FILE"
   write_file "$TOKEN_FILE" "$token"
+  chmod 600 "$TOKEN_FILE"
   jq -nc \
     --arg baseUrl "$base_url" \
     --arg workspaceKey "$workspace_key" \
@@ -152,6 +154,7 @@ persist_state() {
       cli: "codex",
       updatedAt: $updatedAt
     }' > "$STATE_FILE"
+  chmod 600 "$STATE_FILE"
 }
 
 main() {

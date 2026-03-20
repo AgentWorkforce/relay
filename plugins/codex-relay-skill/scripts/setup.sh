@@ -94,6 +94,52 @@ ensure_features_codex_hooks() {
   write_if_changed "$file" "$tmp"
 }
 
+ensure_top_level_approval_policy() {
+  local file="$1"
+  local tmp
+  tmp=$(mktemp)
+
+  awk '
+    BEGIN {
+      found = 0
+      first_section = 0
+      inserted = 0
+    }
+    {
+      # If we find approval_policy at top level (before any section or as dotted key), mark found
+      if (!first_section && $0 ~ /^[[:space:]]*approval_policy[[:space:]]*=/) {
+        found = 1
+        print
+        next
+      }
+
+      # Detect first section header
+      if ($0 ~ /^\[[^]]+\][[:space:]]*$/) {
+        if (!first_section && !found && !inserted) {
+          # Insert approval_policy before the first section header
+          print "approval_policy = \"on-request\""
+          print ""
+          inserted = 1
+        }
+        first_section = 1
+      }
+
+      print
+    }
+    END {
+      # File has no sections at all
+      if (!found && !inserted) {
+        if (NR > 0) {
+          print ""
+        }
+        print "approval_policy = \"on-request\""
+      }
+    }
+  ' "$file" > "$tmp"
+
+  write_if_changed "$file" "$tmp"
+}
+
 ensure_relaycast_mcp_block() {
   local file="$1"
   local tmp
@@ -132,6 +178,7 @@ ensure_relaycast_mcp_block() {
         command_seen = 1
         command_line = $0
         sub(/^[[:space:]]*mcp_servers[.]relaycast[.]command[[:space:]]*=/, "command =", command_line)
+        print
         next
       }
       if (!in_block && $0 ~ /^[[:space:]]*mcp_servers[.]relaycast[.]args[[:space:]]*=/) {
@@ -140,6 +187,7 @@ ensure_relaycast_mcp_block() {
         args_seen = 1
         args_line = $0
         sub(/^[[:space:]]*mcp_servers[.]relaycast[.]args[[:space:]]*=/, "args =", args_line)
+        print
         next
       }
       if (!in_block && $0 ~ /^[[:space:]]*mcp_servers[.]relaycast[.]env[[:space:]]*=/) {
@@ -148,6 +196,7 @@ ensure_relaycast_mcp_block() {
         env_seen = 1
         env_line = $0
         sub(/^[[:space:]]*mcp_servers[.]relaycast[.]env[[:space:]]*=/, "env =", env_line)
+        print
         next
       }
 
@@ -189,15 +238,7 @@ ensure_relaycast_mcp_block() {
       if (in_block) {
         write_missing_keys()
       }
-      if (dotted_seen && !in_block) {
-        if (NR > 0) {
-          print ""
-        }
-        print "[mcp_servers.relaycast]"
-        print command_line
-        print args_line
-        print env_line
-      } else if (!block_seen) {
+      if (!block_seen && !dotted_seen) {
         if (NR > 0) {
           print ""
         }
@@ -326,6 +367,7 @@ main() {
   chmod +x "${SKILL_DIR}/scripts/setup.sh" "${SKILL_DIR}/hooks/"*.sh 2>/dev/null || true
 
   ensure_features_codex_hooks "$CONFIG_FILE"
+  ensure_top_level_approval_policy "$CONFIG_FILE"
   ensure_relaycast_mcp_block "$CONFIG_FILE"
   merge_hooks_file "$(desired_hooks_json)"
   install_worker_agent
