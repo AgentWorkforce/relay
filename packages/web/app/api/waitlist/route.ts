@@ -1,9 +1,13 @@
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { NextResponse } from 'next/server';
+import { Resource } from 'sst';
 
-const WAITLIST_WEBHOOK_URL = process.env.WAITLIST_WEBHOOK_URL?.trim();
 const MAX_EMAIL_LENGTH = 320;
 const LOCAL_PART_CHARS = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+$/;
 const DOMAIN_CHARS = /^[a-z0-9.-]+$/;
+
+const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 function hasSingleAtSign(email: string): boolean {
   const atIndex = email.indexOf('@');
@@ -14,11 +18,9 @@ function isValidDomain(domain: string): boolean {
   if (!domain || domain.startsWith('.') || domain.endsWith('.') || !domain.includes('.')) {
     return false;
   }
-
   if (!DOMAIN_CHARS.test(domain)) {
     return false;
   }
-
   return domain
     .split('.')
     .every((label) => label.length > 0 && !label.startsWith('-') && !label.endsWith('-'));
@@ -26,17 +28,14 @@ function isValidDomain(domain: string): boolean {
 
 function normalizeEmail(value: unknown): string | null {
   if (typeof value !== 'string') return null;
-
   const email = value.trim().toLowerCase();
   if (!email || email.length > MAX_EMAIL_LENGTH || email.includes(' ') || !hasSingleAtSign(email)) {
     return null;
   }
-
   const [local, domain] = email.split('@');
   if (!local || !LOCAL_PART_CHARS.test(local) || !isValidDomain(domain)) {
     return null;
   }
-
   return email;
 }
 
@@ -49,29 +48,36 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Invalid email address' }, { status: 400 });
     }
 
-    if (!WAITLIST_WEBHOOK_URL) {
-      return NextResponse.json({ error: 'Waitlist is not configured' }, { status: 503 });
-    }
-
-    const response = await fetch(WAITLIST_WEBHOOK_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ email }),
-      cache: 'no-store',
+    await client.send(
+      new PutCommand({
+        TableName: Resource.Waitlist.name,
+        Item: {
+          email,
+          joinedAt: new Date().toISOString(),
+        },
+        ConditionExpression: 'attribute_not_exists(email)',
+      })
+    ).catch((err: Error & { name?: string }) => {
+      // ConditionalCheckFailedException means email already exists — that's fine
+      if (err.name !== 'ConditionalCheckFailedException') throw err;
     });
 
-    if (!response.ok) {
-      return NextResponse.json({ error: 'Unable to join waitlist' }, { status: 502 });
-    }
-
-    return NextResponse.json({ message: 'Added to waitlist' });
+    return NextResponse.json({ message: 'Added to waitlist', email });
   } catch {
     return NextResponse.json({ error: 'Server error' }, { status: 500 });
   }
 }
 
 export async function GET() {
-  return NextResponse.json({ configured: Boolean(WAITLIST_WEBHOOK_URL) });
+  try {
+    const result = await client.send(
+      new ScanCommand({
+        TableName: Resource.Waitlist.name,
+        Select: 'COUNT',
+      })
+    );
+    return NextResponse.json({ count: result.Count ?? 0 });
+  } catch {
+    return NextResponse.json({ count: 0 });
+  }
 }

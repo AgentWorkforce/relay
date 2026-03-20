@@ -22,7 +22,7 @@
   top: 0;
   height: 100vh;
   overflow-y: auto;
-  padding: 1.25rem 1rem 2rem;
+  padding: 4rem 1.25rem 2rem;
   border-right: 1px solid var(--line);
 }
 
@@ -34,7 +34,7 @@
 
 .content {
   min-width: 0;
-  padding: 2rem 3rem 5rem;
+  padding: 4rem 3rem 5rem;
 }
 
 /* ── Article + TOC wrapper ── */
@@ -42,17 +42,19 @@
 .articleWrapper {
   display: grid;
   grid-template-columns: 1fr 200px;
-  gap: 32px;
+  gap: 48px;
   max-width: 56rem;
 }
 
 .tocSidebar {
   position: relative;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .toc {
   position: sticky;
-  top: 80px;
+  top: 100px;
   max-height: calc(100vh - 100px);
   overflow-y: auto;
   padding-top: 0.5rem;
@@ -76,13 +78,16 @@
 .tocLink {
   display: block;
   padding: 3px 0;
-  font-size: 0.76rem;
+  font-size: 0.72rem;
   line-height: 1.4;
   color: var(--fg-faint);
   text-decoration: none;
   border-left: 2px solid transparent;
   padding-left: 10px;
   transition: color 0.15s, border-color 0.15s;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tocLink:hover {
@@ -135,7 +140,7 @@
 
 /* ── Article ── */
 
-.article { line-height: 1.7; color: var(--fg); }
+.article { line-height: 1.7; color: var(--fg); min-width: 0; overflow: hidden; }
 
 .article h1 {
   font-size: clamp(1.8rem, 4vw, 2.4rem);
@@ -188,6 +193,43 @@
   color: var(--inline-code-fg);
   padding: 0.15em 0.35em;
   border-radius: 0.3rem;
+}
+
+.codeWrapper {
+  position: relative;
+  margin: 1rem 0;
+}
+
+.codeWrapper pre {
+  margin: 0;
+}
+
+.copyBtn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--card-bg);
+  color: var(--fg-faint);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.codeWrapper:hover .copyBtn {
+  opacity: 1;
+}
+
+.copyBtn:hover {
+  color: var(--primary);
+  background: var(--bg);
 }
 
 .article pre {
@@ -253,8 +295,9 @@
   box-shadow: 0 2px 12px color-mix(in srgb, var(--primary) 8%, transparent);
 }
 
-.cardTitle { font-size: 0.95rem; font-weight: 600; color: var(--primary); margin: 0 0 0.3rem; }
+.cardTitle { font-size: 0.95rem; font-weight: 600; color: var(--primary); margin: 0 0 0.3rem !important; }
 .cardBody { font-size: 0.88rem; color: var(--fg-muted); margin: 0; line-height: 1.5; }
+.cardBody p { margin: 0; }
 
 /* ── Note ── */
 

@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { useRouter } from 'next/navigation';
 
 import type { SearchEntry } from '../../lib/docs';
 import s from './docs-search.module.css';
@@ -35,13 +37,26 @@ function search(query: string, index: SearchEntry[]): SearchEntry[] {
 export function DocsSearch({ index }: DocsSearchProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const router = useRouter();
   const results = search(query, index);
 
   const close = useCallback(() => {
     setOpen(false);
     setQuery('');
+    setActiveIdx(0);
   }, []);
+
+  const navigate = useCallback((slug: string) => {
+    close();
+    router.push(`/docs/${slug}`);
+  }, [close, router]);
+
+  // Reset active index when results change
+  useEffect(() => {
+    setActiveIdx(0);
+  }, [query]);
 
   // Cmd+K / Ctrl+K shortcut
   useEffect(() => {
@@ -61,6 +76,19 @@ export function DocsSearch({ index }: DocsSearchProps) {
     if (open) setTimeout(() => inputRef.current?.focus(), 50);
   }, [open]);
 
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActiveIdx((prev) => (prev + 1) % Math.max(results.length, 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActiveIdx((prev) => (prev - 1 + results.length) % Math.max(results.length, 1));
+    } else if (e.key === 'Enter' && results[activeIdx]) {
+      e.preventDefault();
+      navigate(results[activeIdx].slug);
+    }
+  }
+
   return (
     <>
       <button className={s.trigger} onClick={() => setOpen(true)}>
@@ -72,9 +100,9 @@ export function DocsSearch({ index }: DocsSearchProps) {
         <kbd className={s.triggerKbd}>&#8984;K</kbd>
       </button>
 
-      {open && (
+      {open && createPortal(
         <div className={s.overlay} onClick={close}>
-          <div className={s.modal} onClick={(e) => e.stopPropagation()}>
+          <div className={s.modal} onClick={(e) => e.stopPropagation()} onKeyDown={handleKeyDown}>
             <div className={s.inputRow}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="11" cy="11" r="8" />
@@ -95,12 +123,13 @@ export function DocsSearch({ index }: DocsSearchProps) {
                 {results.length === 0 ? (
                   <p className={s.empty}>No results for &ldquo;{query}&rdquo;</p>
                 ) : (
-                  results.map((entry) => (
+                  results.map((entry, i) => (
                     <a
                       key={entry.slug}
                       href={`/docs/${entry.slug}`}
-                      className={s.result}
-                      onClick={close}
+                      className={`${s.result} ${i === activeIdx ? s.resultActive : ''}`}
+                      onClick={(e) => { e.preventDefault(); navigate(entry.slug); }}
+                      onMouseEnter={() => setActiveIdx(i)}
                     >
                       <span className={s.resultTitle}>{entry.title}</span>
                       {entry.description && (
@@ -112,7 +141,8 @@ export function DocsSearch({ index }: DocsSearchProps) {
               </div>
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );

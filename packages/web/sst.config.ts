@@ -7,9 +7,17 @@ export default $config({
     };
   },
   run() {
-    new sst.aws.Nextjs('OpenClawWeb', {
+    const waitlist = new sst.aws.Dynamo('Waitlist', {
+      fields: {
+        email: 'string',
+      },
+      primaryIndex: { hashKey: 'email' },
+    });
+
+    new sst.aws.Nextjs('Web', {
       path: '.',
       openNextVersion: '3.6.2',
+      link: [waitlist],
       domain:
         $app.stage === 'production'
           ? {
