@@ -946,17 +946,17 @@
 @media (max-width: 960px) {
   .hero {
     grid-template-columns: 1fr;
-    padding: 0 24px 40px;
+    padding: 40px 24px 40px;
     gap: 24px;
     min-height: auto;
   }
 
   .heroLeft {
-    gap: 22px;
+    gap: 20px;
   }
 
   .heroRight {
-    min-height: 360px;
+    min-height: 320px;
   }
 
   .headline {
@@ -1002,11 +1002,19 @@
 @media (max-width: 600px) {
   .ctas {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .ctaPrimary,
+  .ctaSecondary {
+    justify-content: center;
+    padding: 12px 20px;
+    font-size: 0.85rem;
   }
 
   .subtitle {
-    font-size: 1rem;
+    font-size: 0.95rem;
   }
 
   .heroRight {

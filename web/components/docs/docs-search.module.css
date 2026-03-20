@@ -7,18 +7,18 @@
   width: 100%;
   padding: 7px 14px;
   border-radius: 100px;
-  border: 1px solid var(--line);
-  background: var(--bg);
-  color: var(--fg-faint);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.7);
   font-family: var(--font-geist-sans), sans-serif;
   font-size: 0.8rem;
   cursor: pointer;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color 0.2s, background 0.2s;
 }
 
 .trigger:hover {
-  border-color: var(--primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 8%, transparent);
+  border-color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.15);
 }
 
 .triggerText {
@@ -31,9 +31,9 @@
   font-size: 0.68rem;
   padding: 2px 6px;
   border-radius: 4px;
-  border: 1px solid var(--line);
-  background: var(--bg);
-  color: var(--fg-faint);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.5);
 }
 
 /* ── Modal overlay ── */
@@ -42,11 +42,13 @@
   position: fixed;
   inset: 0;
   z-index: 200;
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding-top: 15vh;
+  padding-top: 12vh;
   animation: fadeIn 0.15s ease;
 }
 
@@ -122,6 +124,11 @@
   text-decoration: none;
   color: inherit;
   transition: background 0.1s;
+  cursor: pointer;
+}
+
+.resultActive {
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
 }
 
 .result:hover {

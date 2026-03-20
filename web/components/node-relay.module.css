@@ -20,8 +20,8 @@
 .card {
   position: absolute;
   z-index: 1;
-  width: 140px;
-  height: 78px;
+  width: 160px;
+  height: 88px;
   padding: 0;
   background: rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(10px);
@@ -128,7 +128,7 @@
 /* ── Responsive ── */
 
 @media (max-width: 1100px) {
-  .card { width: 125px; height: 70px; }
+  .card { width: 140px; height: 78px; }
   .cardName { font-size: 0.58rem; }
   .cardModel { font-size: 0.46rem; }
   .statusText { font-size: 0.5rem; }

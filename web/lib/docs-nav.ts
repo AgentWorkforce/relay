@@ -17,33 +17,34 @@ export const docsNav: NavGroup[] = [
     ],
   },
   {
-    title: 'Communicate',
+    title: 'SDK',
     items: [
-      { title: 'Overview', slug: 'communicate' },
-      { title: 'AI SDK', slug: 'communicate/ai-sdk' },
-      { title: 'Claude SDK', slug: 'communicate/claude-sdk' },
-      { title: 'Google ADK', slug: 'communicate/google-adk' },
-      { title: 'Pi', slug: 'communicate/pi' },
-      { title: 'Agno', slug: 'communicate/agno' },
-      { title: 'OpenAI Agents', slug: 'communicate/openai-agents' },
-      { title: 'Swarms', slug: 'communicate/swarms' },
-      { title: 'CrewAI', slug: 'communicate/crewai' },
-    ],
-  },
-  {
-    title: 'SDK Reference',
-    items: [
-      { title: 'TypeScript SDK', slug: 'reference/sdk' },
-      { title: 'Python SDK', slug: 'reference/sdk-py' },
+      { title: 'TypeScript SDK Reference', slug: 'reference/sdk' },
+      { title: 'Python SDK Reference', slug: 'reference/sdk-py' },
     ],
   },
   {
     title: 'Integrations',
-    items: [{ title: 'OpenClaw', slug: 'reference/openclaw' }],
+    items: [{ title: 'OpenClaw Bridge', slug: 'reference/openclaw' }],
   },
+];
+
+/** All doc slugs including hidden pages (for static generation + search) */
+const ALL_SLUGS = [
+  ...docsNav.flatMap((group) => group.items.map((item) => item.slug)),
+  // Hidden from nav but still routable
+  'communicate',
+  'communicate/ai-sdk',
+  'communicate/claude-sdk',
+  'communicate/google-adk',
+  'communicate/pi',
+  'communicate/agno',
+  'communicate/openai-agents',
+  'communicate/swarms',
+  'communicate/crewai',
 ];
 
 /** Flat list of all doc slugs for static generation */
 export function getAllDocSlugs(): string[] {
-  return docsNav.flatMap((group) => group.items.map((item) => item.slug));
+  return ALL_SLUGS;
 }

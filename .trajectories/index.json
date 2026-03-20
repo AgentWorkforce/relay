@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-03-19T21:57:37.057Z",
+  "lastUpdated": "2026-03-20T20:12:42.267Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -840,7 +840,7 @@
       "title": "Code review for assigned workflow changes",
       "status": "active",
       "startedAt": "2026-03-12T08:38:19.960Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/active/traj_u6bndffr0b8g.json"
+      "path": "/Users/will/Projects/relay/.trajectories/active/traj_u6bndffr0b8g.json"
     }
   }
 }

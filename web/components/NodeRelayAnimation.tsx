@@ -62,7 +62,6 @@ const RELAYING_TEXTS: Record<ModelProvider, string[]> = {
   opencode: ['$ relaying output...', '$ syncing...'],
 };
 
-// Indices: 0=Lead, 1=Planner, 2=Coder, 3=Reviewer, 4=Frontend, 5=Backend, 6=Marketer, ...
 const NODE_POOL: { name: string; provider: ModelProvider; model: string }[] = [
   { name: 'Lead', provider: 'claude', model: 'Opus' },         // 0
   { name: 'Planner', provider: 'gemini', model: '2.5 Pro' },   // 1
@@ -72,10 +71,6 @@ const NODE_POOL: { name: string; provider: ModelProvider; model: string }[] = [
   { name: 'Backend', provider: 'opencode', model: 'Gemini' },   // 5
   { name: 'Marketer', provider: 'gemini', model: '2.5 Flash' }, // 6
   { name: 'Tester', provider: 'claude', model: 'Haiku' },       // 7
-  { name: 'DevOps', provider: 'codex', model: 'Codex-1' },      // 8
-  { name: 'Docs', provider: 'copilot', model: 'GPT-4.1' },     // 9
-  { name: 'Security', provider: 'claude', model: 'Opus' },      // 10
-  { name: 'Analyst', provider: 'opencode', model: 'Gemini' },   // 11
 ];
 
 // Scripted spawn/message sequence: { tick, type, from, to }
@@ -87,48 +82,39 @@ type ScriptEvent =
 const SCRIPT: ScriptEvent[] = [
   // Lead spawns Planner and Coder
   { tick: 3, type: 'spawn', from: 0, to: 1 },
-  { tick: 5, type: 'spawn', from: 0, to: 2 },
+  { tick: 6, type: 'spawn', from: 0, to: 2 },
   // Lead spawns Reviewer
-  { tick: 9, type: 'spawn', from: 0, to: 3 },
+  { tick: 10, type: 'spawn', from: 0, to: 3 },
   // Planner talks with Coder
-  { tick: 12, type: 'message', from: 1, to: 2 },
-  { tick: 15, type: 'message', from: 2, to: 1 },
+  { tick: 14, type: 'message', from: 1, to: 2 },
+  { tick: 17, type: 'message', from: 2, to: 1 },
   // Coder spawns Frontend and Backend
-  { tick: 18, type: 'spawn', from: 2, to: 4 },
-  { tick: 21, type: 'spawn', from: 2, to: 5 },
+  { tick: 21, type: 'spawn', from: 2, to: 4 },
+  { tick: 25, type: 'spawn', from: 2, to: 5 },
   // Lead spawns Marketer
-  { tick: 24, type: 'spawn', from: 0, to: 6 },
-  // Some chatter
-  { tick: 27, type: 'message', from: 4, to: 3 },
-  { tick: 29, type: 'message', from: 5, to: 3 },
-  { tick: 31, type: 'message', from: 3, to: 0 },
-  { tick: 33, type: 'message', from: 0, to: 6 },
-  // More spawns from various nodes
-  { tick: 36, type: 'spawn', from: 3, to: 7 },
-  { tick: 40, type: 'spawn', from: 5, to: 8 },
-  { tick: 44, type: 'spawn', from: 0, to: 9 },
-  { tick: 48, type: 'spawn', from: 4, to: 10 },
-  { tick: 52, type: 'spawn', from: 6, to: 11 },
+  { tick: 29, type: 'spawn', from: 0, to: 6 },
+  // Chatter
+  { tick: 33, type: 'message', from: 4, to: 3 },
+  { tick: 35, type: 'message', from: 5, to: 3 },
+  { tick: 38, type: 'message', from: 3, to: 0 },
+  // Tester spawns last
+  { tick: 42, type: 'spawn', from: 3, to: 7 },
+  { tick: 46, type: 'message', from: 0, to: 6 },
+  { tick: 49, type: 'message', from: 7, to: 2 },
 ];
 
-const MIN_NODES = 7;
-const MAX_NODES = 12;
+const MIN_NODES = 5;
+const MAX_NODES = 8;
 
-// Spiral layout: index 0 = dead center, then concentric rings sorted by angle
-// (right → bottom → left → top). Card is ~140px wide so we need ~0.25 spacing
-// at typical 600px container width.
+// Layout: 1 center + 7 in a single ring, evenly spaced
 const NODE_POSITIONS = (() => {
-  const cx = 0.38; // center X (slightly left to avoid clipping right edge)
-  const cy = 0.40; // center Y
+  const cx = 0.38;
+  const cy = 0.38;
 
-  // Ring 1: 6 nodes at radius 0.22 (the first 7 = center + ring1, no overlap)
-  // Ring 2: 8 nodes at radius 0.40
-  // Ring 3: 5 nodes at radius 0.56
   const positions: { x: number; y: number }[] = [{ x: cx, y: cy }]; // index 0 = center
 
   const rings = [
-    { count: 6, radius: 0.24 },
-    { count: 5, radius: 0.42 },
+    { count: 7, radius: 0.32 },
   ];
 
   for (const ring of rings) {
@@ -149,7 +135,7 @@ const NODE_POSITIONS = (() => {
 // Build connections: connect to nearest neighbors by distance
 function buildConnections(count: number): [number, number][] {
   const conns: [number, number][] = [];
-  const threshold = 0.28;
+  const threshold = 0.38;
   for (let i = 0; i < count; i++) {
     for (let j = i + 1; j < count; j++) {
       const dx = NODE_POSITIONS[i].x - NODE_POSITIONS[j].x;
@@ -408,8 +394,8 @@ export function NodeRelayAnimation() {
     resize();
     window.addEventListener('resize', resize);
 
-    const CARD_W = 140;
-    const CARD_H = 72;
+    const CARD_W = 160;
+    const CARD_H = 88;
 
     const draw = () => {
       const rect = container.getBoundingClientRect();
@@ -488,15 +474,15 @@ export function NodeRelayAnimation() {
           const trailSize = Math.max(0.5, 2.5 - tp.age * 0.03);
           ctx.beginPath();
           ctx.arc(tp.x, tp.y, trailSize, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(45, 79, 62, ${trailAlpha})`;
+          ctx.fillStyle = `rgba(74, 144, 194, ${trailAlpha})`;
           ctx.fill();
         }
 
         if (msg.t <= 1) {
           const grad = ctx.createRadialGradient(px, py, 0, px, py, 14);
-          grad.addColorStop(0, 'rgba(45, 79, 62, 0.45)');
-          grad.addColorStop(0.4, 'rgba(45, 79, 62, 0.12)');
-          grad.addColorStop(1, 'rgba(45, 79, 62, 0)');
+          grad.addColorStop(0, 'rgba(74, 144, 194, 0.5)');
+          grad.addColorStop(0.4, 'rgba(74, 144, 194, 0.15)');
+          grad.addColorStop(1, 'rgba(74, 144, 194, 0)');
           ctx.beginPath();
           ctx.arc(px, py, 14, 0, Math.PI * 2);
           ctx.fillStyle = grad;
@@ -504,7 +490,7 @@ export function NodeRelayAnimation() {
 
           ctx.beginPath();
           ctx.arc(px, py, 3.5, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(45, 79, 62, 0.75)';
+          ctx.fillStyle = 'rgba(74, 144, 194, 0.8)';
           ctx.fill();
 
           ctx.beginPath();

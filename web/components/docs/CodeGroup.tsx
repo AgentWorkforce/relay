@@ -2,7 +2,6 @@
 
 import { useState, type ReactNode, type ReactElement, Children, isValidElement } from 'react';
 
-import { HighlightedPre } from './HighlightedCode';
 import styles from './docs.module.css';
 
 interface CodeGroupProps {
@@ -36,8 +35,7 @@ export function CodeGroup({ children }: CodeGroupProps) {
   const [active, setActive] = useState(0);
 
   if (rawBlocks.length <= 1) {
-    // Single block — still highlight it
-    return <>{rawBlocks.map((b, i) => <HighlightedPre key={i} {...b.props} />)}</>;
+    return <>{rawBlocks}</>;
   }
 
   // Pair blocks with labels, then sort TypeScript first
@@ -67,7 +65,7 @@ export function CodeGroup({ children }: CodeGroupProps) {
         ))}
       </div>
       <div className={styles.codeGroupPanel}>
-        <HighlightedPre {...blocks[active].props} />
+        {blocks[active]}
       </div>
     </div>
   );

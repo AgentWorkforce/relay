@@ -45,6 +45,7 @@ export function LogoWordmark() {
 
 export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
   const [scrolled, setScrolled] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 20);
@@ -79,7 +80,36 @@ export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
         </ul>
         <GitHubStarsBadge />
       </div>
+
+      {/* Mobile hamburger */}
+      <button
+        className={s.hamburger}
+        onClick={() => setMenuOpen(!menuOpen)}
+        aria-label="Toggle menu"
+      >
+        {menuOpen ? (
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        ) : (
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <line x1="3" y1="6" x2="21" y2="6" />
+            <line x1="3" y1="12" x2="21" y2="12" />
+            <line x1="3" y1="18" x2="21" y2="18" />
+          </svg>
+        )}
+      </button>
     </nav>
+
+    {/* Mobile menu dropdown */}
+    {menuOpen && (
+      <div className={s.mobileMenu}>
+        <Link href="/docs" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Docs</Link>
+        <Link href="/blog" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Blog</Link>
+        <a href="https://github.com/agentworkforce/relay" target="_blank" rel="noopener noreferrer" className={s.mobileLink} onClick={() => setMenuOpen(false)}>GitHub</a>
+      </div>
+    )}
     </header>
     </div>
   );
