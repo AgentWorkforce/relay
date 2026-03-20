@@ -411,9 +411,12 @@ export class WorkflowBuilder {
         ? runner.resume(resumeRunId, options.vars)
         : runner.execute(config, options.workflow, options.vars, executeOptions);
 
-      const [result] = await Promise.all([runPromise, renderer.start()]);
-      renderer.unmount();
-      return result;
+      try {
+        const [result] = await Promise.all([runPromise, renderer.start()]);
+        return result;
+      } finally {
+        renderer.unmount();
+      }
     }
 
     if (resumeRunId) {
