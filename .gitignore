@@ -81,3 +81,4 @@ __pycache__/
 
 .sst
 web/sst-env.d.ts
+web/waitlist.json

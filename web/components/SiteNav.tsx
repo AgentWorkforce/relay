@@ -1,3 +1,4 @@
+import type React from 'react';
 import Link from 'next/link';
 
 import { GitHubStarsBadge } from './GitHubStars';
@@ -38,7 +39,7 @@ export function LogoWordmark() {
   );
 }
 
-export function SiteNav() {
+export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
   return (
     <header className={s.navBar}>
     <nav className={s.nav}>
@@ -46,6 +47,8 @@ export function SiteNav() {
         <LogoIcon />
         <LogoWordmark />
       </Link>
+
+      {center && <div className={s.navCenter}>{center}</div>}
 
       <div className={s.navRight}>
         <ul className={s.links}>

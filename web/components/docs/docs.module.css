@@ -17,13 +17,17 @@
   min-height: calc(100vh - 70px);
 }
 
-.sidebar {
+.sidebarCol {
   position: sticky;
   top: 0;
   height: 100vh;
   overflow-y: auto;
   padding: 1.25rem 1rem 2rem;
   border-right: 1px solid var(--line);
+}
+
+.sidebar {
+  /* DocsNav wrapper — no longer sticky itself since sidebarCol handles it */
 }
 
 .sidebarLogo { display: none; }
@@ -275,7 +279,7 @@
 
 @media (max-width: 900px) {
   .docsBody { grid-template-columns: 1fr; }
-  .sidebar { position: relative; height: auto; border-right: none; border-bottom: 1px solid var(--line); }
+  .sidebarCol { position: relative; height: auto; border-right: none; border-bottom: 1px solid var(--line); }
   .content { padding: 1.5rem 1rem 3rem; }
   .cardGroup { grid-template-columns: 1fr !important; }
 }

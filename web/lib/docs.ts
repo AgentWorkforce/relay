@@ -30,6 +30,15 @@ export interface DocFrontmatter {
   description: string;
 }
 
+export interface SearchEntry {
+  slug: string;
+  title: string;
+  description: string;
+  headings: string[];
+  /** Plain text snippet for matching (no MDX/HTML) */
+  body: string;
+}
+
 export interface TocItem {
   id: string;
   text: string;
@@ -97,4 +106,44 @@ export function getDoc(slug: string): DocContent | null {
     content: processed,
     toc,
   };
+}
+
+/** Build a lightweight search index from all docs */
+export function getSearchIndex(): SearchEntry[] {
+  // Import inline to avoid circular dependency at module level
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getAllDocSlugs } = require('./docs-nav') as typeof import('./docs-nav');
+  const slugs = getAllDocSlugs();
+
+  return slugs.map((slug) => {
+    const filePath = path.join(DOCS_DIR, `${slug}.mdx`);
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const { data, content } = matter(raw);
+
+    // Strip MDX components and code blocks for plain text
+    const body = content
+      .replace(/<[^>]+>/g, '')
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/`[^`]+`/g, '')
+      .replace(/#+\s/g, '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/\n{2,}/g, '\n')
+      .trim()
+      .slice(0, 500);
+
+    const headings: string[] = [];
+    const hRegex = /^#{2,3}\s+(.+)$/gm;
+    let m;
+    while ((m = hRegex.exec(content)) !== null) {
+      headings.push(m[1].replace(/`([^`]+)`/g, '$1').trim());
+    }
+
+    return {
+      slug,
+      title: (data.title as string) || slug,
+      description: (data.description as string) || '',
+      headings,
+      body,
+    };
+  });
 }

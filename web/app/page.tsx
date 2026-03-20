@@ -24,6 +24,76 @@ export default function HomePage() {
       <SiteNav />
 
       <div className={s.heroSection}>
+        <svg className={s.heroBgSvg} viewBox="0 0 1200 600" fill="none" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice">
+          {/* Grid of interconnected nodes */}
+          {/* Paths — connection lines */}
+          <g stroke="var(--primary)" strokeWidth="0.8" opacity="0.07">
+            {/* Horizontal flows */}
+            <path d="M80,120 L220,140 L380,110 L520,145 L680,120" />
+            <path d="M150,280 L310,260 L460,290 L620,270 L780,295" />
+            <path d="M60,440 L200,420 L360,450 L510,430 L670,455" />
+            {/* Cross connections */}
+            <path d="M220,140 L310,260" />
+            <path d="M380,110 L460,290" />
+            <path d="M520,145 L620,270" />
+            <path d="M310,260 L360,450" />
+            <path d="M460,290 L510,430" />
+            <path d="M620,270 L670,455" />
+            {/* Right side sparse */}
+            <path d="M780,295 L900,240 L1020,280" />
+            <path d="M680,120 L830,160 L960,130" />
+            <path d="M900,240 L960,130" />
+            <path d="M830,160 L780,295" />
+            {/* Diagonal sweeps */}
+            <path d="M120,60 L220,140" />
+            <path d="M680,120 L740,40" />
+            <path d="M60,440 L30,520" />
+            <path d="M670,455 L720,540" />
+          </g>
+          {/* Nodes — small circles at intersections */}
+          <g fill="var(--primary)" opacity="0.08">
+            <circle cx="80" cy="120" r="3" />
+            <circle cx="220" cy="140" r="4" />
+            <circle cx="380" cy="110" r="3" />
+            <circle cx="520" cy="145" r="4" />
+            <circle cx="680" cy="120" r="3" />
+            <circle cx="150" cy="280" r="3" />
+            <circle cx="310" cy="260" r="4" />
+            <circle cx="460" cy="290" r="3" />
+            <circle cx="620" cy="270" r="4" />
+            <circle cx="780" cy="295" r="3" />
+            <circle cx="60" cy="440" r="3" />
+            <circle cx="200" cy="420" r="4" />
+            <circle cx="360" cy="450" r="3" />
+            <circle cx="510" cy="430" r="4" />
+            <circle cx="670" cy="455" r="3" />
+            <circle cx="830" cy="160" r="3" />
+            <circle cx="900" cy="240" r="3" />
+            <circle cx="960" cy="130" r="3" />
+            <circle cx="1020" cy="280" r="3" />
+          </g>
+          {/* Ghost card outlines — faint rectangles suggesting agent cards */}
+          <g stroke="var(--primary)" strokeWidth="0.6" fill="none" opacity="0.04">
+            <rect x="190" y="120" width="60" height="38" rx="6" />
+            <rect x="350" y="90" width="60" height="38" rx="6" />
+            <rect x="490" y="125" width="60" height="38" rx="6" />
+            <rect x="280" y="240" width="60" height="38" rx="6" />
+            <rect x="430" y="270" width="60" height="38" rx="6" />
+            <rect x="590" y="250" width="60" height="38" rx="6" />
+            <rect x="170" y="400" width="60" height="38" rx="6" />
+            <rect x="330" y="430" width="60" height="38" rx="6" />
+            <rect x="480" y="410" width="60" height="38" rx="6" />
+            <rect x="870" y="220" width="60" height="38" rx="6" />
+            <rect x="800" y="140" width="60" height="38" rx="6" />
+          </g>
+          {/* Pulse dots — brighter accent nodes */}
+          <g fill="var(--primary)" opacity="0.12">
+            <circle cx="220" cy="140" r="2" />
+            <circle cx="460" cy="290" r="2" />
+            <circle cx="670" cy="455" r="2" />
+            <circle cx="900" cy="240" r="2" />
+          </g>
+        </svg>
         <section className={s.hero}>
           <div className={s.heroLeft}>
             <h1 className={s.headline}>

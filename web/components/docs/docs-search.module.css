@@ -1,0 +1,149 @@
+/* ── Search trigger button ── */
+
+.trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 14px;
+  border-radius: 100px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg-faint);
+  font-family: var(--font-geist-sans), sans-serif;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.trigger:hover {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+.triggerText {
+  flex: 1;
+  text-align: left;
+}
+
+.triggerKbd {
+  font-family: var(--font-geist-sans), sans-serif;
+  font-size: 0.68rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg-faint);
+}
+
+/* ── Modal overlay ── */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 15vh;
+  animation: fadeIn 0.15s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal {
+  width: 100%;
+  max-width: 560px;
+  border-radius: 14px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  box-shadow: 0 16px 64px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+  animation: slideIn 0.15s ease;
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.inputRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--fg-faint);
+}
+
+.input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--font-geist-sans), sans-serif;
+  font-size: 0.95rem;
+  outline: none;
+}
+
+.input::placeholder {
+  color: var(--fg-faint);
+}
+
+.escKbd {
+  font-family: var(--font-geist-sans), sans-serif;
+  font-size: 0.65rem;
+  padding: 3px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--card-bg);
+  color: var(--fg-faint);
+  cursor: pointer;
+}
+
+/* ── Results ── */
+
+.results {
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  text-decoration: none;
+  color: inherit;
+  transition: background 0.1s;
+}
+
+.result:hover {
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
+}
+
+.resultTitle {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.resultDesc {
+  font-size: 0.78rem;
+  color: var(--fg-faint);
+  line-height: 1.4;
+}
+
+.empty {
+  padding: 20px 16px;
+  text-align: center;
+  font-size: 0.88rem;
+  color: var(--fg-faint);
+  margin: 0;
+}

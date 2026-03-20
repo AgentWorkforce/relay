@@ -13,6 +13,14 @@
   padding: 14px 40px;
 }
 
+.navCenter {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  max-width: 360px;
+  margin: 0 auto;
+}
+
 .navRight {
   display: flex;
   align-items: center;
@@ -70,6 +78,10 @@
   }
 
   .links {
+    display: none;
+  }
+
+  .navCenter {
     display: none;
   }
 }
