@@ -1,6 +1,8 @@
 export * from './types.js';
 export * from './runner.js';
 export * from './custom-steps.js';
+export * from './cli-session-collector.js';
+export * from './run-summary-table.js';
 export {
   Models,
   ClaudeModels,
@@ -23,3 +25,4 @@ export * from './templates.js';
 export { WorkflowTrajectory, type StepOutcome } from './trajectory.js';
 export { formatDryRunReport } from './dry-run-format.js';
 export { createWorkflowRenderer, type WorkflowRenderer } from './listr-renderer.js';
+export { createDefaultEventLogger } from './default-logger.js';

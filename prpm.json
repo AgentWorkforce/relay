@@ -692,36 +692,6 @@
       ]
     },
     {
-      "name": "claude-relay-plugin",
-      "version": "0.1.0",
-      "description": "Claude Code plugin for Agent Relay - MCP integration, inbox polling hooks, worker agents, and multi-agent coordination skills",
-      "format": "claude-plugin",
-      "subtype": "plugin",
-      "tags": [
-        "claude-code",
-        "plugin",
-        "multi-agent",
-        "relaycast",
-        "mcp",
-        "hooks"
-      ],
-      "files": [
-        "plugins/claude-relay-plugin/.claude-plugin/plugin.json",
-        "plugins/claude-relay-plugin/.mcp.json",
-        "plugins/claude-relay-plugin/hooks/hooks.json",
-        "plugins/claude-relay-plugin/hooks/stop-inbox.js",
-        "plugins/claude-relay-plugin/hooks/stop-inbox.ts",
-        "plugins/claude-relay-plugin/hooks/post-tool-inbox.sh",
-        "plugins/claude-relay-plugin/hooks/pre-compact.sh",
-        "plugins/claude-relay-plugin/hooks/subagent-bootstrap.sh",
-        "plugins/claude-relay-plugin/skills/relay-team/SKILL.md",
-        "plugins/claude-relay-plugin/skills/relay-fanout/SKILL.md",
-        "plugins/claude-relay-plugin/skills/relay-pipeline/SKILL.md",
-        "plugins/claude-relay-plugin/agents/relay-worker/agent.md",
-        "plugins/claude-relay-plugin/agents/relay-worker/config.json"
-      ]
-    },
-    {
       "name": "opencode-relay-plugin",
       "version": "0.1.0",
       "description": "OpenCode plugin for Agent Relay - native tools, idle polling hooks, worker spawning, and multi-agent orchestration",
@@ -898,12 +868,6 @@
           "version": "^1.0.0",
           "required": false,
           "reason": "Shadow agents for code review, auditing, and monitoring"
-        },
-        {
-          "packageId": "claude-relay-plugin",
-          "version": "^0.1.0",
-          "required": false,
-          "reason": "Claude Code native plugin"
         },
         {
           "packageId": "opencode-relay-plugin",

@@ -33,7 +33,7 @@ pip install agent-relay-sdk
 Use Agent Relay directly inside Claude Code — no SDK required. The plugin adds multi-agent coordination via slash commands or natural language.
 
 ```
-/plugin marketplace add Agentworkforce/relay
+/plugin marketplace add Agentworkforce/skills
 ```
 
 Once installed, coordinate agents with built-in skills:
@@ -51,7 +51,7 @@ Use relay fan-out to lint all packages in parallel
 Split the migration into three relay workers — one for the schema, one for the API, one for the frontend
 ```
 
-See the [plugin README](https://github.com/AgentWorkforce/relay/tree/main/plugins/claude-relay-plugin) for full details.
+See the [plugin README](https://github.com/AgentWorkforce/skills/tree/main/plugins/claude-relay-plugin) for full details.
 
 ## LLM / Machine-Readable Docs
 

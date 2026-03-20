@@ -262,6 +262,8 @@ export interface WorkflowStep {
   retries?: number;
   /** Maximum iterations for steps that may need to retry (e.g., fix-failures). */
   maxIterations?: number;
+  /** Explicit working directory for this step. */
+  cwd?: string;
 
   // ── Deterministic step fields ──────────────────────────────────────────────
   /** Shell command to execute (required for deterministic steps). */

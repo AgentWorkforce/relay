@@ -995,10 +995,10 @@ agents:
       expect(args).toEqual(['-p', 'Analyze']);
     });
 
-    it('should build opencode command with --prompt flag', () => {
+    it('should build opencode command with run subcommand', () => {
       const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand('opencode', 'Fix bug');
       expect(cmd).toBe('opencode');
-      expect(args).toEqual(['--prompt', 'Fix bug']);
+      expect(args).toEqual(['run', 'Fix bug']);
     });
 
     it('should build droid command with exec subcommand', () => {

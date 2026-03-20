@@ -76,6 +76,13 @@ type RegisterAgentWithRebindArgs = {
   forcedAgentType?: AgentType;
 };
 
+/** Return env var value, or undefined if missing / an unresolved ${…} template. */
+function resolveEnv(key: string): string | undefined {
+  const v = process.env[key];
+  if (!v || /^\$\{.+\}$/.test(v)) return undefined;
+  return v;
+}
+
 export function normalizeBaseUrl(baseUrl?: string): string {
   return (baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
 }
@@ -579,7 +586,7 @@ export async function startPatchedStdio(options: PatchedMcpServerOptions): Promi
 export function optionsFromEnv(): PatchedMcpServerOptions {
   return {
     apiKey: process.env.RELAY_API_KEY,
-    baseUrl: process.env.RELAY_BASE_URL,
+    baseUrl: resolveEnv('RELAY_BASE_URL'),
     agentToken: process.env.RELAY_AGENT_TOKEN,
     agentName: process.env.RELAY_AGENT_NAME ?? process.env.RELAY_CLAW_NAME,
     agentType: normalizeAgentType(process.env.RELAY_AGENT_TYPE),
