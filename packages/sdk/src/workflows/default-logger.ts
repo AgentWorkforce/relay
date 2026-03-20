@@ -18,7 +18,7 @@ export function createDefaultEventLogger(level: LogLevel = 'normal'): WorkflowEv
       // ── Run lifecycle ──
       case 'run:started':
         if (level !== 'quiet') {
-          console.log(chalk.cyan(`[workflow] run ${event.runId.slice(0, 8)}...`));
+          console.log(chalk.cyan(`[workflow] run ${event.runId}`));
         }
         break;
 
