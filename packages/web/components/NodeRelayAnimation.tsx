@@ -488,15 +488,15 @@ export function NodeRelayAnimation() {
           const trailSize = Math.max(0.5, 2.5 - tp.age * 0.03);
           ctx.beginPath();
           ctx.arc(tp.x, tp.y, trailSize, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(45, 79, 62, ${trailAlpha})`;
+          ctx.fillStyle = `rgba(74, 144, 194, ${trailAlpha})`;
           ctx.fill();
         }
 
         if (msg.t <= 1) {
           const grad = ctx.createRadialGradient(px, py, 0, px, py, 14);
-          grad.addColorStop(0, 'rgba(45, 79, 62, 0.45)');
-          grad.addColorStop(0.4, 'rgba(45, 79, 62, 0.12)');
-          grad.addColorStop(1, 'rgba(45, 79, 62, 0)');
+          grad.addColorStop(0, 'rgba(74, 144, 194, 0.5)');
+          grad.addColorStop(0.4, 'rgba(74, 144, 194, 0.15)');
+          grad.addColorStop(1, 'rgba(74, 144, 194, 0)');
           ctx.beginPath();
           ctx.arc(px, py, 14, 0, Math.PI * 2);
           ctx.fillStyle = grad;
@@ -504,7 +504,7 @@ export function NodeRelayAnimation() {
 
           ctx.beginPath();
           ctx.arc(px, py, 3.5, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(45, 79, 62, 0.75)';
+          ctx.fillStyle = 'rgba(74, 144, 194, 0.8)';
           ctx.fill();
 
           ctx.beginPath();
