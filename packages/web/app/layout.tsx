@@ -2,8 +2,6 @@ import type { Metadata } from 'next';
 import { Geist_Mono, Inter, Sora } from 'next/font/google';
 import type { ReactNode } from 'react';
 
-import { ThemeProvider } from '../components/ThemeProvider';
-import { ThemeToggle } from '../components/ThemeToggle';
 import './globals.css';
 
 const inter = Inter({
@@ -59,10 +57,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" data-theme="carolina" suppressHydrationWarning>
       <body className={`${inter.variable} ${geistMono.variable} ${sora.variable}`}>
-        <ThemeProvider>
-          {children}
-          <ThemeToggle />
-        </ThemeProvider>
+        {children}
       </body>
     </html>
   );
