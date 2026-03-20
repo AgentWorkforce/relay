@@ -393,9 +393,6 @@ export class WorkflowBuilder {
 
     // Auto-detect RESUME_RUN_ID env var for resuming failed runs
     const resumeRunId = process.env.RESUME_RUN_ID;
-    if (resumeRunId) {
-      return runner.resume(resumeRunId, options.vars);
-    }
 
     const startFrom = this._startFrom ?? options.startFrom ?? process.env.START_FROM;
     const previousRunId = this._previousRunId ?? options.previousRunId ?? process.env.PREVIOUS_RUN_ID;
@@ -404,16 +401,23 @@ export class WorkflowBuilder {
       : undefined;
 
     // If listr renderer requested, wire it up and run concurrently
+    // Must be set up BEFORE the resume check so resume runs also get event output
     if (options.renderer === 'listr') {
       const { createWorkflowRenderer } = await import('./listr-renderer.js');
       const renderer = createWorkflowRenderer();
       runner.on(renderer.onEvent);
-      const [result] = await Promise.all([
-        runner.execute(config, options.workflow, options.vars, executeOptions),
-        renderer.start(),
-      ]);
+
+      const runPromise = resumeRunId
+        ? runner.resume(resumeRunId, options.vars)
+        : runner.execute(config, options.workflow, options.vars, executeOptions);
+
+      const [result] = await Promise.all([runPromise, renderer.start()]);
       renderer.unmount();
       return result;
+    }
+
+    if (resumeRunId) {
+      return runner.resume(resumeRunId, options.vars);
     }
 
     return runner.execute(config, options.workflow, options.vars, executeOptions);
