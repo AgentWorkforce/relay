@@ -4178,18 +4178,23 @@ async fn handle_sdk_frame(
                 )
                 .await
             {
-                // Spawn failed — remove the dedup entry so WS retries are not
-                // blocked for the 5-minute dedup window.
-                remove_local_spawn_control_dedup(
-                    dedup,
-                    default_workspace_id.or_else(|| {
-                        workspaces
-                            .first()
-                            .map(|workspace| workspace.workspace_id.as_str())
-                    }),
-                    &name,
-                    worker_relay_key.as_deref(),
-                );
+                let err_msg = format!("{err:#}");
+                // Only clean up dedup if this was a genuinely new spawn attempt
+                // that failed, not a duplicate request for an already-running
+                // agent.  When the error is "already exists" the dedup entry
+                // belongs to the prior successful spawn and must be preserved.
+                if !err_msg.contains("already exists") {
+                    remove_local_spawn_control_dedup(
+                        dedup,
+                        default_workspace_id.or_else(|| {
+                            workspaces
+                                .first()
+                                .map(|workspace| workspace.workspace_id.as_str())
+                        }),
+                        &name,
+                        worker_relay_key.as_deref(),
+                    );
+                }
                 return Err(err);
             }
 
