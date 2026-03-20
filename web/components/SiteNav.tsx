@@ -42,23 +42,25 @@ export function SiteNav() {
   return (
     <header className={s.navBar}>
     <nav className={s.nav}>
-      <Link href="/" className={s.logo}>
-        <LogoIcon />
-        <LogoWordmark />
-      </Link>
+      <div className={s.navLeft}>
+        <Link href="/" className={s.logo}>
+          <LogoIcon />
+          <LogoWordmark />
+        </Link>
 
-      <ul className={s.links}>
-        <li>
-          <Link href="/docs" className={s.link}>
-            Docs
-          </Link>
-        </li>
-        <li>
-          <Link href="/blog" className={s.link}>
-            Blog
-          </Link>
-        </li>
-      </ul>
+        <ul className={s.links}>
+          <li>
+            <Link href="/docs" className={s.link}>
+              Docs
+            </Link>
+          </li>
+          <li>
+            <Link href="/blog" className={s.link}>
+              Blog
+            </Link>
+          </li>
+        </ul>
+      </div>
 
       <GitHubStarsBadge />
     </nav>

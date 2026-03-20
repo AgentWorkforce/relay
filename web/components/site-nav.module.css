@@ -13,6 +13,12 @@
   padding: 14px 40px;
 }
 
+.navLeft {
+  display: flex;
+  align-items: center;
+  gap: 36px;
+}
+
 .logo {
   color: var(--primary);
   text-decoration: none;
@@ -36,7 +42,7 @@
 .links {
   display: flex;
   align-items: center;
-  gap: 40px;
+  gap: 28px;
   list-style: none;
 }
 
