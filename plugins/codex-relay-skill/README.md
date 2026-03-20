@@ -46,7 +46,31 @@ env = { RELAY_API_KEY = "", RELAY_BASE_URL = "https://api.relaycast.dev", RELAY_
 
 Set `RELAY_API_KEY` to an existing workspace key when you want Codex to join a known Relaycast workspace automatically.
 
-### 3. Install the relay worker agent
+### 3. Enable hooks
+
+The lifecycle hooks (auto-connect, inbox polling, stop guard) require the Codex hooks engine to be enabled.
+
+Add to `.codex/config.toml`:
+
+```toml
+features.codex_hooks = true
+```
+
+Then copy the hooks config:
+
+```bash
+cp .agents/skills/agent-relay/hooks/hooks.json .codex/hooks.json
+```
+
+If the skill is installed somewhere other than `.agents/skills/agent-relay/`, update the command paths in `.codex/hooks.json` to match the actual location:
+
+```json
+"command": "bash <path-to-skill>/hooks/session-start.sh"
+```
+
+Without this step, the Relaycast MCP tools still work but auto-connect, inbox injection, and the stop guard won't fire automatically.
+
+### 4. Install the relay worker agent
 
 If you want a reusable Codex sub-agent for relay work, copy the worker template into `.codex/agents/`:
 
@@ -115,12 +139,18 @@ codex-relay-skill/
   codex-config/
     config.toml              # Template MCP server config for .codex/config.toml
     relay-worker.toml        # Template custom worker agent for .codex/agents/
+  hooks/
+    hooks.json               # Hook definitions (SessionStart, Stop, UserPromptSubmit)
+    session-start.sh         # Auto-connect and state persistence
+    stop-inbox.sh            # Block exit while unread messages exist
+    prompt-inbox.sh          # Rate-limited inbox polling and context injection
 ```
 
 Installed layout in a project typically looks like:
 
 ```text
 .agents/skills/agent-relay/   # Skill directory Codex scans
-.codex/config.toml            # Runtime Relaycast MCP server configuration
+.codex/config.toml            # Runtime Relaycast MCP server + features.codex_hooks
+.codex/hooks.json             # Hook wiring (copied from skill)
 .codex/agents/relay-worker.toml
 ```

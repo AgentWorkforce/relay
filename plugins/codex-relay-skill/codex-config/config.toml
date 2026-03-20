@@ -1,5 +1,8 @@
 # Add this block to .codex/config.toml or ~/.codex/config.toml.
 
+# Enable the hooks engine (required for auto-connect, inbox polling, stop guard)
+features.codex_hooks = true
+
 [mcp_servers.relaycast]
 command = "npx"
 args = ["-y", "@relaycast/mcp"]
