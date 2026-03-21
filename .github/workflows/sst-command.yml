@@ -11,7 +11,7 @@ on:
           - refresh
           - remove
           - deploy
-          - repair
+          - state repair
       stage:
         description: 'Stage name (e.g. production, staging)'
         required: true
