@@ -14,11 +14,8 @@ The docs exist in two locations that **must stay in sync**:
    - `<Warning>` → `> **Warning:**`
    - `<Tabs>` / `<Tab>` → use headers or separate code blocks
    - Frontmatter (`---` YAML block) → remove from `.md` files
-3. **File mapping:**
-   - `web/content/docs/introduction.mdx` ↔ `docs/introduction.md`
-   - `web/content/docs/quickstart.mdx` ↔ `docs/quickstart.md`
-   - `web/content/docs/reference/sdk.mdx` ↔ `docs/reference/sdk.md`
-   - `web/content/docs/reference/sdk-py.mdx` ↔ `docs/reference/sdk-py.md`
-   - `web/content/docs/reference/openclaw.mdx` ↔ `docs/reference/openclaw.md`
+3. **File mapping** (flat structure, no subdirectories):
+   - `web/content/docs/{slug}.mdx` ↔ `docs/{slug}.md`
+   - e.g. `web/content/docs/reference-sdk.mdx` ↔ `docs/reference-sdk.md`
 4. If you add a new `.mdx` doc, create the corresponding `.md` mirror.
 5. If you update default values, API signatures, or examples — update **both** files.
