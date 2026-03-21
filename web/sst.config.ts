@@ -3,7 +3,7 @@ export default $config({
     return {
       name: 'relay-web',
       home: 'aws',
-      removal: input?.stage === 'production' ? 'retain' : 'remove',
+      removal: 'remove',
     };
   },
   run() {
