@@ -1,13 +1,14 @@
 # Documentation Sync Rule
 
-The docs exist in two formats that **must stay in sync**:
+The docs exist in three locations that **must stay in sync**:
 
 - `docs/*.mdx` — Mintlify source (rendered at docs.agent-relay.com)
+- `web/content/docs/*.mdx` — Copy used by the Next.js web app (must match `docs/*.mdx`)
 - `docs/markdown/*.md` — Plain markdown mirror (for LLMs, CLI users, GitHub readers)
 
 ## Rules
 
-1. **Any change to a `.mdx` file must be mirrored to the corresponding `.md` file**, and vice versa.
+1. **Any change to a `.mdx` file must be mirrored to the corresponding `.md` file and `web/content/docs/` copy**, and vice versa.
 2. The markdown files should have the same content but with MDX components converted to plain markdown:
    - `<CodeGroup>` / `</CodeGroup>` → remove (just keep the code blocks)
    - `<Note>` → `> **Note:**`

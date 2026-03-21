@@ -7,25 +7,7 @@ import matter from 'gray-matter';
 const moduleFilename = fileURLToPath(import.meta.url);
 const moduleDirname = path.dirname(moduleFilename);
 
-function resolveDocsDir(): string {
-  const candidates = [
-    path.resolve(process.cwd(), 'docs'),
-    path.resolve(process.cwd(), '../docs'),
-    path.resolve(process.cwd(), '../../docs'),
-    path.resolve(moduleDirname, '../../docs'),
-    path.resolve(moduleDirname, '../../../docs'),
-  ];
-
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  throw new Error(`Unable to locate docs directory. Checked: ${candidates.join(', ')}`);
-}
-
-const DOCS_DIR = resolveDocsDir();
+const DOCS_DIR = path.resolve(moduleDirname, '../content/docs');
 
 export interface DocFrontmatter {
   title: string;
