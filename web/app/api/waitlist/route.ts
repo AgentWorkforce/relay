@@ -6,8 +6,13 @@ import { Resource } from 'sst';
 const MAX_EMAIL_LENGTH = 320;
 const LOCAL_PART_CHARS = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+$/;
 const DOMAIN_CHARS = /^[a-z0-9.-]+$/;
+type WaitlistResource = typeof Resource & { Waitlist: { name: string } };
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+
+function getWaitlistTableName(): string {
+  return (Resource as WaitlistResource).Waitlist.name;
+}
 
 function hasSingleAtSign(email: string): boolean {
   const atIndex = email.indexOf('@');
@@ -50,7 +55,7 @@ export async function POST(request: Request) {
 
     await client.send(
       new PutCommand({
-        TableName: Resource.Waitlist.name,
+        TableName: getWaitlistTableName(),
         Item: {
           email,
           joinedAt: new Date().toISOString(),
@@ -72,7 +77,7 @@ export async function GET() {
   try {
     const result = await client.send(
       new ScanCommand({
-        TableName: Resource.Waitlist.name,
+        TableName: getWaitlistTableName(),
         Select: 'COUNT',
       })
     );
