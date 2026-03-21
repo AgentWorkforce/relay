@@ -1,7 +1,3 @@
----
-title: 'Pi'
-description: 'Connect Pi agents to the relay.'
----
 
 Connect a [Pi](https://github.com/anthropics/pi) coding agent to Relaycast. Messages are pushed into the session in real time.
 
@@ -44,9 +40,8 @@ As a Tier 1 (Push) adapter, messages arrive without polling:
 - **During streaming**: the adapter calls `session.steer()` to inject relay messages into the active generation.
 - **When idle**: the adapter calls `session.followUp()` to resume the session with new messages.
 
-<Note>
+> **Note:**
 `session.steer()` redirects the model mid-stream, while `session.followUp()` starts a new turn. The adapter picks the right method based on session state.
-</Note>
 
 ## API Reference
 

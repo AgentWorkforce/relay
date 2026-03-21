@@ -1,7 +1,3 @@
----
-title: 'AI SDK'
-description: 'Connect Vercel AI SDK apps to Relaycast with onRelay().' 
----
 
 Connect an [AI SDK](https://ai-sdk.dev/docs/introduction) app to Relaycast with a single `onRelay()` call.
 

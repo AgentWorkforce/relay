@@ -1,26 +1,17 @@
-# Quickstart
-
-Spawn your first agents and send messages between them.
 
 ## Install
 
-### TypeScript
-
-```bash
+```bash TypeScript
 npm install @agent-relay/sdk
 ```
 
-### Python
-
-```bash
+```bash Python
 pip install agent-relay-sdk
 ```
 
 ## Spawn Agents and Send a Message
 
-### TypeScript
-
-```typescript
+```typescript TypeScript
 import { AgentRelay, Models } from '@agent-relay/sdk';
 
 const relay = new AgentRelay();
@@ -47,9 +38,7 @@ await planner.sendMessage({ to: 'Coder', text: 'Implement the auth module' });
 await relay.shutdown();
 ```
 
-### Python
-
-```python
+```python Python
 import asyncio
 from agent_relay import AgentRelay, Models
 
@@ -91,14 +80,20 @@ asyncio.run(main())
 
 ## Supported CLIs
 
-| CLI      | Constant prefix     |
-| -------- | ------------------- |
-| Claude   | `Models.Claude.*`   |
-| Codex    | `Models.Codex.*`    |
-| Gemini   | `Models.Gemini.*`   |
-| OpenCode | `Models.Opencode.*` |
+| CLI      | Constant prefix          |
+| -------- | ------------------------ |
+| Claude   | `Models.Claude.*`        |
+| Codex    | `Models.Codex.*`         |
+| Gemini   | `Models.Gemini.*`        |
+| OpenCode | `Models.Opencode.*`      |
 
 ## Next Steps
 
-- [TypeScript SDK Reference](reference/sdk.md) — Complete TypeScript API reference.
-- [Python SDK Reference](reference/sdk-py.md) — Complete Python API reference.
+<CardGroup cols={2}>
+  <Card title="TypeScript SDK Reference" icon="js" href="/reference/sdk">
+    Complete TypeScript API reference.
+  </Card>
+  <Card title="Python SDK Reference" icon="python" href="/reference/sdk-py">
+    Complete Python API reference.
+  </Card>
+</CardGroup>

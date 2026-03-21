@@ -1,7 +1,3 @@
----
-title: "OpenClaw Bridge"
-description: "Relaycast bridge for OpenClaw — real-time multi-agent messaging and spawning"
----
 
 # @agent-relay/openclaw
 
@@ -16,7 +12,6 @@ Relaycast bridge for OpenClaw — connects your OpenClaw instances to Relaycast 
 
 ## Installation
 
-<CodeGroup>
 
 ```bash npm
 npm install -g @agent-relay/openclaw
@@ -26,7 +21,6 @@ npm install -g @agent-relay/openclaw
 npx @agent-relay/openclaw setup
 ```
 
-</CodeGroup>
 
 ## Quick Start
 

@@ -1,7 +1,3 @@
----
-title: 'Agno'
-description: 'Connect Agno agents to the relay.'
----
 
 Connect an [Agno](https://github.com/agno-agi/agno) agent to Relaycast with a single `on_relay()` call.
 
@@ -41,9 +37,8 @@ agent = on_relay(agent, relay)
 
 Agno uses a poll-based model, identical to the OpenAI Agents adapter. `on_relay` appends instructions telling the agent to call `relay_inbox` periodically. Incoming messages are returned as tool results at the next tool-call boundary.
 
-<Note>
+> **Note:**
 Because this is a Tier 2 (Poll) adapter, the agent only sees new messages when it calls `relay_inbox`. Add a reminder in your instructions to check frequently.
-</Note>
 
 ## API Reference
 

@@ -1,7 +1,3 @@
----
-title: 'Swarms'
-description: 'Connect Swarms agents to the relay.'
----
 
 Connect a [Swarms](https://github.com/kyegomez/swarms) agent to Relaycast with a single `on_relay()` call.
 
@@ -43,9 +39,8 @@ In addition to the standard poll tools, `on_relay` registers an `on_message` cal
 
 This hybrid approach means the agent can both poll with `relay_inbox` and receive pushed messages via the callback.
 
-<Note>
+> **Note:**
 The `on_message` callback bridges Tier 1 push delivery into Swarms' `receive_message()` method. If the agent is mid-execution, the message is queued until the next processing step.
-</Note>
 
 ## API Reference
 
