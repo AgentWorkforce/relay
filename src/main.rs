@@ -15,10 +15,11 @@ mod swarm_tui;
 mod wrap;
 
 use helpers::{
-    detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
-    detect_gemini_trust_prompt, detect_gemini_untrusted_banner, floor_char_boundary,
-    is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode, normalize_cli_name,
-    parse_cli_command, strip_ansi, TerminalQueryParser,
+    detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
+    detect_gemini_action_required, detect_gemini_trust_prompt, detect_gemini_untrusted_banner,
+    detect_opencode_permission_prompt, floor_char_boundary, is_auto_suggestion,
+    is_bypass_selection_menu, is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi,
+    TerminalQueryParser,
 };
 use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiRequest};
 use routing::display_target_for_dashboard;
@@ -558,6 +559,13 @@ struct SendInputPayload {
 }
 
 #[derive(Debug, Deserialize)]
+struct ResizePtyPayload {
+    name: String,
+    rows: u16,
+    cols: u16,
+}
+
+#[derive(Debug, Deserialize)]
 struct SetModelPayload {
     name: String,
     model: String,
@@ -801,6 +809,8 @@ impl WorkerRegistry {
                         &effective_args,
                         Path::new(cwd),
                         worker_relay_api_key.as_deref(),
+                        self.env_value("RELAY_WORKSPACES_JSON"),
+                        self.env_value("RELAY_DEFAULT_WORKSPACE"),
                     )
                     .await?
                 };
@@ -860,6 +870,8 @@ impl WorkerRegistry {
                         &spec.args,
                         Path::new(spec.cwd.as_deref().unwrap_or(".")),
                         worker_relay_api_key.as_deref(),
+                        self.env_value("RELAY_WORKSPACES_JSON"),
+                        self.env_value("RELAY_DEFAULT_WORKSPACE"),
                     )
                     .await?
                 };
@@ -2540,13 +2552,51 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 let spec_for_state = spec.clone();
                                 let effective_task = normalize_initial_task(task.clone());
 
-                                let worker_relay_key = relaycast_ws_spawn_token(&ws_value);
-                                if worker_relay_key.is_none() {
-                                    tracing::debug!(
-                                        worker = %name,
-                                        "relaycast WS spawn request did not include agent token; spawning without pre-registration"
-                                    );
-                                }
+                                // Pre-register agent token. Claude doesn't need this — it
+                                // bakes the API key into --mcp-config JSON and self-registers.
+                                // Non-Claude CLIs need the token injected into their CLI args
+                                // at spawn time, so we do a quick (3s) registration attempt.
+                                let cli_command = parse_cli_command(&cli).map(|(cmd, _)| cmd).unwrap_or_else(|_| cli.clone());
+                                let cli_name_lower = normalize_cli_name(&cli_command).to_lowercase();
+                                let is_claude = cli_name_lower == "claude" || cli_name_lower.starts_with("claude:");
+                                let worker_relay_key = {
+                                    let ws_token = relaycast_ws_spawn_token(&ws_value);
+                                    if ws_token.is_some() {
+                                        ws_token
+                                    } else if is_claude {
+                                        // Claude self-registers via its MCP server — skip blocking call
+                                        None
+                                    } else {
+                                        const REG_TIMEOUT: Duration = Duration::from_secs(3);
+                                        match tokio::time::timeout(
+                                            REG_TIMEOUT,
+                                            workspace_http.register_agent_token(&name, Some(cli.as_str())),
+                                        ).await {
+                                            Ok(Ok(token)) => {
+                                                tracing::info!(
+                                                    worker = %name,
+                                                    "pre-registered agent via broker for WS spawn"
+                                                );
+                                                Some(token)
+                                            }
+                                            Ok(Err(error)) => {
+                                                tracing::warn!(
+                                                    worker = %name,
+                                                    error = %error,
+                                                    "WS spawn pre-registration failed; agent will self-register"
+                                                );
+                                                None
+                                            }
+                                            Err(_) => {
+                                                tracing::warn!(
+                                                    worker = %name,
+                                                    "WS spawn pre-registration timed out (3s); agent will self-register"
+                                                );
+                                                None
+                                            }
+                                        }
+                                    }
+                                };
 
                                 match workers.spawn(
                                     spec,
@@ -2695,7 +2745,38 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     let task_opt = Some(task).filter(|v| !v.trim().is_empty());
                                     let effective_task = normalize_initial_task(task_opt.clone());
 
-                                    let worker_relay_key = relaycast_ws_spawn_token(&ws_value);
+                                    // Pre-register (same logic as primary WS spawn path).
+                                    let cli_command = parse_cli_command(&cli).map(|(cmd, _)| cmd).unwrap_or_else(|_| cli.clone());
+                                    let cli_name_lower = normalize_cli_name(&cli_command).to_lowercase();
+                                    let is_claude = cli_name_lower == "claude" || cli_name_lower.starts_with("claude:");
+                                    let worker_relay_key = {
+                                        let ws_token = relaycast_ws_spawn_token(&ws_value);
+                                        if ws_token.is_some() {
+                                            ws_token
+                                        } else if is_claude {
+                                            None
+                                        } else {
+                                            const REG_TIMEOUT: Duration = Duration::from_secs(3);
+                                            match tokio::time::timeout(
+                                                REG_TIMEOUT,
+                                                workspace_http.register_agent_token(&name, Some(cli.as_str())),
+                                            ).await {
+                                                Ok(Ok(token)) => Some(token),
+                                                Ok(Err(error)) => {
+                                                    tracing::warn!(
+                                                        worker = %name,
+                                                        error = %error,
+                                                        "WS spawn fallback pre-registration failed"
+                                                    );
+                                                    None
+                                                }
+                                                Err(_) => {
+                                                    tracing::warn!(worker = %name, "WS spawn fallback pre-registration timed out (3s)");
+                                                    None
+                                                }
+                                            }
+                                        }
+                                    };
 
                                     match workers.spawn(
                                         spec,
@@ -4072,7 +4153,21 @@ async fn handle_sdk_frame(
                 None
             };
 
-            workers
+            // Seed the dedup cache BEFORE spawning so that a Relaycast WS echo
+            // arriving while the spawn is in progress is correctly deduplicated.
+            // If spawn fails we remove the entry so retries are not blocked.
+            note_local_spawn_control_dedup(
+                dedup,
+                default_workspace_id.or_else(|| {
+                    workspaces
+                        .first()
+                        .map(|workspace| workspace.workspace_id.as_str())
+                }),
+                &name,
+                worker_relay_key.as_deref(),
+            );
+
+            if let Err(err) = workers
                 .spawn(
                     payload.agent.clone(),
                     None,
@@ -4081,7 +4176,27 @@ async fn handle_sdk_frame(
                     payload.skip_relay_prompt,
                     None,
                 )
-                .await?;
+                .await
+            {
+                let err_msg = format!("{err:#}");
+                // Only clean up dedup if this was a genuinely new spawn attempt
+                // that failed, not a duplicate request for an already-running
+                // agent.  When the error is "already exists" the dedup entry
+                // belongs to the prior successful spawn and must be preserved.
+                if !err_msg.contains("already exists") {
+                    remove_local_spawn_control_dedup(
+                        dedup,
+                        default_workspace_id.or_else(|| {
+                            workspaces
+                                .first()
+                                .map(|workspace| workspace.workspace_id.as_str())
+                        }),
+                        &name,
+                        worker_relay_key.as_deref(),
+                    );
+                }
+                return Err(err);
+            }
 
             // Subscribe the broker's WebSocket to any custom channels the
             // spawned agent needs so cloud-routed messages reach the broker.
@@ -4105,17 +4220,6 @@ async fn handle_sdk_frame(
                         .await;
                 }
             }
-
-            note_local_spawn_control_dedup(
-                dedup,
-                default_workspace_id.or_else(|| {
-                    workspaces
-                        .first()
-                        .map(|workspace| workspace.workspace_id.as_str())
-                }),
-                &name,
-                worker_relay_key.as_deref(),
-            );
             if let Some(task) = effective_task.clone() {
                 workers.initial_tasks.insert(name.clone(), task);
             }
@@ -4431,6 +4535,76 @@ async fn handle_sdk_frame(
                 json!({
                     "name": payload.name,
                     "bytes_written": bytes.len(),
+                }),
+            )
+            .await?;
+            Ok(false)
+        }
+        "resize_pty" => {
+            let payload: ResizePtyPayload = serde_json::from_value(frame.payload)
+                .context("resize_pty payload must contain `name`, `rows`, and `cols`")?;
+
+            if payload.rows == 0 || payload.cols == 0 {
+                send_error(
+                    out_tx,
+                    frame.request_id,
+                    "invalid_dimensions",
+                    "rows and cols must be >= 1".to_string(),
+                    false,
+                    None,
+                )
+                .await?;
+                return Ok(false);
+            }
+
+            let Some(handle) = workers.workers.get(&payload.name) else {
+                send_error(
+                    out_tx,
+                    frame.request_id,
+                    "agent_not_found",
+                    format!("unknown worker '{}'", payload.name),
+                    false,
+                    None,
+                )
+                .await?;
+                return Ok(false);
+            };
+
+            if handle.spec.runtime != AgentRuntime::Pty {
+                send_error(
+                    out_tx,
+                    frame.request_id,
+                    "unsupported_operation",
+                    format!(
+                        "resize_pty is only supported for PTY agents, '{}' is {:?}",
+                        payload.name, handle.spec.runtime
+                    ),
+                    false,
+                    None,
+                )
+                .await?;
+                return Ok(false);
+            }
+
+            workers
+                .send_to_worker(
+                    &payload.name,
+                    "resize_pty",
+                    None,
+                    json!({
+                        "rows": payload.rows,
+                        "cols": payload.cols,
+                    }),
+                )
+                .await?;
+
+            send_ok(
+                out_tx,
+                frame.request_id,
+                json!({
+                    "name": payload.name,
+                    "rows": payload.rows,
+                    "cols": payload.cols,
                 }),
             )
             .await?;
@@ -5517,6 +5691,26 @@ fn note_local_spawn_control_dedup(
     }
 }
 
+fn remove_local_spawn_control_dedup(
+    dedup: &mut DedupCache,
+    workspace_id: Option<&str>,
+    agent_name: &str,
+    relay_key: Option<&str>,
+) {
+    let Some(workspace_id) = workspace_id else {
+        return;
+    };
+    let agent_name = agent_name.trim();
+    if !agent_name.is_empty() {
+        let key = relaycast_spawn_control_dedup_key(workspace_id, agent_name);
+        dedup.remove(&key);
+    }
+    if let Some(relay_key) = relay_key.map(str::trim).filter(|value| !value.is_empty()) {
+        let key = relaycast_spawn_control_dedup_key(workspace_id, relay_key);
+        dedup.remove(&key);
+    }
+}
+
 fn is_unknown_worker_error_message(message: &str) -> bool {
     message.contains("unknown worker '")
 }
@@ -6253,8 +6447,8 @@ mod tests {
     use super::{
         build_agent_state_transition_event, build_thread_infos, channels_from_csv, continuity_dir,
         delivery_retry_interval, derive_ws_base_url_from_http, detect_bypass_permissions_prompt,
-        display_target_for_dashboard, drop_pending_for_worker, extract_mcp_message_ids,
-        http_api_event_emit_timeout, http_api_local_delivery_timeout,
+        detect_claude_trust_prompt, display_target_for_dashboard, drop_pending_for_worker,
+        extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
         http_api_relaycast_send_timeout, is_auto_suggestion, is_bypass_selection_menu,
         is_in_editor_mode, is_relaycast_self_control_target, is_unknown_worker_error_message,
         normalize_channel, normalize_initial_task, normalize_sender,
@@ -7263,6 +7457,53 @@ mod tests {
         let clean = strip_ansi(raw);
         let (has_ref, has_confirm) = detect_bypass_permissions_prompt(&clean);
         assert!(has_ref && has_confirm);
+    }
+
+    // ==================== detect_claude_trust_prompt tests ====================
+
+    #[test]
+    fn claude_trust_prompt_full_match() {
+        let output = "take a moment to review what's in this folder first.\n\
+                       Claude Code'll be able to read, edit, and execute files here.\n\
+                       Security guide\n\
+                       ❯ 1. Yes, I trust this folder\n\
+                         2. No, exit\n\
+                       Enter to confirm · Esc to cancel";
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
+        assert!(has_trust_ref);
+        assert!(has_confirmation);
+    }
+
+    #[test]
+    fn claude_trust_prompt_stripped_spaces() {
+        let output = "Yes,Itrustthisfolder\nNo,exit";
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
+        assert!(has_trust_ref);
+        assert!(has_confirmation);
+    }
+
+    #[test]
+    fn claude_trust_prompt_no_match_normal_output() {
+        let output = "I'll help you fix that bug. Let me read the file first.";
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
+        assert!(!has_trust_ref);
+        assert!(!has_confirmation);
+    }
+
+    #[test]
+    fn claude_trust_prompt_partial_no_exit() {
+        let output = "Yes, I trust this folder";
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
+        assert!(has_trust_ref);
+        assert!(!has_confirmation, "should not match without exit option");
+    }
+
+    #[test]
+    fn claude_trust_prompt_with_ansi() {
+        let raw = "\x1b[1m❯ 1. Yes, I trust this folder\x1b[0m\n  2. No, exit";
+        let clean = strip_ansi(raw);
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(&clean);
+        assert!(has_trust_ref && has_confirmation);
     }
 
     // ==================== is_in_editor_mode tests ====================

@@ -29,6 +29,227 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.2.13] - 2026-03-20
+
+### Product Perspective
+#### User-Impacting Fixes
+- Ignore non-zero exit codes for opencode non-interactive agents (#602) (#602)
+
+### Technical Perspective
+#### Releases
+- v3.2.13
+
+---
+
+## [3.2.12] - 2026-03-20
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add Codex relay skill for sub-agent communication (#595)** (#595)
+
+### Technical Perspective
+#### Releases
+- v3.2.12
+
+---
+
+## [3.2.11] - 2026-03-20
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add workflow defaults abstraction (#599)** (#599)
+
+#### User-Impacting Fixes
+- Detect Codex boot marker format in PTY startup gate (#600) (#600)
+- Consolidate CLI path resolution (#598) (#598)
+- Reduce WS spawn pre-registration timeout from 15s to 3s (#597) (#597)
+
+### Technical Perspective
+#### Releases
+- v3.2.11
+
+---
+
+## [3.2.10] - 2026-03-20
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Workflow to polish CLI output with listr2 + chalk (#585)** (#585)
+- **CLI session collectors, step-level cwd, and run summary table (#592)** (#592)
+
+#### User-Impacting Fixes
+- Auto-build local sdk workflows runtime (#588) (#588)
+- MCP tools unavailable for agents spawned via agent_add (#591) (#591)
+
+### Technical Perspective
+#### Releases
+- v3.2.10
+
+---
+
+## [3.2.9] - 2026-03-19
+
+### Technical Perspective
+#### Releases
+- v3.2.9
+
+---
+
+## [3.2.8] - 2026-03-18
+
+### Product Perspective
+#### User-Impacting Fixes
+- Detect claude CLI with inline args for MCP injection (#584) (#584)
+
+### Technical Perspective
+#### Releases
+- v3.2.8
+
+---
+
+## [3.2.7] - 2026-03-18
+
+### Product Perspective
+#### User-Impacting Fixes
+- Forward RELAY_WORKSPACES_JSON and RELAY_DEFAULT_WORKSPACE to spawned agent MCP config (#583) (#583)
+
+### Technical Perspective
+#### Releases
+- v3.2.7
+
+---
+
+## [3.2.6] - 2026-03-17
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add reasoning effort metadata to model registry (#579)** (#579)
+- **Add resize_pty protocol message for remote PTY resize**
+
+#### User-Impacting Fixes
+- Ensure spawned Claude agents get proper MCP config (#581) (#581)
+- Address PR review feedback for resize_pty
+
+### Technical Perspective
+#### Releases
+- v3.2.6
+
+---
+
+## [3.2.5] - 2026-03-17
+
+### Technical Perspective
+#### Releases
+- v3.2.5
+
+---
+
+## [3.2.4] - 2026-03-17
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **StartFrom + deterministic/worktree step parity (#574)** (#574)
+- **A2A protocol transport layer — Python (89 tests ✅) + TypeScript**
+- **Add OpenClaw orchestrator skill for headless multi-agent sessions**
+- **Add TS adapters for OpenAI Agents, LangGraph, Google ADK, CrewAI + review fixes**
+- **Add Pi RPC adapter for Python SDK + verify TS Pi adapter exports**
+- **Add Communicate Mode SDK (on_relay) for Python and TypeScript**
+
+#### User-Impacting Fixes
+- Address latest Devin review findings
+- Move framework adapters from dependencies to optional peerDependencies
+- Update TS test mock servers to match actual Relaycast API paths
+- Address remaining Devin review findings
+- Exclude all test files from SDK tsconfig.json too
+- Exclude all test files from SDK build config
+- Address Devin review findings on Communicate SDK
+- Address Barry review feedback on Communicate SDK
+- Address Will + Devin review feedback on Communicate SDK
+- Address PR #565 review — remove onRelay auto-detect, fix ReDoS regex (#565)
+- RegisterOrRotate for 409, ws.close timeout, add @sinclair/typebox dep for Pi adapter
+- Align Python SDK transport with real Relaycast API surface
+- Address Devin review findings
+- Exclude vitest test files from SDK build config
+- Add @sinclair/typebox to root dependencies for global install
+- Address PR #565 review feedback (#565)
+- Communicate mode spec compliance — adapters, tests, infra
+- Critical spec compliance issues from deep review
+- Spec compliance — ping/pong, auto-detect module matching
+- Add per-adapter subpath exports and withRelay alias
+- Sync package-lock.json with package.json
+
+### Technical Perspective
+#### Performance & Reliability
+- Add 13 e2e tests for all TS + Python adapters against live Relaycast
+
+#### Dependencies & Tooling
+- Hide communicate pages from public docs until tested
+- Sync package-lock.json after config version bump
+
+#### Releases
+- v3.2.4
+
+---
+
+## [3.2.3] - 2026-03-15
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add HTTP transport mode; route all CLI commands through SDK**
+
+#### User-Impacting Fixes
+- Use correct broker init subcommand and --api-port flag (#569)
+- Use broker binary path instead of process.argv[1] for auto-start (#569)
+- Add RELAY_SKIP_BOOTSTRAP to Codex, Opencode, and Gemini/Droid config paths
+- Auto-accept droid/opencode permission prompts with --cwd
+- Set RELAY_SKIP_BOOTSTRAP when agent token is pre-registered (#85)
+- Auto-accept droid/opencode permission prompts with --cwd
+- Address review feedback on HTTP client and listing commands
+- Auto-accept Claude Code folder trust prompt for spawned agents
+
+### Technical Perspective
+#### Performance & Reliability
+- Add tests for droid/opencode auto-accept permission detection
+- Add tests for droid/opencode auto-accept permission detection
+
+#### Releases
+- v3.2.3
+
+---
+
+## [3.2.2] - 2026-03-14
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Package plugins as proper platform formats and PRPM collections**
+- **Implement CLI native plugins for OpenCode, Claude Code, and Gemini CLI**
+- **Add deterministic step support to WorkflowBuilder**
+
+#### User-Impacting Fixes
+- Suppress codex update prompt in spawned workers
+- Remove relay.shutdown() that killed the running broker in status command
+- Add jq availability check in before-model-inject.sh
+- Make broker API port discovery injectable for testability
+- Status command spawns new broker instead of connecting to existing one
+- Address Devin review round 2 — error handling, state mutation order, message limit
+- Address Devin PR review comments
+- Address minor verification gaps across all 3 plugins
+- Idle verification loop handles single-fire agent_idle events
+- Idle verification loop mirrors runVerification double-occurrence guard
+- Non-lead agents in hub-spoke should use idle-as-complete
+- Address Devin review feedback on PR #566 (#566)
+- Use ref-counted Map for activeReviewers instead of Set
+- WorkflowBuilder drops preset field and reviewer double-booking
+
+### Technical Perspective
+#### Dependencies & Tooling
+- Update MCP tool name references to 3-level hierarchy (#564) (#564)
+
+#### Releases
+- v3.2.2
+
+---
+
 ## [3.2.1] - 2026-03-13
 
 ### Product Perspective

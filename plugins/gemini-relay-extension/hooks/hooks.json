@@ -1,0 +1,72 @@
+{
+  "hooks": {
+    "AfterTool": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh ${extensionPath}/hooks/after-tool-inbox.sh",
+            "name": "Relay Inbox Poll",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "AfterAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh ${extensionPath}/hooks/after-agent-inbox.sh",
+            "name": "Relay Stop Guard"
+          }
+        ]
+      }
+    ],
+    "BeforeModel": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh ${extensionPath}/hooks/before-model-inject.sh",
+            "name": "Relay Message Injection"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh ${extensionPath}/hooks/session-start.sh",
+            "name": "Relay Auto-Connect"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh ${extensionPath}/hooks/session-end.sh",
+            "name": "Relay Cleanup"
+          }
+        ]
+      }
+    ],
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh ${extensionPath}/hooks/subagent-bootstrap.sh",
+            "name": "Relay Worker Bootstrap"
+          }
+        ]
+      }
+    ]
+  }
+}

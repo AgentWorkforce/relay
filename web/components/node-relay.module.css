@@ -1,0 +1,147 @@
+.container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 420px;
+  background: transparent;
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* ══════════════════════════════════════
+   Terminal Card — Light mode (default)
+   ══════════════════════════════════════ */
+
+.card {
+  position: absolute;
+  z-index: 1;
+  width: 160px;
+  height: 88px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(45, 79, 62, 0.10);
+  border-radius: 8px;
+  overflow: hidden;
+  transition:
+    box-shadow 0.4s ease,
+    opacity 0.2s ease-out,
+    transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
+    border-color 0.3s ease,
+    background 0.3s ease;
+}
+
+.cardActive {
+  border-color: rgba(45, 79, 62, 0.22);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  background: rgba(245, 243, 238, 0.95);
+  border-bottom: 1px solid rgba(45, 79, 62, 0.08);
+  gap: 4px;
+  transition: background 0.3s ease, border-color 0.3s ease;
+}
+
+.cardIdentity { display: flex; align-items: center; gap: 5px; }
+
+.providerLogo { width: 12px; height: 12px; flex-shrink: 0; }
+
+.cardName {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.62rem; font-weight: 600; letter-spacing: 0.02em;
+  color: #2D4F3E; white-space: nowrap;
+  transition: color 0.3s ease;
+}
+
+.cardModel {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.5rem; font-weight: 400; letter-spacing: 0.02em;
+  color: #8a907e; white-space: nowrap;
+  transition: color 0.3s ease;
+}
+
+.cardStatus {
+  display: flex; align-items: flex-start; gap: 5px;
+  padding: 8px 8px 10px; min-height: 36px;
+}
+
+.statusDot {
+  width: 4px; height: 4px; margin-top: 3px;
+  border-radius: 50%; background: #3a8c62; flex-shrink: 0;
+  animation: statusPulse 1s ease-in-out infinite;
+  box-shadow: 0 0 4px rgba(58, 140, 98, 0.4);
+}
+
+@keyframes statusPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.statusText {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.55rem; font-weight: 400; letter-spacing: 0.01em;
+  line-height: 1.4; color: #8a907e;
+  overflow: hidden; text-overflow: ellipsis;
+  transition: color 0.3s ease;
+}
+
+.statusActive { color: #2D4F3E; }
+
+/* ══════════════════════════════════════
+   Terminal Card — Dark mode
+   ══════════════════════════════════════ */
+
+:global([data-theme='dark']) .card {
+  background: #1a1e1c;
+  backdrop-filter: none;
+  border-color: #2a3130;
+}
+
+:global([data-theme='dark']) .cardActive {
+  border-color: #3a5548;
+}
+
+:global([data-theme='dark']) .cardHeader {
+  background: #141816;
+  border-bottom-color: #2a3130;
+}
+
+:global([data-theme='dark']) .cardName { color: #c8d0ca; }
+:global([data-theme='dark']) .cardModel { color: #5a6b62; }
+:global([data-theme='dark']) .statusText { color: #5a6b62; }
+:global([data-theme='dark']) .statusActive { color: #6fcfa0; }
+
+:global([data-theme='dark']) .statusDot {
+  background: #6fcfa0;
+  box-shadow: 0 0 4px rgba(111, 207, 160, 0.4);
+}
+
+/* ── Responsive ── */
+
+@media (max-width: 1100px) {
+  .card { width: 140px; height: 78px; }
+  .cardName { font-size: 0.58rem; }
+  .cardModel { font-size: 0.46rem; }
+  .statusText { font-size: 0.5rem; }
+}
+
+@media (max-width: 900px) {
+  .container { min-height: 340px; }
+  .card { width: 110px; height: 62px; border-radius: 6px; }
+  .providerLogo { width: 10px; height: 10px; }
+  .cardName { font-size: 0.54rem; }
+  .cardModel { font-size: 0.42rem; }
+  .cardHeader { padding: 4px 6px; }
+  .cardStatus { padding: 5px 6px 7px; min-height: 28px; }
+  .statusText { font-size: 0.46rem; }
+  .statusDot { width: 3px; height: 3px; margin-top: 2px; }
+}

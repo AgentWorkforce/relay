@@ -4,18 +4,25 @@ import type { AgentRelayOptions } from '../relay.js';
 import type {
   AgentCli,
   AgentDefinition,
+  AgentPreset,
+  Barrier,
+  CoordinationConfig,
   DryRunReport,
   ErrorHandlingConfig,
   IdleNudgeConfig,
   RelayYamlConfig,
+  StateConfig,
   SwarmPattern,
+  TrajectoryConfig,
   VerificationCheck,
   WorkflowDefinition,
+  WorkflowExecuteOptions,
   WorkflowRunRow,
   WorkflowStep,
 } from './types.js';
 import { WorkflowRunner, type WorkflowEventListener, type VariableContext, type StepExecutor } from './runner.js';
 import { formatDryRunReport } from './dry-run-format.js';
+import { createDefaultEventLogger, type LogLevel } from './default-logger.js';
 
 // ── Option types for the builder API ────────────────────────────────────────
 
@@ -33,16 +40,47 @@ export interface AgentOptions {
   /** When false, the agent runs as a non-interactive subprocess (no PTY, no relay messaging).
    *  Default: true. */
   interactive?: boolean;
+  /** Agent preset: 'lead' (interactive PTY), 'worker' | 'reviewer' | 'analyst' (non-interactive subprocess). */
+  preset?: AgentPreset;
 }
 
-export interface StepOptions {
+/** Options for agent steps (default). */
+export interface AgentStepOptions {
   agent: string;
   task: string;
+  cwd?: string;
   dependsOn?: string[];
   verification?: VerificationCheck;
   timeoutMs?: number;
   retries?: number;
 }
+
+/** Options for deterministic (shell command) steps. */
+export interface DeterministicStepOptions {
+  type: 'deterministic';
+  command: string;
+  cwd?: string;
+  /** Capture stdout as step output for downstream steps. Default: true. */
+  captureOutput?: boolean;
+  /** Fail if command exit code is non-zero. Default: true. */
+  failOnError?: boolean;
+  dependsOn?: string[];
+  verification?: VerificationCheck;
+  timeoutMs?: number;
+}
+
+/** Options for worktree steps (create/checkout git worktrees). */
+export interface WorktreeStepOptions {
+  type: 'worktree';
+  branch: string;
+  baseBranch?: string;
+  path?: string;
+  createBranch?: boolean;
+  dependsOn?: string[];
+  timeoutMs?: number;
+}
+
+export type StepOptions = AgentStepOptions | DeterministicStepOptions | WorktreeStepOptions;
 
 export interface ErrorOptions {
   maxRetries?: number;
@@ -65,6 +103,14 @@ export interface WorkflowRunOptions {
   dryRun?: boolean;
   /** External step executor (e.g. Daytona sandbox backend). */
   executor?: StepExecutor;
+  /** Start from a specific step, skipping all predecessors. */
+  startFrom?: string;
+  /** Previous run ID whose cached outputs are used with startFrom. */
+  previousRunId?: string;
+  /** Console log verbosity: "verbose" | "normal" (default) | "quiet" | false (silent). */
+  logLevel?: LogLevel;
+  /** Renderer: "listr" for listr2 UI, "default" for console logger, false to disable. */
+  renderer?: 'listr' | 'default' | false;
 }
 
 // ── WorkflowBuilder ─────────────────────────────────────────────────────────
@@ -95,6 +141,11 @@ export class WorkflowBuilder {
   private _agents: AgentDefinition[] = [];
   private _steps: WorkflowStep[] = [];
   private _errorHandling?: ErrorHandlingConfig;
+  private _coordination?: CoordinationConfig;
+  private _state?: StateConfig;
+  private _trajectories?: TrajectoryConfig | false;
+  private _startFrom?: string;
+  private _previousRunId?: string;
 
   constructor(name: string) {
     this._name = name;
@@ -136,6 +187,36 @@ export class WorkflowBuilder {
     return this;
   }
 
+  /** Set workflow coordination settings (barriers, voting threshold, consensus strategy). */
+  coordination(config: CoordinationConfig): this {
+    this._coordination = config;
+    return this;
+  }
+
+  /** Configure shared workflow state backend settings. */
+  state(config: StateConfig): this {
+    this._state = config;
+    return this;
+  }
+
+  /** Configure trajectory recording, or pass `false` to disable it. */
+  trajectories(config: TrajectoryConfig | false): this {
+    this._trajectories = config;
+    return this;
+  }
+
+  /** Start execution from a specific step, skipping all predecessor steps. */
+  startFrom(stepName: string): this {
+    this._startFrom = stepName;
+    return this;
+  }
+
+  /** Set the previous run ID whose cached step outputs should be used with startFrom. */
+  previousRunId(id: string): this {
+    this._previousRunId = id;
+    return this;
+  }
+
   /** Add an agent definition. */
   agent(name: string, options: AgentOptions): this {
     const def: AgentDefinition = {
@@ -146,6 +227,7 @@ export class WorkflowBuilder {
     if (options.role !== undefined) def.role = options.role;
     if (options.task !== undefined) def.task = options.task;
     if (options.channels !== undefined) def.channels = options.channels;
+    if (options.preset !== undefined) def.preset = options.preset;
     if (options.interactive !== undefined) def.interactive = options.interactive;
 
     if (
@@ -168,18 +250,50 @@ export class WorkflowBuilder {
     return this;
   }
 
-  /** Add a workflow step. */
+  /** Add a workflow step (agent or deterministic). */
   step(name: string, options: StepOptions): this {
-    const step: WorkflowStep = {
-      name,
-      agent: options.agent,
-      task: options.task,
-    };
+    const step: WorkflowStep = { name };
 
-    if (options.dependsOn !== undefined) step.dependsOn = options.dependsOn;
-    if (options.verification !== undefined) step.verification = options.verification;
-    if (options.timeoutMs !== undefined) step.timeoutMs = options.timeoutMs;
-    if (options.retries !== undefined) step.retries = options.retries;
+    if ('type' in options && options.type === 'deterministic') {
+      if (!options.command) {
+        throw new Error('deterministic steps must have a command');
+      }
+      if ('agent' in options || 'task' in options) {
+        throw new Error('deterministic steps must not have agent or task');
+      }
+      step.type = 'deterministic';
+      step.command = options.command;
+      if (options.cwd !== undefined) step.cwd = options.cwd;
+      if (options.captureOutput !== undefined) step.captureOutput = options.captureOutput;
+      if (options.failOnError !== undefined) step.failOnError = options.failOnError;
+      if (options.dependsOn !== undefined) step.dependsOn = options.dependsOn;
+      if (options.verification !== undefined) step.verification = options.verification;
+      if (options.timeoutMs !== undefined) step.timeoutMs = options.timeoutMs;
+    } else if ('type' in options && options.type === 'worktree') {
+      if ('agent' in options || 'task' in options) {
+        throw new Error('worktree steps must not have agent or task');
+      }
+      step.type = 'worktree';
+      step.branch = options.branch;
+      if (options.baseBranch !== undefined) step.baseBranch = options.baseBranch;
+      if (options.path !== undefined) step.path = options.path;
+      if (options.createBranch !== undefined) step.createBranch = options.createBranch;
+      if (options.dependsOn !== undefined) step.dependsOn = options.dependsOn;
+      if (options.timeoutMs !== undefined) step.timeoutMs = options.timeoutMs;
+    } else {
+      // Agent step
+      const agentOpts = options as AgentStepOptions;
+      if (!agentOpts.agent || !agentOpts.task) {
+        throw new Error('Agent steps must have both agent and task');
+      }
+      step.agent = agentOpts.agent;
+      step.task = agentOpts.task;
+      if (agentOpts.cwd !== undefined) step.cwd = agentOpts.cwd;
+      if (agentOpts.dependsOn !== undefined) step.dependsOn = agentOpts.dependsOn;
+      if (agentOpts.verification !== undefined) step.verification = agentOpts.verification;
+      if (agentOpts.timeoutMs !== undefined) step.timeoutMs = agentOpts.timeoutMs;
+      if (agentOpts.retries !== undefined) step.retries = agentOpts.retries;
+    }
 
     this._steps.push(step);
     return this;
@@ -196,8 +310,9 @@ export class WorkflowBuilder {
 
   /** Build and return the RelayYamlConfig object. */
   toConfig(): RelayYamlConfig {
-    if (this._agents.length === 0) {
-      throw new Error('Workflow must have at least one agent');
+    const hasAgentSteps = this._steps.some((s) => s.type !== 'deterministic' && s.type !== 'worktree');
+    if (hasAgentSteps && this._agents.length === 0) {
+      throw new Error('Workflow must have at least one agent when using agent steps');
     }
     if (this._steps.length === 0) {
       throw new Error('Workflow must have at least one step');
@@ -223,7 +338,14 @@ export class WorkflowBuilder {
     if (this._timeoutMs !== undefined) config.swarm.timeoutMs = this._timeoutMs;
     if (this._channel !== undefined) config.swarm.channel = this._channel;
     if (this._idleNudge !== undefined) config.swarm.idleNudge = this._idleNudge;
-    if (this._errorHandling !== undefined) config.errorHandling = this._errorHandling;
+    config.errorHandling = this._errorHandling ?? {
+      strategy: 'retry',
+      maxRetries: 2,
+      retryDelayMs: 10_000,
+    };
+    if (this._coordination !== undefined) config.coordination = this._coordination;
+    if (this._state !== undefined) config.state = this._state;
+    if (this._trajectories !== undefined) config.trajectories = this._trajectories;
 
     return config;
   }
@@ -254,11 +376,54 @@ export class WorkflowBuilder {
       return report;
     }
 
+    // Wire up default console logger unless explicitly disabled
+    // renderer: "listr" owns the terminal — skip console logger to avoid garbled output
+    // renderer: false implies no output at all
+    const logLevel = options.renderer === 'listr' || options.renderer === false
+      ? false
+      : (options.logLevel ?? 'normal');
+    if (logLevel !== false) {
+      runner.on(createDefaultEventLogger(logLevel));
+    }
+
+    // Wire up user-provided event handler (additive — does not replace the default logger)
     if (options.onEvent) {
       runner.on(options.onEvent);
     }
 
-    return runner.execute(config, options.workflow, options.vars);
+    // Auto-detect RESUME_RUN_ID env var for resuming failed runs
+    const resumeRunId = process.env.RESUME_RUN_ID;
+
+    const startFrom = this._startFrom ?? options.startFrom ?? process.env.START_FROM;
+    const previousRunId = this._previousRunId ?? options.previousRunId ?? process.env.PREVIOUS_RUN_ID;
+    const executeOptions: WorkflowExecuteOptions | undefined = startFrom
+      ? { startFrom, previousRunId }
+      : undefined;
+
+    // If listr renderer requested, wire it up and run concurrently
+    // Must be set up BEFORE the resume check so resume runs also get event output
+    if (options.renderer === 'listr') {
+      const { createWorkflowRenderer } = await import('./listr-renderer.js');
+      const renderer = createWorkflowRenderer();
+      runner.on(renderer.onEvent);
+
+      const runPromise = resumeRunId
+        ? runner.resume(resumeRunId, options.vars)
+        : runner.execute(config, options.workflow, options.vars, executeOptions);
+
+      try {
+        const [result] = await Promise.all([runPromise, renderer.start()]);
+        return result;
+      } finally {
+        renderer.unmount();
+      }
+    }
+
+    if (resumeRunId) {
+      return runner.resume(resumeRunId, options.vars);
+    }
+
+    return runner.execute(config, options.workflow, options.vars, executeOptions);
   }
 }
 

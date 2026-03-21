@@ -826,6 +826,22 @@ pub(crate) fn detect_codex_model_prompt(clean_output: &str) -> (bool, bool) {
     (has_upgrade_ref, has_model_options)
 }
 
+/// Detect opencode/droid EXECUTE permission prompt in output.
+/// Returns (has_header, has_allow_option).
+/// The prompt looks like:
+/// ```text
+/// EXECUTE (command, timeout: 120s, impact: medium)
+/// > Yes, allow
+///   Yes, and always allow medium impact commands (all commands that are reversible)
+///   No, cancel
+/// ```
+pub(crate) fn detect_opencode_permission_prompt(clean_output: &str) -> (bool, bool) {
+    let has_header = clean_output.contains("EXECUTE") && clean_output.contains("impact:");
+    let has_allow_option =
+        clean_output.contains("Yes, allow") || clean_output.contains("Yes, and always allow");
+    (has_header, has_allow_option)
+}
+
 /// Detect Gemini "Action Required" permission prompt in output.
 pub(crate) fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) {
     let has_header = clean_output.contains("Action Required");
@@ -847,6 +863,17 @@ pub(crate) fn detect_gemini_trust_prompt(clean_output: &str) -> (bool, bool) {
     let has_trust_option =
         clean_output.contains("Trust this folder") || clean_output.contains("Trust parent folder");
     (has_header, has_trust_option)
+}
+
+/// Detect Claude Code folder trust prompt in output.
+/// Returns (has_trust_ref, has_confirmation).
+pub(crate) fn detect_claude_trust_prompt(clean_output: &str) -> (bool, bool) {
+    let lower = clean_output.to_lowercase();
+    let has_trust_ref = lower.contains("trust") && lower.contains("folder");
+    let has_confirmation = (lower.contains("yes") && lower.contains("trust"))
+        && lower.contains("no,")
+        && lower.contains("exit");
+    (has_trust_ref, has_confirmation)
 }
 
 /// Continuity actions that an agent can request via PTY output.
@@ -1424,6 +1451,100 @@ mod tests {
     fn gemini_untrusted_banner_partial_no_permissions() {
         let output = "This folder is untrusted, some settings will not apply.";
         assert!(!detect_gemini_untrusted_banner(output));
+    }
+
+    // ==================== detect_opencode_permission_prompt tests ====================
+
+    #[test]
+    fn opencode_permission_prompt_full_match() {
+        let output = "EXECUTE (command, timeout: 120s, impact: medium)\n> Yes, allow\n  Yes, and always allow medium impact commands (all commands that are reversible)\n  No, cancel";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(has_header);
+        assert!(has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_always_allow() {
+        let output = "EXECUTE (command, timeout: 60s, impact: high)\nYes, and always allow";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(has_header);
+        assert!(has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_no_match() {
+        let output = "Running command...\nDone.";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(!has_header);
+        assert!(!has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_header_only() {
+        let output = "EXECUTE (command, timeout: 120s, impact: medium)\nLoading...";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(has_header);
+        assert!(!has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_yes_allow_only() {
+        // "Yes, allow" without "always" variant
+        let output = "EXECUTE (command, timeout: 30s, impact: low)\n> Yes, allow\n  No, cancel";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(has_header);
+        assert!(has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_high_impact() {
+        let output = "EXECUTE (command, timeout: 300s, impact: high)\n> Yes, allow\n  Yes, and always allow high impact commands\n  No, cancel";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(has_header);
+        assert!(has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_no_false_positive_execute_word() {
+        // Normal output containing "EXECUTE" but no "impact:" should not match header
+        let output = "EXECUTE SQL query completed successfully.";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(!has_header);
+        assert!(!has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_no_false_positive_yes_allow_alone() {
+        // "Yes, allow" in normal text without EXECUTE header
+        let output = "The user said: Yes, allow me to explain.";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(!has_header);
+        assert!(has_allow); // has_allow is true but has_header is false, so auto-accept won't trigger
+    }
+
+    #[test]
+    fn opencode_permission_prompt_without_execute_prefix() {
+        // Some formats may not have "EXECUTE" prefix but still have impact
+        let output = "(command, timeout: 120s, impact: medium)\n> Yes, allow";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(!has_header); // No "EXECUTE" keyword
+        assert!(has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_multiline_with_ansi_stripped() {
+        // Simulates what would remain after ANSI stripping
+        let output = "EXECUTE (command, timeout: 120s, impact: medium)\n  Yes, allow\n  Yes, and always allow medium impact commands (all commands that are reversible)\n  No, cancel";
+        let (has_header, has_allow) = detect_opencode_permission_prompt(output);
+        assert!(has_header);
+        assert!(has_allow);
+    }
+
+    #[test]
+    fn opencode_permission_prompt_empty_input() {
+        let (has_header, has_allow) = detect_opencode_permission_prompt("");
+        assert!(!has_header);
+        assert!(!has_allow);
     }
 
     // ==================== detect_cli_ready edge cases ====================

@@ -29,9 +29,10 @@ SwarmPattern = Literal[
     "blackboard",
     "swarm",
     "competitive",
+    "review-loop",
 ]
 
-AgentCli = Literal["claude", "codex", "gemini", "aider", "goose", "opencode", "droid"]
+AgentCli = Literal["claude", "codex", "gemini", "aider", "goose", "opencode", "droid", "cursor", "cursor-agent", "agent"]
 AgentStatus = Literal["healthy", "restarting", "dead", "released"]
 CrashCategory = Literal["oom", "segfault", "error", "signal", "unknown"]
 WorkflowOnError = Literal["fail", "skip", "retry"]

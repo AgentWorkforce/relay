@@ -1,0 +1,94 @@
+{
+  "id": "traj_1773150378283_a9fee762",
+  "version": 1,
+  "task": {
+    "title": "test run #b56f0dbc",
+    "source": {
+      "system": "workflow-runner",
+      "id": "b56f0dbc0f5c355f1f015e6a"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-03-10T13:46:18.283Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-10T13:46:18.283Z"
+    },
+    {
+      "name": "coder",
+      "role": "specialist",
+      "joinedAt": "2026-03-10T13:46:22.267Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_ed901ebe",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-10T13:46:18.283Z",
+      "events": [
+        {
+          "ts": 1773150378283,
+          "type": "note",
+          "content": "Purpose: Simple test to verify PTY output streaming works end-to-end"
+        },
+        {
+          "ts": 1773150378283,
+          "type": "note",
+          "content": "Approach: 1-step sequential workflow — Parsed 1 steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1773150382270,
+          "type": "note",
+          "content": "\"generate-code\": Create a file at /tmp/pty-stream-test.ts with a simple TypeScript",
+          "raw": {
+            "agent": "coder"
+          }
+        },
+        {
+          "ts": 1773150562205,
+          "type": "review-completed",
+          "content": "\"generate-code\" review approved by coder",
+          "significance": "medium",
+          "raw": {
+            "stepName": "generate-code",
+            "reviewer": "coder",
+            "decision": "approved"
+          }
+        },
+        {
+          "ts": 1773150563448,
+          "type": "finding",
+          "content": "\"generate-code\" completed → ✶",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-03-10T13:49:23.450Z"
+    },
+    {
+      "id": "ch_613303e0",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-10T13:49:23.450Z",
+      "events": [
+        {
+          "ts": 1773150563450,
+          "type": "reflection",
+          "content": "All 1 steps completed in 3min. (completed in 3 minutes)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-10T13:49:23.450Z"
+    }
+  ],
+  "completedAt": "2026-03-10T13:49:23.450Z",
+  "retrospective": {
+    "summary": "All 1 steps completed in 3min.",
+    "approach": "sequential workflow (1 agents)",
+    "confidence": 1,
+    "learnings": [],
+    "challenges": []
+  }
+}

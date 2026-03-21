@@ -55,7 +55,10 @@ fn resolve_command_path(command: &str) -> String {
         .unwrap_or_else(|| {
             #[cfg(unix)]
             {
-                OsString::from("/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin")
+                let home = env::var("HOME").unwrap_or_else(|_| String::from("/root"));
+                OsString::from(format!(
+                    "{home}/.local/bin:{home}/.opencode/bin:{home}/.claude/local:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+                ))
             }
             #[cfg(windows)]
             {

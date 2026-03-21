@@ -262,6 +262,8 @@ export interface WorkflowStep {
   retries?: number;
   /** Maximum iterations for steps that may need to retry (e.g., fix-failures). */
   maxIterations?: number;
+  /** Explicit working directory for this step. */
+  cwd?: string;
 
   // ── Deterministic step fields ──────────────────────────────────────────────
   /** Shell command to execute (required for deterministic steps). */
@@ -500,6 +502,20 @@ export interface DryRunReport {
   estimatedPeakConcurrency?: number;
   /** Estimated total agent-steps (counting retries as additional steps). */
   estimatedTotalAgentSteps?: number;
+}
+
+// ── Workflow execution options ───────────────────────────────────────────────
+
+/** Options that control how a workflow run executes. */
+export interface WorkflowExecuteOptions {
+  /** Start execution from a specific step, skipping all predecessor steps.
+   *  Predecessor outputs are loaded from cached step-outputs on disk when available. */
+  startFrom?: string;
+  /** Run ID of a previous execution whose cached step outputs should be used
+   *  when skipping predecessor steps via `startFrom`. If omitted, the runner
+   *  scans `.agent-relay/step-outputs/` for the most recent directory that
+   *  contains the needed step files. */
+  previousRunId?: string;
 }
 
 // ── Database row types ──────────────────────────────────────────────────────

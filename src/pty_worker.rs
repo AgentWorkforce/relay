@@ -29,6 +29,28 @@ const STARTUP_BUFFER_KEEP: usize = 8_000;
 const PROMPT_WINDOW_BYTES: usize = 800;
 const RELAYCAST_BOOT_MARKER: &str = "booting mcp server: relaycast";
 
+/// Detect the relaycast MCP boot marker in output. Different CLIs emit
+/// different boot messages:
+/// - Claude: "booting mcp server: relaycast"
+/// - Codex:  "Starting MCP servers (0/2): relay, relaycast"
+///
+/// Returns the byte offset of the end of the marker, or None if not found.
+fn find_relaycast_boot_marker(lower_output: &str) -> Option<usize> {
+    // Claude-style marker
+    if let Some(idx) = lower_output.find(RELAYCAST_BOOT_MARKER) {
+        return Some(idx + RELAYCAST_BOOT_MARKER.len());
+    }
+    // Codex-style marker: "starting mcp server" with "relaycast" nearby
+    if let Some(idx) = lower_output.find("starting mcp server") {
+        // Look for "relaycast" within the same line (next ~200 chars)
+        let search_end = floor_char_boundary(lower_output, (idx + 200).min(lower_output.len()));
+        if let Some(rc_idx) = lower_output[idx..search_end].find("relaycast") {
+            return Some(idx + rc_idx + "relaycast".len());
+        }
+    }
+    None
+}
+
 fn append_bounded(buf: &mut String, text: &str, max: usize, keep: usize) {
     buf.push_str(text);
     if buf.len() > max {
@@ -338,6 +360,35 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             "shutdown_worker" => {
                                 running = false;
                             }
+                            "resize_pty" => {
+                                #[derive(serde::Deserialize)]
+                                struct ResizePtyPayload { rows: u16, cols: u16 }
+                                match serde_json::from_value::<ResizePtyPayload>(frame.payload) {
+                                    Ok(p) if p.rows > 0 && p.cols > 0 => {
+                                        if let Err(e) = pty.resize(p.rows, p.cols) {
+                                            tracing::warn!(
+                                                target = "agent_relay::worker::pty",
+                                                rows = p.rows, cols = p.cols, error = %e,
+                                                "failed to resize pty"
+                                            );
+                                        }
+                                    }
+                                    Ok(_) => {
+                                        let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
+                                            "code": "invalid_dimensions",
+                                            "message": "rows and cols must be >= 1",
+                                            "retryable": false
+                                        })).await;
+                                    }
+                                    Err(e) => {
+                                        let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
+                                            "code": "invalid_payload",
+                                            "message": e.to_string(),
+                                            "retryable": false
+                                        })).await;
+                                    }
+                                }
+                            }
                             "ping" => {
                                 let ts = frame.payload.get("ts_ms").and_then(Value::as_u64).unwrap_or_default();
                                 let _ = send_frame(&out_tx, "pong", frame.request_id, json!({"ts_ms": ts})).await;
@@ -379,13 +430,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             let mut just_saw_relaycast_boot = false;
                             if !saw_relaycast_boot {
                                 let lower_startup = startup_output.to_ascii_lowercase();
-                                if let Some(marker_idx) = lower_startup.find(RELAYCAST_BOOT_MARKER)
+                                if let Some(marker_end_offset) = find_relaycast_boot_marker(&lower_startup)
                                 {
                                     saw_relaycast_boot = true;
                                     just_saw_relaycast_boot = true;
                                     let marker_end = floor_char_boundary(
                                         &startup_output,
-                                        marker_idx + RELAYCAST_BOOT_MARKER.len(),
+                                        marker_end_offset,
                                     );
                                     post_boot_output.clear();
                                     append_bounded(
@@ -452,9 +503,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.handle_mcp_approval(&text, &pty).await;
                         pty_auto.handle_bypass_permissions(&text, &pty).await;
                         pty_auto.handle_codex_model_prompt(&text, &pty).await;
+                        pty_auto.handle_opencode_permission(&text, &pty).await;
                         pty_auto.handle_gemini_action(&text, &pty).await;
                         pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
                         pty_auto.handle_gemini_trust(&text, &pty).await;
+                        pty_auto.handle_claude_trust(&text, &pty).await;
 
                         // Accumulate echo buffer for verification matching
                         echo_buffer.push_str(&text);

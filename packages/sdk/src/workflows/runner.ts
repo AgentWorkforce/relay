@@ -4,7 +4,7 @@
  * persists state to DB, and supports pause/resume/abort with retries.
  */
 
-import { spawn as cpSpawn, execFileSync } from 'node:child_process';
+import { spawn as cpSpawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
   createWriteStream,
@@ -19,11 +19,14 @@ import {
 import type { Dirent, WriteStream } from 'node:fs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import chalk from 'chalk';
 
 import { parse as parseYaml } from 'yaml';
 import { stripAnsi as stripAnsiFn } from '../pty.js';
 import type { BrokerEvent } from '../protocol.js';
 import { resolveSpawnPolicy } from '../spawn-from-env.js';
+import { getCliDefinition } from '../cli-registry.js';
+import { resolveCliSync } from '../cli-resolver.js';
 
 import {
   loadCustomSteps,
@@ -32,7 +35,9 @@ import {
   CustomStepsParseError,
   CustomStepResolutionError,
 } from './custom-steps.js';
+import { collectCliSession, type CliSessionReport } from './cli-session-collector.js';
 import { InMemoryWorkflowDb } from './memory-db.js';
+import { formatRunSummaryTable } from './run-summary-table.js';
 import type {
   AgentCli,
   AgentDefinition,
@@ -59,6 +64,7 @@ import type {
   WorkflowRunRow,
   WorkflowRunStatus,
   WorkflowStep,
+  WorkflowExecuteOptions,
   WorkflowStepCompletionReason,
   WorkflowStepRow,
   WorkflowStepStatus,
@@ -156,6 +162,7 @@ export type WorkflowEvent =
       decision: 'approved' | 'rejected';
     }
   | { type: 'step:owner-timeout'; runId: string; stepName: string; ownerName: string }
+  | { type: 'step:agent-report'; runId: string; stepName: string; report: CliSessionReport }
   | { type: 'step:failed'; runId: string; stepName: string; error: string; exitCode?: number; exitSignal?: string }
   | { type: 'step:skipped'; runId: string; stepName: string }
   | { type: 'step:retrying'; runId: string; stepName: string; attempt: number }
@@ -273,25 +280,12 @@ interface ChannelEvidenceOptions {
 
 /**
  * Resolve `cursor` to the concrete cursor agent binary available in PATH.
- * Prefers `cursor-agent` over `agent`. Falls back to `agent` if neither
- * `cursor-agent` nor a real cursor IDE CLI is found.
- * Result is memoized after the first call to avoid repeated sync PATH lookups.
+ * Delegates to the consolidated cli-resolver which checks PATH + well-known
+ * install directories. Falls back to `agent` if nothing found.
  */
-let _resolvedCursorCli: 'cursor-agent' | 'agent' | undefined;
 function resolveCursorCli(): 'cursor-agent' | 'agent' {
-  if (_resolvedCursorCli !== undefined) return _resolvedCursorCli;
-  const candidates: Array<'cursor-agent' | 'agent'> = ['cursor-agent', 'agent'];
-  for (const candidate of candidates) {
-    try {
-      execFileSync('which', [candidate], { stdio: 'ignore' });
-      _resolvedCursorCli = candidate;
-      return candidate;
-    } catch {
-      // not in PATH, try next
-    }
-  }
-  _resolvedCursorCli = 'agent'; // last-resort default
-  return _resolvedCursorCli;
+  const resolved = resolveCliSync('cursor');
+  return (resolved?.binary as 'cursor-agent' | 'agent') ?? 'agent';
 }
 
 // ── WorkflowRunner ──────────────────────────────────────────────────────────
@@ -357,6 +351,10 @@ export class WorkflowRunner {
   private readonly stepSignalParticipants = new Map<string, StepSignalParticipants>();
   /** Resolved named paths from the top-level `paths` config, keyed by name → absolute directory. */
   private resolvedPaths = new Map<string, string>();
+  /** Tracks agent names currently assigned as reviewers (ref-counted to handle concurrent usage). */
+  private readonly activeReviewers = new Map<string, number>();
+  /** Structured CLI session reports captured during the current run, keyed by step name. */
+  private readonly agentReports = new Map<string, CliSessionReport>();
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -449,6 +447,13 @@ export class WorkflowRunner {
       );
     }
     return resolved;
+  }
+
+  private resolveEffectiveCwd(step: WorkflowStep, agentDef?: AgentDefinition): string {
+    if (step.cwd) {
+      return path.resolve(this.cwd, step.cwd);
+    }
+    return this.resolveStepWorkdir(step) ?? (agentDef ? this.resolveAgentCwd(agentDef) : this.cwd);
   }
 
   private static readonly EVIDENCE_IGNORED_DIRS = new Set([
@@ -987,7 +992,7 @@ export class WorkflowRunner {
       mins > 0
         ? `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
         : `00:${String(secs).padStart(2, '0')}`;
-    console.log(`[workflow ${ts}] ${msg}`);
+    console.log(`${chalk.dim.cyan('[workflow')} ${chalk.dim.cyan(ts)}${chalk.dim.cyan(']')} ${msg}`);
   }
 
   // ── Relaycast auto-provisioning ────────────────────────────────────────
@@ -1776,7 +1781,8 @@ export class WorkflowRunner {
   async execute(
     config: RelayYamlConfig,
     workflowName?: string,
-    vars?: VariableContext
+    vars?: VariableContext,
+    executeOptions?: WorkflowExecuteOptions
   ): Promise<WorkflowRunRow> {
     // Set up abort controller early so callers can abort() even during setup
     this.abortController = new AbortController();
@@ -1830,6 +1836,7 @@ export class WorkflowRunner {
     };
 
     await this.db.insertRun(run);
+    this.persistRunIdHint(runId);
 
     // Build step rows
     const stepStates = new Map<string, StepState>();
@@ -1859,6 +1866,49 @@ export class WorkflowRunner {
       stepStates.set(step.name, { row: stepRow });
     }
 
+    // Handle startFrom: skip all transitive dependencies of the target step
+    if (executeOptions?.startFrom) {
+      const startFromName = executeOptions.startFrom;
+      const stepNames = new Set(resolvedWorkflow.steps.map((s) => s.name));
+      if (!stepNames.has(startFromName)) {
+        throw new Error(
+          `startFrom step "${startFromName}" not found in workflow. Available steps: ${[...stepNames].join(', ')}`
+        );
+      }
+
+      const transitiveDeps = this.collectTransitiveDeps(startFromName, resolvedWorkflow.steps);
+      const skippedCount = transitiveDeps.size;
+
+      // Determine which run ID to load cached outputs from
+      const cacheRunId = executeOptions.previousRunId
+        ?? this.findMostRecentRunWithSteps(transitiveDeps);
+
+      for (const depName of transitiveDeps) {
+        const state = stepStates.get(depName);
+        if (!state) continue;
+
+        // Load cached output from a previous run if available
+        const cachedOutput = cacheRunId ? this.loadStepOutput(cacheRunId, depName) : undefined;
+        if (!cachedOutput) {
+          this.log(`[startFrom] No cached output for skipped step "${depName}" — using empty string`);
+        }
+
+        state.row.status = 'completed';
+        state.row.output = cachedOutput ?? '';
+        state.row.completedAt = now;
+        await this.db.updateStep(state.row.id, {
+          status: 'completed',
+          output: state.row.output,
+          completedAt: now,
+          updatedAt: now,
+        });
+      }
+
+      if (skippedCount > 0) {
+        this.log(`[startFrom] Skipping ${skippedCount} steps, starting from "${startFromName}"`);
+      }
+    }
+
     return this.runWorkflowCore({
       run,
       workflow: resolvedWorkflow,
@@ -1878,6 +1928,7 @@ export class WorkflowRunner {
     if (!run) {
       throw new Error(`Run "${runId}" not found`);
     }
+    this.persistRunIdHint(runId);
 
     if (run.status !== 'running' && run.status !== 'failed') {
       throw new Error(`Run "${runId}" is in status "${run.status}" and cannot be resumed`);
@@ -1944,6 +1995,7 @@ export class WorkflowRunner {
     this.runStartTime = Date.now();
     this.runtimeStepAgents.clear();
     this.stepCompletionEvidence.clear();
+    this.agentReports.clear();
 
     this.log(`Starting workflow "${workflow.name}" (${workflow.steps.length} steps)`);
 
@@ -2186,7 +2238,7 @@ export class WorkflowRunner {
 
         // Wire broker stderr to console for observability
         this.unsubBrokerStderr = this.relay.onBrokerStderr((line: string) => {
-          console.log(`[broker] ${line}`);
+          console.log(`${chalk.dim.yellow('[broker]')} ${line}`);
         });
 
         if (!relaycastDisabled) {
@@ -2326,6 +2378,7 @@ export class WorkflowRunner {
       this.lastActivity.clear();
       this.supervisedRuntimeAgents.clear();
       this.runtimeStepAgents.clear();
+      this.activeReviewers.clear();
 
       this.log('Shutting down broker...');
       await this.relay?.shutdown();
@@ -2721,7 +2774,7 @@ export class WorkflowRunner {
       });
 
       // Resolve step workdir (named path reference) for deterministic steps
-      const stepCwd = this.resolveStepWorkdir(step) ?? this.cwd;
+      const stepCwd = this.resolveEffectiveCwd(step);
       this.beginStepEvidence(step.name, [stepCwd], state.row.startedAt);
 
       try {
@@ -3164,9 +3217,13 @@ export class WorkflowRunner {
     }
     const specialistDef = WorkflowRunner.resolveAgentDef(rawAgentDef);
     const usesOwnerFlow = specialistDef.interactive !== false;
-    const usesAutoHardening = usesOwnerFlow && !this.isExplicitInteractiveWorker(specialistDef);
+    const currentPattern = this.currentConfig?.swarm?.pattern ?? '';
+    const isHubPattern = WorkflowRunner.HUB_PATTERNS.has(currentPattern);
+    const usesAutoHardening = usesOwnerFlow && isHubPattern && !this.isExplicitInteractiveWorker(specialistDef);
     const ownerDef = usesAutoHardening ? this.resolveAutoStepOwner(specialistDef, agentMap) : specialistDef;
-    const reviewDef = usesAutoHardening ? this.resolveAutoReviewAgent(ownerDef, agentMap) : undefined;
+    // Reviewer resolution is deferred to just before the review gate runs (see below)
+    // so that activeReviewers is up-to-date for concurrent steps.
+    let reviewDef: ReturnType<typeof this.resolveAutoReviewAgent> | undefined;
     const supervised: SupervisedStep = {
       specialist: specialistDef,
       owner: ownerDef,
@@ -3191,6 +3248,9 @@ export class WorkflowRunner {
     let lastExitCode: number | undefined;
     let lastExitSignal: string | undefined;
     let lastCompletionReason: WorkflowStepCompletionReason | undefined;
+    let lastAttemptStartedAt: number | undefined;
+    let lastEffectiveAgentDef: AgentDefinition | undefined;
+    let lastEffectiveCwd: string | undefined;
 
     // OWNER_DECISION: INCOMPLETE_RETRY is enforced here at the attempt-loop level so every
     // interactive execution path shares the same contract:
@@ -3222,6 +3282,7 @@ export class WorkflowRunner {
       }
 
       try {
+        lastAttemptStartedAt = Date.now();
         // Mark step as running
         state.row.status = 'running';
         state.row.error = undefined;
@@ -3280,7 +3341,10 @@ export class WorkflowRunner {
         }
 
         // Apply step-level workdir override to agent definitions if present
-        const applyStepWorkdir = (def: AgentDefinition): AgentDefinition => {
+        const applyStepCwd = (def: AgentDefinition): AgentDefinition => {
+          if (step.cwd) {
+            return { ...def, cwd: step.cwd, workdir: undefined };
+          }
           if (step.workdir) {
             const stepWorkdir = this.resolveStepWorkdir(step);
             if (stepWorkdir) {
@@ -3289,9 +3353,11 @@ export class WorkflowRunner {
           }
           return def;
         };
-        const effectiveSpecialist = applyStepWorkdir(specialistDef);
-        const effectiveOwner = applyStepWorkdir(ownerDef);
-        const effectiveReviewer = reviewDef ? applyStepWorkdir(reviewDef) : undefined;
+        const effectiveSpecialist = applyStepCwd(specialistDef);
+        const effectiveOwner = applyStepCwd(ownerDef);
+        const effectiveReviewer = reviewDef ? applyStepCwd(reviewDef) : undefined;
+        lastEffectiveAgentDef = effectiveSpecialist;
+        lastEffectiveCwd = this.resolveAgentCwd(effectiveSpecialist);
         this.beginStepEvidence(
           step.name,
           [
@@ -3333,6 +3399,7 @@ export class WorkflowRunner {
             : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
                 evidenceStepName: step.name,
                 evidenceRole: usesOwnerFlow ? 'owner' : 'specialist',
+                preserveOnIdle: (!isHubPattern || !this.isLeadLikeAgent(effectiveOwner)) ? false : undefined,
                 logicalName: effectiveOwner.name,
                 onSpawned: explicitInteractiveWorker
                   ? ({ agent }) => {
@@ -3436,20 +3503,41 @@ export class WorkflowRunner {
         }
 
         // Every interactive step gets a review pass; pick a dedicated reviewer when available.
+        // Resolve reviewer JIT so activeReviewers reflects concurrent steps that started earlier.
+        if (usesAutoHardening && usesDedicatedOwner && !reviewDef) {
+          reviewDef = this.resolveAutoReviewAgent(ownerDef, agentMap);
+          supervised.reviewer = reviewDef;
+        }
         let combinedOutput = specialistOutput;
         if (usesOwnerFlow && reviewDef) {
-          const remainingMs = timeoutMs ? Math.max(0, timeoutMs - ownerElapsed) : undefined;
-          const reviewOutput = await this.runStepReviewGate(
-            step,
-            resolvedTask,
-            specialistOutput,
-            ownerOutput,
-            ownerDef,
-            reviewDef,
-            remainingMs
-          );
-          combinedOutput = this.combineStepAndReviewOutput(specialistOutput, reviewOutput);
+          this.activeReviewers.set(reviewDef.name, (this.activeReviewers.get(reviewDef.name) ?? 0) + 1);
+          try {
+            const remainingMs = timeoutMs ? Math.max(0, timeoutMs - ownerElapsed) : undefined;
+            const reviewOutput = await this.runStepReviewGate(
+              step,
+              resolvedTask,
+              specialistOutput,
+              ownerOutput,
+              ownerDef,
+              reviewDef,
+              remainingMs
+            );
+            combinedOutput = this.combineStepAndReviewOutput(specialistOutput, reviewOutput);
+          } finally {
+            const count = (this.activeReviewers.get(reviewDef.name) ?? 1) - 1;
+            if (count <= 0) this.activeReviewers.delete(reviewDef.name);
+            else this.activeReviewers.set(reviewDef.name, count);
+          }
         }
+
+        await this.captureAgentReport(
+          runId,
+          step.name,
+          lastEffectiveAgentDef,
+          lastEffectiveCwd,
+          lastAttemptStartedAt,
+          Date.now()
+        );
 
         // Mark completed
         state.row.status = 'completed';
@@ -3503,6 +3591,14 @@ export class WorkflowRunner {
       typeof step.verification === 'object' && 'value' in step.verification
         ? String(step.verification.value)
         : undefined;
+    await this.captureAgentReport(
+      runId,
+      step.name,
+      lastEffectiveAgentDef,
+      lastEffectiveCwd,
+      lastAttemptStartedAt,
+      Date.now()
+    );
     await this.trajectory?.stepFailed(step, lastError ?? 'Unknown error', maxRetries + 1, maxRetries, {
       agent: agentName,
       nonInteractive,
@@ -3950,12 +4046,17 @@ export class WorkflowRunner {
       if (roleLC.includes('critic')) return 2;
       return isReviewer(def) ? 1 : 0;
     };
-    const dedicated = allDefs
+    // Prefer agents not currently assigned as reviewers to avoid double-booking
+    const notBusy = (def: AgentDefinition): boolean => !this.activeReviewers.has(def.name);
+
+    const dedicatedCandidates = allDefs
       .filter((d) => eligible(d) && isReviewer(d))
-      .sort((a, b) => reviewerPriority(b) - reviewerPriority(a) || a.name.localeCompare(b.name))[0];
+      .sort((a, b) => reviewerPriority(b) - reviewerPriority(a) || a.name.localeCompare(b.name));
+    const dedicated = dedicatedCandidates.find(notBusy) ?? dedicatedCandidates[0];
     if (dedicated) return dedicated;
 
-    const alternate = allDefs.find((d) => eligible(d) && d.interactive !== false);
+    const alternateCandidates = allDefs.filter((d) => eligible(d) && d.interactive !== false);
+    const alternate = alternateCandidates.find(notBusy) ?? alternateCandidates[0];
     if (alternate) return alternate;
 
     // Self-review fallback — log a warning since owner reviewing itself is weak.
@@ -4626,38 +4727,22 @@ export class WorkflowRunner {
 
   /**
    * Build the CLI command and arguments for a non-interactive agent execution.
-   * Each CLI has a specific flag for one-shot prompt mode.
+   * Delegates to the consolidated CLI registry for per-CLI arg formats.
    */
   static buildNonInteractiveCommand(
     cli: AgentCli,
     task: string,
     extraArgs: string[] = []
   ): { cmd: string; args: string[] } {
-    switch (cli) {
-      case 'claude':
-        // --dangerously-skip-permissions prevents any tool-use permission prompt
-        // from blocking the process when stdio is piped (no TTY available).
-        return { cmd: 'claude', args: ['-p', '--dangerously-skip-permissions', task, ...extraArgs] };
-      case 'codex':
-        return { cmd: 'codex', args: ['exec', task, ...extraArgs] };
-      case 'gemini':
-        return { cmd: 'gemini', args: ['-p', task, ...extraArgs] };
-      case 'opencode':
-        return { cmd: 'opencode', args: ['--prompt', task, ...extraArgs] };
-      case 'droid':
-        return { cmd: 'droid', args: ['exec', task, ...extraArgs] };
-      case 'aider':
-        return { cmd: 'aider', args: ['--message', task, '--yes-always', '--no-git', ...extraArgs] };
-      case 'goose':
-        return { cmd: 'goose', args: ['run', '--text', task, '--no-session', ...extraArgs] };
-      case 'cursor-agent':
-      case 'agent':
-        return { cmd: cli, args: ['--force', '-p', task, ...extraArgs] };
-      case 'cursor':
-        // Should not reach here after resolveAgentDef resolves to agent/cursor-agent,
-        // but handle as fallback.
-        return { cmd: resolveCursorCli(), args: ['--force', '-p', task, ...extraArgs] };
+    const resolvedCli: AgentCli = cli === 'cursor' ? resolveCursorCli() : cli;
+    const def = getCliDefinition(resolvedCli);
+    if (!def) {
+      throw new Error(`Unknown CLI: ${resolvedCli}`);
     }
+    return {
+      cmd: def.binaries[0],
+      args: def.nonInteractiveArgs(task, extraArgs),
+    };
   }
 
   /**
@@ -4784,7 +4869,7 @@ export class WorkflowRunner {
       const { stdout: output, exitCode, exitSignal } = await new Promise<{ stdout: string; exitCode?: number; exitSignal?: string }>((resolve, reject) => {
         const child = cpSpawn(cmd, args, {
           stdio: ['ignore', 'pipe', 'pipe'],
-          cwd: this.resolveAgentCwd(agentDef),
+          cwd: this.resolveEffectiveCwd(step, agentDef),
           env: this.getRelayEnv() ?? { ...process.env },
         });
 
@@ -4864,7 +4949,8 @@ export class WorkflowRunner {
             return;
           }
 
-          if (code !== 0 && code !== null) {
+          const cliDef = getCliDefinition(agentDef.cli);
+          if (code !== 0 && code !== null && !cliDef?.ignoreExitCode) {
             const stderr = stderrChunks.join('');
             reject(
               new SpawnExitError(
@@ -5302,19 +5388,70 @@ export class WorkflowRunner {
         return agent.waitForExit(timeoutMs);
       }
 
-      // Idle = done: race exit against idle. Whichever fires first completes the step.
-      const result = await Promise.race([
-        agent.waitForExit(timeoutMs).then((r) => ({ kind: 'exit' as const, result: r })),
-        agent.waitForIdle(timeoutMs).then((r) => ({ kind: 'idle' as const, result: r })),
-      ]);
-      if (result.kind === 'idle' && result.result === 'idle') {
-        this.log(`[${step.name}] Agent "${agent.name}" went idle — treating as complete`);
-        this.postToChannel(`**[${step.name}]** Agent \`${agent.name}\` idle — treating as complete`);
-        await agent.release();
-        return 'released';
+      // Idle = done: race exit against idle, but only accept idle if verification passes.
+      const idleLoopStart = Date.now();
+      while (true) {
+        const elapsed = Date.now() - idleLoopStart;
+        const remaining = timeoutMs != null ? Math.max(0, timeoutMs - elapsed) : undefined;
+        if (remaining != null && remaining <= 0) {
+          return 'timeout';
+        }
+        const result = await Promise.race([
+          agent.waitForExit(remaining).then((r) => ({ kind: 'exit' as const, result: r })),
+          agent.waitForIdle(remaining).then((r) => ({ kind: 'idle' as const, result: r })),
+        ]);
+        if (result.kind === 'idle' && result.result === 'idle') {
+          // Check verification before treating idle as complete.
+          // Mirror runVerification's double-occurrence guard: if the task text
+          // contains the token (from the prompt instruction), require a second
+          // occurrence from the agent's actual output to avoid false positives.
+          if (step.verification && step.verification.type === 'output_contains') {
+            const token = step.verification.value;
+            const ptyOutput = (this.ptyOutputBuffers.get(agent.name) ?? []).join('');
+            const taskText = step.task ?? '';
+            const taskHasToken = taskText.includes(token);
+            let verificationPassed = true;
+            if (taskHasToken) {
+              const first = ptyOutput.indexOf(token);
+              verificationPassed = first !== -1 && ptyOutput.includes(token, first + token.length);
+            } else {
+              verificationPassed = ptyOutput.includes(token);
+            }
+            if (!verificationPassed) {
+              // The broker fires agent_idle only once per idle transition.
+              // If the agent is still working (will produce output then idle again),
+              // continuing the loop works. But if the agent is permanently idle,
+              // waitForIdle won't resolve again. Wait briefly for new output,
+              // then release and let upstream verification handle the result.
+              this.log(`[${step.name}] Agent "${agent.name}" went idle but verification not yet passed — waiting for more output`);
+              const idleGraceSecs = 15;
+              const graceResult = await Promise.race([
+                agent.waitForExit(idleGraceSecs * 1000).then((r) => ({ kind: 'exit' as const, result: r })),
+                agent.waitForIdle(idleGraceSecs * 1000).then((r) => ({ kind: 'idle' as const, result: r })),
+              ]);
+              if (graceResult.kind === 'idle' && graceResult.result === 'idle') {
+                // Agent went idle again after producing output — re-check verification
+                continue;
+              }
+              if (graceResult.kind === 'exit') {
+                return graceResult.result as 'exited' | 'timeout' | 'released';
+              }
+              // Grace period timed out — agent is permanently idle without verification.
+              // Release and let upstream executeAgentStep handle verification.
+              this.log(`[${step.name}] Agent "${agent.name}" still idle after ${idleGraceSecs}s grace — releasing`);
+              this.postToChannel(`**[${step.name}]** Agent \`${agent.name}\` idle — releasing (verification pending)`);
+              await agent.release();
+              return 'released';
+            }
+          }
+          this.log(`[${step.name}] Agent "${agent.name}" went idle — treating as complete`);
+          this.postToChannel(`**[${step.name}]** Agent \`${agent.name}\` idle — treating as complete`);
+          await agent.release();
+          return 'released';
+        }
+        // Exit won the race, or idle returned 'exited'/'timeout' — pass through.
+        return result.result as 'exited' | 'timeout' | 'released';
       }
-      // Exit won the race, or idle returned 'exited'/'timeout' — pass through.
-      return result.result as 'exited' | 'timeout' | 'released';
     }
 
     const nudgeAfterMs = nudgeConfig.nudgeAfterMs ?? 120_000;
@@ -5605,6 +5742,35 @@ export class WorkflowRunner {
     this.finalizeStepEvidence(state.row.stepName, 'failed', state.row.completedAt, completionReason);
   }
 
+  private async captureAgentReport(
+    runId: string,
+    stepName: string,
+    agentDef: AgentDefinition | undefined,
+    cwd: string | undefined,
+    startedAt: number | undefined,
+    completedAt: number
+  ): Promise<void> {
+    if (!agentDef || !cwd || !startedAt) return;
+
+    try {
+      const report = await collectCliSession({
+        cli: agentDef.cli,
+        cwd,
+        startedAt,
+        completedAt,
+      });
+      if (!report) return;
+
+      this.agentReports.set(stepName, report);
+      this.emit({ type: 'step:agent-report', runId, stepName, report });
+      await this.persistAgentReport(runId, stepName, report);
+    } catch (error) {
+      this.log(
+        `[${stepName}] CLI session collection failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
   private async markDownstreamSkipped(
     failedStepName: string,
     allSteps: WorkflowStep[],
@@ -5641,6 +5807,35 @@ export class WorkflowRunner {
         }
       }
     }
+  }
+
+  // ── startFrom dependency resolution ─────────────────────────────────
+
+  /**
+   * Walk the dependsOn graph backwards from a target step to collect ALL
+   * transitive dependencies (i.e. every step that must complete before
+   * the target step can run). The target step itself is NOT included.
+   */
+  private collectTransitiveDeps(targetStep: string, steps: WorkflowStep[]): Set<string> {
+    const stepMap = new Map<string, WorkflowStep>();
+    for (const s of steps) stepMap.set(s.name, s);
+
+    const deps = new Set<string>();
+    const queue = [...(stepMap.get(targetStep)?.dependsOn ?? [])];
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (deps.has(current)) continue;
+      deps.add(current);
+      const step = stepMap.get(current);
+      if (step?.dependsOn) {
+        for (const dep of step.dependsOn) {
+          if (!deps.has(dep)) queue.push(dep);
+        }
+      }
+    }
+
+    return deps;
   }
 
   // ── Control flow helpers ──────────────────────────────────────────────
@@ -5851,26 +6046,33 @@ export class WorkflowRunner {
     const skipped = outcomes.filter((o) => o.status === 'skipped');
 
     console.log('');
-    console.log('━'.repeat(70));
-    console.log(`  Workflow "${workflowName}" — ${failed.length === 0 ? 'COMPLETED' : 'FAILED'}`);
-    console.log(`  ${completed.length} passed, ${failed.length} failed, ${skipped.length} skipped`);
-    console.log('━'.repeat(70));
+    console.log(chalk.dim('━'.repeat(70)));
+    console.log(`  Workflow "${workflowName}" — ${failed.length === 0 ? chalk.green('COMPLETED') : chalk.red('FAILED')}`);
+    console.log(
+      `  ${chalk.green(`${completed.length} passed`)}, ${chalk.red(`${failed.length} failed`)}, ${chalk.dim(`${skipped.length} skipped`)}`
+    );
+    console.log(chalk.dim('━'.repeat(70)));
 
-    for (const outcome of outcomes) {
-      const icon = outcome.status === 'completed' ? '✓' : outcome.status === 'failed' ? '✗' : '⊘';
-      const retryNote = outcome.attempts > 1 ? ` (${outcome.attempts} attempts)` : '';
-      console.log(`  ${icon} ${outcome.name} [${outcome.agent}]${retryNote}`);
+    if (this.agentReports.size > 0) {
+      console.log(formatRunSummaryTable(outcomes, this.agentReports));
+    } else {
+      for (const outcome of outcomes) {
+        const icon =
+          outcome.status === 'completed' ? chalk.green('✓') : outcome.status === 'failed' ? chalk.red('✗') : chalk.dim('⊘');
+        const retryNote = outcome.attempts > 1 ? ` (${outcome.attempts} attempts)` : '';
+        console.log(`  ${icon} ${outcome.name} [${outcome.agent}]${retryNote}`);
 
-      if (outcome.error) {
-        console.log(`    Error: ${outcome.error}`);
-      }
+        if (outcome.error) {
+          console.log(`    Error: ${outcome.error}`);
+        }
 
-      // Extract last meaningful lines from raw PTY output
-      if (outcome.output) {
-        const excerpt = this.extractOutputExcerpt(outcome.output);
-        if (excerpt) {
-          for (const line of excerpt.split('\n')) {
-            console.log(`    ${line}`);
+        // Extract last meaningful lines from raw PTY output
+        if (outcome.output) {
+          const excerpt = this.extractOutputExcerpt(outcome.output);
+          if (excerpt) {
+            for (const line of excerpt.split('\n')) {
+              console.log(`    ${line}`);
+            }
           }
         }
       }
@@ -5880,9 +6082,10 @@ export class WorkflowRunner {
     const outputDir = this.getStepOutputDir(runId);
     const logsDir = path.join(this.cwd, '.agent-relay', 'team', 'worker-logs');
     console.log('');
+    console.log(`  Run ID:      ${runId}`);
     console.log(`  Step output: ${outputDir}`);
     console.log(`  Agent logs:  ${logsDir}`);
-    console.log('━'.repeat(70));
+    console.log(chalk.dim('━'.repeat(70)));
     console.log('');
   }
 
@@ -5943,6 +6146,12 @@ export class WorkflowRunner {
     const stepsWithVerification = new Set(steps?.filter((s) => s.verification).map((s) => s.name) ?? []);
     const outcomes: StepOutcome[] = [];
     for (const [name, state] of stepStates) {
+      const startedAtMs = state.row.startedAt ? Date.parse(state.row.startedAt) : Number.NaN;
+      const completedAtMs = state.row.completedAt ? Date.parse(state.row.completedAt) : Number.NaN;
+      const durationMs =
+        Number.isFinite(startedAtMs) && Number.isFinite(completedAtMs)
+          ? Math.max(0, completedAtMs - startedAtMs)
+          : undefined;
       outcomes.push({
         name,
         agent: state.row.agentName ?? 'deterministic',
@@ -5956,6 +6165,7 @@ export class WorkflowRunner {
         output: state.row.output,
         error: state.row.error,
         verificationPassed: state.row.status === 'completed' && stepsWithVerification.has(name),
+        durationMs,
         completionMode: state.row.completionReason
           ? this.buildStepCompletionDecision(name, state.row.completionReason)?.mode
           : undefined,
@@ -5965,6 +6175,17 @@ export class WorkflowRunner {
   }
 
   // ── ID generation ─────────────────────────────────────────────────────
+
+  private persistRunIdHint(runId: string): void {
+    const target = process.env.AGENT_RELAY_RUN_ID_FILE?.trim();
+    if (!target) return;
+    try {
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, runId + '\n', 'utf8');
+    } catch {
+      // Ignore hint persistence failures.
+    }
+  }
 
   private generateId(): string {
     return randomBytes(12).toString('hex');
@@ -6125,6 +6346,51 @@ export class WorkflowRunner {
     const maxMsg = 2000;
     const preview = scrubbed.length > maxMsg ? scrubbed.slice(-maxMsg) : scrubbed;
     this.postToChannel(`**[${stepName}] Output:**\n\`\`\`\n${preview}\n\`\`\``, { stepName });
+  }
+
+  private async persistAgentReport(runId: string, stepName: string, report: CliSessionReport): Promise<void> {
+    const reportPath = path.join(this.getStepOutputDir(runId), `${stepName}.report.json`);
+    try {
+      mkdirSync(this.getStepOutputDir(runId), { recursive: true });
+      await writeFile(reportPath, JSON.stringify(report, null, 2), 'utf8');
+    } catch {
+      // Non-critical
+    }
+  }
+
+  /** Scan .agent-relay/step-outputs/ for the most recent run directory containing the needed steps. */
+  private findMostRecentRunWithSteps(stepNames: Set<string>): string | undefined {
+    try {
+      const baseDir = path.join(this.cwd, '.agent-relay', 'step-outputs');
+      if (!existsSync(baseDir)) return undefined;
+
+      const entries = readdirSync(baseDir);
+      let best: { name: string; mtime: number } | undefined;
+
+      for (const entry of entries) {
+        const dirPath = path.join(baseDir, entry);
+        try {
+          const stat = statSync(dirPath);
+          if (!stat.isDirectory()) continue;
+
+          // Check if this directory has at least one of the needed step files
+          const hasAny = [...stepNames].some(name =>
+            existsSync(path.join(dirPath, `${name}.md`))
+          );
+          if (!hasAny) continue;
+
+          if (!best || stat.mtimeMs > best.mtime) {
+            best = { name: entry, mtime: stat.mtimeMs };
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      return best?.name;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Load persisted step output from disk. */

@@ -1,0 +1,27 @@
+{
+  "name": "agent-relay",
+  "version": "0.1.0",
+  "description": "Lets your Gemini CLI sub-agents communicate with each other in real time",
+  "contextFileName": "GEMINI.md",
+  "mcpServers": {
+    "relaycast": {
+      "command": "node",
+      "args": [
+        "${extensionPath}${/}relay-server.js"
+      ],
+      "cwd": "${extensionPath}"
+    }
+  },
+  "permissions": {
+    "autoApprove": [
+      {
+        "toolName": "relaycast.*",
+        "reason": "Allow real-time agent-to-agent communication"
+      },
+      {
+        "toolName": "mcp_relaycast_*",
+        "reason": "Allow real-time agent-to-agent communication (compat)"
+      }
+    ]
+  }
+}

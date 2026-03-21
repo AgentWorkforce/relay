@@ -1305,18 +1305,23 @@ export async function runStatusCommand(deps: CoreDependencies): Promise<void> {
   deps.log(`PID: ${brokerPid}`);
   deps.log(`Project: ${paths.projectRoot}`);
 
-  const relay = deps.createRelay(paths.projectRoot);
-  try {
-    const status = await relay.getStatus();
-    if (typeof status.agent_count === 'number') {
-      deps.log(`Agents: ${status.agent_count}`);
+  // Discover the existing broker's API port instead of spawning a new broker.
+  // Without an API port, createRelay spawns a fresh broker process which
+  // conflicts with the already-running one and can cause the command to fail.
+  const apiPort = await deps.findBrokerApiPort();
+
+  if (apiPort > 0) {
+    const relay = deps.createRelay(paths.projectRoot, apiPort);
+    try {
+      const status = await relay.getStatus();
+      if (typeof status.agent_count === 'number') {
+        deps.log(`Agents: ${status.agent_count}`);
+      }
+      if (typeof status.pending_delivery_count === 'number' && status.pending_delivery_count > 0) {
+        deps.log(`Pending deliveries: ${status.pending_delivery_count}`);
+      }
+    } catch {
+      // PID-based status is enough when broker query fails.
     }
-    if (typeof status.pending_delivery_count === 'number' && status.pending_delivery_count > 0) {
-      deps.log(`Pending deliveries: ${status.pending_delivery_count}`);
-    }
-  } catch {
-    // PID-based status is enough when broker query fails.
-  } finally {
-    await relay.shutdown().catch(() => undefined);
   }
 }

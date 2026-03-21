@@ -1,8 +1,7 @@
 import { Command } from 'commander';
-import { RelayCast } from '@agent-relay/sdk';
+import { RelayCast, HttpAgentRelayClient } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 
-import { createAgentRelayClient } from '../lib/client-factory.js';
 import { parseSince } from '../lib/formatting.js';
 
 type ExitFn = (code: number) => never;
@@ -56,7 +55,7 @@ export interface MessagingBrokerClient {
 
 export interface MessagingDependencies {
   getProjectRoot: () => string;
-  createClient: (cwd: string) => MessagingBrokerClient;
+  createClient: (cwd: string) => MessagingBrokerClient | Promise<MessagingBrokerClient>;
   createRelaycastClient: (options: { agentName: string }) => Promise<MessagingRelaycastClient>;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
@@ -67,8 +66,9 @@ function defaultExit(code: number): never {
   process.exit(code);
 }
 
-function createDefaultClient(cwd: string): MessagingBrokerClient {
-  return createAgentRelayClient({ cwd }) as unknown as MessagingBrokerClient;
+async function createDefaultClient(cwd: string): Promise<MessagingBrokerClient> {
+  const client = await HttpAgentRelayClient.discoverAndConnect({ cwd });
+  return client as unknown as MessagingBrokerClient;
 }
 
 async function createDefaultRelaycastClient(options: {
@@ -114,7 +114,15 @@ export function registerMessagingCommands(
     .option('--from <name>', 'Sender name', '__cli_sender__')
     .option('--thread <id>', 'Thread identifier')
     .action(async (agent: string, message: string, options: { from: string; thread?: string }) => {
-      const client = deps.createClient(deps.getProjectRoot());
+      let client: MessagingBrokerClient;
+      try {
+        client = await deps.createClient(deps.getProjectRoot());
+      } catch (err: any) {
+        deps.error(`Failed to connect to broker: ${err?.message || String(err)}`);
+        deps.error('Start the broker with `agent-relay up` and try again.');
+        deps.exit(1);
+        return;
+      }
 
       try {
         await client.sendMessage({

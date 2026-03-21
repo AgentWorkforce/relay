@@ -1,0 +1,10 @@
+prompt = """Run a fan-out relay workflow for: {{args}}
+
+Use fan-out only when the work can be split into independent subtasks.
+
+Follow this protocol:
+1. Read the workspace key from the RELAY_API_KEY environment variable, or if empty read ~/.relay/workspace-key. Print the observer URL so the user can follow along: https://agentrelay.dev/observer?key=<the actual key>. This is mandatory.
+2. Break the task into parallel subtasks with minimal overlap (max 5)
+3. Delegate each subtask to a @relay-worker sub-agent. Give each a clear, bounded task description. Tell each worker your agent name so they can send ACK/DONE messages back to you via mcp_relaycast_message_dm_send.
+4. Monitor progress with mcp_relaycast_message_inbox_check and answer worker questions
+5. When all workers finish, merge the results, resolve conflicts, and present a single synthesis"""

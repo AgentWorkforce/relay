@@ -219,12 +219,13 @@ fi
 
 # Test status command (with timeout to ensure it doesn't hang)
 log_info "Testing: agent-relay status (with 10s timeout)"
-if ! run_with_timeout 10 "$CLI_CMD" status; then
-  EXIT_CODE=$?
-  if [ $EXIT_CODE -eq 124 ]; then
+STATUS_EXIT=0
+run_with_timeout 10 "$CLI_CMD" status || STATUS_EXIT=$?
+if [ $STATUS_EXIT -ne 0 ]; then
+  if [ $STATUS_EXIT -eq 124 ]; then
     log_error "status command timed out (hung for >10s)"
   else
-    log_error "status command failed with exit code $EXIT_CODE"
+    log_error "status command failed with exit code $STATUS_EXIT"
   fi
   exit 1
 fi

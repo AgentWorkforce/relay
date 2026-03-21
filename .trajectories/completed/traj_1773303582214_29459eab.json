@@ -1,0 +1,120 @@
+{
+  "id": "traj_1773303582214_29459eab",
+  "version": 1,
+  "task": {
+    "title": "codex-sequential",
+    "source": {
+      "system": "workflow-runner",
+      "id": "e162a36a5ba5a5f5a6348158"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-03-12T08:19:42.214Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-12T08:19:42.214Z"
+    },
+    {
+      "name": "codex-a",
+      "role": "specialist",
+      "joinedAt": "2026-03-12T08:19:46.596Z"
+    },
+    {
+      "name": "codex-b",
+      "role": "specialist",
+      "joinedAt": "2026-03-12T08:19:50.840Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_91bb7692",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-12T08:19:42.214Z",
+      "events": [
+        {
+          "ts": 1773303582214,
+          "type": "note",
+          "content": "Purpose: Minimal sequential Codex workflow with step output chaining."
+        },
+        {
+          "ts": 1773303582214,
+          "type": "note",
+          "content": "Approach: 2-step pipeline workflow — Parsed 2 steps, 1 dependent steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-12T08:19:46.598Z"
+    },
+    {
+      "id": "ch_56b175ee",
+      "title": "Execution: first",
+      "agentName": "codex-a",
+      "startedAt": "2026-03-12T08:19:46.598Z",
+      "events": [
+        {
+          "ts": 1773303586598,
+          "type": "note",
+          "content": "\"first\": Output exactly:",
+          "raw": {
+            "agent": "codex-a"
+          }
+        },
+        {
+          "ts": 1773303590838,
+          "type": "finding",
+          "content": "\"first\" completed → VALUE=alpha",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-03-12T08:19:50.841Z"
+    },
+    {
+      "id": "ch_5f6e3a1c",
+      "title": "Execution: second",
+      "agentName": "codex-b",
+      "startedAt": "2026-03-12T08:19:50.841Z",
+      "events": [
+        {
+          "ts": 1773303590841,
+          "type": "note",
+          "content": "\"second\": Read this injected prior output and respond exactly:",
+          "raw": {
+            "agent": "codex-b"
+          }
+        },
+        {
+          "ts": 1773303595740,
+          "type": "finding",
+          "content": "\"second\" completed → SECOND_OK",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-03-12T08:19:55.743Z"
+    },
+    {
+      "id": "ch_cce51b86",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-12T08:19:55.743Z",
+      "events": [
+        {
+          "ts": 1773303595743,
+          "type": "reflection",
+          "content": "All 2 steps completed in 14s. (completed in 14 seconds)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-12T08:19:55.743Z"
+    }
+  ],
+  "completedAt": "2026-03-12T08:19:55.743Z",
+  "retrospective": {
+    "summary": "All 2 steps completed in 14s.",
+    "approach": "pipeline workflow (2 agents)",
+    "confidence": 1,
+    "learnings": [],
+    "challenges": []
+  }
+}

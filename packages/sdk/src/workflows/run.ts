@@ -21,6 +21,12 @@ export interface RunWorkflowOptions {
   trajectories?: TrajectoryConfig | false;
   /** Validate and show execution plan without running. */
   dryRun?: boolean;
+  /** Resume a failed run by its ID instead of starting fresh. */
+  resume?: string;
+  /** Skip to a specific step (re-uses cached outputs from earlier steps). */
+  startFrom?: string;
+  /** Previous run ID whose cached step outputs are used with startFrom. */
+  previousRunId?: string;
 }
 
 /**
@@ -68,5 +74,15 @@ export async function runWorkflow(
     runner.on(options.onEvent);
   }
 
-  return runner.execute(config, options.workflow, options.vars);
+  // Resume a previous run if requested
+  const resumeRunId = options.resume ?? process.env.RESUME_RUN_ID;
+  if (resumeRunId) {
+    return runner.resume(resumeRunId, options.vars);
+  }
+
+  const startFrom = options.startFrom ?? process.env.START_FROM;
+  const previousRunId = options.previousRunId ?? process.env.PREVIOUS_RUN_ID;
+  const executeOptions = startFrom ? { startFrom, previousRunId } : undefined;
+
+  return runner.execute(config, options.workflow, options.vars, executeOptions);
 }
