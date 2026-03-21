@@ -4,16 +4,16 @@ import { fileURLToPath } from 'node:url';
 
 import matter from 'gray-matter';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const moduleFilename = fileURLToPath(import.meta.url);
+const moduleDirname = path.dirname(moduleFilename);
 
 function resolveDocsDir(): string {
   const candidates = [
     path.resolve(process.cwd(), 'docs'),
     path.resolve(process.cwd(), '../docs'),
     path.resolve(process.cwd(), '../../docs'),
-    path.resolve(__dirname, '../../docs'),
-    path.resolve(__dirname, '../../../docs'),
+    path.resolve(moduleDirname, '../../docs'),
+    path.resolve(moduleDirname, '../../../docs'),
   ];
 
   for (const candidate of candidates) {

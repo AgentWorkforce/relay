@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const moduleFilename = fileURLToPath(import.meta.url);
+const moduleDirname = path.dirname(moduleFilename);
 
 function resolveSkillPath(): string {
   const candidates = [
@@ -11,8 +11,8 @@ function resolveSkillPath(): string {
     path.resolve(process.cwd(), '../packages/openclaw/skill/SKILL.md'),
     path.resolve(process.cwd(), '../../packages/openclaw/skill/SKILL.md'),
     path.resolve(process.cwd(), '../openclaw/skill/SKILL.md'),
-    path.resolve(__dirname, '../../packages/openclaw/skill/SKILL.md'),
-    path.resolve(__dirname, '../../../packages/openclaw/skill/SKILL.md'),
+    path.resolve(moduleDirname, '../../packages/openclaw/skill/SKILL.md'),
+    path.resolve(moduleDirname, '../../../packages/openclaw/skill/SKILL.md'),
   ];
 
   for (const candidate of candidates) {

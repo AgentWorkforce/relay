@@ -89,6 +89,39 @@
             "reasoning": "The site copy, sitemap, and robots rules already use /openclaw/skill as the public URL. The current redirects invert that intent, so the content and invite pages should live under /openclaw/skill and /skill should redirect there as a legacy alias."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1774103061345,
+          "type": "decision",
+          "content": "Keep animation behavior intact while extracting helper functions to satisfy ESLint complexity limits: Keep animation behavior intact while extracting helper functions to satisfy ESLint complexity limits",
+          "raw": {
+            "question": "Keep animation behavior intact while extracting helper functions to satisfy ESLint complexity limits",
+            "chosen": "Keep animation behavior intact while extracting helper functions to satisfy ESLint complexity limits",
+            "alternatives": [],
+            "reasoning": "The warnings are structural rather than behavioral, so helper extraction is the lowest-risk fix."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1774103219705,
+          "type": "reflection",
+          "content": "Cleared the current web lint warnings by removing unused symbols, renaming ESM path helpers, and extracting animation helper functions without changing behavior.",
+          "raw": {
+            "focalPoints": [
+              "lint",
+              "animation-components",
+              "esm-path-helpers"
+            ],
+            "adjustments": "Used helper extraction instead of logic changes to satisfy complexity and max-depth rules.",
+            "confidence": 0.87
+          },
+          "significance": "high",
+          "tags": [
+            "focal:lint",
+            "focal:animation-components",
+            "focal:esm-path-helpers",
+            "confidence:0.87"
+          ]
         }
       ]
     }

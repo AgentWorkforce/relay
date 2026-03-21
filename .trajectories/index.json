@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-03-20T20:12:42.267Z",
+  "lastUpdated": "2026-03-21T14:26:59.706Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",

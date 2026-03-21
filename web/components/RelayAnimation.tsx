@@ -35,6 +35,110 @@ const PULSE_CENTER = 'rgba(45, 79, 62, 0.55)';
 const PULSE_MID = 'rgba(45, 79, 62, 0.18)';
 const PULSE_EDGE = 'rgba(45, 79, 62, 0)';
 
+function drawBackground(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const bgGrad = ctx.createRadialGradient(w * 0.5, h * 0.45, 0, w * 0.5, h * 0.45, w * 0.7);
+  bgGrad.addColorStop(0, BG_CENTER);
+  bgGrad.addColorStop(1, BG_EDGE);
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, w, h);
+}
+
+function updateNodePositions(nodes: Node[], w: number, h: number) {
+  for (const node of nodes) {
+    node.x += node.vx;
+    node.y += node.vy;
+
+    if (node.x > w + 20) node.x = -20;
+    if (node.x < -20) node.x = w + 20;
+
+    if (node.y < 20 || node.y > h - 20) {
+      node.vy *= -1;
+    }
+  }
+}
+
+function drawConnections(ctx: CanvasRenderingContext2D, nodes: Node[], pulses: Pulse[]) {
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const dx = nodes[i].x - nodes[j].x;
+      const dy = nodes[i].y - nodes[j].y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist >= CONNECTION_DISTANCE) {
+        continue;
+      }
+
+      const alpha = (1 - dist / CONNECTION_DISTANCE) * 0.15;
+      ctx.beginPath();
+      ctx.moveTo(nodes[i].x, nodes[i].y);
+      ctx.lineTo(nodes[j].x, nodes[j].y);
+      ctx.strokeStyle = `rgba(${LINE_COLOR_R}, ${LINE_COLOR_G}, ${LINE_COLOR_B}, ${alpha})`;
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+
+      if (Math.random() < PULSE_CHANCE) {
+        pulses.push({
+          fromIdx: i,
+          toIdx: j,
+          t: 0,
+          speed: 0.008 + Math.random() * 0.012,
+        });
+      }
+    }
+  }
+}
+
+function drawPulses(ctx: CanvasRenderingContext2D, nodes: Node[], pulses: Pulse[]) {
+  for (let p = pulses.length - 1; p >= 0; p--) {
+    const pulse = pulses[p];
+    pulse.t += pulse.speed;
+
+    if (pulse.t > 1) {
+      pulses.splice(p, 1);
+      continue;
+    }
+
+    const from = nodes[pulse.fromIdx];
+    const to = nodes[pulse.toIdx];
+    if (!from || !to) {
+      pulses.splice(p, 1);
+      continue;
+    }
+
+    const px = from.x + (to.x - from.x) * pulse.t;
+    const py = from.y + (to.y - from.y) * pulse.t;
+
+    const grad = ctx.createRadialGradient(px, py, 0, px, py, 7);
+    grad.addColorStop(0, PULSE_CENTER);
+    grad.addColorStop(0.5, PULSE_MID);
+    grad.addColorStop(1, PULSE_EDGE);
+    ctx.beginPath();
+    ctx.arc(px, py, 7, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+  }
+}
+
+function drawNodes(ctx: CanvasRenderingContext2D, nodes: Node[]) {
+  for (const node of nodes) {
+    const glowGrad = ctx.createRadialGradient(
+      node.x, node.y, 0,
+      node.x, node.y, node.radius * 5
+    );
+    glowGrad.addColorStop(0, GLOW_COLOR);
+    glowGrad.addColorStop(1, 'rgba(45, 79, 62, 0)');
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, node.radius * 5, 0, Math.PI * 2);
+    ctx.fillStyle = glowGrad;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
+    ctx.fillStyle = node.shade > 0.5 ? NODE_DARK : NODE_LIGHT;
+    ctx.fill();
+  }
+}
+
 export default function RelayAnimation({ className }: { className?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const nodesRef = useRef<Node[]>([]);
@@ -99,108 +203,11 @@ export default function RelayAnimation({ className }: { className?: string }) {
       const pulses = pulsesRef.current;
 
       ctx.clearRect(0, 0, w, h);
-
-      // Background — warm oatmeal with subtle radial gradient
-      const bgGrad = ctx.createRadialGradient(w * 0.5, h * 0.45, 0, w * 0.5, h * 0.45, w * 0.7);
-      bgGrad.addColorStop(0, BG_CENTER);
-      bgGrad.addColorStop(1, BG_EDGE);
-      ctx.fillStyle = bgGrad;
-      ctx.fillRect(0, 0, w, h);
-
-      // Update nodes
-      for (const node of nodes) {
-        node.x += node.vx;
-        node.y += node.vy;
-
-        // Wrap horizontally (marquee)
-        if (node.x > w + 20) node.x = -20;
-        if (node.x < -20) node.x = w + 20;
-
-        // Bounce vertically with gentle drift
-        if (node.y < 20 || node.y > h - 20) {
-          node.vy *= -1;
-        }
-      }
-
-      // Draw connections
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const dx = nodes[i].x - nodes[j].x;
-          const dy = nodes[i].y - nodes[j].y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-
-          if (dist < CONNECTION_DISTANCE) {
-            const alpha = (1 - dist / CONNECTION_DISTANCE) * 0.15;
-            ctx.beginPath();
-            ctx.moveTo(nodes[i].x, nodes[i].y);
-            ctx.lineTo(nodes[j].x, nodes[j].y);
-            ctx.strokeStyle = `rgba(${LINE_COLOR_R}, ${LINE_COLOR_G}, ${LINE_COLOR_B}, ${alpha})`;
-            ctx.lineWidth = 0.8;
-            ctx.stroke();
-
-            // Maybe spawn a pulse
-            if (Math.random() < PULSE_CHANCE) {
-              pulses.push({
-                fromIdx: i,
-                toIdx: j,
-                t: 0,
-                speed: 0.008 + Math.random() * 0.012,
-              });
-            }
-          }
-        }
-      }
-
-      // Draw pulses
-      for (let p = pulses.length - 1; p >= 0; p--) {
-        const pulse = pulses[p];
-        pulse.t += pulse.speed;
-
-        if (pulse.t > 1) {
-          pulses.splice(p, 1);
-          continue;
-        }
-
-        const from = nodes[pulse.fromIdx];
-        const to = nodes[pulse.toIdx];
-        if (!from || !to) {
-          pulses.splice(p, 1);
-          continue;
-        }
-
-        const px = from.x + (to.x - from.x) * pulse.t;
-        const py = from.y + (to.y - from.y) * pulse.t;
-
-        const grad = ctx.createRadialGradient(px, py, 0, px, py, 7);
-        grad.addColorStop(0, PULSE_CENTER);
-        grad.addColorStop(0.5, PULSE_MID);
-        grad.addColorStop(1, PULSE_EDGE);
-        ctx.beginPath();
-        ctx.arc(px, py, 7, 0, Math.PI * 2);
-        ctx.fillStyle = grad;
-        ctx.fill();
-      }
-
-      // Draw nodes
-      for (const node of nodes) {
-        // Glow
-        const glowGrad = ctx.createRadialGradient(
-          node.x, node.y, 0,
-          node.x, node.y, node.radius * 5
-        );
-        glowGrad.addColorStop(0, GLOW_COLOR);
-        glowGrad.addColorStop(1, 'rgba(45, 79, 62, 0)');
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, node.radius * 5, 0, Math.PI * 2);
-        ctx.fillStyle = glowGrad;
-        ctx.fill();
-
-        // Core
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
-        ctx.fillStyle = node.shade > 0.5 ? NODE_DARK : NODE_LIGHT;
-        ctx.fill();
-      }
+      drawBackground(ctx, w, h);
+      updateNodePositions(nodes, w, h);
+      drawConnections(ctx, nodes, pulses);
+      drawPulses(ctx, nodes, pulses);
+      drawNodes(ctx, nodes);
 
       rafRef.current = requestAnimationFrame(draw);
     };
