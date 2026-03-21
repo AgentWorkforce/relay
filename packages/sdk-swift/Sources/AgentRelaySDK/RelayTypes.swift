@@ -149,15 +149,18 @@ public struct EmptyPayload: Codable, Sendable {
 public struct HelloPayload: Codable, Sendable {
     public var clientName: String
     public var clientVersion: String
+    public var apiKey: String?
 
     enum CodingKeys: String, CodingKey {
         case clientName = "client_name"
         case clientVersion = "client_version"
+        case apiKey = "api_key"
     }
 
-    public init(clientName: String, clientVersion: String) {
+    public init(clientName: String, clientVersion: String, apiKey: String? = nil) {
         self.clientName = clientName
         self.clientVersion = clientVersion
+        self.apiKey = apiKey
     }
 }
 
@@ -228,6 +231,9 @@ public enum BrokerEvent: Sendable {
     case agentRestarting(AgentRestartingEvent)
     case agentRestarted(AgentRestartedEvent)
     case agentPermanentlyDead(AgentPermanentlyDeadEvent)
+    /// Catch-all for unrecognized broker event kinds, preserving the raw kind string
+    /// and the full JSON payload for forward compatibility.
+    case unknown(kind: String, rawJSON: Data?)
 }
 
 extension BrokerEvent: Codable {
@@ -260,7 +266,10 @@ extension BrokerEvent: Codable {
         case "agent_restarted": self = .agentRestarted(try AgentRestartedEvent(from: decoder))
         case "agent_permanently_dead": self = .agentPermanentlyDead(try AgentPermanentlyDeadEvent(from: decoder))
         default:
-            throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Unsupported broker event kind")
+            // Forward-compatible: preserve unknown event kinds with raw JSON data
+            // so consumers can handle new broker events without SDK updates.
+            let kind = try container.decode(String.self, forKey: .kind)
+            self = .unknown(kind: kind, rawJSON: nil)
         }
     }
 
@@ -289,6 +298,9 @@ extension BrokerEvent: Codable {
         case .agentRestarting(let value): try value.encode(to: encoder)
         case .agentRestarted(let value): try value.encode(to: encoder)
         case .agentPermanentlyDead(let value): try value.encode(to: encoder)
+        case .unknown(let kind, _):
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(kind, forKey: .kind)
         }
     }
 }
@@ -302,6 +314,8 @@ public enum InboundMessage: Sendable {
     case workerStream(WorkerStreamPayload)
     case workerExited(WorkerExitedPayload)
     case pong(PongPayload)
+    /// Catch-all for unrecognized inbound message types for forward compatibility.
+    case unknown(type: String, rawJSON: Data?)
 }
 
 extension InboundMessage: Codable {
@@ -320,7 +334,9 @@ extension InboundMessage: Codable {
         case "worker_exited": self = .workerExited(try container.decode(WorkerExitedPayload.self, forKey: .payload))
         case "pong", "ping": self = .pong(try container.decode(PongPayload.self, forKey: .payload))
         default:
-            throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unsupported inbound message type")
+            // Forward-compatible: preserve unknown message types so consumers
+            // can handle new protocol frames without SDK updates.
+            self = .unknown(type: type, rawJSON: nil)
         }
     }
 
@@ -335,6 +351,7 @@ extension InboundMessage: Codable {
         case .workerStream(let payload): try container.encode("worker_stream", forKey: .type); try container.encode(payload, forKey: .payload)
         case .workerExited(let payload): try container.encode("worker_exited", forKey: .type); try container.encode(payload, forKey: .payload)
         case .pong(let payload): try container.encode("pong", forKey: .type); try container.encode(payload, forKey: .payload)
+        case .unknown(let type, _): try container.encode(type, forKey: .type)
         }
     }
 }

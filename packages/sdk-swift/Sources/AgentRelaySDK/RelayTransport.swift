@@ -106,7 +106,8 @@ public actor RelayTransport {
         if !(components?.path.hasSuffix("/v1/ws") ?? false) && !(components?.path.hasSuffix("/ws") ?? false) {
             components?.path = "/v1/ws"
         }
-        components?.queryItems = (components?.queryItems ?? []) + [URLQueryItem(name: "token", value: authToken)]
+        let existingItems = components?.queryItems ?? []
+        components?.queryItems = existingItems + [URLQueryItem(name: "token", value: authToken)]
 
         var request = URLRequest(url: components?.url ?? baseURL)
         request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
