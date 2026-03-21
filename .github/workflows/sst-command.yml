@@ -57,4 +57,4 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_DEFAULT_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: ../node_modules/.bin/sst ${{ inputs.command }} --stage ${{ inputs.stage }}
+        run: ../node_modules/.bin/sst ${{ inputs.command }} --stage "$SST_STAGE"
