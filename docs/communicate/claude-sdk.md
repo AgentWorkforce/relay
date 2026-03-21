@@ -1,5 +1,7 @@
 # Claude Agent SDK
 
+Connect Claude Agent SDK agents to the relay.
+
 Connect a [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents) agent to Relaycast. Supports both Python and TypeScript.
 
 **Tier 1 (Push)** -- Messages are injected mid-execution via PostToolUse and Stop hooks.

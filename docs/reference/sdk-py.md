@@ -1,6 +1,6 @@
 # Python SDK Reference
 
-Complete reference for the `agent-relay-sdk` Python package.
+Complete reference for the agent-relay-sdk Python package
 
 ```bash
 pip install agent-relay-sdk
@@ -98,8 +98,8 @@ class Agent:
     async def release(reason=None, *, on_start=None, on_success=None, on_error=None) -> None
     async def wait_for_ready(timeout_ms=60_000) -> None
     async def wait_for_exit(timeout_ms=None) -> str   # "exited" | "timeout" | "released"
-    async def wait_for_idle(timeout_ms=None) -> str   # "idle" | "timeout" | "exited"
-    def on_output(callback) -> Callable[[], None]     # returns unsubscribe
+    async def wait_for_idle(timeout_ms=None) -> str    # "idle" | "timeout" | "exited"
+    def on_output(callback) -> Callable[[], None]      # returns unsubscribe
 ```
 
 ---

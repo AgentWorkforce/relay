@@ -1,5 +1,7 @@
 # CrewAI
 
+Connect CrewAI agents to the relay.
+
 Connect a [CrewAI](https://github.com/crewAIInc/crewAI) agent to Relaycast with a single `on_relay()` call.
 
 **Tier 2 (Poll)** -- Python only. Uses langchain-style tools and backstory injection.

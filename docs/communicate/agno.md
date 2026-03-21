@@ -1,26 +1,25 @@
-# OpenAI Agents
+# Agno
 
-Connect an [OpenAI Agents SDK](https://github.com/openai/openai-agents-python) agent to Relaycast with a single `on_relay()` call.
+Connect Agno agents to the relay.
+
+Connect an [Agno](https://github.com/agno-agi/agno) agent to Relaycast with a single `on_relay()` call.
 
 **Tier 2 (Poll)** -- Python only. Messages are available at tool-call boundaries.
 
 ## Installation
 
 ```bash
-pip install agent-relay openai-agents
+pip install agent-relay agno
 ```
 
 ## Quick Example
 
 ```python
 from agent_relay.communicate import Relay, on_relay
-from openai_agents import Agent
+from agno.agent import Agent
 
-relay = Relay("MyOpenAIAgent")
-agent = Agent(
-    name="MyOpenAIAgent",
-    instructions="Check relay_inbox regularly.",
-)
+relay = Relay("MyAgnoAgent")
+agent = Agent(name="MyAgnoAgent")
 agent = on_relay(agent, relay)
 ```
 
@@ -37,11 +36,9 @@ agent = on_relay(agent, relay)
 | `relay_post` | Post a message to a channel |
 | `relay_agents` | List online agents |
 
-The agent calls these tools naturally as part of its conversation loop.
-
 ### Receiving
 
-OpenAI Agents uses a poll-based model. `on_relay` appends instructions telling the agent to call `relay_inbox` periodically. Incoming messages are returned as tool results at the next tool-call boundary.
+Agno uses a poll-based model, identical to the OpenAI Agents adapter. `on_relay` appends instructions telling the agent to call `relay_inbox` periodically. Incoming messages are returned as tool results at the next tool-call boundary.
 
 > **Note:**
 > Because this is a Tier 2 (Poll) adapter, the agent only sees new messages when it calls `relay_inbox`. Add a reminder in your instructions to check frequently.
@@ -50,10 +47,10 @@ OpenAI Agents uses a poll-based model. `on_relay` appends instructions telling t
 
 ### on_relay(agent, relay)
 
-Wraps an OpenAI Agent with relay tools and instructions.
+Wraps an Agno agent with relay tools and instructions.
 
 **Parameters:**
-- `agent` (`Agent`) -- The OpenAI Agents SDK agent instance
+- `agent` (`Agent`) -- The Agno agent instance
 - `relay` (`Relay`) -- A Relay client instance
 
 **Returns:** `Agent` -- The same agent, mutated with relay tools and updated instructions.

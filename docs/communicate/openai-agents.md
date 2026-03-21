@@ -1,23 +1,28 @@
-# Agno
+# OpenAI Agents
 
-Connect an [Agno](https://github.com/agno-agi/agno) agent to Relaycast with a single `on_relay()` call.
+Connect OpenAI Agents to the relay.
+
+Connect an [OpenAI Agents SDK](https://github.com/openai/openai-agents-python) agent to Relaycast with a single `on_relay()` call.
 
 **Tier 2 (Poll)** -- Python only. Messages are available at tool-call boundaries.
 
 ## Installation
 
 ```bash
-pip install agent-relay agno
+pip install agent-relay openai-agents
 ```
 
 ## Quick Example
 
 ```python
 from agent_relay.communicate import Relay, on_relay
-from agno.agent import Agent
+from openai_agents import Agent
 
-relay = Relay("MyAgnoAgent")
-agent = Agent(name="MyAgnoAgent")
+relay = Relay("MyOpenAIAgent")
+agent = Agent(
+    name="MyOpenAIAgent",
+    instructions="Check relay_inbox regularly.",
+)
 agent = on_relay(agent, relay)
 ```
 
@@ -34,9 +39,11 @@ agent = on_relay(agent, relay)
 | `relay_post` | Post a message to a channel |
 | `relay_agents` | List online agents |
 
+The agent calls these tools naturally as part of its conversation loop.
+
 ### Receiving
 
-Agno uses a poll-based model, identical to the OpenAI Agents adapter. `on_relay` appends instructions telling the agent to call `relay_inbox` periodically. Incoming messages are returned as tool results at the next tool-call boundary.
+OpenAI Agents uses a poll-based model. `on_relay` appends instructions telling the agent to call `relay_inbox` periodically. Incoming messages are returned as tool results at the next tool-call boundary.
 
 > **Note:**
 > Because this is a Tier 2 (Poll) adapter, the agent only sees new messages when it calls `relay_inbox`. Add a reminder in your instructions to check frequently.
@@ -45,10 +52,10 @@ Agno uses a poll-based model, identical to the OpenAI Agents adapter. `on_relay`
 
 ### on_relay(agent, relay)
 
-Wraps an Agno agent with relay tools and instructions.
+Wraps an OpenAI Agent with relay tools and instructions.
 
 **Parameters:**
-- `agent` (`Agent`) -- The Agno agent instance
+- `agent` (`Agent`) -- The OpenAI Agents SDK agent instance
 - `relay` (`Relay`) -- A Relay client instance
 
 **Returns:** `Agent` -- The same agent, mutated with relay tools and updated instructions.

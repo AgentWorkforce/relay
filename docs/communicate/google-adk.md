@@ -1,5 +1,7 @@
 # Google ADK
 
+Connect Google ADK agents to the relay.
+
 Connect a [Google Agent Development Kit](https://google.github.io/adk-docs/) agent to Relaycast with a single `on_relay()` call.
 
 **Tier 1 (Push)** -- Python only. Messages are injected via `before_model_callback`.

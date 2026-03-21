@@ -1,5 +1,7 @@
 # Pi
 
+Connect Pi agents to the relay.
+
 Connect a [Pi](https://github.com/anthropics/pi) coding agent to Relaycast. Messages are pushed into the session in real time.
 
 **Tier 1 (Push)** -- TypeScript only. Uses `session.steer()` and `session.followUp()`.

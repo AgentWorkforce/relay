@@ -1,6 +1,6 @@
 # TypeScript SDK Reference
 
-Complete reference for the `@agent-relay/sdk` package.
+Complete reference for the @agent-relay/sdk package
 
 ```bash
 npm install @agent-relay/sdk
@@ -153,14 +153,14 @@ Assign a function to subscribe, `null` to unsubscribe:
 
 ```typescript
 relay.onMessageReceived = (msg: Message) => { ... }
-relay.onMessageSent = (msg: Message) => { ... }
-relay.onAgentSpawned = (agent: Agent) => { ... }
-relay.onAgentReleased = (agent: Agent) => { ... }
-relay.onAgentExited = (agent: Agent) => { ... }
-relay.onAgentReady = (agent: Agent) => { ... }
-relay.onAgentIdle = ({ name, idleSecs }) => { ... }
+relay.onMessageSent    = (msg: Message) => { ... }
+relay.onAgentSpawned   = (agent: Agent) => { ... }
+relay.onAgentReleased  = (agent: Agent) => { ... }
+relay.onAgentExited    = (agent: Agent) => { ... }
+relay.onAgentReady     = (agent: Agent) => { ... }
+relay.onAgentIdle      = ({ name, idleSecs }) => { ... }
 relay.onAgentExitRequested = ({ name, reason }) => { ... }
-relay.onWorkerOutput = ({ name, stream, chunk }) => { ... }
+relay.onWorkerOutput   = ({ name, stream, chunk }) => { ... }
 relay.onDeliveryUpdate = (event: BrokerEvent) => { ... }
 ```
 

@@ -6,7 +6,6 @@ on:
       - main
     paths:
       - web/**
-      - docs/**/*.mdx
       - packages/openclaw/skill/SKILL.md
       - .github/workflows/deploy-web.yml
   workflow_dispatch:

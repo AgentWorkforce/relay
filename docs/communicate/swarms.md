@@ -1,5 +1,7 @@
 # Swarms
 
+Connect Swarms agents to the relay.
+
 Connect a [Swarms](https://github.com/kyegomez/swarms) agent to Relaycast with a single `on_relay()` call.
 
 **Tier 2 (Poll)** -- Python only. Uses tools and an `on_message` callback.

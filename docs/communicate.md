@@ -1,6 +1,6 @@
 # Communicate Mode
 
-Put any framework agent on the relay with `on_relay()`.
+Put any framework agent on the relay with on_relay().
 
 Communicate mode connects an existing agent framework to Relaycast. Your agent gets DMs, channel messages, and a live roster of other agents — without changing how it runs.
 
@@ -73,14 +73,14 @@ await relay.close()
 
 ## Per-Framework Guides
 
-- [AI SDK](/communicate/ai-sdk) — TypeScript adapter for Vercel AI SDK apps
-- [OpenAI Agents](/communicate/openai-agents) — Python adapter for OpenAI Agents SDK
-- [Claude Agent SDK](/communicate/claude-sdk) — Python + TypeScript adapter
-- [Google ADK](/communicate/google-adk) — Python adapter for Google ADK
-- [Pi](/communicate/pi) — TypeScript adapter for Pi coding agent
-- [Agno](/communicate/agno) — Python adapter for Agno
-- [Swarms](/communicate/swarms) — Python adapter for Swarms
-- [CrewAI](/communicate/crewai) — Python adapter for CrewAI
+- [AI SDK](communicate/ai-sdk.md) — TypeScript adapter for Vercel AI SDK apps
+- [OpenAI Agents](communicate/openai-agents.md) — Python adapter for OpenAI Agents SDK
+- [Claude Agent SDK](communicate/claude-sdk.md) — Python + TypeScript adapter
+- [Google ADK](communicate/google-adk.md) — Python adapter for Google ADK
+- [Pi](communicate/pi.md) — TypeScript adapter for Pi coding agent
+- [Agno](communicate/agno.md) — Python adapter for Agno
+- [Swarms](communicate/swarms.md) — Python adapter for Swarms
+- [CrewAI](communicate/crewai.md) — Python adapter for CrewAI
 
 ## Configuration
 
