@@ -80,5 +80,4 @@ __pycache__/
 .agent-relay/
 
 .sst
-web/sst-env.d.ts
 web/waitlist.json
