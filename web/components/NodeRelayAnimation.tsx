@@ -103,8 +103,9 @@ const SCRIPT: ScriptEvent[] = [
   { tick: 49, type: 'message', from: 7, to: 2 },
 ];
 
-const MIN_NODES = 5;
 const MAX_NODES = 8;
+const CARD_W = 160;
+const CARD_H = 88;
 
 // Layout: 1 center + 7 in a single ring, evenly spaced
 const NODE_POSITIONS = (() => {
@@ -158,6 +159,316 @@ function easeInOut(t: number) {
 
 function pick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function isReadyNode(node: AgentNode) {
+  return node.active && node.opacity >= 0.9;
+}
+
+function enqueueMessage(messages: Message[], message: Omit<Message, 't' | 'trail'>) {
+  messages.push({
+    ...message,
+    t: 0,
+    trail: [],
+  });
+}
+
+function setNodeRelaying(node: AgentNode, statusText: string) {
+  node.state = 'RELAYING';
+  node.statusText = statusText;
+  node.glowing = true;
+}
+
+function handleScriptEvents(tick: number, nodes: AgentNode[], messages: Message[]) {
+  for (const event of SCRIPT) {
+    if (event.tick !== tick) {
+      continue;
+    }
+
+    if (event.type === 'spawn') {
+      setNodeRelaying(nodes[event.from], `Spawning ${nodes[event.to].name}...`);
+      enqueueMessage(messages, {
+        from: event.from,
+        to: event.to,
+        speed: 0.02 + Math.random() * 0.008,
+        isSpawn: true,
+      });
+      continue;
+    }
+
+    const sender = nodes[event.from];
+    if (!isReadyNode(sender)) {
+      continue;
+    }
+
+    setNodeRelaying(sender, pick(RELAYING_TEXTS[sender.provider]));
+    enqueueMessage(messages, {
+      from: event.from,
+      to: event.to,
+      speed: 0.015 + Math.random() * 0.01,
+    });
+  }
+}
+
+function findReadyIndices(nodes: AgentNode[]) {
+  return nodes
+    .map((node, index) => (isReadyNode(node) ? index : -1))
+    .filter((index) => index >= 0);
+}
+
+function getActiveNeighbors(senderIdx: number, connections: [number, number][], nodes: AgentNode[]) {
+  return connections
+    .filter(([a, b]) => a === senderIdx || b === senderIdx)
+    .map(([a, b]) => (a === senderIdx ? b : a))
+    .filter((index) => isReadyNode(nodes[index]) && index !== senderIdx);
+}
+
+function pickRelayTargets(activeNeighbors: number[]) {
+  if (activeNeighbors.length >= 2 && Math.random() < 0.3) {
+    return [...activeNeighbors].sort(() => Math.random() - 0.5).slice(0, 2);
+  }
+
+  return [pick(activeNeighbors)];
+}
+
+function maybeQueueRandomRelay(
+  tick: number,
+  nodes: AgentNode[],
+  messages: Message[],
+  connections: [number, number][]
+) {
+  const readyIndices = findReadyIndices(nodes);
+  const scriptDone = tick > (SCRIPT.length > 0 ? SCRIPT[SCRIPT.length - 1].tick + 5 : 0);
+  if (!scriptDone || tick % 3 !== 0 || readyIndices.length < 2) {
+    return;
+  }
+
+  const senderIdx = pick(readyIndices);
+  const activeNeighbors = getActiveNeighbors(senderIdx, connections, nodes);
+  if (activeNeighbors.length === 0) {
+    return;
+  }
+
+  const sender = nodes[senderIdx];
+  setNodeRelaying(sender, pick(RELAYING_TEXTS[sender.provider]));
+
+  for (const target of pickRelayTargets(activeNeighbors)) {
+    enqueueMessage(messages, {
+      from: senderIdx,
+      to: target,
+      speed: 0.015 + Math.random() * 0.012,
+      branches: Math.random() < 0.25 && readyIndices.length > 1 ? [pick(readyIndices)] : undefined,
+    });
+  }
+}
+
+function cycleNodeStates(nodes: AgentNode[], tick: number) {
+  for (const node of nodes) {
+    if (node.state === 'COMPLETE') {
+      node.state = 'AWAITING TASK';
+      node.statusText = pick(IDLE_TEXTS[node.provider]);
+    }
+
+    if (node.state === 'RELAYING' && tick % 3 === 0) {
+      node.state = 'COMPLETE';
+      node.statusText = 'Done';
+    }
+
+    if (node.state === 'PROCESSING' && Math.random() < 0.15) {
+      node.statusText = pick(WORKING_TEXTS[node.provider]);
+    }
+  }
+}
+
+function updateNodePositions(nodes: AgentNode[], now: number) {
+  for (const node of nodes) {
+    const t = now * node.driftSpeed + node.driftPhase;
+    node.x = node.baseX + Math.sin(t) * node.driftAmplitudeX + Math.cos(t * 0.7) * node.driftAmplitudeX * 0.5;
+    node.y = node.baseY + Math.cos(t * 1.3) * node.driftAmplitudeY + Math.sin(t * 0.5) * node.driftAmplitudeY * 0.4;
+
+    node.opacity = node.active
+      ? Math.min(node.opacity + 0.08, 1)
+      : Math.max(node.opacity - 0.03, 0);
+
+    node.glowOpacity = node.glowing
+      ? Math.min(node.glowOpacity + 0.06, 1)
+      : Math.max(node.glowOpacity - 0.02, 0);
+
+    if (node.glowOpacity > 0.85) {
+      node.glowing = false;
+    }
+  }
+}
+
+type NodeCenter = { cx: number; cy: number; opacity: number };
+
+function buildCenters(nodes: AgentNode[], w: number, h: number): NodeCenter[] {
+  return nodes.map((node) => ({
+    cx: node.x * w + CARD_W / 2,
+    cy: node.y * h + CARD_H / 2,
+    opacity: node.opacity,
+  }));
+}
+
+function drawConnectionLines(
+  ctx: CanvasRenderingContext2D,
+  centers: NodeCenter[],
+  connections: [number, number][]
+) {
+  for (const [i, j] of connections) {
+    const ci = centers[i];
+    const cj = centers[j];
+    if (!ci || !cj) {
+      continue;
+    }
+
+    const lineOpacity = Math.min(ci.opacity, cj.opacity) * 0.1;
+    if (lineOpacity < 0.01) {
+      continue;
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(ci.cx, ci.cy);
+    ctx.lineTo(cj.cx, cj.cy);
+    ctx.strokeStyle = `rgba(45, 79, 62, ${lineOpacity})`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+}
+
+function drawMessageTrail(ctx: CanvasRenderingContext2D, message: Message) {
+  for (let trailIndex = message.trail.length - 1; trailIndex >= 0; trailIndex--) {
+    const point = message.trail[trailIndex];
+    point.age++;
+    const trailAlpha = Math.max(0, 0.22 - point.age * 0.004);
+
+    if (trailAlpha <= 0) {
+      message.trail.splice(trailIndex, 1);
+      continue;
+    }
+
+    const trailSize = Math.max(0.5, 2.5 - point.age * 0.03);
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, trailSize, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(74, 144, 194, ${trailAlpha})`;
+    ctx.fill();
+  }
+}
+
+function drawMessagePulse(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const grad = ctx.createRadialGradient(x, y, 0, x, y, 14);
+  grad.addColorStop(0, 'rgba(74, 144, 194, 0.5)');
+  grad.addColorStop(0.4, 'rgba(74, 144, 194, 0.15)');
+  grad.addColorStop(1, 'rgba(74, 144, 194, 0)');
+  ctx.beginPath();
+  ctx.arc(x, y, 14, 0, Math.PI * 2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(74, 144, 194, 0.8)';
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(234, 230, 221, 0.9)';
+  ctx.fill();
+}
+
+function handleMessageArrival(message: Message, nodes: AgentNode[], messages: Message[]) {
+  const receiver = nodes[message.to];
+  if (!receiver) {
+    return;
+  }
+
+  if (message.isSpawn && !receiver.active) {
+    receiver.active = true;
+    receiver.state = 'AWAITING TASK';
+    receiver.statusText = pick(IDLE_TEXTS[receiver.provider]);
+    receiver.glowing = true;
+  } else if (receiver.active) {
+    receiver.state = 'PROCESSING';
+    receiver.statusText = pick(WORKING_TEXTS[receiver.provider]);
+    receiver.glowing = true;
+  }
+
+  if (!message.branches || !receiver.active) {
+    return;
+  }
+
+  const branchTargets = message.branches.filter(
+    (branchTarget) => branchTarget !== message.to && branchTarget !== message.from && nodes[branchTarget]?.active
+  );
+
+  if (branchTargets.length === 0) {
+    return;
+  }
+
+  for (const branchTarget of branchTargets) {
+    enqueueMessage(messages, {
+      from: message.to,
+      to: branchTarget,
+      speed: 0.014 + Math.random() * 0.01,
+    });
+  }
+
+  receiver.state = 'RELAYING';
+  receiver.statusText = pick(RELAYING_TEXTS[receiver.provider]);
+}
+
+function drawMessages(
+  ctx: CanvasRenderingContext2D,
+  nodes: AgentNode[],
+  messages: Message[],
+  centers: NodeCenter[]
+) {
+  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex--) {
+    const message = messages[messageIndex];
+    message.t += message.speed;
+
+    const from = centers[message.from];
+    const to = centers[message.to];
+    if (!from || !to) {
+      messages.splice(messageIndex, 1);
+      continue;
+    }
+
+    const progress = easeInOut(Math.min(message.t, 1));
+    const px = lerp(from.cx, to.cx, progress);
+    const py = lerp(from.cy, to.cy, progress);
+
+    message.trail.push({ x: px, y: py, age: 0 });
+    drawMessageTrail(ctx, message);
+
+    if (message.t <= 1) {
+      drawMessagePulse(ctx, px, py);
+      continue;
+    }
+
+    handleMessageArrival(message, nodes, messages);
+    messages.splice(messageIndex, 1);
+  }
+}
+
+function drawGlowRings(ctx: CanvasRenderingContext2D, nodes: AgentNode[], centers: NodeCenter[]) {
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    if (node.glowOpacity <= 0.01 || node.opacity <= 0.1) {
+      continue;
+    }
+
+    const center = centers[i];
+    const radius = 56;
+    const alpha = node.glowOpacity * node.opacity * 0.07;
+    const grad = ctx.createRadialGradient(center.cx, center.cy, radius * 0.6, center.cx, center.cy, radius);
+    grad.addColorStop(0, `rgba(45, 79, 62, ${alpha})`);
+    grad.addColorStop(1, 'rgba(45, 79, 62, 0)');
+    ctx.beginPath();
+    ctx.arc(center.cx, center.cy, radius, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+  }
 }
 
 // ── SVG logos from pear/AgentIcons ──
@@ -280,92 +591,9 @@ export function NodeRelayAnimation() {
       const tick = tickRef.current++;
       const ns = nodesRef.current;
       const ms = messagesRef.current;
-      const activeIndices = ns.map((n, i) => (n.active ? i : -1)).filter((i) => i >= 0);
-
-      const conns = connectionsRef.current;
-      const scriptDone = tick > (SCRIPT.length > 0 ? SCRIPT[SCRIPT.length - 1].tick + 5 : 0);
-
-      // --- Scripted events ---
-      for (const evt of SCRIPT) {
-        if (evt.tick !== tick) continue;
-        if (evt.type === 'spawn') {
-          ns[evt.from].state = 'RELAYING';
-          ns[evt.from].statusText = `Spawning ${ns[evt.to].name}...`;
-          ns[evt.from].glowing = true;
-          ms.push({
-            from: evt.from,
-            to: evt.to,
-            t: 0,
-            speed: 0.02 + Math.random() * 0.008,
-            trail: [],
-            isSpawn: true,
-          });
-        } else {
-          // message between active nodes
-          if (ns[evt.from].active && ns[evt.from].opacity >= 0.9) {
-            ns[evt.from].state = 'RELAYING';
-            ns[evt.from].statusText = pick(RELAYING_TEXTS[ns[evt.from].provider]);
-            ns[evt.from].glowing = true;
-            ms.push({
-              from: evt.from,
-              to: evt.to,
-              t: 0,
-              speed: 0.015 + Math.random() * 0.01,
-              trail: [],
-            });
-          }
-        }
-      }
-
-      // --- After script: random relay chains between active nodes ---
-      const readyIndices = activeIndices.filter((i) => ns[i].opacity >= 0.9);
-      if (scriptDone && tick % 3 === 0 && readyIndices.length >= 2) {
-        const senderIdx = readyIndices[Math.floor(Math.random() * readyIndices.length)];
-        const activeNeighbors = conns
-          .filter(([a, b]) => a === senderIdx || b === senderIdx)
-          .map(([a, b]) => (a === senderIdx ? b : a))
-          .filter((i) => ns[i].active && ns[i].opacity >= 0.9 && i !== senderIdx);
-
-        if (activeNeighbors.length > 0) {
-          ns[senderIdx].state = 'RELAYING';
-          ns[senderIdx].statusText = pick(RELAYING_TEXTS[ns[senderIdx].provider]);
-          ns[senderIdx].glowing = true;
-
-          const branchRoll = Math.random();
-          let targets: number[];
-          if (branchRoll < 0.3 && activeNeighbors.length >= 2) {
-            targets = [...activeNeighbors].sort(() => Math.random() - 0.5).slice(0, 2);
-          } else {
-            targets = [activeNeighbors[Math.floor(Math.random() * activeNeighbors.length)]];
-          }
-
-          for (const target of targets) {
-            ms.push({
-              from: senderIdx,
-              to: target,
-              t: 0,
-              speed: 0.015 + Math.random() * 0.012,
-              trail: [],
-              branches: Math.random() < 0.25 && readyIndices.length > 1 ? [readyIndices[Math.floor(Math.random() * readyIndices.length)]] : undefined,
-            });
-          }
-        }
-      }
-
-      // --- Cycle states ---
-      for (const node of ns) {
-        if (node.state === 'COMPLETE') {
-          node.state = 'AWAITING TASK';
-          node.statusText = pick(IDLE_TEXTS[node.provider]);
-        }
-        if (node.state === 'RELAYING' && tick % 3 === 0) {
-          node.state = 'COMPLETE';
-          node.statusText = 'Done';
-        }
-        if (node.state === 'PROCESSING' && Math.random() < 0.15) {
-          node.statusText = pick(WORKING_TEXTS[node.provider]);
-        }
-      }
+      handleScriptEvents(tick, ns, ms);
+      maybeQueueRandomRelay(tick, ns, ms, connectionsRef.current);
+      cycleNodeStates(ns, tick);
 
       setRenderNodes([...ns]);
     }, 250);
@@ -394,9 +622,6 @@ export function NodeRelayAnimation() {
     resize();
     window.addEventListener('resize', resize);
 
-    const CARD_W = 160;
-    const CARD_H = 88;
-
     const draw = () => {
       const rect = container.getBoundingClientRect();
       const w = rect.width;
@@ -406,144 +631,11 @@ export function NodeRelayAnimation() {
       const now = timeRef.current++;
 
       ctx.clearRect(0, 0, w, h);
-
-      // Update drift
-      for (const node of ns) {
-        const t = now * node.driftSpeed + node.driftPhase;
-        node.x = node.baseX + Math.sin(t) * node.driftAmplitudeX + Math.cos(t * 0.7) * node.driftAmplitudeX * 0.5;
-        node.y = node.baseY + Math.cos(t * 1.3) * node.driftAmplitudeY + Math.sin(t * 0.5) * node.driftAmplitudeY * 0.4;
-
-        if (node.active) {
-          node.opacity = Math.min(node.opacity + 0.08, 1); // fast pop-in
-        } else {
-          node.opacity = Math.max(node.opacity - 0.03, 0);
-        }
-
-        if (node.glowing) {
-          node.glowOpacity = Math.min(node.glowOpacity + 0.06, 1);
-        } else {
-          node.glowOpacity = Math.max(node.glowOpacity - 0.02, 0);
-        }
-        if (node.glowOpacity > 0.85) {
-          node.glowing = false;
-        }
-      }
-
-      const centers = ns.map((n) => ({
-        cx: n.x * w + CARD_W / 2,
-        cy: n.y * h + CARD_H / 2,
-        opacity: n.opacity,
-      }));
-
-      // Connection lines
-      for (const [i, j] of connectionsRef.current) {
-        const ci = centers[i];
-        const cj = centers[j];
-        if (!ci || !cj) continue;
-        const lineOpacity = Math.min(ci.opacity, cj.opacity) * 0.1;
-        if (lineOpacity < 0.01) continue;
-        ctx.beginPath();
-        ctx.moveTo(ci.cx, ci.cy);
-        ctx.lineTo(cj.cx, cj.cy);
-        ctx.strokeStyle = `rgba(45, 79, 62, ${lineOpacity})`;
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
-
-      // Message trails and pulses
-      for (let m = ms.length - 1; m >= 0; m--) {
-        const msg = ms[m];
-        msg.t += msg.speed;
-
-        const from = centers[msg.from];
-        const to = centers[msg.to];
-        if (!from || !to) { ms.splice(m, 1); continue; }
-
-        const et = easeInOut(Math.min(msg.t, 1));
-        const px = lerp(from.cx, to.cx, et);
-        const py = lerp(from.cy, to.cy, et);
-
-        msg.trail.push({ x: px, y: py, age: 0 });
-
-        // Trail
-        for (let ti = msg.trail.length - 1; ti >= 0; ti--) {
-          const tp = msg.trail[ti];
-          tp.age++;
-          const trailAlpha = Math.max(0, 0.22 - tp.age * 0.004);
-          if (trailAlpha <= 0) { msg.trail.splice(ti, 1); continue; }
-          const trailSize = Math.max(0.5, 2.5 - tp.age * 0.03);
-          ctx.beginPath();
-          ctx.arc(tp.x, tp.y, trailSize, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(74, 144, 194, ${trailAlpha})`;
-          ctx.fill();
-        }
-
-        if (msg.t <= 1) {
-          const grad = ctx.createRadialGradient(px, py, 0, px, py, 14);
-          grad.addColorStop(0, 'rgba(74, 144, 194, 0.5)');
-          grad.addColorStop(0.4, 'rgba(74, 144, 194, 0.15)');
-          grad.addColorStop(1, 'rgba(74, 144, 194, 0)');
-          ctx.beginPath();
-          ctx.arc(px, py, 14, 0, Math.PI * 2);
-          ctx.fillStyle = grad;
-          ctx.fill();
-
-          ctx.beginPath();
-          ctx.arc(px, py, 3.5, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(74, 144, 194, 0.8)';
-          ctx.fill();
-
-          ctx.beginPath();
-          ctx.arc(px, py, 1.5, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(234, 230, 221, 0.9)';
-          ctx.fill();
-        }
-
-        if (msg.t > 1) {
-          const receiver = ns[msg.to];
-          if (receiver) {
-            if (msg.isSpawn && !receiver.active) {
-              // Spawn arrival: activate node — it will pop in via fast opacity ramp
-              receiver.active = true;
-              receiver.state = 'AWAITING TASK';
-              receiver.statusText = pick(IDLE_TEXTS[receiver.provider]);
-              receiver.glowing = true;
-            } else if (receiver.active) {
-              receiver.state = 'PROCESSING';
-              receiver.statusText = pick(WORKING_TEXTS[receiver.provider]);
-              receiver.glowing = true;
-            }
-
-            if (msg.branches && receiver.active) {
-              for (const bt of msg.branches) {
-                if (bt !== msg.to && bt !== msg.from && ns[bt]?.active) {
-                  ms.push({ from: msg.to, to: bt, t: 0, speed: 0.014 + Math.random() * 0.01, trail: [] });
-                  receiver.state = 'RELAYING';
-                  receiver.statusText = pick(RELAYING_TEXTS[receiver.provider]);
-                }
-              }
-            }
-          }
-          ms.splice(m, 1);
-        }
-      }
-
-      // Glow rings behind cards
-      for (let i = 0; i < ns.length; i++) {
-        const node = ns[i];
-        if (node.glowOpacity > 0.01 && node.opacity > 0.1) {
-          const c = centers[i];
-          const r = 56;
-          const alpha = node.glowOpacity * node.opacity * 0.07;
-          const grad = ctx.createRadialGradient(c.cx, c.cy, r * 0.6, c.cx, c.cy, r);
-          grad.addColorStop(0, `rgba(45, 79, 62, ${alpha})`);
-          grad.addColorStop(1, 'rgba(45, 79, 62, 0)');
-          ctx.beginPath();
-          ctx.arc(c.cx, c.cy, r, 0, Math.PI * 2);
-          ctx.fillStyle = grad;
-          ctx.fill();
-        }
-      }
+      updateNodePositions(ns, now);
+      const centers = buildCenters(ns, w, h);
+      drawConnectionLines(ctx, centers, connectionsRef.current);
+      drawMessages(ctx, ns, ms, centers);
+      drawGlowRings(ctx, ns, centers);
 
       rafRef.current = requestAnimationFrame(draw);
     };

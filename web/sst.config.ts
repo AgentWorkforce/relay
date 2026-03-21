@@ -16,7 +16,7 @@ export default $config({
 
     new sst.aws.Nextjs('Web', {
       path: '.',
-      openNextVersion: '3.6.2',
+      openNextVersion: '3.9.16',
       link: [waitlist],
       domain:
         $app.stage === 'production'

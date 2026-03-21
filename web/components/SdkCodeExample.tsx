@@ -52,7 +52,6 @@ function highlight(code: string, lang: Tab) {
     ? /\b(import|from|const|await|new)\b/g
     : /\b(from|import|await)\b/g;
 
-  const strings = /(["'`])(?:(?!\1).)*\1/g;
   const methods = /\.(\w+)\(/g;
   const types = lang === 'typescript'
     ? /\b(AgentRelay)\b/g
