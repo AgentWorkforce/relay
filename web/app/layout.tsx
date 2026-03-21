@@ -49,7 +49,7 @@ export const metadata: Metadata = {
     icon: '/favicon.svg',
   },
   twitter: {
-    card: 'summary',
+    card: 'summary_large_image',
   },
 };
 
