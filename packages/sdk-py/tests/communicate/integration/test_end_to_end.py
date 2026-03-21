@@ -64,30 +64,16 @@ async def _wait_for_agent_absent(
     transport: RelayTransport,
     agent_name: str,
     *,
-    timeout: float = 30.0,
+    timeout: float = 15.0,
 ) -> None:
-    """Wait for an agent to disappear from list_agents or go offline.
-
-    Relaycast presence may take a few seconds to propagate after disconnect.
-    We check both absence from the list and offline status.
-    """
     deadline = asyncio.get_running_loop().time() + timeout
 
     while asyncio.get_running_loop().time() < deadline:
-        agents_payload = await transport.send_http("GET", "/v1/agents")
-        data = agents_payload.get("data", agents_payload)
-        if isinstance(data, list):
-            matching = [a for a in data if isinstance(a, dict) and a.get("name") == agent_name]
-            if not matching:
-                return
-            # Also accept "offline" status
-            if all(a.get("status") == "offline" for a in matching):
-                return
-        elif agent_name not in await transport.list_agents():
+        if agent_name not in await transport.list_agents():
             return
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.25)
 
-    raise AssertionError(f"Timed out waiting for {agent_name!r} to go offline/absent from list_agents().")
+    raise AssertionError(f"Timed out waiting for {agent_name!r} to disappear from list_agents().")
 
 
 @pytest.mark.asyncio
@@ -110,20 +96,24 @@ async def test_register_send_receive_inbox_and_unregister_round_trip():
         assert message.text == text
         assert message.sender == sender.agent_name
 
-        # Verify disconnect completes without error
         receiver_name = receiver.agent_name
         await receiver.disconnect()
-
-        # Note: Relaycast presence updates are eventually consistent —
-        # agents may remain "online" in list_agents for a heartbeat window
-        # after disconnect. We verify the disconnect call succeeds rather
-        # than waiting for presence propagation.
+        await _wait_for_agent_absent(probe, receiver_name)
     finally:
         await asyncio.gather(
             _safe_disconnect(sender),
             _safe_disconnect(receiver),
             _safe_disconnect(probe),
         )
+
+    cleanup_probe = RelayTransport(_unique_name("sdk-py-e2e-cleanup"), config)
+    await cleanup_probe.connect()
+    try:
+        agents = await cleanup_probe.list_agents()
+        assert sender.agent_name not in agents
+        assert receiver.agent_name not in agents
+    finally:
+        await _safe_disconnect(cleanup_probe)
 
 
 @pytest.mark.asyncio

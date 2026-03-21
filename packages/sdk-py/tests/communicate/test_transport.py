@@ -1,4 +1,4 @@
-"""Tests for the RelayTransport HTTP/WS client against real Relaycast API surface."""
+"""Wave 1.2 tests for the RelayTransport HTTP/WS client."""
 
 from __future__ import annotations
 
@@ -44,8 +44,10 @@ async def test_register_agent_and_unregister_agent_manage_identity(relay_server)
 
     assert transport.agent_id in relay_server.registered_agents
     assert transport.token == relay_server.registered_agents[transport.agent_id]["token"]
-    register_payload = relay_server.requests["register_agent"][-1]["json"]
-    assert register_payload["name"] == "TransportTester"
+    assert relay_server.requests["register_agent"][-1]["json"] == {
+        "name": "TransportTester",
+        "workspace": relay_server.workspace,
+    }
 
     agent_id = transport.agent_id
     await transport.unregister_agent()
@@ -75,55 +77,47 @@ async def test_connect_and_disconnect_manage_registration_and_websocket(relay_se
 
 
 @pytest.mark.asyncio
-async def test_send_dm_posts_to_correct_endpoint(relay_server):
+@pytest.mark.parametrize(
+    ("method_name", "args", "operation", "expected_payload"),
+    [
+        (
+            "send_dm",
+            ("Review-Core", "hello"),
+            "send_dm",
+            {"to": "Review-Core", "text": "hello", "from": "TransportTester"},
+        ),
+        (
+            "post_message",
+            ("core-py", "status update"),
+            "post_message",
+            {"channel": "core-py", "text": "status update", "from": "TransportTester"},
+        ),
+        (
+            "reply",
+            ("message-123", "thread reply"),
+            "reply",
+            {"message_id": "message-123", "text": "thread reply", "from": "TransportTester"},
+        ),
+    ],
+)
+async def test_send_methods_use_expected_http_payload(
+    relay_server,
+    method_name,
+    args,
+    operation,
+    expected_payload,
+):
     RelayTransport = _transport_class()
     transport = RelayTransport("TransportTester", relay_server.make_config())
     await transport.connect()
 
     try:
-        message_id = await transport.send_dm("Review-Core", "hello")
+        message_id = await getattr(transport, method_name)(*args)
     finally:
         await transport.disconnect()
 
     assert message_id.startswith("message-")
-    dm_req = relay_server.requests["send_dm"][-1]
-    assert dm_req["json"]["to"] == "Review-Core"
-    assert dm_req["json"]["text"] == "hello"
-    assert dm_req["path"] == "/v1/dm"
-
-
-@pytest.mark.asyncio
-async def test_post_message_posts_to_channel_endpoint(relay_server):
-    RelayTransport = _transport_class()
-    transport = RelayTransport("TransportTester", relay_server.make_config())
-    await transport.connect()
-
-    try:
-        message_id = await transport.post_message("core-py", "status update")
-    finally:
-        await transport.disconnect()
-
-    assert message_id.startswith("message-")
-    ch_req = relay_server.requests["post_message"][-1]
-    assert ch_req["json"]["text"] == "status update"
-    assert "/v1/channels/core-py/messages" in ch_req["path"]
-
-
-@pytest.mark.asyncio
-async def test_reply_posts_to_replies_endpoint(relay_server):
-    RelayTransport = _transport_class()
-    transport = RelayTransport("TransportTester", relay_server.make_config())
-    await transport.connect()
-
-    try:
-        message_id = await transport.reply("message-123", "thread reply")
-    finally:
-        await transport.disconnect()
-
-    assert message_id.startswith("message-")
-    reply_req = relay_server.requests["reply"][-1]
-    assert reply_req["json"]["text"] == "thread reply"
-    assert "/v1/messages/message-123/replies" in reply_req["path"]
+    assert relay_server.requests[operation][-1]["json"] == expected_payload
 
 
 @pytest.mark.asyncio
@@ -148,10 +142,16 @@ async def test_check_inbox_returns_message_objects_and_drains_server_inbox(relay
     finally:
         await transport.disconnect()
 
-    assert len(messages) == 1
-    assert messages[0].sender == "Impl-Core"
-    assert messages[0].text == "transport ready"
-    assert messages[0].message_id == "message-inbox-1"
+    assert messages == [
+        Message(
+            sender=queued["sender"],
+            text=queued["text"],
+            channel=queued["channel"],
+            thread_id=queued["thread_id"],
+            timestamp=queued["timestamp"],
+            message_id=queued["message_id"],
+        )
+    ]
     assert empty == []
 
 
@@ -197,11 +197,16 @@ async def test_websocket_messages_are_decoded_and_delivered_to_callback(relay_se
     finally:
         await transport.disconnect()
 
-    assert len(received) == 1
-    assert received[0].sender == "Review-Core"
-    assert received[0].text == "looks good"
-    assert received[0].channel == "core-py"
-    assert received[0].message_id == "message-ws-1"
+    assert received == [
+        Message(
+            sender="Review-Core",
+            text="looks good",
+            channel="core-py",
+            thread_id=None,
+            timestamp=None,
+            message_id="message-ws-1",
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -242,8 +247,14 @@ async def test_transport_reconnects_after_websocket_disconnect(relay_server, mon
     finally:
         await transport.disconnect()
 
-    assert received[-1].sender == "Impl-Core"
-    assert received[-1].text == "reconnected"
+    assert received[-1] == Message(
+        sender="Impl-Core",
+        text="reconnected",
+        channel=None,
+        thread_id=None,
+        timestamp=None,
+        message_id="message-reconnect-1",
+    )
     assert [delay for delay in sleep_calls if delay >= 1][:1] == [1]
 
 
