@@ -40,45 +40,31 @@ const components = {
 };
 
 type PageProps = {
-  params: Promise<{
-    slug?: string[];
-  }>;
+  params: Promise<{ slug: string }>;
 };
 
-function slugToPath(slug?: string[]): string {
-  if (!slug || slug.length === 0) return 'introduction';
-  return slug.join('/');
-}
-
 export async function generateStaticParams() {
-  const slugs = getAllDocSlugs();
-  return [
-    { slug: undefined },
-    ...slugs.map((s) => ({ slug: s.split('/') })),
-  ];
+  return getAllDocSlugs().map((slug) => ({ slug }));
 }
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params;
-  const docSlug = slugToPath(slug);
-  const doc = getDoc(docSlug);
+  const doc = getDoc(slug);
 
   if (!doc) {
     return { title: 'Not Found' };
   }
 
-  const urlPath = slug ? `/docs/${slug.join('/')}` : '/docs';
-
   return {
     title: doc.frontmatter.title,
     description: doc.frontmatter.description,
     alternates: {
-      canonical: `https://agentrelay.dev${urlPath}`,
+      canonical: `https://agentrelay.dev/docs/${slug}`,
     },
     openGraph: {
       title: doc.frontmatter.title,
       description: doc.frontmatter.description,
-      url: `https://agentrelay.dev${urlPath}`,
+      url: `https://agentrelay.dev/docs/${slug}`,
       type: 'article',
     },
   };
@@ -86,8 +72,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function DocsPage({ params }: PageProps) {
   const { slug } = await params;
-  const docSlug = slugToPath(slug);
-  const doc = getDoc(docSlug);
+  const doc = getDoc(slug);
 
   if (!doc) {
     notFound();

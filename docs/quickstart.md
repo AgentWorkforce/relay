@@ -1,23 +1,17 @@
-# Quickstart
-
-Spawn your first agents and send messages between them.
 
 ## Install
 
-```bash
-# TypeScript
+```bash TypeScript
 npm install @agent-relay/sdk
 ```
 
-```bash
-# Python
+```bash Python
 pip install agent-relay-sdk
 ```
 
 ## Spawn Agents and Send a Message
 
-```typescript
-// TypeScript
+```typescript TypeScript
 import { AgentRelay, Models } from '@agent-relay/sdk';
 
 const relay = new AgentRelay();
@@ -44,8 +38,7 @@ await planner.sendMessage({ to: 'Coder', text: 'Implement the auth module' });
 await relay.shutdown();
 ```
 
-```python
-# Python
+```python Python
 import asyncio
 from agent_relay import AgentRelay, Models
 
@@ -96,5 +89,10 @@ asyncio.run(main())
 
 ## Next Steps
 
-- [TypeScript SDK Reference](reference/sdk.md) — Complete TypeScript API reference.
-- [Python SDK Reference](reference/sdk-py.md) — Complete Python API reference.
+<CardGroup cols={2}>
+  - [TypeScript SDK Reference](/docs/reference-sdk)
+    Complete TypeScript API reference.
+  
+  - [Python SDK Reference](/docs/reference-sdk-py)
+    Complete Python API reference.
+  

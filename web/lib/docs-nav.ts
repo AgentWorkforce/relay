@@ -19,13 +19,13 @@ export const docsNav: NavGroup[] = [
   {
     title: 'SDK',
     items: [
-      { title: 'TypeScript SDK Reference', slug: 'reference/sdk' },
-      { title: 'Python SDK Reference', slug: 'reference/sdk-py' },
+      { title: 'TypeScript SDK Reference', slug: 'reference-sdk' },
+      { title: 'Python SDK Reference', slug: 'reference-sdk-py' },
     ],
   },
   {
     title: 'Integrations',
-    items: [{ title: 'OpenClaw Bridge', slug: 'reference/openclaw' }],
+    items: [{ title: 'OpenClaw Bridge', slug: 'reference-openclaw' }],
   },
 ];
 
@@ -34,14 +34,14 @@ const ALL_SLUGS = [
   ...docsNav.flatMap((group) => group.items.map((item) => item.slug)),
   // Hidden from nav but still routable
   'communicate',
-  'communicate/ai-sdk',
-  'communicate/claude-sdk',
-  'communicate/google-adk',
-  'communicate/pi',
-  'communicate/agno',
-  'communicate/openai-agents',
-  'communicate/swarms',
-  'communicate/crewai',
+  'communicate-ai-sdk',
+  'communicate-claude-sdk',
+  'communicate-google-adk',
+  'communicate-pi',
+  'communicate-agno',
+  'communicate-openai-agents',
+  'communicate-swarms',
+  'communicate-crewai',
 ];
 
 /** Flat list of all doc slugs for static generation */
