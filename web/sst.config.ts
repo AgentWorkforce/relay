@@ -1,7 +1,7 @@
 export default $config({
   app(input) {
     return {
-      name: 'relay-openclaw-page',
+      name: 'relay-web',
       home: 'aws',
       removal: input?.stage === 'production' ? 'retain' : 'remove',
     };
