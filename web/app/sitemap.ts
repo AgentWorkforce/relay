@@ -39,13 +39,13 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.8,
     },
     {
-      url: 'https://agentrelay.dev/docs/reference/sdk',
+      url: 'https://agentrelay.dev/docs/reference-sdk',
       lastModified: new Date(),
       changeFrequency: 'weekly',
       priority: 0.8,
     },
     {
-      url: 'https://agentrelay.dev/docs/reference/sdk-py',
+      url: 'https://agentrelay.dev/docs/reference-sdk-py',
       lastModified: new Date(),
       changeFrequency: 'weekly',
       priority: 0.8,
