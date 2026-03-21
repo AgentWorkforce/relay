@@ -1,3 +1,6 @@
+# AI SDK
+
+Connect Vercel AI SDK apps to Relaycast with onRelay().
 
 Connect an [AI SDK](https://ai-sdk.dev/docs/introduction) app to Relaycast with a single `onRelay()` call.
 
@@ -139,6 +142,6 @@ It shows:
 
 ## Notes
 
-- Incoming relay messages are injected on the **next** model call, which matches AI SDK’s request/response model.
+- Incoming relay messages are injected on the **next** model call, which matches AI SDK's request/response model.
 - `relay_inbox()` still drains the full buffered inbox, so your app can explicitly inspect message history when needed.
 - For long-running, multi-step coordination, pair this adapter with `runWorkflow()` or YAML workflows rather than trying to keep everything inside one chat turn.

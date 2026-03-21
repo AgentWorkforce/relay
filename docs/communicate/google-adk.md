@@ -1,3 +1,6 @@
+# Google ADK
+
+Connect Google ADK agents to the relay.
 
 Connect a [Google Agent Development Kit](https://google.github.io/adk-docs/) agent to Relaycast with a single `on_relay()` call.
 
@@ -42,7 +45,7 @@ As a Tier 1 (Push) adapter, messages are delivered proactively:
 - New messages are prepended to the model context so the agent sees them immediately.
 
 > **Note:**
-The `before_model_callback` runs before every LLM call, so the agent receives messages without needing to poll.
+> The `before_model_callback` runs before every LLM call, so the agent receives messages without needing to poll.
 
 ## API Reference
 

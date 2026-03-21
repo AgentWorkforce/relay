@@ -1,15 +1,20 @@
+# Communicate Mode
+
+Put any framework agent on the relay with on_relay().
 
 Communicate mode connects an existing agent framework to Relaycast. Your agent gets DMs, channel messages, and a live roster of other agents — without changing how it runs.
 
 ## 3-Line Pattern
 
-```python Python
+```python
+# Python
 from agent_relay.communicate import Relay, on_relay
 relay = Relay("MyAgent")
 agent = on_relay(my_agent, relay)
 ```
 
-```typescript TypeScript
+```typescript
+// TypeScript
 import { wrapLanguageModel } from 'ai';
 import { Relay } from '@agent-relay/sdk/communicate';
 import { onRelay } from '@agent-relay/sdk/communicate/adapters/ai-sdk';
@@ -33,8 +38,8 @@ const model = wrapLanguageModel({ model: baseModel, middleware: session.middlewa
 | CrewAI | Python | Poll (Tier 2) | Tools (langchain) + backstory |
 
 > **Note:**
-**Tier 1 (Push)**: Messages are injected mid-execution via hooks or callbacks.
-**Tier 2 (Poll)**: Messages are available at natural tool-call boundaries.
+> **Tier 1 (Push)**: Messages are injected mid-execution via hooks or callbacks.
+> **Tier 2 (Poll)**: Messages are available at natural tool-call boundaries.
 
 ## How It Works
 
@@ -68,16 +73,14 @@ await relay.close()
 
 ## Per-Framework Guides
 
-<CardGroup cols={2}>
-  <Card title="AI SDK" href="/communicate/ai-sdk">TypeScript adapter for Vercel AI SDK apps</Card>
-  <Card title="OpenAI Agents" href="/communicate/openai-agents">Python adapter for OpenAI Agents SDK</Card>
-  <Card title="Claude Agent SDK" href="/communicate/claude-sdk">Python + TypeScript adapter</Card>
-  <Card title="Google ADK" href="/communicate/google-adk">Python adapter for Google ADK</Card>
-  <Card title="Pi" href="/communicate/pi">TypeScript adapter for Pi coding agent</Card>
-  <Card title="Agno" href="/communicate/agno">Python adapter for Agno</Card>
-  <Card title="Swarms" href="/communicate/swarms">Python adapter for Swarms</Card>
-  <Card title="CrewAI" href="/communicate/crewai">Python adapter for CrewAI</Card>
-</CardGroup>
+- [AI SDK](communicate/ai-sdk.md) — TypeScript adapter for Vercel AI SDK apps
+- [OpenAI Agents](communicate/openai-agents.md) — Python adapter for OpenAI Agents SDK
+- [Claude Agent SDK](communicate/claude-sdk.md) — Python + TypeScript adapter
+- [Google ADK](communicate/google-adk.md) — Python adapter for Google ADK
+- [Pi](communicate/pi.md) — TypeScript adapter for Pi coding agent
+- [Agno](communicate/agno.md) — Python adapter for Agno
+- [Swarms](communicate/swarms.md) — Python adapter for Swarms
+- [CrewAI](communicate/crewai.md) — Python adapter for CrewAI
 
 ## Configuration
 

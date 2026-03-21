@@ -1,8 +1,39 @@
+# TypeScript SDK Reference
+
+Complete reference for the @agent-relay/sdk package
 
 ```bash
 npm install @agent-relay/sdk
 ```
 
+---
+
+## AgentRelay
+
+The main entry point. Manages the broker lifecycle, spawns agents, and routes messages.
+
+```typescript
+import { AgentRelay } from '@agent-relay/sdk';
+
+const relay = new AgentRelay(options?: AgentRelayOptions);
+```
+
+### AgentRelayOptions
+
+| Property            | Type                | Description                                         | Default                     |
+| ------------------- | ------------------- | --------------------------------------------------- | --------------------------- |
+| `binaryPath`        | `string`            | Path to the broker binary                           | Auto-resolved               |
+| `binaryArgs`        | `string[]`          | Extra arguments for the broker process              | None                        |
+| `brokerName`        | `string`            | Name for the broker instance                        | Auto-generated              |
+| `channels`          | `string[]`          | Default channels agents are joined to on spawn      | `['general']`               |
+| `cwd`               | `string`            | Working directory for the broker and spawned agents | `process.cwd()`             |
+| `env`               | `NodeJS.ProcessEnv` | Environment variables passed to the broker          | Inherited                   |
+| `requestTimeoutMs`  | `number`            | Timeout for broker requests                         | `10000`                     |
+| `shutdownTimeoutMs` | `number`            | Timeout when shutting down                          | `3000`                      |
+| `workspaceName`     | `string`            | Name for the auto-created Relaycast workspace       | Random                      |
+| `relaycastBaseUrl`  | `string`            | Base URL for the Relaycast API                      | `https://api.relaycast.dev` |
+
+---
 
 ## Spawning Agents
 
@@ -52,6 +83,50 @@ const agent = await relay.spawnAndWait('Worker', 'claude', 'Analyze the codebase
 });
 ```
 
+---
+
+## Agent
+
+All spawn methods return an `Agent`:
+
+```typescript
+interface Agent {
+  readonly name: string;
+  readonly runtime: AgentRuntime;
+  readonly channels: string[];
+  readonly status: AgentStatus; // 'spawning' | 'ready' | 'idle' | 'exited'
+  exitCode?: number;
+  exitSignal?: string;
+  exitReason?: string;
+
+  sendMessage(input: {
+    to: string;
+    text: string;
+    threadId?: string;
+    priority?: number;
+    data?: Record<string, unknown>;
+  }): Promise<Message>;
+
+  release(reasonOrOptions?: string | ReleaseOptions): Promise<void>;
+  waitForReady(timeoutMs?: number): Promise<void>;
+  waitForExit(timeoutMs?: number): Promise<'exited' | 'timeout' | 'released'>;
+  waitForIdle(timeoutMs?: number): Promise<'idle' | 'timeout' | 'exited'>;
+  onOutput(callback: (chunk: string) => void): () => void; // returns unsubscribe
+}
+```
+
+### `ReleaseOptions`
+
+`agent.release(...)` accepts either a reason string or a `ReleaseOptions` object:
+
+| Property    | Type       | Description                                        |
+| ----------- | ---------- | -------------------------------------------------- |
+| `reason`    | `string`   | Optional release reason sent to the broker         |
+| `onStart`   | `function` | Sync/async callback before release request is sent |
+| `onSuccess` | `function` | Sync/async callback after release succeeds         |
+| `onError`   | `function` | Sync/async callback when release fails             |
+
+---
 
 ## Human Handles
 
@@ -70,6 +145,39 @@ await sys.sendMessage({ to: 'Worker', text: 'Stop and report status' });
 await relay.broadcast('All hands: stand by for new task');
 ```
 
+---
+
+## Event Hooks
+
+Assign a function to subscribe, `null` to unsubscribe:
+
+```typescript
+relay.onMessageReceived = (msg: Message) => { ... }
+relay.onMessageSent    = (msg: Message) => { ... }
+relay.onAgentSpawned   = (agent: Agent) => { ... }
+relay.onAgentReleased  = (agent: Agent) => { ... }
+relay.onAgentExited    = (agent: Agent) => { ... }
+relay.onAgentReady     = (agent: Agent) => { ... }
+relay.onAgentIdle      = ({ name, idleSecs }) => { ... }
+relay.onAgentExitRequested = ({ name, reason }) => { ... }
+relay.onWorkerOutput   = ({ name, stream, chunk }) => { ... }
+relay.onDeliveryUpdate = (event: BrokerEvent) => { ... }
+```
+
+**Message type:**
+
+```typescript
+interface Message {
+  eventId: string;
+  from: string;
+  to: string;
+  text: string;
+  threadId?: string;
+  data?: Record<string, unknown>;
+}
+```
+
+---
 
 ## Other Methods
 
@@ -103,6 +211,50 @@ const { agent, result } = await AgentRelay.waitForAny([agent1, agent2], 60000)
 await relay.shutdown()
 ```
 
+---
+
+## Complete Example
+
+```typescript
+import { AgentRelay, Models } from '@agent-relay/sdk';
+
+const relay = new AgentRelay();
+
+relay.onMessageReceived = (msg) => {
+  console.log(`${msg.from} → ${msg.to}: ${msg.text}`);
+};
+
+relay.onAgentSpawned = (agent) => {
+  console.log(`Spawned: ${agent.name}`);
+};
+
+// Spawn agents
+const planner = await relay.claude.spawn({
+  name: 'Planner',
+  model: Models.Claude.OPUS,
+  task: 'Plan the feature implementation',
+});
+
+const coder = await relay.codex.spawn({
+  name: 'Coder',
+  model: Models.Codex.GPT_5_3_CODEX,
+  task: 'Implement the plan',
+});
+
+// Wait for both to be ready
+await planner.waitForReady();
+await coder.waitForReady();
+
+// Send a message
+await planner.sendMessage({ to: 'Coder', text: 'Start implementing the auth module' });
+
+// Wait for coder to finish
+await coder.waitForExit(300_000);
+
+await relay.shutdown();
+```
+
+---
 
 ## Models
 
@@ -127,8 +279,28 @@ Models.Opencode.OPENAI_GPT_5_2; // 'openai/gpt-5.2' (default)
 Models.Opencode.OPENCODE_GPT_5_NANO; // 'opencode/gpt-5-nano'
 ```
 
+---
+
+## Error Types
+
+```typescript
+import { AgentRelayProtocolError, AgentRelayProcessError } from '@agent-relay/sdk';
+
+try {
+  await relay.claude.spawn({ name: 'Worker' });
+} catch (err) {
+  if (err instanceof AgentRelayProtocolError) {
+    // Broker returned an error response (err.code available)
+  }
+  if (err instanceof AgentRelayProcessError) {
+    // Broker process failed to start or crashed
+  }
+}
+```
+
+---
 
 ## See Also
 
-- [Quickstart](/quickstart) — Spawn agents and exchange messages quickly
-- [Python SDK Reference](/reference/sdk-py) — Python API reference
+- [Quickstart](../quickstart.md) — Spawn agents and exchange messages quickly
+- [Python SDK Reference](sdk-py.md) — Python API reference

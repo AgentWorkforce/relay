@@ -1,14 +1,19 @@
+# Introduction
+
+Spawn, coordinate, and connect AI agents from TypeScript or Python.
 
 The Agent Relay SDK has two modes:
 
 - **Orchestrate** — Spawn and manage AI agents (Claude, Codex, Gemini, OpenCode) from code. Send messages, listen for responses, and shut them down when done.
 - **Communicate** — Put an existing framework agent "on the relay" with a single `on_relay()` / `onRelay()` call. Works with AI SDK, OpenAI Agents, Claude Agent SDK, Google ADK, Pi, Agno, Swarms, and CrewAI.
 
-```bash TypeScript
+```bash
+# TypeScript
 npm install @agent-relay/sdk
 ```
 
-```bash Python
+```bash
+# Python
 pip install agent-relay-sdk
 ```
 
@@ -18,13 +23,15 @@ pip install agent-relay-sdk
 
 Spawn and control agents from your code:
 
-```typescript TypeScript
+```typescript
+// TypeScript
 import { AgentRelayClient } from '@agent-relay/sdk';
 const client = new AgentRelayClient();
 const agent = await client.spawnPty({ cli: 'claude', task: 'Review the PR' });
 ```
 
-```python Python
+```python
+# Python
 from agent_relay import workflow
 wf = workflow("review")
 wf.agent("reviewer", cli="claude")
@@ -36,13 +43,15 @@ wf.build()
 
 Connect any framework agent to Relaycast in 3 lines:
 
-```python Python
+```python
+# Python
 from agent_relay.communicate import Relay, on_relay
 relay = Relay("MyAgent")
 agent = on_relay(my_framework_agent, relay)
 ```
 
-```typescript TypeScript
+```typescript
+// TypeScript
 import { Relay } from '@agent-relay/sdk/communicate';
 import { onRelay } from '@agent-relay/sdk/communicate/adapters/pi';
 const config = onRelay('MyAgent', piConfig, new Relay('MyAgent'));
@@ -50,20 +59,10 @@ const config = onRelay('MyAgent', piConfig, new Relay('MyAgent'));
 
 ## What You Can Do
 
-<CardGroup cols={2}>
-  <Card title="Spawn Agents" icon="users">
-    Programmatically create Claude, Codex, Gemini, or OpenCode agents with a specific model and task.
-  </Card>
-  <Card title="Send Messages" icon="messages">
-    Route messages between agents — direct, broadcast, or channel-based.
-  </Card>
-  <Card title="Connect Frameworks" icon="plug">
-    Put OpenAI Agents, Claude SDK, Google ADK, Pi, Agno, Swarms, or CrewAI agents on the relay.
-  </Card>
-  <Card title="Multi-Provider" icon="shuffle">
-    Mix Claude, Codex, Gemini, and OpenCode agents in a single workflow, each using their strengths.
-  </Card>
-</CardGroup>
+- **Spawn Agents** — Programmatically create Claude, Codex, Gemini, or OpenCode agents with a specific model and task.
+- **Send Messages** — Route messages between agents — direct, broadcast, or channel-based.
+- **Connect Frameworks** — Put OpenAI Agents, Claude SDK, Google ADK, Pi, Agno, Swarms, or CrewAI agents on the relay.
+- **Multi-Provider** — Mix Claude, Codex, Gemini, and OpenCode agents in a single workflow, each using their strengths.
 
 ## Claude Code Plugin
 
@@ -92,23 +91,11 @@ Split the migration into three relay workers — one for the schema, one for the
 
 These docs are also available as plain Markdown for LLMs, CLI tools, and programmatic access:
 
-<Card title="📄 Markdown Docs on GitHub" icon="file-lines" href="https://github.com/AgentWorkforce/relay/tree/main/docs/markdown">
-  Plain-text versions of every page — no MDX components, no JavaScript. Designed for `curl`, agents, and language models.
-</Card>
+- [Markdown Docs on GitHub](https://github.com/AgentWorkforce/relay/tree/main/docs) — Plain-text versions of every page — no MDX components, no JavaScript. Designed for `curl`, agents, and language models.
 
 ## Next Steps
 
-<CardGroup cols={2}>
-  <Card title="Quickstart" icon="rocket" href="/quickstart">
-    Get your first agents talking to each other in minutes.
-  </Card>
-  <Card title="Communicate Mode" icon="plug" href="/communicate">
-    Put any framework agent on the relay with on_relay().
-  </Card>
-  <Card title="TypeScript SDK" icon="js" href="/reference/sdk">
-    Full API reference for the TypeScript SDK.
-  </Card>
-  <Card title="Python SDK" icon="python" href="/reference/sdk-py">
-    Full API reference for the Python SDK.
-  </Card>
-</CardGroup>
+- [Quickstart](quickstart.md) — Get your first agents talking to each other in minutes.
+- [Communicate Mode](communicate.md) — Put any framework agent on the relay with on_relay().
+- [TypeScript SDK](reference/sdk.md) — Full API reference for the TypeScript SDK.
+- [Python SDK](reference/sdk-py.md) — Full API reference for the Python SDK.
