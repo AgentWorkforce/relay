@@ -56,6 +56,7 @@ actor RelayCore {
     let decoder = JSONDecoder()
 
     private var handshakeInFlight = false
+    private var handshakeGeneration = 0
     private var handshakeContinuations: [CheckedContinuation<Void, Error>] = []
     private var routerTask: Task<Void, Never>?
     private var channelContinuations: [String: [AsyncStream<RelayChannelEvent>.Continuation]] = [:]
@@ -82,6 +83,7 @@ actor RelayCore {
             return try await waitForHandshake()
         }
         handshakeInFlight = true
+        handshakeGeneration &+= 1
         try await transport.connect()
         try await send(.hello(HelloPayload(clientName: "AgentRelaySDK.Swift", clientVersion: "0.1.0", apiKey: apiKey)))
         try await waitForHandshake()
@@ -92,6 +94,7 @@ actor RelayCore {
             finishHandshake(with: RelayError.connectionFailed("Transport reconnected before previous handshake completed"))
         }
         handshakeInFlight = true
+        handshakeGeneration &+= 1
         notifyConnectionState(.connected)
         do {
             try await send(.hello(HelloPayload(clientName: "AgentRelaySDK.Swift", clientVersion: "0.1.0", apiKey: apiKey)))
@@ -183,11 +186,12 @@ actor RelayCore {
     }
 
     private func waitForHandshake() async throws {
+        let generation = handshakeGeneration
         try await withCheckedThrowingContinuation { continuation in
             handshakeContinuations.append(continuation)
-            Task {
+            Task { [weak self] in
                 try? await Task.sleep(for: .seconds(10))
-                await self.failHandshakeIfPending(with: RelayError.timeout("Timed out waiting for hello_ack"))
+                await self?.failHandshakeIfPending(generation: generation, with: RelayError.timeout("Timed out waiting for hello_ack"))
             }
         }
     }
@@ -210,8 +214,8 @@ actor RelayCore {
         }
     }
 
-    private func failHandshakeIfPending(with error: Error) {
-        guard handshakeInFlight else { return }
+    private func failHandshakeIfPending(generation: Int, with error: Error) {
+        guard handshakeInFlight, handshakeGeneration == generation else { return }
         finishHandshake(with: error)
     }
 
