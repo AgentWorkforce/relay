@@ -1,72 +1,77 @@
 import type { MetadataRoute } from 'next';
 
+import { getAllPosts } from '../lib/blog';
+import { getAllDocSlugs } from '../lib/docs-nav';
+
+const SITE_URL = 'https://agentrelay.dev';
+const OPENCLAW_USE_CASE_SLUGS = [
+  'multi-agent-workflows-claude-codex',
+  'how-to-let-ai-agents-message-each-other',
+  'agent-orchestration-for-coding-teams',
+  'slack-style-messaging-for-ai-agents',
+  'human-in-the-loop-agent-workflows',
+] as const;
+
+function siteUrl(path: string) {
+  return `${SITE_URL}${path}`;
+}
+
 export default function sitemap(): MetadataRoute.Sitemap {
+  const lastModified = new Date();
+  const docs = getAllDocSlugs().map((slug) => ({
+    url: siteUrl(`/docs/${slug}`),
+    lastModified,
+    changeFrequency: 'weekly' as const,
+    priority: slug === 'introduction' ? 0.85 : 0.8,
+  }));
+
+  const blogPosts = getAllPosts().map((post) => ({
+    url: siteUrl(`/blog/${post.slug}`),
+    lastModified: post.frontmatter.date ? new Date(post.frontmatter.date) : lastModified,
+    changeFrequency: 'monthly' as const,
+    priority: 0.7,
+  }));
+
+  const openclawUseCases = OPENCLAW_USE_CASE_SLUGS.map((slug) => ({
+    url: siteUrl(`/openclaw/use-cases/${slug}`),
+    lastModified,
+    changeFrequency: 'weekly' as const,
+    priority: 0.72,
+  }));
+
   return [
     {
-      url: 'https://agentrelay.dev/',
-      lastModified: new Date(),
+      url: siteUrl('/'),
+      lastModified,
       changeFrequency: 'weekly',
       priority: 1.0,
     },
     {
-      url: 'https://agentrelay.dev/openclaw',
-      lastModified: new Date(),
+      url: siteUrl('/openclaw'),
+      lastModified,
       changeFrequency: 'weekly',
       priority: 0.9,
     },
     {
-      url: 'https://agentrelay.dev/openclaw/skill',
-      lastModified: new Date(),
+      url: siteUrl('/openclaw/skill'),
+      lastModified,
       changeFrequency: 'weekly',
       priority: 0.8,
     },
+    ...openclawUseCases,
     {
-      url: 'https://agentrelay.dev/docs',
-      lastModified: new Date(),
+      url: siteUrl('/docs'),
+      lastModified,
       changeFrequency: 'weekly',
       priority: 0.9,
     },
+    ...docs,
     {
-      url: 'https://agentrelay.dev/docs/quickstart',
-      lastModified: new Date(),
+      url: siteUrl('/blog'),
+      lastModified,
       changeFrequency: 'weekly',
       priority: 0.8,
     },
-    {
-      url: 'https://agentrelay.dev/docs/communicate',
-      lastModified: new Date(),
-      changeFrequency: 'weekly',
-      priority: 0.8,
-    },
-    {
-      url: 'https://agentrelay.dev/docs/reference-sdk',
-      lastModified: new Date(),
-      changeFrequency: 'weekly',
-      priority: 0.8,
-    },
-    {
-      url: 'https://agentrelay.dev/docs/reference-sdk-py',
-      lastModified: new Date(),
-      changeFrequency: 'weekly',
-      priority: 0.8,
-    },
-    {
-      url: 'https://agentrelay.dev/blog',
-      lastModified: new Date(),
-      changeFrequency: 'weekly',
-      priority: 0.8,
-    },
-    {
-      url: 'https://agentrelay.dev/blog/let-them-cook-multi-agent-orchestration',
-      lastModified: new Date('2026-02-04'),
-      changeFrequency: 'monthly',
-      priority: 0.7,
-    },
-    {
-      url: 'https://agentrelay.dev/blog/go-to-bed-wake-up-to-a-finished-product',
-      lastModified: new Date('2026-02-01'),
-      changeFrequency: 'monthly',
-      priority: 0.7,
-    },
+    ...blogPosts,
   ];
 }
