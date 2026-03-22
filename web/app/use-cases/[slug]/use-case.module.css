@@ -1,0 +1,110 @@
+.page {
+  min-height: 100vh;
+  background: #0b0b0e;
+  color: #f5f5f5;
+}
+
+.main {
+  width: min(100%, 68rem);
+  margin: 0 auto;
+  padding: 2.5rem 1rem 5rem;
+}
+
+.hero {
+  padding-top: 1rem;
+}
+
+.eyebrow {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #38bdf8;
+}
+
+.title {
+  max-width: 12ch;
+  margin: 0.9rem 0 0;
+  font-size: clamp(3rem, 7vw, 4.75rem);
+  line-height: 0.98;
+  letter-spacing: -0.05em;
+}
+
+.lead {
+  max-width: 48rem;
+  margin: 1rem 0 0;
+  color: #c4c4cc;
+  line-height: 1.75;
+  font-size: 1.05rem;
+}
+
+.ctaRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.primaryCta,
+.secondaryCta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  border-radius: 999px;
+  padding: 0 1rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.primaryCta {
+  background: #38bdf8;
+  color: #082f49;
+}
+
+.secondaryCta {
+  border: 1px solid #2b2b32;
+  color: #f5f5f5;
+}
+
+.introCard,
+.sectionCard,
+.outcomesCard {
+  margin-top: 1.5rem;
+  padding: 1.25rem;
+  border: 1px solid #202024;
+  border-radius: 1.25rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.cardTitle {
+  margin: 0 0 0.75rem;
+  font-size: 1.15rem;
+}
+
+.cardBody {
+  margin: 0;
+  color: #a1a1aa;
+  line-height: 1.75;
+}
+
+.outcomes {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: #d4d4d8;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.sections {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+@media (max-width: 800px) {
+  .main {
+    padding-bottom: 3.5rem;
+  }
+}
