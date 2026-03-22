@@ -109,15 +109,40 @@ jobs:
 
           # Install to user local bin (no sudo required)
           mkdir -p ~/.local/bin
-          curl -fsSL "$RELEASE_URL" | gunzip > ~/.local/bin/relay-dashboard-server
-          chmod +x ~/.local/bin/relay-dashboard-server
+
+          # Download with retry logic (transient 504s from GitHub releases are common)
+          MAX_RETRIES=3
+          RETRY_DELAY=5
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            echo "Download attempt $attempt of $MAX_RETRIES..."
+            if curl -fsSL --retry 3 --retry-delay 2 "$RELEASE_URL" | gunzip > ~/.local/bin/relay-dashboard-server 2>/dev/null; then
+              echo "Download succeeded on attempt $attempt"
+              break
+            fi
+            if [ "$attempt" -eq "$MAX_RETRIES" ]; then
+              echo "::warning::Failed to download dashboard binary after $MAX_RETRIES attempts — continuing without it"
+              rm -f ~/.local/bin/relay-dashboard-server
+              exit 0
+            fi
+            echo "Attempt $attempt failed, retrying in ${RETRY_DELAY}s..."
+            sleep $RETRY_DELAY
+            RETRY_DELAY=$((RETRY_DELAY * 2))
+          done
+
+          if [ -f ~/.local/bin/relay-dashboard-server ]; then
+            chmod +x ~/.local/bin/relay-dashboard-server
+          fi
 
           # Add to PATH for this workflow
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
           # Verify
-          echo "Installed dashboard binary:"
-          ~/.local/bin/relay-dashboard-server --version || echo "Binary installed (version check may not be supported)"
+          if [ -f ~/.local/bin/relay-dashboard-server ]; then
+            echo "Installed dashboard binary:"
+            ~/.local/bin/relay-dashboard-server --version || echo "Binary installed (version check may not be supported)"
+          else
+            echo "Dashboard binary not available — tests will run without it"
+          fi
 
       - name: Check for API key
         id: check-key
