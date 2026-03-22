@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 
 import { CopyInstructionsButton } from '../../components/CopyInstructionsButton';
-import { OpenClawUseCaseFooter } from '../../components/OpenClawUseCaseFooter';
+import { UseCaseFooter } from '../../components/UseCaseFooter';
 import { SiteFooter } from '../../components/SiteFooter';
 import { SiteNav } from '../../components/SiteNav';
 import s from './openclaw.module.css';
@@ -83,7 +83,7 @@ export default function OpenClawPage() {
           </div>
         </section>
 
-        <OpenClawUseCaseFooter />
+        <UseCaseFooter />
       </main>
 
       <SiteFooter />

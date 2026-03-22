@@ -1,5 +1,7 @@
 import type { MetadataRoute } from 'next';
 
+import { useCasePages } from '../lib/use-cases';
+
 export default function sitemap(): MetadataRoute.Sitemap {
   return [
     {
@@ -20,6 +22,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: 'weekly',
       priority: 0.8,
     },
+    ...useCasePages.map((page) => ({
+      url: `https://agentrelay.dev/use-cases/${page.slug}`,
+      lastModified: new Date(),
+      changeFrequency: 'weekly' as const,
+      priority: 0.8,
+    })),
     {
       url: 'https://agentrelay.dev/docs',
       lastModified: new Date(),

@@ -25,9 +25,9 @@ export function SiteFooter() {
             <a href="https://agent-relay.com" className={s.link}>Cloud</a>
           </div>
           <div className={s.col}>
-            <h4 className={s.colTitle}>OpenClaw use cases</h4>
+            <h4 className={s.colTitle}>Use cases</h4>
             {useCasePages.slice(0, 4).map((page) => (
-              <Link key={page.slug} href={`/openclaw/use-cases/${page.slug}`} className={s.link}>
+              <Link key={page.slug} href={`/use-cases/${page.slug}`} className={s.link}>
                 {page.navLabel}
               </Link>
             ))}
