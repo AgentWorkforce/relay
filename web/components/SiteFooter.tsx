@@ -1,5 +1,6 @@
 import Link from 'next/link';
 
+import { useCasePages } from '../lib/use-cases';
 import { LogoIcon, LogoWordmark } from './SiteNav';
 import s from './site-footer.module.css';
 
@@ -20,8 +21,16 @@ export function SiteFooter() {
             <h4 className={s.colTitle}>Product</h4>
             <Link href="/docs" className={s.link}>Documentation</Link>
             <Link href="/docs/quickstart" className={s.link}>Quickstart</Link>
-            <Link href="/docs/reference/sdk" className={s.link}>SDK Reference</Link>
+            <Link href="/docs/reference-sdk" className={s.link}>SDK Reference</Link>
             <a href="https://agent-relay.com" className={s.link}>Cloud</a>
+          </div>
+          <div className={s.col}>
+            <h4 className={s.colTitle}>OpenClaw use cases</h4>
+            {useCasePages.slice(0, 4).map((page) => (
+              <Link key={page.slug} href={`/openclaw/use-cases/${page.slug}`} className={s.link}>
+                {page.navLabel}
+              </Link>
+            ))}
           </div>
           <div className={s.col}>
             <h4 className={s.colTitle}>Community</h4>
@@ -32,6 +41,7 @@ export function SiteFooter() {
           <div className={s.col}>
             <h4 className={s.colTitle}>Company</h4>
             <Link href="/openclaw" className={s.link}>OpenClaw</Link>
+            <Link href="/openclaw/skill" className={s.link}>Hosted skill</Link>
             <a href="mailto:hello@agentrelay.dev" className={s.link}>Contact</a>
           </div>
         </div>

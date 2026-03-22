@@ -1,0 +1,85 @@
+.section {
+  margin-top: 4.5rem;
+  padding: 2rem;
+  border: 1px solid #202024;
+  border-radius: 1.25rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.header {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.eyebrow {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #38bdf8;
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(1.8rem, 3vw, 2.4rem);
+  letter-spacing: -0.04em;
+}
+
+.copy {
+  margin: 0;
+  max-width: 42rem;
+  color: #a1a1aa;
+  line-height: 1.7;
+}
+
+.grid {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.card {
+  display: block;
+  height: 100%;
+  padding: 1rem 1.05rem;
+  border: 1px solid #27272a;
+  border-radius: 1rem;
+  text-decoration: none;
+  background: #111114;
+  transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(56, 189, 248, 0.6);
+  background: #12161d;
+}
+
+.cardTitle {
+  display: block;
+  margin-bottom: 0.45rem;
+  color: #f5f5f5;
+  font-weight: 600;
+}
+
+.cardDescription {
+  display: block;
+  color: #a1a1aa;
+  line-height: 1.55;
+  font-size: 0.95rem;
+}
+
+@media (max-width: 800px) {
+  .section {
+    padding: 1.25rem;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
