@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 
-const SKILL_URL = 'agentrelay.dev/skill';
+const SKILL_URL = 'agentrelay.dev/openclaw/skill';
 
 function CopyIcon() {
   return (
