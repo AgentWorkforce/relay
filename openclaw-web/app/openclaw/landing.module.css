@@ -5,7 +5,8 @@
 }
 
 .header,
-.main {
+.main,
+.footerInner {
   width: min(100%, 68rem);
   margin: 0 auto;
   padding-left: 1rem;
@@ -59,6 +60,14 @@
   margin: 0.9rem auto 0;
   font-size: clamp(3rem, 8vw, 4.9rem);
   line-height: 0.96;
+  letter-spacing: -0.05em;
+}
+
+.useCaseHeadline {
+  max-width: 13ch;
+  margin: 0.9rem auto 0;
+  font-size: clamp(2.8rem, 7vw, 4.6rem);
+  line-height: 1;
   letter-spacing: -0.05em;
 }
 
@@ -136,7 +145,8 @@
 }
 
 .featureCard,
-.step {
+.step,
+.useCaseIntroCard {
   border: 1px solid #27272a;
   border-radius: 0.95rem;
   background: rgba(255, 255, 255, 0.02);
@@ -164,7 +174,9 @@
 }
 
 .featureCard p,
-.step p {
+.step p,
+.useCaseIntroCard p,
+.footerCopy {
   color: #a1a1aa;
   line-height: 1.6;
 }
@@ -182,7 +194,8 @@
   letter-spacing: -0.04em;
 }
 
-.steps {
+.steps,
+.useCaseSections {
   max-width: 42rem;
   margin: 0 auto;
   display: grid;
@@ -231,8 +244,83 @@
   overflow-wrap: anywhere;
 }
 
+.useCaseIntroSection {
+  max-width: 46rem;
+  margin: 3rem auto 0;
+}
+
+.useCaseIntroCard {
+  padding: 1.5rem;
+}
+
+.useCaseIntroCard h2,
+.useCaseSectionHeader h3,
+.footerTitle {
+  letter-spacing: -0.03em;
+}
+
+.useCaseIntroCard h2 {
+  font-size: 1.35rem;
+  margin-bottom: 0.75rem;
+}
+
+.useCaseSectionHeader {
+  margin-bottom: 0.6rem;
+}
+
+.footer {
+  border-top: 1px solid #202024;
+  padding: 2rem 0 3rem;
+}
+
+.footerInner {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.footerEyebrow {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #38bdf8;
+  margin-bottom: 0.55rem;
+}
+
+.footerTitle {
+  font-size: 1.5rem;
+  margin-bottom: 0.55rem;
+}
+
+.footerCopy {
+  color: #a1a1aa;
+  line-height: 1.6;
+}
+
+.footerLinks {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.footerLinks a {
+  display: block;
+  padding: 0.9rem 1rem;
+  border: 1px solid #27272a;
+  border-radius: 0.9rem;
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.footerLinks a:hover {
+  border-color: #38bdf8;
+  color: #e0f2fe;
+}
+
 @media (max-width: 800px) {
-  .features {
+  .features,
+  .footerLinks {
     grid-template-columns: 1fr;
   }
 

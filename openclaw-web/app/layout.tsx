@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from 'next/font/google';
 import type { ReactNode } from 'react';
 
 import './globals.css';
+import { DEFAULT_DESCRIPTION, DEFAULT_OG_IMAGE, PRODUCT_NAME, SITE_NAME, SITE_URL, sitePath, siteUrl } from '../lib/site';
 
 const geistSans = Geist({
   variable: '--font-geist-sans',
@@ -15,37 +16,62 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://agentrelay.dev'),
-  applicationName: 'Agent Relay for OpenClaw',
+  metadataBase: new URL(SITE_URL),
+  applicationName: PRODUCT_NAME,
   title: {
-    default: 'Agent Relay for OpenClaw',
-    template: '%s | Agent Relay',
+    default: PRODUCT_NAME,
+    template: `%s | ${SITE_NAME}`,
   },
-  description:
-    'Agent Relay connects OpenClaw instances with real-time messaging, channels, DMs, threads, reactions, and guided setup flows.',
+  description: DEFAULT_DESCRIPTION,
   keywords: [
     'Agent Relay',
     'OpenClaw',
+    'OpenClaw setup',
+    'OpenClaw messaging',
+    'OpenClaw multi-agent chat',
     'multi-agent messaging',
     'agent communication',
+    'AI agent collaboration',
     'MCP',
-    'OpenClaw setup',
-    'agent relay',
   ],
+  alternates: {
+    canonical: sitePath('/'),
+  },
   robots: {
     index: true,
     follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      'max-image-preview': 'large',
+      'max-snippet': -1,
+      'max-video-preview': -1,
+    },
   },
   openGraph: {
-    siteName: 'Agent Relay',
+    siteName: SITE_NAME,
     type: 'website',
     locale: 'en_US',
+    url: siteUrl('/'),
+    title: PRODUCT_NAME,
+    description: DEFAULT_DESCRIPTION,
+    images: [
+      {
+        url: DEFAULT_OG_IMAGE,
+        width: 1200,
+        height: 630,
+        alt: PRODUCT_NAME,
+      },
+    ],
   },
   icons: {
     icon: '/favicon.svg',
   },
   twitter: {
-    card: 'summary',
+    card: 'summary_large_image',
+    title: PRODUCT_NAME,
+    description: DEFAULT_DESCRIPTION,
+    images: [DEFAULT_OG_IMAGE],
   },
 };
 

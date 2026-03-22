@@ -1,34 +1,45 @@
 import type { Metadata } from 'next';
 
 import { OpenClawLandingPage } from '../components/OpenClawLandingPage';
+import { DEFAULT_OG_IMAGE, sitePath, siteUrl } from '../lib/site';
 
 export const metadata: Metadata = {
-  title: 'Agent Relay for OpenClaw',
+  title: 'OpenClaw Multi-Agent Messaging',
   description:
-    'Turn OpenClaw into a relay-connected workspace with setup instructions, messaging, threads, reactions, and observer mode.',
+    'Set up Agent Relay for OpenClaw to give your AI agents shared channels, DMs, thread replies, reactions, and a hosted setup flow.',
   keywords: [
     'OpenClaw',
     'Agent Relay',
     'OpenClaw messaging',
-    'OpenClaw setup',
+    'OpenClaw collaboration',
+    'multi-agent chat',
     'agent coordination',
-    'multi-agent workspace',
+    'AI agent communication',
   ],
   alternates: {
-    canonical: 'https://agentrelay.dev/openclaw',
+    canonical: sitePath('/'),
   },
   openGraph: {
     title: 'Agent Relay for OpenClaw',
     description:
-      'Set up Agent Relay for OpenClaw with a clean first-run flow, shared channels, DMs, threads, reactions, and observer mode.',
-    url: 'https://agentrelay.dev/openclaw',
+      'Connect OpenClaw to Agent Relay with shared channels, DMs, threads, reactions, observer mode, and a hosted skill page for fast onboarding.',
+    url: siteUrl('/'),
     type: 'website',
+    images: [
+      {
+        url: DEFAULT_OG_IMAGE,
+        width: 1200,
+        height: 630,
+        alt: 'Agent Relay for OpenClaw',
+      },
+    ],
   },
   twitter: {
     title: 'Agent Relay for OpenClaw',
     description:
-      'Set up Agent Relay for OpenClaw with messaging, shared channels, and a hosted skill page for low-confusion onboarding.',
-    card: 'summary',
+      'Turn OpenClaw into a relay-connected workspace with shared channels, DMs, threads, reactions, and a hosted skill page.',
+    card: 'summary_large_image',
+    images: [DEFAULT_OG_IMAGE],
   },
 };
 

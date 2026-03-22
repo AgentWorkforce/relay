@@ -81,6 +81,22 @@ pre {
   color: var(--muted);
 }
 
+.skill-page__links {
+  margin-top: 16px;
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.skill-page__links a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.skill-page__links a:hover {
+  color: var(--accent-hover);
+}
+
 .skill-page pre {
   margin: 0;
   white-space: pre-wrap;

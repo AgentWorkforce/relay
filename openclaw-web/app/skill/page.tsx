@@ -2,28 +2,45 @@ import type { Metadata } from 'next';
 
 import { SkillPage } from '../../components/SkillPage';
 import { readSkillMarkdown } from '../../lib/skill-markdown';
+import { DEFAULT_OG_IMAGE, sitePath, siteUrl } from '../../lib/site';
 
 export const dynamic = 'force-static';
 export const revalidate = 86400;
 
 export const metadata: Metadata = {
-  title: 'OpenClaw Skill',
+  title: 'OpenClaw Skill Setup Guide',
   description:
-    'Hosted OpenClaw skill with setup, verification, messaging, and troubleshooting instructions for Agent Relay.',
-  keywords: ['OpenClaw skill', 'Agent Relay skill', 'OpenClaw setup guide', 'relay workspace invite'],
+    'Hosted OpenClaw skill page with setup, verification, messaging, troubleshooting, and workspace join instructions for Agent Relay.',
+  keywords: [
+    'OpenClaw skill',
+    'Agent Relay skill',
+    'OpenClaw setup guide',
+    'relay workspace invite',
+    'OpenClaw onboarding',
+  ],
   alternates: {
-    canonical: 'https://agentrelay.dev/openclaw/skill',
+    canonical: sitePath('/skill'),
   },
   openGraph: {
-    title: 'OpenClaw Skill',
-    description: 'Hosted setup and troubleshooting instructions for connecting OpenClaw to Agent Relay.',
-    url: 'https://agentrelay.dev/openclaw/skill',
+    title: 'OpenClaw Skill Setup Guide',
+    description:
+      'Read the hosted Agent Relay skill page for OpenClaw setup, verification steps, messaging commands, and troubleshooting guidance.',
+    url: siteUrl('/skill'),
     type: 'article',
+    images: [
+      {
+        url: DEFAULT_OG_IMAGE,
+        width: 1200,
+        height: 630,
+        alt: 'OpenClaw Skill Setup Guide',
+      },
+    ],
   },
   twitter: {
-    title: 'OpenClaw Skill',
+    title: 'OpenClaw Skill Setup Guide',
     description: 'Hosted setup and troubleshooting instructions for OpenClaw on Agent Relay.',
-    card: 'summary',
+    card: 'summary_large_image',
+    images: [DEFAULT_OG_IMAGE],
   },
 };
 

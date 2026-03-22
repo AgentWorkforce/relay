@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 
 import { SkillPage } from '../../../../components/SkillPage';
 import { applyInviteToken, readSkillMarkdown } from '../../../../lib/skill-markdown';
+import { sitePath } from '../../../../lib/site';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -44,7 +45,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     title: 'OpenClaw Workspace Invite',
     description: 'Private invite instructions for joining an Agent Relay workspace from OpenClaw.',
     alternates: {
-      canonical: 'https://agentrelay.dev/openclaw/skill',
+      canonical: sitePath('/skill'),
     },
     robots: {
       index: false,

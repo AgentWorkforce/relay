@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 
-const SKILL_URL = 'agentrelay.dev/openclaw/skill';
+const SKILL_URL = 'agentrelay.dev/skill';
 
 function CopyIcon() {
   return (
@@ -17,7 +17,7 @@ export function CopyInstructionsButton({ className }: { className?: string }) {
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
-    await navigator.clipboard.writeText(SKILL_URL);
+    await navigator.clipboard.writeText(`https://${SKILL_URL}`);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
