@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from .client import AgentRelayClient
-from .protocol import AgentRuntime, BrokerEvent
+from .protocol import AgentRuntime, BrokerEvent, MessageInjectionMode
 
 # ── Public types ──────────────────────────────────────────────────────────────
 
@@ -36,6 +36,7 @@ class Message:
     text: str
     thread_id: Optional[str] = None
     data: Optional[dict[str, Any]] = None
+    mode: Optional[MessageInjectionMode] = None
 
 
 @dataclass
@@ -197,6 +198,7 @@ class Agent:
         thread_id: Optional[str] = None,
         priority: Optional[int] = None,
         data: Optional[dict[str, Any]] = None,
+        mode: Optional[MessageInjectionMode] = None,
     ) -> Message:
         client = await self._relay._ensure_started()
         result = await client.send_message(
@@ -206,6 +208,7 @@ class Agent:
             thread_id=thread_id,
             priority=priority,
             data=data,
+            mode=mode,
         )
 
         event_id = result.get("event_id", secrets.token_hex(8))
@@ -216,6 +219,7 @@ class Agent:
             text=text,
             thread_id=thread_id,
             data=data,
+            mode=mode,
         )
         # Don't fire hook for unsupported operations
         if event_id != "unsupported_operation" and self._relay.on_message_sent:
@@ -259,6 +263,7 @@ class HumanHandle:
         thread_id: Optional[str] = None,
         priority: Optional[int] = None,
         data: Optional[dict[str, Any]] = None,
+        mode: Optional[MessageInjectionMode] = None,
     ) -> Message:
         client = await self._relay._ensure_started()
         result = await client.send_message(
@@ -268,6 +273,7 @@ class HumanHandle:
             thread_id=thread_id,
             priority=priority,
             data=data,
+            mode=mode,
         )
 
         event_id = result.get("event_id", secrets.token_hex(8))
@@ -278,6 +284,7 @@ class HumanHandle:
             text=text,
             thread_id=thread_id,
             data=data,
+            mode=mode,
         )
         # Don't fire hook for unsupported operations
         if event_id != "unsupported_operation" and self._relay.on_message_sent:
@@ -772,6 +779,7 @@ class AgentRelay:
                     to=event.get("target", ""),
                     text=event.get("body", ""),
                     thread_id=event.get("thread_id"),
+                    mode=event.get("injection_mode") or event.get("mode"),
                 )
                 if self.on_message_received:
                     self.on_message_received(msg)

@@ -25,6 +25,7 @@ from .protocol import (
     AgentSpec,
     BrokerEvent,
     HeadlessProvider,
+    MessageInjectionMode,
     ProtocolEnvelope,
 )
 
@@ -715,6 +716,7 @@ class AgentRelayClient:
         thread_id: Optional[str] = None,
         priority: Optional[int] = None,
         data: Optional[dict[str, Any]] = None,
+        mode: Optional[MessageInjectionMode] = None,
     ) -> dict[str, Any]:
         await self.start_client()
         payload: dict[str, Any] = {"to": to, "text": text}
@@ -726,6 +728,8 @@ class AgentRelayClient:
             payload["priority"] = priority
         if data is not None:
             payload["data"] = data
+        if mode is not None:
+            payload["mode"] = mode
         try:
             return await self._request_ok("send_message", payload)
         except AgentRelayProtocolError as e:

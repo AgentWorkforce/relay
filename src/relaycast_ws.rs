@@ -11,7 +11,7 @@ use relaycast::{
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::events::EventEmitter;
+use crate::{events::EventEmitter, protocol::MessageInjectionMode};
 
 #[derive(Debug, Clone)]
 pub enum WsControl {
@@ -711,11 +711,40 @@ impl RelaycastHttpClient {
 
     /// Smart send: routes to channel or DM based on `#` prefix.
     pub async fn send(&self, to: &str, text: &str) -> Result<()> {
+        self.send_with_mode(to, text, MessageInjectionMode::Wait)
+            .await
+    }
+
+    /// Smart send with explicit injection mode.
+    pub async fn send_with_mode(
+        &self,
+        to: &str,
+        text: &str,
+        mode: MessageInjectionMode,
+    ) -> Result<()> {
         if to.starts_with('#') {
-            self.send_to_channel(to, text).await
-        } else {
-            self.send_dm(to, text).await
+            let token = self.ensure_token().await?;
+            let agent_client = AgentClient::new(&token, Some(self.base_url.clone()))
+                .map_err(|e| anyhow::anyhow!("failed to create agent client: {e}"))?;
+            let relay_mode = match mode {
+                MessageInjectionMode::Wait => relaycast::MessageInjectionMode::Wait,
+                MessageInjectionMode::Steer => relaycast::MessageInjectionMode::Steer,
+            };
+            agent_client
+                .send_with_mode(to, text, None, None, relay_mode, None)
+                .await
+                .map_err(|e| anyhow::anyhow!("relaycast send_to_channel failed: {e}"))?;
+            return Ok(());
         }
+
+        if matches!(mode, MessageInjectionMode::Steer) {
+            return Err(anyhow::anyhow!(
+                "mode=steer is only supported for local PTY delivery; target was relaycast-only"
+            ));
+        }
+
+        // DM path: relaycast dm() currently owns delivery semantics.
+        self.send_dm(to, text).await
     }
 }
 
