@@ -64,7 +64,12 @@ const CLI_REGISTRY: Record<AgentCli, CliDefinition> = {
   },
   codex: {
     binaries: ['codex'],
-    nonInteractiveArgs: (task, extra = []) => ['exec', task, ...extra],
+    nonInteractiveArgs: (task, extra = []) => [
+      'exec',
+      '--dangerously-bypass-approvals-and-sandbox',
+      task,
+      ...extra,
+    ],
     bypassFlag: '--dangerously-bypass-approvals-and-sandbox',
     bypassAliases: ['--full-auto'],
     searchPaths: ['~/.local/bin'],
