@@ -2180,24 +2180,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     );
                                 }
                             } else {
-                                if matches!(mode, MessageInjectionMode::Steer) {
-                                    tracing::warn!(
-                                        target = "relay_broker::http_api",
-                                        event_id = %event_id,
-                                        to = %normalized_to,
-                                        "rejecting mode=steer for relaycast-only delivery path"
-                                    );
-                                    let _ = reply.send(Err(
-                                        "mode=steer is only supported for local PTY delivery; target was relaycast-only"
-                                            .to_string(),
-                                    ));
-                                    continue;
-                                }
                                 tracing::info!(
                                     target = "relay_broker::http_api",
 
                                     event_id = %event_id,
                                     to = %normalized_to,
+                                    mode = ?mode,
                                     delivery_errors = %delivery_errors,
                                     delivery_from = %delivery_from,
                                     ui_from = %ui_from,
@@ -2205,7 +2193,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     "no local deliveries succeeded; forwarding to relaycast"
                                 );
                                 let relaycast_start = Instant::now();
-                                match timeout(relaycast_timeout, selected_workspace.http_client.send(&normalized_to, &text))
+                                match timeout(
+                                    relaycast_timeout,
+                                    selected_workspace
+                                        .http_client
+                                        .send_with_mode(&normalized_to, &text, mode.clone()),
+                                )
                                     .await
                                 {
                                     Ok(Ok(())) => {
