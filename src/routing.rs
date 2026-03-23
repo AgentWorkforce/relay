@@ -267,7 +267,6 @@ mod tests {
         }
     }
 
-
     fn routing_workers<'a>(workers: &'a [WorkerFixture]) -> Vec<RoutingWorker<'a>> {
         workers
             .iter()
@@ -275,7 +274,6 @@ mod tests {
                 name: &worker.name,
                 channels: &worker.channels,
                 workspace_id: None,
-
             })
             .collect()
     }
@@ -451,13 +449,11 @@ mod tests {
                 name: &workers[0].name,
                 channels: &workers[0].channels,
                 workspace_id: Some("ws_a"),
-
             },
             RoutingWorker {
                 name: &workers[1].name,
                 channels: &workers[1].channels,
                 workspace_id: Some("ws_b"),
-
             },
         ];
 
@@ -485,13 +481,11 @@ mod tests {
                 name: &workers[0].name,
                 channels: &workers[0].channels,
                 workspace_id: None,
-
             },
             RoutingWorker {
                 name: &workers[1].name,
                 channels: &workers[1].channels,
                 workspace_id: Some("ws_b"),
-
             },
         ];
 
@@ -506,5 +500,4 @@ mod tests {
         let plan = resolve_delivery_targets(&event, &routing_workers);
         assert_eq!(plan.targets, vec!["Alpha".to_string(), "Bravo".to_string()]);
     }
-
 }

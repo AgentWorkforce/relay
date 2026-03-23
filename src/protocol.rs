@@ -535,5 +535,4 @@ mod tests {
         let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, event);
     }
-
 }

@@ -1819,7 +1819,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             spec: Some(spec_for_state),
                                             restart_policy: None,
                                             initial_task: effective_task,
-                        
+
                                         },
                                     );
                                     if paths.persist { let _ = state.save(&paths.state); }
@@ -2633,7 +2633,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 spec: Some(spec_for_state),
                                                 restart_policy: None,
                                                 initial_task: effective_task,
-                            
+
                                             },
                                         );
                                         if paths.persist { let _ = state.save(&paths.state); }
@@ -2814,7 +2814,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                     spec: Some(spec_for_state),
                                                     restart_policy: None,
                                                     initial_task: effective_task,
-                                
+
                                                 },
                                             );
                                             if paths.persist { let _ = state.save(&paths.state); }
@@ -4243,7 +4243,6 @@ async fn handle_sdk_frame(
                     spec: Some(payload.agent.clone()),
                     restart_policy: payload.agent.restart_policy.clone(),
                     initial_task: effective_task.clone(),
-
                 },
             );
             state.save(state_path)?;
@@ -4984,7 +4983,12 @@ async fn handle_sdk_frame(
 
             let mut added = Vec::new();
             for ch in &payload.channels {
-                if !handle.spec.channels.iter().any(|c| c.eq_ignore_ascii_case(ch)) {
+                if !handle
+                    .spec
+                    .channels
+                    .iter()
+                    .any(|c| c.eq_ignore_ascii_case(ch))
+                {
                     handle.spec.channels.push(ch.clone());
                     added.push(ch.clone());
                 }
@@ -5003,7 +5007,12 @@ async fn handle_sdk_frame(
                 }
             }
 
-            send_ok(out_tx, frame.request_id, json!({"name": payload.name, "channels": handle.spec.channels})).await?;
+            send_ok(
+                out_tx,
+                frame.request_id,
+                json!({"name": payload.name, "channels": handle.spec.channels}),
+            )
+            .await?;
             send_event(out_tx, json!({"kind":"channel_subscribed","name":payload.name,"channels":payload.channels})).await?;
             Ok(false)
         }
@@ -5032,15 +5041,21 @@ async fn handle_sdk_frame(
                 }
             };
 
-            handle.spec.channels.retain(|c| {
-                !payload.channels.iter().any(|uc| uc.eq_ignore_ascii_case(c))
-            });
+            handle
+                .spec
+                .channels
+                .retain(|c| !payload.channels.iter().any(|uc| uc.eq_ignore_ascii_case(c)));
             if let Some(persisted) = state.agents.get_mut(&payload.name) {
                 persisted.channels = handle.spec.channels.clone();
             }
             state.save(state_path)?;
 
-            send_ok(out_tx, frame.request_id, json!({"name": payload.name, "channels": handle.spec.channels})).await?;
+            send_ok(
+                out_tx,
+                frame.request_id,
+                json!({"name": payload.name, "channels": handle.spec.channels}),
+            )
+            .await?;
             send_event(out_tx, json!({"kind":"channel_unsubscribed","name":payload.name,"channels":payload.channels})).await?;
             Ok(false)
         }
