@@ -983,10 +983,10 @@ agents:
       expect(args).toEqual(['-p', '--dangerously-skip-permissions', 'Do the thing']);
     });
 
-    it('should build codex command with exec subcommand', () => {
+    it('should build codex command with exec subcommand and bypass flag', () => {
       const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand('codex', 'Build it');
       expect(cmd).toBe('codex');
-      expect(args).toEqual(['exec', 'Build it']);
+      expect(args).toEqual(['exec', '--dangerously-bypass-approvals-and-sandbox', 'Build it']);
     });
 
     it('should build gemini command with -p flag', () => {
