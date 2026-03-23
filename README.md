@@ -73,6 +73,7 @@ Use Agent Relay directly inside Claude Code — no SDK required. The plugin adds
 
 ```
 /plugin marketplace add Agentworkforce/skills
+/plugin install claude-relay-plugin
 ```
 
 Once installed, coordinate agents with built-in skills:

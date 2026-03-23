@@ -5089,7 +5089,7 @@ export class WorkflowRunner {
         channels: agentChannels,
         task: taskWithExit,
         idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
-        cwd: agentCwd !== this.cwd ? agentCwd : undefined,
+        cwd: agentCwd,
       });
 
       // Re-key PTY maps if broker assigned a different name than requested
