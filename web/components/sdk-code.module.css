@@ -1,0 +1,62 @@
+.codeBlock {
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+}
+
+.tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 16px;
+  background: var(--nav-bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--nav-bg) 80%, black);
+}
+
+.tab {
+  padding: 10px 16px;
+  font-family: var(--font-geist-sans), sans-serif;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--nav-fg);
+  opacity: 0.55;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: opacity 0.2s, border-color 0.2s;
+}
+
+.tab:hover {
+  opacity: 0.8;
+}
+
+.tabActive {
+  opacity: 1;
+  border-bottom-color: var(--nav-fg);
+}
+
+.pre {
+  margin: 0;
+  padding: 24px;
+  overflow-x: auto;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.85rem;
+  line-height: 1.7;
+  color: var(--code-fg);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+/* Syntax — uses primary for keywords/types */
+.keyword { color: var(--primary); }
+.string { color: #b45309; }
+.type { color: var(--primary); }
+.method { color: #6b21a8; }
+
+
+:global([data-theme='dark']) .keyword { color: #6fcfa0; }
+:global([data-theme='dark']) .string { color: #d4a373; }
+:global([data-theme='dark']) .type { color: #6fcfa0; }
+:global([data-theme='dark']) .method { color: #e0c97f; }

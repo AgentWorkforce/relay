@@ -26,6 +26,8 @@ export interface CliDefinition {
   bypassAliases?: string[];
   /** Extra install paths to check beyond PATH (resolved relative to $HOME) */
   searchPaths?: string[];
+  /** When true, non-zero exit codes are not treated as failures (some CLIs exit non-zero on success) */
+  ignoreExitCode?: boolean;
 }
 
 // ── Well-known install paths ───────────────────────────────────────────────
@@ -62,7 +64,12 @@ const CLI_REGISTRY: Record<AgentCli, CliDefinition> = {
   },
   codex: {
     binaries: ['codex'],
-    nonInteractiveArgs: (task, extra = []) => ['exec', task, ...extra],
+    nonInteractiveArgs: (task, extra = []) => [
+      'exec',
+      '--dangerously-bypass-approvals-and-sandbox',
+      task,
+      ...extra,
+    ],
     bypassFlag: '--dangerously-bypass-approvals-and-sandbox',
     bypassAliases: ['--full-auto'],
     searchPaths: ['~/.local/bin'],
@@ -75,8 +82,9 @@ const CLI_REGISTRY: Record<AgentCli, CliDefinition> = {
   },
   opencode: {
     binaries: ['opencode'],
-    nonInteractiveArgs: (task, extra = []) => ['--prompt', task, ...extra],
+    nonInteractiveArgs: (task, extra = []) => ['run', task, ...extra],
     searchPaths: ['~/.opencode/bin'],
+    ignoreExitCode: true,
   },
   droid: {
     binaries: ['droid'],

@@ -72,7 +72,8 @@ await relay.shutdown();
 Use Agent Relay directly inside Claude Code — no SDK required. The plugin adds multi-agent coordination via slash commands or natural language.
 
 ```
-/plugin marketplace add Agentworkforce/relay
+/plugin marketplace add Agentworkforce/skills
+/plugin install claude-relay-plugin
 ```
 
 Once installed, coordinate agents with built-in skills:
@@ -90,7 +91,7 @@ Or just describe what you want in plain language:
 > Split the migration into three relay workers — one for the schema, one for the API, one for the frontend
 ```
 
-See the [plugin README](plugins/claude-relay-plugin/README.md) for full details.
+See the [plugin README](https://github.com/AgentWorkforce/skills/tree/main/plugins/claude-relay-plugin) for full details.
 
 ## Supported CLI’s
 - Claude

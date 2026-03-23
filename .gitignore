@@ -2,6 +2,7 @@
 node_modules/
 
 # Build output
+.build
 dist/
 ui-dist/
 
@@ -80,4 +81,5 @@ __pycache__/
 .agent-relay/
 
 .sst
-openclaw-web/sst-env.d.ts
+web/waitlist.json
+web/.open-next

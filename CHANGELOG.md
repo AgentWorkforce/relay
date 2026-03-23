@@ -29,6 +29,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.2.15] - 2026-03-23
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add RelayObserver proxy client for UI consumers (#627)** (#627)
+
+#### User-Impacting Fixes
+- Add bypass flag to codex non-interactive spawns (#628) (#628)
+
+### Technical Perspective
+#### Releases
+- v3.2.15
+
+---
+
+## [3.2.14] - 2026-03-23
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add initial Swift SDK and harden workflow output (#589)** (#589)
+
+#### User-Impacting Fixes
+- Make og image compatible with OpenNext
+- Track generated SST resource types
+- Avoid generated SST type dependency
+
+### Technical Perspective
+#### Dependencies & Tooling
+- Rename SST app to relay-web
+
+#### Releases
+- v3.2.14
+
+---
+
+## [3.2.13] - 2026-03-20
+
+### Product Perspective
+#### User-Impacting Fixes
+- Ignore non-zero exit codes for opencode non-interactive agents (#602) (#602)
+
+### Technical Perspective
+#### Releases
+- v3.2.13
+
+---
+
+## [3.2.12] - 2026-03-20
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add Codex relay skill for sub-agent communication (#595)** (#595)
+
+### Technical Perspective
+#### Releases
+- v3.2.12
+
+---
+
+## [3.2.11] - 2026-03-20
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add workflow defaults abstraction (#599)** (#599)
+
+#### User-Impacting Fixes
+- Detect Codex boot marker format in PTY startup gate (#600) (#600)
+- Consolidate CLI path resolution (#598) (#598)
+- Reduce WS spawn pre-registration timeout from 15s to 3s (#597) (#597)
+
+### Technical Perspective
+#### Releases
+- v3.2.11
+
+---
+
 ## [3.2.10] - 2026-03-20
 
 ### Product Perspective

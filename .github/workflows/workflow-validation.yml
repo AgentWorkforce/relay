@@ -45,8 +45,10 @@ jobs:
 
       - name: Find changed workflow files
         id: changed
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          files=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- 'workflows/**' \
+          files=$(git diff --name-only "origin/$BASE_REF"...HEAD -- 'workflows/**' \
             | grep -E '\.(ts|yaml|yml)$' || true)
           echo "files<<EOF" >> "$GITHUB_OUTPUT"
           echo "$files" >> "$GITHUB_OUTPUT"

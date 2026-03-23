@@ -983,10 +983,10 @@ agents:
       expect(args).toEqual(['-p', '--dangerously-skip-permissions', 'Do the thing']);
     });
 
-    it('should build codex command with exec subcommand', () => {
+    it('should build codex command with exec subcommand and bypass flag', () => {
       const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand('codex', 'Build it');
       expect(cmd).toBe('codex');
-      expect(args).toEqual(['exec', 'Build it']);
+      expect(args).toEqual(['exec', '--dangerously-bypass-approvals-and-sandbox', 'Build it']);
     });
 
     it('should build gemini command with -p flag', () => {
@@ -995,10 +995,10 @@ agents:
       expect(args).toEqual(['-p', 'Analyze']);
     });
 
-    it('should build opencode command with --prompt flag', () => {
+    it('should build opencode command with run subcommand', () => {
       const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand('opencode', 'Fix bug');
       expect(cmd).toBe('opencode');
-      expect(args).toEqual(['--prompt', 'Fix bug']);
+      expect(args).toEqual(['run', 'Fix bug']);
     });
 
     it('should build droid command with exec subcommand', () => {

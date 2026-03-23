@@ -1,0 +1,46 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 14px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 100px;
+  text-decoration: none;
+  font-size: 0.82rem;
+  font-weight: 500;
+  animation: throb 3s ease-in-out infinite;
+  transition: background 0.25s, color 0.25s;
+}
+
+.badge:hover {
+  background: #ffffff;
+  color: var(--nav-bg);
+  animation: none;
+  transform: scale(1.04);
+}
+
+@keyframes throb {
+  0%, 100% {
+    border-color: rgba(255, 255, 255, 0.2);
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+  }
+  50% {
+    border-color: rgba(255, 255, 255, 0.5);
+    transform: scale(1.04);
+    box-shadow: 0 0 12px rgba(255, 255, 255, 0.08);
+  }
+}
+
+.divider {
+  width: 1px;
+  height: 14px;
+  background: currentColor;
+  opacity: 0.3;
+}
+
+.count {
+  font-variant-numeric: tabular-nums;
+}
