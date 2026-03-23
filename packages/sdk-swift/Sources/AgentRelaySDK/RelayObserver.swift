@@ -32,12 +32,7 @@ public final class RelayObserver: NSObject, URLSessionWebSocketDelegate, @unchec
     // MARK: - AsyncStream
 
     public var events: AsyncStream<RelayObserverEvent> {
-        if let existingContinuation = eventsContinuation {
-            _ = existingContinuation // already wired
-            return AsyncStream { continuation in
-                self.eventsContinuation = continuation
-            }
-        }
+        eventsContinuation?.finish()
         return AsyncStream { continuation in
             self.eventsContinuation = continuation
         }
@@ -211,7 +206,7 @@ public final class RelayObserver: NSObject, URLSessionWebSocketDelegate, @unchec
 
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard let self, let url = self.activeURL else { return }
+            guard !Task.isCancelled, let self, let url = self.activeURL else { return }
             self.openSocket(url: url)
         }
     }
