@@ -3711,6 +3711,7 @@ export class WorkflowRunner {
       `WORKER COMPLETION CONTRACT:\n` +
       `- You are handing work off to owner "${supervised.owner.name}" for step "${step.name}".\n` +
       `- When your work is ready for review, post to #${this.channel}: \`WORKER_DONE: <brief summary>\`\n` +
+      `- CHANNEL SCOPE: Post ALL messages to #${this.channel} ONLY. Do NOT post to #general or any other channel.\n` +
       `- Do not rely on terminal output alone for handoff; use the workflow group chat signal above.\n` +
       `- After posting your handoff signal, self-terminate with /exit unless the owner asks for follow-up.`
     );
@@ -5038,10 +5039,17 @@ export class WorkflowRunner {
     // so they call register() before any other relay tool.
     const relayRegistrationNote = this.buildRelayRegistrationNote(agentDef.cli, agentName);
 
+    const channelScope = this.channel
+      ? `\nCHANNEL SCOPE: You are assigned to channel #${this.channel}. ` +
+        `Post ALL messages, progress updates, and completion signals to #${this.channel} ONLY. ` +
+        `Do NOT post to #general or any other channel.`
+      : '';
+
     const taskWithExit =
       step.task +
       (relayRegistrationNote ? '\n\n' + relayRegistrationNote : '') +
       (delegationGuidance ? '\n\n' + delegationGuidance + '\n' : '') +
+      channelScope +
       '\n\n---\n' +
       'IMPORTANT: When you have fully completed this task, you MUST self-terminate by either: ' +
       '(a) calling remove_agent(name: "<your-agent-name>", reason: "task completed") — preferred, or ' +
