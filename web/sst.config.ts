@@ -14,18 +14,15 @@ export default $config({
       primaryIndex: { hashKey: 'email' },
     });
 
+    const isProd = $app.stage === 'production';
+    const domain = isProd ? 'agentrelay.net' : `${$app.stage}.agentrelay.net`;
+
     new sst.aws.Nextjs('Web', {
       path: '.',
       openNextVersion: '3.9.16',
       link: [waitlist],
-      domain:
-        $app.stage === 'production'
-          ? {
-              // This domain is proxied by agentrelay.dev; SEO canonicals are set in Next metadata.
-              name: 'agentrelay.net',
-              dns: sst.cloudflare.dns({ proxy: true }),
-            }
-          : undefined,
+      // Production is proxied by agentrelay.dev; SEO canonicals are set in Next metadata.
+      domain: { name: domain, dns: sst.cloudflare.dns({ proxy: true }) },
     });
   },
 });

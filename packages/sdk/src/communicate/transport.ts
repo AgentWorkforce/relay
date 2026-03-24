@@ -83,113 +83,70 @@ export class RelayTransport {
       return this.agentId;
     }
 
-    let payload: JsonObject;
-    try {
-      payload = await this.sendHttp<JsonObject>(
-        'POST',
-        '/v1/agents',
-        { name: this.agentName, type: 'agent' },
-      );
-    } catch (error) {
-      if (error instanceof RelayConnectionError && error.statusCode === 409) {
-        const agentPayload = await this.sendHttp<JsonObject>(
-          'GET',
-          `/v1/agents/${encodeURIComponent(this.agentName)}`,
-        );
-        const agentData = (agentPayload as any).data ?? agentPayload;
-        this.agentId = String(agentData.id);
-
-        const rotatePayload = await this.sendHttp<JsonObject>(
-          'POST',
-          `/v1/agents/${encodeURIComponent(this.agentName)}/rotate-token`,
-        );
-        const rotateData = (rotatePayload as any).data ?? rotatePayload;
-        this.token = String(rotateData.token);
-        return this.agentId;
+    const payload = await this.sendHttp<{ agent_id: string; token: string }>(
+      'POST',
+      '/v1/agents/register',
+      {
+        name: this.agentName,
+        workspace: this.config.workspace,
       }
-      throw error;
-    }
+    );
 
-    const data = (payload as any).data ?? payload;
-    this.agentId = String(data.id);
-    this.token = String(data.token);
+    this.agentId = payload.agent_id;
+    this.token = payload.token;
     return this.agentId;
   }
 
   async unregisterAgent(): Promise<void> {
-    if (!this.agentId || !this.token) {
+    if (!this.agentId) {
       return;
     }
 
+    const agentId = this.agentId;
     this.agentId = undefined;
-    const agentToken = this.token;
     this.token = undefined;
-    await this.sendHttpAsAgent('POST', '/v1/agents/disconnect', undefined, agentToken);
+    await this.sendHttp('DELETE', `/v1/agents/${agentId}`);
   }
 
   async sendDm(to: string, text: string): Promise<string> {
     await this.ensureRegistered();
-    const payload = await this.sendHttpAsAgent<JsonObject>('POST', '/v1/dm', { to, text });
-    const data = (payload as any).data ?? payload;
-    return String(data.id ?? data.message_id ?? '');
+    const payload = await this.sendHttp<{ message_id: string }>('POST', '/v1/messages/dm', {
+      to,
+      text,
+      from: this.agentName,
+    });
+    return payload.message_id;
   }
 
   async postMessage(channel: string, text: string): Promise<string> {
     await this.ensureRegistered();
-    const payload = await this.sendHttpAsAgent<JsonObject>(
-      'POST',
-      `/v1/channels/${encodeURIComponent(channel)}/messages`,
-      { text },
-    );
-    const data = (payload as any).data ?? payload;
-    return String(data.id ?? data.message_id ?? '');
+    const payload = await this.sendHttp<{ message_id: string }>('POST', '/v1/messages/channel', {
+      channel,
+      text,
+      from: this.agentName,
+    });
+    return payload.message_id;
   }
 
   async reply(messageId: string, text: string): Promise<string> {
     await this.ensureRegistered();
-    const payload = await this.sendHttpAsAgent<JsonObject>(
-      'POST',
-      `/v1/messages/${encodeURIComponent(messageId)}/replies`,
-      { text },
-    );
-    const data = (payload as any).data ?? payload;
-    return String(data.id ?? data.message_id ?? '');
+    const payload = await this.sendHttp<{ message_id: string }>('POST', '/v1/messages/reply', {
+      message_id: messageId,
+      text,
+      from: this.agentName,
+    });
+    return payload.message_id;
   }
 
   async checkInbox(): Promise<Message[]> {
     await this.ensureRegistered();
-    const payload = await this.sendHttpAsAgent<JsonObject>('GET', '/v1/inbox');
-    const data = (payload as any).data ?? payload;
-    const messages: Message[] = [];
-
-    for (const mention of ((data as any).mentions ?? []) as JsonObject[]) {
-      messages.push(this.messageFromPayload(mention));
-    }
-
-    for (const dm of ((data as any).unread_dms ?? []) as JsonObject[]) {
-      const last = (dm as any).last_message as JsonObject | undefined;
-      if (last?.text) {
-        messages.push({
-          sender: String(dm.from ?? dm.agent_name ?? 'unknown'),
-          text: String(last.text),
-          channel: undefined,
-          threadId: typeof dm.conversation_id === 'string' ? dm.conversation_id : undefined,
-          timestamp: typeof last.created_at === 'string' ? undefined : (last.created_at as number | undefined),
-          messageId: typeof last.id === 'string' ? last.id : undefined,
-        });
-      }
-    }
-
-    return messages;
+    const payload = await this.sendHttp<{ messages?: JsonObject[] }>('GET', `/v1/inbox/${this.agentId}`);
+    return (payload.messages ?? []).map((message) => this.messageFromPayload(message));
   }
 
   async listAgents(): Promise<string[]> {
-    const payload = await this.sendHttp<JsonObject>('GET', '/v1/agents');
-    const data = (payload as any).data ?? (payload as any).agents ?? [];
-    if (Array.isArray(data)) {
-      return data.map((a: any) => (typeof a === 'string' ? a : String(a.name ?? a)));
-    }
-    return [];
+    const payload = await this.sendHttp<{ agents?: string[] }>('GET', '/v1/agents');
+    return [...(payload.agents ?? [])];
   }
 
   private async ensureRegistered(): Promise<void> {
@@ -211,71 +168,6 @@ export class RelayTransport {
         'Missing RELAY_WORKSPACE. Set the environment variable or pass workspace to RelayConfig.'
       );
     }
-  }
-
-  private async sendHttpAsAgent<T = unknown>(
-    method: string,
-    path: string,
-    payload?: JsonObject,
-    overrideToken?: string,
-  ): Promise<T> {
-    this.requireConfig();
-
-    const agentToken = overrideToken ?? this.token;
-    if (!agentToken) {
-      throw new RelayConfigError('Agent not registered; no agent token available.');
-    }
-
-    const url = `${this.config.baseUrl}${path}`;
-    const headers: Record<string, string> = {
-      authorization: `Bearer ${agentToken}`,
-    };
-    if (payload !== undefined) {
-      headers['content-type'] = 'application/json';
-    }
-
-    for (let attempt = 1; attempt <= HTTP_RETRY_ATTEMPTS; attempt += 1) {
-      let response: Response;
-      try {
-        response = await fetch(url, {
-          method,
-          headers,
-          body: payload === undefined ? undefined : JSON.stringify(payload),
-        });
-      } catch (error) {
-        if (attempt < HTTP_RETRY_ATTEMPTS) {
-          await sleep(Math.min(2 ** (attempt - 1) * 1_000, WS_RECONNECT_MAX_DELAY_MS));
-          continue;
-        }
-        throw new RelayConnectionError(0, error instanceof Error ? error.message : String(error));
-      }
-
-      if (response.status === 401) {
-        throw new RelayAuthError(await this.errorMessage(response));
-      }
-      if (response.status >= 500 && response.status <= 599) {
-        const message = await this.errorMessage(response);
-        if (attempt < HTTP_RETRY_ATTEMPTS) {
-          await sleep(Math.min(2 ** (attempt - 1) * 1_000, WS_RECONNECT_MAX_DELAY_MS));
-          continue;
-        }
-        throw new RelayConnectionError(response.status, message);
-      }
-      if (response.status >= 400) {
-        throw new RelayConnectionError(response.status, await this.errorMessage(response));
-      }
-      if (response.status === 204) {
-        return undefined as T;
-      }
-
-      const contentType = response.headers.get('content-type') ?? '';
-      if (contentType.includes('application/json')) {
-        return (await response.json()) as T;
-      }
-      return (await response.text()) as T;
-    }
-
-    throw new RelayConnectionError(500, 'Unexpected transport retry failure');
   }
 
   private async sendHttp<T = unknown>(
@@ -354,7 +246,7 @@ export class RelayTransport {
       return this.wsConnectPromise;
     }
 
-    const url = `${this.wsBaseUrl()}/v1/ws?token=${encodeURIComponent(this.token ?? '')}`;
+    const url = `${this.wsBaseUrl()}/v1/ws/${this.agentId}?token=${encodeURIComponent(this.token ?? '')}`;
     const socket = new WebSocket(url);
 
     this.wsConnectPromise = new Promise<void>((resolve, reject) => {
@@ -437,12 +329,7 @@ export class RelayTransport {
       this.ws?.send(JSON.stringify({ type: 'pong' }));
       return;
     }
-
-    const messageEvents = new Set([
-      'message.created', 'dm.received', 'direct_message.received',
-      'thread.reply', 'message', 'group_dm.received',
-    ]);
-    if (!messageEvents.has(payload.type as string) || !this.messageCallback) {
+    if (payload.type !== 'message' || !this.messageCallback) {
       return;
     }
 
@@ -450,40 +337,22 @@ export class RelayTransport {
   }
 
   private messageFromPayload(payload: JsonObject): Message {
-    const m = (typeof payload.message === 'object' && payload.message !== null)
-      ? (payload.message as JsonObject)
-      : payload;
-
-    const sender = String(
-      m.sender ?? m.agent_name ?? m.from ?? m.agentName
-      ?? payload.agent_name ?? payload.from ?? 'unknown',
-    );
-    const text = String(m.text ?? '');
-    const channel = String(
-      m.channel ?? m.channel_name ?? m.channelName ?? payload.channel ?? payload.channel_name ?? '',
-    ) || undefined;
-    const threadId = String(
-      m.thread_id ?? m.threadId ?? m.conversation_id ?? m.conversationId ?? payload.thread_id ?? '',
-    ) || undefined;
-    const rawTs = m.timestamp ?? m.created_at ?? m.createdAt ?? payload.timestamp;
-    const timestamp = typeof rawTs === 'number' ? rawTs : undefined;
-    const messageId = String(
-      m.id ?? m.message_id ?? m.messageId ?? payload.message_id ?? '',
-    ) || undefined;
-
-    return { sender, text, channel, threadId, timestamp, messageId };
+    return {
+      sender: String(payload.sender ?? ''),
+      text: String(payload.text ?? ''),
+      channel: typeof payload.channel === 'string' ? payload.channel : undefined,
+      threadId: typeof payload.thread_id === 'string' ? payload.thread_id : undefined,
+      timestamp: typeof payload.timestamp === 'number' ? payload.timestamp : undefined,
+      messageId: typeof payload.message_id === 'string' ? payload.message_id : undefined,
+    };
   }
 
   private async errorMessage(response: Response): Promise<string> {
-    const text = await response.text().catch(() => '');
     try {
-      const payload = JSON.parse(text) as { message?: string; error?: { message?: string } };
-      if (typeof payload.error === 'object' && payload.error?.message) {
-        return payload.error.message;
-      }
+      const payload = (await response.json()) as { message?: string };
       return payload.message ?? response.statusText ?? 'Request failed';
     } catch {
-      return text || response.statusText || 'Request failed';
+      return (await response.text()) || response.statusText || 'Request failed';
     }
   }
 }

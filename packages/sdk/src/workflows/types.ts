@@ -145,9 +145,11 @@ export interface AgentDefinition {
    *   analyst  → interactive: false, reads code/files, writes findings, no sub-agents
    */
   preset?: AgentPreset;
+  /** System prompt / skills for API-mode agents (cli: 'api'). */
+  skills?: string;
 }
 
-export type AgentCli = 'claude' | 'codex' | 'gemini' | 'aider' | 'goose' | 'opencode' | 'droid' | 'cursor' | 'cursor-agent' | 'agent';
+export type AgentCli = 'claude' | 'codex' | 'gemini' | 'aider' | 'goose' | 'opencode' | 'droid' | 'cursor' | 'cursor-agent' | 'agent' | 'api';
 
 /** Resource and behavioral constraints for an agent. */
 export interface AgentConstraints {

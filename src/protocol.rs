@@ -111,6 +111,14 @@ pub enum SdkToBroker {
     ReleaseAgent {
         name: String,
     },
+    SubscribeChannels {
+        name: String,
+        channels: Vec<String>,
+    },
+    UnsubscribeChannels {
+        name: String,
+        channels: Vec<String>,
+    },
     ListAgents {},
     Shutdown {},
 }
@@ -248,6 +256,14 @@ pub enum BrokerEvent {
     AgentPermanentlyDead {
         name: String,
         reason: String,
+    },
+    ChannelSubscribed {
+        name: String,
+        channels: Vec<String>,
+    },
+    ChannelUnsubscribed {
+        name: String,
+        channels: Vec<String>,
     },
 }
 
@@ -497,5 +513,57 @@ mod tests {
         assert_eq!(raw["type"], "resize_pty");
         assert_eq!(raw["payload"]["rows"], 40);
         assert_eq!(raw["payload"]["cols"], 120);
+    }
+
+    #[test]
+    fn sdk_subscribe_channels_round_trip() {
+        use super::SdkToBroker;
+        let msg = SdkToBroker::SubscribeChannels {
+            name: "Worker1".into(),
+            channels: vec!["ops".into(), "alerts".into()],
+        };
+        let encoded = serde_json::to_string(&msg).unwrap();
+        let decoded: SdkToBroker = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+
+        let raw: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(raw["type"], "subscribe_channels");
+    }
+
+    #[test]
+    fn sdk_unsubscribe_channels_round_trip() {
+        use super::SdkToBroker;
+        let msg = SdkToBroker::UnsubscribeChannels {
+            name: "Worker1".into(),
+            channels: vec!["ops".into()],
+        };
+        let encoded = serde_json::to_string(&msg).unwrap();
+        let decoded: SdkToBroker = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+
+        let raw: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(raw["type"], "unsubscribe_channels");
+    }
+
+    #[test]
+    fn broker_event_channel_subscribed_round_trip() {
+        let event = BrokerToSdk::Event(BrokerEvent::ChannelSubscribed {
+            name: "Worker1".into(),
+            channels: vec!["ops".into(), "alerts".into()],
+        });
+        let encoded = serde_json::to_string(&event).unwrap();
+        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn broker_event_channel_unsubscribed_round_trip() {
+        let event = BrokerToSdk::Event(BrokerEvent::ChannelUnsubscribed {
+            name: "Worker1".into(),
+            channels: vec!["ops".into()],
+        });
+        let encoded = serde_json::to_string(&event).unwrap();
+        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
     }
 }

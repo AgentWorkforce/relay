@@ -47,18 +47,9 @@ class _RelayBackstory:
     def _resolve_sync(self) -> str:
         messages = self._drain_buffer()
         try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop is None:
             messages.extend(self._relay.inbox_sync())
-        else:
-            # Running inside an event loop — use a thread to avoid blocking
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                polled = pool.submit(asyncio.run, self._relay.inbox()).result()
-                messages.extend(polled)
+        except Exception:
+            pass  # Buffer messages are still available
         return _format_backstory(self._dedupe(messages), self._base_backstory)
 
     async def _resolve_async(self) -> str:
@@ -136,8 +127,7 @@ def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
     def _buffer_message(message: Any) -> None:
         backstory_buffer.append(message)
 
-    unsubscribe = relay.on_message(_buffer_message)
+    relay.on_message(_buffer_message)
     agent.backstory = _RelayBackstory(relay, agent.backstory or "", backstory_buffer)
-    agent._relay_unsubscribe = unsubscribe  # type: ignore[attr-defined]
 
     return agent

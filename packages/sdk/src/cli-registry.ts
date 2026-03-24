@@ -137,6 +137,10 @@ const CLI_REGISTRY: Record<AgentCli, CliDefinition> = {
       ...extra,
     ],
   },
+  api: {
+    binaries: [],
+    nonInteractiveArgs: (task) => [task],
+  },
 };
 
 /**

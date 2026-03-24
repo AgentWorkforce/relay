@@ -10,10 +10,10 @@ if TYPE_CHECKING:
 
 
 def _format_instructions_with_inbox(messages: list[Any], base_instructions: str) -> str:
-    content = "\n\nNew messages from other agents:\n"
+    content = "New messages from other agents:\n"
     for message in messages:
         content += f"  {message.sender}: {message.text}\n"
-    return f"{content}\n{base_instructions}" if base_instructions else content
+    return f"{base_instructions}\n\n{content}" if base_instructions else content
 
 
 def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
@@ -57,11 +57,8 @@ def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
         function_tool(relay_agents)
     ])
 
-    # 2. Wrap instructions with a local buffer so we don't starve relay_inbox tool
+    # 2. Wrap instructions
     orig_instructions = agent.instructions
-    pending_messages: list[Any] = []
-
-    relay.on_message(lambda msg: pending_messages.append(msg))
 
     async def instructions_wrapper(*args: Any, **kwargs: Any) -> str:
         if callable(orig_instructions):
@@ -75,11 +72,10 @@ def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
             base = orig_instructions
 
         base = base or ""
-        if not pending_messages:
+        messages = await relay.inbox()
+        if not messages:
             return base
 
-        messages = list(pending_messages)
-        pending_messages.clear()
         return _format_instructions_with_inbox(messages, base)
 
     agent.instructions = instructions_wrapper

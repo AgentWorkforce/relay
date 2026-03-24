@@ -195,6 +195,8 @@ export interface Agent {
     data?: Record<string, unknown>;
     mode?: MessageInjectionMode;
   }): Promise<Message>;
+  subscribe(channels: string[]): Promise<void>;
+  unsubscribe(channels: string[]): Promise<void>;
   /** Register a callback for PTY output from this agent. Returns an unsubscribe function. */
   onOutput(callback: AgentOutputCallback): () => void;
 }
@@ -256,6 +258,10 @@ type OutputListener = {
   mode: 'chunk' | 'structured';
 };
 
+type InternalAgent = Agent & {
+  _setChannels: (channels: string[]) => void;
+};
+
 // ── AgentRelay facade ───────────────────────────────────────────────────────
 
 export class AgentRelay {
@@ -270,6 +276,8 @@ export class AgentRelay {
   onDeliveryUpdate: EventHook<BrokerEvent> = null;
   onAgentExitRequested: EventHook<{ name: string; reason: string }> = null;
   onAgentIdle: EventHook<{ name: string; idleSecs: number }> = null;
+  onChannelSubscribed: ((agent: string, channels: string[]) => void) | null = null;
+  onChannelUnsubscribed: ((agent: string, channels: string[]) => void) | null = null;
 
   // ── Public accessors ────────────────────────────────────────────────────
 
@@ -598,6 +606,18 @@ export class AgentRelay {
     return client.getStatus();
   }
 
+  async subscribe(opts: { agent: string; channels: string[] }): Promise<void> {
+    const client = await this.ensureStarted();
+    await client.subscribeChannels(opts.agent, opts.channels);
+    this.addAgentChannels(opts.agent, opts.channels);
+  }
+
+  async unsubscribe(opts: { agent: string; channels: string[] }): Promise<void> {
+    const client = await this.ensureStarted();
+    await client.unsubscribeChannels(opts.agent, opts.channels);
+    this.removeAgentChannels(opts.agent, opts.channels);
+  }
+
   getDeliveryState(eventId: string): DeliveryState | undefined {
     return this.deliveryStates.get(eventId);
   }
@@ -860,6 +880,20 @@ export class AgentRelay {
     return typeof candidate === 'number' ? candidate : Date.now();
   }
 
+  private addAgentChannels(name: string, channels: string[]): void {
+    const agent = this.knownAgents.get(name) as InternalAgent | undefined;
+    if (!agent || channels.length === 0) return;
+    const next = [...new Set([...agent.channels, ...channels])];
+    agent._setChannels(next);
+  }
+
+  private removeAgentChannels(name: string, channels: string[]): void {
+    const agent = this.knownAgents.get(name) as InternalAgent | undefined;
+    if (!agent || channels.length === 0) return;
+    const removed = new Set(channels);
+    agent._setChannels(agent.channels.filter((channel) => !removed.has(channel)));
+  }
+
   /** Resolve a target to a channel name. If `to` is `#channel`, use that
    *  channel. If it's a known agent name, use the agent's first channel.
    *  Otherwise fall back to the relay's default channel. */
@@ -1040,6 +1074,16 @@ export class AgentRelay {
           this.onAgentReady?.(agent);
           break;
         }
+        case 'channel_subscribed': {
+          this.addAgentChannels(event.name, event.channels);
+          this.onChannelSubscribed?.(event.name, event.channels);
+          break;
+        }
+        case 'channel_unsubscribed': {
+          this.removeAgentChannels(event.name, event.channels);
+          this.onChannelUnsubscribed?.(event.name, event.channels);
+          break;
+        }
         case 'delivery_queued': {
           this.updateDeliveryState(
             event.event_id,
@@ -1103,10 +1147,13 @@ export class AgentRelay {
   private makeAgent(name: string, runtime: AgentRuntime, channels: string[]): Agent {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const relay = this;
-    return {
+    let agentChannels = [...channels];
+    const agent: InternalAgent = {
       name,
       runtime,
-      channels,
+      get channels() {
+        return [...agentChannels];
+      },
       get status(): AgentStatus {
         if (relay.exitedAgents.has(name)) return 'exited';
         if (relay.idleAgents.has(name)) return 'idle';
@@ -1274,6 +1321,12 @@ export class AgentRelay {
         relay.onMessageSent?.(msg);
         return msg;
       },
+      async subscribe(channelsToAdd: string[]) {
+        await relay.subscribe({ agent: name, channels: channelsToAdd });
+      },
+      async unsubscribe(channelsToRemove: string[]) {
+        await relay.unsubscribe({ agent: name, channels: channelsToRemove });
+      },
       onOutput(callback: AgentOutputCallback): () => void {
         let listeners = relay.outputListeners.get(name);
         if (!listeners) {
@@ -1292,7 +1345,11 @@ export class AgentRelay {
           }
         };
       },
+      _setChannels(nextChannels: string[]) {
+        agentChannels = [...nextChannels];
+      },
     };
+    return agent;
   }
 
   private createSpawner(cli: string, defaultName: string, runtime: AgentRuntime): AgentSpawner {

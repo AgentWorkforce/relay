@@ -10,7 +10,7 @@ from inspect import isawaitable
 from typing import Any, Callable
 
 from .transport import RelayTransport
-from .types import Message, MessageCallback, RelayConfig, RelayConfigError, RelayAuthError
+from .types import Message, MessageCallback, RelayAuthError, RelayConfig, RelayConfigError
 
 MAX_PENDING_MESSAGES = 10_000
 
@@ -85,11 +85,6 @@ class Relay:
 
         return unsubscribe
 
-
-    async def join(self, channel: str) -> None:
-        await self._ensure_connected()
-        await self.transport.join_channel(channel)
-
     async def agents(self) -> list[str]:
         await self._ensure_connected()
         return await self.transport.list_agents()
@@ -160,25 +155,17 @@ class Relay:
             try:
                 await self.transport.connect()
                 self._ws_connected = True
+            except (RelayConfigError, RelayAuthError):
+                raise
             except Exception:
                 # WebSocket failed — register agent via HTTP and fall back to polling
                 await self.transport.register_agent()
                 self._ws_connected = False
                 self._start_poll_loop()
-
-            from contextlib import suppress
-            for ch in self.config.channels:
-                with suppress(Exception):
-                    await self.transport.join_channel(ch)
-
             self._connected = True
             self._connect_future.set_result(None)
-            self._connect_future = None
-        except Exception as exc:
-            # Ensure future is always resolved so waiters don't hang
-            if not self._connect_future.done():
-                self._connect_future.set_exception(exc)
-            self._connect_future = None
+        except BaseException as exc:
+            self._connect_future.set_exception(exc)
             raise
 
     def _schedule_connect(self) -> None:
@@ -262,10 +249,6 @@ def on_relay(agent: Any, relay: Relay | None = None) -> Any:
         relay = Relay(getattr(agent, "name", "Agent"))
 
     cls_module = type(agent).__module__
-    if cls_module.startswith("claude_agent_sdk"):
-        agent_name = getattr(agent, "name", "Agent")
-        from .adapters.claude_sdk import on_relay as _adapt
-        return _adapt(agent_name, agent, relay)
     if cls_module.startswith("agents"):
         from .adapters.openai_agents import on_relay as _adapt
         return _adapt(agent, relay)
@@ -284,8 +267,8 @@ def on_relay(agent: Any, relay: Relay | None = None) -> Any:
 
     raise TypeError(
         f"on_relay() doesn't recognize {type(agent).__name__} from {cls_module}. "
-        "Supported frameworks: Claude Agent SDK, OpenAI Agents, Google ADK, Agno, Swarms, CrewAI (Python). "
-        "For Claude Agent SDK, you can also import directly: "
+        "Supported frameworks: OpenAI Agents, Google ADK, Agno, Swarms, CrewAI (Python). "
+        "For Claude Agent SDK, import the adapter directly: "
         "from agent_relay.communicate.adapters.claude_sdk import on_relay"
     )
 

@@ -79,6 +79,14 @@ export type SdkToBroker =
       payload: { name: string; data: string };
     }
   | {
+      type: 'subscribe_channels';
+      payload: { name: string; channels: string[] };
+    }
+  | {
+      type: 'unsubscribe_channels';
+      payload: { name: string; channels: string[] };
+    }
+  | {
       type: 'set_model';
       payload: { name: string; model: string; timeout_ms?: number };
     }
@@ -285,6 +293,16 @@ export type BrokerEvent =
       name: string;
       delivery_id: string;
       event_id: string;
+    }
+  | {
+      kind: 'channel_subscribed';
+      name: string;
+      channels: string[];
+    }
+  | {
+      kind: 'channel_unsubscribed';
+      name: string;
+      channels: string[];
     }
   | {
       kind: 'worker_ready';
