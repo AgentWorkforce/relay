@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use parking_lot::Mutex;
@@ -28,7 +28,9 @@ pub enum WsControl {
 pub struct RelaycastWsClient {
     ws_base_url: String,
     workspace_http: RelaycastHttpClient,
-    subscriptions: Arc<Mutex<HashSet<String>>>,
+    /// Reference-counted channel subscriptions: channel_name -> number of agents subscribed.
+    /// The WS only unsubscribes when the count drops to zero.
+    subscriptions: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 impl RelaycastWsClient {
@@ -37,15 +39,19 @@ impl RelaycastWsClient {
         workspace_http: RelaycastHttpClient,
         channels: impl IntoIterator<Item = String>,
     ) -> Self {
+        let mut subs = HashMap::new();
+        for ch in channels {
+            *subs.entry(ch).or_insert(0) += 1;
+        }
         Self {
             ws_base_url: ws_base_url.into(),
             workspace_http,
-            subscriptions: Arc::new(Mutex::new(channels.into_iter().collect())),
+            subscriptions: Arc::new(Mutex::new(subs)),
         }
     }
 
     pub fn active_subscriptions(&self) -> Vec<String> {
-        self.subscriptions.lock().iter().cloned().collect()
+        self.subscriptions.lock().keys().cloned().collect()
     }
 
     pub async fn run(
@@ -145,9 +151,11 @@ impl RelaycastWsClient {
                                         {
                                             let mut subs = self.subscriptions.lock();
                                             for ch in &channels {
-                                                if subs.insert(ch.clone()) {
+                                                let count = subs.entry(ch.clone()).or_insert(0);
+                                                if *count == 0 {
                                                     joined_now.push(ch.clone());
                                                 }
+                                                *count += 1;
                                             }
                                         }
                                         if !joined_now.is_empty() {
@@ -181,8 +189,12 @@ impl RelaycastWsClient {
                                         {
                                             let mut subs = self.subscriptions.lock();
                                             for ch in &channels {
-                                                if subs.remove(ch) {
-                                                    left_now.push(ch.clone());
+                                                if let Some(count) = subs.get_mut(ch) {
+                                                    *count = count.saturating_sub(1);
+                                                    if *count == 0 {
+                                                        subs.remove(ch);
+                                                        left_now.push(ch.clone());
+                                                    }
                                                 }
                                             }
                                         }
