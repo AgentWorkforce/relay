@@ -56,6 +56,15 @@ export class RelayAuthError extends RelayConnectionError {
   }
 }
 
+/** Strip trailing slashes without a quantified regex (avoids ReDoS). */
+function trimTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url[end - 1] === '/') {
+    end -= 1;
+  }
+  return url.slice(0, end);
+}
+
 /**
  * Resolve a partial config into a fully-populated config with env-var fallbacks.
  * @param config - Partial user config.
@@ -65,7 +74,7 @@ export function resolveRelayConfig(config: RelayConfig = {}): ResolvedRelayConfi
   return {
     workspace: config.workspace ?? process.env.RELAY_WORKSPACE,
     apiKey: config.apiKey ?? process.env.RELAY_API_KEY,
-    baseUrl: (config.baseUrl ?? process.env.RELAY_BASE_URL ?? DEFAULT_RELAY_BASE_URL).replace(/\/+$/, ''),
+    baseUrl: trimTrailingSlashes(config.baseUrl ?? process.env.RELAY_BASE_URL ?? DEFAULT_RELAY_BASE_URL),
     channels: [...(config.channels ?? ['general'])],
     pollIntervalMs: config.pollIntervalMs ?? 1_000,
     autoCleanup: config.autoCleanup ?? true,

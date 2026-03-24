@@ -66,7 +66,10 @@ class RelayTransport:
         self._ws = None
         if ws is not None and not ws.closed:
             with suppress(Exception):
-                await ws.close()
+                try:
+                    await asyncio.wait_for(ws.close(), timeout=2)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
 
         if ws_task is not None and not ws_task.done():
             ws_task.cancel()
