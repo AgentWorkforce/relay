@@ -4,7 +4,7 @@ use relay_broker::types::{InboundKind, InboundRelayEvent};
 
 use crate::normalize_channel;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct RoutingWorker<'a> {
     pub(crate) name: &'a str,
     pub(crate) channels: &'a [String],

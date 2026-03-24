@@ -1819,6 +1819,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             spec: Some(spec_for_state),
                                             restart_policy: None,
                                             initial_task: effective_task,
+
                                         },
                                     );
                                     if paths.persist { let _ = state.save(&paths.state); }
@@ -2632,6 +2633,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 spec: Some(spec_for_state),
                                                 restart_policy: None,
                                                 initial_task: effective_task,
+
                                             },
                                         );
                                         if paths.persist { let _ = state.save(&paths.state); }
@@ -2812,6 +2814,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                     spec: Some(spec_for_state),
                                                     restart_policy: None,
                                                     initial_task: effective_task,
+
                                                 },
                                             );
                                             if paths.persist { let _ = state.save(&paths.state); }
@@ -4951,6 +4954,137 @@ async fn handle_sdk_frame(
                 }
             }
 
+            Ok(false)
+        }
+        "subscribe_channels" => {
+            #[derive(serde::Deserialize)]
+            struct SubscribePayload {
+                name: String,
+                channels: Vec<String>,
+            }
+            let payload: SubscribePayload = serde_json::from_value(frame.payload)
+                .context("subscribe_channels payload must contain `name` and `channels`")?;
+
+            let handle = match workers.workers.get_mut(&payload.name) {
+                Some(h) => h,
+                None => {
+                    send_error(
+                        out_tx,
+                        frame.request_id,
+                        "agent_not_found",
+                        format!("unknown worker '{}'", payload.name),
+                        false,
+                        None,
+                    )
+                    .await?;
+                    return Ok(false);
+                }
+            };
+
+            let mut added = Vec::new();
+            for ch in &payload.channels {
+                if !handle
+                    .spec
+                    .channels
+                    .iter()
+                    .any(|c| c.eq_ignore_ascii_case(ch))
+                {
+                    handle.spec.channels.push(ch.clone());
+                    added.push(ch.clone());
+                }
+            }
+
+            // Update persisted state
+            if let Some(persisted) = state.agents.get_mut(&payload.name) {
+                persisted.channels = handle.spec.channels.clone();
+            }
+            state.save(state_path)?;
+
+            // Subscribe the WS to newly added channels
+            if !added.is_empty() {
+                if let Some(ws_tx) = ws_control_tx {
+                    let _ = ws_tx.send(WsControl::Subscribe(added.clone())).await;
+                }
+            }
+
+            send_ok(
+                out_tx,
+                frame.request_id,
+                json!({"name": payload.name, "channels": handle.spec.channels}),
+            )
+            .await?;
+            send_event(
+                out_tx,
+                json!({"kind":"channel_subscribed","name":payload.name,"channels":added}),
+            )
+            .await?;
+            Ok(false)
+        }
+        "unsubscribe_channels" => {
+            #[derive(serde::Deserialize)]
+            struct UnsubscribePayload {
+                name: String,
+                channels: Vec<String>,
+            }
+            let payload: UnsubscribePayload = serde_json::from_value(frame.payload)
+                .context("unsubscribe_channels payload must contain `name` and `channels`")?;
+
+            let handle = match workers.workers.get_mut(&payload.name) {
+                Some(h) => h,
+                None => {
+                    send_error(
+                        out_tx,
+                        frame.request_id,
+                        "agent_not_found",
+                        format!("unknown worker '{}'", payload.name),
+                        false,
+                        None,
+                    )
+                    .await?;
+                    return Ok(false);
+                }
+            };
+
+            let mut removed = Vec::new();
+            let before: Vec<String> = handle.spec.channels.clone();
+            handle
+                .spec
+                .channels
+                .retain(|c| !payload.channels.iter().any(|uc| uc.eq_ignore_ascii_case(c)));
+            for ch in &before {
+                if !handle
+                    .spec
+                    .channels
+                    .iter()
+                    .any(|c| c.eq_ignore_ascii_case(ch))
+                {
+                    removed.push(ch.clone());
+                }
+            }
+
+            if let Some(persisted) = state.agents.get_mut(&payload.name) {
+                persisted.channels = handle.spec.channels.clone();
+            }
+            state.save(state_path)?;
+
+            // Unsubscribe the WS from removed channels
+            if !removed.is_empty() {
+                if let Some(ws_tx) = ws_control_tx {
+                    let _ = ws_tx.send(WsControl::Unsubscribe(removed.clone())).await;
+                }
+            }
+
+            send_ok(
+                out_tx,
+                frame.request_id,
+                json!({"name": payload.name, "channels": handle.spec.channels}),
+            )
+            .await?;
+            send_event(
+                out_tx,
+                json!({"kind":"channel_unsubscribed","name":payload.name,"channels":removed}),
+            )
+            .await?;
             Ok(false)
         }
         "shutdown" => {
