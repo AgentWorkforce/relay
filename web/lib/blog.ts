@@ -22,10 +22,26 @@ export interface BlogPost {
   slug: string;
   frontmatter: BlogFrontmatter;
   content: string;
+  readTime: string;
 }
 
 function isValidBlogSlug(slug: string): boolean {
   return BLOG_SLUG_PATTERN.test(slug);
+}
+
+function estimateReadTime(content: string): string {
+  const words = content
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`]*`/g, ' ')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/[#>*_~-]/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+
+  const minutes = Math.max(1, Math.ceil(words / 200));
+  return `${minutes} min read`;
 }
 
 function readPostFromFile(fileName: string): BlogPost | null {
@@ -47,6 +63,7 @@ function readPostFromFile(fileName: string): BlogPost | null {
       category: (data.category as string) || '',
     },
     content,
+    readTime: estimateReadTime(content),
   };
 }
 
@@ -80,5 +97,6 @@ export function getPost(slug: string): BlogPost | null {
       category: (data.category as string) || '',
     },
     content,
+    readTime: estimateReadTime(content),
   };
 }
