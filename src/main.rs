@@ -5013,7 +5013,11 @@ async fn handle_sdk_frame(
                 json!({"name": payload.name, "channels": handle.spec.channels}),
             )
             .await?;
-            send_event(out_tx, json!({"kind":"channel_subscribed","name":payload.name,"channels":added})).await?;
+            send_event(
+                out_tx,
+                json!({"kind":"channel_subscribed","name":payload.name,"channels":added}),
+            )
+            .await?;
             Ok(false)
         }
         "unsubscribe_channels" => {
@@ -5048,7 +5052,12 @@ async fn handle_sdk_frame(
                 .channels
                 .retain(|c| !payload.channels.iter().any(|uc| uc.eq_ignore_ascii_case(c)));
             for ch in &before {
-                if !handle.spec.channels.iter().any(|c| c.eq_ignore_ascii_case(ch)) {
+                if !handle
+                    .spec
+                    .channels
+                    .iter()
+                    .any(|c| c.eq_ignore_ascii_case(ch))
+                {
                     removed.push(ch.clone());
                 }
             }
@@ -5071,7 +5080,11 @@ async fn handle_sdk_frame(
                 json!({"name": payload.name, "channels": handle.spec.channels}),
             )
             .await?;
-            send_event(out_tx, json!({"kind":"channel_unsubscribed","name":payload.name,"channels":removed})).await?;
+            send_event(
+                out_tx,
+                json!({"kind":"channel_unsubscribed","name":payload.name,"channels":removed}),
+            )
+            .await?;
             Ok(false)
         }
         "shutdown" => {
