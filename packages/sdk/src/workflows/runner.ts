@@ -1711,6 +1711,15 @@ export class WorkflowRunner {
           if (step.command) {
             step.command = this.interpolate(step.command, vars);
           }
+          // Resolve variables in integration step params
+          if (step.params && typeof step.params === 'object') {
+            for (const key of Object.keys(step.params)) {
+              const val = (step.params as Record<string, unknown>)[key];
+              if (typeof val === 'string') {
+                (step.params as Record<string, string>)[key] = this.interpolate(val, vars);
+              }
+            }
+          }
         }
       }
     }
@@ -3263,7 +3272,7 @@ export class WorkflowRunner {
         );
       }
 
-      const result = await this.executor.executeIntegrationStep(step, resolvedParams, {});
+      const result = await this.executor.executeIntegrationStep(step, resolvedParams, { workspaceId: this.workspaceId });
 
       if (!result.success) {
         throw new Error(`Integration step "${step.name}" failed: ${result.output}`);
