@@ -3236,23 +3236,39 @@ export class WorkflowRunner {
       this.emit({ type: 'step:started', runId, stepName: step.name });
       this.postToChannel(`**[${step.name}]** Started (api)`);
 
-      const output = await executeApiStep(
-        specialistDef.constraints?.model ?? 'claude-sonnet-4-20250514',
-        resolvedTask,
-        { envSecrets: this.envSecrets, skills: specialistDef.skills },
-      );
+      try {
+        const output = await executeApiStep(
+          specialistDef.constraints?.model ?? 'claude-sonnet-4-20250514',
+          resolvedTask,
+          { envSecrets: this.envSecrets, skills: specialistDef.skills },
+        );
 
-      state.row.status = 'completed';
-      state.row.output = output;
-      state.row.completedAt = new Date().toISOString();
-      await this.db.updateStep(state.row.id, {
-        status: 'completed',
-        output,
-        completedAt: state.row.completedAt,
-        updatedAt: new Date().toISOString(),
-      });
-      await this.persistStepOutput(runId, step.name, output);
-      this.emit({ type: 'step:completed', runId, stepName: step.name, output });
+        state.row.status = 'completed';
+        state.row.output = output;
+        state.row.completedAt = new Date().toISOString();
+        await this.db.updateStep(state.row.id, {
+          status: 'completed',
+          output,
+          completedAt: state.row.completedAt,
+          updatedAt: new Date().toISOString(),
+        });
+        await this.persistStepOutput(runId, step.name, output);
+        this.emit({ type: 'step:completed', runId, stepName: step.name, output });
+      } catch (apiError) {
+        const errorMessage = apiError instanceof Error ? apiError.message : String(apiError);
+        state.row.status = 'failed';
+        state.row.error = errorMessage;
+        state.row.completedAt = new Date().toISOString();
+        await this.db.updateStep(state.row.id, {
+          status: 'failed',
+          error: errorMessage,
+          completedAt: state.row.completedAt,
+          updatedAt: new Date().toISOString(),
+        });
+        this.emit({ type: 'step:failed', runId, stepName: step.name, error: errorMessage });
+        this.postToChannel(`**[${step.name}]** Failed (api): ${errorMessage}`);
+        throw apiError;
+      }
       return;
     }
 
