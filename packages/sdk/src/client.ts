@@ -1186,20 +1186,18 @@ export class HttpAgentRelayClient {
     return { name: typeof payload?.name === 'string' ? payload.name : name };
   }
 
-  async subscribeChannels(name: string, channels: string[]): Promise<void> {
-    await this.request(`/api/spawned/${encodeURIComponent(name)}/channels/subscribe`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ channels }),
-    });
+  async subscribeChannels(_name: string, _channels: string[]): Promise<void> {
+    throw new Error(
+      'subscribeChannels is only available via the broker protocol (BrokerAgentRelayClient). ' +
+      'The HTTP API does not support dynamic channel subscription.'
+    );
   }
 
-  async unsubscribeChannels(name: string, channels: string[]): Promise<void> {
-    await this.request(`/api/spawned/${encodeURIComponent(name)}/channels/unsubscribe`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ channels }),
-    });
+  async unsubscribeChannels(_name: string, _channels: string[]): Promise<void> {
+    throw new Error(
+      'unsubscribeChannels is only available via the broker protocol (BrokerAgentRelayClient). ' +
+      'The HTTP API does not support dynamic channel unsubscription.'
+    );
   }
 
   async setModel(

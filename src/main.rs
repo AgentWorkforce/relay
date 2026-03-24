@@ -5013,7 +5013,7 @@ async fn handle_sdk_frame(
                 json!({"name": payload.name, "channels": handle.spec.channels}),
             )
             .await?;
-            send_event(out_tx, json!({"kind":"channel_subscribed","name":payload.name,"channels":payload.channels})).await?;
+            send_event(out_tx, json!({"kind":"channel_subscribed","name":payload.name,"channels":added})).await?;
             Ok(false)
         }
         "unsubscribe_channels" => {
@@ -5041,14 +5041,29 @@ async fn handle_sdk_frame(
                 }
             };
 
+            let mut removed = Vec::new();
+            let before: Vec<String> = handle.spec.channels.clone();
             handle
                 .spec
                 .channels
                 .retain(|c| !payload.channels.iter().any(|uc| uc.eq_ignore_ascii_case(c)));
+            for ch in &before {
+                if !handle.spec.channels.iter().any(|c| c.eq_ignore_ascii_case(ch)) {
+                    removed.push(ch.clone());
+                }
+            }
+
             if let Some(persisted) = state.agents.get_mut(&payload.name) {
                 persisted.channels = handle.spec.channels.clone();
             }
             state.save(state_path)?;
+
+            // Unsubscribe the WS from removed channels
+            if !removed.is_empty() {
+                if let Some(ws_tx) = ws_control_tx {
+                    let _ = ws_tx.send(WsControl::Unsubscribe(removed.clone())).await;
+                }
+            }
 
             send_ok(
                 out_tx,
@@ -5056,7 +5071,7 @@ async fn handle_sdk_frame(
                 json!({"name": payload.name, "channels": handle.spec.channels}),
             )
             .await?;
-            send_event(out_tx, json!({"kind":"channel_unsubscribed","name":payload.name,"channels":payload.channels})).await?;
+            send_event(out_tx, json!({"kind":"channel_unsubscribed","name":payload.name,"channels":removed})).await?;
             Ok(false)
         }
         "shutdown" => {

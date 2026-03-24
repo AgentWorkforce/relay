@@ -20,6 +20,8 @@ pub enum WsControl {
     /// Re-subscribe to a list of channels (e.g. after creating/joining a new
     /// channel that didn't exist when the WS connection was first established).
     Subscribe(Vec<String>),
+    /// Unsubscribe from channels that an agent has left.
+    Unsubscribe(Vec<String>),
 }
 
 #[derive(Clone)]
@@ -172,6 +174,33 @@ impl RelaycastWsClient {
                                                     "payload":{"channel":channel}
                                                 }))
                                                 .await;
+                                        }
+                                    }
+                                    Some(WsControl::Unsubscribe(channels)) => {
+                                        let mut left_now = Vec::new();
+                                        {
+                                            let mut subs = self.subscriptions.lock();
+                                            for ch in &channels {
+                                                if subs.remove(ch) {
+                                                    left_now.push(ch.clone());
+                                                }
+                                            }
+                                        }
+                                        if !left_now.is_empty() {
+                                            if let Err(error) = ws.unsubscribe(left_now.clone()).await {
+                                                tracing::warn!(
+                                                    target = "relay_broker::ws",
+                                                    channels = ?left_now,
+                                                    error = %error,
+                                                    "failed to unsubscribe websocket from broker channels"
+                                                );
+                                            } else {
+                                                tracing::info!(
+                                                    target = "broker::ws",
+                                                    channels = ?left_now,
+                                                    "unsubscribed websocket from broker channels"
+                                                );
+                                            }
                                         }
                                     }
                                 }
