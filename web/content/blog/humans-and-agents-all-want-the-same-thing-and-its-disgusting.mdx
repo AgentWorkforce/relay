@@ -5,3 +5,121 @@ date: "2026-02-13"
 author: "Will Washburn"
 category: ""
 ---
+
+Cognitive science explains why. Humans can actively hold only about four chunks of information in working memory at once (Cowan, 2001). A manager with five engineers isn’t just tracking five humans. They’re tracking five skill profiles, five motivation states, cross-dependencies between them, roadmap constraints, business pressure, and technical risk. That’s a lot of context switching. And research on decision fatigue (Danziger et al., 2011) shows that as decision volume rises, decision quality drops.
+
+Communication theory says the same thing from another angle. As Fred Brooks pointed out in The Mythical Man-Month, coordination paths grow roughly with n². Each additional person doesn’t just add one new relationship, they add many.
+
+At around five direct reports, maintaining high-fidelity context routing becomes extremely difficult. So in the human world, the best teams have structures that reflect this.
+
+## Pair programming is where 2+2=5
+
+No plan survives first contact with reality.
+
+Architecture diagrams look clean. Tickets look clear. Roadmaps feel confident. Then execution starts, and the edge cases show up. Assumptions break. Constraints you didn’t know existed suddenly matter.
+
+Pair programming shortens the distance between plan and reality.
+
+If management is context routing at the team level, pairing is context routing at the keystroke level. One editor. Two brains. A live feedback loop while the work is actually happening.
+
+When it works, it feels unfair. Bad assumptions get challenged immediately. Edge cases surface before they escape into production. Tradeoffs get debated while they’re still cheap to change. It’s real time feedback within a set of boundaries that collapses feedback loops and increases context density during execution.
+
+I strongly believe pair programming improves software quality, but it is not free. I mean at a simple level it is at least twice as expensive right? It also requires two people to be motivated, online and “in the zone” at the same time. It’s hairy and inconsistent.
+
+## Is Claude on the team now? Or is it a tool?
+
+Of course the whole world has changed in the last year, six months, 2 weeks so most of what I’m saying feels a bit… dated. But is it?
+
+The best software teams have adopted coding agents. Or at least experimented. But how and where should they fit in the process? Is Claude a teammate? Is it a simple tool not to be anthropomorphized?
+
+I’ve seen a lot of influencers frame this as engineers getting promoted to managers and they just need to “manage their AI team.” now. It’s a nice analogy. Makes you feel in control. We’re all the boss now! But I’m not so sure that’s the right mental model.
+
+## The “new” world
+
+I recently worked with a team trying to adapt to AI-native development. You probably recognize the symptoms:
+
+Code reviews feel impossible to keep up with. “Slop” creeps into the codebase. Velocity is up, but confidence is down. Expectations have skyrocketed. Fear is lurking in the background. Anxiety dominates the vibes.
+
+The old processes feel… insufficient.
+
+So we went back to first principles and asked a simple question: When you introduce coding agents, what inputs do you actually need to get them to build software?
+
+After long sessions and deep discussions, the answer was almost boring.
+
+It’s pretty much what it’s always been. You still just need clearly defined requirements.
+
+## Agents Want What Humans Want
+
+If you strip away the hype, agents don’t want magic prompts. They want context.
+
+Look at what consistently predicts high-performing human teams. Google’s Project Aristotle found that clarity of goals was a stronger predictor of performance than raw talent. People perform best when they understand the objective, the constraints, the boundaries of their authority, and how their work connects to the system around them.
+
+Agents are no different.
+
+They need clear goals, explicit constraints, access to relevant system state and feedback loops.
+
+Without those, they hallucinate. Overreach. Or produce technically correct but strategically useless output.
+
+We keep obsessing over bigger context windows and orchestration layers. But giving an agent 200k tokens isn’t the same thing as giving it the right information. Just like giving a human a 200-page PRD isn’t clarity.
+
+Humans and agents both make better decisions when the decision surface is bounded and the relevant context is preloaded and they have the authority to make decisions. Talent helps. Model quality helps. But neither compensates for missing context.
+
+And if software development is a system for producing good decisions, then agents just plug into the same system.
+
+## How do we give agents the right context?
+
+The real question is: how do we provide agents with the right context to do their work effectively?
+
+The answer may not be glamorous, but it’s at least familiar. We organize them much like we do people. Some focus on the details of implementation. Others focus on defining the problem, setting direction, and establishing guardrails.
+
+In other words, the structure isn’t new. What matters is clear communication of goals, constraints, and expectations so agents can collaborate, iterate, and stay aligned.
+
+And what role should humans play in this flow? Many people have been building orchestrators where the human is at the center of the loop. I think they are quickly finding themselves as the bottleneck.
+
+The truth is there is no need for a human to coordinate if the context waterfall is systematically sound. Humans are needed to define broad intent and constraints, but the environment should facilitate the execution.
+
+## The missing protocol
+
+How would humans do that? Well today we all work in Slack and Microsoft teams. We have meetings to push and pull on ideas. We give feedback while we execute. We get a ton of value from rapidly discussing things.
+
+Agents should have that same ability.
+
+Agents need to be able to communicate in real time. Send messages, ask for help, provide context to each other about what they’re working on. It’s a missing core primitive.
+
+This is why we built agent relay.
+
+Agent Relay is a real-time messaging protocol for AI agents. It provides a dedicated rail for agents to share context and coordinate work as it happens. It’s agentic slack, more or less.
+
+## Speed Changes Everything
+
+When agents can convey context to each other, magic truly starts to happen. You really don’t need all these opinionated orchestrators and you don’t need to reinvent the wheel.
+
+Building used to be the expensive part. You’d spend weeks debating something because implementation cost was high. You wanted to be sure.
+
+Now?
+
+You can generate five approaches before lunch. Throw three away. Merge one. Rewrite it tomorrow. Upfront validation matters wayyy less.
+
+What matters? Boundaries. Constraints. Shared understanding of intent. When iteration is cheap, ambiguity becomes the bottleneck. And ambiguity is just missing context.
+
+So building becomes a real-time conversation with agents about what those constraints are. It’s the same as it’s always been, but the execution phase is going to 0. Feedback happens as the work happens. Humans don’t need to be the coordinators, agents can do it just fine.
+
+## Free your ego
+
+If you’re like me, this part stings a little. Humans just define intent and constraints?! That’s it?
+
+I will not try to tell you that your work is not going to change, because I believe it is. It’s going to change significantly. The sooner you accept that, the more leverage you’ll have inside it.
+
+But here’s what I actually believe:
+
+Your value as a knowledge worker has increased.
+
+When execution cost approaches zero, the bottleneck shifts to defining constraints and setting direction. Those decisions carry more weight than ever. The squishy human parts didn’t disappear at all, if anything they’ve been highlighted. Your humanity is now more important. More rare in the overall system.
+
+We’re all going to explore the exact mechanics of how that happens, but software has always been a human driven solution space. It will continue to be so.
+
+You still get to create something from nothing. You still define the shape of the system. You just don’t have to manually push every instruction through the machine. You are freed from the chains of the slow, cumbersome execution phase albatrossed with deterministic, repetitive coordination problems. You are free to create literally anything you can imagine. You can make the world a better place, faster.
+
+Or, at least thats my take.
+
+If that excites you and you want to help shape how this new layer of coordination works we’re hiring! Email us at hi@agent-relay.com and let’s talk.
