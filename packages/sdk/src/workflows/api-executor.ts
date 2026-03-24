@@ -78,7 +78,6 @@ async function callGoogle(apiKey: string, model: string, task: string, maxTokens
       generationConfig: { maxOutputTokens: maxTokens },
     }),
   });
-  });
   if (!res.ok) throw new Error(`Google API error (${res.status}): ${await res.text()}`);
   const data = await res.json() as { candidates: Array<{ content: { parts: Array<{ text: string }> } }>; usageMetadata?: { promptTokenCount: number; candidatesTokenCount: number } };
   return {
