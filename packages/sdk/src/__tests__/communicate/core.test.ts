@@ -66,15 +66,11 @@ class MockRelayServer {
 
   baseUrl = '';
 
-  /** Track agent tokens from registration: token -> agentId */
-  private tokenToAgentId = new Map<string, string>();
-
   constructor() {
     this.server.on('upgrade', this.handleUpgrade.bind(this));
     this.wsServer.on('connection', (socket, request) => {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');
-      const token = url.searchParams.get('token');
-      const agentId = token ? this.tokenToAgentId.get(token) : undefined;
+      const agentId = url.pathname.split('/').at(-1);
       if (!agentId) {
         socket.close();
         return;
@@ -190,7 +186,7 @@ class MockRelayServer {
     this.requestLog.set(operation, entries);
   }
 
-  private authorizeWorkspaceKey(request: IncomingMessage, response: ServerResponse): boolean {
+  private authorize(request: IncomingMessage, response: ServerResponse): boolean {
     if (request.headers.authorization !== `Bearer ${this.apiKey}`) {
       sendJson(response, 401, { message: 'Unauthorized' });
       return false;
@@ -198,126 +194,81 @@ class MockRelayServer {
     return true;
   }
 
-  private resolveAgentFromToken(request: IncomingMessage): string | undefined {
-    const auth = request.headers.authorization ?? '';
-    if (auth.startsWith('Bearer ')) {
-      const token = auth.slice(7);
-      return this.tokenToAgentId.get(token);
-    }
-    return undefined;
-  }
-
-  private authorizeAgentToken(request: IncomingMessage, response: ServerResponse): string | undefined {
-    const agentId = this.resolveAgentFromToken(request);
-    if (!agentId) {
-      sendJson(response, 401, { ok: false, error: { message: 'Unauthorized' } });
-    }
-    return agentId;
-  }
-
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', this.baseUrl || 'http://127.0.0.1');
     const pathname = url.pathname;
 
-    // POST /v1/agents — register (workspace key auth)
-    if (request.method === 'POST' && pathname === '/v1/agents') {
+    if (request.method === 'POST' && pathname === '/v1/agents/register') {
       const json = await readJson(request);
       this.record('register_agent', json);
-      if (!this.authorizeWorkspaceKey(request, response)) return;
+      if (!this.authorize(request, response)) return;
 
       const agentId = `agent-${this.nextAgentId++}`;
       const token = `token-${agentId}`;
       this.registeredAgents.set(agentId, { name: json.name, token });
-      this.tokenToAgentId.set(token, agentId);
-      sendJson(response, 200, { ok: true, data: { id: agentId, name: json.name, token, status: 'online' } });
+      sendJson(response, 200, { agent_id: agentId, token });
       return;
     }
 
-    // POST /v1/agents/disconnect — unregister (agent token auth)
-    if (request.method === 'POST' && pathname === '/v1/agents/disconnect') {
-      const agentId = this.authorizeAgentToken(request, response);
-      if (!agentId) return;
+    if (request.method === 'DELETE' && pathname.startsWith('/v1/agents/')) {
+      const agentId = pathname.split('/').at(-1)!;
       this.record('unregister_agent', { agent_id: agentId });
+      if (!this.authorize(request, response)) return;
 
-      // Remove token mapping
-      const auth = request.headers.authorization ?? '';
-      const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-      this.tokenToAgentId.delete(token);
       this.registeredAgents.delete(agentId);
       this.inboxes.delete(agentId);
       this.websockets.get(agentId)?.close();
-      sendJson(response, 200, { ok: true });
+      sendJson(response, 204, {});
       return;
     }
 
-    // POST /v1/dm — send DM (agent token auth)
-    if (request.method === 'POST' && pathname === '/v1/dm') {
+    if (request.method === 'POST' && pathname === '/v1/messages/dm') {
       const json = await readJson(request);
-      const agentId = this.authorizeAgentToken(request, response);
-      if (!agentId) return;
-      const senderName = this.registeredAgents.get(agentId)?.name ?? 'unknown';
-      this.record('send_dm', { ...json, from: senderName });
+      this.record('send_dm', json);
+      if (!this.authorize(request, response)) return;
 
-      const msgId = `message-${this.nextMessageId++}`;
-      sendJson(response, 201, { ok: true, data: { id: msgId, text: json.text } });
+      sendJson(response, 200, { message_id: `message-${this.nextMessageId++}` });
       return;
     }
 
-    // POST /v1/channels/{channel}/messages — channel post (agent token auth)
-    const channelMatch = pathname.match(/^\/v1\/channels\/([^/]+)\/messages$/);
-    if (request.method === 'POST' && channelMatch) {
+    if (request.method === 'POST' && pathname === '/v1/messages/channel') {
       const json = await readJson(request);
-      const channel = decodeURIComponent(channelMatch[1]);
-      const agentId = this.authorizeAgentToken(request, response);
-      if (!agentId) return;
-      const senderName = this.registeredAgents.get(agentId)?.name ?? 'unknown';
-      this.record('post_message', { ...json, channel, from: senderName });
+      this.record('post_message', json);
+      if (!this.authorize(request, response)) return;
 
-      const msgId = `message-${this.nextMessageId++}`;
-      sendJson(response, 201, { ok: true, data: { id: msgId, channel_name: channel, text: json.text } });
+      sendJson(response, 200, { message_id: `message-${this.nextMessageId++}` });
       return;
     }
 
-    // POST /v1/messages/{id}/replies — reply (agent token auth)
-    const replyMatch = pathname.match(/^\/v1\/messages\/([^/]+)\/replies$/);
-    if (request.method === 'POST' && replyMatch) {
+    if (request.method === 'POST' && pathname === '/v1/messages/reply') {
       const json = await readJson(request);
-      const parentId = decodeURIComponent(replyMatch[1]);
-      const agentId = this.authorizeAgentToken(request, response);
-      if (!agentId) return;
-      const senderName = this.registeredAgents.get(agentId)?.name ?? 'unknown';
-      this.record('reply', { ...json, message_id: parentId, from: senderName });
+      this.record('reply', json);
+      if (!this.authorize(request, response)) return;
 
-      const msgId = `message-${this.nextMessageId++}`;
-      sendJson(response, 201, { ok: true, data: { id: msgId, text: json.text } });
+      sendJson(response, 200, { message_id: `message-${this.nextMessageId++}` });
       return;
     }
 
-    // GET /v1/inbox — inbox (agent token auth)
-    if (request.method === 'GET' && pathname === '/v1/inbox') {
-      const agentId = this.authorizeAgentToken(request, response);
-      if (!agentId) return;
+    if (request.method === 'GET' && pathname.startsWith('/v1/inbox/')) {
+      const agentId = pathname.split('/').at(-1)!;
       this.record('check_inbox', { agent_id: agentId });
+      if (!this.authorize(request, response)) return;
 
       const messages = this.inboxes.get(agentId) ?? [];
       this.inboxes.set(agentId, []);
-      sendJson(response, 200, { ok: true, data: { unread_channels: [], mentions: [], unread_dms: messages, recent_reactions: [] } });
+      sendJson(response, 200, { messages });
       return;
     }
 
-    // GET /v1/agents — list agents (workspace key auth)
     if (request.method === 'GET' && pathname === '/v1/agents') {
       this.record('list_agents');
-      if (!this.authorizeWorkspaceKey(request, response)) return;
+      if (!this.authorize(request, response)) return;
 
-      const agentList: Array<{ name: string; id: string; status: string }> = [];
-      for (const [agentId, registration] of this.registeredAgents.entries()) {
-        agentList.push({ name: registration.name, id: agentId, status: 'online' });
+      const agents = new Set<string>(this.extraAgents);
+      for (const registration of this.registeredAgents.values()) {
+        agents.add(registration.name);
       }
-      for (const name of this.extraAgents) {
-        agentList.push({ name, id: `extra-${name}`, status: 'online' });
-      }
-      sendJson(response, 200, { ok: true, data: agentList });
+      sendJson(response, 200, { agents: [...agents] });
       return;
     }
 
@@ -327,18 +278,15 @@ class MockRelayServer {
   private handleUpgrade(request: IncomingMessage, socket: any, head: Buffer): void {
     const url = new URL(request.url ?? '/', this.baseUrl || 'http://127.0.0.1');
     const pathname = url.pathname;
-    if (pathname !== '/v1/ws') {
+    if (!pathname.startsWith('/v1/ws/')) {
       socket.destroy();
       return;
     }
 
+    const agentId = pathname.split('/').at(-1)!;
     const token = url.searchParams.get('token');
-    if (!token) {
-      socket.destroy();
-      return;
-    }
-    const agentId = this.tokenToAgentId.get(token);
-    if (!agentId || !this.registeredAgents.has(agentId)) {
+    const registration = this.registeredAgents.get(agentId);
+    if (!registration || token !== registration.token) {
       socket.destroy();
       return;
     }

@@ -74,7 +74,7 @@ export function onRelay<TConfig extends PiConfigLike>(
   name: string,
   config: TConfig,
   relay: RelayLike = new Relay(name)
-): TConfig & { customTools: RelayTool[]; onSessionCreated: (session: PiSessionLike) => Promise<void>; cleanup: () => void } {
+): TConfig & { customTools: RelayTool[]; onSessionCreated: (session: PiSessionLike) => Promise<void> } {
   const customTools = [...(config.customTools ?? []), ...createRelayTools(relay)];
   const originalOnSessionCreated = config.onSessionCreated;
   let unsubscribe: (() => void) | undefined;
@@ -96,10 +96,6 @@ export function onRelay<TConfig extends PiConfigLike>(
         }
         await session.followUp(prompt);
       });
-    },
-    cleanup() {
-      unsubscribe?.();
-      unsubscribe = undefined;
     },
   };
 }

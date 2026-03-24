@@ -41,9 +41,6 @@ class MockServer {
   private nextAgentId = 1;
   private nextMessageId = 1;
 
-  /** Track agent tokens from registration: token -> agentId */
-  private tokenToAgentId = new Map<string, string>();
-
   /** Override to customize HTTP responses */
   responseOverride?: (method: string, path: string, json?: any) => { status: number; body: unknown } | undefined;
 
@@ -52,12 +49,7 @@ class MockServer {
   constructor() {
     this.server.on('upgrade', (req, socket, head) => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-      if (url.pathname !== '/v1/ws') {
-        socket.destroy();
-        return;
-      }
-      const token = url.searchParams.get('token');
-      if (!token || !this.tokenToAgentId.has(token)) {
+      if (!url.pathname.startsWith('/v1/ws/')) {
         socket.destroy();
         return;
       }
@@ -115,15 +107,6 @@ class MockServer {
     });
   }
 
-  private resolveAgentFromToken(request: IncomingMessage): string | undefined {
-    const auth = request.headers.authorization ?? '';
-    if (auth.startsWith('Bearer ')) {
-      const token = auth.slice(7);
-      return this.tokenToAgentId.get(token);
-    }
-    return undefined;
-  }
-
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', this.baseUrl || 'http://127.0.0.1');
     const method = request.method ?? 'GET';
@@ -140,86 +123,68 @@ class MockServer {
       }
     }
 
-    // POST /v1/agents — register (workspace key auth)
-    if (method === 'POST' && path === '/v1/agents') {
+    if (method === 'POST' && path === '/v1/agents/register') {
       if (request.headers.authorization !== `Bearer ${this.apiKey}`) {
         sendJson(response, 401, { message: 'Unauthorized' });
         return;
       }
       const agentId = `agent-${this.nextAgentId++}`;
-      const token = `token-${agentId}`;
-      this.tokenToAgentId.set(token, agentId);
-      sendJson(response, 200, { ok: true, data: { id: agentId, name: json?.name, token, status: 'online' } });
+      sendJson(response, 200, { agent_id: agentId, token: `token-${agentId}` });
       return;
     }
 
-    // POST /v1/agents/disconnect — unregister (agent token auth)
-    if (method === 'POST' && path === '/v1/agents/disconnect') {
-      const agentId = this.resolveAgentFromToken(request);
-      if (!agentId) {
+    if (method === 'DELETE' && path.startsWith('/v1/agents/')) {
+      if (request.headers.authorization !== `Bearer ${this.apiKey}`) {
         sendJson(response, 401, { message: 'Unauthorized' });
         return;
       }
-      // Remove token mapping
-      const auth = request.headers.authorization ?? '';
-      const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-      this.tokenToAgentId.delete(token);
-      sendJson(response, 200, { ok: true });
+      response.statusCode = 204;
+      response.end();
       return;
     }
 
-    // POST /v1/dm — send DM (agent token auth)
-    if (method === 'POST' && path === '/v1/dm') {
-      if (!this.resolveAgentFromToken(request)) {
+    if (method === 'POST' && path === '/v1/messages/dm') {
+      if (request.headers.authorization !== `Bearer ${this.apiKey}`) {
         sendJson(response, 401, { message: 'Unauthorized' });
         return;
       }
-      const msgId = `msg-${this.nextMessageId++}`;
-      sendJson(response, 201, { ok: true, data: { id: msgId, text: json?.text } });
+      sendJson(response, 200, { message_id: `msg-${this.nextMessageId++}` });
       return;
     }
 
-    // POST /v1/channels/{channel}/messages — channel post (agent token auth)
-    const channelMatch = path.match(/^\/v1\/channels\/([^/]+)\/messages$/);
-    if (method === 'POST' && channelMatch) {
-      if (!this.resolveAgentFromToken(request)) {
+    if (method === 'POST' && path === '/v1/messages/channel') {
+      if (request.headers.authorization !== `Bearer ${this.apiKey}`) {
         sendJson(response, 401, { message: 'Unauthorized' });
         return;
       }
-      const msgId = `msg-${this.nextMessageId++}`;
-      sendJson(response, 201, { ok: true, data: { id: msgId, channel_name: channelMatch[1], text: json?.text } });
+      sendJson(response, 200, { message_id: `msg-${this.nextMessageId++}` });
       return;
     }
 
-    // POST /v1/messages/{id}/replies — reply (agent token auth)
-    const replyMatch = path.match(/^\/v1\/messages\/([^/]+)\/replies$/);
-    if (method === 'POST' && replyMatch) {
-      if (!this.resolveAgentFromToken(request)) {
+    if (method === 'POST' && path === '/v1/messages/reply') {
+      if (request.headers.authorization !== `Bearer ${this.apiKey}`) {
         sendJson(response, 401, { message: 'Unauthorized' });
         return;
       }
-      const msgId = `msg-${this.nextMessageId++}`;
-      sendJson(response, 201, { ok: true, data: { id: msgId, text: json?.text } });
+      sendJson(response, 200, { message_id: `msg-${this.nextMessageId++}` });
       return;
     }
 
-    // GET /v1/inbox — inbox (agent token auth)
-    if (method === 'GET' && path === '/v1/inbox') {
-      if (!this.resolveAgentFromToken(request)) {
+    if (method === 'GET' && path.startsWith('/v1/inbox/')) {
+      if (request.headers.authorization !== `Bearer ${this.apiKey}`) {
         sendJson(response, 401, { message: 'Unauthorized' });
         return;
       }
-      sendJson(response, 200, { ok: true, data: { unread_channels: [], mentions: [], unread_dms: [], recent_reactions: [] } });
+      sendJson(response, 200, { messages: [] });
       return;
     }
 
-    // GET /v1/agents — list agents (workspace key auth)
     if (method === 'GET' && path === '/v1/agents') {
       if (request.headers.authorization !== `Bearer ${this.apiKey}`) {
         sendJson(response, 401, { message: 'Unauthorized' });
         return;
       }
-      sendJson(response, 200, { ok: true, data: [{ name: 'TestAgent', id: 'extra-TestAgent', status: 'online' }] });
+      sendJson(response, 200, { agents: ['TestAgent'] });
       return;
     }
 
@@ -239,7 +204,7 @@ async function withServer(run: (server: MockServer) => Promise<void>): Promise<v
 
 // --- HTTP method tests ---
 
-test('registerAgent sends POST /v1/agents with auth header', async () => {
+test('registerAgent sends POST /v1/agents/register with auth header', async () => {
   await withServer(async (server) => {
     const { RelayTransport } = await loadModules();
     const transport = new RelayTransport('TestAgent', server.makeConfig());
@@ -248,14 +213,13 @@ test('registerAgent sends POST /v1/agents with auth header', async () => {
 
     assert.ok(agentId.startsWith('agent-'));
     assert.ok(transport.token);
-    const reqs = server.requestsFor('/v1/agents').filter((r) => r.method === 'POST');
-    assert.ok(reqs.length > 0);
-    assert.equal(reqs[0].auth, `Bearer ${server.apiKey}`);
-    assert.deepEqual(reqs[0].json, { name: 'TestAgent', type: 'agent' });
+    const req = server.requestsFor('/v1/agents/register')[0];
+    assert.equal(req.auth, `Bearer ${server.apiKey}`);
+    assert.deepEqual(req.json, { name: 'TestAgent', workspace: server.workspace });
   });
 });
 
-test('unregisterAgent sends POST /v1/agents/disconnect', async () => {
+test('unregisterAgent sends DELETE /v1/agents/{id}', async () => {
   await withServer(async (server) => {
     const { RelayTransport } = await loadModules();
     const transport = new RelayTransport('TestAgent', server.makeConfig());
@@ -263,14 +227,14 @@ test('unregisterAgent sends POST /v1/agents/disconnect', async () => {
     await transport.registerAgent();
     await transport.unregisterAgent();
 
-    const disconnectReqs = server.requestsFor('/v1/agents/disconnect');
-    assert.ok(disconnectReqs.some((r) => r.method === 'POST'));
+    const deleteReqs = server.requestsFor('/v1/agents/agent-');
+    assert.ok(deleteReqs.some((r) => r.method === 'DELETE'));
     assert.equal(transport.agentId, undefined);
     assert.equal(transport.token, undefined);
   });
 });
 
-test('sendDm sends POST /v1/dm with correct payload', async () => {
+test('sendDm sends POST /v1/messages/dm with correct payload', async () => {
   await withServer(async (server) => {
     const { RelayTransport } = await loadModules();
     const transport = new RelayTransport('Sender', server.makeConfig());
@@ -278,14 +242,13 @@ test('sendDm sends POST /v1/dm with correct payload', async () => {
     const messageId = await transport.sendDm('Recipient', 'hello');
 
     assert.ok(messageId.startsWith('msg-'));
-    const req = server.requestsFor('/v1/dm')[0];
-    assert.deepEqual(req.json, { to: 'Recipient', text: 'hello' });
-    // Agent-authenticated endpoint uses the per-agent token, not workspace key
-    assert.ok(req.auth?.startsWith('Bearer token-agent-'));
+    const req = server.requestsFor('/v1/messages/dm')[0];
+    assert.deepEqual(req.json, { to: 'Recipient', text: 'hello', from: 'Sender' });
+    assert.equal(req.auth, `Bearer ${server.apiKey}`);
   });
 });
 
-test('postMessage sends POST /v1/channels/{channel}/messages', async () => {
+test('postMessage sends POST /v1/messages/channel', async () => {
   await withServer(async (server) => {
     const { RelayTransport } = await loadModules();
     const transport = new RelayTransport('Poster', server.makeConfig());
@@ -293,13 +256,12 @@ test('postMessage sends POST /v1/channels/{channel}/messages', async () => {
     const messageId = await transport.postMessage('general', 'update');
 
     assert.ok(messageId.startsWith('msg-'));
-    const req = server.requestsFor('/v1/channels/general/messages')[0];
-    assert.deepEqual(req.json, { text: 'update' });
-    assert.ok(req.auth?.startsWith('Bearer token-agent-'));
+    const req = server.requestsFor('/v1/messages/channel')[0];
+    assert.deepEqual(req.json, { channel: 'general', text: 'update', from: 'Poster' });
   });
 });
 
-test('reply sends POST /v1/messages/{id}/replies', async () => {
+test('reply sends POST /v1/messages/reply', async () => {
   await withServer(async (server) => {
     const { RelayTransport } = await loadModules();
     const transport = new RelayTransport('Replier', server.makeConfig());
@@ -307,9 +269,8 @@ test('reply sends POST /v1/messages/{id}/replies', async () => {
     const messageId = await transport.reply('msg-42', 'response');
 
     assert.ok(messageId.startsWith('msg-'));
-    const req = server.requestsFor('/v1/messages/msg-42/replies')[0];
-    assert.deepEqual(req.json, { text: 'response' });
-    assert.ok(req.auth?.startsWith('Bearer token-agent-'));
+    const req = server.requestsFor('/v1/messages/reply')[0];
+    assert.deepEqual(req.json, { message_id: 'msg-42', text: 'response', from: 'Replier' });
   });
 });
 
@@ -326,7 +287,7 @@ test('listAgents sends GET /v1/agents', async () => {
   });
 });
 
-test('checkInbox sends GET /v1/inbox', async () => {
+test('checkInbox sends GET /v1/inbox/{agentId}', async () => {
   await withServer(async (server) => {
     const { RelayTransport } = await loadModules();
     const transport = new RelayTransport('Checker', server.makeConfig());
@@ -334,7 +295,7 @@ test('checkInbox sends GET /v1/inbox', async () => {
     const messages = await transport.checkInbox();
 
     assert.deepEqual(messages, []);
-    assert.ok(server.requestsFor('/v1/inbox').length > 0);
+    assert.ok(server.requestsFor('/v1/inbox/').length > 0);
   });
 });
 
@@ -526,7 +487,7 @@ test('disconnect closes WebSocket and unregisters agent', async () => {
 
     await transport.disconnect();
 
-    assert.ok(server.requestsFor('/v1/agents/disconnect').some((r) => r.method === 'POST'));
+    assert.ok(server.requestsFor('/v1/agents/agent-').some((r) => r.method === 'DELETE'));
   });
 });
 
@@ -570,7 +531,7 @@ test('all HTTP methods include Authorization header', async () => {
     await transport.unregisterAgent();
 
     for (const req of server.requests) {
-      assert.ok(req.auth?.startsWith('Bearer '), `Missing auth on ${req.method} ${req.path}`);
+      assert.equal(req.auth, `Bearer ${server.apiKey}`, `Missing auth on ${req.method} ${req.path}`);
     }
   });
 });
