@@ -4790,10 +4790,13 @@ export class WorkflowRunner {
     task: string,
     extraArgs: string[] = []
   ): { cmd: string; args: string[] } {
+    if (cli === 'api') {
+      throw new Error('cli "api" uses direct API calls, not a subprocess command');
+    }
     const resolvedCli: AgentCli = cli === 'cursor' ? resolveCursorCli() : cli;
     const def = getCliDefinition(resolvedCli);
-    if (!def) {
-      throw new Error(`Unknown CLI: ${resolvedCli}`);
+    if (!def || def.binaries.length === 0) {
+      throw new Error(`Unknown or non-executable CLI: ${resolvedCli}`);
     }
     return {
       cmd: def.binaries[0],
