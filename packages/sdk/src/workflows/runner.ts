@@ -3240,7 +3240,7 @@ export class WorkflowRunner {
         const output = await executeApiStep(
           specialistDef.constraints?.model ?? 'claude-sonnet-4-20250514',
           resolvedTask,
-          { envSecrets: this.envSecrets, skills: specialistDef.skills },
+          { envSecrets: this.envSecrets, skills: specialistDef.skills, defaultMaxTokens: specialistDef.constraints?.maxTokens },
         );
 
         state.row.status = 'completed';

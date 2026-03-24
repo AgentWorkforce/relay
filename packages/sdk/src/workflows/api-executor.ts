@@ -69,9 +69,9 @@ async function callOpenAI(apiKey: string, model: string, task: string, maxTokens
 }
 
 async function callGoogle(apiKey: string, model: string, task: string, _maxTokens: number, systemPrompt?: string): Promise<ApiResponse> {
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
     body: JSON.stringify({
       ...(systemPrompt ? { systemInstruction: { parts: [{ text: systemPrompt }] } } : {}),
       contents: [{ parts: [{ text: task }] }],
