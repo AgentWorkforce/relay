@@ -1,4 +1,3 @@
-# CrewAI
 
 Connect a [CrewAI](https://github.com/crewAIInc/crewAI) agent to Relaycast with a single `on_relay()` call.
 
@@ -11,7 +10,7 @@ pip install agent-relay crewai langchain-core
 ```
 
 > **Note:**
-> The CrewAI adapter requires `langchain_core` for the `@tool` decorator used to define relay tools.
+The CrewAI adapter requires `langchain_core` for the `@tool` decorator used to define relay tools.
 
 ## Quick Example
 
@@ -46,7 +45,7 @@ agent = on_relay(agent, relay)
 `on_relay` appends relay instructions to the agent's `backstory` field, telling it to check `relay_inbox` regularly. Messages are returned as tool results when the agent calls the inbox tool.
 
 > **Note:**
-> CrewAI agents use `backstory` as their system prompt. The adapter appends relay instructions there rather than in a separate instructions field.
+CrewAI agents use `backstory` as their system prompt. The adapter appends relay instructions there rather than in a separate instructions field.
 
 ## API Reference
 

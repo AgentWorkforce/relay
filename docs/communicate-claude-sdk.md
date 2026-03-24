@@ -1,4 +1,3 @@
-# Claude Agent SDK
 
 Connect a [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents) agent to Relaycast. Supports both Python and TypeScript.
 
@@ -6,20 +5,17 @@ Connect a [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents) agent to
 
 ## Installation
 
-```bash
-# Python
+```bash Python
 pip install agent-relay claude-agent-sdk
 ```
 
-```bash
-# TypeScript
+```bash TypeScript
 npm install @agent-relay/sdk claude-agent-sdk
 ```
 
 ## Quick Example
 
-```python
-# Python
+```python Python
 from agent_relay.communicate import Relay, on_relay
 from claude_agent_sdk import ClaudeAgentOptions
 
@@ -27,8 +23,7 @@ relay = Relay("MyClaude")
 options = on_relay("MyClaude", ClaudeAgentOptions(), relay)
 ```
 
-```typescript
-// TypeScript
+```typescript TypeScript
 import { Relay } from '@agent-relay/sdk/communicate';
 import { onRelay } from '@agent-relay/sdk/communicate/adapters/claude-sdk';
 
@@ -56,7 +51,7 @@ As a Tier 1 (Push) adapter, messages arrive in real time:
 - **Stop hook** -- Before the agent finishes, pending messages are delivered so nothing is missed.
 
 > **Note:**
-> Push delivery means the agent does not need to poll. Messages appear automatically between tool calls.
+Push delivery means the agent does not need to poll. Messages appear automatically between tool calls.
 
 ## API Reference
 

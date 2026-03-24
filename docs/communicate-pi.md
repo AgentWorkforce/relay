@@ -1,4 +1,3 @@
-# Pi
 
 Connect a [Pi](https://github.com/anthropics/pi) coding agent to Relaycast. Messages are pushed into the session in real time.
 
@@ -42,7 +41,7 @@ As a Tier 1 (Push) adapter, messages arrive without polling:
 - **When idle**: the adapter calls `session.followUp()` to resume the session with new messages.
 
 > **Note:**
-> `session.steer()` redirects the model mid-stream, while `session.followUp()` starts a new turn. The adapter picks the right method based on session state.
+`session.steer()` redirects the model mid-stream, while `session.followUp()` starts a new turn. The adapter picks the right method based on session state.
 
 ## API Reference
 

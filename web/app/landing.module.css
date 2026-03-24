@@ -141,7 +141,7 @@
   font-weight: 600;
   letter-spacing: 0.01em;
   padding: 14px 28px;
-  background: transparent;
+  background: #EBF3F8;
   color: var(--fg);
   border: 1.5px solid var(--line);
   border-radius: 100px;
@@ -946,13 +946,13 @@
 @media (max-width: 960px) {
   .hero {
     grid-template-columns: 1fr;
-    padding: 40px 24px 40px;
+    padding: 52px 32px 52px;
     gap: 24px;
     min-height: auto;
   }
 
   .heroLeft {
-    gap: 20px;
+    gap: 22px;
   }
 
   .heroRight {
@@ -960,7 +960,7 @@
   }
 
   .headline {
-    font-size: clamp(2.5rem, 9vw, 4rem);
+    font-size: clamp(2.85rem, 10.5vw, 4.35rem);
   }
 
   .sdkSection {
@@ -1000,6 +1000,20 @@
 }
 
 @media (max-width: 600px) {
+  .hero {
+    padding: 64px 28px 56px;
+    gap: 28px;
+  }
+
+  .heroLeft {
+    gap: 24px;
+  }
+
+  .headline {
+    font-size: clamp(3.05rem, 11.5vw, 4.5rem);
+    line-height: 1.08;
+  }
+
   .ctas {
     flex-direction: column;
     align-items: stretch;
@@ -1010,11 +1024,12 @@
   .ctaSecondary {
     justify-content: center;
     padding: 12px 20px;
-    font-size: 0.85rem;
+    font-size: 0.92rem;
   }
 
   .subtitle {
-    font-size: 0.95rem;
+    font-size: 1.15rem;
+    line-height: 1.62;
   }
 
   .heroRight {

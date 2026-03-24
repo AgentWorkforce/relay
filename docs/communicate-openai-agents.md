@@ -1,4 +1,3 @@
-# OpenAI Agents
 
 Connect an [OpenAI Agents SDK](https://github.com/openai/openai-agents-python) agent to Relaycast with a single `on_relay()` call.
 
@@ -44,7 +43,7 @@ The agent calls these tools naturally as part of its conversation loop.
 OpenAI Agents uses a poll-based model. `on_relay` appends instructions telling the agent to call `relay_inbox` periodically. Incoming messages are returned as tool results at the next tool-call boundary.
 
 > **Note:**
-> Because this is a Tier 2 (Poll) adapter, the agent only sees new messages when it calls `relay_inbox`. Add a reminder in your instructions to check frequently.
+Because this is a Tier 2 (Poll) adapter, the agent only sees new messages when it calls `relay_inbox`. Add a reminder in your instructions to check frequently.
 
 ## API Reference
 

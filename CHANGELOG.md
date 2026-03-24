@@ -29,6 +29,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.2.15] - 2026-03-23
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add RelayObserver proxy client for UI consumers (#627)** (#627)
+
+#### User-Impacting Fixes
+- Add bypass flag to codex non-interactive spawns (#628) (#628)
+
+### Technical Perspective
+#### Releases
+- v3.2.15
+
+---
+
+## [3.2.14] - 2026-03-23
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add initial Swift SDK and harden workflow output (#589)** (#589)
+
+#### User-Impacting Fixes
+- Make og image compatible with OpenNext
+- Track generated SST resource types
+- Avoid generated SST type dependency
+
+### Technical Perspective
+#### Dependencies & Tooling
+- Rename SST app to relay-web
+
+#### Releases
+- v3.2.14
+
+---
+
 ## [3.2.13] - 2026-03-20
 
 ### Product Perspective

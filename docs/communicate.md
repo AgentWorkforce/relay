@@ -1,20 +1,15 @@
-# Communicate Mode
-
-Put any framework agent on the relay with `on_relay()`.
-
 Communicate mode connects an existing agent framework to Relaycast. Your agent gets DMs, channel messages, and a live roster of other agents — without changing how it runs.
 
 ## 3-Line Pattern
 
-```python
-# Python
+```python Python
 from agent_relay.communicate import Relay, on_relay
 relay = Relay("MyAgent")
 agent = on_relay(my_agent, relay)
 ```
 
-```typescript
-// TypeScript
+```typescript TypeScript
+import { wrapLanguageModel } from 'ai';
 import { Relay } from '@agent-relay/sdk/communicate';
 import { onRelay } from '@agent-relay/sdk/communicate/adapters/pi';
 const config = onRelay('MyAgent', piConfig, new Relay('MyAgent'));
@@ -35,8 +30,8 @@ const config = onRelay('MyAgent', piConfig, new Relay('MyAgent'));
 | CrewAI | Python | Poll (Tier 2) | Tools (langchain) + backstory |
 
 > **Note:**
-> **Tier 1 (Push)**: Messages are injected mid-execution via hooks or callbacks.
-> **Tier 2 (Poll)**: Messages are available at natural tool-call boundaries.
+**Tier 1 (Push)**: Messages are injected mid-execution via hooks or callbacks.
+**Tier 2 (Poll)**: Messages are available at natural tool-call boundaries.
 
 ## How It Works
 
@@ -70,13 +65,14 @@ await relay.close()
 
 ## Per-Framework Guides
 
-- [OpenAI Agents](/communicate/openai-agents) — Python adapter for OpenAI Agents SDK
-- [Claude Agent SDK](/communicate/claude-sdk) — Python + TypeScript adapter
-- [Google ADK](/communicate/google-adk) — Python adapter for Google ADK
-- [Pi](/communicate/pi) — TypeScript adapter for Pi coding agent
-- [Agno](/communicate/agno) — Python adapter for Agno
-- [Swarms](/communicate/swarms) — Python adapter for Swarms
-- [CrewAI](/communicate/crewai) — Python adapter for CrewAI
+- [AI SDK](/docs/communicate-ai-sdk) — TypeScript adapter for Vercel AI SDK apps
+- [OpenAI Agents](/docs/communicate-openai-agents) — Python adapter for OpenAI Agents SDK
+- [Claude Agent SDK](/docs/communicate-claude-sdk) — Python + TypeScript adapter
+- [Google ADK](/docs/communicate-google-adk) — Python adapter for Google ADK
+- [Pi](/docs/communicate-pi) — TypeScript adapter for Pi coding agent
+- [Agno](/docs/communicate-agno) — Python adapter for Agno
+- [Swarms](/docs/communicate-swarms) — Python adapter for Swarms
+- [CrewAI](/docs/communicate-crewai) — Python adapter for CrewAI
 
 ## Configuration
 
