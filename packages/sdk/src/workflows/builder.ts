@@ -23,6 +23,7 @@ import type {
 import { WorkflowRunner, type WorkflowEventListener, type VariableContext, type StepExecutor } from './runner.js';
 import { formatDryRunReport } from './dry-run-format.js';
 import { createDefaultEventLogger, type LogLevel } from './default-logger.js';
+import { runInCloud, type CloudRunOptions } from './cloud-runner.js';
 
 // ── Option types for the builder API ────────────────────────────────────────
 
@@ -42,6 +43,8 @@ export interface AgentOptions {
   interactive?: boolean;
   /** Agent preset: 'lead' (interactive PTY), 'worker' | 'reviewer' | 'analyst' (non-interactive subprocess). */
   preset?: AgentPreset;
+  /** Skills to make available to the agent (for API-mode agents). */
+  skills?: string;
 }
 
 /** Options for agent steps (default). */
@@ -111,6 +114,18 @@ export interface WorkflowRunOptions {
   logLevel?: LogLevel;
   /** Renderer: "listr" for listr2 UI, "default" for console logger, false to disable. */
   renderer?: 'listr' | 'default' | false;
+  /** Run the workflow in the cloud instead of locally. */
+  cloud?: boolean;
+  /** Cloud API base URL (or set CLOUD_API_URL env var). */
+  cloudApiUrl?: string;
+  /** Cloud API authentication token (or set CLOUD_API_TOKEN env var). */
+  cloudApiToken?: string;
+  /** Environment secrets to forward to cloud agents. */
+  envSecrets?: Record<string, string>;
+  /** Polling interval in ms for cloud run status checks. */
+  cloudPollIntervalMs?: number;
+  /** Callback invoked when the cloud run status changes. */
+  onCloudStatusChange?: (status: string, runId: string) => void;
 }
 
 // ── WorkflowBuilder ─────────────────────────────────────────────────────────
@@ -229,6 +244,7 @@ export class WorkflowBuilder {
     if (options.channels !== undefined) def.channels = options.channels;
     if (options.preset !== undefined) def.preset = options.preset;
     if (options.interactive !== undefined) def.interactive = options.interactive;
+    if (options.skills !== undefined) def.skills = options.skills;
 
     if (
       options.model !== undefined ||
@@ -365,6 +381,7 @@ export class WorkflowBuilder {
       cwd: options.cwd,
       relay: options.relay,
       executor: options.executor,
+      envSecrets: options.envSecrets,
     });
 
     // Auto-detect DRY_RUN env var so existing scripts get dry-run for free
@@ -374,6 +391,22 @@ export class WorkflowBuilder {
       const report = runner.dryRun(config, options.workflow, options.vars);
       console.log(formatDryRunReport(report));
       return report;
+    }
+
+    // Cloud execution path — submit to remote API and poll for completion
+    if (options.cloud) {
+      const cloudApiUrl = options.cloudApiUrl ?? process.env.CLOUD_API_URL;
+      const cloudApiToken = options.cloudApiToken ?? process.env.CLOUD_API_TOKEN;
+      if (!cloudApiUrl) throw new Error('cloud: true requires cloudApiUrl or CLOUD_API_URL env var');
+      if (!cloudApiToken) throw new Error('cloud: true requires cloudApiToken or CLOUD_API_TOKEN env var');
+      return runInCloud(config, {
+        cloudApiUrl,
+        cloudApiToken,
+        envSecrets: options.envSecrets,
+        pollIntervalMs: options.cloudPollIntervalMs,
+        timeoutMs: this._timeoutMs,
+        onStatusChange: options.onCloudStatusChange,
+      });
     }
 
     // Wire up default console logger unless explicitly disabled
