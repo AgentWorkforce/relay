@@ -26,3 +26,5 @@ export { WorkflowTrajectory, type StepOutcome } from './trajectory.js';
 export { formatDryRunReport } from './dry-run-format.js';
 export { createWorkflowRenderer, type WorkflowRenderer } from './listr-renderer.js';
 export { createDefaultEventLogger } from './default-logger.js';
+export { executeApiStep, type ApiExecutorOptions } from './api-executor.js';
+export type { CloudRunOptions } from './cloud-runner.js';
