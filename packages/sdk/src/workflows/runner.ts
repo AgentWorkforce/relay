@@ -36,6 +36,7 @@ import {
   CustomStepResolutionError,
 } from './custom-steps.js';
 import { collectCliSession, type CliSessionReport } from './cli-session-collector.js';
+import { executeApiStep } from './api-executor.js';
 import { InMemoryWorkflowDb } from './memory-db.js';
 import { formatRunSummaryTable } from './run-summary-table.js';
 import type {
@@ -180,6 +181,7 @@ export interface WorkflowRunnerOptions {
   cwd?: string;
   summaryDir?: string;
   executor?: StepExecutor;
+  envSecrets?: Record<string, string>;
 }
 
 // ── Step executor interface ──────────────────────────────────────────────────
@@ -297,6 +299,7 @@ export class WorkflowRunner {
   private readonly cwd: string;
   private readonly summaryDir: string;
   private readonly executor?: StepExecutor;
+  private readonly envSecrets?: Record<string, string>;
 
   /** @internal exposed for CLI signal-handler shutdown only */
   relay?: AgentRelay;
@@ -364,6 +367,7 @@ export class WorkflowRunner {
     this.summaryDir = options.summaryDir ?? path.join(this.cwd, '.relay', 'summaries');
     this.workersPath = path.join(this.cwd, '.agent-relay', 'team', 'workers.json');
     this.executor = options.executor;
+    this.envSecrets = options.envSecrets;
   }
 
   // ── Path resolution ─────────────────────────────────────────────────────
@@ -3216,6 +3220,58 @@ export class WorkflowRunner {
       throw new Error(`Agent "${agentName}" not found in config`);
     }
     const specialistDef = WorkflowRunner.resolveAgentDef(rawAgentDef);
+
+    // API-mode agents: execute via direct API call instead of spawning a PTY/subprocess.
+    if (specialistDef.cli === 'api') {
+      const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
+      const resolvedTask = this.interpolateStepTask(step.task ?? '', stepOutputContext);
+
+      state.row.status = 'running';
+      state.row.startedAt = new Date().toISOString();
+      await this.db.updateStep(state.row.id, {
+        status: 'running',
+        startedAt: state.row.startedAt,
+        updatedAt: new Date().toISOString(),
+      });
+      this.emit({ type: 'step:started', runId, stepName: step.name });
+      this.postToChannel(`**[${step.name}]** Started (api)`);
+
+      try {
+        const output = await executeApiStep(
+          specialistDef.constraints?.model ?? 'claude-sonnet-4-20250514',
+          resolvedTask,
+          { envSecrets: this.envSecrets, skills: specialistDef.skills, defaultMaxTokens: specialistDef.constraints?.maxTokens },
+        );
+
+        state.row.status = 'completed';
+        state.row.output = output;
+        state.row.completedAt = new Date().toISOString();
+        await this.db.updateStep(state.row.id, {
+          status: 'completed',
+          output,
+          completedAt: state.row.completedAt,
+          updatedAt: new Date().toISOString(),
+        });
+        await this.persistStepOutput(runId, step.name, output);
+        this.emit({ type: 'step:completed', runId, stepName: step.name, output });
+      } catch (apiError) {
+        const errorMessage = apiError instanceof Error ? apiError.message : String(apiError);
+        state.row.status = 'failed';
+        state.row.error = errorMessage;
+        state.row.completedAt = new Date().toISOString();
+        await this.db.updateStep(state.row.id, {
+          status: 'failed',
+          error: errorMessage,
+          completedAt: state.row.completedAt,
+          updatedAt: new Date().toISOString(),
+        });
+        this.emit({ type: 'step:failed', runId, stepName: step.name, error: errorMessage });
+        this.postToChannel(`**[${step.name}]** Failed (api): ${errorMessage}`);
+        throw apiError;
+      }
+      return;
+    }
+
     const usesOwnerFlow = specialistDef.interactive !== false;
     const currentPattern = this.currentConfig?.swarm?.pattern ?? '';
     const isHubPattern = WorkflowRunner.HUB_PATTERNS.has(currentPattern);
@@ -4734,10 +4790,13 @@ export class WorkflowRunner {
     task: string,
     extraArgs: string[] = []
   ): { cmd: string; args: string[] } {
+    if (cli === 'api') {
+      throw new Error('cli "api" uses direct API calls, not a subprocess command');
+    }
     const resolvedCli: AgentCli = cli === 'cursor' ? resolveCursorCli() : cli;
     const def = getCliDefinition(resolvedCli);
-    if (!def) {
-      throw new Error(`Unknown CLI: ${resolvedCli}`);
+    if (!def || def.binaries.length === 0) {
+      throw new Error(`Unknown or non-executable CLI: ${resolvedCli}`);
     }
     return {
       cmd: def.binaries[0],

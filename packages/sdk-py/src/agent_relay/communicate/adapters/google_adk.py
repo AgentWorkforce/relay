@@ -47,7 +47,10 @@ def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
             if inspect.isawaitable(orig_result):
                 orig_result = await orig_result
 
-        # Always inject relay messages, even if the original callback returned a result
+        # If original callback short-circuited (returned Content), respect that
+        if orig_result is not None:
+            return orig_result
+
         messages = await relay.inbox()
         if messages:
             from google.genai.types import Content, Part
@@ -63,7 +66,7 @@ def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
                     )
                 )
 
-        return orig_result
+        return None
 
     agent.before_model_callback = relay_callback
     return agent
