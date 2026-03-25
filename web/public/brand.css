@@ -189,7 +189,7 @@
   --footer-faint: rgba(237, 244, 251, 0.42);
   --footer-line: rgba(255, 255, 255, 0.1);
   --btn-bg: #5EA8D7;
-  --btn-hover: #7BBDE7;
+  --btn-hover: #4A90C2;
   --hero-gradient: linear-gradient(180deg, #08111A 0%, #10263A 56%, #0A1724 100%);
   --secondary-surface: rgba(116, 184, 226, 0.12);
   --showcase-bg: #101821;
@@ -260,7 +260,7 @@
     --footer-faint: rgba(237, 244, 251, 0.42);
     --footer-line: rgba(255, 255, 255, 0.1);
     --btn-bg: #5EA8D7;
-    --btn-hover: #7BBDE7;
+    --btn-hover: #4A90C2;
     --hero-gradient: linear-gradient(180deg, #08111A 0%, #10263A 56%, #0A1724 100%);
     --secondary-surface: rgba(116, 184, 226, 0.12);
     --showcase-bg: #101821;
