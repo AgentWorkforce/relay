@@ -11,7 +11,6 @@ import {
   clearStoredAuth,
   defaultApiUrl,
   AUTH_FILE_PATH,
-  SUPPORTED_PROVIDERS,
   runWorkflow,
   getRunStatus,
   getRunLogs,
@@ -56,14 +55,24 @@ function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependen
   };
 }
 
+const PROVIDER_ALIASES: Record<string, string> = {
+  claude: 'anthropic',
+  codex: 'openai',
+  gemini: 'google',
+};
+
+const PROVIDER_HELP_TEXT = [
+  'anthropic (alias: claude)',
+  'openai (alias: codex)',
+  'google (alias: gemini)',
+  'cursor',
+  'opencode',
+  'droid',
+].join(', ');
+
 function normalizeProvider(providerArg: string): string {
   const providerInput = providerArg.toLowerCase().trim();
-  const providerMap: Record<string, string> = {
-    claude: 'anthropic',
-    codex: 'openai',
-    gemini: 'google',
-  };
-  return providerMap[providerInput] || providerInput;
+  return PROVIDER_ALIASES[providerInput] || providerInput;
 }
 
 function parsePositiveInteger(value: string): number {
@@ -210,7 +219,7 @@ export function registerCloudCommands(
   cloudCommand
     .command('connect')
     .description('Connect a provider via interactive SSH session')
-    .argument('<provider>', `Provider to connect (${SUPPORTED_PROVIDERS.join(', ')})`)
+    .argument('<provider>', `Provider to connect (${PROVIDER_HELP_TEXT})`)
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--language <language>', 'Sandbox language/image', 'typescript')
     .option('--timeout <seconds>', 'Connection timeout in seconds', parsePositiveInteger, 300)
@@ -379,7 +388,19 @@ export function registerCloudCommands(
     .option('--json', 'Print raw JSON response', false)
     .action(async (runId: string, options: { apiUrl?: string; json?: boolean }) => {
       const result = await getRunStatus(runId, options);
-      deps.log(JSON.stringify(result, null, 2));
+      if (options.json) {
+        deps.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      deps.log(`Run: ${result.runId ?? runId}`);
+      deps.log(`Status: ${result.status ?? 'unknown'}`);
+      if (typeof result.sandboxId === 'string') {
+        deps.log(`Sandbox: ${result.sandboxId}`);
+      }
+      if (typeof result.updatedAt === 'string') {
+        deps.log(`Updated: ${result.updatedAt}`);
+      }
     });
 
   // ── logs ───────────────────────────────────────────────────────────────────

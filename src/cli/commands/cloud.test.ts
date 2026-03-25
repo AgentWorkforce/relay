@@ -46,6 +46,10 @@ describe('registerCloudCommands', () => {
 
     expect(connect).toBeDefined();
     expect(connect?.description()).toContain('interactive SSH session');
+    expect(connect?.registeredArguments[0]?.argChoices).toBeUndefined();
+    expect(connect?.registeredArguments[0]?.description).toContain('anthropic (alias: claude)');
+    expect(connect?.registeredArguments[0]?.description).toContain('openai (alias: codex)');
+    expect(connect?.registeredArguments[0]?.description).toContain('google (alias: gemini)');
   });
 
   it('run requires a workflow argument', () => {
@@ -64,6 +68,8 @@ describe('registerCloudCommands', () => {
 
     expect(status).toBeDefined();
     expect(status?.description()).toContain('workflow run status');
+    const optionNames = status?.options.map((option) => option.long);
+    expect(optionNames).toContain('--json');
   });
 
   it('logs has --follow and --poll-interval options', () => {
