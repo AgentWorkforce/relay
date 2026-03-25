@@ -3,7 +3,16 @@
 
 html {
   background: var(--bg);
+  color-scheme: light dark;
   transition: background 0.3s ease;
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
+}
+
+html[data-theme='dark'] {
+  color-scheme: dark;
 }
 
 body {
@@ -26,12 +35,18 @@ pre {
 }
 
 /* ── Syntax highlighting ── */
-.syn-keyword { color: var(--primary-900); }
-.syn-string { color: #b45309; }
+.syn-keyword { color: var(--primary); }
+.syn-string { color: var(--syntax-string); }
 .syn-type { color: var(--primary-500); }
-.syn-method { color: #6b21a8; }
-.syn-comment { color: #9CA3AF; font-style: italic; }
-.syn-number { color: var(--primary-600); }
+.syn-method { color: var(--syntax-method); }
+.syn-comment { color: var(--syntax-comment); font-style: italic; }
+.syn-number { color: var(--primary-hover); }
+
+html[data-theme='dark'] .shiki,
+html[data-theme='dark'] .shiki span {
+  color: var(--shiki-dark) !important;
+  background-color: var(--shiki-dark-bg) !important;
+}
 
 .skill-page {
   max-width: 1040px;
@@ -82,5 +97,5 @@ pre {
   background: var(--surface);
   color: var(--fg-muted);
   padding: 24px;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--shadow-strong);
 }

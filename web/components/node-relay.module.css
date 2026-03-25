@@ -23,9 +23,9 @@
   width: 160px;
   height: 88px;
   padding: 0;
-  background: rgba(255, 255, 255, 0.88);
+  background: var(--agent-card-bg);
   backdrop-filter: blur(10px);
-  border: 1px solid rgba(45, 79, 62, 0.10);
+  border: 1px solid var(--agent-card-border);
   border-radius: 8px;
   overflow: hidden;
   transition:
@@ -37,7 +37,7 @@
 }
 
 .cardActive {
-  border-color: rgba(45, 79, 62, 0.22);
+  border-color: var(--agent-card-border-active);
 }
 
 .cardHeader {
@@ -45,8 +45,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 5px 8px;
-  background: rgba(245, 243, 238, 0.95);
-  border-bottom: 1px solid rgba(45, 79, 62, 0.08);
+  background: var(--agent-card-header);
+  border-bottom: 1px solid var(--agent-card-border);
   gap: 4px;
   transition: background 0.3s ease, border-color 0.3s ease;
 }
@@ -58,14 +58,14 @@
 .cardName {
   font-family: var(--font-geist-mono), monospace;
   font-size: 0.62rem; font-weight: 600; letter-spacing: 0.02em;
-  color: #2D4F3E; white-space: nowrap;
+  color: var(--agent-card-title); white-space: nowrap;
   transition: color 0.3s ease;
 }
 
 .cardModel {
   font-family: var(--font-geist-mono), monospace;
   font-size: 0.5rem; font-weight: 400; letter-spacing: 0.02em;
-  color: #8a907e; white-space: nowrap;
+  color: var(--agent-card-muted); white-space: nowrap;
   transition: color 0.3s ease;
 }
 
@@ -76,9 +76,9 @@
 
 .statusDot {
   width: 4px; height: 4px; margin-top: 3px;
-  border-radius: 50%; background: #3a8c62; flex-shrink: 0;
+  border-radius: 50%; background: var(--agent-card-status); flex-shrink: 0;
   animation: statusPulse 1s ease-in-out infinite;
-  box-shadow: 0 0 4px rgba(58, 140, 98, 0.4);
+  box-shadow: 0 0 4px var(--agent-card-glow);
 }
 
 @keyframes statusPulse {
@@ -89,12 +89,12 @@
 .statusText {
   font-family: var(--font-geist-mono), monospace;
   font-size: 0.55rem; font-weight: 400; letter-spacing: 0.01em;
-  line-height: 1.4; color: #8a907e;
+  line-height: 1.4; color: var(--agent-card-muted);
   overflow: hidden; text-overflow: ellipsis;
   transition: color 0.3s ease;
 }
 
-.statusActive { color: #2D4F3E; }
+.statusActive { color: var(--agent-card-title); }
 
 /* ── Responsive ── */
 

@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 
 import { GitHubStarsBadge } from './GitHubStars';
+import { ThemeToggle } from './ThemeToggle';
 import s from './site-nav.module.css';
 
 export function LogoIcon() {
@@ -78,7 +79,10 @@ export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
             </Link>
           </li>
         </ul>
-        <GitHubStarsBadge />
+        <div className={s.actions}>
+          <ThemeToggle />
+          <GitHubStarsBadge />
+        </div>
       </div>
 
       {/* Mobile hamburger */}
@@ -108,6 +112,7 @@ export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
         <Link href="/docs" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Docs</Link>
         <Link href="/blog" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Blog</Link>
         <a href="https://github.com/agentworkforce/relay" target="_blank" rel="noopener noreferrer" className={s.mobileLink} onClick={() => setMenuOpen(false)}>GitHub</a>
+        <ThemeToggle mobile />
       </div>
     )}
     </header>

@@ -53,9 +53,28 @@ export const metadata: Metadata = {
   },
 };
 
+const themeScript = `
+  (function () {
+    try {
+      var key = 'agentrelay-theme';
+      var stored = localStorage.getItem(key);
+      if (stored === 'dark' || stored === 'light') {
+        document.documentElement.dataset.theme = stored;
+        document.documentElement.style.colorScheme = stored;
+      } else {
+        document.documentElement.removeAttribute('data-theme');
+        document.documentElement.style.removeProperty('color-scheme');
+      }
+    } catch (error) {}
+  })();
+`;
+
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
       <body className={`${inter.variable} ${geistMono.variable} ${sora.variable}`}>
         {children}
       </body>

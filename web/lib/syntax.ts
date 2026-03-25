@@ -12,9 +12,13 @@ const LANG_ALIASES: Record<string, string> = {
 
 /**
  * Server-side syntax highlighting with Shiki.
- * Returns an HTML string ready for dangerouslySetInnerHTML.
+ * Returns the extracted <code> contents plus <pre> metadata for dual light/dark themes.
  */
-export async function highlightCode(code: string, lang = 'text'): Promise<string> {
+export async function highlightCode(code: string, lang = 'text'): Promise<{
+  codeHtml: string;
+  preClassName?: string;
+  preStyle?: string;
+}> {
   // Normalize and validate language
   let resolved = LANG_ALIASES[lang] || lang;
   if (!(resolved in bundledLanguages) && resolved !== 'text') {
@@ -23,11 +27,21 @@ export async function highlightCode(code: string, lang = 'text'): Promise<string
 
   const html = await codeToHtml(code, {
     lang: resolved,
-    theme: 'github-light',
+    themes: {
+      light: 'github-light',
+      dark: 'github-dark',
+    },
   });
 
-  // Shiki wraps in <pre><code>...</code></pre> — we only want the inner content
-  // since our components already provide the <pre> wrapper
-  const match = html.match(/<code[^>]*>([\s\S]*)<\/code>/);
-  return match ? match[1] : html;
+  const match = html.match(/<pre(?: class="([^"]*)")?(?: style="([^"]*)")?[^>]*><code>([\s\S]*)<\/code><\/pre>/);
+
+  if (!match) {
+    return { codeHtml: html };
+  }
+
+  return {
+    preClassName: match[1],
+    preStyle: match[2],
+    codeHtml: match[3],
+  };
 }
