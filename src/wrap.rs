@@ -1035,6 +1035,20 @@ pub(crate) async fn run_wrap(
                             continue;
                         }
 
+                        // DM routing: only deliver DMs addressed to this agent.
+                        // Channel messages (target starts with '#') are broadcast
+                        // to all subscribers.
+                        if !mapped.target.starts_with('#')
+                            && !workspace_self_names.contains(&mapped.target)
+                        {
+                            tracing::debug!(
+                                target = %mapped.target,
+                                self_names = ?workspace_self_names,
+                                "skipping DM not addressed to this agent"
+                            );
+                            continue;
+                        }
+
                         let delivery_id = format!("wrap_{}", mapped.event_id);
                         tracing::debug!(
                             delivery_id = %delivery_id,
