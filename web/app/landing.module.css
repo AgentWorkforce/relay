@@ -95,6 +95,10 @@
   opacity: 0.85;
 }
 
+:global(html[data-theme='dark']) .headline {
+  opacity: 1;
+}
+
 .subtitle {
   font-size: 1.1rem;
   line-height: 1.65;
