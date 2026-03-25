@@ -18,9 +18,11 @@ Example::
 from __future__ import annotations
 
 import copy
+import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -388,9 +390,23 @@ class WorkflowBuilder:
         """Serialize the config to a YAML string."""
         return yaml.dump(self.to_config(), default_flow_style=False, sort_keys=False)
 
-    def run(self, options: RunOptions | None = None) -> WorkflowResult:
-        """Build the config and execute it via ``agent-relay run <tempfile>``."""
+    def dry_run(self, options: RunOptions | None = None) -> WorkflowResult:
+        """Validate the workflow and show execution plan without running."""
         opts = options or RunOptions()
+        opts.dry_run = True
+        return self.run(opts)
+
+    def run(self, options: RunOptions | None = None) -> WorkflowResult:
+        """Build the config and execute it via ``agent-relay run <tempfile>``.
+
+        Dry-run is enabled when:
+        - ``options.dry_run`` is ``True``, or
+        - the ``DRY_RUN`` environment variable is set to ``"true"``
+          (set automatically by ``agent-relay run script.py --dry-run``).
+        """
+        opts = options or RunOptions()
+        if opts.dry_run is None and os.environ.get("DRY_RUN") == "true":
+            opts.dry_run = True
         config = _apply_runtime_overrides(self.to_config(), opts)
         return _run_config(config, opts)
 
@@ -403,6 +419,8 @@ def workflow(name: str) -> WorkflowBuilder:
 def run_yaml(yaml_path: str, options: RunOptions | None = None) -> WorkflowResult:
     """Run an existing relay YAML workflow file."""
     opts = options or RunOptions()
+    if opts.dry_run is None and os.environ.get("DRY_RUN") == "true":
+        opts.dry_run = True
 
     if opts.trajectories is None and not opts.vars:
         return _run_yaml_path(yaml_path, opts)
@@ -436,6 +454,8 @@ def _run_yaml_path(yaml_path: str, options: RunOptions) -> WorkflowResult:
         )
 
     cmd = [*cmd_prefix, "run", yaml_path]
+    if options.dry_run:
+        cmd.append("--dry-run")
     if options.workflow:
         cmd.extend(["--workflow", options.workflow])
 
@@ -462,7 +482,30 @@ def _execute_cli(
     cwd: str | None,
     on_event: WorkflowEventCallback | None,
 ) -> WorkflowResult:
-    """Execute CLI command and parse emitted workflow events."""
+    """Execute CLI command and parse emitted workflow events.
+
+    Output is streamed to the terminal in real-time so the user sees the same
+    live progress (listr tasks, summary table, etc.) that the TypeScript and
+    YAML paths produce.  Each line is also captured for event parsing.
+    """
+    # Use stdio passthrough when there's a TTY and no event callback — this
+    # preserves listr2's interactive rendering (cursor movement, spinners).
+    passthrough = sys.stdout.isatty() and on_event is None
+
+    if passthrough:
+        process = subprocess.Popen(cmd, cwd=cwd)
+        process.wait()
+
+        return WorkflowResult(
+            status="completed" if process.returncode == 0 else "failed",
+            run_id="",
+            error=None if process.returncode == 0 else "Workflow failed",
+            steps=[],
+            events=[],
+        )
+
+    # Fallback: capture stdout line-by-line, echo to stderr so the user
+    # still sees output, and parse events for the callback.
     process = subprocess.Popen(
         cmd,
         cwd=cwd,
@@ -480,6 +523,9 @@ def _execute_cli(
         for raw_line in process.stdout:
             line = raw_line.rstrip("\n")
             lines.append(line)
+
+            # Echo every line so the user sees real-time output
+            print(line, file=sys.stderr, flush=True)
 
             event = _parse_cli_event(line, run_id=run_id)
             if event is None:
