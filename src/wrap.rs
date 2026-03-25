@@ -4,9 +4,9 @@ use std::time::{Duration, Instant};
 use super::*;
 use crate::helpers::{
     check_echo_in_output, floor_char_boundary, format_injection_for_worker_with_workspace,
-    ActivityDetector, DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
-    ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
-    MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+    resolve_dm_participants_cached, ActivityDetector, DeliveryOutcome, PendingActivity,
+    PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
+    ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
 };
 
 // PTY auto-response constants (shared by wrap and pty workers)
@@ -1330,51 +1330,3 @@ pub(crate) async fn run_wrap(
     Ok(())
 }
 
-const DM_PARTICIPANT_CACHE_TTL: Duration = Duration::from_secs(30);
-
-async fn resolve_dm_participants_cached(
-    http: &RelaycastHttpClient,
-    cache: &mut HashMap<String, (Instant, Vec<String>)>,
-    workspace_id: &str,
-    conversation_id: &str,
-) -> Vec<String> {
-    let workspace_id = workspace_id.trim();
-    let conversation_id = conversation_id.trim();
-    if conversation_id.is_empty() {
-        return vec![];
-    }
-    let cache_key = format!("{workspace_id}:{conversation_id}");
-
-    if let Some((fetched_at, participants)) = cache.get(&cache_key) {
-        if fetched_at.elapsed() < DM_PARTICIPANT_CACHE_TTL {
-            return participants.clone();
-        }
-    }
-
-    match http.get_dm_participants(conversation_id).await {
-        Ok(fetched) => {
-            // Evict oldest entry if cache exceeds cap
-            const MAX_DM_CACHE_ENTRIES: usize = 8192;
-            if cache.len() >= MAX_DM_CACHE_ENTRIES {
-                if let Some(oldest_key) = cache
-                    .iter()
-                    .min_by_key(|(_, (ts, _))| *ts)
-                    .map(|(k, _)| k.clone())
-                {
-                    cache.remove(&oldest_key);
-                }
-            }
-            cache.insert(cache_key, (Instant::now(), fetched.clone()));
-            fetched
-        }
-        Err(error) => {
-            tracing::warn!(
-                workspace_id = %workspace_id,
-                conversation_id = %conversation_id,
-                error = %error,
-                "failed resolving DM participants in wrap mode"
-            );
-            vec![]
-        }
-    }
-}

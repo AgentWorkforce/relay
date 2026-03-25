@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ffi::OsStr,
     path::Path,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -988,6 +989,55 @@ pub(crate) fn is_auto_suggestion(output: &str) -> bool {
     let has_cursor_ghost = output.contains("\x1b[7m") && output.contains("\x1b[27m\x1b[2m");
     let has_send_hint = output.contains("↵ send");
     has_cursor_ghost || has_send_hint
+}
+
+pub(crate) const DM_PARTICIPANT_CACHE_TTL: Duration = Duration::from_secs(30);
+const MAX_DM_CACHE_ENTRIES: usize = 8192;
+
+pub(crate) async fn resolve_dm_participants_cached(
+    http: &relay_broker::relaycast_ws::RelaycastHttpClient,
+    cache: &mut HashMap<String, (Instant, Vec<String>)>,
+    workspace_id: &str,
+    conversation_id: &str,
+) -> Vec<String> {
+    let workspace_id = workspace_id.trim();
+    let conversation_id = conversation_id.trim();
+    if conversation_id.is_empty() {
+        return vec![];
+    }
+    let cache_key = format!("{workspace_id}:{conversation_id}");
+
+    if let Some((fetched_at, participants)) = cache.get(&cache_key) {
+        if fetched_at.elapsed() < DM_PARTICIPANT_CACHE_TTL {
+            return participants.clone();
+        }
+    }
+
+    match http.get_dm_participants(conversation_id).await {
+        Ok(fetched) => {
+            let fetched: Vec<String> = fetched;
+            if cache.len() >= MAX_DM_CACHE_ENTRIES {
+                if let Some(oldest_key) = cache
+                    .iter()
+                    .min_by_key(|(_, (ts, _))| *ts)
+                    .map(|(k, _)| k.clone())
+                {
+                    cache.remove(&oldest_key);
+                }
+            }
+            cache.insert(cache_key, (Instant::now(), fetched.clone()));
+            fetched
+        }
+        Err(error) => {
+            tracing::warn!(
+                workspace_id = %workspace_id,
+                conversation_id = %conversation_id,
+                error = %error,
+                "failed resolving DM participants"
+            );
+            vec![]
+        }
+    }
 }
 
 #[cfg(test)]

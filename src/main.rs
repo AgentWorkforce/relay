@@ -64,7 +64,7 @@ use spawner::{spawn_env_vars, terminate_child, Spawner};
 const DEFAULT_DELIVERY_RETRY_MS: u64 = 1_000;
 const MAX_DELIVERY_RETRIES: u32 = 10;
 const DEFAULT_RELAYCAST_BASE_URL: &str = "https://api.relaycast.dev";
-const DM_PARTICIPANT_CACHE_TTL: Duration = Duration::from_secs(30);
+use helpers::resolve_dm_participants_cached;
 const THREAD_HISTORY_LIMIT: usize = 1_000;
 const DEFAULT_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS: u64 = 3_000;
 const DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS: u64 = 20_000;
@@ -2963,7 +2963,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         if delivery_plan.needs_dm_resolution {
                             let conversation_id = mapped.target.clone();
                             tracing::info!(conversation_id = %conversation_id, "resolving DM participants");
-                            let participants = resolve_dm_participants(
+                            let participants = resolve_dm_participants_cached(
                                 &workspace_http,
                                 &mut dm_participants_cache,
                                 &workspace_id,
@@ -5232,42 +5232,6 @@ async fn retry_pending_delivery(
             Err(error)
         }
     }
-}
-
-async fn resolve_dm_participants(
-    relaycast_http: &RelaycastHttpClient,
-    dm_participants_cache: &mut HashMap<String, (Instant, Vec<String>)>,
-    workspace_id: &str,
-    conversation_id: &str,
-) -> Vec<String> {
-    let workspace_id = workspace_id.trim();
-    let conversation_id = conversation_id.trim();
-    if conversation_id.is_empty() {
-        return vec![];
-    }
-    let cache_key = format!("{workspace_id}:{conversation_id}");
-
-    if let Some((fetched_at, participants)) = dm_participants_cache.get(&cache_key) {
-        if fetched_at.elapsed() < DM_PARTICIPANT_CACHE_TTL {
-            return participants.clone();
-        }
-    }
-
-    let fetched = relaycast_http
-        .get_dm_participants(conversation_id)
-        .await
-        .unwrap_or_else(|error| {
-            tracing::debug!(
-                workspace_id = %workspace_id,
-                conversation_id = %conversation_id,
-                error = %error,
-                "failed resolving DM participants"
-            );
-            vec![]
-        });
-
-    dm_participants_cache.insert(cache_key, (Instant::now(), fetched.clone()));
-    fetched
 }
 
 fn drop_pending_for_worker(
