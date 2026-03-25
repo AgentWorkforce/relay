@@ -35,13 +35,14 @@ const expectedLeafCommands = [
   'run',
   'connect',
   'workflows list',
-  'cloud link',
-  'cloud unlink',
+  'cloud login',
+  'cloud logout',
+  'cloud whoami',
+  'cloud connect',
+  'cloud run',
   'cloud status',
+  'cloud logs',
   'cloud sync',
-  'cloud agents',
-  'cloud send',
-  'cloud brokers',
 ];
 
 function collectLeafCommandPaths(program: Command): string[] {
@@ -114,7 +115,7 @@ describe('bootstrap CLI', () => {
     const program = createProgram();
     const leafCommandPaths = collectLeafCommandPaths(program);
 
-    expect(leafCommandPaths).toHaveLength(38);
+    expect(leafCommandPaths).toHaveLength(39);
     expect(leafCommandPaths).toEqual(expect.arrayContaining(expectedLeafCommands));
     expect(leafCommandPaths).not.toContain('create-agent');
   });
