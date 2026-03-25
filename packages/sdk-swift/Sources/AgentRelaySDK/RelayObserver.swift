@@ -218,6 +218,8 @@ public final class RelayObserver: NSObject, URLSessionWebSocketDelegate, @unchec
     }
 
     private func _handleSocketError(_ error: Error) {
+        isConnectionReady = false
+
         guard reconnectAttempts < maxReconnectAttempts else {
             _connectionState = .disconnected
             let delegate = self.delegate
