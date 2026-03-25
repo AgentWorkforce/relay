@@ -1038,7 +1038,7 @@ pub(crate) async fn run_wrap(
                             || mapped
                                 .sender_agent_id
                                 .as_ref()
-                                .is_some_and(|id| workspace_self_agent_ids.contains(id))
+                                .is_some_and(|id| workspace_self_agent_ids.iter().any(|self_id| agent_name_eq(self_id, id)))
                         {
                             tracing::debug!(
                                 from = %mapped.from,
