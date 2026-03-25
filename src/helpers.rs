@@ -1012,12 +1012,6 @@ where
 
 static DM_DROPS_TOTAL: AtomicU64 = AtomicU64::new(0);
 
-/// Return the total number of DMs silently dropped due to participant
-/// resolution failures.  Useful for metrics / incident detection.
-pub(crate) fn dm_drops_total() -> u64 {
-    DM_DROPS_TOTAL.load(Ordering::Relaxed)
-}
-
 pub(crate) const DM_PARTICIPANT_CACHE_TTL: Duration = Duration::from_secs(30);
 const MAX_DM_CACHE_ENTRIES: usize = 8192;
 
