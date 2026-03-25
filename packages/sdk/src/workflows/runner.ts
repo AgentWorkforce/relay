@@ -6223,26 +6223,23 @@ export class WorkflowRunner {
     );
     console.log(chalk.dim('━'.repeat(70)));
 
-    if (this.agentReports.size > 0) {
-      console.log(formatRunSummaryTable(outcomes, this.agentReports));
-    } else {
-      for (const outcome of outcomes) {
-        const icon =
-          outcome.status === 'completed' ? chalk.green('✓') : outcome.status === 'failed' ? chalk.red('✗') : chalk.dim('⊘');
-        const retryNote = outcome.attempts > 1 ? ` (${outcome.attempts} attempts)` : '';
-        console.log(`  ${icon} ${outcome.name} [${outcome.agent}]${retryNote}`);
+    // Always show the summary table — with agent reports when available,
+    // with just step/status/duration when not (non-interactive agents).
+    console.log(formatRunSummaryTable(outcomes, this.agentReports));
 
-        if (outcome.error) {
-          console.log(`    Error: ${outcome.error}`);
-        }
+    // Show errors and output excerpts for failed steps below the table
+    for (const outcome of outcomes) {
+      if (outcome.status !== 'failed') continue;
 
-        // Extract last meaningful lines from raw PTY output
-        if (outcome.output) {
-          const excerpt = this.extractOutputExcerpt(outcome.output);
-          if (excerpt) {
-            for (const line of excerpt.split('\n')) {
-              console.log(`    ${line}`);
-            }
+      if (outcome.error) {
+        console.log(chalk.red(`  ${outcome.name}: ${outcome.error}`));
+      }
+
+      if (outcome.output) {
+        const excerpt = this.extractOutputExcerpt(outcome.output);
+        if (excerpt) {
+          for (const line of excerpt.split('\n')) {
+            console.log(`    ${line}`);
           }
         }
       }

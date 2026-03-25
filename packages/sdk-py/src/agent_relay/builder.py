@@ -18,9 +18,11 @@ Example::
 from __future__ import annotations
 
 import copy
+import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -388,9 +390,36 @@ class WorkflowBuilder:
         """Serialize the config to a YAML string."""
         return yaml.dump(self.to_config(), default_flow_style=False, sort_keys=False)
 
+    def dry_run(self, options: RunOptions | None = None) -> WorkflowResult:
+        """Validate the workflow and show execution plan without running."""
+        opts = RunOptions(
+            workflow=(options.workflow if options else None),
+            cwd=(options.cwd if options else None),
+            vars=(options.vars if options else None),
+            trajectories=(options.trajectories if options else None),
+            on_event=(options.on_event if options else None),
+            dry_run=True,
+        )
+        return self.run(opts)
+
     def run(self, options: RunOptions | None = None) -> WorkflowResult:
-        """Build the config and execute it via ``agent-relay run <tempfile>``."""
-        opts = options or RunOptions()
+        """Build the config and execute it via ``agent-relay run <tempfile>``.
+
+        Dry-run is enabled when:
+        - ``options.dry_run`` is ``True``, or
+        - the ``DRY_RUN`` environment variable is set to ``"true"``
+          (set automatically by ``agent-relay run script.py --dry-run``).
+        """
+        opts = RunOptions(
+            workflow=(options.workflow if options else None),
+            cwd=(options.cwd if options else None),
+            vars=(options.vars if options else None),
+            trajectories=(options.trajectories if options else None),
+            on_event=(options.on_event if options else None),
+            dry_run=(options.dry_run if options else None),
+        )
+        if opts.dry_run is None and os.environ.get("DRY_RUN") == "true":
+            opts.dry_run = True
         config = _apply_runtime_overrides(self.to_config(), opts)
         return _run_config(config, opts)
 
@@ -402,7 +431,16 @@ def workflow(name: str) -> WorkflowBuilder:
 
 def run_yaml(yaml_path: str, options: RunOptions | None = None) -> WorkflowResult:
     """Run an existing relay YAML workflow file."""
-    opts = options or RunOptions()
+    opts = RunOptions(
+        workflow=(options.workflow if options else None),
+        cwd=(options.cwd if options else None),
+        vars=(options.vars if options else None),
+        trajectories=(options.trajectories if options else None),
+        on_event=(options.on_event if options else None),
+        dry_run=(options.dry_run if options else None),
+    )
+    if opts.dry_run is None and os.environ.get("DRY_RUN") == "true":
+        opts.dry_run = True
 
     if opts.trajectories is None and not opts.vars:
         return _run_yaml_path(yaml_path, opts)
@@ -436,6 +474,8 @@ def _run_yaml_path(yaml_path: str, options: RunOptions) -> WorkflowResult:
         )
 
     cmd = [*cmd_prefix, "run", yaml_path]
+    if options.dry_run:
+        cmd.append("--dry-run")
     if options.workflow:
         cmd.extend(["--workflow", options.workflow])
 
@@ -462,7 +502,26 @@ def _execute_cli(
     cwd: str | None,
     on_event: WorkflowEventCallback | None,
 ) -> WorkflowResult:
-    """Execute CLI command and parse emitted workflow events."""
+    """Execute CLI command and parse emitted workflow events.
+
+    When no event callback is registered, stdio is passed straight through so
+    the TypeScript runner's listr progress and summary table render directly
+    to the terminal — identical output to YAML and TypeScript workflows.
+    """
+    # Passthrough mode: no callback → let the TS runner render directly
+    if on_event is None:
+        process = subprocess.Popen(cmd, cwd=cwd)
+        process.wait()
+
+        return WorkflowResult(
+            status="completed" if process.returncode == 0 else "failed",
+            run_id="",
+            error=None if process.returncode == 0 else "Workflow failed",
+            steps=[],
+            events=[],
+        )
+
+    # Capture mode: callback registered → parse events line by line
     process = subprocess.Popen(
         cmd,
         cwd=cwd,
@@ -487,9 +546,7 @@ def _execute_cli(
 
             events.append(event)
             _sync_step_result(steps, event)
-
-            if on_event is not None:
-                on_event(event)
+            on_event(event)
 
     return_code = process.wait()
     output = "\n".join(lines).strip()
