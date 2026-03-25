@@ -504,27 +504,10 @@ def _execute_cli(
 ) -> WorkflowResult:
     """Execute CLI command and parse emitted workflow events.
 
-    Output is streamed to the terminal in real-time so the user sees the same
-    live progress (listr tasks, summary table, etc.) that the TypeScript and
-    YAML paths produce.  Each line is also captured for event parsing.
+    Output is always captured so returned WorkflowResult objects retain parsed
+    steps, events, rich error details, and cancelled status detection even when
+    no event callback is registered.
     """
-    # When no event callback is registered, pass stdio straight through so the
-    # TypeScript runner's listr progress, live step updates, and summary table
-    # render directly to the user's terminal — identical to YAML/TS workflows.
-    if on_event is None:
-        process = subprocess.Popen(cmd, cwd=cwd)
-        process.wait()
-
-        return WorkflowResult(
-            status="completed" if process.returncode == 0 else "failed",
-            run_id="",
-            error=None if process.returncode == 0 else "Workflow failed",
-            steps=[],
-            events=[],
-        )
-
-    # When an event callback is registered, capture stdout line-by-line
-    # so we can parse events and dispatch them to the callback.
     process = subprocess.Popen(
         cmd,
         cwd=cwd,
@@ -549,7 +532,8 @@ def _execute_cli(
 
             events.append(event)
             _sync_step_result(steps, event)
-            on_event(event)
+            if on_event is not None:
+                on_event(event)
 
     return_code = process.wait()
     output = "\n".join(lines).strip()
