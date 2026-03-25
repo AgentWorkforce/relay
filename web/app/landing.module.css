@@ -116,7 +116,7 @@
   font-size: 0.92rem;
   font-weight: 600;
   letter-spacing: 0.01em;
-  padding: 14px 30px;
+  padding: 12px 28px;
   background: var(--btn-bg);
   color: #fff;
   border: none;
@@ -233,7 +233,7 @@
 .previewAccent {
   position: absolute;
   inset: 0;
-  background: linear-gradient(135deg, #D97757 0%, #c4684a 50%, #e8956e 100%);
+  background: linear-gradient(135deg, #C1674B 0%, #B45542 50%, #CD866A 100%);
   z-index: 0;
 }
 
@@ -561,10 +561,6 @@
   position: relative;
   overflow: hidden;
   transition: background 0.3s ease;
-}
-
-:global([data-theme='dark']) .byohWrapper {
-  background: #1a1e1c;
 }
 
 .byohWrapper::before {

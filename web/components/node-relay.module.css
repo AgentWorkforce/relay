@@ -96,35 +96,6 @@
 
 .statusActive { color: #2D4F3E; }
 
-/* ══════════════════════════════════════
-   Terminal Card — Dark mode
-   ══════════════════════════════════════ */
-
-:global([data-theme='dark']) .card {
-  background: #1a1e1c;
-  backdrop-filter: none;
-  border-color: #2a3130;
-}
-
-:global([data-theme='dark']) .cardActive {
-  border-color: #3a5548;
-}
-
-:global([data-theme='dark']) .cardHeader {
-  background: #141816;
-  border-bottom-color: #2a3130;
-}
-
-:global([data-theme='dark']) .cardName { color: #c8d0ca; }
-:global([data-theme='dark']) .cardModel { color: #5a6b62; }
-:global([data-theme='dark']) .statusText { color: #5a6b62; }
-:global([data-theme='dark']) .statusActive { color: #6fcfa0; }
-
-:global([data-theme='dark']) .statusDot {
-  background: #6fcfa0;
-  box-shadow: 0 0 4px rgba(111, 207, 160, 0.4);
-}
-
 /* ── Responsive ── */
 
 @media (max-width: 1100px) {

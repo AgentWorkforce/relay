@@ -54,9 +54,3 @@
 .string { color: #b45309; }
 .type { color: var(--primary); }
 .method { color: #6b21a8; }
-
-
-:global([data-theme='dark']) .keyword { color: #6fcfa0; }
-:global([data-theme='dark']) .string { color: #d4a373; }
-:global([data-theme='dark']) .type { color: #6fcfa0; }
-:global([data-theme='dark']) .method { color: #e0c97f; }
