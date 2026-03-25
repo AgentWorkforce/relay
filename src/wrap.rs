@@ -668,6 +668,7 @@ pub(crate) async fn run_wrap(
 
     // Dedup for WS events
     let mut dedup = DedupCache::new(Duration::from_secs(300), 8192);
+    let mut dm_participants_cache: HashMap<String, (Instant, Vec<String>)> = HashMap::new();
 
     // Buffer for extracting message IDs from MCP tool responses in PTY output.
     // When the agent sends messages via MCP, the response contains the message ID.
@@ -1021,7 +1022,7 @@ pub(crate) async fn run_wrap(
                             tracing::debug!(event_id = %mapped.event_id, workspace_id = %mapped.workspace_id, "dedup: skipping relay event");
                             continue;
                         }
-                        if workspace_self_names.contains(&mapped.from)
+                        if workspace_self_names.iter().any(|n| n.eq_ignore_ascii_case(&mapped.from))
                             || mapped
                                 .sender_agent_id
                                 .as_ref()
@@ -1037,21 +1038,41 @@ pub(crate) async fn run_wrap(
 
                         // DM routing: only deliver DMs addressed to this agent.
                         // Channel messages (target starts with '#') are broadcast
-                        // to all subscribers. Allow through: empty targets (presence),
-                        // thread replies, conversation_id fallbacks.
+                        // to all subscribers. Allow through: empty targets (presence)
+                        // and thread replies.
                         if !mapped.target.is_empty()
                             && !mapped.target.starts_with('#')
                             && mapped.target != "thread"
-                            && !mapped.target.starts_with("dm_")
-                            && !mapped.target.starts_with("conv_")
-                            && !workspace_self_names.contains(&mapped.target)
                         {
-                            tracing::debug!(
-                                target = %mapped.target,
-                                self_names = ?workspace_self_names,
-                                "skipping DM not addressed to this agent"
-                            );
-                            continue;
+                            if mapped.target.starts_with("dm_") || mapped.target.starts_with("conv_") {
+                                // Conversation-ID target: resolve participants to check
+                                // if this wrapped agent is part of the DM.
+                                let participants = resolve_dm_participants_cached(
+                                    &workspace_child_http,
+                                    &mut dm_participants_cache,
+                                    &workspace_id,
+                                    &mapped.target,
+                                ).await;
+                                let dominated = workspace_self_names.iter().any(|name| {
+                                    participants.iter().any(|p| p.eq_ignore_ascii_case(name))
+                                });
+                                if !dominated {
+                                    tracing::debug!(
+                                        target = %mapped.target,
+                                        participants = ?participants,
+                                        self_names = ?workspace_self_names,
+                                        "skipping DM — agent not in participants"
+                                    );
+                                    continue;
+                                }
+                            } else if !workspace_self_names.iter().any(|n| n.eq_ignore_ascii_case(&mapped.target)) {
+                                tracing::debug!(
+                                    target = %mapped.target,
+                                    self_names = ?workspace_self_names,
+                                    "skipping DM not addressed to this agent"
+                                );
+                                continue;
+                            }
                         }
 
                         let delivery_id = format!("wrap_{}", mapped.event_id);
@@ -1296,4 +1317,41 @@ pub(crate) async fn run_wrap(
 
     eprintln!("\r\n[agent-relay] session ended");
     Ok(())
+}
+
+const DM_PARTICIPANT_CACHE_TTL: Duration = Duration::from_secs(30);
+
+async fn resolve_dm_participants_cached(
+    http: &RelaycastHttpClient,
+    cache: &mut HashMap<String, (Instant, Vec<String>)>,
+    workspace_id: &str,
+    conversation_id: &str,
+) -> Vec<String> {
+    let conversation_id = conversation_id.trim();
+    if conversation_id.is_empty() {
+        return vec![];
+    }
+    let cache_key = format!("{workspace_id}:{conversation_id}");
+
+    if let Some((fetched_at, participants)) = cache.get(&cache_key) {
+        if fetched_at.elapsed() < DM_PARTICIPANT_CACHE_TTL {
+            return participants.clone();
+        }
+    }
+
+    let fetched = http
+        .get_dm_participants(conversation_id)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::debug!(
+                workspace_id = %workspace_id,
+                conversation_id = %conversation_id,
+                error = %error,
+                "failed resolving DM participants in wrap mode"
+            );
+            vec![]
+        });
+
+    cache.insert(cache_key, (Instant::now(), fetched.clone()));
+    fetched
 }
