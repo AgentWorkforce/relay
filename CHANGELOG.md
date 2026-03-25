@@ -29,6 +29,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.2.16] - 2026-03-25
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add http and broker-path subpath exports for Electron apps (#640)** (#640)
+- **PTY output streaming workflow (#390) (#528)** (#390)
+- **Add integration step type for external services (#631)** (#631)
+- **Add dynamic channel subscribe/unsubscribe to broker (#630)** (#630)
+- **Cloud endpoints, API executor, and Communicate SDK v2 protocol (#632)** (#632)
+- **Communicate Mode SDK (on_relay) for Python and TypeScript (#618)** (#618)
+- **Add wait/steer message injection modes**
+
+#### User-Impacting Fixes
+- Add RELAY_SKIP_PROMPT and self-echo filtering (#641) (#641)
+- Ignore failing relaycast DM tests pending relaycast 1.0 API investigation
+- Cargo fmt corrections
+- Sync lockfile for new UI deps
+- Validate channel names at build time and dry-run (#638) (#638)
+- Forward steer mode through relaycast DMs
+- Unblock fork PR checks and enforce steer rejection for relaycast DM
+- Propagate inbound injection mode on relay_inbound events
+- Allow relaycast delivery path to accept steer mode
+- Reject steer mode on relaycast-only send path
+- Validate send mode and harden steer delivery semantics
+- Satisfy rust fmt/clippy for injection mode changes
+- Don't block steer injections behind autosuggest gate
+
+### Technical Perspective
+#### Performance & Reliability
+- Assert injection mode defaults to wait when omitted
+- Fix missing MessageInjectionMode imports in test modules
+
+#### Dependencies & Tooling
+- Bump relaycast crate to v1 for injection mode support
+
+#### Releases
+- v3.2.16
+
+---
+
 ## [3.2.15] - 2026-03-23
 
 ### Product Perspective
