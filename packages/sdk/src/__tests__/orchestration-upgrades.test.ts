@@ -1180,4 +1180,28 @@ describe('Agent.onOutput', () => {
       await relay.shutdown();
     }
   });
+
+  it('onOutput with explicit mode: "structured" receives { stream, chunk } objects', async () => {
+    const { client, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    try {
+      const agent = await relay.spawnPty({
+        name: 'explicit-mode-agent',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      const payloads: Array<{ stream: string; chunk: string }> = [];
+      // Use a plain (chunk) => ... signature but force structured mode via options
+      agent.onOutput(((data: { stream: string; chunk: string }) => payloads.push(data)) as any, { mode: 'structured' });
+
+      emit({ kind: 'worker_stream', name: 'explicit-mode-agent', stream: 'stdout', chunk: 'hello' });
+
+      expect(payloads).toEqual([{ stream: 'stdout', chunk: 'hello' }]);
+    } finally {
+      await relay.shutdown();
+    }
+  });
 });
