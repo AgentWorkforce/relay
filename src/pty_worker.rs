@@ -680,8 +680,17 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         }
                     }
                     None => {
-                        // PTY reader closed — child likely exited. Emit
-                        // agent_exit with any echo_buffer tail so the
+                        // PTY reader closed — child likely exited. Flush
+                        // any buffered stream output before sending
+                        // agent_exit to preserve output ordering.
+                        if !stream_buffer.is_empty() {
+                            let chunk = std::mem::take(&mut stream_buffer);
+                            let _ = send_frame(&out_tx, "worker_stream", None, json!({
+                                "stream": "stdout",
+                                "chunk": chunk,
+                            })).await;
+                        }
+                        // Emit agent_exit with any echo_buffer tail so the
                         // dashboard can surface the CLI's last output.
                         let clean = strip_ansi(&echo_buffer);
                         let trimmed = if clean.len() > 2000 {
