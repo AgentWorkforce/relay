@@ -254,6 +254,12 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // Bounded to avoid unbounded memory growth; continuity blocks are small.
     let mut continuity_buffer = String::new();
     const CONTINUITY_BUFFER_MAX: usize = 4096;
+    // Rate-limited buffering for worker_stream emissions.
+    // Chunks are accumulated and flushed at most every 100ms or when buffer exceeds threshold.
+    let mut stream_buffer = String::new();
+    let mut stream_buffer_last_flush = Instant::now();
+    const STREAM_BUFFER_MAX: usize = 4096;
+    const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
     let mut verification_tick = tokio::time::interval(Duration::from_millis(200));
     verification_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -490,10 +496,17 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             running = false;
                         }
 
-                        let _ = send_frame(&out_tx, "worker_stream", None, json!({
-                            "stream": "stdout",
-                            "chunk": text,
-                        })).await;
+                        stream_buffer.push_str(&text);
+                        if stream_buffer.len() >= STREAM_BUFFER_MAX
+                            || stream_buffer_last_flush.elapsed() >= STREAM_FLUSH_INTERVAL
+                        {
+                            let chunk = std::mem::take(&mut stream_buffer);
+                            let _ = send_frame(&out_tx, "worker_stream", None, json!({
+                                "stream": "stdout",
+                                "chunk": chunk,
+                            })).await;
+                            stream_buffer_last_flush = Instant::now();
+                        }
 
                         pty_auto.update_auto_suggestion(&text);
                         pty_auto.last_output_time = Instant::now();
@@ -854,6 +867,18 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             i += 1;
                         }
                     }
+                }
+
+                // Flush any buffered stream output during quiet periods.
+                if !stream_buffer.is_empty()
+                    && stream_buffer_last_flush.elapsed() >= STREAM_FLUSH_INTERVAL
+                {
+                    let chunk = std::mem::take(&mut stream_buffer);
+                    let _ = send_frame(&out_tx, "worker_stream", None, json!({
+                        "stream": "stdout",
+                        "chunk": chunk,
+                    })).await;
+                    stream_buffer_last_flush = Instant::now();
                 }
 
             }
