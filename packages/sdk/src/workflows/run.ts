@@ -1,6 +1,7 @@
 import type { AgentRelayOptions } from '../relay.js';
 import type { DryRunReport, TrajectoryConfig, WorkflowRunRow } from './types.js';
 import { WorkflowRunner, type WorkflowEventListener, type VariableContext } from './runner.js';
+import { createDefaultEventLogger } from './default-logger.js';
 import { formatDryRunReport } from './dry-run-format.js';
 
 /**
@@ -69,6 +70,10 @@ export async function runWorkflow(
     console.log(formatDryRunReport(report));
     return report;
   }
+
+  // Attach default console logger so callers get progress output without
+  // needing to wire up their own handler.
+  runner.on(createDefaultEventLogger('normal'));
 
   if (options.onEvent) {
     runner.on(options.onEvent);

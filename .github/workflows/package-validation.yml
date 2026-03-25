@@ -129,20 +129,21 @@ jobs:
         run: |
           echo "=== Testing CLI broker lifecycle ==="
           TEST_PORT=3899
+          API_PORT=$((TEST_PORT + 1))
           # Start broker+dashboard in background
           node dist/src/cli/index.js up --port "$TEST_PORT" &
           DAEMON_PID=$!
 
-          # Wait for health endpoint
+          # Wait for health endpoint (broker API is dashboard port + 1)
           for i in {1..20}; do
-            if curl -sf "http://127.0.0.1:${TEST_PORT}/health" > /dev/null; then
+            if curl -sf "http://127.0.0.1:${API_PORT}/health" > /dev/null; then
               break
             fi
             sleep 1
           done
 
           # Verify broker is reachable
-          if curl -sf "http://127.0.0.1:${TEST_PORT}/health" > /dev/null; then
+          if curl -sf "http://127.0.0.1:${API_PORT}/health" > /dev/null; then
             echo "✓ Broker health endpoint responding"
             AGENT_RELAY_SKIP_TMUX=1 node dist/src/cli/index.js status || true
           else
