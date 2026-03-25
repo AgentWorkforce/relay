@@ -20,7 +20,7 @@ export function validateWorkflow(config: RelayYamlConfig): ValidationIssue[] {
       severity: 'error',
       code: 'INVALID_CHANNEL_NAME',
       message: `Channel name "${channel}" is invalid. Must be lowercase alphanumeric and hyphens, starting with a letter or number.`,
-      fix: `Use .toLowerCase().replace(/[^a-z0-9-]/g, '-') on the channel name.`,
+      fix: `Use .toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') on the channel name.`,
       location: 'swarm:channel',
     });
   }
