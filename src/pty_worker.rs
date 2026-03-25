@@ -990,10 +990,16 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // Flush any remaining buffered stream output before signaling exit.
     if !stream_buffer.is_empty() {
         let chunk = std::mem::take(&mut stream_buffer);
-        let _ = send_frame(&out_tx, "worker_stream", None, json!({
-            "stream": "stdout",
-            "chunk": chunk,
-        })).await;
+        let _ = send_frame(
+            &out_tx,
+            "worker_stream",
+            None,
+            json!({
+                "stream": "stdout",
+                "chunk": chunk,
+            }),
+        )
+        .await;
     }
 
     if child_exit_detected {
