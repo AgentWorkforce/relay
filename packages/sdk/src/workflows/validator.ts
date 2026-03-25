@@ -8,8 +8,23 @@ export interface ValidationIssue {
   location?: string; // e.g. "step:analyze" or "agent:analyst"
 }
 
+const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+
 export function validateWorkflow(config: RelayYamlConfig): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
+
+  // Validate channel name format (must be lowercase alphanumeric + hyphens)
+  const channel = (config as any).swarm?.channel ?? (config as any).channel;
+  if (channel && !CHANNEL_NAME_RE.test(channel)) {
+    issues.push({
+      severity: 'error',
+      code: 'INVALID_CHANNEL_NAME',
+      message: `Channel name "${channel}" is invalid. Must be lowercase alphanumeric and hyphens, starting with a letter or number.`,
+      fix: `Use .toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') on the channel name.`,
+      location: 'swarm:channel',
+    });
+  }
+
   const agentMap = new Map(config.agents.map((a) => [a.name, a]));
   const hasReviewerAgent = config.agents.some((a) => {
     const role = a.role?.toLowerCase() ?? '';
