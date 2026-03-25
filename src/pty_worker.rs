@@ -260,6 +260,20 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut stream_buffer_last_flush = Instant::now();
     const STREAM_BUFFER_MAX: usize = 4096;
     const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+
+    /// Flush `stream_buffer` via a `worker_stream` frame if non-empty.
+    macro_rules! flush_stream_buffer {
+        () => {
+            if !stream_buffer.is_empty() {
+                let chunk = std::mem::take(&mut stream_buffer);
+                let _ = send_frame(&out_tx, "worker_stream", None, json!({
+                    "stream": "stdout",
+                    "chunk": chunk,
+                })).await;
+                stream_buffer_last_flush = Instant::now();
+            }
+        };
+    }
     let mut verification_tick = tokio::time::interval(Duration::from_millis(200));
     verification_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -483,6 +497,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // Detect /exit command in agent output and trigger graceful shutdown.
                         // Skip detection while echo verifications are pending to avoid
                         // false-positives from injected relay messages containing "/exit".
+                        stream_buffer.push_str(&text);
+                        if stream_buffer.len() >= STREAM_BUFFER_MAX
+                            || stream_buffer_last_flush.elapsed() >= STREAM_FLUSH_INTERVAL
+                        {
+                            flush_stream_buffer!();
+                        }
+
                         if pending_verifications.is_empty()
                             && clean_text.lines().any(|line| line.trim() == "/exit")
                         {
@@ -490,22 +511,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 target = "agent_relay::worker::pty",
                                 "agent issued /exit — shutting down"
                             );
+                            flush_stream_buffer!();
                             let _ = send_frame(&out_tx, "agent_exit", None, json!({
                                 "reason": "agent_requested",
                             })).await;
                             running = false;
-                        }
-
-                        stream_buffer.push_str(&text);
-                        if stream_buffer.len() >= STREAM_BUFFER_MAX
-                            || stream_buffer_last_flush.elapsed() >= STREAM_FLUSH_INTERVAL
-                        {
-                            let chunk = std::mem::take(&mut stream_buffer);
-                            let _ = send_frame(&out_tx, "worker_stream", None, json!({
-                                "stream": "stdout",
-                                "chunk": chunk,
-                            })).await;
-                            stream_buffer_last_flush = Instant::now();
                         }
 
                         pty_auto.update_auto_suggestion(&text);
@@ -683,13 +693,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // PTY reader closed — child likely exited. Flush
                         // any buffered stream output before sending
                         // agent_exit to preserve output ordering.
-                        if !stream_buffer.is_empty() {
-                            let chunk = std::mem::take(&mut stream_buffer);
-                            let _ = send_frame(&out_tx, "worker_stream", None, json!({
-                                "stream": "stdout",
-                                "chunk": chunk,
-                            })).await;
-                        }
+                        flush_stream_buffer!();
                         // Emit agent_exit with any echo_buffer tail so the
                         // dashboard can surface the CLI's last output.
                         let clean = strip_ansi(&echo_buffer);
@@ -882,12 +886,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 if !stream_buffer.is_empty()
                     && stream_buffer_last_flush.elapsed() >= STREAM_FLUSH_INTERVAL
                 {
-                    let chunk = std::mem::take(&mut stream_buffer);
-                    let _ = send_frame(&out_tx, "worker_stream", None, json!({
-                        "stream": "stdout",
-                        "chunk": chunk,
-                    })).await;
-                    stream_buffer_last_flush = Instant::now();
+                    flush_stream_buffer!();
                 }
 
             }
@@ -926,14 +925,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     // between the reader thread and the watchdog.
                     // Flush any buffered stream output before sending late output
                     // to preserve ordering.
-                    if !stream_buffer.is_empty() {
-                        let chunk = std::mem::take(&mut stream_buffer);
-                        let _ = send_frame(&out_tx, "worker_stream", None, json!({
-                            "stream": "stdout",
-                            "chunk": chunk,
-                        })).await;
-                        stream_buffer_last_flush = Instant::now();
-                    }
+                    flush_stream_buffer!();
                     let mut late_output = String::new();
                     while let Ok(chunk) = pty_rx.try_recv() {
                         let text = String::from_utf8_lossy(&chunk).to_string();
@@ -997,19 +989,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     }
 
     // Flush any remaining buffered stream output before signaling exit.
-    if !stream_buffer.is_empty() {
-        let chunk = std::mem::take(&mut stream_buffer);
-        let _ = send_frame(
-            &out_tx,
-            "worker_stream",
-            None,
-            json!({
-                "stream": "stdout",
-                "chunk": chunk,
-            }),
-        )
-        .await;
-    }
+    flush_stream_buffer!();
 
     if child_exit_detected {
         let _ = send_frame(
