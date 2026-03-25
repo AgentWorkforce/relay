@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use crate::helpers::{
-    check_echo_in_output, floor_char_boundary, format_injection_with_workspace, ActivityDetector,
+    check_echo_in_output, floor_char_boundary, format_injection_for_worker_with_workspace, format_injection_with_workspace, ActivityDetector,
     DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
     ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
     MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
@@ -546,6 +546,7 @@ pub(crate) async fn run_wrap(
     let requested_name = std::env::var("RELAY_AGENT_NAME").unwrap_or_else(|_| resolved_cli.clone());
     let channels = std::env::var("RELAY_CHANNELS").unwrap_or_else(|_| "general".to_string());
     let channel_list = channels_from_csv(&channels);
+    let skip_prompt = env_flag_enabled("RELAY_SKIP_PROMPT");
 
     eprintln!(
         "[agent-relay] wrapping {} (agent: {}, channels: {:?})",
@@ -578,6 +579,16 @@ pub(crate) async fn run_wrap(
         workspaces,
         mut ws_inbound_rx,
     } = relay;
+    // Ensure the requested agent name (from RELAY_AGENT_NAME) is in self_names
+    // so that messages sent by the MCP server child (which registers with the
+    // same name) are recognized as self-echo and filtered out.
+    let workspaces: Vec<RelayWorkspace> = workspaces
+        .into_iter()
+        .map(|mut ws| {
+            ws.self_names.insert(requested_name.clone());
+            ws
+        })
+        .collect();
     let workspace_lookup: std::collections::HashMap<String, RelayWorkspace> = workspaces
         .iter()
         .cloned()
@@ -1072,11 +1083,14 @@ pub(crate) async fn run_wrap(
                         pty_auto.auto_suggestion_visible = false;
                     }
                     tracing::debug!("relay from {} → {}", pending.from, pending.target);
-                    let injection = format_injection_with_workspace(
+                    let injection = format_injection_for_worker_with_workspace(
                         &pending.from,
                         &pending.event_id,
                         &pending.body,
                         &pending.target,
+                        !skip_prompt, // include_reminder
+                        true,         // pre_registered
+                        None,         // assigned_name
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
@@ -1171,11 +1185,14 @@ pub(crate) async fn run_wrap(
                 // Re-inject retries
                 for mut pv in retry_queue {
                     tokio::time::sleep(throttle.delay()).await;
-                    let injection = format_injection_with_workspace(
+                    let injection = format_injection_for_worker_with_workspace(
                         &pv.from,
                         &pv.event_id,
                         &pv.body,
                         &pv.target,
+                        !skip_prompt,
+                        true,
+                        None,
                         pv.workspace_id.as_deref(),
                         pv.workspace_alias.as_deref(),
                     );
