@@ -15,11 +15,11 @@ mod swarm_tui;
 mod wrap;
 
 use helpers::{
-    detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
-    detect_gemini_action_required, detect_gemini_trust_prompt, detect_gemini_untrusted_banner,
-    detect_opencode_permission_prompt, floor_char_boundary, is_auto_suggestion,
-    is_bypass_selection_menu, is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi,
-    TerminalQueryParser,
+    agent_name_eq, detect_bypass_permissions_prompt, detect_claude_trust_prompt,
+    detect_codex_model_prompt, detect_gemini_action_required, detect_gemini_trust_prompt,
+    detect_gemini_untrusted_banner, detect_opencode_permission_prompt, floor_char_boundary,
+    is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode, is_self_name,
+    normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
 use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiRequest};
 use routing::display_target_for_dashboard;
@@ -44,8 +44,8 @@ use relay_broker::{
     message_bridge::{map_ws_broker_command, map_ws_event},
     multi_workspace::{MultiWorkspaceSession, WorkspaceInboundMessage, WorkspaceMembershipSummary},
     protocol::{
-        AgentRuntime, AgentSpec, HeadlessProvider as ProtocolHeadlessProvider, ProtocolEnvelope,
-        RelayDelivery, PROTOCOL_VERSION,
+        AgentRuntime, AgentSpec, HeadlessProvider as ProtocolHeadlessProvider,
+        MessageInjectionMode, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION,
     },
     pty::PtySession,
     relaycast_ws::{
@@ -64,7 +64,7 @@ use spawner::{spawn_env_vars, terminate_child, Spawner};
 const DEFAULT_DELIVERY_RETRY_MS: u64 = 1_000;
 const MAX_DELIVERY_RETRIES: u32 = 10;
 const DEFAULT_RELAYCAST_BASE_URL: &str = "https://api.relaycast.dev";
-const DM_PARTICIPANT_CACHE_TTL: Duration = Duration::from_secs(30);
+use helpers::resolve_dm_participants_cached;
 const THREAD_HISTORY_LIMIT: usize = 1_000;
 const DEFAULT_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS: u64 = 3_000;
 const DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS: u64 = 20_000;
@@ -550,6 +550,8 @@ struct SendMessagePayload {
     workspace_alias: Option<String>,
     #[serde(default)]
     priority: Option<u8>,
+    #[serde(default)]
+    mode: MessageInjectionMode,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1978,6 +1980,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             thread_id,
                             workspace_id,
                             workspace_alias,
+                            mode,
                             reply,
                         } => {
                             let normalized_to = to.trim().to_string();
@@ -2097,6 +2100,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         Some(selected_workspace_id.clone()),
                                         selected_workspace_alias.clone(),
                                         priority,
+                                        mode.clone(),
                                         delivery_retry_interval,
                                     ),
                                 )
@@ -2182,6 +2186,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
                                     event_id = %event_id,
                                     to = %normalized_to,
+                                    mode = ?mode,
                                     delivery_errors = %delivery_errors,
                                     delivery_from = %delivery_from,
                                     ui_from = %ui_from,
@@ -2189,7 +2194,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     "no local deliveries succeeded; forwarding to relaycast"
                                 );
                                 let relaycast_start = Instant::now();
-                                match timeout(relaycast_timeout, selected_workspace.http_client.send(&normalized_to, &text))
+                                match timeout(
+                                    relaycast_timeout,
+                                    selected_workspace
+                                        .http_client
+                                        .send_with_mode(&normalized_to, &text, mode.clone()),
+                                )
                                     .await
                                 {
                                     Ok(Ok(())) => {
@@ -2953,7 +2963,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         if delivery_plan.needs_dm_resolution {
                             let conversation_id = mapped.target.clone();
                             tracing::info!(conversation_id = %conversation_id, "resolving DM participants");
-                            let participants = resolve_dm_participants(
+                            let participants = resolve_dm_participants_cached(
                                 &workspace_http,
                                 &mut dm_participants_cache,
                                 &workspace_id,
@@ -2964,7 +2974,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
                             if let Some(participant) = participants
                                 .iter()
-                                .find(|participant| !participant.eq_ignore_ascii_case(&mapped.from))
+                                .find(|participant| !agent_name_eq(participant, &mapped.from))
                             {
                                 delivery_plan.display_target = participant.clone();
                             }
@@ -2993,9 +3003,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
                         let display_target =
                             display_target_for_dashboard(&delivery_plan.display_target, &workspace_self_names, &workspace_self_name);
-                        let display_from = if workspace_self_names
-                            .iter()
-                            .any(|name| mapped.from.eq_ignore_ascii_case(name))
+                        let display_from = if is_self_name(&workspace_self_names, &mapped.from)
                         {
                             workspace_self_name.clone()
                         } else {
@@ -3216,6 +3224,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             None,
                                             None,
                                             2,
+                                            MessageInjectionMode::Wait,
                                             delivery_retry_interval,
                                         ).await {
                                             tracing::warn!(worker = %name, error = %e, "failed to deliver initial_task");
@@ -3373,6 +3382,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                                 None,
                                                                 None,
                                                                 2,
+                                                                MessageInjectionMode::Wait,
                                                                 delivery_retry_interval,
                                                             ).await {
                                                                 tracing::warn!(
@@ -4412,6 +4422,7 @@ async fn handle_sdk_frame(
                     Some(selected_workspace.workspace_id.clone()),
                     selected_workspace.workspace_alias.clone(),
                     priority,
+                    payload.mode,
                     delivery_retry_interval(),
                 )
                 .await?;
@@ -4434,7 +4445,7 @@ async fn handle_sdk_frame(
                 let eid = event_id.clone();
                 match selected_workspace
                     .http_client
-                    .send(&to, &payload.text)
+                    .send_with_mode(&to, &payload.text, payload.mode)
                     .await
                 {
                     Ok(()) => {
@@ -5125,6 +5136,7 @@ async fn queue_and_try_delivery(
         Some(mapped.workspace_id.clone()),
         mapped.workspace_alias.clone(),
         mapped.priority.as_u8(),
+        MessageInjectionMode::Wait,
         retry_interval,
     )
     .await
@@ -5143,6 +5155,7 @@ async fn queue_and_try_delivery_raw(
     workspace_id: Option<String>,
     workspace_alias: Option<String>,
     priority: u8,
+    injection_mode: MessageInjectionMode,
     retry_interval: Duration,
 ) -> Result<()> {
     let delivery = RelayDelivery {
@@ -5155,6 +5168,7 @@ async fn queue_and_try_delivery_raw(
         body: body.to_string(),
         thread_id,
         priority: Some(priority),
+        injection_mode,
     };
     let delivery_id = delivery.delivery_id.clone();
     pending_deliveries.insert(
@@ -5216,42 +5230,6 @@ async fn retry_pending_delivery(
             Err(error)
         }
     }
-}
-
-async fn resolve_dm_participants(
-    relaycast_http: &RelaycastHttpClient,
-    dm_participants_cache: &mut HashMap<String, (Instant, Vec<String>)>,
-    workspace_id: &str,
-    conversation_id: &str,
-) -> Vec<String> {
-    let workspace_id = workspace_id.trim();
-    let conversation_id = conversation_id.trim();
-    if conversation_id.is_empty() {
-        return vec![];
-    }
-    let cache_key = format!("{workspace_id}:{conversation_id}");
-
-    if let Some((fetched_at, participants)) = dm_participants_cache.get(&cache_key) {
-        if fetched_at.elapsed() < DM_PARTICIPANT_CACHE_TTL {
-            return participants.clone();
-        }
-    }
-
-    let fetched = relaycast_http
-        .get_dm_participants(conversation_id)
-        .await
-        .unwrap_or_else(|error| {
-            tracing::debug!(
-                workspace_id = %workspace_id,
-                conversation_id = %conversation_id,
-                error = %error,
-                "failed resolving DM participants"
-            );
-            vec![]
-        });
-
-    dm_participants_cache.insert(cache_key, (Instant::now(), fetched.clone()));
-    fetched
 }
 
 fn drop_pending_for_worker(
@@ -6575,7 +6553,7 @@ mod tests {
     };
 
     use crate::helpers::{format_injection, terminal_query_responses};
-    use relay_broker::protocol::RelayDelivery;
+    use relay_broker::protocol::{MessageInjectionMode, RelayDelivery};
     use serde_json::{json, Value};
 
     use super::{
@@ -7329,6 +7307,7 @@ mod tests {
                     body: "hello".to_string(),
                     thread_id: None,
                     priority: None,
+                    injection_mode: MessageInjectionMode::Wait,
                 },
                 attempts: 1,
                 next_retry_at: Instant::now(),
@@ -7348,6 +7327,7 @@ mod tests {
                     body: "world".to_string(),
                     thread_id: None,
                     priority: None,
+                    injection_mode: MessageInjectionMode::Wait,
                 },
                 attempts: 1,
                 next_retry_at: Instant::now(),
@@ -7374,6 +7354,7 @@ mod tests {
                 body: "hello".to_string(),
                 thread_id: None,
                 priority: None,
+                injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 1,
             next_retry_at: Instant::now(),
@@ -7403,6 +7384,7 @@ mod tests {
                 body: "hello".to_string(),
                 thread_id: None,
                 priority: None,
+                injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 1,
             next_retry_at: Instant::now(),

@@ -6,7 +6,10 @@
 
 use std::time::{Duration, Instant};
 
-use relay_broker::{multi_workspace::WorkspaceMembershipSummary, replay_buffer::ReplayBuffer};
+use relay_broker::{
+    multi_workspace::WorkspaceMembershipSummary, protocol::MessageInjectionMode,
+    replay_buffer::ReplayBuffer,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc};
@@ -58,6 +61,7 @@ pub enum ListenApiRequest {
         thread_id: Option<String>,
         workspace_id: Option<String>,
         workspace_alias: Option<String>,
+        mode: MessageInjectionMode,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
 }
@@ -582,6 +586,27 @@ async fn listen_api_send(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let mode_input = body
+        .get("mode")
+        .or_else(|| body.get("injectionMode"))
+        .or_else(|| body.get("injection_mode"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+    let mode = match mode_input.as_deref() {
+        Some("wait") | None => MessageInjectionMode::Wait,
+        Some("steer") => MessageInjectionMode::Steer,
+        Some(other) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({
+                    "success": false,
+                    "error": format!("invalid mode '{other}'. expected 'wait' or 'steer'"),
+                })),
+            );
+        }
+    };
     tracing::info!(
         target = "relay_broker::http_api",
         request_id = %request_id,
@@ -618,6 +643,7 @@ async fn listen_api_send(
             thread_id,
             workspace_id,
             workspace_alias,
+            mode,
             reply: reply_tx,
         })
         .await
@@ -1254,6 +1280,104 @@ mod auth_tests {
         set_model_replier
             .await
             .expect("set model replier should complete");
+    }
+
+    #[tokio::test]
+    async fn send_route_defaults_mode_to_wait() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let send_replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::Send { mode, reply, .. }) => {
+                    assert!(matches!(
+                        mode,
+                        relay_broker::protocol::MessageInjectionMode::Wait
+                    ));
+                    let _ = reply.send(Ok(json!({ "success": true, "event_id": "evt_1" })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/send")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "to": "worker-a", "text": "hi" }).to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        send_replier.await.expect("send replier should complete");
+    }
+
+    #[tokio::test]
+    async fn send_route_forwards_steer_mode() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let send_replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::Send { mode, reply, .. }) => {
+                    assert!(matches!(
+                        mode,
+                        relay_broker::protocol::MessageInjectionMode::Steer
+                    ));
+                    let _ = reply.send(Ok(json!({ "success": true, "event_id": "evt_2" })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/send")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "to": "worker-a", "text": "interrupt", "mode": "steer" })
+                            .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        send_replier.await.expect("send replier should complete");
+    }
+
+    #[tokio::test]
+    async fn send_route_rejects_invalid_mode() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/send")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "to": "worker-a", "text": "interrupt", "mode": "steeer" })
+                            .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            rx.try_recv().is_err(),
+            "invalid mode should not enqueue request"
+        );
     }
 
     #[tokio::test]

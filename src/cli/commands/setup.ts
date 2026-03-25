@@ -72,6 +72,7 @@ function withDefaults(overrides: Partial<SetupDependencies> = {}): SetupDependen
   };
 }
 function logWorkflowEvent(event: WorkflowEvent, log: (...args: unknown[]) => void): void {
+  if (event.type === 'broker:event') return;
   const prefix = event.type.startsWith('run:') ? '[run]' : '[step]';
   const name = 'stepName' in event ? `${event.stepName} ` : '';
   const status = event.type.split(':')[1];

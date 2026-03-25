@@ -562,6 +562,7 @@ class RunOptions:
     vars: dict[str, str | int | bool] | None = None
     trajectories: TrajectoryConfig | Literal[False] | dict[str, Any] | bool | None = None
     on_event: WorkflowEventCallback | None = None
+    dry_run: bool | None = None
 
 
 @dataclass
