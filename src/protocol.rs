@@ -45,6 +45,14 @@ pub struct AgentSpec {
     pub restart_policy: Option<RestartPolicy>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageInjectionMode {
+    #[default]
+    Wait,
+    Steer,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayDelivery {
     pub delivery_id: String,
@@ -60,6 +68,8 @@ pub struct RelayDelivery {
     pub thread_id: Option<String>,
     #[serde(default)]
     pub priority: Option<u8>,
+    #[serde(default)]
+    pub injection_mode: MessageInjectionMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,6 +105,8 @@ pub enum SdkToBroker {
         workspace_alias: Option<String>,
         #[serde(default)]
         priority: Option<u8>,
+        #[serde(default)]
+        mode: MessageInjectionMode,
     },
     ReleaseAgent {
         name: String,
@@ -316,7 +328,7 @@ mod tests {
 
     use super::{
         AgentRuntime, AgentSpec, BrokerEvent, BrokerToSdk, BrokerToWorker, HeadlessProvider,
-        ProtocolEnvelope, RelayDelivery, WorkerToBroker, PROTOCOL_VERSION,
+        MessageInjectionMode, ProtocolEnvelope, RelayDelivery, WorkerToBroker, PROTOCOL_VERSION,
     };
 
     #[test]
@@ -355,11 +367,30 @@ mod tests {
             body: "hello".into(),
             thread_id: Some("thr_1".into()),
             priority: Some(2),
+            injection_mode: MessageInjectionMode::Wait,
         });
 
         let encoded = serde_json::to_string(&msg).unwrap();
         let decoded: BrokerToWorker = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn relay_delivery_defaults_injection_mode_to_wait_when_omitted() {
+        let payload = json!({
+            "delivery_id": "del_1",
+            "event_id": "evt_1",
+            "workspace_id": "ws_test",
+            "workspace_alias": "test",
+            "from": "Lead",
+            "target": "#general",
+            "body": "hello",
+            "thread_id": "thr_1",
+            "priority": 2
+        });
+
+        let decoded: RelayDelivery = serde_json::from_value(payload).unwrap();
+        assert!(matches!(decoded.injection_mode, MessageInjectionMode::Wait));
     }
 
     #[test]

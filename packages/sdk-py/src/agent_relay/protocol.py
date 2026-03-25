@@ -12,6 +12,7 @@ PROTOCOL_VERSION = 1
 
 AgentRuntime = Literal["pty", "headless"]
 HeadlessProvider = Literal["claude", "opencode"]
+MessageInjectionMode = Literal["wait", "steer"]
 
 
 @dataclass
