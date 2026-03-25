@@ -127,6 +127,13 @@ relay = Relay("Researcher")
 await relay.send("Lead", "Status update")
 await relay.post("docs", "Wave 5.1 complete")
 messages = await relay.inbox()
+
+human = relay.system()
+await human.send_message(
+    to="Agent1",
+    text="Please start the analysis",
+    mode="wait",   # or "steer"
+)
 ```
 
 ### `on_relay()`

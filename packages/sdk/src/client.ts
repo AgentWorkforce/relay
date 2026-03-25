@@ -20,6 +20,7 @@ import {
   type ProtocolEnvelope,
   type ProtocolError,
   type RestartPolicy,
+  type MessageInjectionMode,
 } from './protocol.js';
 
 export interface AgentRelayClientOptions {
@@ -99,6 +100,7 @@ export interface SendMessageInput {
   workspaceAlias?: string;
   priority?: number;
   data?: Record<string, unknown>;
+  mode?: MessageInjectionMode;
 }
 
 export interface ListAgent {
@@ -433,6 +435,7 @@ export class AgentRelayClient {
         workspace_alias: input.workspaceAlias,
         priority: input.priority,
         data: input.data,
+        mode: input.mode,
       });
     } catch (error) {
       if (error instanceof AgentRelayProtocolError && error.code === 'unsupported_operation') {
@@ -1164,6 +1167,7 @@ export class HttpAgentRelayClient {
         workspaceAlias: input.workspaceAlias,
         priority: input.priority,
         data: input.data,
+        mode: input.mode,
       }),
     });
   }

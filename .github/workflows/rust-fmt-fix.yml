@@ -17,8 +17,8 @@ jobs:
   format:
     name: Auto-format Rust code
     runs-on: ubuntu-latest
-    # Only run on PRs, not on main push (to avoid commit loops)
-    if: github.event_name == 'pull_request'
+    # Only run on same-repo PRs where the bot can push back formatting commits.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: write
     steps:
