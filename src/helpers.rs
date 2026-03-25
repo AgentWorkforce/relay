@@ -532,27 +532,6 @@ pub(crate) fn format_injection(from: &str, event_id: &str, body: &str, target: &
     format_injection_with_reminder(from, event_id, body, target, true)
 }
 
-pub(crate) fn format_injection_with_workspace(
-    from: &str,
-    event_id: &str,
-    body: &str,
-    target: &str,
-    workspace_id: Option<&str>,
-    workspace_alias: Option<&str>,
-) -> String {
-    format_injection_for_worker_with_workspace(
-        from,
-        event_id,
-        body,
-        target,
-        true,
-        true,
-        None,
-        workspace_id,
-        workspace_alias,
-    )
-}
-
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn format_injection_with_reminder(
     from: &str,
