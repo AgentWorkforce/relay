@@ -1,0 +1,109 @@
+/*
+  Agent Relay Brand Color Guide
+
+  Reuse guidance:
+  - Copy the whole file into another project.
+  - Use the :root block for the standard Agent Relay look.
+  - Keep the semantic token names; that is the main design pattern in the current site.
+*/
+
+:root {
+  /* Logo */
+  --logo-primary: #4A90C2;
+  --logo-secondary: rgba(74, 144, 194, 0.5);
+
+  /* Brand accents */
+  --accent-warm: #C1674B;
+  --accent-warm-deep: #B45542;
+  --accent-warm-soft: #CD866A;
+
+  --accent-ink: #111827;
+  --accent-stone: #7A7A72;
+  --accent-stone-light: #F5F4F0;
+  --accent-stone-dark: #5A5A54;
+
+  /* Status */
+  --status-red: #FF5F57;
+  --status-yellow: #FEBC2E;
+  --status-green: #28C840;
+
+  /* Console / terminal */
+  --console-bg: #1A1C22;
+  --console-panel: #15171C;
+  --console-line: #2A2D35;
+  --console-fg: #C9D1D9;
+  --console-muted: #555555;
+  --console-keyword: #7EB8DA;
+  --console-string: #CE9178;
+  --console-type: #4EC9B0;
+  --console-method: #DCDCAA;
+
+  /* Primary (Curious Blue) scale */
+  --primary-50: #F3F7FC;
+  --primary-100: #E7EFF7;
+  --primary-200: #C9DDEE;
+  --primary-300: #99C2E0;
+  --primary-400: #62A1CE;
+  --primary-500: #4A90C2;
+  --primary-600: #2D6A9C;
+  --primary-700: #26557E;
+  --primary-800: #234969;
+  --primary-900: #223E58;
+  --primary-950: #16283B;
+
+  /* Secondary (warm) scale */
+  --secondary-50: #FBF5F1;
+  --secondary-100: #F5E8DF;
+  --secondary-200: #EACEBE;
+  --secondary-300: #DCAD95;
+  --secondary-400: #CD866A;
+  --secondary-500: #C1674B;
+  --secondary-600: #B45542;
+  --secondary-700: #964338;
+  --secondary-800: #793833;
+  --secondary-900: #62302C;
+  --secondary-950: #341716;
+
+  /* Neutral (Pampas) scale */
+  --neutral-50: #f5f2ee;
+  --neutral-100: #efebe5;
+  --neutral-200: #dfd5c9;
+  --neutral-300: #cab9a7;
+  --neutral-400: #b49a83;
+  --neutral-500: #a5836a;
+  --neutral-600: #98735e;
+  --neutral-700: #7f5e4f;
+  --neutral-800: #684e44;
+  --neutral-900: #554139;
+  --neutral-950: #2d211d;
+
+  /* Semantic tokens */
+  --bg: #F9FAFB;
+  --bg-elevated: rgba(255, 255, 255, 0.8);
+  --fg: #111827;
+  --fg-muted: #4B5563;
+  --fg-faint: #9CA3AF;
+  --primary: var(--primary-500);
+  --primary-hover: var(--primary-600);
+  --primary-bg: var(--primary-500);
+  --primary-fg: #ffffff;
+  --secondary-bg: var(--secondary-100);
+  --secondary-fg: var(--secondary-600);
+  --line: rgba(74, 144, 194, 0.10);
+  --surface: #F3F4F6;
+  --section-bg: #ffffff;
+  --code-bg: #F3F4F6;
+  --code-fg: #1F2937;
+  --inline-code-bg: rgba(74, 144, 194, 0.07);
+  --inline-code-fg: var(--primary-800);
+  --card-bg: rgba(255, 255, 255, 0.9);
+  --card-border: rgba(74, 144, 194, 0.10);
+  --card-hover-border: rgba(74, 144, 194, 0.28);
+  --note-bg: rgba(74, 144, 194, 0.05);
+  --link-underline: rgba(74, 144, 194, 0.3);
+  --nav-bg: var(--primary-500);
+  --nav-fg: #ffffff;
+  --btn-bg: var(--primary-500);
+  --btn-hover: var(--primary-600);
+  --hero-gradient: linear-gradient(180deg, var(--bg) 0%, var(--primary-50) 100%);
+}
