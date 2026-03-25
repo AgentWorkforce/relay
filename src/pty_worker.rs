@@ -915,6 +915,16 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     // messages from CLIs that exit immediately (e.g. codex MCP
                     // failure). Without this, the output is lost in the race
                     // between the reader thread and the watchdog.
+                    // Flush any buffered stream output before sending late output
+                    // to preserve ordering.
+                    if !stream_buffer.is_empty() {
+                        let chunk = std::mem::take(&mut stream_buffer);
+                        let _ = send_frame(&out_tx, "worker_stream", None, json!({
+                            "stream": "stdout",
+                            "chunk": chunk,
+                        })).await;
+                        stream_buffer_last_flush = Instant::now();
+                    }
                     let mut late_output = String::new();
                     while let Ok(chunk) = pty_rx.try_recv() {
                         let text = String::from_utf8_lossy(&chunk).to_string();
@@ -975,6 +985,15 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 }
             }
         }
+    }
+
+    // Flush any remaining buffered stream output before signaling exit.
+    if !stream_buffer.is_empty() {
+        let chunk = std::mem::take(&mut stream_buffer);
+        let _ = send_frame(&out_tx, "worker_stream", None, json!({
+            "stream": "stdout",
+            "chunk": chunk,
+        })).await;
     }
 
     if child_exit_detected {
