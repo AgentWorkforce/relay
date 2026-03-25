@@ -69,6 +69,16 @@
       "types": "./dist/communicate/adapters/ai-sdk.d.ts",
       "import": "./dist/communicate/adapters/ai-sdk.js",
       "default": "./dist/communicate/adapters/ai-sdk.js"
+    },
+    "./http": {
+      "types": "./dist/http.d.ts",
+      "import": "./dist/http.js",
+      "default": "./dist/http.js"
+    },
+    "./broker-path": {
+      "types": "./dist/broker-path.d.ts",
+      "import": "./dist/broker-path.js",
+      "default": "./dist/broker-path.js"
     }
   },
   "files": [
