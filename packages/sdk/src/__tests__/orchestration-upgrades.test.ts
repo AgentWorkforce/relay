@@ -1107,4 +1107,101 @@ describe('Agent.onOutput', () => {
       await relay.shutdown();
     }
   });
+
+  it('onOutput with { stream: "stdout" } only receives stdout events', async () => {
+    const { client, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    try {
+      const agent = await relay.spawnPty({
+        name: 'stream-filter-agent',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      const chunks: string[] = [];
+      agent.onOutput((chunk: string) => chunks.push(chunk), { stream: 'stdout' });
+
+      emit({ kind: 'worker_stream', name: 'stream-filter-agent', stream: 'stdout', chunk: 'out1' });
+      emit({ kind: 'worker_stream', name: 'stream-filter-agent', stream: 'stderr', chunk: 'err1' });
+      emit({ kind: 'worker_stream', name: 'stream-filter-agent', stream: 'stdout', chunk: 'out2' });
+
+      expect(chunks).toEqual(['out1', 'out2']);
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('onOutput without filter receives all streams', async () => {
+    const { client, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    try {
+      const agent = await relay.spawnPty({
+        name: 'all-streams-agent',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      const chunks: string[] = [];
+      agent.onOutput((chunk: string) => chunks.push(chunk));
+
+      emit({ kind: 'worker_stream', name: 'all-streams-agent', stream: 'stdout', chunk: 'out' });
+      emit({ kind: 'worker_stream', name: 'all-streams-agent', stream: 'stderr', chunk: 'err' });
+
+      expect(chunks).toEqual(['out', 'err']);
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('onOutput with { stream: "stderr" } ignores stdout events', async () => {
+    const { client, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    try {
+      const agent = await relay.spawnPty({
+        name: 'stderr-filter-agent',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      const chunks: string[] = [];
+      agent.onOutput((chunk: string) => chunks.push(chunk), { stream: 'stderr' });
+
+      emit({ kind: 'worker_stream', name: 'stderr-filter-agent', stream: 'stdout', chunk: 'ignored' });
+      emit({ kind: 'worker_stream', name: 'stderr-filter-agent', stream: 'stderr', chunk: 'captured' });
+
+      expect(chunks).toEqual(['captured']);
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('onOutput with explicit mode: "structured" receives { stream, chunk } objects', async () => {
+    const { client, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    try {
+      const agent = await relay.spawnPty({
+        name: 'explicit-mode-agent',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      const payloads: Array<{ stream: string; chunk: string }> = [];
+      // Use a plain (chunk) => ... signature but force structured mode via options
+      agent.onOutput(((data: { stream: string; chunk: string }) => payloads.push(data)) as any, { mode: 'structured' });
+
+      emit({ kind: 'worker_stream', name: 'explicit-mode-agent', stream: 'stdout', chunk: 'hello' });
+
+      expect(payloads).toEqual([{ stream: 'stdout', chunk: 'hello' }]);
+    } finally {
+      await relay.shutdown();
+    }
+  });
 });
