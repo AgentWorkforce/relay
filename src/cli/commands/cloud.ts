@@ -263,7 +263,8 @@ export function registerCloudCommands(
         | null;
 
       if (!createResponse.ok || !start?.sessionId) {
-        throw new Error(start?.error || start?.message || (await getErrorDetails(createResponse)));
+        const detail = start?.error || start?.message || `${createResponse.status} ${createResponse.statusText}`;
+        throw new Error(detail);
       }
 
       const sshPort = typeof start.ssh?.port === 'string'
