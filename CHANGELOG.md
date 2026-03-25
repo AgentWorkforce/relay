@@ -29,6 +29,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.2.17] - 2026-03-25
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add dry-run support and stream CLI output to terminal (#643)** (#643)
+
+#### User-Impacting Fixes
+- Resolve DM participants for correct routing (#644) (#644)
+
+### Technical Perspective
+#### Releases
+- v3.2.17
+
+---
+
 ## [3.2.16] - 2026-03-25
 
 ### Product Perspective
