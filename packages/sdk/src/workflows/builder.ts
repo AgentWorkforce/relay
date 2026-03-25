@@ -192,6 +192,13 @@ export class WorkflowBuilder {
 
   /** Set the relay channel for agent communication. */
   channel(ch: string): this {
+    const CHANNEL_RE = /^[a-z0-9][a-z0-9-]*$/;
+    if (!CHANNEL_RE.test(ch)) {
+      throw new Error(
+        `Invalid channel name "${ch}". Channel names must be lowercase alphanumeric and hyphens, starting with a letter or number. ` +
+        `Fix: use .toLowerCase().replace(/[^a-z0-9-]/g, '-')`
+      );
+    }
     this._channel = ch;
     return this;
   }
