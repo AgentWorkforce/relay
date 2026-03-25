@@ -515,8 +515,9 @@ const runner = new WorkflowRunner({
   relay: { port: 3000 },         // AgentRelay options (optional)
 });
 
-// Listen to events
+// Listen to events (broker:event fires frequently — filter it out for cleaner output)
 runner.on((event) => {
+  if (event.type === 'broker:event') return;
   console.log(event.type, event);
 });
 
@@ -543,7 +544,9 @@ import { runWorkflow } from "@agent-relay/sdk/workflows";
 const result = await runWorkflow("workflow.yaml", {
   workflow: "deploy",
   vars: { environment: "staging" },
-  onEvent: (event) => console.log(event.type),
+  onEvent: (event) => {
+    if (event.type !== 'broker:event') console.log(event.type);
+  },
 });
 ```
 

@@ -185,8 +185,8 @@ export interface WorkflowDefinition {
   onError?: 'fail' | 'skip' | 'retry';
 }
 
-/** Step type: agent (LLM-powered), deterministic (shell command), or worktree (git worktree setup). */
-export type WorkflowStepType = 'agent' | 'deterministic' | 'worktree';
+/** Step type: agent (LLM-powered), deterministic (shell command), worktree (git worktree setup), or integration (external service). */
+export type WorkflowStepType = 'agent' | 'deterministic' | 'worktree' | 'integration';
 
 // ── Custom step definitions ─────────────────────────────────────────────────
 
@@ -279,6 +279,14 @@ export interface WorkflowStep {
   /** Capture stdout as step output for downstream steps. Default: true. */
   captureOutput?: boolean;
 
+  // ── Integration step fields ────────────────────────────────────────────────
+  /** Integration name: 'github', 'linear', 'slack' (required for integration steps). */
+  integration?: string;
+  /** Action within the integration, e.g. 'create-pr', 'create-branch' (required for integration steps). */
+  action?: string;
+  /** Action parameters, supports {{steps.X.output}} interpolation. */
+  params?: Record<string, string>;
+
   // ── Worktree step fields ──────────────────────────────────────────────────
   /** Branch name for the worktree (required for worktree steps). */
   branch?: string;
@@ -300,6 +308,11 @@ export function isWorktreeStep(step: WorkflowStep): boolean {
   return step.type === 'worktree';
 }
 
+/** Type guard: Check if a step is an integration (external service) step. */
+export function isIntegrationStep(step: WorkflowStep): boolean {
+  return step.type === 'integration';
+}
+
 /** Type guard: Check if a step uses a custom step definition. */
 export function isCustomStep(step: WorkflowStep): boolean {
   return step.use !== undefined;
@@ -307,7 +320,7 @@ export function isCustomStep(step: WorkflowStep): boolean {
 
 /** Type guard: Check if a step is an agent (LLM-powered) step. */
 export function isAgentStep(step: WorkflowStep): boolean {
-  return step.type !== 'deterministic' && step.type !== 'worktree';
+  return step.type !== 'deterministic' && step.type !== 'worktree' && step.type !== 'integration';
 }
 
 // Legacy type aliases for backward compatibility

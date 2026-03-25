@@ -4,7 +4,7 @@
   "task": {
     "title": "Code review for assigned workflow changes"
   },
-  "status": "completed",
+  "status": "abandoned",
   "startedAt": "2026-03-12T08:38:19.960Z",
   "agents": [
     {
@@ -122,9 +122,15 @@
             "focal:esm-path-helpers",
             "confidence:0.87"
           ]
+        },
+        {
+          "ts": 1774430888625,
+          "type": "note",
+          "content": "Abandoned: Stale trajectory",
+          "significance": "high"
         }
       ],
-      "endedAt": "2026-03-23T15:08:33.166Z"
+      "endedAt": "2026-03-25T09:28:08.625Z"
     }
   ],
   "commits": [],
@@ -135,10 +141,5 @@
     "startRef": "4ce7ccf5e297e46ededaf74c2a997cfe0d2f88af",
     "endRef": "4ce7ccf5e297e46ededaf74c2a997cfe0d2f88af"
   },
-  "completedAt": "2026-03-23T15:08:33.166Z",
-  "retrospective": {
-    "summary": "Added channel management protocol variants and SDK client methods",
-    "approach": "Standard approach",
-    "confidence": 0.93
-  }
+  "completedAt": "2026-03-25T09:28:08.625Z"
 }

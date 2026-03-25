@@ -204,6 +204,12 @@ export interface StepExecutor {
     resolvedCommand: string,
     cwd: string
   ): Promise<{ output: string; exitCode: number }>;
+
+  executeIntegrationStep?(
+    step: WorkflowStep,
+    resolvedParams: Record<string, string>,
+    context: { workspaceId?: string }
+  ): Promise<{ output: string; success: boolean }>;
 }
 
 // ── Variable context for template resolution ────────────────────────────────
@@ -1506,7 +1512,7 @@ export class WorkflowRunner {
     // 6. Resource estimation
     const peakConcurrency = Math.max(...waves.map((w) => w.steps.length), 0);
     const totalAgentSteps = resolvedSteps.filter(
-      (s) => s.type !== 'deterministic' && s.type !== 'worktree'
+      (s) => s.type !== 'deterministic' && s.type !== 'worktree' && s.type !== 'integration'
     ).length;
 
     // 7. Check maxConcurrency against wave widths
@@ -1563,6 +1569,14 @@ export class WorkflowRunner {
         if (typeof s.command !== 'string') {
           throw new Error(`${source}: deterministic step "${s.name}" must have a "command" field`);
         }
+      } else if (s.type === 'integration') {
+        // Integration steps require integration and action
+        if (typeof s.integration !== 'string') {
+          throw new Error(`${source}: integration step "${s.name}" must have an "integration" string field`);
+        }
+        if (typeof s.action !== 'string') {
+          throw new Error(`${source}: integration step "${s.name}" must have an "action" string field`);
+        }
       } else {
         // Agent steps (type undefined or 'agent') require agent and task
         if (typeof s.agent !== 'string' || typeof s.task !== 'string') {
@@ -1587,7 +1601,7 @@ export class WorkflowRunner {
 
     // Warn if non-interactive agent task is excessively large before interpolation
     for (const step of w.steps as WorkflowStep[]) {
-      if (step.type === 'deterministic' || step.type === 'worktree') continue;
+      if (step.type === 'deterministic' || step.type === 'worktree' || step.type === 'integration') continue;
       const agentDef = agents.find((a) => a.name === step.agent);
       const isNonInteractive =
         agentDef?.interactive === false || ['worker', 'reviewer', 'analyst'].includes(agentDef?.preset ?? '');
@@ -1646,7 +1660,7 @@ export class WorkflowRunner {
 
     for (const step of steps) {
       // Only check interactive agent steps (leads)
-      if (step.type === 'deterministic' || step.type === 'worktree') continue;
+      if (step.type === 'deterministic' || step.type === 'worktree' || step.type === 'integration') continue;
       const agentDef = agents.find((a) => a.name === step.agent);
       // Skip non-interactive agents — they can't wait for channel signals
       if (
@@ -1700,6 +1714,15 @@ export class WorkflowRunner {
           }
           if (step.command) {
             step.command = this.interpolate(step.command, vars);
+          }
+          // Resolve variables in integration step params
+          if (step.params && typeof step.params === 'object') {
+            for (const key of Object.keys(step.params)) {
+              const val = (step.params as Record<string, unknown>)[key];
+              if (typeof val === 'string') {
+                (step.params as Record<string, string>)[key] = this.interpolate(val, vars);
+              }
+            }
           }
         }
       }
@@ -1845,22 +1868,24 @@ export class WorkflowRunner {
     // Build step rows
     const stepStates = new Map<string, StepState>();
     for (const step of resolvedWorkflow.steps) {
-      // Handle agent, deterministic, and worktree steps
-      const isNonAgent = step.type === 'deterministic' || step.type === 'worktree';
+      // Handle agent, deterministic, worktree, and integration steps
+      const isNonAgent = step.type === 'deterministic' || step.type === 'worktree' || step.type === 'integration';
 
       const stepRow: WorkflowStepRow = {
         id: this.generateId(),
         runId,
         stepName: step.name,
         agentName: isNonAgent ? null : (step.agent ?? null),
-        stepType: isNonAgent ? (step.type as 'deterministic' | 'worktree') : 'agent',
+        stepType: isNonAgent ? (step.type as 'deterministic' | 'worktree' | 'integration') : 'agent',
         status: 'pending',
         task:
           step.type === 'deterministic'
             ? (step.command ?? '')
             : step.type === 'worktree'
               ? (step.branch ?? '')
-              : (step.task ?? ''),
+              : step.type === 'integration'
+                ? (`${step.integration}.${step.action}`)
+                : (step.task ?? ''),
         dependsOn: step.dependsOn ?? [],
         retryCount: 0,
         createdAt: now,
@@ -2045,7 +2070,7 @@ export class WorkflowRunner {
         this.relayOptions.env?.AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST === '1';
       const requiresBroker =
         !this.executor &&
-        workflow.steps.some((step) => step.type !== 'deterministic' && step.type !== 'worktree');
+        workflow.steps.some((step) => step.type !== 'deterministic' && step.type !== 'worktree' && step.type !== 'integration');
       // Skip broker/relay init when an external executor handles agent spawning
       if (requiresBroker) {
         if (!relaycastDisabled) {
@@ -2240,8 +2265,14 @@ export class WorkflowRunner {
         this.relaycast = undefined;
         this.relaycastAgent = undefined;
 
-        // Wire broker stderr to console for observability
+        // Wire broker stderr to console for observability — skip empty and
+        // JSON event lines (already surfaced via the broker:event emitter).
         this.unsubBrokerStderr = this.relay.onBrokerStderr((line: string) => {
+          const trimmed = line.trim();
+          if (!trimmed) return;
+          // JSON event lines from the Rust EventEmitter are already parsed
+          // and emitted as broker:event — no need to double-log them.
+          if (trimmed.startsWith('{') && trimmed.endsWith('}')) return;
           console.log(`${chalk.dim.yellow('[broker]')} ${line}`);
         });
 
@@ -2688,6 +2719,11 @@ export class WorkflowRunner {
     return step.type === 'worktree';
   }
 
+  /** Check if a step is an integration (external service) step. */
+  private isIntegrationStep(step: WorkflowStep): boolean {
+    return step.type === 'integration';
+  }
+
   private async executeStep(
     step: WorkflowStep,
     stepStates: Map<string, StepState>,
@@ -2703,6 +2739,11 @@ export class WorkflowRunner {
     // Branch: worktree steps set up git worktrees
     if (this.isWorktreeStep(step)) {
       return this.executeWorktreeStep(step, stepStates, runId);
+    }
+
+    // Branch: integration steps interact with external services
+    if (this.isIntegrationStep(step)) {
+      return this.executeIntegrationStep(step, stepStates, runId);
     }
 
     // Agent step execution
@@ -3194,6 +3235,76 @@ export class WorkflowRunner {
         exitCode: lastExitCode,
         exitSignal: lastExitSignal,
       });
+      throw new Error(`Step "${step.name}" failed: ${errorMsg}`);
+    }
+  }
+
+  /**
+   * Execute an integration step (external service interaction via executor).
+   */
+  private async executeIntegrationStep(
+    step: WorkflowStep,
+    stepStates: Map<string, StepState>,
+    runId: string
+  ): Promise<void> {
+    const state = stepStates.get(step.name);
+    if (!state) throw new Error(`Step state not found: ${step.name}`);
+
+    this.checkAborted();
+
+    // Mark step as running
+    state.row.status = 'running';
+    state.row.error = undefined;
+    state.row.completionReason = undefined;
+    state.row.startedAt = new Date().toISOString();
+    await this.db.updateStep(state.row.id, {
+      status: 'running',
+      error: undefined,
+      completionReason: undefined,
+      startedAt: state.row.startedAt,
+      updatedAt: new Date().toISOString(),
+    });
+    this.emit({ type: 'step:started', runId, stepName: step.name });
+    this.postToChannel(`**[${step.name}]** Started (integration: ${step.integration}.${step.action})`);
+
+    // Resolve {{steps.X.output}} in params
+    const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
+    const resolvedParams: Record<string, string> = {};
+    for (const [key, value] of Object.entries(step.params ?? {})) {
+      resolvedParams[key] = this.interpolateStepTask(value, stepOutputContext);
+    }
+
+    try {
+      if (!this.executor?.executeIntegrationStep) {
+        throw new Error(
+          `Integration steps require a cloud executor. Step "${step.name}" cannot run locally. ` +
+          `Use "cloud run" to execute workflows with integration steps.`
+        );
+      }
+
+      const result = await this.executor.executeIntegrationStep(step, resolvedParams, { workspaceId: this.workspaceId });
+
+      if (!result.success) {
+        throw new Error(`Integration step "${step.name}" failed: ${result.output}`);
+      }
+
+      // Mark completed
+      state.row.status = 'completed';
+      state.row.output = result.output;
+      state.row.completedAt = new Date().toISOString();
+      await this.db.updateStep(state.row.id, {
+        status: 'completed',
+        output: result.output,
+        completedAt: state.row.completedAt,
+        updatedAt: new Date().toISOString(),
+      });
+      await this.persistStepOutput(runId, step.name, result.output);
+      this.emit({ type: 'step:completed', runId, stepName: step.name, output: result.output });
+      this.postToChannel(`**[${step.name}]** Completed (integration: ${step.integration}.${step.action})`);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.postToChannel(`**[${step.name}]** Failed: ${errorMsg}`);
+      await this.markStepFailed(state, errorMsg, runId);
       throw new Error(`Step "${step.name}" failed: ${errorMsg}`);
     }
   }
