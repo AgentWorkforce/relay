@@ -3,10 +3,11 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use crate::helpers::{
-    check_echo_in_output, floor_char_boundary, format_injection_for_worker_with_workspace,
-    resolve_dm_participants_cached, ActivityDetector, DeliveryOutcome, PendingActivity,
-    PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
-    ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+    agent_name_eq, check_echo_in_output, floor_char_boundary,
+    format_injection_for_worker_with_workspace, is_self_name, resolve_dm_participants_cached,
+    ActivityDetector, DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
+    ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+    MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
 };
 
 // PTY auto-response constants (shared by wrap and pty workers)
@@ -1033,7 +1034,7 @@ pub(crate) async fn run_wrap(
                             tracing::debug!(event_id = %mapped.event_id, workspace_id = %mapped.workspace_id, "dedup: skipping relay event");
                             continue;
                         }
-                        if workspace_self_names.iter().any(|n| n.eq_ignore_ascii_case(&mapped.from))
+                        if is_self_name(&workspace_self_names, &mapped.from)
                             || mapped
                                 .sender_agent_id
                                 .as_ref()
@@ -1065,7 +1066,7 @@ pub(crate) async fn run_wrap(
                                     &mapped.target,
                                 ).await;
                                 let is_participant = workspace_self_names.iter().any(|name| {
-                                    participants.iter().any(|p| p.eq_ignore_ascii_case(name))
+                                    participants.iter().any(|p| agent_name_eq(p, name))
                                 });
                                 if !is_participant {
                                     tracing::debug!(
@@ -1076,7 +1077,7 @@ pub(crate) async fn run_wrap(
                                     );
                                     continue;
                                 }
-                            } else if !workspace_self_names.iter().any(|n| n.eq_ignore_ascii_case(&mapped.target)) {
+                            } else if !is_self_name(&workspace_self_names, &mapped.target) {
                                 tracing::debug!(
                                     target = %mapped.target,
                                     self_names = ?workspace_self_names,

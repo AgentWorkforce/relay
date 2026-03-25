@@ -15,11 +15,11 @@ mod swarm_tui;
 mod wrap;
 
 use helpers::{
-    detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
-    detect_gemini_action_required, detect_gemini_trust_prompt, detect_gemini_untrusted_banner,
-    detect_opencode_permission_prompt, floor_char_boundary, is_auto_suggestion,
-    is_bypass_selection_menu, is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi,
-    TerminalQueryParser,
+    agent_name_eq, detect_bypass_permissions_prompt, detect_claude_trust_prompt,
+    detect_codex_model_prompt, detect_gemini_action_required, detect_gemini_trust_prompt,
+    detect_gemini_untrusted_banner, detect_opencode_permission_prompt, floor_char_boundary,
+    is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode, is_self_name,
+    normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
 use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiRequest};
 use routing::display_target_for_dashboard;
@@ -2974,7 +2974,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
                             if let Some(participant) = participants
                                 .iter()
-                                .find(|participant| !participant.eq_ignore_ascii_case(&mapped.from))
+                                .find(|participant| !agent_name_eq(participant, &mapped.from))
                             {
                                 delivery_plan.display_target = participant.clone();
                             }
@@ -3003,9 +3003,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
                         let display_target =
                             display_target_for_dashboard(&delivery_plan.display_target, &workspace_self_names, &workspace_self_name);
-                        let display_from = if workspace_self_names
-                            .iter()
-                            .any(|name| mapped.from.eq_ignore_ascii_case(name))
+                        let display_from = if is_self_name(&workspace_self_names, &mapped.from)
                         {
                             workspace_self_name.clone()
                         } else {
