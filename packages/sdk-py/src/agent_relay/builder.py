@@ -392,8 +392,14 @@ class WorkflowBuilder:
 
     def dry_run(self, options: RunOptions | None = None) -> WorkflowResult:
         """Validate the workflow and show execution plan without running."""
-        opts = options or RunOptions()
-        opts.dry_run = True
+        opts = RunOptions(
+            workflow=(options.workflow if options else None),
+            cwd=(options.cwd if options else None),
+            vars=(options.vars if options else None),
+            trajectories=(options.trajectories if options else None),
+            on_event=(options.on_event if options else None),
+            dry_run=True,
+        )
         return self.run(opts)
 
     def run(self, options: RunOptions | None = None) -> WorkflowResult:
@@ -404,7 +410,14 @@ class WorkflowBuilder:
         - the ``DRY_RUN`` environment variable is set to ``"true"``
           (set automatically by ``agent-relay run script.py --dry-run``).
         """
-        opts = options or RunOptions()
+        opts = RunOptions(
+            workflow=(options.workflow if options else None),
+            cwd=(options.cwd if options else None),
+            vars=(options.vars if options else None),
+            trajectories=(options.trajectories if options else None),
+            on_event=(options.on_event if options else None),
+            dry_run=(options.dry_run if options else None),
+        )
         if opts.dry_run is None and os.environ.get("DRY_RUN") == "true":
             opts.dry_run = True
         config = _apply_runtime_overrides(self.to_config(), opts)
@@ -418,7 +431,14 @@ def workflow(name: str) -> WorkflowBuilder:
 
 def run_yaml(yaml_path: str, options: RunOptions | None = None) -> WorkflowResult:
     """Run an existing relay YAML workflow file."""
-    opts = options or RunOptions()
+    opts = RunOptions(
+        workflow=(options.workflow if options else None),
+        cwd=(options.cwd if options else None),
+        vars=(options.vars if options else None),
+        trajectories=(options.trajectories if options else None),
+        on_event=(options.on_event if options else None),
+        dry_run=(options.dry_run if options else None),
+    )
     if opts.dry_run is None and os.environ.get("DRY_RUN") == "true":
         opts.dry_run = True
 
