@@ -181,8 +181,11 @@ export interface Agent {
   }): Promise<Message>;
   subscribe(channels: string[]): Promise<void>;
   unsubscribe(channels: string[]): Promise<void>;
-  /** Register a callback for PTY output from this agent. Returns an unsubscribe function. */
-  onOutput(callback: AgentOutputCallback): () => void;
+  /** Register a callback for PTY output from this agent. Returns an unsubscribe function.
+   * @param options.stream — if provided, only invoke callback when the event stream matches (e.g. 'stdout', 'stderr')
+   * @param options.mode — 'chunk' for raw string callbacks, 'structured' for { stream, chunk } callbacks. Auto-detected if omitted.
+   */
+  onOutput(callback: AgentOutputCallback, options?: { stream?: string; mode?: 'chunk' | 'structured' }): () => void;
 }
 
 export interface HumanHandle {
@@ -239,6 +242,7 @@ export interface AgentRelayOptions {
 type OutputListener = {
   callback: AgentOutputCallback;
   mode: 'chunk' | 'structured';
+  stream?: string;
 };
 
 type InternalAgent = Agent & {
@@ -897,6 +901,7 @@ export class AgentRelay {
     const listeners = this.outputListeners.get(name);
     if (!listeners) return;
     for (const listener of listeners) {
+      if (listener.stream !== undefined && listener.stream !== stream) continue;
       if (listener.mode === 'structured') {
         (listener.callback as (data: AgentOutputPayload) => void)({ stream, chunk });
       } else {
@@ -1305,7 +1310,7 @@ export class AgentRelay {
       async unsubscribe(channelsToRemove: string[]) {
         await relay.unsubscribe({ agent: name, channels: channelsToRemove });
       },
-      onOutput(callback: AgentOutputCallback): () => void {
+      onOutput(callback: AgentOutputCallback, options?: { stream?: string; mode?: 'chunk' | 'structured' }): () => void {
         let listeners = relay.outputListeners.get(name);
         if (!listeners) {
           listeners = new Set();
@@ -1313,7 +1318,8 @@ export class AgentRelay {
         }
         const listener: OutputListener = {
           callback,
-          mode: relay.inferOutputMode(callback),
+          mode: options?.mode ?? relay.inferOutputMode(callback),
+          stream: options?.stream,
         };
         listeners.add(listener);
         return () => {
