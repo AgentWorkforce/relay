@@ -1,6 +1,8 @@
 use std::{
+    collections::HashMap,
     ffi::OsStr,
     path::Path,
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -990,6 +992,83 @@ pub(crate) fn is_auto_suggestion(output: &str) -> bool {
     has_cursor_ghost || has_send_hint
 }
 
+/// Case-insensitive comparison for agent names.
+///
+/// Agent names may have inconsistent casing across registration, WebSocket
+/// events, and API responses.  Centralising the comparison here prevents
+/// recurrences of the case-sensitivity routing bugs seen in commits 64bcb2f7
+/// and PR #641.
+pub(crate) fn agent_name_eq(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+/// Check whether *any* of the `self_names` match `name` (case-insensitive).
+pub(crate) fn is_self_name<'a, I>(self_names: I, name: &str) -> bool
+where
+    I: IntoIterator<Item = &'a String>,
+{
+    self_names.into_iter().any(|n| agent_name_eq(n, name))
+}
+
+static DM_DROPS_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Return the total number of DMs silently dropped due to participant
+/// resolution failures.  Useful for metrics / incident detection.
+pub(crate) fn dm_drops_total() -> u64 {
+    DM_DROPS_TOTAL.load(Ordering::Relaxed)
+}
+
+pub(crate) const DM_PARTICIPANT_CACHE_TTL: Duration = Duration::from_secs(30);
+const MAX_DM_CACHE_ENTRIES: usize = 8192;
+
+pub(crate) async fn resolve_dm_participants_cached(
+    http: &relay_broker::relaycast_ws::RelaycastHttpClient,
+    cache: &mut HashMap<String, (Instant, Vec<String>)>,
+    workspace_id: &str,
+    conversation_id: &str,
+) -> Vec<String> {
+    let workspace_id = workspace_id.trim();
+    let conversation_id = conversation_id.trim();
+    if conversation_id.is_empty() {
+        return vec![];
+    }
+    let cache_key = format!("{workspace_id}:{conversation_id}");
+
+    if let Some((fetched_at, participants)) = cache.get(&cache_key) {
+        if fetched_at.elapsed() < DM_PARTICIPANT_CACHE_TTL {
+            return participants.clone();
+        }
+    }
+
+    match http.get_dm_participants(conversation_id).await {
+        Ok(fetched) => {
+            let fetched: Vec<String> = fetched;
+            if cache.len() >= MAX_DM_CACHE_ENTRIES {
+                if let Some(oldest_key) = cache
+                    .iter()
+                    .min_by_key(|(_, (ts, _))| *ts)
+                    .map(|(k, _)| k.clone())
+                {
+                    cache.remove(&oldest_key);
+                }
+            }
+            cache.insert(cache_key, (Instant::now(), fetched.clone()));
+            fetched
+        }
+        Err(error) => {
+            DM_DROPS_TOTAL.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                workspace_id = %workspace_id,
+                conversation_id = %conversation_id,
+                error = %error,
+                dm_drops_total = DM_DROPS_TOTAL.load(Ordering::Relaxed),
+                "failed resolving DM participants — DM silently dropped"
+            );
+            vec![]
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1866,5 +1945,49 @@ mod tests {
     fn normalize_cli_name_uses_executable_for_paths() {
         assert_eq!(normalize_cli_name("/usr/local/bin/claude"), "claude");
         assert_eq!(normalize_cli_name("codex"), "codex");
+    }
+
+    // ==================== agent_name_eq / is_self_name tests ====================
+
+    #[test]
+    fn agent_name_eq_case_insensitive() {
+        assert!(agent_name_eq("Alice", "alice"));
+        assert!(agent_name_eq("alice", "ALICE"));
+        assert!(agent_name_eq("Worker-1", "worker-1"));
+        assert!(!agent_name_eq("Alice", "Bob"));
+    }
+
+    #[test]
+    fn agent_name_eq_empty_strings() {
+        assert!(agent_name_eq("", ""));
+        assert!(!agent_name_eq("", "Alice"));
+    }
+
+    #[test]
+    fn is_self_name_matches_any() {
+        let names = vec!["Alice".to_string(), "alice-dev".to_string()];
+        assert!(is_self_name(&names, "alice"));
+        assert!(is_self_name(&names, "ALICE"));
+        assert!(is_self_name(&names, "Alice-Dev"));
+        assert!(!is_self_name(&names, "Bob"));
+    }
+
+    #[test]
+    fn is_self_name_empty_list() {
+        let names: Vec<String> = vec![];
+        assert!(!is_self_name(&names, "Alice"));
+    }
+
+    // ==================== DM participant cache tests ====================
+
+    #[test]
+    fn dm_cache_ttl_constant_is_reasonable() {
+        assert!(DM_PARTICIPANT_CACHE_TTL.as_secs() > 0);
+        assert!(DM_PARTICIPANT_CACHE_TTL.as_secs() <= 300);
+    }
+
+    #[test]
+    fn dm_cache_eviction_cap_is_set() {
+        assert_eq!(MAX_DM_CACHE_ENTRIES, 8192);
     }
 }

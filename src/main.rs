@@ -15,11 +15,11 @@ mod swarm_tui;
 mod wrap;
 
 use helpers::{
-    detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
-    detect_gemini_action_required, detect_gemini_trust_prompt, detect_gemini_untrusted_banner,
-    detect_opencode_permission_prompt, floor_char_boundary, is_auto_suggestion,
-    is_bypass_selection_menu, is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi,
-    TerminalQueryParser,
+    agent_name_eq, detect_bypass_permissions_prompt, detect_claude_trust_prompt,
+    detect_codex_model_prompt, detect_gemini_action_required, detect_gemini_trust_prompt,
+    detect_gemini_untrusted_banner, detect_opencode_permission_prompt, floor_char_boundary,
+    is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode, is_self_name,
+    normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
 use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiRequest};
 use routing::display_target_for_dashboard;
@@ -64,7 +64,7 @@ use spawner::{spawn_env_vars, terminate_child, Spawner};
 const DEFAULT_DELIVERY_RETRY_MS: u64 = 1_000;
 const MAX_DELIVERY_RETRIES: u32 = 10;
 const DEFAULT_RELAYCAST_BASE_URL: &str = "https://api.relaycast.dev";
-const DM_PARTICIPANT_CACHE_TTL: Duration = Duration::from_secs(30);
+use helpers::resolve_dm_participants_cached;
 const THREAD_HISTORY_LIMIT: usize = 1_000;
 const DEFAULT_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS: u64 = 3_000;
 const DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS: u64 = 20_000;
@@ -2963,7 +2963,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         if delivery_plan.needs_dm_resolution {
                             let conversation_id = mapped.target.clone();
                             tracing::info!(conversation_id = %conversation_id, "resolving DM participants");
-                            let participants = resolve_dm_participants(
+                            let participants = resolve_dm_participants_cached(
                                 &workspace_http,
                                 &mut dm_participants_cache,
                                 &workspace_id,
@@ -2974,7 +2974,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
                             if let Some(participant) = participants
                                 .iter()
-                                .find(|participant| !participant.eq_ignore_ascii_case(&mapped.from))
+                                .find(|participant| !agent_name_eq(participant, &mapped.from))
                             {
                                 delivery_plan.display_target = participant.clone();
                             }
@@ -3003,9 +3003,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
                         let display_target =
                             display_target_for_dashboard(&delivery_plan.display_target, &workspace_self_names, &workspace_self_name);
-                        let display_from = if workspace_self_names
-                            .iter()
-                            .any(|name| mapped.from.eq_ignore_ascii_case(name))
+                        let display_from = if is_self_name(&workspace_self_names, &mapped.from)
                         {
                             workspace_self_name.clone()
                         } else {
@@ -5232,42 +5230,6 @@ async fn retry_pending_delivery(
             Err(error)
         }
     }
-}
-
-async fn resolve_dm_participants(
-    relaycast_http: &RelaycastHttpClient,
-    dm_participants_cache: &mut HashMap<String, (Instant, Vec<String>)>,
-    workspace_id: &str,
-    conversation_id: &str,
-) -> Vec<String> {
-    let workspace_id = workspace_id.trim();
-    let conversation_id = conversation_id.trim();
-    if conversation_id.is_empty() {
-        return vec![];
-    }
-    let cache_key = format!("{workspace_id}:{conversation_id}");
-
-    if let Some((fetched_at, participants)) = dm_participants_cache.get(&cache_key) {
-        if fetched_at.elapsed() < DM_PARTICIPANT_CACHE_TTL {
-            return participants.clone();
-        }
-    }
-
-    let fetched = relaycast_http
-        .get_dm_participants(conversation_id)
-        .await
-        .unwrap_or_else(|error| {
-            tracing::debug!(
-                workspace_id = %workspace_id,
-                conversation_id = %conversation_id,
-                error = %error,
-                "failed resolving DM participants"
-            );
-            vec![]
-        });
-
-    dm_participants_cache.insert(cache_key, (Instant::now(), fetched.clone()));
-    fetched
 }
 
 fn drop_pending_for_worker(

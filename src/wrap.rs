@@ -3,7 +3,8 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use crate::helpers::{
-    check_echo_in_output, floor_char_boundary, format_injection_for_worker_with_workspace,
+    agent_name_eq, check_echo_in_output, floor_char_boundary,
+    format_injection_for_worker_with_workspace, is_self_name, resolve_dm_participants_cached,
     ActivityDetector, DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
     ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
     MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
@@ -668,6 +669,7 @@ pub(crate) async fn run_wrap(
 
     // Dedup for WS events
     let mut dedup = DedupCache::new(Duration::from_secs(300), 8192);
+    let mut dm_participants_cache: HashMap<String, (Instant, Vec<String>)> = HashMap::new();
 
     // Buffer for extracting message IDs from MCP tool responses in PTY output.
     // When the agent sends messages via MCP, the response contains the message ID.
@@ -1016,16 +1018,27 @@ pub(crate) async fn run_wrap(
                         &workspace_id,
                         workspace_alias.as_deref(),
                     ) {
+                        // Skip presence and reaction events — they carry no content
+                        // to inject and cause agents to respond to empty messages.
+                        if matches!(mapped.kind, InboundKind::Presence | InboundKind::ReactionReceived) {
+                            tracing::debug!(
+                                kind = ?mapped.kind,
+                                from = %mapped.from,
+                                "skipping non-message event in wrap mode"
+                            );
+                            continue;
+                        }
+
                         let dedup_key = format!("{}:{}", mapped.workspace_id, mapped.event_id);
                         if !dedup.insert_if_new(&dedup_key, Instant::now()) {
                             tracing::debug!(event_id = %mapped.event_id, workspace_id = %mapped.workspace_id, "dedup: skipping relay event");
                             continue;
                         }
-                        if workspace_self_names.contains(&mapped.from)
+                        if is_self_name(&workspace_self_names, &mapped.from)
                             || mapped
                                 .sender_agent_id
                                 .as_ref()
-                                .is_some_and(|id| workspace_self_agent_ids.contains(id))
+                                .is_some_and(|id| workspace_self_agent_ids.iter().any(|self_id| agent_name_eq(self_id, id)))
                         {
                             tracing::debug!(
                                 from = %mapped.from,
@@ -1037,21 +1050,41 @@ pub(crate) async fn run_wrap(
 
                         // DM routing: only deliver DMs addressed to this agent.
                         // Channel messages (target starts with '#') are broadcast
-                        // to all subscribers. Allow through: empty targets (presence),
-                        // thread replies, conversation_id fallbacks.
+                        // to all subscribers. Allow through: empty targets (presence)
+                        // and thread replies.
                         if !mapped.target.is_empty()
                             && !mapped.target.starts_with('#')
                             && mapped.target != "thread"
-                            && !mapped.target.starts_with("dm_")
-                            && !mapped.target.starts_with("conv_")
-                            && !workspace_self_names.contains(&mapped.target)
                         {
-                            tracing::debug!(
-                                target = %mapped.target,
-                                self_names = ?workspace_self_names,
-                                "skipping DM not addressed to this agent"
-                            );
-                            continue;
+                            if mapped.target.starts_with("dm_") || mapped.target.starts_with("conv_") {
+                                // Conversation-ID target: resolve participants to check
+                                // if this wrapped agent is part of the DM.
+                                let participants = resolve_dm_participants_cached(
+                                    &workspace_child_http,
+                                    &mut dm_participants_cache,
+                                    &workspace_id,
+                                    &mapped.target,
+                                ).await;
+                                let is_participant = workspace_self_names.iter().any(|name| {
+                                    participants.iter().any(|p| agent_name_eq(p, name))
+                                });
+                                if !is_participant {
+                                    tracing::debug!(
+                                        target = %mapped.target,
+                                        participants = ?participants,
+                                        self_names = ?workspace_self_names,
+                                        "skipping DM — agent not in participants"
+                                    );
+                                    continue;
+                                }
+                            } else if !is_self_name(&workspace_self_names, &mapped.target) {
+                                tracing::debug!(
+                                    target = %mapped.target,
+                                    self_names = ?workspace_self_names,
+                                    "skipping DM not addressed to this agent"
+                                );
+                                continue;
+                            }
                         }
 
                         let delivery_id = format!("wrap_{}", mapped.event_id);
