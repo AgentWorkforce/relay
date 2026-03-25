@@ -4,7 +4,7 @@
   "task": {
     "title": "Add mute/unmute channel methods to sdk-typescript AgentClient"
   },
-  "status": "active",
+  "status": "abandoned",
   "startedAt": "2026-03-23T20:21:54.726Z",
   "agents": [
     {
@@ -31,8 +31,15 @@
             "reasoning": "Worker can read ../relaycast but apply_patch is limited to the writable relay workspace, so I produced a ready-to-apply patch artifact instead."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1774430878870,
+          "type": "note",
+          "content": "Abandoned: Switching to PTY output streaming work",
+          "significance": "high"
         }
-      ]
+      ],
+      "endedAt": "2026-03-25T09:27:58.870Z"
     }
   ],
   "commits": [],
@@ -42,5 +49,6 @@
   "_trace": {
     "startRef": "eb6ed1f75a433eab11500574d1fa9897695e5d90",
     "endRef": "eb6ed1f75a433eab11500574d1fa9897695e5d90"
-  }
+  },
+  "completedAt": "2026-03-25T09:27:58.870Z"
 }
