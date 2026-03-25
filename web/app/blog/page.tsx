@@ -22,13 +22,6 @@ function formatDate(dateStr: string): string {
   });
 }
 
-function readTime(description: string): string {
-  // Rough estimate based on description length
-  const words = description.split(/\s+/).length;
-  const mins = Math.max(3, Math.ceil(words / 40) + 2);
-  return `${mins} min read`;
-}
-
 export default function BlogIndexPage() {
   const posts = getAllPosts();
   const featured = posts[0];
@@ -56,7 +49,7 @@ export default function BlogIndexPage() {
                 <span className={styles.postDot}>·</span>
                 <span>{formatDate(featured.frontmatter.date)}</span>
                 <span className={styles.postDot}>·</span>
-                <span>{readTime(featured.frontmatter.description)}</span>
+                <span>{featured.readTime}</span>
               </div>
               <h2 className={styles.featuredTitle}>{featured.frontmatter.title}</h2>
               <p className={styles.featuredDesc}>{featured.frontmatter.description}</p>
@@ -82,7 +75,7 @@ export default function BlogIndexPage() {
                 <p className={styles.postCardDescription}>{post.frontmatter.description}</p>
                 <div className={styles.postCardFooter}>
                   <span className={styles.postCardAuthor}>{post.frontmatter.author}</span>
-                  <span className={styles.postCardRead}>{readTime(post.frontmatter.description)} &rarr;</span>
+                  <span className={styles.postCardRead}>{post.readTime} &rarr;</span>
                 </div>
               </Link>
             ))}

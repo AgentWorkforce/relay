@@ -79,6 +79,8 @@ export default async function BlogPostPage({ params }: PageProps) {
               <span className={styles.postDot}>·</span>
               <span>{formatDate(post.frontmatter.date)}</span>
               <span className={styles.postDot}>·</span>
+              <span>{post.readTime}</span>
+              <span className={styles.postDot}>·</span>
               <span>{post.frontmatter.author}</span>
             </div>
             <h1 className={styles.postHeaderTitle}>{post.frontmatter.title}</h1>
