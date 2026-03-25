@@ -9,6 +9,8 @@
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 const BROKER_NAME = 'agent-relay-broker';
 
@@ -16,7 +18,7 @@ const BROKER_NAME = 'agent-relay-broker';
  * Resolve the agent-relay-broker binary path.
  *
  * Search order:
- *   1. SDK's bin/ directory (resolved via require.resolve or import.meta.url)
+ *   1. SDK's bin/ directory (resolved via createRequire or import.meta.url)
  *   2. Platform-specific name (agent-relay-broker-{platform}-{arch}) in bin/
  *   3. PATH lookup via `which` / `where`
  *
@@ -25,13 +27,13 @@ const BROKER_NAME = 'agent-relay-broker';
 export function getBrokerBinaryPath(): string | null {
   let binDir: string | null = null;
   try {
-    // Works in both CJS and ESM — resolve the SDK entry then navigate to bin/
-    const sdkEntry = require.resolve('@agent-relay/sdk');
+    // Use createRequire for ESM-compatible require.resolve
+    const esmRequire = createRequire(import.meta.url);
+    const sdkEntry = esmRequire.resolve('@agent-relay/sdk');
     binDir = join(dirname(sdkEntry), '..', 'bin');
   } catch {
     try {
-      // Fallback for ESM-only contexts
-      const { fileURLToPath } = require('node:url');
+      // Fallback: derive from import.meta.url
       binDir = join(dirname(dirname(fileURLToPath(import.meta.url))), 'bin');
     } catch {
       // Neither method worked
