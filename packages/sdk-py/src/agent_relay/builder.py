@@ -488,11 +488,10 @@ def _execute_cli(
     live progress (listr tasks, summary table, etc.) that the TypeScript and
     YAML paths produce.  Each line is also captured for event parsing.
     """
-    # Use stdio passthrough when there's a TTY and no event callback — this
-    # preserves listr2's interactive rendering (cursor movement, spinners).
-    passthrough = sys.stdout.isatty() and on_event is None
-
-    if passthrough:
+    # When no event callback is registered, pass stdio straight through so the
+    # TypeScript runner's listr progress, live step updates, and summary table
+    # render directly to the user's terminal — identical to YAML/TS workflows.
+    if on_event is None:
         process = subprocess.Popen(cmd, cwd=cwd)
         process.wait()
 
@@ -504,8 +503,8 @@ def _execute_cli(
             events=[],
         )
 
-    # Fallback: capture stdout line-by-line, echo to stderr so the user
-    # still sees output, and parse events for the callback.
+    # When an event callback is registered, capture stdout line-by-line
+    # so we can parse events and dispatch them to the callback.
     process = subprocess.Popen(
         cmd,
         cwd=cwd,
@@ -524,18 +523,13 @@ def _execute_cli(
             line = raw_line.rstrip("\n")
             lines.append(line)
 
-            # Echo every line so the user sees real-time output
-            print(line, file=sys.stderr, flush=True)
-
             event = _parse_cli_event(line, run_id=run_id)
             if event is None:
                 continue
 
             events.append(event)
             _sync_step_result(steps, event)
-
-            if on_event is not None:
-                on_event(event)
+            on_event(event)
 
     return_code = process.wait()
     output = "\n".join(lines).strip()
