@@ -4,10 +4,9 @@ use anyhow::Result;
 use parking_lot::Mutex;
 use relaycast::{
     agent::DmOptions, format_registration_error,
-    retry_agent_registration as sdk_retry_agent_registration, AgentClient,
-    AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
-    MessageListQuery, RelayCast, RelayCastOptions, RelayError, ReleaseAgentRequest, WsClient,
-    WsClientOptions, WsLifecycleEvent,
+    retry_agent_registration as sdk_retry_agent_registration, AgentClient, AgentRegistrationClient,
+    AgentRegistrationError, AgentRegistrationRetryOutcome, MessageListQuery, RelayCast,
+    RelayCastOptions, RelayError, ReleaseAgentRequest, WsClient, WsClientOptions, WsLifecycleEvent,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -846,7 +845,8 @@ mod tests {
     };
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
-        let client = RelaycastHttpClient::new(base_url.to_string(), "rk_live_test", "broker", "codex");
+        let client =
+            RelaycastHttpClient::new(base_url.to_string(), "rk_live_test", "broker", "codex");
         client.seed_agent_token("broker", "at_live_test");
         client
     }
