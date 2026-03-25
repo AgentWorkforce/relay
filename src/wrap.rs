@@ -1017,6 +1017,17 @@ pub(crate) async fn run_wrap(
                         &workspace_id,
                         workspace_alias.as_deref(),
                     ) {
+                        // Skip presence and reaction events — they carry no content
+                        // to inject and cause agents to respond to empty messages.
+                        if matches!(mapped.kind, InboundKind::Presence | InboundKind::ReactionReceived) {
+                            tracing::debug!(
+                                kind = ?mapped.kind,
+                                from = %mapped.from,
+                                "skipping non-message event in wrap mode"
+                            );
+                            continue;
+                        }
+
                         let dedup_key = format!("{}:{}", mapped.workspace_id, mapped.event_id);
                         if !dedup.insert_if_new(&dedup_key, Instant::now()) {
                             tracing::debug!(event_id = %mapped.event_id, workspace_id = %mapped.workspace_id, "dedup: skipping relay event");
@@ -1053,10 +1064,10 @@ pub(crate) async fn run_wrap(
                                     &workspace_id,
                                     &mapped.target,
                                 ).await;
-                                let dominated = workspace_self_names.iter().any(|name| {
+                                let is_participant = workspace_self_names.iter().any(|name| {
                                     participants.iter().any(|p| p.eq_ignore_ascii_case(name))
                                 });
-                                if !dominated {
+                                if !is_participant {
                                     tracing::debug!(
                                         target = %mapped.target,
                                         participants = ?participants,
@@ -1327,6 +1338,7 @@ async fn resolve_dm_participants_cached(
     workspace_id: &str,
     conversation_id: &str,
 ) -> Vec<String> {
+    let workspace_id = workspace_id.trim();
     let conversation_id = conversation_id.trim();
     if conversation_id.is_empty() {
         return vec![];
@@ -1339,19 +1351,30 @@ async fn resolve_dm_participants_cached(
         }
     }
 
-    let fetched = http
-        .get_dm_participants(conversation_id)
-        .await
-        .unwrap_or_else(|error| {
-            tracing::debug!(
+    match http.get_dm_participants(conversation_id).await {
+        Ok(fetched) => {
+            // Evict oldest entry if cache exceeds cap
+            const MAX_DM_CACHE_ENTRIES: usize = 8192;
+            if cache.len() >= MAX_DM_CACHE_ENTRIES {
+                if let Some(oldest_key) = cache
+                    .iter()
+                    .min_by_key(|(_, (ts, _))| *ts)
+                    .map(|(k, _)| k.clone())
+                {
+                    cache.remove(&oldest_key);
+                }
+            }
+            cache.insert(cache_key, (Instant::now(), fetched.clone()));
+            fetched
+        }
+        Err(error) => {
+            tracing::warn!(
                 workspace_id = %workspace_id,
                 conversation_id = %conversation_id,
                 error = %error,
                 "failed resolving DM participants in wrap mode"
             );
             vec![]
-        });
-
-    cache.insert(cache_key, (Instant::now(), fetched.clone()));
-    fetched
+        }
+    }
 }
