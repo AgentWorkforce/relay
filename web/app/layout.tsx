@@ -62,8 +62,8 @@ const themeScript = `
         document.documentElement.dataset.theme = stored;
         document.documentElement.style.colorScheme = stored;
       } else {
-        document.documentElement.removeAttribute('data-theme');
-        document.documentElement.style.removeProperty('color-scheme');
+        document.documentElement.dataset.theme = 'dark';
+        document.documentElement.style.colorScheme = 'dark';
       }
     } catch (error) {}
   })();
@@ -71,7 +71,7 @@ const themeScript = `
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" data-theme="dark" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>

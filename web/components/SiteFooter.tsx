@@ -21,17 +21,15 @@ export function SiteFooter() {
             <Link href="/docs" className={s.link}>Documentation</Link>
             <Link href="/docs/quickstart" className={s.link}>Quickstart</Link>
             <Link href="/docs/reference/sdk" className={s.link}>SDK Reference</Link>
+            <Link href="/openclaw" className={s.link}>OpenClaw</Link>
             <a href="https://agent-relay.com" className={s.link}>Cloud</a>
           </div>
           <div className={s.col}>
             <h4 className={s.colTitle}>Community</h4>
-            <a href="https://github.com/agentworkforce/relay" target="_blank" rel="noopener noreferrer" className={s.link}>GitHub</a>
             <Link href="/blog" className={s.link}>Blog</Link>
-            <a href="https://twitter.com/agent_relay" target="_blank" rel="noopener noreferrer" className={s.link}>Twitter</a>
           </div>
           <div className={s.col}>
             <h4 className={s.colTitle}>Company</h4>
-            <Link href="/openclaw" className={s.link}>OpenClaw</Link>
             <a href="mailto:hello@agentrelay.dev" className={s.link}>Contact</a>
           </div>
         </div>

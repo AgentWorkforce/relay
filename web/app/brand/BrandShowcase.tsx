@@ -82,6 +82,18 @@ function buildSnippet(tokens: ThemeToken[]) {
   return [':root {', ...lines, '}'].join('\n');
 }
 
+function brandButtonClass(variant?: 'default' | 'secondary' | 'outline' | 'ghost' | 'destructive') {
+  if (variant === 'default' || variant === undefined) {
+    return s.brandCtaPrimary;
+  }
+
+  if (variant === 'secondary') {
+    return s.brandCtaSecondary;
+  }
+
+  return '';
+}
+
 export function BrandShowcase() {
   const snippet = buildSnippet(THEME_TOKENS);
   return (
@@ -142,11 +154,11 @@ export function BrandShowcase() {
 
           <Card className={s.heroCard}>
             <div className={s.buttonMatrix}>
-              <Button type="button" className="w-full">Primary</Button>
-              <Button type="button" variant="secondary" className="w-full">Secondary</Button>
+              <Button type="button" className={`w-full ${s.brandCtaPrimary}`}>Primary</Button>
+              <Button type="button" variant="secondary" className={`w-full ${s.brandCtaSecondary}`}>Secondary</Button>
               <Button type="button" variant="outline" className="w-full">Outline</Button>
               <Button type="button" variant="ghost" className="w-full">Ghost</Button>
-<Button type="button" variant="destructive" className="w-full">Destructive</Button>
+              <Button type="button" variant="destructive" className="w-full">Destructive</Button>
             </div>
           </Card>
 
@@ -173,7 +185,7 @@ export function BrandShowcase() {
             </div>
           </Card>
 
-<Card className={s.heroCard}>
+          <Card className={s.heroCard}>
             <div className={s.iconRow}>
               <Button variant="ghost" size="icon" className={s.iconChip}><Wand2 /></Button>
               <Button variant="ghost" size="icon" className={s.iconChip}><Shapes /></Button>
@@ -276,13 +288,13 @@ export function BrandShowcase() {
             { variant: 'default', label: 'Primary' },
             { variant: 'secondary', label: 'Secondary' },
             { variant: 'ghost', label: 'Ghost' },
-{ variant: 'destructive', label: 'Destructive' },
+            { variant: 'destructive', label: 'Destructive' },
           ] as const).map(({ variant, label }) => (
             <Card key={variant} className={s.buttonVariantCard}>
               <p className={s.buttonVariantLabel}>{label}</p>
               <div className={s.buttonStateGrid}>
                 <div className={s.buttonStateCol}>
-                  <Button type="button" variant={variant} className="w-full">
+                  <Button type="button" variant={variant} className={`w-full ${brandButtonClass(variant)}`}>
                     {label}
                   </Button>
                   <span className={s.buttonStateLabel}>Default</span>
@@ -291,7 +303,7 @@ export function BrandShowcase() {
                   <Button
                     type="button"
                     variant={variant}
-                    className="w-full"
+                    className={`w-full ${brandButtonClass(variant)}`}
                     data-state="hover"
                   >
                     {label}
@@ -302,7 +314,7 @@ export function BrandShowcase() {
                   <Button
                     type="button"
                     variant={variant}
-                    className="w-full"
+                    className={`w-full ${brandButtonClass(variant)}`}
                     data-state="active"
                   >
                     {label}
@@ -310,7 +322,7 @@ export function BrandShowcase() {
                   <span className={s.buttonStateLabel}>Active</span>
                 </div>
                 <div className={s.buttonStateCol}>
-                  <Button type="button" variant={variant} className="w-full" disabled>
+                  <Button type="button" variant={variant} className={`w-full ${brandButtonClass(variant)}`} disabled>
                     {label}
                   </Button>
                   <span className={s.buttonStateLabel}>Disabled</span>
@@ -373,8 +385,8 @@ export function BrandShowcase() {
               Buttons, tags, and neutral containers using the semantic palette.
             </p>
             <div className={s.buttonRow}>
-              <Button size={'lg'} type="button">Read the Docs</Button>
-              <Button size={'lg'} type="button" variant="outline">Open GitHub</Button>
+              <Button size={'lg'} type="button" className={s.brandCtaPrimary}>Read the Docs</Button>
+              <Button size={'lg'} type="button" variant="secondary" className={s.brandCtaSecondary}>Open GitHub</Button>
             </div>
           </Card>
 

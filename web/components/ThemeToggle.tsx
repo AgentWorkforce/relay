@@ -17,7 +17,7 @@ function readTheme(): Theme {
     return 'light';
   }
 
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  return 'dark';
 }
 
 function applyTheme(theme: Theme) {
@@ -45,25 +45,11 @@ function MoonIcon() {
 
 export function ThemeToggle({ mobile = false }: { mobile?: boolean } = {}) {
   const [mounted, setMounted] = useState(false);
-  const [theme, setTheme] = useState<Theme>('light');
+  const [theme, setTheme] = useState<Theme>('dark');
 
   useEffect(() => {
     setTheme(readTheme());
     setMounted(true);
-
-    const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const onChange = () => {
-      if (localStorage.getItem(STORAGE_KEY)) {
-        return;
-      }
-
-      document.documentElement.removeAttribute('data-theme');
-      document.documentElement.style.removeProperty('color-scheme');
-      setTheme(media.matches ? 'dark' : 'light');
-    };
-
-    media.addEventListener?.('change', onChange);
-    return () => media.removeEventListener?.('change', onChange);
   }, []);
 
   const nextTheme: Theme = theme === 'dark' ? 'light' : 'dark';

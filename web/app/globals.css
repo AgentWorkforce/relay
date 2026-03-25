@@ -3,7 +3,7 @@
 
 html {
   background: var(--bg);
-  color-scheme: light dark;
+  color-scheme: dark;
   transition: background 0.3s ease;
 }
 
