@@ -2265,8 +2265,14 @@ export class WorkflowRunner {
         this.relaycast = undefined;
         this.relaycastAgent = undefined;
 
-        // Wire broker stderr to console for observability
+        // Wire broker stderr to console for observability — skip empty and
+        // JSON event lines (already surfaced via the broker:event emitter).
         this.unsubBrokerStderr = this.relay.onBrokerStderr((line: string) => {
+          const trimmed = line.trim();
+          if (!trimmed) return;
+          // JSON event lines from the Rust EventEmitter are already parsed
+          // and emitted as broker:event — no need to double-log them.
+          if (trimmed.startsWith('{') && trimmed.endsWith('}')) return;
           console.log(`${chalk.dim.yellow('[broker]')} ${line}`);
         });
 
