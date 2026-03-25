@@ -73,9 +73,10 @@
     "web"
   ],
   "bundledDependencies": [
-    "@agent-relay/sdk",
+    "@agent-relay/cloud",
     "@agent-relay/config",
     "@agent-relay/hooks",
+    "@agent-relay/sdk",
     "@agent-relay/telemetry",
     "@agent-relay/trajectory",
     "@agent-relay/user-directory",

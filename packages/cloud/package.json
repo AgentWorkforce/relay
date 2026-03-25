@@ -1,0 +1,44 @@
+{
+  "name": "@agent-relay/cloud",
+  "version": "3.2.15",
+  "description": "Cloud SDK for Agent Relay — auth, workflow execution, and provider connections",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agent-relay/config": "3.2.15",
+    "@aws-sdk/client-s3": "^3.1004.0",
+    "ignore": "^7.0.5",
+    "tar": "^7.5.10"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.3",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/cloud"
+  }
+}
