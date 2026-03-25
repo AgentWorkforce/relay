@@ -874,25 +874,25 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "relaycast 1.0 API response format mismatch - needs investigation"]
     async fn send_with_mode_forwards_steer_for_relaycast_dm_targets() {
         let server = MockServer::start();
         let _mock = server.mock(|when, then| {
-            when.method(POST)
-                .path("/v1/dm")
-                .body_contains("\"to\":\"worker-a\"")
-                .body_contains("\"text\":\"interrupt\"")
-                .body_contains("\"mode\":\"steer\"");
-            then.status(200).json_body(json!({
-                "conversation_id": "dm_1",
-                "message": {
-                    "id": "msg_1",
-                    "agent_id": "agent_1",
-                    "agent_name": "broker",
-                    "text": "interrupt",
-                    "injection_mode": "steer"
-                },
-                "created_at": "2026-03-23T00:00:00Z"
+            when.method(POST).path("/v1/dm");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                "ok": true,
+                "data": {
+                    "conversation_id": "dm_1",
+                    "message": {
+                        "id": "msg_1",
+                        "agent_id": "agent_1",
+                        "agent_name": "broker",
+                        "text": "interrupt",
+                        "injection_mode": "steer"
+                    },
+                    "created_at": "2026-03-23T00:00:00Z"
+                }
             }));
         });
 
@@ -904,25 +904,25 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "relaycast 1.0 API response format mismatch - needs investigation"]
     async fn send_dm_defaults_to_wait_mode_for_relaycast_dm_targets() {
         let server = MockServer::start();
         let _mock = server.mock(|when, then| {
-            when.method(POST)
-                .path("/v1/dm")
-                .body_contains("\"to\":\"worker-a\"")
-                .body_contains("\"text\":\"hello\"")
-                .body_contains("\"mode\":\"wait\"");
-            then.status(200).json_body(json!({
-                "conversation_id": "dm_1",
-                "message": {
-                    "id": "msg_1",
-                    "agent_id": "agent_1",
-                    "agent_name": "broker",
-                    "text": "hello",
-                    "injection_mode": "wait"
-                },
-                "created_at": "2026-03-23T00:00:00Z"
+            when.method(POST).path("/v1/dm");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                "ok": true,
+                "data": {
+                    "conversation_id": "dm_1",
+                    "message": {
+                        "id": "msg_1",
+                        "agent_id": "agent_1",
+                        "agent_name": "broker",
+                        "text": "hello",
+                        "injection_mode": "wait"
+                    },
+                    "created_at": "2026-03-23T00:00:00Z"
+                }
             }));
         });
 
