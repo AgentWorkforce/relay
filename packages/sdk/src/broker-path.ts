@@ -41,14 +41,16 @@ export function getBrokerBinaryPath(): string | null {
   }
   if (!binDir) return null;
 
+  const ext = process.platform === 'win32' ? '.exe' : '';
+
   // 1. Exact name in bin/
-  const exactPath = join(binDir, BROKER_NAME);
+  const exactPath = join(binDir, `${BROKER_NAME}${ext}`);
   if (existsSync(exactPath)) {
     return exactPath;
   }
 
   // 2. Platform-specific name in bin/
-  const platformSpecific = `${BROKER_NAME}-${process.platform}-${process.arch}`;
+  const platformSpecific = `${BROKER_NAME}-${process.platform}-${process.arch}${ext}`;
   const platformPath = join(binDir, platformSpecific);
   if (existsSync(platformPath)) {
     return platformPath;
