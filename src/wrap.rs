@@ -4,9 +4,9 @@ use std::time::{Duration, Instant};
 use super::*;
 use crate::helpers::{
     check_echo_in_output, floor_char_boundary, format_injection_for_worker_with_workspace,
-    ActivityDetector, DeliveryOutcome, PendingActivity,
-    PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
-    ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+    ActivityDetector, DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
+    ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+    MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
 };
 
 // PTY auto-response constants (shared by wrap and pty workers)
