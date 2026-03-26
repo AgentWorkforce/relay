@@ -1,6 +1,6 @@
-# @relaycast/brand
+# @agent-relay/brand
 
-Shared brand tokens, CSS variables, and color system for Agent Relay / Relaycast.
+Shared brand tokens, CSS variables, and color system for Agent Relay and associated properties.
 
 This is a pure CSS package — no build step required.
 
@@ -9,13 +9,13 @@ This is a pure CSS package — no build step required.
 ### Import in CSS (with a bundler)
 
 ```css
-@import '@relaycast/brand/brand.css';
+@import '@agent-relay/brand/brand.css';
 ```
 
 ### Link directly (HTML)
 
 ```html
-<link rel="stylesheet" href="node_modules/@relaycast/brand/brand.css">
+<link rel="stylesheet" href="node_modules/@agent-relay/brand/brand.css">
 ```
 
 ### Static sites without a bundler
