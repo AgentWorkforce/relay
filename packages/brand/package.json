@@ -1,0 +1,20 @@
+{
+  "name": "@agent-relay/brand",
+  "version": "1.1.0",
+  "description": "Shared brand tokens, CSS variables, and color system for Agent Relay and associated properties",
+  "main": "brand.css",
+  "style": "brand.css",
+  "files": [
+    "brand.css",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./brand.css",
+    "./brand.css": "./brand.css"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AgentWorkforce/relay",
+    "directory": "packages/brand"
+  }
+}
