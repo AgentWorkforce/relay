@@ -26,7 +26,7 @@ export default function HomePage() {
         <svg className={s.heroBgSvg} viewBox="0 0 1200 600" fill="none" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice">
           {/* Grid of interconnected nodes */}
           {/* Paths — connection lines */}
-          <g stroke="var(--primary)" strokeWidth="0.8" opacity="0.07">
+          <g stroke="var(--primary)" strokeWidth="0.9" opacity="0.13">
             {/* Horizontal flows */}
             <path d="M80,120 L220,140 L380,110 L520,145 L680,120" />
             <path d="M150,280 L310,260 L460,290 L620,270 L780,295" />
@@ -50,7 +50,7 @@ export default function HomePage() {
             <path d="M670,455 L720,540" />
           </g>
           {/* Nodes — small circles at intersections */}
-          <g fill="var(--primary)" opacity="0.08">
+          <g fill="var(--primary)" opacity="0.17">
             <circle cx="80" cy="120" r="3" />
             <circle cx="220" cy="140" r="4" />
             <circle cx="380" cy="110" r="3" />
@@ -72,7 +72,7 @@ export default function HomePage() {
             <circle cx="1020" cy="280" r="3" />
           </g>
           {/* Ghost card outlines — faint rectangles suggesting agent cards */}
-          <g stroke="var(--primary)" strokeWidth="0.6" fill="none" opacity="0.04">
+          <g stroke="var(--primary)" strokeWidth="0.75" fill="none" opacity="0.08">
             <rect x="190" y="120" width="60" height="38" rx="6" />
             <rect x="350" y="90" width="60" height="38" rx="6" />
             <rect x="490" y="125" width="60" height="38" rx="6" />
@@ -86,7 +86,7 @@ export default function HomePage() {
             <rect x="800" y="140" width="60" height="38" rx="6" />
           </g>
           {/* Pulse dots — brighter accent nodes */}
-          <g fill="var(--primary)" opacity="0.12">
+          <g fill="var(--primary)" opacity="0.24">
             <circle cx="220" cy="140" r="2" />
             <circle cx="460" cy="290" r="2" />
             <circle cx="670" cy="455" r="2" />
