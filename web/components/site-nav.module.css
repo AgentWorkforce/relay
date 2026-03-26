@@ -220,15 +220,14 @@
 }
 
 .productDropdown .link {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
   cursor: pointer;
 }
 
 .chevron {
   display: inline-block;
   transition: transform 0.2s ease;
+  vertical-align: middle;
+  margin-top: -1px;
 }
 
 .chevronOpen {
@@ -242,9 +241,9 @@
 .dropdownMenu {
   position: absolute;
   top: 100%;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
   padding-top: 10px;
+  z-index: 100;
   opacity: 0;
   visibility: hidden;
   pointer-events: none;

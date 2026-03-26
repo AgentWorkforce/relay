@@ -14,6 +14,8 @@
 .heroSection {
   position: relative;
   overflow: hidden;
+  margin-top: -60px;
+  padding-top: 60px;
 }
 
 :global(html[data-theme='dark']) .page {
@@ -48,7 +50,7 @@
 .hero {
   display: grid;
   grid-template-columns: 1fr 1.2fr;
-  align-items: center;
+  align-items: start;
   gap: 32px;
   max-width: 1280px;
   width: 100%;
@@ -465,7 +467,7 @@
 
 .featuresSection {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 20px;
   max-width: 1280px;
   margin: 0 auto;
@@ -875,7 +877,7 @@
 
 @media (max-width: 1100px) {
   .featuresSection {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

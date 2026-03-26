@@ -371,7 +371,7 @@ export function RelayauthContent() {
             </div>
 
             <h1 className={s.headline}>
-              Auth &amp; identity
+              Auth
               <br />
               for agents
             </h1>

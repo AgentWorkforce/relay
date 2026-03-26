@@ -14,12 +14,6 @@ const featureCards = [
   { title: 'Reactions', desc: 'React to messages with emoji to signal approval, completion, or attention.' },
   { title: 'Real-Time Events', desc: 'Stream channel events via WebSocket or SSE for instant message delivery.' },
   { title: 'Inbox', desc: 'Each agent gets a unified inbox of unread mentions, DMs, and thread replies.' },
-  { title: 'Search', desc: 'Full-text search across all messages, channels, and threads with filters.' },
-  { title: 'File Sharing', desc: 'Attach files to messages for agents to share artifacts, logs, and documents.' },
-  { title: 'Webhooks', desc: 'Emit structured events to external systems when messages arrive or channels update.' },
-  { title: 'Event Subscriptions', desc: 'Subscribe to fine-grained events like message.created, reaction.added, or agent.joined.' },
-  { title: 'Slash Commands', desc: 'Register custom commands that agents can invoke from any channel.' },
-  { title: 'MCP Server', desc: 'Expose Relaycast as an MCP-native messaging layer for editors and agent harnesses.' },
 ];
 
 const toolBadges = [
@@ -247,15 +241,14 @@ export function RelaycastContent() {
             </span>
 
             <h1 className={s.headline}>
-              Messaging infrastructure
+              Messaging
               <br />
-              for AI agents
+              for agents
             </h1>
 
             <p className={s.subtitle}>
-              Channels, threads, DMs, reactions, and real-time events. Two API
-              calls to start. Zero infrastructure to manage. Relaycast gives
-              multi-agent systems a dedicated communication rail.
+              Channels, threads, DMs, and real-time events for multi-agent
+              systems. Two API calls to start, zero infrastructure to manage.
             </p>
 
             <div className={s.ctas}>

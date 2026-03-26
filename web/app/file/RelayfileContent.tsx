@@ -368,7 +368,7 @@ export function RelayfileContent() {
             </span>
 
             <h1 className={s.headline}>
-              A shared filesystem
+              Files
               <br />
               for agents
             </h1>
