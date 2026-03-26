@@ -123,19 +123,17 @@ export async function resolveWorkflowInput(
     inferWorkflowFileType(workflowArg) !== null;
 
   try {
-    const stat = await fs.stat(workflowArg);
-    if (!stat.isFile()) {
-      throw new Error(`Workflow path is not a file: ${workflowArg}`);
-    }
-
+    const workflow = await fs.readFile(workflowArg, "utf-8");
     const fileType = explicitFileType ?? inferWorkflowFileType(workflowArg);
     if (!fileType) {
       throw new Error(`Could not infer workflow type from ${workflowArg}. Use --file-type.`);
     }
-
-    const workflow = await fs.readFile(workflowArg, "utf-8");
     return { workflow, fileType };
   } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === "EISDIR") {
+      throw new Error(`Workflow path is not a file: ${workflowArg}`);
+    }
     if (!isMissingFileError(error)) {
       throw error;
     }

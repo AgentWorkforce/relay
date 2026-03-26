@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -486,8 +485,9 @@ export function registerCloudCommands(
       }
 
       const { execSync } = await import('node:child_process');
-      const tmpPatch = path.join(os.tmpdir(), `cloud-sync-${crypto.randomUUID()}.patch`);
-      fs.writeFileSync(tmpPatch, result.patch);
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-sync-'));
+      const tmpPatch = path.join(tmpDir, 'changes.patch');
+      fs.writeFileSync(tmpPatch, result.patch, { mode: 0o600 });
 
       try {
         const stat = execSync(`git apply --stat "${tmpPatch}"`, {

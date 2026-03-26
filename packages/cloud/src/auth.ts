@@ -104,12 +104,23 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
       }
 
       const returnedState = requestUrl.searchParams.get("state");
-      const accessToken = requestUrl.searchParams.get("access_token");
-      const refreshToken = requestUrl.searchParams.get("refresh_token");
-      const accessTokenExpiresAt = requestUrl.searchParams.get("access_token_expires_at");
-      const returnedApiUrl = requestUrl.searchParams.get("api_url");
-      const error = requestUrl.searchParams.get("error");
 
+      // Validate state parameter first (CSRF protection) — this check
+      // must run unconditionally, before any user-controlled values.
+      if (returnedState !== state) {
+        redirectToHostedCliAuthPage(response, apiUrl, {
+          status: "error",
+          detail: "Invalid state parameter",
+        });
+        if (!settled) {
+          settled = true;
+          server.close();
+          reject(new Error("Invalid state parameter in CLI login callback"));
+        }
+        return;
+      }
+
+      const error = requestUrl.searchParams.get("error");
       if (error) {
         redirectToHostedCliAuthPage(response, apiUrl, {
           status: "error",
@@ -123,8 +134,12 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
         return;
       }
 
+      const accessToken = requestUrl.searchParams.get("access_token");
+      const refreshToken = requestUrl.searchParams.get("refresh_token");
+      const accessTokenExpiresAt = requestUrl.searchParams.get("access_token_expires_at");
+      const returnedApiUrl = requestUrl.searchParams.get("api_url");
+
       if (
-        returnedState !== state ||
         !accessToken ||
         !refreshToken ||
         !accessTokenExpiresAt ||
