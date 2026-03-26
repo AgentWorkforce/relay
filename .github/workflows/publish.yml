@@ -501,7 +501,7 @@ jobs:
         working-directory: packages/${{ matrix.package }}
         run: |
           if [ "${{ matrix.package }}" = "brand" ]; then
-            echo "Dry run - would publish @relaycast/brand"
+            echo "Dry run - would publish @agent-relay/brand"
           else
             echo "Dry run - would publish @agent-relay/${{ matrix.package }}"
           fi
@@ -542,7 +542,7 @@ jobs:
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/brand
         run: |
-          echo "Dry run - would publish @relaycast/brand"
+          echo "Dry run - would publish @agent-relay/brand"
           npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
       - name: Publish Brand to NPM
