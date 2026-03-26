@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { WorkflowRunRow, WorkflowStepRow } from './types.js';
@@ -24,6 +24,7 @@ export class JsonFileWorkflowDb implements WorkflowDb {
 
   /** Whether the storage directory is writable. False = silent no-op mode. */
   private readonly writable: boolean;
+  private appendFailedOnce = false;
 
   constructor(filePath: string) {
     this.filePath = filePath;
@@ -43,14 +44,32 @@ export class JsonFileWorkflowDb implements WorkflowDb {
     return this.writable;
   }
 
+  hasStepOutputs(runId: string): boolean {
+    try {
+      const dir = path.join(path.dirname(this.filePath), 'step-outputs', runId);
+      return existsSync(dir);
+    } catch {
+      return false;
+    }
+  }
+
   // ── Private helpers ─────────────────────────────────────────────────────
 
   private append(entry: DbEntry): void {
     if (!this.writable) return;
     try {
       appendFileSync(this.filePath, JSON.stringify(entry) + '\n', 'utf8');
-    } catch {
-      // Non-critical — workflow execution continues; resume won't be available.
+    } catch (err) {
+      if (!this.appendFailedOnce) {
+        this.appendFailedOnce = true;
+        console.warn(
+          '[workflow] warning: failed to write run state to ' +
+            this.filePath +
+            ' — --resume will not be available for this run. Use --start-from instead. ' +
+            'Error: ' +
+            (err instanceof Error ? err.message : String(err))
+        );
+      }
     }
   }
 

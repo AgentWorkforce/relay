@@ -1952,14 +1952,25 @@ export class WorkflowRunner {
   }
 
   /** Resume a previously paused or partially completed run. */
-  async resume(runId: string, vars?: VariableContext): Promise<WorkflowRunRow> {
+  async resume(runId: string, vars?: VariableContext, config?: RelayYamlConfig): Promise<WorkflowRunRow> {
     // Set up abort controller early so callers can abort() even during setup
     this.abortController = new AbortController();
     this.paused = false;
 
-    const run = await this.db.getRun(runId);
+    let run = await this.db.getRun(runId);
+    let stepStates = new Map<string, StepState>();
     if (!run) {
-      throw new Error(`Run "${runId}" not found`);
+      const reconstructed = this.reconstructRunFromCache(runId, config);
+      if (!reconstructed) {
+        throw new Error(`Run "${runId}" not found (no database entry or cached step outputs)`);
+      }
+      this.log('[resume] Reconstructing run from cached step outputs (workflow-runs.jsonl missing)');
+      run = reconstructed.run;
+      stepStates = reconstructed.stepStates;
+      await this.db.insertRun(run);
+      for (const [, state] of stepStates) {
+        await this.db.insertStep(state.row);
+      }
     }
     this.persistRunIdHint(runId);
 
@@ -1967,25 +1978,26 @@ export class WorkflowRunner {
       throw new Error(`Run "${runId}" is in status "${run.status}" and cannot be resumed`);
     }
 
-    const config = vars ? this.resolveVariables(run.config, vars) : run.config;
+    const resolvedConfig = vars ? this.resolveVariables(run.config, vars) : run.config;
 
     // Resolve path definitions (same as execute()) so workdir lookups work on resume
-    const pathResult = this.resolvePathDefinitions(config.paths, this.cwd);
+    const pathResult = this.resolvePathDefinitions(resolvedConfig.paths, this.cwd);
     if (pathResult.errors.length > 0) {
       throw new Error(`Path validation failed:\n  ${pathResult.errors.join('\n  ')}`);
     }
     this.resolvedPaths = pathResult.resolved;
 
-    const workflows = config.workflows ?? [];
+    const workflows = resolvedConfig.workflows ?? [];
     const workflow = workflows.find((w) => w.name === run.workflowName);
     if (!workflow) {
       throw new Error(`Workflow "${run.workflowName}" not found in stored config`);
     }
 
-    const existingSteps = await this.db.getStepsByRunId(runId);
-    const stepStates = new Map<string, StepState>();
-    for (const stepRow of existingSteps) {
-      stepStates.set(stepRow.stepName, { row: stepRow });
+    if (stepStates.size === 0) {
+      const existingSteps = await this.db.getStepsByRunId(runId);
+      for (const stepRow of existingSteps) {
+        stepStates.set(stepRow.stepName, { row: stepRow });
+      }
     }
 
     // Reset failed steps to pending for retry
@@ -2006,7 +2018,7 @@ export class WorkflowRunner {
     return this.runWorkflowCore({
       run,
       workflow,
-      config,
+      config: resolvedConfig,
       stepStates,
       isResume: true,
     });
@@ -6636,6 +6648,102 @@ export class WorkflowRunner {
     } catch {
       return undefined;
     }
+  }
+
+  private reconstructRunFromCache(
+    runId: string,
+    config?: RelayYamlConfig
+  ): { run: WorkflowRunRow; stepStates: Map<string, StepState> } | null {
+    const stepOutputDir = this.getStepOutputDir(runId);
+    if (!existsSync(stepOutputDir)) return null;
+
+    const resumeConfig = config ?? this.currentConfig;
+    if (!resumeConfig) return null;
+
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(stepOutputDir, { withFileTypes: true });
+    } catch {
+      return null;
+    }
+
+    const cachedStepNames = new Set(
+      entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+        .map((entry) => entry.name.slice(0, -3))
+        .filter(Boolean)
+    );
+    const workflows = resumeConfig.workflows ?? [];
+    if (workflows.length === 0) return null;
+
+    // Empty cache directory is valid — all steps will be re-run
+    const workflow = cachedStepNames.size === 0
+      ? (workflows.length === 1 ? workflows[0] : null)
+      : workflows.length === 1
+        ? workflows[0]
+        : workflows
+            .map((candidate) => ({
+              workflow: candidate,
+              matchedSteps: candidate.steps.filter((step) => cachedStepNames.has(step.name)).length,
+              unknownSteps: [...cachedStepNames].filter((name) => !candidate.steps.some((step) => step.name === name))
+                .length,
+            }))
+            .filter((candidate) => candidate.unknownSteps === 0)
+            .sort((a, b) => b.matchedSteps - a.matchedSteps)[0]?.workflow;
+    if (!workflow) return null;
+
+    const now = new Date().toISOString();
+    const completedSteps = new Set(workflow.steps.filter((step) => cachedStepNames.has(step.name)).map((step) => step.name));
+    const failedStepName = workflow.steps.find(
+      (step) => !completedSteps.has(step.name) && (step.dependsOn ?? []).every((dep) => completedSteps.has(dep))
+    )?.name;
+
+    const run: WorkflowRunRow = {
+      id: runId,
+      workspaceId: this.workspaceId,
+      workflowName: workflow.name,
+      pattern: resumeConfig.swarm.pattern,
+      status: 'failed',
+      config: resumeConfig,
+      startedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const stepStates = new Map<string, StepState>();
+    for (const step of workflow.steps) {
+      const isNonAgent = step.type === 'deterministic' || step.type === 'worktree' || step.type === 'integration';
+      const cachedOutput = completedSteps.has(step.name) ? this.loadStepOutput(runId, step.name) : undefined;
+      const status: WorkflowStepStatus =
+        completedSteps.has(step.name) ? 'completed' : step.name === failedStepName ? 'failed' : 'pending';
+
+      const stepRow: WorkflowStepRow = {
+        id: this.generateId(),
+        runId,
+        stepName: step.name,
+        agentName: isNonAgent ? null : (step.agent ?? null),
+        stepType: isNonAgent ? (step.type as 'deterministic' | 'worktree' | 'integration') : 'agent',
+        status,
+        task:
+          step.type === 'deterministic'
+            ? (step.command ?? '')
+            : step.type === 'worktree'
+              ? (step.branch ?? '')
+              : step.type === 'integration'
+                ? (`${step.integration}.${step.action}`)
+                : (step.task ?? ''),
+        dependsOn: step.dependsOn ?? [],
+        output: cachedOutput,
+        error: status === 'failed' ? 'Recovered from cached step outputs' : undefined,
+        completedAt: status === 'completed' ? now : undefined,
+        retryCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      stepStates.set(step.name, { row: stepRow });
+    }
+
+    return { run, stepStates };
   }
 
   /** Get or create the worker logs directory (.agent-relay/team/worker-logs) */
