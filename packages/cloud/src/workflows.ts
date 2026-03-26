@@ -34,7 +34,22 @@ type RunWorkflowOptions = {
   syncCode?: boolean;
 };
 
-const CODE_SYNC_EXCLUDES = [".git", "node_modules", ".sst", ".next", ".open-next"];
+const CODE_SYNC_EXCLUDES = [
+  ".git",
+  "node_modules",
+  ".sst",
+  ".next",
+  ".open-next",
+  ".env",
+  ".env.*",
+  ".env.local",
+  ".env.production",
+  "*.pem",
+  "*.key",
+  "credentials.json",
+  ".aws",
+  ".ssh",
+];
 
 function validateYamlWorkflow(content: string): void {
   const hasField = (field: string) =>

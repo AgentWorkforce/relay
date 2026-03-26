@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +12,7 @@ import {
   clearStoredAuth,
   defaultApiUrl,
   AUTH_FILE_PATH,
+  REFRESH_WINDOW_MS,
   runWorkflow,
   getRunStatus,
   getRunLogs,
@@ -61,14 +63,13 @@ const PROVIDER_ALIASES: Record<string, string> = {
   gemini: 'google',
 };
 
-const PROVIDER_HELP_TEXT = [
-  'anthropic (alias: claude)',
-  'openai (alias: codex)',
-  'google (alias: gemini)',
-  'cursor',
-  'opencode',
-  'droid',
-].join(', ');
+const PROVIDER_HELP_TEXT = Object.keys(CLI_AUTH_CONFIG)
+  .sort()
+  .map((id) => {
+    const alias = Object.entries(PROVIDER_ALIASES).find(([, target]) => target === id);
+    return alias ? `${id} (alias: ${alias[0]})` : id;
+  })
+  .join(', ');
 
 function normalizeProvider(providerArg: string): string {
   const providerInput = providerArg.toLowerCase().trim();
@@ -103,18 +104,19 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function getErrorDetails(response: Response): Promise<string> {
-  let details = response.statusText;
+  let body: string;
   try {
-    const json = (await response.json()) as { error?: string; message?: string };
-    details = json.error || json.message || details;
+    body = await response.text();
   } catch {
-    try {
-      details = await response.text();
-    } catch {
-      // ignore
-    }
+    return response.statusText;
   }
-  return details || response.statusText;
+  if (!body) return response.statusText;
+  try {
+    const json = JSON.parse(body) as { error?: string; message?: string };
+    return json.error || json.message || response.statusText;
+  } catch {
+    return body;
+  }
 }
 
 // ── Command registration ─────────────────────────────────────────────────────
@@ -143,7 +145,7 @@ export function registerCloudCommands(
         const existing = await readStoredAuth();
         if (existing && existing.apiUrl === apiUrl) {
           const expiresAt = Date.parse(existing.accessTokenExpiresAt);
-          if (!Number.isNaN(expiresAt) && expiresAt - Date.now() > 60_000) {
+          if (!Number.isNaN(expiresAt) && expiresAt - Date.now() > REFRESH_WINDOW_MS) {
             deps.log(`Already logged in to ${existing.apiUrl}`);
             return;
           }
@@ -484,7 +486,7 @@ export function registerCloudCommands(
       }
 
       const { execSync } = await import('node:child_process');
-      const tmpPatch = path.join(os.tmpdir(), `cloud-sync-${Date.now()}.patch`);
+      const tmpPatch = path.join(os.tmpdir(), `cloud-sync-${crypto.randomUUID()}.patch`);
       fs.writeFileSync(tmpPatch, result.patch);
 
       try {
