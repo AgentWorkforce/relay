@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useMemo, useState } from 'react';
 
 import { FadeIn } from '../../components/FadeIn';
-import { RelaycastAnimation } from './RelaycastAnimation';
+import { MessageRelayAnimation } from '../../components/MessageRelayAnimation';
 import s from './relaycast.module.css';
 
 const featureCards = [
@@ -277,7 +277,7 @@ export function RelaycastContent() {
           </div>
 
           <div className={s.heroRight}>
-            <RelaycastAnimation />
+            <MessageRelayAnimation />
           </div>
         </section>
       </div>
