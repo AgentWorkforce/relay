@@ -1315,7 +1315,7 @@ jobs:
             ```bash
             npm install -g agent-relay@${{ needs.build.outputs.new_version }}
             npm install @agent-relay/sdk@${{ needs.build.outputs.new_version }}
-            npm install @relaycast/brand@${{ needs.build.outputs.new_version }}
+            npm install @agent-relay/brand@${{ needs.build.outputs.new_version }}
             ```
 
             Or by dist-tag:
