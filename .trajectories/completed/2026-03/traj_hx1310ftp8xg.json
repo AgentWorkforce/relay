@@ -1,0 +1,53 @@
+{
+  "id": "traj_hx1310ftp8xg",
+  "version": 1,
+  "task": {
+    "title": "Move OpenClaw footer link under Product"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-25T22:57:38.400Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-03-25T22:57:47.560Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_3tu0yuzv0k3w",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-25T22:57:47.560Z",
+      "events": [
+        {
+          "ts": 1774479467561,
+          "type": "decision",
+          "content": "Moved the OpenClaw footer link from Company to Product: Moved the OpenClaw footer link from Company to Product",
+          "raw": {
+            "question": "Moved the OpenClaw footer link from Company to Product",
+            "chosen": "Moved the OpenClaw footer link from Company to Product",
+            "alternatives": [],
+            "reasoning": "OpenClaw is a product surface, so grouping it under Product makes the footer information architecture more accurate."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-25T22:58:00.875Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "73382eb963ae7cf9554ce182000fdf30118627aa",
+    "endRef": "73382eb963ae7cf9554ce182000fdf30118627aa"
+  },
+  "completedAt": "2026-03-25T22:58:00.875Z",
+  "retrospective": {
+    "summary": "Moved the OpenClaw footer link into the Product column and removed it from Company.",
+    "approach": "Standard approach",
+    "confidence": 0.99
+  }
+}
