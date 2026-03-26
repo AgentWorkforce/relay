@@ -17,7 +17,13 @@ export function SiteFooter() {
 
         <div className={s.columns}>
           <div className={s.col}>
-            <h4 className={s.colTitle}>Product</h4>
+            <h4 className={s.colTitle}>Products</h4>
+            <Link href="/message" className={s.link}>Message</Link>
+            <Link href="/auth" className={s.link}>Auth</Link>
+            <Link href="/file" className={s.link}>File</Link>
+          </div>
+          <div className={s.col}>
+            <h4 className={s.colTitle}>Resources</h4>
             <Link href="/docs" className={s.link}>Documentation</Link>
             <Link href="/docs/quickstart" className={s.link}>Quickstart</Link>
             <Link href="/docs/reference/sdk" className={s.link}>SDK Reference</Link>

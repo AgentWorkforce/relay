@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto';
 import {
   createWriteStream,
   existsSync,
+  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -4496,6 +4497,9 @@ export class WorkflowRunner {
     token: string,
     injectedTaskText?: string
   ): boolean {
+    if (!token) {
+      return false;
+    }
     return this.stripInjectedTaskEcho(output, injectedTaskText).includes(token);
   }
 
@@ -4510,8 +4514,9 @@ export class WorkflowRunner {
       };
     }
 
-    const taskTmpFile = path.join(tmpdir(), `relay-pty-task-${agentName}-${Date.now()}.txt`);
-    writeFileSync(taskTmpFile, taskText, 'utf8');
+    const taskTmpDir = mkdtempSync(path.join(tmpdir(), 'relay-pty-task-'));
+    const taskTmpFile = path.join(taskTmpDir, `${agentName}-${Date.now()}.txt`);
+    writeFileSync(taskTmpFile, taskText, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     const promptTaskText =
       `TASK_FILE:${taskTmpFile}\n` +
       'Read that file completely before taking any action.\n' +

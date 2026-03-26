@@ -11,6 +11,16 @@ const nextConfig = {
   outputFileTracingIncludes: {
     '/*': ['../packages/openclaw/skill/SKILL.md'],
   },
+  async rewrites() {
+    return [
+      { source: '/relayfile', destination: '/file' },
+      { source: '/relayfile/:path*', destination: '/file/:path*' },
+      { source: '/relayauth', destination: '/auth' },
+      { source: '/relayauth/:path*', destination: '/auth/:path*' },
+      { source: '/relaycast', destination: '/message' },
+      { source: '/relaycast/:path*', destination: '/message/:path*' },
+    ];
+  },
 };
 
 export default nextConfig;
