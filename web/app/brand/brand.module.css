@@ -223,6 +223,83 @@
   gap: 8px;
 }
 
+.brandCtaPrimary,
+.brandCtaSecondary {
+  min-height: 48px;
+  border-radius: 999px !important;
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    transform 0.15s ease,
+    box-shadow 0.2s ease !important;
+}
+
+.brandCtaPrimary {
+  border: none !important;
+  background: var(--btn-bg) !important;
+  color: #fff !important;
+  box-shadow: 0 2px 12px color-mix(in srgb, var(--btn-bg) 25%, transparent) !important;
+}
+
+.brandCtaPrimary:hover,
+.brandCtaPrimary[data-state='hover'] {
+  background: var(--btn-hover) !important;
+  box-shadow: 0 4px 20px color-mix(in srgb, var(--btn-bg) 35%, transparent) !important;
+  transform: translateY(-1px);
+}
+
+.brandCtaPrimary[data-state='active'] {
+  background: color-mix(in srgb, var(--btn-hover) 88%, black 12%) !important;
+  box-shadow: 0 1px 8px color-mix(in srgb, var(--btn-bg) 24%, transparent) !important;
+  transform: translateY(0.5px) scale(0.985);
+}
+
+.brandCtaSecondary {
+  background: var(--secondary-surface) !important;
+  color: var(--fg) !important;
+  border: 1.5px solid var(--line) !important;
+}
+
+.brandCtaSecondary:hover,
+.brandCtaSecondary[data-state='hover'] {
+  border-color: var(--primary) !important;
+  color: var(--primary) !important;
+  background: color-mix(in srgb, var(--secondary-surface) 82%, var(--primary) 18%) !important;
+  transform: translateY(-1px);
+}
+
+.brandCtaSecondary[data-state='active'] {
+  border-color: color-mix(in srgb, var(--primary) 82%, black 18%) !important;
+  color: var(--primary) !important;
+  background: color-mix(in srgb, var(--secondary-surface) 72%, var(--primary) 28%) !important;
+  transform: translateY(0.5px) scale(0.985);
+}
+
+:global(html[data-theme='dark']) .brandCtaSecondary {
+  background: color-mix(in srgb, var(--surface-strong) 88%, var(--primary) 12%) !important;
+  border-color: color-mix(in srgb, var(--primary) 18%, transparent) !important;
+  color: var(--fg) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    0 1px 0 rgba(0, 0, 0, 0.14) !important;
+}
+
+:global(html[data-theme='dark']) .brandCtaSecondary:hover,
+:global(html[data-theme='dark']) .brandCtaSecondary[data-state='hover'] {
+  background: color-mix(in srgb, var(--surface-strong) 76%, var(--primary) 24%) !important;
+  border-color: color-mix(in srgb, var(--primary) 36%, transparent) !important;
+  color: #d9efff !important;
+}
+
+:global(html[data-theme='dark']) .brandCtaSecondary[data-state='active'] {
+  background: color-mix(in srgb, var(--surface-strong) 68%, var(--primary) 32%) !important;
+  border-color: color-mix(in srgb, var(--primary) 48%, transparent) !important;
+}
+
 .section {
   padding: 8px 0 28px;
 }

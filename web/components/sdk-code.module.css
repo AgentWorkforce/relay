@@ -10,7 +10,7 @@
   gap: 0;
   padding: 0 16px;
   background: var(--nav-bg);
-  border-bottom: 1px solid color-mix(in srgb, var(--nav-bg) 80%, black);
+  border-bottom: 1px solid var(--nav-border);
 }
 
 .tab {
@@ -51,6 +51,6 @@
 
 /* Syntax — uses primary for keywords/types */
 .keyword { color: var(--primary); }
-.string { color: #b45309; }
+.string { color: var(--syntax-string); }
 .type { color: var(--primary); }
-.method { color: #6b21a8; }
+.method { color: var(--syntax-method); }

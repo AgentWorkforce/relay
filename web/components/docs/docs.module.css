@@ -256,7 +256,7 @@
 .codeGroupTabs {
   display: flex;
   background: var(--nav-bg);
-  border-bottom: 1px solid color-mix(in srgb, var(--nav-bg) 80%, black);
+  border-bottom: 1px solid var(--nav-border);
 }
 
 .codeGroupTab {

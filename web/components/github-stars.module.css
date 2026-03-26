@@ -3,9 +3,9 @@
   align-items: center;
   gap: 7px;
   padding: 6px 14px;
-  background: rgba(255, 255, 255, 0.1);
-  color: #ffffff;
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: var(--nav-surface);
+  color: var(--nav-fg);
+  border: 1px solid var(--nav-border);
   border-radius: 100px;
   text-decoration: none;
   font-size: 0.82rem;
@@ -15,7 +15,7 @@
 }
 
 .badge:hover {
-  background: #ffffff;
+  background: var(--surface-strong);
   color: var(--nav-bg);
   animation: none;
   transform: scale(1.04);
@@ -23,14 +23,14 @@
 
 @keyframes throb {
   0%, 100% {
-    border-color: rgba(255, 255, 255, 0.2);
+    border-color: var(--nav-border);
     transform: scale(1);
-    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+    box-shadow: 0 0 0 0 transparent;
   }
   50% {
-    border-color: rgba(255, 255, 255, 0.5);
+    border-color: var(--nav-border-strong);
     transform: scale(1.04);
-    box-shadow: 0 0 12px rgba(255, 255, 255, 0.08);
+    box-shadow: 0 0 12px color-mix(in srgb, var(--nav-fg) 10%, transparent);
   }
 }
 
