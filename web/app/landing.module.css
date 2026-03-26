@@ -21,15 +21,15 @@
 }
 
 :global(html[data-theme='dark']) .page {
-  background: var(--bg);
-}
-
-:global(html[data-theme='dark']) .heroSection {
   background:
     radial-gradient(circle at 14% 0%, color-mix(in srgb, var(--primary) 18%, transparent), transparent 36%),
     radial-gradient(circle at 78% 14%, color-mix(in srgb, var(--primary) 14%, transparent), transparent 30%),
     radial-gradient(circle at 50% 22%, color-mix(in srgb, var(--primary) 8%, transparent), transparent 44%),
     var(--landing-hero-bg);
+}
+
+:global(html[data-theme='dark']) .heroSection {
+  background: transparent;
 }
 
 .heroSection > * {
