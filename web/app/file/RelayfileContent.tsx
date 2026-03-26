@@ -16,10 +16,6 @@ const featureCards = [
     desc: 'Create, overwrite, append, and patch files safely from agents and tools.',
   },
   {
-    title: 'List Directory',
-    desc: 'Browse trees, inspect file types, and page through large directories efficiently.',
-  },
-  {
     title: 'Watch Changes',
     desc: 'Subscribe to file events and trigger follow-up work the moment something changes.',
   },
@@ -32,28 +28,8 @@ const featureCards = [
     desc: 'Coordinate concurrent writes with explicit locks and conflict-aware workflows.',
   },
   {
-    title: 'Versioning',
-    desc: 'Track revisions, restore prior states, and attach history to every important change.',
-  },
-  {
-    title: 'Metadata',
-    desc: 'Store tags, checksums, content type, ownership, and custom attributes alongside files.',
-  },
-  {
     title: 'Permissions',
     desc: 'Control which agents can read, write, watch, or administer each path.',
-  },
-  {
-    title: 'Webhooks',
-    desc: 'Emit structured events into your pipelines whenever files are written, moved, or deleted.',
-  },
-  {
-    title: 'SDK Support',
-    desc: 'Use the same primitives from TypeScript, Python, or raw HTTP without wrappers.',
-  },
-  {
-    title: 'MCP Server',
-    desc: 'Expose Relayfile as an MCP-native filesystem for editors, agents, and automation.',
   },
 ];
 

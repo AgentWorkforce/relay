@@ -26,36 +26,12 @@ const featureGroups = [
     description: 'Track every token use, scope decision, and admin action back to a responsible human.',
   },
   {
-    title: 'Identity Lifecycle',
-    description: 'Create, rotate, suspend, resume, and retire agents without losing ownership or traceability.',
-  },
-  {
     title: 'Token Revocation',
     description: 'Invalidate credentials globally in under a second with edge-aware revocation checks.',
   },
   {
     title: 'Budget Enforcement',
     description: 'Cap spend, rate, and risky actions before an agent runs away with production access.',
-  },
-  {
-    title: 'Webhook Events',
-    description: 'Push budget alerts, token issuance, revocation, and policy changes to your existing systems.',
-  },
-  {
-    title: 'SDK Middleware',
-    description: 'Protect HTTP routes with framework-agnostic auth checks in a few lines.',
-  },
-  {
-    title: 'Session Tracking',
-    description: 'Monitor active sessions, refresh chains, and agent presence across planes in real time.',
-  },
-  {
-    title: 'JWKS Endpoint',
-    description: 'Validate signatures anywhere with a standard public key endpoint and no callback dependency.',
-  },
-  {
-    title: 'MCP Server',
-    description: 'Expose identity-aware auth flows to agent tools without leaking long-lived secrets.',
   },
 ];
 

@@ -869,7 +869,7 @@
 
 .terminalBar {
   display: flex;
-  gap: 8px;
+  gap: 6px;
 }
 
 .dotRed,
@@ -877,7 +877,7 @@
 .dotGreen {
   width: 10px;
   height: 10px;
-  border-radius: 999px;
+  border-radius: 50%;
 }
 
 .dotRed {

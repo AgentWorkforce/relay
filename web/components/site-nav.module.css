@@ -212,3 +212,116 @@
   background: var(--nav-surface);
   opacity: 1;
 }
+
+/* ── Product dropdown (desktop hover) ── */
+
+.productDropdown {
+  position: relative;
+}
+
+.productDropdown .link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.chevron {
+  display: inline-block;
+  transition: transform 0.2s ease;
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+.productDropdown:hover .chevron {
+  transform: rotate(180deg);
+}
+
+.dropdownMenu {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding-top: 10px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.15s ease, visibility 0.15s ease;
+}
+
+.productDropdown:hover .dropdownMenu {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.dropdownItem {
+  display: block;
+  padding: 10px 24px;
+  font-family: var(--font-geist-sans), sans-serif;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: inherit;
+  text-decoration: none;
+  white-space: nowrap;
+  background: var(--nav-solid-bg);
+  border: 1px solid var(--nav-border);
+  border-top: none;
+  transition: background 0.15s, opacity 0.15s;
+  opacity: 0.85;
+}
+
+.dropdownMenu a:first-child {
+  border-top: 1px solid var(--nav-border);
+  border-radius: 8px 8px 0 0;
+}
+
+.dropdownMenu a:last-child {
+  border-radius: 0 0 8px 8px;
+}
+
+.dropdownItem:hover {
+  background: var(--nav-surface);
+  opacity: 1;
+}
+
+/* ── Mobile product toggle ── */
+
+.mobileProductToggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 1.0625rem;
+  font-weight: 500;
+  color: inherit;
+  text-decoration: none;
+  opacity: 0.85;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+  font-family: inherit;
+}
+
+.mobileProductToggle:hover {
+  background: var(--nav-surface);
+  opacity: 1;
+}
+
+.mobileProductItems {
+  padding-left: 16px;
+}
+
+.mobileProductItems .mobileLink {
+  font-size: 0.95rem;
+  opacity: 0.75;
+}
+
+.mobileProductItems .mobileLink:hover {
+  opacity: 1;
+}

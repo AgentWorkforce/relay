@@ -18,6 +18,8 @@
   background: transparent;
   transition: background 0.3s ease;
   overflow: hidden;
+  margin-top: -60px;
+  padding-top: 60px;
 }
 
 :global(html[data-theme='dark']) .page {
