@@ -1,94 +1,54 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import readline from 'node:readline';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { randomBytes } from 'node:crypto';
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
+import { CLI_AUTH_CONFIG } from '@agent-relay/config/cli-auth-config';
 
-import { formatTableRow } from '../lib/formatting.js';
 import {
-  createCloudApiClient,
-  type CloudApiClient,
-  type CloudAgent,
-} from '../lib/cloud-client.js';
+  ensureAuthenticated,
+  authorizedApiFetch,
+  readStoredAuth,
+  clearStoredAuth,
+  defaultApiUrl,
+  AUTH_FILE_PATH,
+  REFRESH_WINDOW_MS,
+  runWorkflow,
+  getRunStatus,
+  getRunLogs,
+  syncWorkflowPatch,
+  type WhoAmIResponse,
+  type AuthSessionResponse,
+  type WorkflowFileType,
+} from '@agent-relay/cloud';
+
+import { runInteractiveSession } from '../lib/ssh-interactive.js';
+
+// ── Types ────────────────────────────────────────────────────────────────────
 
 type ExitFn = (code: number) => never;
 
-interface CloudConfig {
-  apiKey: string;
-  cloudUrl: string;
-  machineId: string;
-  machineName: string;
-  linkedAt: string;
-}
-
-export type { CloudApiClient, CloudAgent };
-
 export interface CloudDependencies {
-  createApiClient: () => CloudApiClient;
-  getDataDir: () => string;
-  getHostname: () => string;
-  randomHex: (bytes: number) => string;
-  now: () => Date;
-  openExternal: (url: string) => Promise<void>;
-  prompt: (question: string) => Promise<string>;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
 }
 
-const DEFAULT_CLOUD_URL = process.env.AGENT_RELAY_CLOUD_URL || 'https://agent-relay.com';
-const execFileAsync = promisify(execFile);
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+const color = {
+  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
+  green: (s: string) => `\x1b[32m${s}\x1b[0m`,
+  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
+  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
+  dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
+};
 
 function defaultExit(code: number): never {
   process.exit(code);
 }
 
-async function defaultPrompt(question: string): Promise<string> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  return await new Promise<string>((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
-}
-
-async function defaultOpenExternal(url: string): Promise<void> {
-  if (process.platform === 'darwin') {
-    await execFileAsync('open', [url]);
-    return;
-  }
-
-  if (process.platform === 'win32') {
-    await execFileAsync('cmd', ['/c', 'start', '', url]);
-    return;
-  }
-
-  await execFileAsync('xdg-open', [url]);
-}
-
-function createDefaultApiClient(): CloudApiClient {
-  return createCloudApiClient();
-}
-
-function withDefaults(
-  overrides: Partial<CloudDependencies> = {}
-): CloudDependencies {
+function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependencies {
   return {
-    createApiClient: createDefaultApiClient,
-    getDataDir: () => process.env.AGENT_RELAY_DATA_DIR || path.join(os.homedir(), '.local', 'share', 'agent-relay'),
-    getHostname: () => os.hostname(),
-    randomHex: (bytes: number) => randomBytes(bytes).toString('hex'),
-    now: () => new Date(),
-    openExternal: defaultOpenExternal,
-    prompt: defaultPrompt,
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
@@ -96,41 +56,69 @@ function withDefaults(
   };
 }
 
-function readConfigFile(configPath: string): CloudConfig | undefined {
-  if (!fs.existsSync(configPath)) {
-    return undefined;
+const PROVIDER_ALIASES: Record<string, string> = {
+  claude: 'anthropic',
+  codex: 'openai',
+  gemini: 'google',
+};
+
+const PROVIDER_HELP_TEXT = Object.keys(CLI_AUTH_CONFIG)
+  .sort()
+  .map((id) => {
+    const alias = Object.entries(PROVIDER_ALIASES).find(([, target]) => target === id);
+    return alias ? `${id} (alias: ${alias[0]})` : id;
+  })
+  .join(', ');
+
+function normalizeProvider(providerArg: string): string {
+  const providerInput = providerArg.toLowerCase().trim();
+  return PROVIDER_ALIASES[providerInput] || providerInput;
+}
+
+function parsePositiveInteger(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new InvalidArgumentError('Expected a positive integer.');
   }
-
-  const raw = fs.readFileSync(configPath, 'utf-8');
-  return JSON.parse(raw) as CloudConfig;
+  return parsed;
 }
 
-function stripApiSuffix(cloudUrl: string): string {
-  return cloudUrl.replace(/\/api\/?$/, '');
-}
-
-function getPaths(dataDir: string): {
-  machineIdPath: string;
-  configPath: string;
-  tempCodePath: string;
-  credentialsPath: string;
-} {
-  return {
-    machineIdPath: path.join(dataDir, 'machine-id'),
-    configPath: path.join(dataDir, 'cloud-config.json'),
-    tempCodePath: path.join(dataDir, '.link-code'),
-    credentialsPath: path.join(dataDir, 'cloud-credentials.json'),
-  };
-}
-
-function ensureLinked(configPath: string, deps: CloudDependencies): CloudConfig {
-  const config = readConfigFile(configPath);
-  if (!config) {
-    deps.error('Not linked to cloud. Run `agent-relay cloud link` first.');
-    deps.exit(1);
+function parseNonNegativeInteger(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new InvalidArgumentError('Expected a non-negative integer.');
   }
-  return config;
+  return parsed;
 }
+
+function parseWorkflowFileType(value: string): WorkflowFileType {
+  if (value === 'yaml' || value === 'ts' || value === 'py') {
+    return value;
+  }
+  throw new InvalidArgumentError('Expected workflow type to be one of: yaml, ts, py');
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getErrorDetails(response: Response): Promise<string> {
+  let body: string;
+  try {
+    body = await response.text();
+  } catch {
+    return response.statusText;
+  }
+  if (!body) return response.statusText;
+  try {
+    const json = JSON.parse(body) as { error?: string; message?: string };
+    return json.error || json.message || response.statusText;
+  } catch {
+    return body;
+  }
+}
+
+// ── Command registration ─────────────────────────────────────────────────────
 
 export function registerCloudCommands(
   program: Command,
@@ -140,353 +128,388 @@ export function registerCloudCommands(
 
   const cloudCommand = program
     .command('cloud')
-    .description('Cloud account and sync commands')
-    .addHelpText(
-      'afterAll',
-      '\nBREAKING CHANGE: daemon compatibility was removed. Cloud integrations must use /api/brokers/* and brokerId/brokerName.'
-    );
+    .description('Cloud account, provider auth, and workflow commands');
+
+  // ── login ──────────────────────────────────────────────────────────────────
 
   cloudCommand
-    .command('link')
-    .description('Link this machine to your Agent Relay Cloud account')
-    .option('--name <name>', 'Name for this machine')
-    .option('--cloud-url <url>', 'Cloud API URL', DEFAULT_CLOUD_URL)
-    .action(async (options: { name?: string; cloudUrl: string }) => {
-      const cloudUrl = options.cloudUrl;
-      const machineName = options.name || deps.getHostname();
-      const dataDir = deps.getDataDir();
-      const { machineIdPath, configPath, tempCodePath } = getPaths(dataDir);
+    .command('login')
+    .description('Authenticate with Agent Relay Cloud via browser')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--force', 'Force re-authentication even if already logged in')
+    .action(async (options: { apiUrl?: string; force?: boolean }) => {
+      const apiUrl = options.apiUrl || defaultApiUrl();
 
-      let machineId: string;
-      if (fs.existsSync(machineIdPath)) {
-        machineId = fs.readFileSync(machineIdPath, 'utf-8').trim();
-      } else {
-        machineId = `${deps.getHostname()}-${deps.randomHex(8)}`;
-        fs.mkdirSync(dataDir, { recursive: true });
-        fs.writeFileSync(machineIdPath, machineId);
-      }
-
-      deps.log('');
-      deps.log('Agent Relay Cloud - Link Machine');
-      deps.log('');
-      deps.log(`Machine: ${machineName}`);
-      deps.log(`ID: ${machineId}`);
-      deps.log('');
-
-      const tempCode = deps.randomHex(16);
-      fs.writeFileSync(tempCodePath, tempCode);
-
-      const authUrl =
-        `${stripApiSuffix(cloudUrl)}/cloud/link?code=${tempCode}` +
-        `&machine=${encodeURIComponent(machineId)}&name=${encodeURIComponent(machineName)}`;
-
-      deps.log('Open this URL in your browser to authenticate:');
-      deps.log('');
-      deps.log(`  ${authUrl}`);
-      deps.log('');
-
-      try {
-        await deps.openExternal(authUrl);
-        deps.log('(Browser opened automatically)');
-      } catch {
-        deps.log('(Copy the URL above and paste it in your browser)');
-      }
-
-      deps.log('');
-      deps.log('After authenticating, paste your API key here:');
-
-      const apiKey = (await deps.prompt('API Key: ')).trim();
-      if (!apiKey || !apiKey.startsWith('ar_live_')) {
-        deps.error('');
-        deps.error('Invalid API key format. Expected ar_live_...');
-        deps.exit(1);
-      }
-
-      deps.log('');
-      deps.log('Verifying API key...');
-
-      try {
-        const client = deps.createApiClient();
-        await client.verifyApiKey({ cloudUrl, apiKey });
-
-        const config: CloudConfig = {
-          apiKey,
-          cloudUrl,
-          machineId,
-          machineName,
-          linkedAt: deps.now().toISOString(),
-        };
-
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-        fs.chmodSync(configPath, 0o600);
-
-        if (fs.existsSync(tempCodePath)) {
-          fs.unlinkSync(tempCodePath);
+      if (!options.force) {
+        const existing = await readStoredAuth();
+        if (existing && existing.apiUrl === apiUrl) {
+          const expiresAt = Date.parse(existing.accessTokenExpiresAt);
+          if (!Number.isNaN(expiresAt) && expiresAt - Date.now() > REFRESH_WINDOW_MS) {
+            deps.log(`Already logged in to ${existing.apiUrl}`);
+            return;
+          }
         }
-
-        deps.log('');
-        deps.log('Machine linked successfully!');
-        deps.log('');
-        deps.log('Your broker will now sync with Agent Relay Cloud.');
-        deps.log('Run `agent-relay up` to start with cloud sync enabled.');
-        deps.log('');
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        deps.error(`Failed to connect to cloud: ${message}`);
-        deps.exit(1);
       }
+
+      await ensureAuthenticated(apiUrl, { force: options.force });
     });
 
-  cloudCommand
-    .command('unlink')
-    .description('Unlink this machine from Agent Relay Cloud')
-    .action(async () => {
-      const dataDir = deps.getDataDir();
-      const { configPath } = getPaths(dataDir);
+  // ── logout ─────────────────────────────────────────────────────────────────
 
-      if (!fs.existsSync(configPath)) {
-        deps.log('This machine is not linked to Agent Relay Cloud.');
+  cloudCommand
+    .command('logout')
+    .description('Clear stored cloud credentials')
+    .action(async () => {
+      const auth = await readStoredAuth();
+      if (!auth) {
+        deps.log('Not logged in.');
         return;
       }
 
-      const config = readConfigFile(configPath);
-      fs.unlinkSync(configPath);
+      try {
+        const revokeUrl = new URL(
+          'api/v1/auth/token/revoke',
+          auth.apiUrl.endsWith('/') ? auth.apiUrl : `${auth.apiUrl}/`
+        );
+        await fetch(revokeUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ token: auth.refreshToken }),
+        });
+      } catch {
+        // best-effort revoke
+      }
 
-      deps.log('');
-      deps.log('Machine unlinked from Agent Relay Cloud');
-      deps.log('');
-      deps.log(`Machine ID: ${config?.machineId || 'unknown'}`);
-      deps.log(`Was linked since: ${config?.linkedAt || 'unknown'}`);
-      deps.log('');
-      deps.log('Note: The API key has been removed locally. To fully revoke access,');
-      deps.log('visit your Agent Relay Cloud dashboard and remove this machine.');
-      deps.log('');
+      await clearStoredAuth();
+      deps.log('Logged out.');
     });
+
+  // ── whoami ─────────────────────────────────────────────────────────────────
+
+  cloudCommand
+    .command('whoami')
+    .description('Show current authentication status')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .action(async (options: { apiUrl?: string }) => {
+      const apiUrl = options.apiUrl || defaultApiUrl();
+      const auth = await ensureAuthenticated(apiUrl);
+      const { response } = await authorizedApiFetch(auth, '/api/v1/auth/whoami', {
+        method: 'GET',
+      });
+
+      const payload = (await response.json().catch(() => null)) as
+        | (WhoAmIResponse & { error?: string })
+        | null;
+
+      if (!response.ok || !payload?.authenticated) {
+        throw new Error(payload?.error || 'Failed to resolve auth status');
+      }
+
+      deps.log(`API URL: ${auth.apiUrl}`);
+      deps.log(`Auth source: ${payload.source}`);
+      deps.log(`Subject type: ${payload.subjectType ?? 'session'}`);
+      deps.log(`User: ${payload.user.name || '(no name)'}${payload.user.email ? ` <${payload.user.email}>` : ''}`);
+      deps.log(`Organization: ${payload.currentOrganization.name}`);
+      deps.log(`Workspace: ${payload.currentWorkspace.name}`);
+      deps.log(`Scopes: ${payload.scopes.length > 0 ? payload.scopes.join(', ') : '(none)'}`);
+      deps.log(`Token file: ${AUTH_FILE_PATH}`);
+    });
+
+  // ── connect ────────────────────────────────────────────────────────────────
+
+  cloudCommand
+    .command('connect')
+    .description('Connect a provider via interactive SSH session')
+    .argument('<provider>', `Provider to connect (${PROVIDER_HELP_TEXT})`)
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--language <language>', 'Sandbox language/image', 'typescript')
+    .option('--timeout <seconds>', 'Connection timeout in seconds', parsePositiveInteger, 300)
+    .action(async (providerArg: string, options: { apiUrl?: string; language: string; timeout: number }) => {
+      const timeoutMs = options.timeout * 1000;
+
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        throw new Error('This command requires an interactive terminal (TTY).');
+      }
+
+      const provider = normalizeProvider(providerArg);
+      const providerConfig = CLI_AUTH_CONFIG[provider];
+      if (!providerConfig) {
+        const known = Object.keys(CLI_AUTH_CONFIG).sort();
+        throw new Error(`Unknown provider: ${providerArg}. Supported providers: ${known.join(', ')}`);
+      }
+
+      const apiUrl = options.apiUrl || defaultApiUrl();
+
+      const io = {
+        log: deps.log,
+        error: deps.error,
+      };
+
+      io.log('');
+      io.log(color.cyan('═══════════════════════════════════════════════════'));
+      io.log(color.cyan('      Provider Authentication (Daytona Connect)'));
+      io.log(color.cyan('═══════════════════════════════════════════════════'));
+      io.log('');
+      io.log(`Provider: ${providerConfig.displayName} (${provider})`);
+      io.log(`Language: ${color.dim(options.language)}`);
+      io.log(color.dim(`Cloud: ${apiUrl}`));
+      io.log('');
+      io.log('Requesting sandbox from cloud...');
+
+      let auth = await ensureAuthenticated(apiUrl);
+
+      const { response: createResponse, auth: refreshedAuth } = await authorizedApiFetch(
+        auth,
+        '/api/v1/cli/auth',
+        {
+          method: 'POST',
+          body: JSON.stringify({ provider, language: options.language }),
+        }
+      );
+      auth = refreshedAuth;
+
+      const start = (await createResponse.json().catch(() => null)) as
+        | (AuthSessionResponse & { error?: string; message?: string })
+        | null;
+
+      if (!createResponse.ok || !start?.sessionId) {
+        const detail = start?.error || start?.message || `${createResponse.status} ${createResponse.statusText}`;
+        throw new Error(detail);
+      }
+
+      const sshPort = typeof start.ssh?.port === 'string'
+        ? Number.parseInt(start.ssh.port as unknown as string, 10)
+        : start.ssh?.port;
+      if (!start.ssh?.host || !sshPort || !start.ssh.user || !start.ssh.password) {
+        throw new Error('Cloud returned invalid SSH session details.');
+      }
+
+      io.log(color.green('✓ Sandbox ready'));
+      io.log(color.dim(`  SSH: ${start.ssh.user}@${start.ssh.host}:${sshPort}`));
+      io.log('');
+      io.log(color.yellow('Connecting via SSH...'));
+      io.log(color.dim(`  Running: ${start.remoteCommand}`));
+      io.log('');
+
+      let sessionResult;
+      try {
+        sessionResult = await runInteractiveSession({
+          ssh: {
+            host: start.ssh.host,
+            port: sshPort,
+            user: start.ssh.user,
+            password: start.ssh.password,
+          },
+          remoteCommand: start.remoteCommand,
+          successPatterns: providerConfig.successPatterns || [],
+          errorPatterns: providerConfig.errorPatterns || [],
+          timeoutMs,
+          io,
+        });
+      } catch (error) {
+        throw new Error(`Failed to connect via SSH: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      io.log('');
+      const success = sessionResult.authDetected;
+
+      io.log('Finalizing authentication with cloud...');
+      const { response: completeResponse } = await authorizedApiFetch(
+        auth,
+        '/api/v1/cli/auth/complete',
+        {
+          method: 'POST',
+          body: JSON.stringify({ sessionId: start.sessionId, success }),
+        }
+      );
+
+      if (!completeResponse.ok) {
+        throw new Error(await getErrorDetails(completeResponse));
+      }
+
+      if (!success) {
+        const exitCode = sessionResult.exitCode;
+        if (typeof exitCode === 'number' && exitCode !== 0) {
+          io.error(color.red(`Remote auth command exited with code ${exitCode}.`));
+        }
+        if (sessionResult.exitCode === 127) {
+          io.log(color.yellow(`The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on the sandbox.`));
+          io.log(color.dim('Check the sandbox snapshot includes the required CLI tools.'));
+        }
+        throw new Error(`Provider auth for ${provider} did not complete successfully`);
+      }
+
+      io.log('');
+      io.log(color.green('═══════════════════════════════════════════════════'));
+      io.log(color.green('          Authentication Complete!'));
+      io.log(color.green('═══════════════════════════════════════════════════'));
+      io.log('');
+      io.log(`${providerConfig.displayName} credentials are now stored and encrypted.`);
+      io.log(color.dim('Your workflows will automatically use these credentials.'));
+      io.log('');
+    });
+
+  // ── run ────────────────────────────────────────────────────────────────────
+
+  cloudCommand
+    .command('run')
+    .description('Submit a workflow run')
+    .argument('<workflow>', 'Workflow file path or inline workflow content')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
+    .option('--sync-code', 'Upload the current working directory before running')
+    .option('--no-sync-code', 'Skip uploading the current working directory')
+    .option('--json', 'Print raw JSON response', false)
+    .action(async (
+      workflow: string,
+      options: { apiUrl?: string; fileType?: WorkflowFileType; syncCode?: boolean; json?: boolean },
+    ) => {
+      const result = await runWorkflow(workflow, options);
+      if (options.json) {
+        deps.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      deps.log(`Run created: ${result.runId}`);
+      if (typeof result.sandboxId === 'string') {
+        deps.log(`Sandbox: ${result.sandboxId}`);
+      }
+      deps.log(`Status: ${result.status}`);
+      deps.log(`\nView logs:  agent-relay cloud logs ${result.runId} --follow`);
+      deps.log(`Sync code:  agent-relay cloud sync ${result.runId}`);
+    });
+
+  // ── status ─────────────────────────────────────────────────────────────────
 
   cloudCommand
     .command('status')
-    .description('Show cloud sync status')
-    .action(async () => {
-      const dataDir = deps.getDataDir();
-      const { configPath } = getPaths(dataDir);
-      const config = readConfigFile(configPath);
-
-      if (!config) {
-        deps.log('');
-        deps.log('Cloud sync: Not configured');
-        deps.log('');
-        deps.log('Run `agent-relay cloud link` to connect to Agent Relay Cloud.');
-        deps.log('');
+    .description('Fetch workflow run status')
+    .argument('<runId>', 'Workflow run id')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--json', 'Print raw JSON response', false)
+    .action(async (runId: string, options: { apiUrl?: string; json?: boolean }) => {
+      const result = await getRunStatus(runId, options);
+      if (options.json) {
+        deps.log(JSON.stringify(result, null, 2));
         return;
       }
 
-      deps.log('');
-      deps.log('Cloud sync: Enabled');
-      deps.log('');
-      deps.log(`  Machine: ${config.machineName}`);
-      deps.log(`  ID: ${config.machineId}`);
-      deps.log(`  Cloud URL: ${config.cloudUrl}`);
-      deps.log(`  Linked: ${new Date(config.linkedAt).toLocaleString()}`);
-      deps.log('');
-
-      try {
-        const client = deps.createApiClient();
-        const online = await client.checkConnection({
-          cloudUrl: config.cloudUrl,
-          apiKey: config.apiKey,
-        });
-        deps.log(`  Cloud connection: ${online ? 'Online' : 'Error (API key may be invalid)'}`);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        deps.log(`  Cloud connection: Offline (${message})`);
+      deps.log(`Run: ${result.runId ?? runId}`);
+      deps.log(`Status: ${result.status ?? 'unknown'}`);
+      if (typeof result.sandboxId === 'string') {
+        deps.log(`Sandbox: ${result.sandboxId}`);
       }
-
-      deps.log('');
+      if (typeof result.updatedAt === 'string') {
+        deps.log(`Updated: ${result.updatedAt}`);
+      }
     });
+
+  // ── logs ───────────────────────────────────────────────────────────────────
+
+  cloudCommand
+    .command('logs')
+    .description('Read workflow run logs')
+    .argument('<runId>', 'Workflow run id')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--follow', 'Poll until the run is done', false)
+    .option('--poll-interval <seconds>', 'Polling interval while following', parsePositiveInteger, 2)
+    .option('--offset <bytes>', 'Start reading logs from a byte offset', parseNonNegativeInteger, 0)
+    .option('--agent <name>', 'Read logs for a specific agent')
+    .option('--sandbox-id <sandboxId>', 'Read logs for a specific step sandbox')
+    .option('--json', 'Print raw JSON responses', false)
+    .action(async (
+      runId: string,
+      options: {
+        apiUrl?: string;
+        follow?: boolean;
+        pollInterval?: number;
+        offset?: number;
+        agent?: string;
+        sandboxId?: string;
+        json?: boolean;
+      },
+    ) => {
+      let offset = options.offset ?? 0;
+      const sandboxId = options.agent ?? options.sandboxId;
+
+      while (true) {
+        const result = await getRunLogs(runId, {
+          apiUrl: options.apiUrl,
+          offset,
+          sandboxId,
+        });
+
+        if (options.json) {
+          deps.log(JSON.stringify(result, null, 2));
+        } else if (result.content) {
+          process.stdout.write(result.content);
+        }
+
+        offset = result.offset;
+        if (!options.follow || result.done) {
+          break;
+        }
+
+        await sleep((options.pollInterval ?? 2) * 1000);
+      }
+    });
+
+  // ── sync ───────────────────────────────────────────────────────────────────
 
   cloudCommand
     .command('sync')
-    .description('Manually sync credentials from cloud')
-    .action(async () => {
-      const dataDir = deps.getDataDir();
-      const { configPath, credentialsPath } = getPaths(dataDir);
-      const config = ensureLinked(configPath, deps);
+    .description('Download and apply code changes from a completed workflow run')
+    .argument('<runId>', 'Workflow run id')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--dir <path>', 'Local directory to apply the patch to', '.')
+    .option('--dry-run', 'Download and display the patch without applying', false)
+    .action(async (
+      runId: string,
+      options: { apiUrl?: string; dir?: string; dryRun?: boolean },
+    ) => {
+      const targetDir = path.resolve(options.dir ?? '.');
+      deps.log(`Fetching patch for run ${runId}...`);
 
-      deps.log('Syncing credentials from cloud...');
+      const result = await syncWorkflowPatch(runId, { apiUrl: options.apiUrl });
 
-      try {
-        const client = deps.createApiClient();
-        const credentials = await client.syncCredentials({
-          cloudUrl: config.cloudUrl,
-          apiKey: config.apiKey,
-        });
-
-        deps.log('');
-        deps.log(`Synced ${credentials.length} provider credentials:`);
-        for (const credential of credentials) {
-          deps.log(`  - ${credential.provider}`);
-        }
-
-        fs.writeFileSync(credentialsPath, JSON.stringify(credentials, null, 2));
-        fs.chmodSync(credentialsPath, 0o600);
-
-        deps.log('');
-        deps.log('Credentials synced successfully');
-        deps.log('');
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        deps.error(`Failed to sync: ${message}`);
-        deps.exit(1);
+      if (!result.hasChanges) {
+        deps.log('No changes to sync — the workflow did not modify any files.');
+        return;
       }
-    });
 
-  cloudCommand
-    .command('agents')
-    .description('List agents across all linked machines')
-    .option('--json', 'Output as JSON')
-    .action(async (options: { json?: boolean }) => {
-      const dataDir = deps.getDataDir();
-      const { configPath } = getPaths(dataDir);
-      const config = ensureLinked(configPath, deps);
-
-      try {
-        const client = deps.createApiClient();
-        const agents = await client.listAgents({
-          cloudUrl: config.cloudUrl,
-          apiKey: config.apiKey,
-        });
-
-        if (options.json) {
-          deps.log(JSON.stringify(agents, null, 2));
-          return;
-        }
-
-        if (!agents.length) {
-          deps.log('No agents found across linked machines.');
-          deps.log('Make sure brokers are running on linked machines.');
-          return;
-        }
-
-        deps.log('');
-        deps.log('Agents across all linked machines:');
-        deps.log('');
-        deps.log('NAME            STATUS   BROKER              MACHINE');
-        deps.log('─'.repeat(65));
-
-        const byBroker = new Map<string, CloudAgent[]>();
-        for (const agent of agents) {
-          const current = byBroker.get(agent.brokerName) || [];
-          current.push(agent);
-          byBroker.set(agent.brokerName, current);
-        }
-
-        for (const [brokerName, brokerAgents] of byBroker.entries()) {
-          for (const agent of brokerAgents) {
-            const machine = (agent.machineId || '').substring(0, 20);
-            deps.log(
-              formatTableRow([
-                { value: agent.name, width: 15 },
-                { value: agent.status, width: 8 },
-                { value: brokerName, width: 18 },
-                { value: machine },
-              ])
-            );
-          }
-        }
-
-        deps.log('');
-        deps.log(`Total: ${agents.length} agents on ${byBroker.size} machines`);
-        deps.log('');
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        deps.error(`Failed to fetch agents: ${message}`);
-        deps.exit(1);
+      if (options.dryRun) {
+        deps.log('\n--- Patch (dry run) ---');
+        process.stdout.write(result.patch);
+        deps.log('\n--- End patch ---');
+        return;
       }
-    });
 
-  cloudCommand
-    .command('send')
-    .description('Send a message to an agent on any linked machine')
-    .argument('<agent>', 'Target agent name')
-    .argument('<message>', 'Message to send')
-    .option('--from <name>', 'Sender name', '__cli_sender__')
-    .action(async (agent: string, message: string, options: { from: string }) => {
-      const dataDir = deps.getDataDir();
-      const { configPath } = getPaths(dataDir);
-      const config = ensureLinked(configPath, deps);
-
-      deps.log(`Sending message to ${agent}...`);
+      const { execSync } = await import('node:child_process');
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-sync-'));
+      const tmpPatch = path.join(tmpDir, 'changes.patch');
+      fs.writeFileSync(tmpPatch, result.patch, { mode: 0o600 });
 
       try {
-        const client = deps.createApiClient();
-        const allAgents = await client.listAgents({
-          cloudUrl: config.cloudUrl,
-          apiKey: config.apiKey,
+        const stat = execSync(`git apply --stat "${tmpPatch}"`, {
+          cwd: targetDir,
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
         });
-
-        const targetAgent = allAgents.find((candidate) => candidate.name === agent);
-        if (!targetAgent) {
-          deps.error(`Agent "${agent}" not found.`);
-          deps.log('Available agents:');
-          for (const availableAgent of allAgents) {
-            deps.log(`  - ${availableAgent.name} (on ${availableAgent.brokerName})`);
-          }
-          deps.exit(1);
-          return;
+        if (stat.trim()) {
+          deps.log('\nFiles changed by agent:');
+          deps.log(stat);
         }
 
-        await client.sendMessage({
-          cloudUrl: config.cloudUrl,
-          apiKey: config.apiKey,
-          targetBrokerId: targetAgent.brokerId,
-          targetAgent: agent,
-          from: options.from,
-          content: message,
+        execSync(`git apply "${tmpPatch}"`, {
+          cwd: targetDir,
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
         });
-
-        deps.log('');
-        deps.log(`Message sent to ${agent} on ${targetAgent.brokerName}`);
-        deps.log('');
-      } catch (err) {
-        const messageText = err instanceof Error ? err.message : String(err);
-        deps.error(`Failed to send message: ${messageText}`);
-        deps.exit(1);
-      }
-    });
-
-  cloudCommand
-    .command('brokers')
-    .description('List all linked broker instances')
-    .option('--json', 'Output as JSON')
-    .action(async (options: { json?: boolean }) => {
-      const dataDir = deps.getDataDir();
-      const { configPath } = getPaths(dataDir);
-      const config = ensureLinked(configPath, deps);
-
-      try {
-        if (options.json) {
-          deps.log(JSON.stringify([{
-            machineName: config.machineName,
-            machineId: config.machineId,
-            cloudUrl: config.cloudUrl,
-            linkedAt: config.linkedAt,
-          }], null, 2));
-          return;
-        }
-
-        deps.log('');
-        deps.log('Linked Broker:');
-        deps.log('');
-        deps.log(`  Machine: ${config.machineName}`);
-        deps.log(`  ID: ${config.machineId}`);
-        deps.log(`  Cloud: ${config.cloudUrl}`);
-        deps.log(`  Linked: ${new Date(config.linkedAt).toLocaleString()}`);
-        deps.log('');
-        deps.log('Note: To see all linked brokers, visit your cloud dashboard.');
-        deps.log('');
-      } catch (err) {
+        deps.log('Patch applied successfully.');
+      } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        deps.error(`Failed: ${message}`);
+        deps.error(`Failed to apply patch: ${message}`);
+        deps.error(`Patch saved to: ${tmpPatch}`);
         deps.exit(1);
       }
     });

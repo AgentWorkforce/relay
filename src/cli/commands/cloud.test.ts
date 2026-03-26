@@ -1,117 +1,24 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { Command } from 'commander';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import {
-  registerCloudCommands,
-  type CloudApiClient,
-  type CloudDependencies,
-} from './cloud.js';
+import { registerCloudCommands, type CloudDependencies } from './cloud.js';
 
-class ExitSignal extends Error {
-  constructor(public readonly code: number) {
-    super(`exit:${code}`);
-  }
-}
-
-function createApiClientMock(overrides: Partial<CloudApiClient> = {}): CloudApiClient {
-  return {
-    verifyApiKey: vi.fn(async () => undefined),
-    checkConnection: vi.fn(async () => true),
-    syncCredentials: vi.fn(async () => []),
-    listAgents: vi.fn(async () => []),
-    sendMessage: vi.fn(async () => undefined),
-    ...overrides,
-  };
-}
-
-const createdTempDirs: string[] = [];
-
-afterEach(() => {
-  for (const dir of createdTempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-function createHarness(options?: {
-  apiClient?: CloudApiClient;
-  promptResponse?: string;
-  hostname?: string;
-  randomHexValues?: string[];
-  now?: Date;
-  dataDir?: string;
-}) {
-  const apiClient = options?.apiClient ?? createApiClientMock();
-  const dataDir = options?.dataDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-command-test-'));
-
-  if (!options?.dataDir) {
-    createdTempDirs.push(dataDir);
-  }
-
-  const hexValues = [...(options?.randomHexValues ?? ['machinehex00112233', 'tempauthccddeeff'])];
-
+function createHarness() {
   const exit = vi.fn((code: number) => {
-    throw new ExitSignal(code);
+    throw new Error(`exit:${code}`);
   }) as unknown as CloudDependencies['exit'];
 
   const deps: CloudDependencies = {
-    createApiClient: vi.fn(() => apiClient),
-    getDataDir: vi.fn(() => dataDir),
-    getHostname: vi.fn(() => options?.hostname ?? 'devbox'),
-    randomHex: vi.fn((_bytes: number) => hexValues.shift() ?? 'fallbackhex'),
-    now: vi.fn(() => options?.now ?? new Date('2026-02-20T12:00:00.000Z')),
-    openExternal: vi.fn(async () => undefined),
-    prompt: vi.fn(async () => options?.promptResponse ?? 'ar_live_test_key'),
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     exit,
   };
 
   const program = new Command();
+  program.exitOverride();
   registerCloudCommands(program, deps);
 
-  return { program, deps, apiClient, dataDir };
-}
-
-async function runCommand(program: Command, args: string[]): Promise<number | undefined> {
-  try {
-    await program.parseAsync(args, { from: 'user' });
-    return undefined;
-  } catch (err) {
-    if (err instanceof ExitSignal) {
-      return err.code;
-    }
-    throw err;
-  }
-}
-
-function writeCloudConfig(
-  dataDir: string,
-  overrides: Partial<{
-    apiKey: string;
-    cloudUrl: string;
-    machineId: string;
-    machineName: string;
-    linkedAt: string;
-  }> = {}
-): void {
-  fs.mkdirSync(dataDir, { recursive: true });
-  const config = {
-    apiKey: 'ar_live_key',
-    cloudUrl: 'https://cloud.example.com',
-    machineId: 'machine-1',
-    machineName: 'Local Dev',
-    linkedAt: '2026-02-18T10:00:00.000Z',
-    ...overrides,
-  };
-  fs.writeFileSync(path.join(dataDir, 'cloud-config.json'), JSON.stringify(config, null, 2));
-}
-
-function getOutput(mockFn: unknown): string {
-  const calls = (mockFn as { mock: { calls: unknown[][] } }).mock.calls;
-  return calls.map((call) => call.map((value) => String(value)).join(' ')).join('\n');
+  return { program, deps };
 }
 
 describe('registerCloudCommands', () => {
@@ -120,177 +27,69 @@ describe('registerCloudCommands', () => {
     const cloud = program.commands.find((command) => command.name() === 'cloud');
 
     expect(cloud).toBeDefined();
-    expect(cloud?.commands.map((command) => command.name())).toEqual(
-      expect.arrayContaining(['link', 'unlink', 'status', 'sync', 'agents', 'send', 'brokers'])
-    );
-  });
-
-  it('cloud link prompts for API key and connects to cloud account', async () => {
-    const apiClient = createApiClientMock();
-    const { program, deps, dataDir } = createHarness({
-      apiClient,
-      promptResponse: 'ar_live_linked_key',
-      hostname: 'local-host',
-      randomHexValues: ['a1b2c3d4e5f60708', 'deadbeefcafefeed'],
-      now: new Date('2026-02-20T16:30:00.000Z'),
-    });
-
-    const exitCode = await runCommand(program, [
-      'cloud',
-      'link',
-      '--name',
-      'Workstation',
-      '--cloud-url',
-      'https://cloud.example.com/api',
+    expect(cloud?.commands.map((command) => command.name())).toEqual([
+      'login',
+      'logout',
+      'whoami',
+      'connect',
+      'run',
+      'status',
+      'logs',
+      'sync',
     ]);
-
-    expect(exitCode).toBeUndefined();
-    expect(deps.prompt).toHaveBeenCalledWith('API Key: ');
-    expect(apiClient.verifyApiKey).toHaveBeenCalledWith({
-      cloudUrl: 'https://cloud.example.com/api',
-      apiKey: 'ar_live_linked_key',
-    });
-    expect(deps.openExternal).toHaveBeenCalledTimes(1);
-
-    const machineIdPath = path.join(dataDir, 'machine-id');
-    const configPath = path.join(dataDir, 'cloud-config.json');
-
-    expect(fs.existsSync(machineIdPath)).toBe(true);
-    expect(fs.existsSync(configPath)).toBe(true);
-
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
-      apiKey: string;
-      cloudUrl: string;
-      machineName: string;
-      linkedAt: string;
-    };
-
-    expect(config).toMatchObject({
-      apiKey: 'ar_live_linked_key',
-      cloudUrl: 'https://cloud.example.com/api',
-      machineName: 'Workstation',
-      linkedAt: '2026-02-20T16:30:00.000Z',
-    });
-    expect(fs.existsSync(path.join(dataDir, '.link-code'))).toBe(false);
   });
 
-  it('cloud status shows sync status', async () => {
-    const apiClient = createApiClientMock({
-      checkConnection: vi.fn(async () => true),
-    });
-    const { program, deps, dataDir } = createHarness({ apiClient });
+  it('connect requires a provider argument', () => {
+    const { program } = createHarness();
+    const cloud = program.commands.find((command) => command.name() === 'cloud');
+    const connect = cloud?.commands.find((command) => command.name() === 'connect');
 
-    writeCloudConfig(dataDir, {
-      apiKey: 'ar_live_status_key',
-      machineName: 'Laptop',
-      machineId: 'machine-status',
-    });
-
-    const exitCode = await runCommand(program, ['cloud', 'status']);
-
-    expect(exitCode).toBeUndefined();
-    expect(apiClient.checkConnection).toHaveBeenCalledWith({
-      cloudUrl: 'https://cloud.example.com',
-      apiKey: 'ar_live_status_key',
-    });
-
-    const output = getOutput(deps.log);
-    expect(output).toContain('Cloud sync: Enabled');
-    expect(output).toContain('Cloud connection: Online');
+    expect(connect).toBeDefined();
+    expect(connect?.description()).toContain('interactive SSH session');
+    expect(connect?.registeredArguments[0]?.argChoices).toBeUndefined();
+    expect(connect?.registeredArguments[0]?.description).toContain('anthropic (alias: claude)');
+    expect(connect?.registeredArguments[0]?.description).toContain('openai (alias: codex)');
+    expect(connect?.registeredArguments[0]?.description).toContain('google (alias: gemini)');
   });
 
-  it('cloud agents lists agents across machines', async () => {
-    const apiClient = createApiClientMock({
-      listAgents: vi.fn(async () => [
-        {
-          name: 'Planner',
-          status: 'online',
-          brokerId: 'broker-1',
-          brokerName: 'MacBook-Pro',
-          machineId: 'machine-alpha',
-        },
-        {
-          name: 'Reviewer',
-          status: 'idle',
-          brokerId: 'broker-2',
-          brokerName: 'Desktop-Linux',
-          machineId: 'machine-beta',
-        },
-      ]),
-    });
-    const { program, deps, dataDir } = createHarness({ apiClient });
+  it('run requires a workflow argument', () => {
+    const { program } = createHarness();
+    const cloud = program.commands.find((command) => command.name() === 'cloud');
+    const run = cloud?.commands.find((command) => command.name() === 'run');
 
-    writeCloudConfig(dataDir);
-
-    const exitCode = await runCommand(program, ['cloud', 'agents']);
-
-    expect(exitCode).toBeUndefined();
-    expect(apiClient.listAgents).toHaveBeenCalledWith({
-      cloudUrl: 'https://cloud.example.com',
-      apiKey: 'ar_live_key',
-    });
-
-    const output = getOutput(deps.log);
-    expect(output).toContain('Agents across all linked machines');
-    expect(output).toContain('Planner');
-    expect(output).toContain('Reviewer');
-    expect(output).toContain('Total: 2 agents on 2 machines');
+    expect(run).toBeDefined();
+    expect(run?.description()).toContain('workflow run');
   });
 
-  it('cloud send routes a message to a remote agent', async () => {
-    const apiClient = createApiClientMock({
-      listAgents: vi.fn(async () => [
-        {
-          name: 'Planner',
-          status: 'online',
-          brokerId: 'broker-9',
-          brokerName: 'Remote-Machine',
-          machineId: 'machine-zeta',
-        },
-      ]),
-      sendMessage: vi.fn(async () => undefined),
-    });
-    const { program, apiClient: client, dataDir } = createHarness({ apiClient });
+  it('status requires a runId argument', () => {
+    const { program } = createHarness();
+    const cloud = program.commands.find((command) => command.name() === 'cloud');
+    const status = cloud?.commands.find((command) => command.name() === 'status');
 
-    writeCloudConfig(dataDir);
-
-    const exitCode = await runCommand(program, ['cloud', 'send', 'Planner', 'Ship it', '--from', 'local-cli']);
-
-    expect(exitCode).toBeUndefined();
-    expect(client.sendMessage).toHaveBeenCalledWith({
-      cloudUrl: 'https://cloud.example.com',
-      apiKey: 'ar_live_key',
-      targetBrokerId: 'broker-9',
-      targetAgent: 'Planner',
-      from: 'local-cli',
-      content: 'Ship it',
-    });
+    expect(status).toBeDefined();
+    expect(status?.description()).toContain('workflow run status');
+    const optionNames = status?.options.map((option) => option.long);
+    expect(optionNames).toContain('--json');
   });
 
-  it('fails when cloud commands are used before linking', async () => {
-    const apiClient = createApiClientMock();
-    const { program, deps } = createHarness({ apiClient });
+  it('logs has --follow and --poll-interval options', () => {
+    const { program } = createHarness();
+    const cloud = program.commands.find((command) => command.name() === 'cloud');
+    const logs = cloud?.commands.find((command) => command.name() === 'logs');
 
-    const exitCode = await runCommand(program, ['cloud', 'agents']);
-
-    expect(exitCode).toBe(1);
-    expect(deps.error).toHaveBeenCalledWith('Not linked to cloud. Run `agent-relay cloud link` first.');
-    expect(apiClient.listAgents).not.toHaveBeenCalled();
+    expect(logs).toBeDefined();
+    const optionNames = logs?.options.map((option) => option.long);
+    expect(optionNames).toContain('--follow');
+    expect(optionNames).toContain('--poll-interval');
   });
 
-  it('handles network errors from cloud API calls', async () => {
-    const apiClient = createApiClientMock({
-      listAgents: vi.fn(async () => {
-        throw new Error('network unavailable');
-      }),
-    });
-    const { program, deps, dataDir } = createHarness({ apiClient });
+  it('sync has --dry-run option', () => {
+    const { program } = createHarness();
+    const cloud = program.commands.find((command) => command.name() === 'cloud');
+    const sync = cloud?.commands.find((command) => command.name() === 'sync');
 
-    writeCloudConfig(dataDir);
-
-    const exitCode = await runCommand(program, ['cloud', 'agents']);
-
-    expect(exitCode).toBe(1);
-    expect(deps.error).toHaveBeenCalledWith('Failed to fetch agents: network unavailable');
+    expect(sync).toBeDefined();
+    const optionNames = sync?.options.map((option) => option.long);
+    expect(optionNames).toContain('--dry-run');
   });
 });

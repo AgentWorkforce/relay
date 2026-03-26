@@ -73,9 +73,10 @@
     "web"
   ],
   "bundledDependencies": [
-    "@agent-relay/sdk",
+    "@agent-relay/cloud",
     "@agent-relay/config",
     "@agent-relay/hooks",
+    "@agent-relay/sdk",
     "@agent-relay/telemetry",
     "@agent-relay/trajectory",
     "@agent-relay/user-directory",
@@ -176,9 +177,11 @@
   },
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "dependencies": {
+    "@agent-relay/cloud": "3.2.18",
     "@agent-relay/config": "3.2.18",
     "@agent-relay/hooks": "3.2.18",
     "@agent-relay/sdk": "3.2.18",
+    "@aws-sdk/client-s3": "^3.1004.0",
     "@agent-relay/telemetry": "3.2.18",
     "@agent-relay/trajectory": "3.2.18",
     "@agent-relay/user-directory": "3.2.18",
@@ -196,9 +199,11 @@
     "express": "^5.2.1",
     "http-proxy-middleware": "^3.0.5",
     "listr2": "^10.2.1",
+    "ignore": "^7.0.5",
     "pg": "^8.16.3",
     "posthog-node": "^4.0.1",
     "smol-toml": "^1.6.0",
+    "tar": "^7.5.10",
     "ssh2": "^1.17.0",
     "uuid": "^10.0.0",
     "ws": "^8.18.3",
@@ -244,9 +249,10 @@
     "react-dom": "^18.3.1"
   },
   "bundleDependencies": [
-    "@agent-relay/sdk",
+    "@agent-relay/cloud",
     "@agent-relay/config",
     "@agent-relay/hooks",
+    "@agent-relay/sdk",
     "@agent-relay/telemetry",
     "@agent-relay/trajectory",
     "@agent-relay/user-directory",
