@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto';
 import {
   createWriteStream,
   existsSync,
+  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -17,7 +18,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import type { Dirent, WriteStream } from 'node:fs';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import chalk from 'chalk';
 
@@ -97,6 +99,7 @@ interface SpawnResult {
   output: string;
   exitCode?: number;
   exitSignal?: string;
+  promptTaskText?: string;
 }
 
 /** Error carrying exit code/signal from a failed subprocess spawn. */
@@ -364,6 +367,7 @@ export class WorkflowRunner {
   private readonly activeReviewers = new Map<string, number>();
   /** Structured CLI session reports captured during the current run, keyed by step name. */
   private readonly agentReports = new Map<string, CliSessionReport>();
+  private static readonly PTY_TASK_ARG_SIZE_LIMIT = 2 * 1024 * 1024; // 2 MB
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -3539,6 +3543,7 @@ export class WorkflowRunner {
         let ownerOutput: string;
         let ownerElapsed: number;
         let completionReason: WorkflowStepCompletionReason | undefined;
+        let promptTaskText: string | undefined;
 
         if (usesDedicatedOwner) {
           const result = await this.executeSupervisedAgentStep(
@@ -3592,6 +3597,12 @@ export class WorkflowRunner {
                   : undefined,
               });
           const output = typeof spawnResult === 'string' ? spawnResult : spawnResult.output;
+          promptTaskText =
+            typeof spawnResult === 'string'
+              ? effectiveOwner.interactive === false
+                ? undefined
+                : ownerTask
+              : spawnResult.promptTaskText ?? ownerTask;
           lastExitCode = typeof spawnResult === 'string' ? undefined : spawnResult.exitCode;
           lastExitSignal = typeof spawnResult === 'string' ? undefined : spawnResult.exitSignal;
           ownerElapsed = Date.now() - ownerStartTime;
@@ -3602,8 +3613,8 @@ export class WorkflowRunner {
                 step,
                 output,
                 output,
-                ownerTask,
-                resolvedTask
+                promptTaskText ?? ownerTask,
+                promptTaskText ?? ownerTask
               );
               completionReason = completionDecision.completionReason;
             } catch (error) {
@@ -3654,7 +3665,7 @@ export class WorkflowRunner {
             step.verification,
             specialistOutput,
             step.name,
-            effectiveOwner.interactive === false ? undefined : resolvedTask
+            promptTaskText
           );
           completionReason = verificationResult.completionReason;
         }
@@ -4028,7 +4039,14 @@ export class WorkflowRunner {
           detail: `Worker ${workerRuntimeName} exited`,
           raw: { worker: workerRuntimeName, exitCode: result.exitCode, exitSignal: result.exitSignal },
         });
-        if (step.verification?.type === 'output_contains' && result.output.includes(step.verification.value)) {
+        if (
+          step.verification?.type === 'output_contains' &&
+          this.outputContainsVerificationToken(
+            result.output,
+            step.verification.value,
+            result.promptTaskText
+          )
+        ) {
           this.log(
             `[${step.name}] Verification gate observed: output contains ${JSON.stringify(step.verification.value)}`
           );
@@ -4079,13 +4097,14 @@ export class WorkflowRunner {
       const ownerElapsed = Date.now() - ownerStartTime;
       const ownerOutput = ownerResultObj.output;
       this.log(`[${step.name}] Owner "${supervised.owner.name}" exited`);
-      const specialistOutput = (await workerPromise).output;
+      const workerResultObj = await workerPromise;
+      const specialistOutput = workerResultObj.output;
       const completionDecision = this.resolveOwnerCompletionDecision(
         step,
         ownerOutput,
         specialistOutput,
-        supervisorTask,
-        resolvedTask
+        ownerResultObj.promptTaskText ?? supervisorTask,
+        workerResultObj.promptTaskText ?? specialistTask
       );
       return {
         specialistOutput,
@@ -4359,6 +4378,10 @@ export class WorkflowRunner {
     injectedTaskText: string
   ): boolean {
     const marker = `STEP_COMPLETE:${step.name}`;
+    const strippedOutput = this.stripInjectedTaskEcho(output, injectedTaskText);
+    if (strippedOutput.includes(marker)) {
+      return true;
+    }
     const taskHasMarker = injectedTaskText.includes(marker);
     const first = output.indexOf(marker);
     if (first === -1) {
@@ -4446,6 +4469,65 @@ export class WorkflowRunner {
       .filter(Boolean)
       .filter((line) => patterns.every((pattern) => !pattern.test(line)))
       .join('\n');
+  }
+
+  private stripInjectedTaskEcho(output: string, injectedTaskText?: string): string {
+    if (!injectedTaskText) {
+      return output;
+    }
+
+    const candidates = [
+      injectedTaskText,
+      injectedTaskText.replace(/\r\n/g, '\n'),
+      injectedTaskText.replace(/\n/g, '\r\n'),
+    ].filter((candidate, index, all) => candidate.length > 0 && all.indexOf(candidate) === index);
+
+    for (const candidate of candidates) {
+      const start = output.indexOf(candidate);
+      if (start !== -1) {
+        return output.slice(0, start) + output.slice(start + candidate.length);
+      }
+    }
+
+    return output;
+  }
+
+  private outputContainsVerificationToken(
+    output: string,
+    token: string,
+    injectedTaskText?: string
+  ): boolean {
+    if (!token) {
+      return false;
+    }
+    return this.stripInjectedTaskEcho(output, injectedTaskText).includes(token);
+  }
+
+  private prepareInteractiveSpawnTask(
+    agentName: string,
+    taskText: string
+  ): { spawnTaskText: string; promptTaskText: string; taskTmpFile?: string } {
+    if (Buffer.byteLength(taskText, 'utf8') <= WorkflowRunner.PTY_TASK_ARG_SIZE_LIMIT) {
+      return {
+        spawnTaskText: taskText,
+        promptTaskText: taskText,
+      };
+    }
+
+    const taskTmpDir = mkdtempSync(path.join(tmpdir(), 'relay-pty-task-'));
+    const taskTmpFile = path.join(taskTmpDir, `${agentName}-${Date.now()}.txt`);
+    writeFileSync(taskTmpFile, taskText, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    const promptTaskText =
+      `TASK_FILE:${taskTmpFile}\n` +
+      'Read that file completely before taking any action.\n' +
+      'Treat the file contents as the full workflow task and follow them exactly.\n' +
+      'Do not ask for the task again.';
+
+    return {
+      spawnTaskText: promptTaskText,
+      promptTaskText,
+      taskTmpFile,
+    };
   }
 
   private firstMeaningfulLine(output: string): string | undefined {
@@ -5218,6 +5300,7 @@ export class WorkflowRunner {
       '(b) outputting the exact text "/exit" on its own line as a fallback. ' +
       'Do not wait for further input — terminate immediately after finishing. ' +
       'Do NOT spawn sub-agents unless the task explicitly requires it.';
+    const preparedTask = this.prepareInteractiveSpawnTask(agentName, taskWithExit);
 
     // Register PTY output listener before spawning so we capture everything
     this.ptyOutputBuffers.set(agentName, []);
@@ -5257,7 +5340,7 @@ export class WorkflowRunner {
         model: agentDef.constraints?.model,
         args: interactiveSpawnPolicy.args,
         channels: agentChannels,
-        task: taskWithExit,
+        task: preparedTask.spawnTaskText,
         idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
         cwd: agentCwd,
       });
@@ -5368,6 +5451,7 @@ export class WorkflowRunner {
         agentDef,
         step,
         timeoutMs,
+        preparedTask.promptTaskText,
         options.preserveOnIdle ?? this.shouldPreserveIdleSupervisor(agentDef, step, options.evidenceRole)
       );
 
@@ -5385,7 +5469,7 @@ export class WorkflowRunner {
             step.verification,
             ptyOutput,
             step.name,
-            undefined,
+            preparedTask.promptTaskText,
             { allowFailure: true }
           );
           if (verificationResult.passed) {
@@ -5446,6 +5530,9 @@ export class WorkflowRunner {
       this.unregisterWorker(agentName);
       this.supervisedRuntimeAgents.delete(agentName);
       this.runtimeStepAgents.delete(agentName);
+      if (preparedTask.taskTmpFile) {
+        await unlink(preparedTask.taskTmpFile).catch(() => undefined);
+      }
     }
 
     let output: string;
@@ -5480,6 +5567,7 @@ export class WorkflowRunner {
       output,
       exitCode: agent?.exitCode,
       exitSignal: agent?.exitSignal,
+      promptTaskText: preparedTask.promptTaskText,
     };
   }
 
@@ -5547,6 +5635,7 @@ export class WorkflowRunner {
     agentDef: AgentDefinition,
     step: WorkflowStep,
     timeoutMs?: number,
+    promptTaskText?: string,
     preserveIdleSupervisor = false
   ): Promise<'exited' | 'timeout' | 'released' | 'force-released'> {
     const nudgeConfig = this.currentConfig?.swarm.idleNudge;
@@ -5572,21 +5661,14 @@ export class WorkflowRunner {
         ]);
         if (result.kind === 'idle' && result.result === 'idle') {
           // Check verification before treating idle as complete.
-          // Mirror runVerification's double-occurrence guard: if the task text
-          // contains the token (from the prompt instruction), require a second
-          // occurrence from the agent's actual output to avoid false positives.
           if (step.verification && step.verification.type === 'output_contains') {
             const token = step.verification.value;
             const ptyOutput = (this.ptyOutputBuffers.get(agent.name) ?? []).join('');
-            const taskText = step.task ?? '';
-            const taskHasToken = taskText.includes(token);
-            let verificationPassed = true;
-            if (taskHasToken) {
-              const first = ptyOutput.indexOf(token);
-              verificationPassed = first !== -1 && ptyOutput.includes(token, first + token.length);
-            } else {
-              verificationPassed = ptyOutput.includes(token);
-            }
+            const verificationPassed = this.outputContainsVerificationToken(
+              ptyOutput,
+              token,
+              promptTaskText
+            );
             if (!verificationPassed) {
               // The broker fires agent_idle only once per idle transition.
               // If the agent is still working (will produce output then idle again),
@@ -5798,23 +5880,8 @@ export class WorkflowRunner {
 
     switch (check.type) {
       case 'output_contains': {
-        // Guard against false positives: the PTY captures the injected task text
-        // verbatim, so if the verification token appears in the task itself the
-        // check would pass immediately without the agent doing any real work.
-        // When the task contains the token, require a SECOND occurrence — one
-        // from the task injection and one from the agent's actual response.
         const token = check.value;
-        const taskHasToken = injectedTaskText ? injectedTaskText.includes(token) : false;
-        if (taskHasToken) {
-          const first = output.indexOf(token);
-          const hasSecond = first !== -1 && output.includes(token, first + token.length);
-          if (!hasSecond) {
-            return fail(
-              `Verification failed for "${stepName}": output does not contain "${token}" ` +
-                `(token found only in task injection — agent must output it explicitly)`
-            );
-          }
-        } else if (!output.includes(token)) {
+        if (!this.outputContainsVerificationToken(output, token, injectedTaskText)) {
           return fail(`Verification failed for "${stepName}": output does not contain "${token}"`);
         }
         break;

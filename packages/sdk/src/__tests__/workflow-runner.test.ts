@@ -642,14 +642,85 @@ agents:
       );
 
       expect(ownerAssignments).toContainEqual({ owner: 'relay-worker', specialist: 'relay-worker' });
-      expect(run.status).toBe('failed');
-      expect(run.error).toContain('verification failed');
+      expect(run.status, run.error).toBe('completed');
 
       const spawnCalls = (mockRelayInstance.spawnPty as any).mock.calls;
       expect(spawnCalls).toHaveLength(1);
       expect(spawnCalls[0][0].task).toContain('STEP OWNER CONTRACT');
       expect(spawnCalls[0][0].name).not.toContain('-owner-');
       expect(spawnCalls[0][0].name).not.toContain('-review-');
+    });
+
+    it('should spill oversized interactive tasks to a temp file before PTY spawn', async () => {
+      const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'relay-pty-task-'));
+      const oversizedBytes = WorkflowRunner.PTY_TASK_ARG_SIZE_LIMIT + 1024;
+      let spawnedTask = '';
+      let taskFilePath = '';
+      let taskFileContents = '';
+      runner = new WorkflowRunner({ db, workspaceId: 'ws-test', cwd: tmpDir });
+
+      mockRelayInstance.spawnPty.mockImplementation(
+        async ({ name, task }: { name: string; task?: string }) => {
+          spawnedTask = task ?? '';
+          const match = spawnedTask.match(/TASK_FILE:(.+)\n/);
+          if (match) {
+            taskFilePath = match[1].trim();
+            taskFileContents = readFileSync(taskFilePath, 'utf-8');
+          }
+
+          const output = mockSpawnOutputs.shift() ?? 'LEAD_DONE\n';
+          queueMicrotask(() => {
+            if (typeof mockRelayInstance.onWorkerOutput === 'function') {
+              mockRelayInstance.onWorkerOutput({ name, chunk: output });
+            }
+          });
+
+          return { ...mockAgent, name };
+        }
+      );
+
+      try {
+        mockSpawnOutputs = ['LEAD_DONE\n'];
+
+        const run = await runner.execute(
+          makeConfig({
+            agents: [{ name: 'team-lead', cli: 'claude', role: 'Lead coordinator' }],
+            workflows: [
+              {
+                name: 'default',
+                steps: [
+                  {
+                    name: 'prepare',
+                    type: 'deterministic',
+                    command: `node -e "process.stdout.write('A'.repeat(${oversizedBytes}))"`,
+                  },
+                  {
+                    name: 'lead-step',
+                    agent: 'team-lead',
+                    dependsOn: ['prepare'],
+                    task: 'Review the injected context below and then print LEAD_DONE:\n{{steps.prepare.output}}\n/exit',
+                    verification: { type: 'exit_code', value: 0 },
+                  },
+                ],
+              },
+            ],
+          }),
+          'default'
+        );
+
+        expect(run.status, run.error).toBe('completed');
+        expect(spawnedTask).toContain('TASK_FILE:');
+        expect(spawnedTask).not.toContain('{{steps.prepare.output}}');
+        expect(Buffer.byteLength(spawnedTask, 'utf8')).toBeLessThan(2048);
+        expect(taskFilePath).toBeTruthy();
+        expect(Buffer.byteLength(taskFileContents, 'utf8')).toBeGreaterThan(
+          WorkflowRunner.PTY_TASK_ARG_SIZE_LIMIT
+        );
+        expect(taskFileContents).toContain('Review the injected context below');
+        expect(existsSync(taskFilePath)).toBe(false);
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
 
     it('should pass canonical bypass args to interactive codex PTY spawns', async () => {
