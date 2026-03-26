@@ -4595,33 +4595,43 @@ export class WorkflowRunner {
       `REVIEW_REASON: <one sentence>\n` +
       `Then output /exit.`;
 
-    const safetyTimeoutMs = timeoutMs ?? 600_000;
+    // Cap review timeout at 5 minutes. Review tasks are self-contained
+    // read-and-judge operations and should not inherit long owner step timeouts.
+    const REVIEW_TIMEOUT_CAP_MS = 300_000;
+    const safetyTimeoutMs = Math.min(timeoutMs ?? 600_000, REVIEW_TIMEOUT_CAP_MS);
+    // Force reviewers onto the non-interactive subprocess path. Review steps
+    // do not need broker connectivity, and interactive Codex reviewers can
+    // connect successfully but never actually consume the review task.
+    const effectiveReviewerDef =
+      reviewerDef.interactive === false
+        ? reviewerDef
+        : { ...reviewerDef, interactive: false };
     const reviewStep: WorkflowStep = {
       name: `${step.name}-review`,
       type: 'agent',
-      agent: reviewerDef.name,
+      agent: effectiveReviewerDef.name,
       task: reviewTask,
     };
 
-    await this.trajectory?.registerAgent(reviewerDef.name, 'reviewer');
-    this.postToChannel(`**[${step.name}]** Review started (reviewer: ${reviewerDef.name})`);
+    await this.trajectory?.registerAgent(effectiveReviewerDef.name, 'reviewer');
+    this.postToChannel(`**[${step.name}]** Review started (reviewer: ${effectiveReviewerDef.name})`);
     this.recordStepToolSideEffect(step.name, {
       type: 'review_started',
-      detail: `Review started with ${reviewerDef.name}`,
-      raw: { reviewer: reviewerDef.name },
+      detail: `Review started with ${effectiveReviewerDef.name}`,
+      raw: { reviewer: effectiveReviewerDef.name },
     });
     const emitReviewCompleted = async (decision: 'approved' | 'rejected', reason?: string) => {
       this.recordStepToolSideEffect(step.name, {
         type: 'review_completed',
-        detail: `Review ${decision} by ${reviewerDef.name}${reason ? `: ${reason}` : ''}`,
-        raw: { reviewer: reviewerDef.name, decision, reason },
+        detail: `Review ${decision} by ${effectiveReviewerDef.name}${reason ? `: ${reason}` : ''}`,
+        raw: { reviewer: effectiveReviewerDef.name, decision, reason },
       });
-      await this.trajectory?.reviewCompleted(step.name, reviewerDef.name, decision, reason);
+      await this.trajectory?.reviewCompleted(step.name, effectiveReviewerDef.name, decision, reason);
       this.emit({
         type: 'step:review-completed',
         runId: this.currentRunId ?? '',
         stepName: step.name,
-        reviewerName: reviewerDef.name,
+        reviewerName: effectiveReviewerDef.name,
         decision,
       });
     };
@@ -4629,21 +4639,21 @@ export class WorkflowRunner {
     if (this.executor) {
       const reviewOutput = await this.executor.executeAgentStep(
         reviewStep,
-        reviewerDef,
+        effectiveReviewerDef,
         reviewTask,
         safetyTimeoutMs
       );
       const parsed = this.parseReviewDecision(reviewOutput);
       if (!parsed) {
         throw new Error(
-          `Step "${step.name}" review response malformed from "${reviewerDef.name}" (missing REVIEW_DECISION)`
+          `Step "${step.name}" review response malformed from "${effectiveReviewerDef.name}" (missing REVIEW_DECISION)`
         );
       }
       await emitReviewCompleted(parsed.decision, parsed.reason);
       if (parsed.decision === 'rejected') {
-        throw new Error(`Step "${step.name}" review rejected by "${reviewerDef.name}"`);
+        throw new Error(`Step "${step.name}" review rejected by "${effectiveReviewerDef.name}"`);
       }
-      this.postToChannel(`**[${step.name}]** Review approved by \`${reviewerDef.name}\``);
+      this.postToChannel(`**[${step.name}]** Review approved by \`${effectiveReviewerDef.name}\``);
       return reviewOutput;
     }
 
@@ -4670,7 +4680,7 @@ export class WorkflowRunner {
     };
 
     try {
-      await this.spawnAndWait(reviewerDef, reviewStep, safetyTimeoutMs, {
+      await this.spawnAndWait(effectiveReviewerDef, reviewStep, safetyTimeoutMs, {
         evidenceStepName: step.name,
         evidenceRole: 'reviewer',
         logicalName: reviewerDef.name,
@@ -4702,7 +4712,7 @@ export class WorkflowRunner {
       const parsed = this.parseReviewDecision(reviewOutput);
       if (!parsed) {
         throw new Error(
-          `Step "${step.name}" review response malformed from "${reviewerDef.name}" (missing REVIEW_DECISION)`
+          `Step "${step.name}" review response malformed from "${effectiveReviewerDef.name}" (missing REVIEW_DECISION)`
         );
       }
       completedReview = parsed;
@@ -4710,10 +4720,10 @@ export class WorkflowRunner {
     }
 
     if (completedReview.decision === 'rejected') {
-      throw new Error(`Step "${step.name}" review rejected by "${reviewerDef.name}"`);
+      throw new Error(`Step "${step.name}" review rejected by "${effectiveReviewerDef.name}"`);
     }
 
-    this.postToChannel(`**[${step.name}]** Review approved by \`${reviewerDef.name}\``);
+    this.postToChannel(`**[${step.name}]** Review approved by \`${effectiveReviewerDef.name}\``);
     return reviewOutput;
   }
 
