@@ -87,6 +87,83 @@ html[data-theme='dark'] .shiki span {
   color: var(--fg-muted);
 }
 
+/* ── Relaycast hero animation cards (vanilla JS, global classes) ── */
+
+.anim-card {
+  position: absolute;
+  z-index: 1;
+  width: 160px;
+  height: 88px;
+  padding: 0;
+  background: var(--agent-card-bg, rgba(15, 27, 41, 0.84));
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--agent-card-border, rgba(116, 184, 226, 0.16));
+  border-radius: 8px;
+  overflow: hidden;
+  opacity: 0;
+  transition: box-shadow 0.4s ease, opacity 0.2s ease-out,
+    transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
+    border-color 0.3s ease, background 0.3s ease;
+  pointer-events: none;
+}
+
+.anim-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  background: var(--agent-card-header, rgba(15, 28, 40, 0.94));
+  border-bottom: 1px solid var(--agent-card-border, rgba(116, 184, 226, 0.16));
+  gap: 4px;
+}
+
+.anim-card-identity { display: flex; align-items: center; gap: 5px; }
+.anim-provider-logo { width: 12px; height: 12px; flex-shrink: 0; }
+.anim-card-name {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.62rem; font-weight: 600; letter-spacing: 0.02em;
+  color: var(--agent-card-title, #DBE9F4); white-space: nowrap;
+}
+.anim-card-model {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.5rem; font-weight: 400; letter-spacing: 0.02em;
+  color: var(--agent-card-muted, #93A7B9); white-space: nowrap;
+}
+.anim-card-status {
+  display: flex; align-items: flex-start; gap: 5px;
+  padding: 8px 8px 10px; min-height: 36px;
+}
+.anim-status-dot {
+  width: 4px; height: 4px; margin-top: 3px;
+  border-radius: 50%; background: var(--agent-card-status, #63D18B);
+  flex-shrink: 0; display: none;
+  animation: animStatusPulse 1s ease-in-out infinite;
+  box-shadow: 0 0 4px var(--agent-card-glow, rgba(99, 209, 139, 0.28));
+}
+@keyframes animStatusPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.anim-status-text {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.55rem; font-weight: 400; letter-spacing: 0.01em;
+  line-height: 1.4; color: var(--agent-card-muted, #93A7B9);
+  overflow: hidden; text-overflow: ellipsis;
+}
+
+@media (max-width: 1100px) {
+  .anim-card { width: 140px; height: 78px; }
+  .anim-card-name { font-size: 0.58rem; }
+  .anim-card-model { font-size: 0.46rem; }
+  .anim-status-text { font-size: 0.5rem; }
+}
+@media (max-width: 900px) {
+  .anim-card { width: 110px; height: 62px; border-radius: 6px; }
+  .anim-card-name { font-size: 0.54rem; }
+  .anim-card-model { font-size: 0.42rem; }
+  .anim-card-header { padding: 4px 6px; }
+  .anim-card-status { padding: 5px 6px 7px; min-height: 28px; }
+  .anim-status-text { font-size: 0.46rem; }
+  .anim-status-dot { width: 3px; height: 3px; margin-top: 2px; }
+}
+
 .skill-page pre {
   margin: 0;
   white-space: pre-wrap;
