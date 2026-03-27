@@ -19,6 +19,7 @@ export function SiteFooter() {
           <div className={s.col}>
             <h4 className={s.colTitle}>Products</h4>
             <Link href="/message" className={s.link}>Message</Link>
+            <Link href="/schedule" className={s.link}>Schedule</Link>
             <Link href="/auth" className={s.link}>Auth</Link>
             <Link href="/file" className={s.link}>File</Link>
           </div>
@@ -31,11 +32,8 @@ export function SiteFooter() {
             <a href="https://agent-relay.com" className={s.link}>Cloud</a>
           </div>
           <div className={s.col}>
-            <h4 className={s.colTitle}>Community</h4>
-            <Link href="/blog" className={s.link}>Blog</Link>
-          </div>
-          <div className={s.col}>
             <h4 className={s.colTitle}>Company</h4>
+            <Link href="/blog" className={s.link}>Blog</Link>
             <a href="mailto:hello@agentrelay.dev" className={s.link}>Contact</a>
           </div>
         </div>
