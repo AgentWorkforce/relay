@@ -6718,11 +6718,8 @@ export class WorkflowRunner {
 
     const cachedStepNames = new Set(
       entries
-        .filter((entry) => entry.isFile() && (entry.name.endsWith('.md') || entry.name.endsWith('.report.json')))
-        .map((entry) => {
-          if (entry.name.endsWith('.report.json')) return entry.name.slice(0, -'.report.json'.length);
-          return entry.name.slice(0, -3);
-        })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+        .map((entry) => entry.name.slice(0, -3))
         .filter(Boolean)
     );
     const workflows = resumeConfig.workflows ?? [];
