@@ -4680,7 +4680,7 @@ export class WorkflowRunner {
     };
 
     try {
-      await this.spawnAndWait(effectiveReviewerDef, reviewStep, safetyTimeoutMs, {
+      const spawnResult = await this.spawnAndWait(effectiveReviewerDef, reviewStep, safetyTimeoutMs, {
         evidenceStepName: step.name,
         evidenceRole: 'reviewer',
         logicalName: reviewerDef.name,
