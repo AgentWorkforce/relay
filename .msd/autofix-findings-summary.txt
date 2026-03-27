@@ -28,8 +28,39 @@ Using modulo on a [cryptographically secure ra
 12. [MEDIUM] packages/sdk/src/relay.ts:1181 — ✅ **Resolved**: The current code at relay.ts now wraps persistWorkspaceMapping in try-catch (lines 1171-1175) and sets t
 13. [MEDIUM] src/cli/commands/on/prereqs.ts:84 — ✅ **Resolved**: The prereqs.ts code now uses a candidates array with .find((candidate) => existsSync(candidate)) at line
 14. [MEDIUM] src/cli/commands/on/services.ts:141 — ✅ **Resolved**: The services.ts code now uses resolveExistingPath at line 134 which checks existsSync for each candidate
-15. [MEDIUM] src/cli/commands/on/services.ts:309 — ✅ **Resolved**: The current spawnLogged code at services.ts:298-309 now has a try/finally block with closeSync(logFile) 
+15. [MEDIUM] src/cli/commands/on/services.ts:309 — ✅ **Resolved**: The current spawnLogged code at services.ts:298-309 now has a try/finally block with closeSync(logFile)
 16. [MEDIUM] src/cli/commands/on.ts:26 — ✅ **Resolved**: The current withDefaults function at on.ts:20-26 no longer has an ...overrides spread. It uses only ?? f
 17. [MEDIUM] packages/sdk/src/workflows/validator.ts:1 — ✅ **Resolved**: The current code at validator.ts:153 now correctly reads 'Check 6: maxConcurrency vs interactive agent c
 18. [MEDIUM] src/cli/commands/on/start.ts:1329 — <!-- devin-review-comment {"id": "BUG_pr-review-job-dae4c01bb7704688a8043d49cc100dbe_0001", "file_path": "src/cli/comman
 19. [MEDIUM] src/cli/commands/on/services.ts:309 — <!-- devin-review-comment {"id": "BUG_pr-review-job-dae4c01bb7704688a8043d49cc100dbe_0002", "file_path": "src/cli/comman
+20. [CRITICAL] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
+21. [HIGH] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
+22. [HIGH] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
+23. [HIGH] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
+24. [HIGH] src/cli/commands/on/workspace.ts — src/cli/commands/on/workspace.ts
+25. [HIGH] src/cli/commands/on/workspace.ts — src/cli/commands/on/workspace.ts
+26. [HIGH] src/cli/commands/on/provision.ts — src/cli/commands/on/provision.ts
+27. [HIGH] scripts/postinstall.js — scripts/postinstall.js
+28. [HIGH] src/cli/commands/on/services.ts — src/cli/commands/on/services.ts
+29. [HIGH] packages/sdk/src/relay.ts — packages/sdk/src/relay.ts
+30. [MEDIUM] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
+31. [MEDIUM] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
+32. [MEDIUM] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
+33. [MEDIUM] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
+34. [MEDIUM] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
+35. [MEDIUM] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
+36. [MEDIUM] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
+37. [MEDIUM] src/cli/commands/on/workspace.ts — src/cli/commands/on/workspace.ts
+38. [MEDIUM] src/cli/commands/on/workspace.ts — src/cli/commands/on/workspace.ts
+39. [MEDIUM] src/cli/commands/on/provision.ts — src/cli/commands/on/provision.ts
+40. [MEDIUM] scripts/postinstall.js — scripts/postinstall.js
+41. [MEDIUM] src/cli/commands/on/services.ts — src/cli/commands/on/services.ts
+42. [MEDIUM] packages/sdk/src/relay.ts — packages/sdk/src/relay.ts
+43. [MEDIUM] src/cli/commands/on/dotfiles.ts — src/cli/commands/on/dotfiles.ts
+44. [MEDIUM] src/cli/commands/on/token.ts — src/cli/commands/on/token.ts
+45. [LOW] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
+46. [LOW] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
+47. [LOW] src/cli/commands/on/services.ts — src/cli/commands/on/services.ts
+48. [LOW] src/cli/commands/on/dotfiles.ts — src/cli/commands/on/dotfiles.ts
+49. [LOW] src/cli/commands/on/prereqs.ts — src/cli/commands/on/prereqs.ts
+50. [LOW] src/cli/commands/on/start.test.ts — src/cli/commands/on/start.test.ts

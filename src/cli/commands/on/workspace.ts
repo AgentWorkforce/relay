@@ -109,7 +109,12 @@ function collectSeedPaths(
 
     if (entry.isSymbolicLink()) {
       try {
-        const stat = fs.statSync(absolutePath);
+        const resolved = fs.realpathSync(absolutePath);
+        // Prevent symlink traversal outside rootDir (CWE-59)
+        if (!resolved.startsWith(rootDir + path.sep) && resolved !== rootDir) {
+          continue;
+        }
+        const stat = fs.statSync(resolved);
         if (stat.isDirectory()) {
           collectSeedPaths(rootDir, nextRelative, excludeDirs, output);
           continue;
@@ -187,7 +192,7 @@ async function writeBulkWrite(
     });
     return parseBulkWriteResponse(response);
   } catch (error) {
-    if ((error as { status?: number }).status && typeof (error as { status?: number }).status !== 'undefined') {
+    if (typeof (error as { status?: number }).status === 'number') {
       throw error;
     }
   }
@@ -238,9 +243,7 @@ export async function createWorkspace(baseUrl: string, token: string, workspaceI
         response.status === 200 ||
         response.status === 201 ||
         response.status === 204 ||
-        response.status === 409 ||
-        response.status === 404 ||
-        response.status === 405
+        response.status === 409
       ) {
         return;
       }

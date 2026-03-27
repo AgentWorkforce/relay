@@ -322,6 +322,10 @@ export interface AgentRelayOptions {
   /**
    * Display name for an auto-created Relaycast workspace.
    * If omitted, the unified workspace ID is used.
+   *
+   * @deprecated Since v1.x this field falls back to workspaceId when omitted,
+   * changing prior behavior where it was required for workspace naming.
+   * Callers relying on distinct naming should set this explicitly.
    */
   workspaceName?: string;
   /**
@@ -438,12 +442,24 @@ export class AgentRelay {
       return {};
     }
 
-    const raw = readFileSync(registryPath, 'utf8').trim();
+    let raw: string;
+    try {
+      raw = readFileSync(registryPath, 'utf8').trim();
+    } catch {
+      return {};
+    }
     if (!raw) {
       return {};
     }
 
-    const parsed = JSON.parse(raw) as unknown;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Registry file is corrupted (partial write, disk full, concurrent access).
+      // Return empty registry so callers can re-create it.
+      return {};
+    }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return {};
     }

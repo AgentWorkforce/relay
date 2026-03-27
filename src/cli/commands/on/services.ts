@@ -10,6 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 interface ServiceConfigCache {
@@ -37,7 +38,9 @@ export interface ServiceConfig {
 
 const DEFAULT_PORT_AUTH = 8787;
 const DEFAULT_PORT_FILE = 8080;
-const PID_FILE_PATH = path.resolve('.relay', 'pids.json');
+function getPidFilePath(): string {
+  return path.join(os.homedir(), '.relay', 'pids.json');
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -210,12 +213,12 @@ function isExecutable(target: string): boolean {
 }
 
 function readPids(): PidFile | null {
-  if (!existsSync(PID_FILE_PATH)) {
+  if (!existsSync(getPidFilePath())) {
     return null;
   }
 
   try {
-    const raw = readFileSync(PID_FILE_PATH, 'utf-8');
+    const raw = readFileSync(getPidFilePath(), 'utf-8');
     return JSON.parse(raw) as PidFile;
   } catch {
     return null;
@@ -223,13 +226,13 @@ function readPids(): PidFile | null {
 }
 
 function writePids(pids: PidFile): void {
-  mkdirSync(path.dirname(PID_FILE_PATH), { recursive: true });
-  writeFileSync(PID_FILE_PATH, `${JSON.stringify(pids)}\n`, 'utf-8');
+  mkdirSync(path.dirname(getPidFilePath()), { recursive: true });
+  writeFileSync(getPidFilePath(), `${JSON.stringify(pids)}\n`, 'utf-8');
 }
 
 function removePidsFile(): void {
-  if (existsSync(PID_FILE_PATH)) {
-    rmSync(PID_FILE_PATH);
+  if (existsSync(getPidFilePath())) {
+    rmSync(getPidFilePath());
   }
 }
 
@@ -303,9 +306,8 @@ function spawnLogged(command: string, args: string[], cwd: string, env: NodeJS.P
       cwd,
       env,
       stdio: ['ignore', logFile, logFile],
-      detached: true,
     });
-    child.unref();
+    // Close parent's copy of the fd — child process inherits its own copy
     return child;
   } finally {
     closeSync(logFile);

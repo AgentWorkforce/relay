@@ -9,6 +9,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -234,7 +235,7 @@ function readWorkspaceRegistry(relayDir?: string): LocalWorkspaceRegistry {
 
 function writeWorkspaceRegistry(relayDir: string, registry: LocalWorkspaceRegistry): void {
   ensureDirectory(relayDir);
-  writeFileSync(getWorkspaceRegistryPath(relayDir), `${JSON.stringify(registry, null, 2)}\n`, 'utf8');
+  writeFileSync(getWorkspaceRegistryPath(relayDir), `${JSON.stringify(registry, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
 }
 
 function updateWorkspaceRegistry(
@@ -597,10 +598,9 @@ function loadConfigFromFile(configPath: string, projectDir: string): RelayConfig
   const root = toRecord(parsed);
   const payload = toRecord(root.data) as Record<string, unknown>;
   const fallbackWorkspace = path.basename(projectDir);
-  const fallbackSecret = process.env.SIGNING_KEY ?? 'dev-relay-secret';
 
   const workspace = toString(payload.workspace, toString(root.workspace, fallbackWorkspace));
-  const signing_secret = toString(payload.signing_secret, toString(root.signing_secret, fallbackSecret));
+  const signing_secret = toString(payload.signing_secret, toString(root.signing_secret, process.env.SIGNING_KEY ?? ''));
   const agents = normalizeAgents(payload.agents ?? root.agents);
 
   return { workspace, signing_secret, agents };
@@ -612,12 +612,13 @@ function writeGeneratedZeroConfig(
   overridesAgentName?: string
 ): RelayConfig {
   const fallbackWorkspace = path.basename(projectDir);
-  const fallbackSecret = process.env.SIGNING_KEY ?? 'dev-relay-secret';
+  const generatedSecret = randomBytes(32).toString('hex');
+  const signingSecret = process.env.SIGNING_KEY ?? generatedSecret;
   const defaultAgent = overridesAgentName ?? 'default-agent';
   const config: RelayConfig = {
     version: '1',
     workspace: fallbackWorkspace,
-    signing_secret: fallbackSecret,
+    signing_secret: signingSecret,
     agents: [
       {
         name: defaultAgent,
@@ -625,7 +626,7 @@ function writeGeneratedZeroConfig(
       },
     ],
   };
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
   return config;
 }
 
@@ -679,9 +680,9 @@ async function waitForHttpHealthy(url: string, attempts = 12): Promise<boolean> 
   return false;
 }
 
-async function runCommandCapture(command: string, args: string[]): Promise<string> {
+async function runCommandCapture(command: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
   return await new Promise((resolve, reject) => {
-    const proc = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
     let output = '';
 
     proc.stdout.setEncoding('utf8');
@@ -727,12 +728,16 @@ function globMatch(filePath: string, rawPattern: string): boolean {
     return target === pattern || target.startsWith(`${pattern}/`);
   }
 
+  // Escape regex special chars, then convert glob wildcards to regex.
+  // Handle ** (double-star) before single * to avoid incorrect conversion.
   const escaped = pattern
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\\\*\\\*/g, '__DOUBLESTAR__')
     .replace(/\\\*/g, '__STAR__')
     .replace(/\\\?/g, '__QMARK__')
-    .replace(/\*/g, '.*')
-    .replace(/\?/g, '.')
+    .replace(/__DOUBLESTAR__/g, '.*')
+    .replace(/__STAR__/g, '[^/]*')
+    .replace(/__QMARK__/g, '[^/]')
     .replace(/__STAR__/g, '\\*')
     .replace(/__QMARK__/g, '\\?');
   const withDirectory = `^${escaped}$`;
@@ -895,8 +900,9 @@ function fileNeedsSync(
   projectDir: string
 ): boolean {
   const relPath = normalizeRelativePosix(path.relative(mountDir, sourcePath));
-  const absTargetPath = path.join(projectDir, relPath);
+  const absTargetPath = path.resolve(projectDir, relPath);
   if (relPath.startsWith('../') || relPath.startsWith('.agent-relay')) return false;
+  if (!absTargetPath.startsWith(projectDir + path.sep) && absTargetPath !== projectDir) return false;
   if (isPathIgnored(relPath, readonlyPatterns)) return false;
   if (existsSync(absTargetPath) && hasSameContent(sourcePath, absTargetPath)) return false;
   return true;
@@ -932,7 +938,11 @@ async function syncWritableFilesBack(
       continue;
     }
 
-    const targetPath = path.join(projectDir, relative);
+    const targetPath = path.resolve(projectDir, relative);
+    // Guard against path traversal via symlinks: resolved target must stay within projectDir
+    if (!targetPath.startsWith(projectDir + path.sep) && targetPath !== projectDir) {
+      continue;
+    }
     ensureDirectory(path.dirname(targetPath));
     cpSync(sourceFile, targetPath, { force: true });
     synced += 1;
@@ -995,6 +1005,17 @@ function killMountProcess(processRef: ChildProcessWithoutNullStreams): Promise<v
   });
 }
 
+interface GoOnRelayDeps {
+  log?: LogFn;
+  error?: LogFn;
+  exit?: (code: number) => never | void;
+  fetch?: FetchFn;
+  provision?: (config: RelayConfig, agent: RelayConfigAgent) => Promise<void>;
+  provisionAgentToken?: (opts: { config: RelayConfig; agent: RelayConfigAgent; tokenPath: string }) => Promise<string | undefined>;
+  ensureServicesRunning?: (authBase: string, fileBase: string) => Promise<void>;
+  startServices?: (opts: { authBase: string; fileBase: string }) => Promise<void>;
+}
+
 function getSandboxFlags(cli: string): string[] {
   const name = path.basename(cli);
   switch (name) {
@@ -1019,7 +1040,7 @@ async function ensureProvisioned(
   tokenPath: string,
   log: LogFn,
   error: LogFn,
-  deps: any
+  deps: GoOnRelayDeps
 ): Promise<string> {
   try {
     return readFileSync(tokenPath, 'utf8').trim();
@@ -1058,7 +1079,7 @@ async function ensureProvisioned(
 async function ensureServices(
   authBase: string,
   fileBase: string,
-  deps: any,
+  deps: GoOnRelayDeps,
   log: LogFn,
   error: LogFn
 ): Promise<void> {
@@ -1126,12 +1147,11 @@ export async function goOnTheRelay(
   cli: string,
   options: OnOptions,
   extraArgs: string[],
-  deps: any
+  deps: GoOnRelayDeps = {}
 ): Promise<void> {
-  const log: LogFn = (deps?.log as LogFn) ?? ((...args: unknown[]) => console.log(...args));
-  const error: LogFn = (deps?.error as LogFn) ?? ((...args: unknown[]) => console.error(...args));
-  const exit: (code: number) => never | void =
-    (deps?.exit as (code: number) => never | void) ?? ((code: number) => process.exit(code));
+  const log: LogFn = deps.log ?? ((...args: unknown[]) => console.log(...args));
+  const error: LogFn = deps.error ?? ((...args: unknown[]) => console.error(...args));
+  const exit: (code: number) => never | void = deps.exit ?? ((code: number) => process.exit(code));
 
   const projectDir = process.cwd();
   const relayDir = path.join(projectDir, '.relay');
@@ -1165,7 +1185,7 @@ export async function goOnTheRelay(
     signingSecret: config.signing_secret,
     relayDir,
     relaycastBaseUrl: process.env.RELAYCAST_BASE_URL,
-    fetchFn: typeof deps?.fetch === 'function' ? (deps.fetch as FetchFn) : undefined,
+    fetchFn: deps.fetch,
   });
 
   if (workspaceSession.created) {
@@ -1186,22 +1206,21 @@ export async function goOnTheRelay(
   const mountLogPath = path.join(relayDir, 'logs', `${agent.name}-mount.log`);
   writeFileSync(mountLogPath, '', 'utf8');
 
-  const onceArgs = [
+  const mountBaseArgs = [
     '--base-url',
     workspaceSession.relayfileUrl,
     '--workspace',
     workspaceSession.workspaceId,
-    '--token',
-    workspaceSession.token,
     '--local-dir',
     mountDir,
-    '--once',
   ];
+  const onceArgs = [...mountBaseArgs, '--once'];
+  const mountEnv = { ...process.env, RELAYFILE_TOKEN: workspaceSession.token };
 
   let initialSyncOutput = '';
   log(`Mounting workspace at ${mountDir}...`);
   try {
-    initialSyncOutput = await runCommandCapture(mountBin, onceArgs);
+    initialSyncOutput = await runCommandCapture(mountBin, onceArgs, mountEnv);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`initial workspace sync failed for ${agent.name}: ${message}`);
@@ -1256,18 +1275,9 @@ export async function goOnTheRelay(
   };
 
   try {
-    const mountArgs = [
-      '--base-url',
-      workspaceSession.relayfileUrl,
-      '--workspace',
-      workspaceSession.workspaceId,
-      '--token',
-      workspaceSession.token,
-      '--local-dir',
-      mountDir,
-    ];
-    const mountedProc: ChildProcessWithoutNullStreams = spawn(mountBin, mountArgs, {
+    const mountedProc: ChildProcessWithoutNullStreams = spawn(mountBin, mountBaseArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: mountEnv,
     });
     mountProc = mountedProc;
 
@@ -1326,18 +1336,18 @@ export async function goOnTheRelay(
         env: envVars,
       });
 
-      const cleanupHook = async () => {
+      let cleanupInProgress: Promise<void> | undefined;
+      const cleanupHook = () => {
         if (agentProc && !agentProc.killed) {
           agentProc.kill('SIGTERM');
         }
-        // Wait for the agent process to exit so agentExitCode is set by the close handler
-        await new Promise<void>((r) => {
+        // Wait for the agent process to exit so agentExitCode is set by the close handler,
+        // then ensure cleanup completes before resolving — avoids data loss from premature exit
+        cleanupInProgress = new Promise<void>((r) => {
           if (!agentProc || agentProc.exitCode !== null) { r(); return; }
           const t = setTimeout(r, 2000);
           agentProc.once('close', () => { clearTimeout(t); r(); });
-        });
-        await finalizeCleanup();
-        resolve();
+        }).then(() => finalizeCleanup()).then(() => resolve());
       };
 
       process.once('SIGINT', cleanupHook);
@@ -1361,7 +1371,12 @@ export async function goOnTheRelay(
         } else {
           agentExitCode = 1;
         }
-        resolve();
+        // If cleanup was triggered by a signal, wait for it to finish
+        if (cleanupInProgress) {
+          cleanupInProgress.then(() => resolve());
+        } else {
+          resolve();
+        }
       });
       // Finalization happens in outer finally.
     });

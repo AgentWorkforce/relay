@@ -156,8 +156,7 @@ export async function provision(config: ProvisionConfig): Promise<ProvisionResul
     );
 
     const tokenPath = path.join(projectDir, '.relay', 'tokens', `${agentName}.jwt`);
-    fs.writeFileSync(tokenPath, `${agentToken}\n`, { encoding: 'utf8' });
-    fs.chmodSync(tokenPath, 0o600);
+    fs.writeFileSync(tokenPath, `${agentToken}\n`, { encoding: 'utf8', mode: 0o600 });
 
     agentResults.push({
       name: agentName,
@@ -185,8 +184,13 @@ export async function provision(config: ProvisionConfig): Promise<ProvisionResul
       adminToken,
       config.workspace,
     );
-  } catch {
-    // Legacy behavior: workspace creation is optional for local seeding.
+  } catch (error) {
+    // Workspace creation is optional for local seeding, but log auth failures
+    // to prevent silent token leaks in subsequent seedWorkspaceFiles calls.
+    const status = (error as { status?: number }).status;
+    if (status === 401 || status === 403) {
+      throw new Error(`Workspace creation failed with auth error (HTTP ${status}). Aborting to prevent token misuse.`);
+    }
   }
   const seededCount = await seedWorkspaceFiles(
     relayfileBaseUrl,

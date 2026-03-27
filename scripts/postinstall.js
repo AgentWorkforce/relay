@@ -10,6 +10,7 @@
  */
 
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import https from 'node:https';
 import path from 'node:path';
@@ -161,6 +162,65 @@ function getPackageVersion(pkgRoot) {
       }`
     );
     return null;
+  }
+}
+
+/**
+ * Verify SHA-256 checksum of a downloaded file.
+ * Downloads a checksums file from the same release directory and verifies.
+ * Returns true if verified, false if checksums file not found (graceful fallback).
+ * Throws if checksums file exists but verification fails.
+ */
+async function verifyChecksum(filePath, downloadUrl) {
+  const checksumUrl = downloadUrl.replace(/\/[^/]+$/, '/checksums.sha256');
+  const binaryName = path.basename(downloadUrl);
+
+  try {
+    const checksumContent = await new Promise((resolve, reject) => {
+      const chunks = [];
+      const request = https.get(checksumUrl, res => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          reject(new Error(`Checksums file not available (HTTP ${res.statusCode})`));
+          return;
+        }
+        res.on('data', chunk => chunks.push(chunk));
+        res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+        res.on('error', reject);
+      });
+      request.on('error', reject);
+    });
+
+    // Parse checksums file (format: "<hash>  <filename>" per line)
+    const expectedHash = checksumContent
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.endsWith(binaryName))
+      .map(line => line.split(/\s+/)[0])[0];
+
+    if (!expectedHash) {
+      warn(`No checksum entry found for ${binaryName} in checksums file`);
+      return false;
+    }
+
+    const fileBuffer = fs.readFileSync(filePath);
+    const actualHash = createHash('sha256').update(fileBuffer).digest('hex');
+
+    if (actualHash !== expectedHash) {
+      throw new Error(
+        `Checksum mismatch for ${binaryName}: expected ${expectedHash}, got ${actualHash}`
+      );
+    }
+
+    info(`Checksum verified for ${binaryName}`);
+    return true;
+  } catch (err) {
+    if (err.message.includes('Checksum mismatch')) {
+      throw err; // Re-throw verification failures — this is a supply chain risk
+    }
+    // Checksums file not available — log warning but allow installation
+    warn(`Checksum verification skipped for ${binaryName}: ${err.message}`);
+    return false;
   }
 }
 
@@ -341,6 +401,7 @@ async function installBrokerBinary() {
 
       try {
         await downloadBinary(downloadUrl, targetPath);
+        await verifyChecksum(targetPath, downloadUrl);
         fs.chmodSync(targetPath, 0o755);
         resignBinaryForMacOS(targetPath);
         success(`Downloaded broker binary for ${os.platform()}-${os.arch()}`);
@@ -348,6 +409,8 @@ async function installBrokerBinary() {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         warn(`Failed to download broker binary: ${message}`);
+        // Clean up partial/untrusted download
+        try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
       }
     }
   }
@@ -414,6 +477,7 @@ async function installDashboardBinary() {
   try {
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     await downloadBinary(downloadUrl, targetPath);
+    await verifyChecksum(targetPath, downloadUrl);
     fs.chmodSync(targetPath, 0o755);
     resignBinaryForMacOS(targetPath);
     success('Downloaded dashboard-server binary');
@@ -421,6 +485,7 @@ async function installDashboardBinary() {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     info(`Dashboard binary not available (${message}) — will use npx fallback`);
+    try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
     return false;
   }
 }
@@ -468,6 +533,7 @@ async function installRelayAcpBinary() {
   try {
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     await downloadBinary(downloadUrl, targetPath);
+    await verifyChecksum(targetPath, downloadUrl);
     fs.chmodSync(targetPath, 0o755);
     resignBinaryForMacOS(targetPath);
     success('Downloaded relay-acp binary');
@@ -475,6 +541,7 @@ async function installRelayAcpBinary() {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     info(`relay-acp binary not available (${message}) — Zed integration requires manual install`);
+    try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
     return false;
   }
 }
@@ -676,13 +743,19 @@ function patchAgentTrajectories() {
     await storage.save(trajectory);`;
 
   if (!content.includes(optionNeedle) || !content.includes(createNeedle)) {
-    warn('agent-trajectories CLI format changed, skipping patch');
+    warn('agent-trajectories CLI format changed, skipping patch (expected needle not found)');
     return;
   }
 
   const updated = content
     .replace(optionNeedle, optionReplacement)
     .replace(createNeedle, createReplacement);
+
+  // Verify the patch produced exactly the expected changes (no double-application or corruption)
+  if (updated === content) {
+    warn('agent-trajectories patch produced no changes, skipping write');
+    return;
+  }
 
   fs.writeFileSync(cliPath, updated, 'utf-8');
   success('Patched agent-trajectories to record agent on trail start');

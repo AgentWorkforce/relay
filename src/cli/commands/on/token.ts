@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 
 interface TokenClaims {
   sub: string;
@@ -40,7 +40,7 @@ export function mintToken(opts: {
     aud: ['relayauth', 'relayfile'],
     iat: now,
     exp: now + (opts.ttlSeconds ?? 3600),
-    jti: 'tok-' + now + '-' + Math.random().toString(36).slice(2, 8),
+    jti: 'tok-' + now + '-' + randomUUID(),
   };
 
   const base64url = (obj: unknown) => Buffer.from(JSON.stringify(obj)).toString('base64url');

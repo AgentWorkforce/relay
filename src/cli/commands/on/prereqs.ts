@@ -140,15 +140,7 @@ export async function checkPrereqs(
 
   const distPath = path.join(relayauthRoot, 'packages', 'sdk', 'dist', 'index.js');
   if (!existsSync(distPath)) {
-    const build = spawnSync('npx', ['turbo', 'build'], {
-      cwd: relayauthRoot,
-      stdio: 'ignore',
-    });
-    if (build.status !== 0) {
-      missing.push('relayauth SDK build');
-    } else {
-      maybeCreateDirectory(path.dirname(distPath));
-    }
+    missing.push('relayauth SDK build (run `npx turbo build` in relayauth root)');
   }
 
   return {

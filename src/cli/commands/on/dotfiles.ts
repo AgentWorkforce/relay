@@ -127,7 +127,7 @@ function walkProjectFiles(
 ): void {
   const entries = readdirSync(currentDir, { withFileTypes: true });
   for (const entry of entries) {
-    if (entry.name === '.git' || entry.name === '.relay') {
+    if (entry.name === '.git' || entry.name === '.relay' || entry.name === 'node_modules') {
       continue;
     }
 
