@@ -4599,15 +4599,12 @@ export class WorkflowRunner {
     // read-and-judge operations and should not inherit long owner step timeouts.
     const REVIEW_TIMEOUT_CAP_MS = 300_000;
     const safetyTimeoutMs = Math.min(timeoutMs ?? 600_000, REVIEW_TIMEOUT_CAP_MS);
-
     const reviewStep: WorkflowStep = {
       name: `${step.name}-review`,
       type: 'agent',
       agent: reviewerDef.name,
       task: reviewTask,
     };
-    // Force non-interactive for review subprocesses regardless of original agent config
-    const reviewReviewerDef = { ...reviewerDef, interactive: false as const };
 
     await this.trajectory?.registerAgent(reviewerDef.name, 'reviewer');
     this.postToChannel(`**[${step.name}]** Review started (reviewer: ${reviewerDef.name})`);
@@ -4635,7 +4632,7 @@ export class WorkflowRunner {
     if (this.executor) {
       const reviewOutput = await this.executor.executeAgentStep(
         reviewStep,
-        reviewReviewerDef,
+        reviewerDef,
         reviewTask,
         safetyTimeoutMs
       );
@@ -4676,7 +4673,7 @@ export class WorkflowRunner {
     };
 
     try {
-      const spawnResult = await this.spawnAndWait(reviewReviewerDef, reviewStep, safetyTimeoutMs, {
+      const spawnResult = await this.spawnAndWait(reviewerDef, reviewStep, safetyTimeoutMs, {
         evidenceStepName: step.name,
         evidenceRole: 'reviewer',
         logicalName: reviewerDef.name,
