@@ -71,15 +71,16 @@ export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
         <ul className={s.links}>
           <li className={s.productDropdown}>
             <span className={s.link} role="button" tabIndex={0}>
-              Products
+              Features
               <svg className={s.chevron} width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M2.5 4L5 6.5L7.5 4" />
               </svg>
             </span>
             <div className={s.dropdownMenu}>
-              <Link href="/message" className={s.dropdownItem}>Message</Link>
               <Link href="/auth" className={s.dropdownItem}>Auth</Link>
               <Link href="/file" className={s.dropdownItem}>File</Link>
+              <Link href="/message" className={s.dropdownItem}>Message</Link>
+              <Link href="/schedule" className={s.dropdownItem}>Schedule</Link>
             </div>
           </li>
           <li>
@@ -124,16 +125,17 @@ export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
     {menuOpen && (
       <div className={s.mobileMenu}>
         <button className={s.mobileProductToggle} onClick={() => setProductOpen(!productOpen)}>
-          Products
+          Features
           <svg className={`${s.chevron} ${productOpen ? s.chevronOpen : ''}`} width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M2.5 4L5 6.5L7.5 4" />
           </svg>
         </button>
         {productOpen && (
           <div className={s.mobileProductItems}>
-            <Link href="/message" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Message</Link>
             <Link href="/auth" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Auth</Link>
             <Link href="/file" className={s.mobileLink} onClick={() => setMenuOpen(false)}>File</Link>
+            <Link href="/message" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Message</Link>
+            <Link href="/schedule" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Schedule</Link>
           </div>
         )}
         <Link href="/docs" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Docs</Link>
