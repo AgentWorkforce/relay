@@ -34,7 +34,8 @@ export function registerOnCommands(program: Command, overrides: Partial<OnDepend
     .command('on')
     .description('Launch an agent on the relay — sandboxed workspace with dotfile permissions')
     .argument('[cli]', 'Agent CLI to launch (codex, claude, gemini, aider)')
-    .option('--agent <name>', 'Agent identity name (default: first from dotfiles)')
+    .option('--agent <name>', 'Agent identity name (default: CLI basename)')
+    .option('--workspace <id>', 'Join an existing relay workspace')
     .option('--scan', 'Preview what the agent will see without launching')
     .option('--doctor', 'Check prerequisites and exit')
     .option('--port-auth <port>', 'Relayauth port', '8787')
@@ -50,7 +51,7 @@ export function registerOnCommands(program: Command, overrides: Partial<OnDepend
         return;
       }
       if (!cli) {
-        deps.error('Usage: agent-relay on <cli> [--agent name] [-- args...]');
+        deps.error('Usage: agent-relay on <cli> [--agent name] [--workspace id] [-- args...]');
         return deps.exit(1);
       }
       await goOnTheRelay(cli, options, command.args.slice(1), deps);

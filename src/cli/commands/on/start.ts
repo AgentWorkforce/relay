@@ -14,9 +14,11 @@ import {
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { mintToken } from './token.js';
+import { seedWorkspace as seedWorkspaceFiles } from './workspace.js';
 
 interface OnOptions {
   agent?: string;
+  workspace?: string;
   portAuth: string;
   portFile: string;
 }
@@ -51,6 +53,31 @@ interface CleanupState {
   readonlyPatterns: string[];
   ignoredPatterns: string[];
 }
+
+interface WorkspaceJoinResponse {
+  workspaceId: string;
+  token: string;
+  relayfileUrl: string;
+  joinCommand: string;
+}
+
+interface WorkspaceSession extends WorkspaceJoinResponse {
+  created: boolean;
+}
+
+type FetchFn = typeof fetch;
+
+interface WorkspaceSessionRequest {
+  authBase: string;
+  fallbackRelayfileUrl: string;
+  requestedWorkspaceId?: string;
+  workspaceName?: string;
+  agentName: string;
+  scopes: string[];
+  fetchFn?: FetchFn;
+}
+
+const DEFAULT_SEED_EXCLUDES = ['.relay', '.git', 'node_modules'];
 
 function normalizeLineList(value: string | undefined): string[] {
   if (!value) return [];
@@ -92,6 +119,171 @@ function toStringArray(value: unknown, fallback: string[] = []): string[] {
 
 function toString(value: unknown, fallback = ''): string {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : fallback;
+}
+
+function buildJoinCommand(workspaceId: string): string {
+  return `agent-relay on <cli> --workspace ${workspaceId}`;
+}
+
+function sanitizePathComponent(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, '-');
+}
+
+async function postWorkspaceApi(
+  fetchFn: FetchFn,
+  url: string,
+  body: Record<string, unknown>
+): Promise<unknown> {
+  const response = await fetchFn(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Correlation-Id': `agent-relay-on-${Date.now()}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(`workspace API request failed (${response.status}): ${raw}`.trim());
+  }
+
+  if (!raw.trim()) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (error) {
+    throw new Error(`workspace API returned invalid JSON: ${String(error)}`);
+  }
+}
+
+function parseCreateWorkspaceResponse(payload: unknown): {
+  workspaceId: string;
+  token: string;
+  relayfileUrl: string;
+  joinCommand: string;
+} {
+  const root = toRecord(payload);
+  const data = toRecord(root.data);
+  const workspaceId = toString(
+    data.workspaceId,
+    toString(data.id, toString(root.workspaceId, toString(root.id)))
+  );
+
+  if (!workspaceId) {
+    throw new Error('workspace create response is missing workspaceId');
+  }
+
+  return {
+    workspaceId,
+    token: toString(data.token, toString(root.token)),
+    relayfileUrl: normalizeBaseUrl(toString(data.relayfileUrl, toString(root.relayfileUrl))),
+    joinCommand: toString(data.joinCommand, toString(root.joinCommand, buildJoinCommand(workspaceId))),
+  };
+}
+
+function parseJoinWorkspaceResponse(payload: unknown, requestedWorkspaceId: string): WorkspaceJoinResponse {
+  const root = toRecord(payload);
+  const data = toRecord(root.data);
+  const workspaceId = toString(
+    data.workspaceId,
+    toString(data.id, toString(root.workspaceId, toString(root.id, requestedWorkspaceId)))
+  );
+  const token = toString(data.token, toString(root.token));
+
+  if (!workspaceId) {
+    throw new Error('workspace join response is missing workspaceId');
+  }
+  if (!token) {
+    throw new Error(`workspace join response for ${workspaceId} is missing token`);
+  }
+
+  return {
+    workspaceId,
+    token,
+    relayfileUrl: normalizeBaseUrl(toString(data.relayfileUrl, toString(root.relayfileUrl))),
+    joinCommand: toString(data.joinCommand, toString(root.joinCommand, buildJoinCommand(workspaceId))),
+  };
+}
+
+async function joinWorkspaceSession(
+  fetchFn: FetchFn,
+  authBase: string,
+  workspaceId: string,
+  agentName: string,
+  scopes: string[]
+): Promise<WorkspaceJoinResponse> {
+  const body: Record<string, unknown> = { agentName };
+  if (scopes.length > 0) {
+    body.scopes = scopes;
+  }
+
+  const payload = await postWorkspaceApi(
+    fetchFn,
+    `${authBase}/api/v1/workspaces/${encodeURIComponent(workspaceId)}/join`,
+    body
+  );
+  return parseJoinWorkspaceResponse(payload, workspaceId);
+}
+
+export async function requestWorkspaceSession(options: WorkspaceSessionRequest): Promise<WorkspaceSession> {
+  const fetchFn = options.fetchFn ?? fetch;
+  const requestedWorkspaceId = toString(options.requestedWorkspaceId);
+
+  if (requestedWorkspaceId) {
+    const joined = await joinWorkspaceSession(
+      fetchFn,
+      options.authBase,
+      requestedWorkspaceId,
+      options.agentName,
+      options.scopes
+    );
+
+    return {
+      created: false,
+      workspaceId: joined.workspaceId,
+      token: joined.token,
+      relayfileUrl: joined.relayfileUrl || options.fallbackRelayfileUrl,
+      joinCommand: joined.joinCommand,
+    };
+  }
+
+  const createBody: Record<string, unknown> = {};
+  if (toString(options.workspaceName)) {
+    createBody.name = options.workspaceName;
+  }
+
+  const created = parseCreateWorkspaceResponse(
+    await postWorkspaceApi(fetchFn, `${options.authBase}/api/v1/workspaces/create`, createBody)
+  );
+
+  let token = created.token;
+  let relayfileUrl = created.relayfileUrl;
+  if (!token || !relayfileUrl) {
+    const joined = await joinWorkspaceSession(
+      fetchFn,
+      options.authBase,
+      created.workspaceId,
+      options.agentName,
+      options.scopes
+    );
+    token = joined.token;
+    relayfileUrl = joined.relayfileUrl || relayfileUrl;
+  }
+
+  if (!token) {
+    throw new Error(`workspace ${created.workspaceId} did not return a token`);
+  }
+
+  return {
+    created: true,
+    workspaceId: created.workspaceId,
+    token,
+    relayfileUrl: relayfileUrl || options.fallbackRelayfileUrl,
+    joinCommand: created.joinCommand,
+  };
 }
 
 function normalizeAgents(rawAgents: unknown): RelayConfigAgent[] {
@@ -344,6 +536,14 @@ function findAgentConfig(config: RelayConfig, requestedAgent?: string): RelayCon
   if (requestedAgent) {
     const match = config.agents.find((agent) => agent.name === requestedAgent);
     if (match) return match;
+    const fallback = config.agents[0];
+    if (fallback) {
+      return {
+        ...fallback,
+        name: requestedAgent,
+      };
+    }
+    return { name: requestedAgent, scopes: ['relayfile:*:*:*'] };
   }
   return config.agents[0] ?? { name: 'default-agent', scopes: ['relayfile:*:*:*'] };
 }
@@ -478,6 +678,15 @@ function ensureProcessRunning(processRef: ChildProcessWithoutNullStreams): boole
   return processRef.exitCode === null && !processRef.killed;
 }
 
+function isLocalBaseUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
+  } catch {
+    return false;
+  }
+}
+
 function killMountProcess(processRef: ChildProcessWithoutNullStreams): Promise<void> {
   if (processRef.exitCode !== null || !processRef.pid) return Promise.resolve();
   processRef.kill('SIGTERM');
@@ -552,27 +761,37 @@ async function ensureProvisioned(
 }
 
 async function ensureServices(authBase: string, fileBase: string, deps: any, log: LogFn, error: LogFn): Promise<void> {
-  const authHealthy = await waitForHttpHealthy(authBase);
-  const fileHealthy = await waitForHttpHealthy(fileBase);
+  const needsLocalAuth = isLocalBaseUrl(authBase);
+  const needsLocalFile = isLocalBaseUrl(fileBase);
+  if (!needsLocalAuth && !needsLocalFile) {
+    return;
+  }
+
+  const authHealthy = !needsLocalAuth || await waitForHttpHealthy(authBase);
+  const fileHealthy = !needsLocalFile || await waitForHttpHealthy(fileBase);
   if (authHealthy && fileHealthy) return;
 
   if (typeof deps?.ensureServicesRunning === 'function') {
     await deps.ensureServicesRunning(authBase, fileBase);
-    const postAuthHealthy = await waitForHttpHealthy(authBase);
-    const postFileHealthy = await waitForHttpHealthy(fileBase);
+    const postAuthHealthy = !needsLocalAuth || await waitForHttpHealthy(authBase);
+    const postFileHealthy = !needsLocalFile || await waitForHttpHealthy(fileBase);
     if (postAuthHealthy && postFileHealthy) return;
   }
 
   if (typeof deps?.startServices === 'function') {
     await deps.startServices({ authBase, fileBase });
-    const postAuthHealthy = await waitForHttpHealthy(authBase);
-    const postFileHealthy = await waitForHttpHealthy(fileBase);
+    const postAuthHealthy = !needsLocalAuth || await waitForHttpHealthy(authBase);
+    const postFileHealthy = !needsLocalFile || await waitForHttpHealthy(fileBase);
     if (postAuthHealthy && postFileHealthy) return;
   }
 
   error('Relay services are not ready.');
-  error(`- relayauth (${authBase}/health): ${authHealthy ? 'healthy' : 'unhealthy'}`);
-  error(`- relayfile (${fileBase}/health): ${fileHealthy ? 'healthy' : 'unhealthy'}`);
+  if (needsLocalAuth) {
+    error(`- relayauth (${authBase}/health): ${authHealthy ? 'healthy' : 'unhealthy'}`);
+  }
+  if (needsLocalFile) {
+    error(`- relayfile (${fileBase}/health): ${fileHealthy ? 'healthy' : 'unhealthy'}`);
+  }
   throw new Error('Start relay services before running relay on; or pass a dependency that can launch them.');
 }
 
@@ -615,8 +834,9 @@ export async function goOnTheRelay(
   }
 
   ensureStateDirs(relayDir);
-  const config = resolveConfig(projectDir, relayDir, options.agent);
-  const agent = findAgentConfig(config, options.agent);
+  const defaultAgentName = toString(options.agent, path.basename(cli));
+  const config = resolveConfig(projectDir, relayDir, defaultAgentName);
+  const agent = findAgentConfig(config, defaultAgentName);
   const authBase = normalizeBaseUrl(options.portAuth);
   const fileBase = normalizeBaseUrl(options.portFile);
   const relayfileRoot = resolveRelayfileRoot(projectDir);
@@ -628,24 +848,41 @@ export async function goOnTheRelay(
 
   await ensureServices(authBase, fileBase, deps, log, error);
 
-  const tokenPath = path.join(relayDir, 'tokens', `${agent.name}.jwt`);
-  const token = (await ensureProvisioned(config, agent, relayfileRoot, projectDir, tokenPath, log, error, deps)).trim();
-  if (!token) {
-    throw new Error(`missing token for ${agent.name}: ${tokenPath}`);
+  const workspaceSession = await requestWorkspaceSession({
+    authBase,
+    fallbackRelayfileUrl: fileBase,
+    requestedWorkspaceId: options.workspace,
+    workspaceName: config.workspace,
+    agentName: agent.name,
+    scopes: agent.scopes,
+    fetchFn: typeof deps?.fetch === 'function' ? (deps.fetch as FetchFn) : undefined,
+  });
+
+  if (workspaceSession.created) {
+    await seedWorkspaceFiles(
+      workspaceSession.relayfileUrl,
+      workspaceSession.token,
+      workspaceSession.workspaceId,
+      projectDir,
+      DEFAULT_SEED_EXCLUDES,
+    );
   }
 
-  const mountDir = path.join(relayDir, `workspace-${agent.name}`);
+  const mountDir = path.join(
+    relayDir,
+    `workspace-${sanitizePathComponent(workspaceSession.workspaceId)}-${sanitizePathComponent(agent.name)}`
+  );
   mkdirSync(mountDir, { recursive: true });
   const mountLogPath = path.join(relayDir, 'logs', `${agent.name}-mount.log`);
   writeFileSync(mountLogPath, '', 'utf8');
 
   const onceArgs = [
     '--base-url',
-    fileBase,
+    workspaceSession.relayfileUrl,
     '--workspace',
-    config.workspace,
+    workspaceSession.workspaceId,
     '--token',
-    token,
+    workspaceSession.token,
     '--local-dir',
     mountDir,
     '--once',
@@ -675,8 +912,12 @@ export async function goOnTheRelay(
   }
 
   const mountedFiles = countFilesForSync(mountDir);
-  log(`On the relay as "${agent.name}"`);
-  log(`  Workspace: ${mountDir}`);
+  log(`On the relay as ${agent.name}`);
+  log(`  Workspace: ${workspaceSession.workspaceId}`);
+  if (workspaceSession.created) {
+    log('  Join from another machine:');
+    log(`    ${workspaceSession.joinCommand}`);
+  }
   log(`  Mounted files: ${mountedFiles}`);
   log(`  Permissions denied (initial sync): ${deniedCount}`);
   const sandboxFlags = getSandboxFlags(cli);
@@ -689,7 +930,7 @@ export async function goOnTheRelay(
     mountLogPath,
     projectDir,
     relayDir,
-    workspace: config.workspace,
+    workspace: workspaceSession.workspaceId,
     readonlyPatterns,
     ignoredPatterns,
   };
@@ -708,11 +949,11 @@ export async function goOnTheRelay(
   try {
     const mountArgs = [
       '--base-url',
-      fileBase,
+      workspaceSession.relayfileUrl,
       '--workspace',
-      config.workspace,
+      workspaceSession.workspaceId,
       '--token',
-      token,
+      workspaceSession.token,
       '--local-dir',
       mountDir,
     ];
@@ -748,9 +989,9 @@ export async function goOnTheRelay(
     await new Promise<void>((resolve, reject) => {
       const envVars = {
         ...process.env,
-        RELAYFILE_TOKEN: token,
-        RELAYFILE_BASE_URL: fileBase,
-        RELAYFILE_WORKSPACE: config.workspace,
+        RELAYFILE_TOKEN: workspaceSession.token,
+        RELAYFILE_BASE_URL: workspaceSession.relayfileUrl,
+        RELAYFILE_WORKSPACE: workspaceSession.workspaceId,
         RELAY_WORKSPACE: mountDir,
         RELAY_AGENT_NAME: agent.name,
       };
