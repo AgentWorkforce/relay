@@ -29,8 +29,8 @@
     "postinstall": "node -e \"try{require('child_process').execSync('ldd --version 2>&1',{stdio:'pipe'})}catch{try{require('child_process').execSync('apk info gcompat 2>/dev/null',{stdio:'pipe'})}catch{console.warn('\\n\\u26a0\\ufe0f  @agent-relay/openclaw: Alpine detected without gcompat. Spawning requires glibc.\\n   Install with: apk add gcompat libstdc++\\n')}}\""
   },
   "dependencies": {
-    "@agent-relay/sdk": "3.2.18",
-    "@relaycast/sdk": "^1.0.0",
+    "@agent-relay/sdk": "^3.2.18",
+    "@relaycast/sdk": "^1.1.0",
     "ws": "^8.0.0"
   },
   "optionalDependencies": {

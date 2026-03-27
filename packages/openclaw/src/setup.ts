@@ -203,46 +203,11 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   let apiKey = options.apiKey;
 
   if (!apiKey) {
-    try {
-      const res = await fetch(`${baseUrl}/v1/workspaces`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: `${clawName}-workspace` }),
-      });
+    const workspaceName = `${clawName}-workspace`;
 
-      if (res.status === 409) {
-        // Workspace already exists — look up its API key
-        const lookupRes = await fetch(`${baseUrl}/v1/workspaces/by-name/${encodeURIComponent(`${clawName}-workspace`)}`, {
-          headers: { 'Content-Type': 'application/json' },
-        });
-        if (lookupRes.ok) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const lookupBody = (await lookupRes.json()) as any;
-          apiKey = lookupBody.apiKey ?? lookupBody.api_key ?? lookupBody.data?.apiKey ?? lookupBody.data?.api_key;
-        }
-        if (!apiKey) {
-          return {
-            ok: false,
-            apiKey: '',
-            clawName,
-            skillDir: '',
-            message: `Workspace "${clawName}-workspace" already exists. Pass the workspace key: @agent-relay/openclaw setup <key> --name ${clawName}`,
-          };
-        }
-      } else if (!res.ok) {
-        const body = await res.text();
-        return {
-          ok: false,
-          apiKey: '',
-          clawName,
-          skillDir: '',
-          message: `Failed to create workspace: ${res.status} ${body}`,
-        };
-      } else {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const successBody = (await res.json()) as any;
-        apiKey = successBody.apiKey ?? successBody.api_key ?? successBody.data?.apiKey ?? successBody.data?.api_key;
-      }
+    try {
+      const workspace = await RelayCast.ensureWorkspace(workspaceName, baseUrl);
+      apiKey = workspace.apiKey;
 
       if (!apiKey) {
         return {
@@ -250,7 +215,9 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
           apiKey: '',
           clawName,
           skillDir: '',
-          message: 'Workspace created but no API key returned.',
+          message: workspace.existed
+            ? `Workspace "${workspaceName}" already exists. Pass the workspace key: @agent-relay/openclaw setup <key> --name ${clawName}`
+            : 'Workspace created but no API key returned.',
         };
       }
     } catch (err) {
