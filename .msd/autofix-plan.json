@@ -2,73 +2,7 @@
   "groups": [
     {
       "id": "group-1",
-      "label": "postinstall.js race condition fix",
-      "domain": "reliability",
-      "findings": [
-        "3001159838"
-      ],
-      "files": [
-        "scripts/postinstall.js"
-      ],
-      "rationale": "Single file with one TOCTOU race condition finding — isolated fix for postinstall script"
-    },
-    {
-      "id": "group-2",
-      "label": "start.ts race conditions and biased random",
-      "domain": "security",
-      "findings": [
-        "3001159849",
-        "3001159865",
-        "3001922882",
-        "3002200341"
-      ],
-      "files": [
-        "src/cli/commands/on/start.ts"
-      ],
-      "rationale": "All findings in start.ts: two TOCTOU race conditions (lines 1037, 1045), one biased random number (line 154), and one devin review comment (line 1329)"
-    },
-    {
-      "id": "group-3",
-      "label": "on/ subcommands: services, prereqs, on.ts",
-      "domain": "reliability",
-      "findings": [
-        "3001216356",
-        "3001216455",
-        "3001216544",
-        "3001216720",
-        "3002199072",
-        "3002199235",
-        "3002199452",
-        "3002199667",
-        "3002200418"
-      ],
-      "files": [
-        "src/cli/commands/on/prereqs.ts",
-        "src/cli/commands/on/services.ts",
-        "src/cli/commands/on.ts"
-      ],
-      "rationale": "Related on/ subcommand files grouped together — includes active devin review findings and their resolved counterparts for verification. No overlap with group-2 (start.ts)"
-    },
-    {
-      "id": "group-4",
-      "label": "SDK: relay.ts and validator.ts fixes",
-      "domain": "security",
-      "findings": [
-        "3001216248",
-        "3001922861",
-        "3001954193",
-        "3002198902",
-        "3002200023"
-      ],
-      "files": [
-        "packages/sdk/src/relay.ts",
-        "packages/sdk/src/workflows/validator.ts"
-      ],
-      "rationale": "SDK package files grouped together — biased random in relay.ts, devin review comments, plus resolved findings for verification"
-    },
-    {
-      "id": "group-5",
-      "label": "start.ts security hardening and refactoring",
+      "label": "start.ts security hardening and code quality",
       "domain": "security",
       "findings": [
         "src/cli/commands/on/start.ts-Hardcoded JWT signing secret-security + developer + historian (all confirmed in cross-review)-critical",
@@ -90,11 +24,11 @@
         "src/cli/commands/on/start.ts",
         "src/cli/commands/on/start.test.ts"
       ],
-      "rationale": "All findings in start.ts (the largest file with the critical JWT issue) plus its test file. Grouped together since no two workers can touch the same file."
+      "rationale": "All 13 findings in start.ts (the largest and most critical file with the CRITICAL JWT issue) plus its test file. Must be one group since no two workers can touch the same file."
     },
     {
-      "id": "group-6",
-      "label": "workspace.ts and provision.ts fixes",
+      "id": "group-2",
+      "label": "workspace.ts and provision.ts reliability and security",
       "domain": "security",
       "findings": [
         "src/cli/commands/on/workspace.ts-Symlink traversal file exfiltration-security + historian (confirmed in cross-review)-high",
@@ -108,10 +42,10 @@
         "src/cli/commands/on/workspace.ts",
         "src/cli/commands/on/provision.ts"
       ],
-      "rationale": "Both files handle workspace/provisioning logic with security issues (symlink traversal, TOCTOU race). Related domain, no file overlap with other groups."
+      "rationale": "Related CLI command files handling workspace and provisioning logic. Both deal with file I/O and API interactions with security implications (symlink traversal, TOCTOU race)."
     },
     {
-      "id": "group-7",
+      "id": "group-3",
       "label": "services, dotfiles, token, and prereqs fixes",
       "domain": "reliability",
       "findings": [
@@ -129,10 +63,10 @@
         "src/cli/commands/on/token.ts",
         "src/cli/commands/on/prereqs.ts"
       ],
-      "rationale": "Remaining CLI command files grouped together. All in src/cli/commands/on/ with no overlap to other groups. Mix of reliability and minor security fixes."
+      "rationale": "Remaining CLI command files all under src/cli/commands/on/. Mix of reliability and minor security fixes with no file overlap to other groups."
     },
     {
-      "id": "group-8",
+      "id": "group-4",
       "label": "postinstall script and SDK relay fixes",
       "domain": "security",
       "findings": [
@@ -145,9 +79,9 @@
         "scripts/postinstall.js",
         "packages/sdk/src/relay.ts"
       ],
-      "rationale": "Non-CLI files: the postinstall script (supply chain security) and SDK relay module (error handling). Separate domain from CLI commands, no file overlap."
+      "rationale": "Non-CLI files: build script and SDK module. Both involve external data handling (binary downloads, registry JSON parsing) with supply-chain and error-handling security implications."
     }
   ],
-  "totalGroups": 8,
+  "totalGroups": 4,
   "conflictCheck": "no file appears in multiple groups"
 }

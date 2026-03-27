@@ -414,6 +414,12 @@ export class AgentRelay {
     this.defaultChannels = options.channels ?? ['general'];
     this.requestedWorkspaceId = requestedWorkspaceId;
     this.workspaceName = options.workspaceName;
+    if (options.workspaceName && !options.workspaceId) {
+      console.warn(
+        '[AgentRelay] workspaceName without workspaceId is deprecated and will be removed in a future major version. ' +
+        'Set workspaceId explicitly to avoid silent behavior changes.',
+      );
+    }
     this.relaycastBaseUrl = options.relaycastBaseUrl;
     this.clientOptions = {
       binaryPath: options.binaryPath,

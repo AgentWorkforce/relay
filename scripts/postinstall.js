@@ -747,6 +747,23 @@ function patchAgentTrajectories() {
     return;
   }
 
+  // Verify each needle appears exactly once to prevent unexpected multi-match corruption
+  const optionCount = content.split(optionNeedle).length - 1;
+  const createCount = content.split(createNeedle).length - 1;
+  if (optionCount !== 1 || createCount !== 1) {
+    warn(`agent-trajectories patch aborted: needle matched ${optionCount}/${createCount} times (expected 1/1)`);
+    return;
+  }
+
+  // Back up original before patching so corruption can be recovered
+  const backupPath = `${cliPath}.pre-relay-patch`;
+  try {
+    fs.copyFileSync(cliPath, backupPath);
+  } catch (backupErr) {
+    warn(`Failed to back up agent-trajectories before patching: ${backupErr.message}`);
+    return;
+  }
+
   const updated = content
     .replace(optionNeedle, optionReplacement)
     .replace(createNeedle, createReplacement);
@@ -754,6 +771,7 @@ function patchAgentTrajectories() {
   // Verify the patch produced exactly the expected changes (no double-application or corruption)
   if (updated === content) {
     warn('agent-trajectories patch produced no changes, skipping write');
+    try { fs.unlinkSync(backupPath); } catch { /* ignore */ }
     return;
   }
 
@@ -776,6 +794,15 @@ function patchRelayauthCoreExports() {
 
     if (rootExport.require === './dist/index.js' && rootExport.default === './dist/index.js') {
       info('@relayauth/core already supports require()');
+      return;
+    }
+
+    // Back up original before patching so corruption can be recovered
+    const backupPath = `${packageJsonPath}.pre-relay-patch`;
+    try {
+      fs.copyFileSync(packageJsonPath, backupPath);
+    } catch (backupErr) {
+      warn(`Failed to back up @relayauth/core before patching: ${backupErr.message}`);
       return;
     }
 

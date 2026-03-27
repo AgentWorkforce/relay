@@ -601,6 +601,12 @@ function loadConfigFromFile(configPath: string, projectDir: string): RelayConfig
 
   const workspace = toString(payload.workspace, toString(root.workspace, fallbackWorkspace));
   const signing_secret = toString(payload.signing_secret, toString(root.signing_secret, process.env.SIGNING_KEY ?? ''));
+  if (!signing_secret) {
+    throw new Error(
+      `relay config at ${configPath} is missing signing_secret and SIGNING_KEY env var is not set. ` +
+        'Set signing_secret in your config or export SIGNING_KEY.'
+    );
+  }
   const agents = normalizeAgents(payload.agents ?? root.agents);
 
   return { workspace, signing_secret, agents };
@@ -737,9 +743,7 @@ function globMatch(filePath: string, rawPattern: string): boolean {
     .replace(/\\\?/g, '__QMARK__')
     .replace(/__DOUBLESTAR__/g, '.*')
     .replace(/__STAR__/g, '[^/]*')
-    .replace(/__QMARK__/g, '[^/]')
-    .replace(/__STAR__/g, '\\*')
-    .replace(/__QMARK__/g, '\\?');
+    .replace(/__QMARK__/g, '[^/]');
   const withDirectory = `^${escaped}$`;
   return new RegExp(withDirectory).test(target);
 }
@@ -925,6 +929,8 @@ async function syncWritableFilesBack(
   ignoredPatterns: string[]
 ): Promise<number> {
   let synced = 0;
+  const realProjectDir = realpathSync(projectDir);
+  const realMountDir = realpathSync(mountDir);
   const files = listFiles(mountDir);
   for (const sourceFile of files) {
     const relative = path.relative(mountDir, sourceFile);
@@ -938,10 +944,19 @@ async function syncWritableFilesBack(
       continue;
     }
 
-    const targetPath = path.resolve(projectDir, relative);
+    const targetPath = path.resolve(realProjectDir, relative);
     // Guard against path traversal via symlinks: resolved target must stay within projectDir
-    if (!targetPath.startsWith(projectDir + path.sep) && targetPath !== projectDir) {
+    if (!targetPath.startsWith(realProjectDir + path.sep) && targetPath !== realProjectDir) {
       continue;
+    }
+    // Also verify source file resolves within the mount directory (prevents symlink-based exfiltration)
+    try {
+      const realSource = realpathSync(sourceFile);
+      if (!realSource.startsWith(realMountDir + path.sep) && realSource !== realMountDir) {
+        continue;
+      }
+    } catch {
+      continue; // Skip files whose realpath cannot be resolved (broken symlinks)
     }
     ensureDirectory(path.dirname(targetPath));
     cpSync(sourceFile, targetPath, { force: true });
@@ -1251,6 +1266,7 @@ export async function goOnTheRelay(
   const sandboxFlags = getSandboxFlags(cli);
   if (sandboxFlags.length > 0) {
     log(`  Sandbox: relay-enforced (${sandboxFlags.join(' ')})`);
+    log(`  ⚠ Agent CLI sandbox bypassed — relay file permissions are the only safety layer`);
   }
 
   const cleanupState: CleanupState = {
