@@ -110,6 +110,12 @@ struct InitCommand {
     #[arg(long, default_value = "0")]
     api_port: u16,
 
+    /// Bind address for the HTTP API (default: 127.0.0.1).
+    /// Use 0.0.0.0 to accept connections from outside the host (e.g. in
+    /// Daytona sandboxes where a remote client connects via preview URL).
+    #[arg(long, default_value = "127.0.0.1")]
+    api_bind: String,
+
     /// Enable persistence: write state, pending-deliveries, lock, PID, and MCP
     /// config to `.agent-relay/` in the working directory. When omitted (the
     /// default), runtime files are written to a deterministic temp directory and
@@ -1609,12 +1615,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             workspace_memberships.clone(),
             default_workspace_id.clone(),
         );
-        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", cmd.api_port))
+        let listener = tokio::net::TcpListener::bind(format!("{}:{}", cmd.api_bind, cmd.api_port))
             .await
-            .with_context(|| format!("failed to bind API on port {}", cmd.api_port))?;
+            .with_context(|| format!("failed to bind API on {}:{}", cmd.api_bind, cmd.api_port))?;
         eprintln!(
-            "[agent-relay] API listening on http://127.0.0.1:{}",
-            cmd.api_port
+            "[agent-relay] API listening on http://{}:{}",
+            cmd.api_bind, cmd.api_port
         );
         tokio::spawn(async move {
             if let Err(e) = axum::serve(listener, router).await {

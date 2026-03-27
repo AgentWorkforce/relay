@@ -139,7 +139,6 @@ export function resolveServiceConfig(overrides: Partial<ServiceConfig> = {}): Se
       overrides.relayauthRoot,
       process.env.RELAYAUTH_ROOT,
       cache.relayauthRoot,
-    ]) || [
       path.join(cwd, 'relayauth'),
       path.join(cwd, '..', 'relayauth'),
       path.join(cwd, '..', '..', 'relayauth'),
