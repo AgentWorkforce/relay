@@ -4696,6 +4696,15 @@ export class WorkflowRunner {
           }
         },
       });
+      // When the reviewer is non-interactive, spawnAndWait short-circuits to
+      // execNonInteractive which ignores onChunk — use SpawnResult.output as fallback.
+      if (!reviewOutput && spawnResult.output) {
+        reviewOutput = spawnResult.output;
+        const parsed = this.parseReviewDecision(reviewOutput);
+        if (parsed) {
+          startReviewCompletion(parsed);
+        }
+      }
       await reviewCompletionPromise;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
