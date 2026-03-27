@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Multi-Repository Spawning**: Agents can now be spawned across multiple repositories in a single operation, improving orchestration flexibility (#2d2bf610).
 - **Model Hotswap**: Runtime model switching for agents, allowing dynamic provider and model changes without restart (#5a80bdc0).
 - **Prerelease Publishing**: New prerelease script for staging environment, enabling faster iteration and testing cycles (#495428cd).
+- **`--api-bind` flag for broker HTTP API**: Configures the bind address for the broker's HTTP/WS server (default: `127.0.0.1`). Use `--api-bind 0.0.0.0` when running inside Daytona sandboxes to accept remote connections from the desktop app.
+- **`write_pty` PTY worker message**: New protocol message type that writes arbitrary data to the PTY. Used internally by the broker's `send_input` handler. The PTY worker responds with `ok` (including `bytes_written`) or `worker_error`.
 
 ### Fixed
 - Task injection failures are no longer silent - spawn properly returns an error when delivery fails.
@@ -28,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking cache removed**: Removed cache logic that caused agent initialization failures (#d1166cf9).
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
+- **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
 ## [3.2.18] - 2026-03-25
 
