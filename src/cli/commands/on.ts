@@ -22,7 +22,6 @@ function withDefaults(overrides: Partial<OnDependencies> = {}): OnDependencies {
     log: overrides.log ?? ((...args: unknown[]) => console.log(...args)),
     error: overrides.error ?? ((...args: unknown[]) => console.error(...args)),
     exit: overrides.exit ?? defaultExit,
-    ...overrides,
   };
 }
 

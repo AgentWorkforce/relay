@@ -68,20 +68,24 @@ function readCachedConfig(): CachedConfig {
   }
 }
 
-function resolvePrereqPaths(config: CheckPrereqConfig = {}): {
+export function resolvePrereqPaths(config: CheckPrereqConfig = {}): {
   relayauthRoot: string;
   relayfileRoot: string;
 } {
   const cache = readCachedConfig();
   const cwd = process.cwd();
 
+  const relayauthCandidates = [
+    config.relayauthRoot,
+    process.env.RELAYAUTH_ROOT,
+    cache.relayauthRoot,
+    path.join(cwd, 'relayauth'),
+    path.join(cwd, '..', 'relayauth'),
+    path.join(cwd, '..', '..', 'relayauth'),
+  ].filter((candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0);
+
   const relayauthRoot = path.resolve(
-    config.relayauthRoot ??
-      process.env.RELAYAUTH_ROOT ??
-      cache.relayauthRoot ??
-      path.join(cwd, 'relayauth') ??
-      path.join(cwd, '..', 'relayauth') ??
-      path.join(cwd, '..', '..', 'relayauth')
+    relayauthCandidates.find((candidate) => existsSync(candidate)) ?? relayauthCandidates[0] ?? path.join(cwd, 'relayauth')
   );
 
   return {

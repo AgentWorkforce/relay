@@ -96,11 +96,19 @@ function normalizeWorkspaceId(value: string | undefined): string | undefined {
 }
 
 function generateWorkspaceId(): string {
-  const bytes = randomBytes(8);
+  const alphabetLength = WORKSPACE_ID_ALPHABET.length;
+  const maxUnbiasedValue = Math.floor(256 / alphabetLength) * alphabetLength;
   let suffix = '';
-  for (let index = 0; index < 8; index += 1) {
-    suffix += WORKSPACE_ID_ALPHABET[bytes[index] % WORKSPACE_ID_ALPHABET.length];
+
+  while (suffix.length < 8) {
+    const bytes = randomBytes(8);
+    for (const byte of bytes) {
+      if (byte >= maxUnbiasedValue) continue;
+      suffix += WORKSPACE_ID_ALPHABET[byte % alphabetLength];
+      if (suffix.length === 8) break;
+    }
   }
+
   return `${WORKSPACE_ID_PREFIX}${suffix}`;
 }
 
@@ -1153,8 +1161,6 @@ export class AgentRelay {
     this.startPromise = this.ensureRelaycastApiKey()
       .then(() => AgentRelayClient.start(this.clientOptions))
       .then((c) => {
-        this.client = c;
-        this.startPromise = undefined;
         // Use the workspace key the broker actually connected with.
         // This ensures SDK and workers are always on the same workspace.
         if (c.workspaceKey) {
@@ -1162,13 +1168,20 @@ export class AgentRelay {
           const workspaceId = this.getResolvedWorkspaceId();
           if (workspaceId) {
             this.applyWorkspaceEnv(workspaceId, c.workspaceKey);
-            this.persistWorkspaceMapping(workspaceId, c.workspaceKey);
+            try {
+              this.persistWorkspaceMapping(workspaceId, c.workspaceKey);
+            } catch {
+              // Best-effort persistence only; do not block event wiring/startup.
+            }
           }
         }
         this.wireEvents(c);
+        this.client = c;
+        this.startPromise = undefined;
         return c;
       })
       .catch((err) => {
+        this.client = undefined;
         this.startPromise = undefined;
         throw err;
       });

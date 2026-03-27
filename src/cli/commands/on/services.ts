@@ -1,6 +1,7 @@
 import { ChildProcess, spawn, spawnSync } from 'node:child_process';
 import {
   accessSync,
+  closeSync,
   constants,
   existsSync,
   mkdirSync,
@@ -112,7 +113,7 @@ function pickFirst<T>(values: Array<T | undefined>): T | undefined {
   return undefined;
 }
 
-function pickFirstString(values: Array<string | undefined>): string {
+export function pickFirstString(values: Array<string | undefined>): string {
   for (const value of values) {
     if (value) {
       return value;
@@ -121,28 +122,35 @@ function pickFirstString(values: Array<string | undefined>): string {
   return '';
 }
 
+function resolveExistingPath(candidates: Array<string | undefined>, fallback: string): string {
+  const normalized = candidates.filter((candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0);
+  return path.resolve(normalized.find((candidate) => existsSync(candidate)) ?? normalized[0] ?? fallback);
+}
+
 export function resolveServiceConfig(overrides: Partial<ServiceConfig> = {}): ServiceConfig {
   const cache = getCachedConfig();
   const cwd = process.cwd();
 
-  const relayauthRoot = path.resolve(
-    pickFirstString([
+  const relayauthRoot = resolveExistingPath(
+    [
       overrides.relayauthRoot,
       process.env.RELAYAUTH_ROOT,
       cache.relayauthRoot,
       path.join(cwd, 'relayauth'),
       path.join(cwd, '..', 'relayauth'),
       path.join(cwd, '..', '..', 'relayauth'),
-    ]) || path.join(cwd, 'relayauth')
+    ],
+    path.join(cwd, 'relayauth')
   );
 
-  const relayfileRoot = path.resolve(
-    pickFirstString([
+  const relayfileRoot = resolveExistingPath(
+    [
       overrides.relayfileRoot,
       process.env.RELAYFILE_ROOT,
       cache.relayfileRoot,
       path.join(path.dirname(relayauthRoot), 'relayfile'),
-    ]) || path.join(path.dirname(relayauthRoot), 'relayfile')
+    ],
+    path.join(path.dirname(relayauthRoot), 'relayfile')
   );
 
   const logDir = path.resolve(
@@ -289,11 +297,15 @@ async function checkHealth(url: string): Promise<boolean> {
 
 function spawnLogged(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, logPath: string): ChildProcess {
   const logFile = openSync(logPath, 'a');
-  return spawn(command, args, {
-    cwd,
-    env,
-    stdio: ['ignore', logFile, logFile],
-  });
+  try {
+    return spawn(command, args, {
+      cwd,
+      env,
+      stdio: ['ignore', logFile, logFile],
+    });
+  } finally {
+    closeSync(logFile);
+  }
 }
 
 function spawnRelayauth(config: ServiceConfig, relayauthLogPath: string): ChildProcess {

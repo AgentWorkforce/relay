@@ -150,7 +150,7 @@ export function validateWorkflow(config: RelayYamlConfig): ValidationIssue[] {
       }
     }
 
-    // Check 5: maxConcurrency vs interactive agent count
+    // Check 6: maxConcurrency vs interactive agent count
     const interactiveSteps = (workflow.steps ?? []).filter((s) => {
       if (s.type === 'deterministic') return false;
       const def = agentMap.get(s.agent ?? '');
