@@ -688,6 +688,42 @@ function patchAgentTrajectories() {
   success('Patched agent-trajectories to record agent on trail start');
 }
 
+function patchRelayauthCoreExports() {
+  const pkgRoot = getPackageRoot();
+  const packageJsonPath = path.join(pkgRoot, 'node_modules', '@relayauth', 'core', 'package.json');
+
+  if (!fs.existsSync(packageJsonPath)) {
+    info('@relayauth/core not installed, skipping require() compatibility patch');
+    return;
+  }
+
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+    const rootExport = packageJson?.exports?.['.'];
+
+    if (!rootExport || typeof rootExport !== 'object' || Array.isArray(rootExport)) {
+      warn('@relayauth/core exports format changed, skipping require() compatibility patch');
+      return;
+    }
+
+    if (rootExport.require === './dist/index.js' && rootExport.default === './dist/index.js') {
+      info('@relayauth/core already supports require()');
+      return;
+    }
+
+    packageJson.exports['.'] = {
+      ...rootExport,
+      require: rootExport.require ?? './dist/index.js',
+      default: rootExport.default ?? './dist/index.js',
+    };
+
+    fs.writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf-8');
+    success('Patched @relayauth/core package exports for require() compatibility');
+  } catch (err) {
+    warn(`Failed to patch @relayauth/core package exports: ${err.message}`);
+  }
+}
+
 function logPostinstallDiagnostics(hasBrokerBinary, sqliteStatus, linkResult) {
   // Workspace packages status (for global installs)
   if (linkResult && linkResult.needed) {
@@ -741,6 +777,9 @@ async function main() {
 
   // Ensure trail CLI captures agent info on start
   patchAgentTrajectories();
+
+  // Make the published @relayauth/core package work with CommonJS require()
+  patchRelayauthCoreExports();
 
   // Always install dashboard dependencies (needed for build)
   installDashboardDeps();

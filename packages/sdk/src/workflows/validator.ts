@@ -1,4 +1,5 @@
 import type { RelayYamlConfig, AgentDefinition, WorkflowStep } from './types.js';
+import { CodexModels } from '@agent-relay/config';
 
 export interface ValidationIssue {
   severity: 'error' | 'warning' | 'info';
@@ -117,7 +118,24 @@ export function validateWorkflow(config: RelayYamlConfig): ValidationIssue[] {
         });
       }
 
-      // Check 4: non-interactive agent that references relay messaging tools in task
+      // Check 4: codex-spark cannot be used in non-interactive mode
+      const CODEX_SPARK_MODELS: string[] = [CodexModels.GPT_5_3_CODEX_SPARK];
+      if (
+        def.interactive === false &&
+        def.cli === 'codex' &&
+        def.model &&
+        (CODEX_SPARK_MODELS.includes(def.model) || /codex-spark/i.test(def.model))
+      ) {
+        issues.push({
+          severity: 'error',
+          code: 'CODEX_SPARK_NON_INTERACTIVE',
+          message: `Agent "${step.agent}" uses codex-spark model in non-interactive mode. Codex Spark does not support non-interactive (headless) execution.`,
+          fix: `Switch to a different model (e.g. gpt-5.3-codex) or set the agent to interactive mode.`,
+          location: `step:${step.name}`,
+        });
+      }
+
+      // Check 5: non-interactive agent that references relay messaging tools in task
       if (
         def.interactive === false &&
         (task.includes('mcp__relaycast__message_dm_send') || task.includes('mcp__relaycast__message_post') || task.includes('mcp__relaycast__message_inbox_check'))
