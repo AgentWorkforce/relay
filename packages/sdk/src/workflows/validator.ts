@@ -123,8 +123,8 @@ export function validateWorkflow(config: RelayYamlConfig): ValidationIssue[] {
       if (
         def.interactive === false &&
         def.cli === 'codex' &&
-        def.model &&
-        (CODEX_SPARK_MODELS.includes(def.model) || /codex-spark/i.test(def.model))
+        def.constraints?.model &&
+        (CODEX_SPARK_MODELS.includes(def.constraints.model) || /codex-spark/i.test(def.constraints.model))
       ) {
         issues.push({
           severity: 'error',
