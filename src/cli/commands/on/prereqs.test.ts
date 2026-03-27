@@ -109,7 +109,7 @@ describe('checkPrereqs', () => {
       'wrangler',
       'relayfile binary',
       'D1 database',
-      'relayauth SDK build',
+      'relayauth SDK build (run `npx turbo build` in relayauth root)',
     ]));
   });
 });

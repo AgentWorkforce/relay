@@ -1,5 +1,5 @@
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import os, { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -17,7 +17,6 @@ vi.mock('node:child_process', async () => {
 
 import { healthCheck, resolveServiceConfig, startServices, stopServices } from './services.js';
 
-const MODULE_CWD = process.cwd();
 
 const tempDirs: string[] = [];
 
@@ -112,7 +111,8 @@ describe('startServices/stopServices', () => {
     writeFileSync(path.join(relayfile, 'bin', 'relayfile'), '#!/bin/sh\n');
     process.chdir(root);
 
-    rmSync(path.resolve(MODULE_CWD, '.relay', 'pids.json'), { force: true });
+    const pidFilePath = path.join(os.homedir(), '.relay', 'pids.json');
+    rmSync(pidFilePath, { force: true });
     const livePids = new Set([1111, 2222]);
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
       if (signal === 0) {
@@ -135,7 +135,7 @@ describe('startServices/stopServices', () => {
 
     expect(started).toEqual({ authPid: 1111, filePid: 2222 });
     expect(spawnMock).toHaveBeenCalledTimes(2);
-    const pidFile = JSON.parse(readFileSync(path.resolve(MODULE_CWD, '.relay', 'pids.json'), 'utf8'));
+    const pidFile = JSON.parse(readFileSync(pidFilePath, 'utf8'));
     expect(pidFile).toEqual({ relayauthPid: 1111, relayfilePid: 2222 });
 
     await stopServices();
