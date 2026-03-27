@@ -52,6 +52,21 @@ type ExecuteOptions = {
   previousRunId?: string;
 };
 
+/** Flags that consume the next argument as their value. Single source of truth for CLI parsing. */
+const FLAGS_WITH_VALUES = new Set(['--resume', '--workflow', '--start-from', '--previous-run-id']);
+
+function getYamlPathArg(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg.startsWith('--')) {
+      if (FLAGS_WITH_VALUES.has(arg)) i += 1;
+      continue;
+    }
+    return arg;
+  }
+  return undefined;
+}
+
 interface RenderableTask {
   output?: string;
   title: string;
@@ -302,6 +317,7 @@ async function runWithListr(
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+  const yamlPath = getYamlPathArg(args);
 
   if (args.length === 0 || args.includes('--help')) {
     printUsage();
@@ -358,7 +374,37 @@ async function main(): Promise<void> {
           break;
       }
     });
-    const result = await runner.resume(runId);
+    let result: RunnerResult;
+    try {
+      const resumeConfig = yamlPath ? await runner.parseYamlFile(yamlPath) : undefined;
+      if (resumeConfig) {
+        console.warn(
+          chalk.yellow(
+            '[workflow] warning: resuming with current config from disk — ' +
+              'if the workflow YAML changed since the original run, behaviour may differ'
+          )
+        );
+      }
+      result = await runner.resume(runId, undefined, resumeConfig);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const isRunNotFound = message.startsWith(`Run "${runId}" not found`);
+      if (isRunNotFound) {
+        if (fileDb.hasStepOutputs(runId)) {
+          console.error(
+            chalk.red(
+              `Error: ${message}. Step outputs exist for this run, but persisted run state is missing from ${dbPath}. ` +
+                `Use --start-from with --previous-run-id ${runId} to recover from the cached step outputs instead.`
+            )
+          );
+        } else {
+          console.error(chalk.red(`Error: ${message}`));
+        }
+      } else {
+        console.error(chalk.red(`Error: ${message}`));
+      }
+      process.exit(1);
+    }
 
     if (result.status === 'completed') {
       console.log(chalk.green('\nWorkflow completed successfully.'));
@@ -371,7 +417,6 @@ async function main(): Promise<void> {
   }
 
   // ── Normal / validate / dry-run mode ──────────────────────────────────────
-  const yamlPath = args[0];
   let workflowName: string | undefined;
 
   const workflowIdx = args.indexOf('--workflow');
@@ -389,6 +434,12 @@ async function main(): Promise<void> {
   const prevRunIdx = args.indexOf('--previous-run-id');
   if (prevRunIdx !== -1 && args[prevRunIdx + 1]) {
     previousRunId = args[prevRunIdx + 1];
+  }
+
+  if (!yamlPath) {
+    console.error(chalk.red('Error: workflow YAML path is required'));
+    printUsage();
+    process.exit(1);
   }
 
   const isValidate = args.includes('--validate');
