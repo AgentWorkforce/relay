@@ -116,6 +116,11 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
     }
   }
 
+  const createWorkspace = vi.fn(async (name: string) => ({
+    apiKey: 'rk_live_created',
+    workspaceName: name,
+  }));
+
   const createInternalRelayCast = vi.fn((config: Record<string, unknown>, origin: Record<string, unknown>) => {
     const inbox = vi.fn(async (token?: string) => behavior.inboxImpl(String(token ?? '')));
     const registerOrRotate = vi.fn(async (input: { name: string; type?: string }) => behavior.registerImpl(input));
@@ -160,6 +165,11 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
   vi.doMock('@modelcontextprotocol/sdk/server/mcp.js', () => ({ McpServer: FakeMcpServer }));
   vi.doMock('@modelcontextprotocol/sdk/server/stdio.js', () => ({ StdioServerTransport: FakeTransport }));
   vi.doMock('@modelcontextprotocol/sdk/types.js', () => ({ ListToolsRequestSchema: { type: 'tools/list' } }));
+  vi.doMock('@relaycast/sdk', () => ({
+    RelayCast: {
+      createWorkspace,
+    },
+  }));
   vi.doMock('@relaycast/sdk/internal', () => ({ createInternalRelayCast, createInternalWsClient }));
   vi.doMock('@relaycast/mcp', () => ({ MCP_VERSION: 'test-mcp-version' }));
   vi.doMock('@relaycast/mcp/dist/piggyback.js', () => ({ enablePiggyback }));
@@ -189,6 +199,7 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
       channelToolGetters,
       resourceGetters,
       telemetry,
+      createWorkspace,
       createInternalRelayCast,
       createInternalWsClient,
       enablePiggyback,
@@ -239,16 +250,6 @@ describe('relaycast-mcp startup helpers', () => {
 describe('createPatchedRelayMcpServer', () => {
   it('registers startup tools, prompt text, and strips execution metadata from tools/list', async () => {
     const { mod, mocks } = await loadRelaycastMcpModule();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        json: async () => ({
-          ok: true,
-          data: { api_key: 'rk_live_created', workspace_name: 'Test Workspace' },
-        }),
-      }))
-    );
-
     mod.createPatchedRelayMcpServer({ baseUrl: 'https://api.relaycast.dev/' });
     const server = mocks.serverInstances[0];
     const registerTool = server.tools.get('register');
@@ -275,13 +276,10 @@ describe('createPatchedRelayMcpServer', () => {
     );
 
     const workspaceResult = await createWorkspaceTool?.handler({ name: 'Coverage Workspace' });
-    expect(fetch).toHaveBeenCalledWith(
-      'https://api.relaycast.dev/v1/workspaces',
-      expect.objectContaining({ method: 'POST' })
-    );
+    expect(mocks.createWorkspace).toHaveBeenCalledWith('Coverage Workspace', 'https://api.relaycast.dev');
     expect(workspaceResult.structuredContent).toEqual({
-      api_key: 'rk_live_created',
-      workspace_name: 'Test Workspace',
+      apiKey: 'rk_live_created',
+      workspaceName: 'Coverage Workspace',
     });
 
     const registerResult = await registerTool?.handler({

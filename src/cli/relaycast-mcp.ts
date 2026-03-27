@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { RelayCast } from '@relaycast/sdk';
 import { createInternalRelayCast, createInternalWsClient } from '@relaycast/sdk/internal';
 import { MCP_VERSION } from '@relaycast/mcp';
 import { enablePiggyback } from '@relaycast/mcp/dist/piggyback.js';
@@ -115,25 +116,7 @@ export function normalizeAgentType(value: string | undefined): AgentType | undef
 }
 
 async function createWorkspace(name: string, baseUrl?: string): Promise<Record<string, unknown>> {
-  const response = await fetch(`${normalizeBaseUrl(baseUrl)}/v1/workspaces`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  });
-  const payload = (await response.json()) as {
-    ok?: boolean;
-    data?: Record<string, unknown>;
-    error?: { message?: string };
-  } | null;
-
-  if (!payload || typeof payload !== 'object' || typeof payload.ok !== 'boolean') {
-    throw new Error('Invalid response while creating workspace');
-  }
-  if (!payload.ok) {
-    throw new Error(payload.error?.message ?? 'Failed to create workspace');
-  }
-
-  return payload.data ?? {};
+  return await RelayCast.createWorkspace(name, normalizeBaseUrl(baseUrl));
 }
 
 function requireWorkspaceKey(session: RegistrationSession): void {

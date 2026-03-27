@@ -188,7 +188,7 @@
     "@agent-relay/utils": "3.2.18",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@relaycast/mcp": "1.0.0",
-    "@relaycast/sdk": "1.0.0",
+    "@relaycast/sdk": "1.1.0",
     "@sinclair/typebox": "^0.34.14",
     "chalk": "^4.1.2",
     "chokidar": "^5.0.0",
