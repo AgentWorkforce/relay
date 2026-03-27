@@ -1,0 +1,49 @@
+{
+  "groups": [
+    {
+      "id": "group-1",
+      "label": "runner.ts reliability and readability fixes",
+      "domain": "reliability",
+      "findings": [
+        "packages/sdk/src/runner.ts-Silent failure: optional config param on resume()-historian-review, developer-cross-review, security-cross-review-medium",
+        "packages/sdk/src/runner.ts-Synthetic timestamps in reconstructed runs-historian-review, developer-cross-review-medium",
+        "packages/sdk/src/runner.ts-Path traversal via unsanitized runId-security-review, all cross-reviewers-low",
+        "packages/sdk/src/runner.ts-failedStepName heuristic asymmetry with startFrom-historian-review, developer-cross-review-low",
+        "packages/sdk/src/runner.ts-.report.json files invisible to cache reconstruction-historian-review, developer-cross-review-low",
+        "packages/sdk/src/runner.ts-Nested ternary workflow selection readability-developer-review, all cross-reviewers-low"
+      ],
+      "files": [
+        "packages/sdk/src/runner.ts"
+      ],
+      "rationale": "All 6 findings target runner.ts — grouping avoids file conflicts and lets one worker handle related resume/reconstruction logic"
+    },
+    {
+      "id": "group-2",
+      "label": "cli.ts flag parsing and config version fixes",
+      "domain": "code-quality",
+      "findings": [
+        "packages/sdk/src/cli.ts-String matching brittleness for flag parsing-developer-review, historian-cross-review-low",
+        "packages/sdk/src/cli.ts-Config version mismatch during resume-historian-cross-review-low"
+      ],
+      "files": [
+        "packages/sdk/src/cli.ts"
+      ],
+      "rationale": "Both findings target cli.ts — same file, related CLI parsing concerns"
+    },
+    {
+      "id": "group-3",
+      "label": "file-db.ts output validation and error handling",
+      "domain": "reliability",
+      "findings": [
+        "packages/sdk/src/file-db.ts-hasStepOutputs false positive potential-historian-review-low",
+        "packages/sdk/src/file-db.ts-File path disclosure in append() catch — DISPUTED NON-ISSUE-security-review (disputed by security-cross-review, developer-cross-review)-low"
+      ],
+      "files": [
+        "packages/sdk/src/file-db.ts"
+      ],
+      "rationale": "Both findings target file-db.ts — same file, related data integrity concerns"
+    }
+  ],
+  "totalGroups": 3,
+  "conflictCheck": "no file appears in multiple groups"
+}

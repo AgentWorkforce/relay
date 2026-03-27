@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { WorkflowRunRow, WorkflowStepRow } from './types.js';
@@ -47,7 +47,7 @@ export class JsonFileWorkflowDb implements WorkflowDb {
   hasStepOutputs(runId: string): boolean {
     try {
       const dir = path.join(path.dirname(this.filePath), 'step-outputs', runId);
-      return existsSync(dir);
+      return existsSync(dir) && readdirSync(dir).length > 0;
     } catch {
       return false;
     }

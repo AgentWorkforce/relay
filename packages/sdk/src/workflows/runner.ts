@@ -6559,8 +6559,16 @@ export class WorkflowRunner {
       .slice(0, 32);
   }
 
+  /** Validate that a runId is safe for use in file paths (no traversal). */
+  private validateRunId(runId: string): void {
+    if (/[/\\]|^\.\.?$/.test(runId) || runId.includes('..')) {
+      throw new Error(`Invalid runId: "${runId}" contains path traversal characters`);
+    }
+  }
+
   /** Directory for persisted step outputs: .agent-relay/step-outputs/{runId}/ */
   private getStepOutputDir(runId: string): string {
+    this.validateRunId(runId);
     return path.join(this.cwd, '.agent-relay', 'step-outputs', runId);
   }
 
@@ -6650,6 +6658,34 @@ export class WorkflowRunner {
     }
   }
 
+  /** Match the best workflow from config given a set of cached step names. */
+  private matchWorkflowFromCache(
+    workflows: WorkflowDefinition[],
+    cachedStepNames: Set<string>
+  ): WorkflowDefinition | null {
+    if (workflows.length === 1) return workflows[0];
+
+    if (cachedStepNames.size === 0) {
+      // No cached steps to disambiguate — ambiguous when multiple workflows exist
+      this.log('[resume] Multiple workflows in config with empty cache — cannot disambiguate');
+      return null;
+    }
+
+    // Score each workflow by how many cached steps match, excluding those with unknown steps
+    const scored = workflows
+      .map((candidate) => ({
+        workflow: candidate,
+        matchedSteps: candidate.steps.filter((step) => cachedStepNames.has(step.name)).length,
+        unknownSteps: [...cachedStepNames].filter(
+          (name) => !candidate.steps.some((step) => step.name === name)
+        ).length,
+      }))
+      .filter((candidate) => candidate.unknownSteps === 0)
+      .sort((a, b) => b.matchedSteps - a.matchedSteps);
+
+    return scored[0]?.workflow ?? null;
+  }
+
   private reconstructRunFromCache(
     runId: string,
     config?: RelayYamlConfig
@@ -6657,8 +6693,21 @@ export class WorkflowRunner {
     const stepOutputDir = this.getStepOutputDir(runId);
     if (!existsSync(stepOutputDir)) return null;
 
-    const resumeConfig = config ?? this.currentConfig;
-    if (!resumeConfig) return null;
+    let resumeConfig = config ?? this.currentConfig;
+    if (!resumeConfig) {
+      // Attempt to load config from relay.yaml on disk (resume() may call before runWorkflowCore sets currentConfig)
+      const yamlPath = path.join(this.cwd, 'relay.yaml');
+      if (existsSync(yamlPath)) {
+        try {
+          const raw = readFileSync(yamlPath, 'utf-8');
+          resumeConfig = this.parseYamlString(raw, yamlPath);
+        } catch {
+          return null;
+        }
+      } else {
+        return null;
+      }
+    }
 
     let entries: Dirent[];
     try {
@@ -6669,35 +6718,48 @@ export class WorkflowRunner {
 
     const cachedStepNames = new Set(
       entries
-        .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
-        .map((entry) => entry.name.slice(0, -3))
+        .filter((entry) => entry.isFile() && (entry.name.endsWith('.md') || entry.name.endsWith('.report.json')))
+        .map((entry) => {
+          if (entry.name.endsWith('.report.json')) return entry.name.slice(0, -'.report.json'.length);
+          return entry.name.slice(0, -3);
+        })
         .filter(Boolean)
     );
     const workflows = resumeConfig.workflows ?? [];
     if (workflows.length === 0) return null;
 
     // Empty cache directory is valid — all steps will be re-run
-    const workflow = cachedStepNames.size === 0
-      ? (workflows.length === 1 ? workflows[0] : null)
-      : workflows.length === 1
-        ? workflows[0]
-        : workflows
-            .map((candidate) => ({
-              workflow: candidate,
-              matchedSteps: candidate.steps.filter((step) => cachedStepNames.has(step.name)).length,
-              unknownSteps: [...cachedStepNames].filter((name) => !candidate.steps.some((step) => step.name === name))
-                .length,
-            }))
-            .filter((candidate) => candidate.unknownSteps === 0)
-            .sort((a, b) => b.matchedSteps - a.matchedSteps)[0]?.workflow;
+    const workflow = this.matchWorkflowFromCache(workflows, cachedStepNames);
     if (!workflow) return null;
 
-    const now = new Date().toISOString();
+    // Use actual file modification times from cached outputs instead of synthetic timestamps
+    const stepMtimes = new Map<string, string>();
+    let earliestMtime = Date.now();
+    for (const stepName of cachedStepNames) {
+      try {
+        const mdPath = path.join(stepOutputDir, `${stepName}.md`);
+        const reportPath = path.join(stepOutputDir, `${stepName}.report.json`);
+        const mdStat = existsSync(mdPath) ? statSync(mdPath) : null;
+        const reportStat = existsSync(reportPath) ? statSync(reportPath) : null;
+        // Use the latest mtime between .md and .report.json
+        const mtime = Math.max(mdStat?.mtimeMs ?? 0, reportStat?.mtimeMs ?? 0);
+        if (mtime > 0) {
+          stepMtimes.set(stepName, new Date(mtime).toISOString());
+          if (mtime < earliestMtime) earliestMtime = mtime;
+        }
+      } catch {
+        // Fall back to current time if stat fails
+      }
+    }
+    const fallbackTime = new Date().toISOString();
+
     const completedSteps = new Set(workflow.steps.filter((step) => cachedStepNames.has(step.name)).map((step) => step.name));
+    // Heuristic: mark the first eligible non-completed step as failed (the likely failure point)
     const failedStepName = workflow.steps.find(
       (step) => !completedSteps.has(step.name) && (step.dependsOn ?? []).every((dep) => completedSteps.has(dep))
     )?.name;
 
+    const runStartedAt = new Date(earliestMtime).toISOString();
     const run: WorkflowRunRow = {
       id: runId,
       workspaceId: this.workspaceId,
@@ -6705,9 +6767,9 @@ export class WorkflowRunner {
       pattern: resumeConfig.swarm.pattern,
       status: 'failed',
       config: resumeConfig,
-      startedAt: now,
-      createdAt: now,
-      updatedAt: now,
+      startedAt: runStartedAt,
+      createdAt: runStartedAt,
+      updatedAt: fallbackTime,
     };
 
     const stepStates = new Map<string, StepState>();
@@ -6735,10 +6797,10 @@ export class WorkflowRunner {
         dependsOn: step.dependsOn ?? [],
         output: cachedOutput,
         error: status === 'failed' ? 'Recovered from cached step outputs' : undefined,
-        completedAt: status === 'completed' ? now : undefined,
+        completedAt: status === 'completed' ? (stepMtimes.get(step.name) ?? fallbackTime) : undefined,
         retryCount: 0,
-        createdAt: now,
-        updatedAt: now,
+        createdAt: stepMtimes.get(step.name) ?? fallbackTime,
+        updatedAt: stepMtimes.get(step.name) ?? fallbackTime,
       };
       stepStates.set(step.name, { row: stepRow });
     }

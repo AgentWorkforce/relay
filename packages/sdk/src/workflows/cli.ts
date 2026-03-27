@@ -52,12 +52,14 @@ type ExecuteOptions = {
   previousRunId?: string;
 };
 
+/** Flags that consume the next argument as their value. Single source of truth for CLI parsing. */
+const FLAGS_WITH_VALUES = new Set(['--resume', '--workflow', '--start-from', '--previous-run-id']);
+
 function getYamlPathArg(args: string[]): string | undefined {
-  const flagsWithValues = new Set(['--resume', '--workflow', '--start-from', '--previous-run-id']);
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg.startsWith('--')) {
-      if (flagsWithValues.has(arg)) i += 1;
+      if (FLAGS_WITH_VALUES.has(arg)) i += 1;
       continue;
     }
     return arg;
@@ -375,13 +377,19 @@ async function main(): Promise<void> {
     let result: RunnerResult;
     try {
       const resumeConfig = yamlPath ? await runner.parseYamlFile(yamlPath) : undefined;
+      if (resumeConfig) {
+        console.warn(
+          chalk.yellow(
+            '[workflow] warning: resuming with current config from disk — ' +
+              'if the workflow YAML changed since the original run, behaviour may differ'
+          )
+        );
+      }
       result = await runner.resume(runId, undefined, resumeConfig);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (
-        message === `Run "${runId}" not found`
-        || message === `Run "${runId}" not found (no database entry or cached step outputs)`
-      ) {
+      const isRunNotFound = message.startsWith(`Run "${runId}" not found`);
+      if (isRunNotFound) {
         if (fileDb.hasStepOutputs(runId)) {
           console.error(
             chalk.red(
