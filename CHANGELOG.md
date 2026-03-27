@@ -29,6 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
+## [3.2.21] - 2026-03-27
+
+### Product Perspective
+#### User-Impacting Fixes
+- Avoid E2BIG spawn failure and verification token double-count (#655) (#655)
+- Queue outbound messages during RelayObserver reconnect (#646) (#646)
+
+### Technical Perspective
+#### Releases
+- v3.2.21
+
+---
+
 ## [3.2.18] - 2026-03-25
 
 ### Product Perspective
