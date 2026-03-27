@@ -153,7 +153,7 @@ function generateWorkspaceId(): string {
   let suffix = '';
 
   while (suffix.length < 8) {
-    const bytes = randomBytes(8);
+    const bytes = randomBytes(8 - suffix.length + 2);
     for (const byte of bytes) {
       if (byte >= maxUnbiasedValue) continue;
       suffix += WORKSPACE_ID_ALPHABET[byte % alphabetLength];
@@ -1021,13 +1021,19 @@ async function ensureProvisioned(
   error: LogFn,
   deps: any
 ): Promise<string> {
-  if (existsSync(tokenPath)) {
+  try {
     return readFileSync(tokenPath, 'utf8').trim();
+  } catch {
+    // Token file does not exist yet — continue to provision
   }
 
   if (typeof deps?.provision === 'function') {
     await deps.provision(config, { ...agent });
-    if (existsSync(tokenPath)) return readFileSync(tokenPath, 'utf8').trim();
+    try {
+      return readFileSync(tokenPath, 'utf8').trim();
+    } catch {
+      // Token still not written — continue
+    }
   }
 
   if (typeof deps?.provisionAgentToken === 'function') {
@@ -1324,6 +1330,12 @@ export async function goOnTheRelay(
         if (agentProc && !agentProc.killed) {
           agentProc.kill('SIGTERM');
         }
+        // Wait for the agent process to exit so agentExitCode is set by the close handler
+        await new Promise<void>((r) => {
+          if (!agentProc || agentProc.exitCode !== null) { r(); return; }
+          const t = setTimeout(r, 2000);
+          agentProc.once('close', () => { clearTimeout(t); r(); });
+        });
         await finalizeCleanup();
         resolve();
       };

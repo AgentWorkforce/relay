@@ -101,7 +101,7 @@ function generateWorkspaceId(): string {
   let suffix = '';
 
   while (suffix.length < 8) {
-    const bytes = randomBytes(8);
+    const bytes = randomBytes(8 - suffix.length);
     for (const byte of bytes) {
       if (byte >= maxUnbiasedValue) continue;
       suffix += WORKSPACE_ID_ALPHABET[byte % alphabetLength];

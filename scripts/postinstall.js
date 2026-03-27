@@ -692,11 +692,6 @@ function patchRelayauthCoreExports() {
   const pkgRoot = getPackageRoot();
   const packageJsonPath = path.join(pkgRoot, 'node_modules', '@relayauth', 'core', 'package.json');
 
-  if (!fs.existsSync(packageJsonPath)) {
-    info('@relayauth/core not installed, skipping require() compatibility patch');
-    return;
-  }
-
   try {
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
     const rootExport = packageJson?.exports?.['.'];
@@ -720,7 +715,11 @@ function patchRelayauthCoreExports() {
     fs.writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf-8');
     success('Patched @relayauth/core package exports for require() compatibility');
   } catch (err) {
-    warn(`Failed to patch @relayauth/core package exports: ${err.message}`);
+    if (err.code === 'ENOENT') {
+      info('@relayauth/core not installed, skipping require() compatibility patch');
+    } else {
+      warn(`Failed to patch @relayauth/core package exports: ${err.message}`);
+    }
   }
 }
 

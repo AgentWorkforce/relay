@@ -136,6 +136,7 @@ export function resolveServiceConfig(overrides: Partial<ServiceConfig> = {}): Se
       overrides.relayauthRoot,
       process.env.RELAYAUTH_ROOT,
       cache.relayauthRoot,
+    ]) || [
       path.join(cwd, 'relayauth'),
       path.join(cwd, '..', 'relayauth'),
       path.join(cwd, '..', '..', 'relayauth'),
@@ -298,11 +299,14 @@ async function checkHealth(url: string): Promise<boolean> {
 function spawnLogged(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, logPath: string): ChildProcess {
   const logFile = openSync(logPath, 'a');
   try {
-    return spawn(command, args, {
+    const child = spawn(command, args, {
       cwd,
       env,
       stdio: ['ignore', logFile, logFile],
+      detached: true,
     });
+    child.unref();
+    return child;
   } finally {
     closeSync(logFile);
   }

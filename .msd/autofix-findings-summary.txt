@@ -1,10 +1,35 @@
-1. [MEDIUM] packages/sdk/src/runner.ts — packages/sdk/src/runner.ts
-2. [MEDIUM] packages/sdk/src/runner.ts — packages/sdk/src/runner.ts
-3. [LOW] packages/sdk/src/runner.ts — packages/sdk/src/runner.ts
-4. [LOW] packages/sdk/src/runner.ts — packages/sdk/src/runner.ts
-5. [LOW] packages/sdk/src/runner.ts — packages/sdk/src/runner.ts
-6. [LOW] packages/sdk/src/runner.ts — packages/sdk/src/runner.ts
-7. [LOW] packages/sdk/src/cli.ts — packages/sdk/src/cli.ts
-8. [LOW] packages/sdk/src/cli.ts — packages/sdk/src/cli.ts
-9. [LOW] packages/sdk/src/file-db.ts — packages/sdk/src/file-db.ts
-10. [LOW] packages/sdk/src/file-db.ts — packages/sdk/src/file-db.ts
+1. [MEDIUM] scripts/postinstall.js:720 — ## Potential file system race condition
+
+The file may have changed since it [was checked](1).
+
+[Show more details](https
+2. [MEDIUM] src/cli/commands/on/start.ts:1037 — ## Potential file system race condition
+
+The file may have changed since it [was checked](1).
+
+[Show more details](https
+3. [MEDIUM] src/cli/commands/on/start.ts:1045 — ## Potential file system race condition
+
+The file may have changed since it [was checked](1).
+
+[Show more details](https
+4. [MEDIUM] packages/sdk/src/workflows/validator.ts:1 — <!-- devin-review-comment {"id": "BUG_pr-review-job-81b8f4cf81404980a5fb34c84e94a840_0004", "file_path": "packages/sdk/s
+5. [MEDIUM] src/cli/commands/on/prereqs.ts:84 — <!-- devin-review-comment {"id": "BUG_pr-review-job-6ee00896c9d947509f82a0df08932ad1_0001", "file_path": "src/cli/comman
+6. [MEDIUM] src/cli/commands/on/services.ts:141 — <!-- devin-review-comment {"id": "BUG_pr-review-job-6ee00896c9d947509f82a0df08932ad1_0002", "file_path": "src/cli/comman
+7. [MEDIUM] src/cli/commands/on/services.ts:309 — <!-- devin-review-comment {"id": "BUG_pr-review-job-6ee00896c9d947509f82a0df08932ad1_0003", "file_path": "src/cli/comman
+8. [MEDIUM] src/cli/commands/on.ts:26 — <!-- devin-review-comment {"id": "BUG_pr-review-job-6ee00896c9d947509f82a0df08932ad1_0004", "file_path": "src/cli/comman
+9. [MEDIUM] packages/sdk/src/relay.ts:102 — ## Creating biased random numbers from a cryptographically secure source
+
+Using modulo on a [cryptographically secure ra
+10. [MEDIUM] src/cli/commands/on/start.ts:154 — ## Creating biased random numbers from a cryptographically secure source
+
+Using modulo on a [cryptographically secure ra
+11. [MEDIUM] packages/sdk/src/relay.ts:1181 — <!-- devin-review-comment {"id": "BUG_pr-review-job-439e996654bf4302beed6212eb86008b_0001", "file_path": "packages/sdk/s
+12. [MEDIUM] packages/sdk/src/relay.ts:1181 — ✅ **Resolved**: The current code at relay.ts now wraps persistWorkspaceMapping in try-catch (lines 1171-1175) and sets t
+13. [MEDIUM] src/cli/commands/on/prereqs.ts:84 — ✅ **Resolved**: The prereqs.ts code now uses a candidates array with .find((candidate) => existsSync(candidate)) at line
+14. [MEDIUM] src/cli/commands/on/services.ts:141 — ✅ **Resolved**: The services.ts code now uses resolveExistingPath at line 134 which checks existsSync for each candidate
+15. [MEDIUM] src/cli/commands/on/services.ts:309 — ✅ **Resolved**: The current spawnLogged code at services.ts:298-309 now has a try/finally block with closeSync(logFile) 
+16. [MEDIUM] src/cli/commands/on.ts:26 — ✅ **Resolved**: The current withDefaults function at on.ts:20-26 no longer has an ...overrides spread. It uses only ?? f
+17. [MEDIUM] packages/sdk/src/workflows/validator.ts:1 — ✅ **Resolved**: The current code at validator.ts:153 now correctly reads 'Check 6: maxConcurrency vs interactive agent c
+18. [MEDIUM] src/cli/commands/on/start.ts:1329 — <!-- devin-review-comment {"id": "BUG_pr-review-job-dae4c01bb7704688a8043d49cc100dbe_0001", "file_path": "src/cli/comman
+19. [MEDIUM] src/cli/commands/on/services.ts:309 — <!-- devin-review-comment {"id": "BUG_pr-review-job-dae4c01bb7704688a8043d49cc100dbe_0002", "file_path": "src/cli/comman

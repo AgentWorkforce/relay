@@ -2,48 +2,71 @@
   "groups": [
     {
       "id": "group-1",
-      "label": "runner.ts reliability and readability fixes",
+      "label": "postinstall.js race condition fix",
       "domain": "reliability",
       "findings": [
-        "packages/sdk/src/runner.ts-Silent failure: optional config param on resume()-historian-review, developer-cross-review, security-cross-review-medium",
-        "packages/sdk/src/runner.ts-Synthetic timestamps in reconstructed runs-historian-review, developer-cross-review-medium",
-        "packages/sdk/src/runner.ts-Path traversal via unsanitized runId-security-review, all cross-reviewers-low",
-        "packages/sdk/src/runner.ts-failedStepName heuristic asymmetry with startFrom-historian-review, developer-cross-review-low",
-        "packages/sdk/src/runner.ts-.report.json files invisible to cache reconstruction-historian-review, developer-cross-review-low",
-        "packages/sdk/src/runner.ts-Nested ternary workflow selection readability-developer-review, all cross-reviewers-low"
+        "3001159838"
       ],
       "files": [
-        "packages/sdk/src/runner.ts"
+        "scripts/postinstall.js"
       ],
-      "rationale": "All 6 findings target runner.ts — grouping avoids file conflicts and lets one worker handle related resume/reconstruction logic"
+      "rationale": "Single file with one TOCTOU race condition finding — isolated fix for postinstall script"
     },
     {
       "id": "group-2",
-      "label": "cli.ts flag parsing and config version fixes",
-      "domain": "code-quality",
+      "label": "start.ts race conditions and biased random",
+      "domain": "security",
       "findings": [
-        "packages/sdk/src/cli.ts-String matching brittleness for flag parsing-developer-review, historian-cross-review-low",
-        "packages/sdk/src/cli.ts-Config version mismatch during resume-historian-cross-review-low"
+        "3001159849",
+        "3001159865",
+        "3001922882",
+        "3002200341"
       ],
       "files": [
-        "packages/sdk/src/cli.ts"
+        "src/cli/commands/on/start.ts"
       ],
-      "rationale": "Both findings target cli.ts — same file, related CLI parsing concerns"
+      "rationale": "All findings in start.ts: two TOCTOU race conditions (lines 1037, 1045), one biased random number (line 154), and one devin review comment (line 1329)"
     },
     {
       "id": "group-3",
-      "label": "file-db.ts output validation and error handling",
+      "label": "on/ subcommands: services, prereqs, on.ts",
       "domain": "reliability",
       "findings": [
-        "packages/sdk/src/file-db.ts-hasStepOutputs false positive potential-historian-review-low",
-        "packages/sdk/src/file-db.ts-File path disclosure in append() catch — DISPUTED NON-ISSUE-security-review (disputed by security-cross-review, developer-cross-review)-low"
+        "3001216356",
+        "3001216455",
+        "3001216544",
+        "3001216720",
+        "3002199072",
+        "3002199235",
+        "3002199452",
+        "3002199667",
+        "3002200418"
       ],
       "files": [
-        "packages/sdk/src/file-db.ts"
+        "src/cli/commands/on/prereqs.ts",
+        "src/cli/commands/on/services.ts",
+        "src/cli/commands/on.ts"
       ],
-      "rationale": "Both findings target file-db.ts — same file, related data integrity concerns"
+      "rationale": "Related on/ subcommand files grouped together — includes active devin review findings and their resolved counterparts for verification. No overlap with group-2 (start.ts)"
+    },
+    {
+      "id": "group-4",
+      "label": "SDK: relay.ts and validator.ts fixes",
+      "domain": "security",
+      "findings": [
+        "3001216248",
+        "3001922861",
+        "3001954193",
+        "3002198902",
+        "3002200023"
+      ],
+      "files": [
+        "packages/sdk/src/relay.ts",
+        "packages/sdk/src/workflows/validator.ts"
+      ],
+      "rationale": "SDK package files grouped together — biased random in relay.ts, devin review comments, plus resolved findings for verification"
     }
   ],
-  "totalGroups": 3,
+  "totalGroups": 4,
   "conflictCheck": "no file appears in multiple groups"
 }
