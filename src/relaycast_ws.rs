@@ -504,7 +504,9 @@ impl RelaycastHttpClient {
         let config = relay
             .ensure_workspace_stream_enabled()
             .await
-            .map_err(|error| anyhow::anyhow!("relaycast ensure_workspace_stream_enabled failed: {error}"))?;
+            .map_err(|error| {
+                anyhow::anyhow!("relaycast ensure_workspace_stream_enabled failed: {error}")
+            })?;
         tracing::debug!(
             enabled = config.enabled,
             default_enabled = config.default_enabled,
