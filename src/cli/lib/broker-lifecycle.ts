@@ -1011,7 +1011,6 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     );
     relay = started.relay;
     apiPort = started.apiPort;
-    ;
     const dashboardRelayUrl = resolveDashboardRelayUrl(apiPort, deps);
     const expectedRelayUrl = getDefaultDashboardRelayUrl(apiPort);
     if (
