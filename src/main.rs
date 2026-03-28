@@ -5194,46 +5194,45 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
                 .and_then(|v| v.get("pid").and_then(|p| p.as_u64()))
                 .map(|p| p as u32);
             if let Some(old_pid) = old_pid {
-                    if !is_pid_alive(old_pid) {
-                        tracing::warn!(
-                            old_pid = old_pid,
-                            "stale broker lock detected (PID {} is dead), recovering",
-                            old_pid
-                        );
-                        // The old process is dead — remove stale PID file and retry lock.
-                        // We drop and re-create the lock file to clear the stale flock.
-                        drop(lock_file);
-                        let lock_file = std::fs::File::create(&lock_path).with_context(|| {
-                            format!(
-                                "failed to re-create lock file after stale recovery {}",
-                                lock_path.display()
-                            )
-                        })?;
-                        let fd = lock_file.as_raw_fd();
-                        let rc = unsafe {
-                            nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB)
-                        };
-                        if rc != 0 {
-                            anyhow::bail!(
-                                "another broker instance is already running in this directory ({})",
-                                root.display()
-                            );
-                        }
-                        // Successfully recovered — PID is written via connection.json at API start
-                        return Ok(RuntimePaths {
-                            persist: true,
-                            state: root.join(format!("state-{safe_name}.json")),
-                            pending: root.join(format!("pending-{safe_name}.json")),
-                            _lock: Some(lock_file),
-                        });
-                    } else {
+                if !is_pid_alive(old_pid) {
+                    tracing::warn!(
+                        old_pid = old_pid,
+                        "stale broker lock detected (PID {} is dead), recovering",
+                        old_pid
+                    );
+                    // The old process is dead — remove stale PID file and retry lock.
+                    // We drop and re-create the lock file to clear the stale flock.
+                    drop(lock_file);
+                    let lock_file = std::fs::File::create(&lock_path).with_context(|| {
+                        format!(
+                            "failed to re-create lock file after stale recovery {}",
+                            lock_path.display()
+                        )
+                    })?;
+                    let fd = lock_file.as_raw_fd();
+                    let rc =
+                        unsafe { nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
+                    if rc != 0 {
                         anyhow::bail!(
+                            "another broker instance is already running in this directory ({})",
+                            root.display()
+                        );
+                    }
+                    // Successfully recovered — PID is written via connection.json at API start
+                    return Ok(RuntimePaths {
+                        persist: true,
+                        state: root.join(format!("state-{safe_name}.json")),
+                        pending: root.join(format!("pending-{safe_name}.json")),
+                        _lock: Some(lock_file),
+                    });
+                } else {
+                    anyhow::bail!(
                             "another broker instance is already running in this directory (pid: {}, {})",
                             old_pid,
                             root.display()
                         );
-                    }
                 }
+            }
             // PID file missing or unreadable while lock is held — treat as stale.
             // This happens when the user deletes .agent-relay/ while an old broker
             // is still alive, or during the shutdown race (PID deleted before flock
@@ -5274,7 +5273,6 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
         _lock: Some(lock_file),
     })
 }
-
 
 fn derive_ws_base_url_from_http(http_base: &str) -> String {
     let trimmed = http_base.trim();
