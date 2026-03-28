@@ -24,7 +24,6 @@ import aiohttp
 
 from .protocol import (
     BrokerEvent,
-    HeadlessProvider,
     MessageInjectionMode,
 )
 
