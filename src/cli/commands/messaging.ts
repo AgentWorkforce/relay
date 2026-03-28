@@ -67,8 +67,14 @@ function defaultExit(code: number): never {
 }
 
 async function createDefaultClient(cwd: string): Promise<MessagingBrokerClient> {
-  const client = await AgentRelayClient.spawn({ cwd });
-  return client as unknown as MessagingBrokerClient;
+  // Connect to an existing broker if one is running, otherwise spawn
+  try {
+    const client = AgentRelayClient.connect({ cwd });
+    return client as unknown as MessagingBrokerClient;
+  } catch {
+    const client = await AgentRelayClient.spawn({ cwd });
+    return client as unknown as MessagingBrokerClient;
+  }
 }
 
 async function createDefaultRelaycastClient(options: {

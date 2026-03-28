@@ -12,6 +12,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { BrokerTransport, AgentRelayProtocolError } from './transport.js';
 import { getBrokerBinaryPath } from './broker-path.js';
@@ -70,6 +71,31 @@ export class AgentRelayClient {
       baseUrl: options.baseUrl,
       apiKey: options.apiKey,
     });
+  }
+
+  /**
+   * Connect to an already-running broker by reading its connection file.
+   *
+   * The broker writes `connection.json` to its data directory ({cwd}/.agent-relay/
+   * in persist mode). This method reads that file to get the URL and API key.
+   *
+   * @param cwd — project directory (default: process.cwd())
+   * @param connectionPath — explicit path to connection.json (overrides cwd)
+   */
+  static connect(options?: { cwd?: string; connectionPath?: string }): AgentRelayClient {
+    const cwd = options?.cwd ?? process.cwd();
+    const connPath = options?.connectionPath ?? path.join(cwd, '.agent-relay', 'connection.json');
+
+    if (!existsSync(connPath)) {
+      throw new Error(
+        `No running broker found (${connPath} does not exist). Start one with 'agent-relay up' or use AgentRelayClient.spawn().`
+      );
+    }
+
+    const raw = readFileSync(connPath, 'utf-8');
+    const conn = JSON.parse(raw) as { url: string; api_key: string; port: number; pid: number };
+
+    return new AgentRelayClient({ baseUrl: conn.url, apiKey: conn.api_key });
   }
 
   /**

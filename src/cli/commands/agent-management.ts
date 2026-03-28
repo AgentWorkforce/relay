@@ -87,9 +87,18 @@ async function readTaskFromStdin(): Promise<string | undefined> {
   return task.length > 0 ? task : undefined;
 }
 
-async function createSdkClient(cwd: string, _autoStart: boolean): Promise<AgentManagementClient> {
-  const client = await AgentRelayClient.spawn({ cwd });
-  return client as unknown as AgentManagementClient;
+async function createSdkClient(cwd: string, autoStart: boolean): Promise<AgentManagementClient> {
+  // Connect to an existing broker if one is running
+  try {
+    const client = AgentRelayClient.connect({ cwd });
+    return client as unknown as AgentManagementClient;
+  } catch {
+    if (!autoStart) {
+      throw new Error('No running broker found. Start one with: agent-relay up');
+    }
+    const client = await AgentRelayClient.spawn({ cwd });
+    return client as unknown as AgentManagementClient;
+  }
 }
 
 function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): AgentManagementDependencies {

@@ -203,7 +203,6 @@ struct RuntimePaths {
     persist: bool,
     state: PathBuf,
     pending: PathBuf,
-    pid: PathBuf,
     /// Held for process lifetime to prevent concurrent broker instances (persist mode only).
     #[allow(dead_code)]
     _lock: Option<std::fs::File>,
@@ -1506,6 +1505,25 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             "[agent-relay] API listening on http://{}:{}",
             cmd.api_bind, actual_port
         );
+
+        // Write connection file so CLI commands can find this broker
+        let connection_dir = paths.state.parent().unwrap();
+        let connection_path = connection_dir.join("connection.json");
+        let connection = json!({
+            "url": format!("http://{}:{}", cmd.api_bind, actual_port),
+            "port": actual_port,
+            "api_key": &api_key,
+            "pid": std::process::id(),
+        });
+        if let Ok(json_str) = serde_json::to_string_pretty(&connection) {
+            if let Ok(mut tmp) = tempfile::NamedTempFile::new_in(connection_dir) {
+                use std::io::Write;
+                if tmp.write_all(json_str.as_bytes()).is_ok() {
+                    let _ = tmp.persist(&connection_path);
+                    tracing::info!(path = %connection_path.display(), "wrote connection file");
+                }
+            }
+        }
         tokio::spawn(async move {
             if let Err(e) = axum::serve(listener, router).await {
                 tracing::error!(error = %e, "HTTP API server error");
@@ -3847,11 +3865,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     }
     workers.shutdown_all().await?;
 
-    // Clean up PID file and state file on graceful shutdown
+    // Clean up state and connection files on graceful shutdown
     if paths.persist {
-        let _ = std::fs::remove_file(&paths.pid);
         let _ = std::fs::remove_file(&paths.state);
     }
+    let connection_path = paths.state.parent().unwrap().join("connection.json");
+    let _ = std::fs::remove_file(&connection_path);
 
     Ok(())
 }
@@ -5134,7 +5153,6 @@ fn ensure_ephemeral_paths(_cwd: &Path, _broker_name: &str) -> Result<RuntimePath
         persist: false,
         state: root.join("state.json"),
         pending: root.join("pending.json"),
-        pid: PathBuf::new(),
         _lock: None,
     })
 }
@@ -5158,7 +5176,6 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
 
     // Lock and PID files are per-broker-name so concurrent workflows can coexist.
     let lock_path = root.join(format!("broker-{safe_name}.lock"));
-    let pid_path = root.join(format!("broker-{safe_name}.pid"));
     let lock_file = std::fs::File::create(&lock_path)
         .with_context(|| format!("failed to create lock file {}", lock_path.display()))?;
 
@@ -5169,8 +5186,14 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
         let rc = unsafe { nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
         if rc != 0 {
             // Lock acquisition failed — check if the holder is still alive
-            if let Ok(contents) = std::fs::read_to_string(&pid_path) {
-                if let Ok(old_pid) = contents.trim().parse::<u32>() {
+            // by reading the PID from connection.json.
+            let connection_path = root.join("connection.json");
+            let old_pid = std::fs::read_to_string(&connection_path)
+                .ok()
+                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                .and_then(|v| v.get("pid").and_then(|p| p.as_u64()))
+                .map(|p| p as u32);
+            if let Some(old_pid) = old_pid {
                     if !is_pid_alive(old_pid) {
                         tracing::warn!(
                             old_pid = old_pid,
@@ -5196,13 +5219,11 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
                                 root.display()
                             );
                         }
-                        // Successfully recovered — write our PID and return
-                        write_pid_file(&pid_path)?;
+                        // Successfully recovered — PID is written via connection.json at API start
                         return Ok(RuntimePaths {
                             persist: true,
                             state: root.join(format!("state-{safe_name}.json")),
                             pending: root.join(format!("pending-{safe_name}.json")),
-                            pid: pid_path,
                             _lock: Some(lock_file),
                         });
                     } else {
@@ -5213,7 +5234,6 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
                         );
                     }
                 }
-            }
             // PID file missing or unreadable while lock is held — treat as stale.
             // This happens when the user deletes .agent-relay/ while an old broker
             // is still alive, or during the shutdown race (PID deleted before flock
@@ -5236,44 +5256,25 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
                     root.display()
                 );
             }
-            write_pid_file(&pid_path)?;
             return Ok(RuntimePaths {
                 persist: true,
                 state: root.join(format!("state-{safe_name}.json")),
                 pending: root.join(format!("pending-{safe_name}.json")),
-                pid: pid_path,
                 _lock: Some(lock_file),
             });
         }
     }
 
-    // Write our PID for crash recovery
-    write_pid_file(&pid_path)?;
+    // PID is written via connection.json at API start
 
     Ok(RuntimePaths {
         persist: true,
         state: root.join(format!("state-{safe_name}.json")),
         pending: root.join(format!("pending-{safe_name}.json")),
-        pid: pid_path,
         _lock: Some(lock_file),
     })
 }
 
-/// Write the current process PID to the given path atomically.
-fn write_pid_file(path: &Path) -> Result<()> {
-    let pid = std::process::id();
-    let dir = path
-        .parent()
-        .with_context(|| format!("pid path has no parent: {}", path.display()))?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .with_context(|| format!("failed creating temp pid file in {}", dir.display()))?;
-    use std::io::Write;
-    write!(tmp, "{}", pid)?;
-    tmp.persist(path)
-        .with_context(|| format!("failed persisting pid file to {}", path.display()))?;
-    tracing::info!(pid = pid, path = %path.display(), "wrote broker PID file");
-    Ok(())
-}
 
 fn derive_ws_base_url_from_http(http_base: &str) -> String {
     let trimmed = http_base.trim();
@@ -6734,19 +6735,6 @@ mod tests {
     }
 
     // ==================== write_pid_file ====================
-
-    #[test]
-    fn write_pid_file_is_atomic() {
-        let dir = tempfile::tempdir().expect("failed to create temp dir");
-        let pid_path = dir.path().join("broker.pid");
-        super::write_pid_file(&pid_path).expect("write_pid_file failed");
-        let contents = std::fs::read_to_string(&pid_path).expect("failed to read pid file");
-        let pid: u32 = contents
-            .trim()
-            .parse()
-            .expect("pid file should contain a number");
-        assert_eq!(pid, std::process::id());
-    }
 
     // ==================== continuity_dir ====================
 

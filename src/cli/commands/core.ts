@@ -389,6 +389,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--background', 'Run broker in the background (detached)')
     .option('--verbose', 'Enable verbose logging')
     .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
+    .option('--state-dir <path>', 'Directory for broker state and connection files (default: .agent-relay/)')
     .action(
       async (options: {
         dashboard?: boolean;
@@ -397,6 +398,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
         background?: boolean;
         verbose?: boolean;
         workspaceKey?: string;
+        stateDir?: string;
       }) => {
         await runUpCommand(options, deps);
       }
