@@ -1,6 +1,6 @@
 /**
  * BrokerTransport — HTTP/WS transport layer for communicating with the
- * agent-relay broker. Used internally by BrokerClient.
+ * agent-relay broker. Used internally by AgentRelayClient.
  *
  * Handles:
  * - HTTP requests with API key auth and structured error parsing

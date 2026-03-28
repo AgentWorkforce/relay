@@ -2,7 +2,7 @@
  * High-level facade for the Agent Relay SDK.
  *
  * Provides a clean, property-based API on top of the lower-level
- * {@link BrokerClient} protocol client.
+ * {@link AgentRelayClient} protocol client.
  *
  * @example
  * ```ts
@@ -30,9 +30,9 @@ import path from 'node:path';
 import { RelayCast } from '@relaycast/sdk';
 
 import {
-  BrokerClient,
-  type SpawnBrokerOptions,
-} from './broker-client.js';
+  AgentRelayClient,
+  type AgentRelaySpawnOptions,
+} from './client.js';
 import {
   AgentRelayProtocolError,
 } from './transport.js';
@@ -385,15 +385,15 @@ export class AgentRelay {
   readonly gemini: AgentSpawner;
   readonly opencode: AgentSpawner;
 
-  private readonly clientOptions: SpawnBrokerOptions;
+  private readonly clientOptions: AgentRelaySpawnOptions;
   private readonly defaultChannels: string[];
   private readonly requestedWorkspaceId?: string;
   private readonly workspaceName?: string;
   private readonly relaycastBaseUrl?: string;
   private relayApiKey?: string;
   private resolvedWorkspaceId?: string;
-  private client?: BrokerClient;
-  private startPromise?: Promise<BrokerClient>;
+  private client?: AgentRelayClient;
+  private startPromise?: Promise<AgentRelayClient>;
   private unsubEvent?: () => void;
   private readonly stderrListeners = new Set<(line: string) => void>();
   private readonly knownAgents = new Map<string, Agent>();
@@ -1177,12 +1177,12 @@ export class AgentRelay {
     }
   }
 
-  private async ensureStarted(): Promise<BrokerClient> {
+  private async ensureStarted(): Promise<AgentRelayClient> {
     if (this.client) return this.client;
     if (this.startPromise) return this.startPromise;
 
     this.startPromise = this.ensureRelaycastApiKey()
-      .then(() => BrokerClient.spawn({
+      .then(() => AgentRelayClient.spawn({
         ...this.clientOptions,
         onStderr: (line) => {
           for (const listener of this.stderrListeners) {
@@ -1219,7 +1219,7 @@ export class AgentRelay {
     return this.startPromise;
   }
 
-  private wireEvents(client: BrokerClient): void {
+  private wireEvents(client: AgentRelayClient): void {
     // eslint-disable-next-line complexity
     this.unsubEvent = client.onEvent((event: BrokerEvent) => {
       switch (event.kind) {

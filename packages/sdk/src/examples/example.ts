@@ -1,4 +1,4 @@
-import { BrokerClient } from "../broker-client.js";
+import { AgentRelayClient } from "../client.js";
 
 function parseArgs(raw: string | undefined): string[] {
   if (!raw || raw.trim() === "") {
@@ -21,7 +21,7 @@ async function main(): Promise<void> {
   const xName = process.env.AGENT_X_NAME ?? "CodexX";
   const oName = process.env.AGENT_O_NAME ?? "CodexO";
 
-  const client = await BrokerClient.spawn({
+  const client = await AgentRelayClient.spawn({
     channels: [channel],
     onStderr: (line) => console.log(`[${now()}] broker:stderr ${line}`),
   });

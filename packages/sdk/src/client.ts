@@ -1,13 +1,13 @@
 /**
- * BrokerClient — single client for communicating with an agent-relay broker
+ * AgentRelayClient — single client for communicating with an agent-relay broker
  * over HTTP/WS. Works identically for local and remote brokers.
  *
  * Usage:
  *   // Remote broker (Daytona sandbox, cloud, etc.)
- *   const client = new BrokerClient({ baseUrl, apiKey });
+ *   const client = new AgentRelayClient({ baseUrl, apiKey });
  *
  *   // Local broker (spawn and connect)
- *   const client = await BrokerClient.spawn({ cwd: '/my/project' });
+ *   const client = await AgentRelayClient.spawn({ cwd: '/my/project' });
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -20,12 +20,12 @@ import type { SpawnPtyInput, SpawnProviderInput, SendMessageInput, ListAgent } f
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-export interface BrokerClientOptions {
+export interface AgentRelayClientOptions {
   baseUrl: string;
   apiKey?: string;
 }
 
-export interface SpawnBrokerOptions {
+export interface AgentRelaySpawnOptions {
   /** Path to the agent-relay-broker binary. Auto-resolved if omitted. */
   binaryPath?: string;
   /** Extra args passed to `broker init` (e.g. ['--persist']). */
@@ -55,7 +55,7 @@ export interface SessionInfo {
 
 // ── Client ─────────────────────────────────────────────────────────────
 
-export class BrokerClient {
+export class AgentRelayClient {
   private readonly transport: BrokerTransport;
 
   /** Set after spawn() — the managed child process. */
@@ -65,7 +65,7 @@ export class BrokerClient {
 
   workspaceKey?: string;
 
-  constructor(options: BrokerClientOptions) {
+  constructor(options: AgentRelayClientOptions) {
     this.transport = new BrokerTransport({
       baseUrl: options.baseUrl,
       apiKey: options.apiKey,
@@ -82,7 +82,7 @@ export class BrokerClient {
    * 5. Fetches session metadata
    * 6. Starts event stream + lease renewal
    */
-  static async spawn(options?: SpawnBrokerOptions): Promise<BrokerClient> {
+  static async spawn(options?: AgentRelaySpawnOptions): Promise<AgentRelayClient> {
     const binaryPath = options?.binaryPath ?? getBrokerBinaryPath() ?? 'agent-relay-broker';
     const cwd = options?.cwd ?? process.cwd();
     const brokerName = options?.brokerName ?? (path.basename(cwd) || 'project');
@@ -121,7 +121,7 @@ export class BrokerClient {
     // Parse the API port from stdout (the broker prints it after binding)
     const port = await waitForApiPort(child, timeoutMs);
 
-    const client = new BrokerClient({ baseUrl: `http://127.0.0.1:${port}`, apiKey });
+    const client = new AgentRelayClient({ baseUrl: `http://127.0.0.1:${port}`, apiKey });
     client.child = child;
 
     await client.getSession();

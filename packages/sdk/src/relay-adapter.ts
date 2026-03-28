@@ -1,7 +1,7 @@
 /**
  * RelayAdapter — high-level interface over the broker SDK.
  *
- * Wraps BrokerClient with auto-start, safe result patterns,
+ * Wraps AgentRelayClient with auto-start, safe result patterns,
  * and convenience methods. Usable by any integration: dashboard,
  * MCP, ACP bridge, CLI, or custom tooling.
  *
@@ -20,9 +20,9 @@
  */
 
 import {
-  BrokerClient,
-  type SpawnBrokerOptions,
-} from './broker-client.js';
+  AgentRelayClient,
+  type AgentRelaySpawnOptions,
+} from './client.js';
 import type {
   SpawnPtyInput,
   SendMessageInput,
@@ -123,9 +123,9 @@ export interface RelayReleaseResult {
 // ── Adapter ─────────────────────────────────────────────────────────
 
 export class RelayAdapter {
-  private client: BrokerClient | null = null;
+  private client: AgentRelayClient | null = null;
   private started = false;
-  private readonly spawnOpts: SpawnBrokerOptions;
+  private readonly spawnOpts: AgentRelaySpawnOptions;
   private readonly stderrListeners = new Set<(line: string) => void>();
 
   constructor(opts: RelayAdapterOptions) {
@@ -137,7 +137,7 @@ export class RelayAdapter {
     };
   }
 
-  private ensureClient(): BrokerClient {
+  private ensureClient(): AgentRelayClient {
     if (!this.client) throw new Error('RelayAdapter not started — call start() first');
     return this.client;
   }
@@ -147,7 +147,7 @@ export class RelayAdapter {
   /** Start the broker process. Idempotent. */
   async start(): Promise<void> {
     if (this.started) return;
-    this.client = await BrokerClient.spawn({
+    this.client = await AgentRelayClient.spawn({
       ...this.spawnOpts,
       onStderr: (line) => {
         for (const listener of this.stderrListeners) {
@@ -301,7 +301,7 @@ export class RelayAdapter {
 
   // ── Underlying client (escape hatch) ────────────────────────────
 
-  get raw(): BrokerClient {
+  get raw(): AgentRelayClient {
     return this.ensureClient();
   }
 }
