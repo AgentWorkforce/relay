@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { HttpAgentRelayClient } from '@agent-relay/sdk';
+import { AgentRelayClient } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 
 import { runAgentsCommand, runAgentsLogsCommand, runWhoCommand } from '../lib/agent-management-listing.js';
@@ -87,10 +87,9 @@ async function readTaskFromStdin(): Promise<string | undefined> {
   return task.length > 0 ? task : undefined;
 }
 
-function createSdkClient(cwd: string, autoStart: boolean): Promise<AgentManagementClient> {
-  return HttpAgentRelayClient.discoverAndConnect({ cwd, autoStart }).then(
-    (client) => client as unknown as AgentManagementClient
-  );
+async function createSdkClient(cwd: string, _autoStart: boolean): Promise<AgentManagementClient> {
+  const client = await AgentRelayClient.spawn({ cwd });
+  return client as unknown as AgentManagementClient;
 }
 
 function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): AgentManagementDependencies {

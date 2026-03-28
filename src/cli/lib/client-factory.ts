@@ -6,7 +6,6 @@ export interface CreateAgentRelayClientOptions {
   binaryPath?: string;
   binaryArgs?: string[];
   env?: NodeJS.ProcessEnv;
-  requestTimeoutMs?: number;
 }
 
 export interface ClientSpawnOptions {
@@ -21,27 +20,22 @@ export interface ClientSpawnOptions {
   shadowOf?: string;
   shadowMode?: 'subagent' | 'process';
 }
-type SpawnCapableClient = AgentRelayClient & {
-  spawnPty?: (input: ClientSpawnOptions) => Promise<unknown>;
-};
 
-export function createAgentRelayClient(options: CreateAgentRelayClientOptions): AgentRelayClient {
+export async function createAgentRelayClient(options: CreateAgentRelayClientOptions): Promise<AgentRelayClient> {
   const {
     cwd,
     channels = ['general'],
     binaryPath = process.env.AGENT_RELAY_BIN,
     binaryArgs,
     env = process.env,
-    requestTimeoutMs,
   } = options;
 
-  return new AgentRelayClient({
-    binaryPath,
+  return AgentRelayClient.spawn({
+    binaryPath: binaryPath || undefined,
     binaryArgs,
     channels,
     cwd,
-    env,
-    requestTimeoutMs,
+    env: env as Record<string, string>,
   });
 }
 
@@ -49,10 +43,5 @@ export async function spawnAgentWithClient(
   client: AgentRelayClient,
   options: ClientSpawnOptions
 ): Promise<void> {
-  const spawnClient = client as SpawnCapableClient;
-  if (typeof spawnClient.spawnPty !== 'function') {
-    throw new Error('Agent relay client does not support spawning agents');
-  }
-
-  await spawnClient.spawnPty(options);
+  await client.spawnPty(options);
 }

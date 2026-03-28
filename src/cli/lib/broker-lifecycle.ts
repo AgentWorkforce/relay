@@ -84,12 +84,7 @@ async function startBrokerWithPortFallback(
   const startApiPort = dashboardPort + 1;
   const apiPort = await resolveApiPortWithFallback(startApiPort, MAX_API_PORT_ATTEMPTS, deps);
 
-  const candidate = deps.createRelay(paths.projectRoot, apiPort);
-  candidate.onBrokerStderr?.((line: string) => {
-    if (verbose) {
-      deps.error(`[broker] ${line}`);
-    }
-  });
+  const candidate = await deps.createRelay(paths.projectRoot, apiPort);
 
   await candidate.getStatus();
   return { relay: candidate, apiPort };
@@ -909,7 +904,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         }
 
         apiPort = await discoverExistingBrokerApiPort(Math.max(1, apiPort), MAX_API_PORT_ATTEMPTS, deps);
-        const reusableRelay = deps.createRelay(paths.projectRoot, apiPort);
+        const reusableRelay = await deps.createRelay(paths.projectRoot, apiPort);
         try {
           await reusableRelay.getStatus();
         } catch {
@@ -1311,9 +1306,9 @@ export async function runStatusCommand(deps: CoreDependencies): Promise<void> {
   const apiPort = await deps.findBrokerApiPort();
 
   if (apiPort > 0) {
-    const relay = deps.createRelay(paths.projectRoot, apiPort);
+    const relay = await deps.createRelay(paths.projectRoot, apiPort);
     try {
-      const status = await relay.getStatus();
+      const status = await relay.getStatus() as { agent_count?: number; pending_delivery_count?: number };
       if (typeof status.agent_count === 'number') {
         deps.log(`Agents: ${status.agent_count}`);
       }

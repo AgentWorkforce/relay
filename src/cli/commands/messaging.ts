@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { RelayCast, HttpAgentRelayClient } from '@agent-relay/sdk';
+import { RelayCast, AgentRelayClient } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 
 import { parseSince } from '../lib/formatting.js';
@@ -67,7 +67,7 @@ function defaultExit(code: number): never {
 }
 
 async function createDefaultClient(cwd: string): Promise<MessagingBrokerClient> {
-  const client = await HttpAgentRelayClient.discoverAndConnect({ cwd });
+  const client = await AgentRelayClient.spawn({ cwd });
   return client as unknown as MessagingBrokerClient;
 }
 
