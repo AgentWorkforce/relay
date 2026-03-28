@@ -244,6 +244,10 @@ pub fn spawn_env_vars(
         .filter(|value| !value.is_empty())
     {
         env.push((
+            "RELAYFILE_WORKSPACE".to_string(),
+            default_workspace.to_string(),
+        ));
+        env.push((
             "RELAY_DEFAULT_WORKSPACE".to_string(),
             default_workspace.to_string(),
         ));

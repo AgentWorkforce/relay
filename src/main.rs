@@ -1531,6 +1531,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     ];
     if let Some(default_workspace_id) = default_workspace_id.clone() {
         worker_env.push((
+            "RELAYFILE_WORKSPACE".to_string(),
+            default_workspace_id.clone(),
+        ));
+        worker_env.push((
             "RELAY_DEFAULT_WORKSPACE".to_string(),
             default_workspace_id.clone(),
         ));

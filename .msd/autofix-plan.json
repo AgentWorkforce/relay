@@ -2,48 +2,86 @@
   "groups": [
     {
       "id": "group-1",
-      "label": "runner.ts reliability and readability fixes",
-      "domain": "reliability",
+      "label": "start.ts security hardening and code quality",
+      "domain": "security",
       "findings": [
-        "packages/sdk/src/runner.ts-Silent failure: optional config param on resume()-historian-review, developer-cross-review, security-cross-review-medium",
-        "packages/sdk/src/runner.ts-Synthetic timestamps in reconstructed runs-historian-review, developer-cross-review-medium",
-        "packages/sdk/src/runner.ts-Path traversal via unsanitized runId-security-review, all cross-reviewers-low",
-        "packages/sdk/src/runner.ts-failedStepName heuristic asymmetry with startFrom-historian-review, developer-cross-review-low",
-        "packages/sdk/src/runner.ts-.report.json files invisible to cache reconstruction-historian-review, developer-cross-review-low",
-        "packages/sdk/src/runner.ts-Nested ternary workflow selection readability-developer-review, all cross-reviewers-low"
+        "src/cli/commands/on/start.ts-Hardcoded JWT signing secret-security + developer + historian (all confirmed in cross-review)-critical",
+        "src/cli/commands/on/start.ts-Token exposed via CLI argument-security + historian (confirmed in cross-review)-high",
+        "src/cli/commands/on/start.ts-Broken glob matcher controls file permissions-developer + historian + security-cross-high",
+        "src/cli/commands/on/start.ts-Monolithic file needs decomposition-developer-high",
+        "src/cli/commands/on/start.ts-Sandbox-bypass flags applied unconditionally-security + developer (confirmed in cross-review)-medium",
+        "src/cli/commands/on/start.ts-World-readable config with signing secret-security-medium",
+        "src/cli/commands/on/start.ts-World-readable workspaces.json with API keys-security-medium",
+        "src/cli/commands/on/start.ts-syncWritableFilesBack path traversal-security-medium",
+        "src/cli/commands/on/start.ts-Signal handler async cleanup not awaited-historian + developer (dispute resolved)-medium",
+        "src/cli/commands/on/start.ts-Untyped dependency injection parameters-developer (dispute resolved)-medium",
+        "src/cli/commands/on/start.ts-Code duplication between CLI and SDK-developer-medium",
+        "src/cli/commands/on/start.ts-Broad default agent scopes-security-low",
+        "src/cli/commands/on/start.ts-Tokens inherited by all child processes-security-low",
+        "src/cli/commands/on/start.test.ts-Missing test coverage for critical paths-developer-low"
       ],
       "files": [
-        "packages/sdk/src/runner.ts"
+        "src/cli/commands/on/start.ts",
+        "src/cli/commands/on/start.test.ts"
       ],
-      "rationale": "All 6 findings target runner.ts — grouping avoids file conflicts and lets one worker handle related resume/reconstruction logic"
+      "rationale": "All 13 findings in start.ts (the largest and most critical file with the CRITICAL JWT issue) plus its test file. Must be one group since no two workers can touch the same file."
     },
     {
       "id": "group-2",
-      "label": "cli.ts flag parsing and config version fixes",
-      "domain": "code-quality",
+      "label": "workspace.ts and provision.ts reliability and security",
+      "domain": "security",
       "findings": [
-        "packages/sdk/src/cli.ts-String matching brittleness for flag parsing-developer-review, historian-cross-review-low",
-        "packages/sdk/src/cli.ts-Config version mismatch during resume-historian-cross-review-low"
+        "src/cli/commands/on/workspace.ts-Symlink traversal file exfiltration-security + historian (confirmed in cross-review)-high",
+        "src/cli/commands/on/workspace.ts-Shotgun API discovery pattern-developer + historian-high",
+        "src/cli/commands/on/workspace.ts-writeBulkWrite falsy status check-developer (cross-review added context)-medium",
+        "src/cli/commands/on/workspace.ts-HTTP 404/405 treated as success-historian-medium",
+        "src/cli/commands/on/provision.ts-TOCTOU token file permission race-historian (confirmed by security-cross and developer-cross)-high",
+        "src/cli/commands/on/provision.ts-Silent error swallowing on workspace creation-developer + security-cross-medium"
       ],
       "files": [
-        "packages/sdk/src/cli.ts"
+        "src/cli/commands/on/workspace.ts",
+        "src/cli/commands/on/provision.ts"
       ],
-      "rationale": "Both findings target cli.ts — same file, related CLI parsing concerns"
+      "rationale": "Related CLI command files handling workspace and provisioning logic. Both deal with file I/O and API interactions with security implications (symlink traversal, TOCTOU race)."
     },
     {
       "id": "group-3",
-      "label": "file-db.ts output validation and error handling",
+      "label": "services, dotfiles, token, and prereqs fixes",
       "domain": "reliability",
       "findings": [
-        "packages/sdk/src/file-db.ts-hasStepOutputs false positive potential-historian-review-low",
-        "packages/sdk/src/file-db.ts-File path disclosure in append() catch — DISPUTED NON-ISSUE-security-review (disputed by security-cross-review, developer-cross-review)-low"
+        "src/cli/commands/on/services.ts-CWD-relative PID file path-historian (confirmed in cross-review)-high",
+        "src/cli/commands/on/services.ts-spawnLogged fd race condition-developer-medium",
+        "src/cli/commands/on/services.ts-pickFirst/pickFirstString near-duplication-developer-low",
+        "src/cli/commands/on/dotfiles.ts-walkProjectFiles missing node_modules exclusion-historian (confirmed by all cross-reviewers)-medium",
+        "src/cli/commands/on/dotfiles.ts-Agent name from filename used unsanitized-historian + security (dispute resolved to LOW)-low",
+        "src/cli/commands/on/token.ts-Math.random() used for JWT jti claim-security + developer-medium",
+        "src/cli/commands/on/prereqs.ts-checkPrereqs runs npx turbo build as side effect-developer-low"
       ],
       "files": [
-        "packages/sdk/src/file-db.ts"
+        "src/cli/commands/on/services.ts",
+        "src/cli/commands/on/dotfiles.ts",
+        "src/cli/commands/on/token.ts",
+        "src/cli/commands/on/prereqs.ts"
       ],
-      "rationale": "Both findings target file-db.ts — same file, related data integrity concerns"
+      "rationale": "Remaining CLI command files all under src/cli/commands/on/. Mix of reliability and minor security fixes with no file overlap to other groups."
+    },
+    {
+      "id": "group-4",
+      "label": "postinstall script and SDK relay fixes",
+      "domain": "security",
+      "findings": [
+        "scripts/postinstall.js-No checksum verification for downloaded binaries-security (confirmed in cross-review)-high",
+        "scripts/postinstall.js-Runtime monkey-patching of node_modules-security + historian-medium",
+        "packages/sdk/src/relay.ts-No error handling for malformed registry JSON-historian-cross (missed by phase 1)-high",
+        "packages/sdk/src/relay.ts-workspaceName semantics change-historian-medium"
+      ],
+      "files": [
+        "scripts/postinstall.js",
+        "packages/sdk/src/relay.ts"
+      ],
+      "rationale": "Non-CLI files: build script and SDK module. Both involve external data handling (binary downloads, registry JSON parsing) with supply-chain and error-handling security implications."
     }
   ],
-  "totalGroups": 3,
+  "totalGroups": 4,
   "conflictCheck": "no file appears in multiple groups"
 }
