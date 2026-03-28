@@ -229,7 +229,10 @@ fn listen_api_router_with_auth(
         .route("/api/resize/{name}", routing::post(listen_api_resize_pty))
         .route("/api/metrics", routing::get(listen_api_metrics))
         .route("/api/status", routing::get(listen_api_status))
-        .route("/api/crash-insights", routing::get(listen_api_crash_insights))
+        .route(
+            "/api/crash-insights",
+            routing::get(listen_api_crash_insights),
+        )
         .route("/api/preflight", routing::post(listen_api_preflight))
         .route("/api/shutdown", routing::post(listen_api_shutdown))
         .route(
@@ -845,7 +848,10 @@ fn api_error(
     code: &str,
     message: impl Into<String>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
-    (status, axum::Json(json!({ "code": code, "message": message.into() })))
+    (
+        status,
+        axum::Json(json!({ "code": code, "message": message.into() })),
+    )
 }
 
 fn internal_error() -> (axum::http::StatusCode, axum::Json<Value>) {
@@ -971,7 +977,11 @@ async fn listen_api_status(
     }
     match reply_rx.await {
         Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
-        Ok(Err(err)) => api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "status_error", err),
+        Ok(Err(err)) => api_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "status_error",
+            err,
+        ),
         Err(_) => internal_error(),
     }
 }
@@ -1022,7 +1032,11 @@ async fn listen_api_preflight(
     }
     match reply_rx.await {
         Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
-        Ok(Err(err)) => api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "preflight_error", err),
+        Ok(Err(err)) => api_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "preflight_error",
+            err,
+        ),
         Err(_) => internal_error(),
     }
 }
@@ -1041,7 +1055,11 @@ async fn listen_api_renew_lease(
     }
     match reply_rx.await {
         Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
-        Ok(Err(err)) => api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "lease_error", err),
+        Ok(Err(err)) => api_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "lease_error",
+            err,
+        ),
         Err(_) => internal_error(),
     }
 }
@@ -1060,7 +1078,11 @@ async fn listen_api_shutdown(
     }
     match reply_rx.await {
         Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
-        Ok(Err(err)) => api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "shutdown_error", err),
+        Ok(Err(err)) => api_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "shutdown_error",
+            err,
+        ),
         Err(_) => internal_error(),
     }
 }
@@ -1375,9 +1397,7 @@ mod tests {
         broadcast_if_relevant(&tx, &replay_buffer, &payload).await;
 
         // All event kinds are now broadcast (full-fidelity for SDK consumers)
-        let delivered = rx
-            .try_recv()
-            .expect("all event kinds should be broadcast");
+        let delivered = rx.try_recv().expect("all event kinds should be broadcast");
         let decoded: Value =
             serde_json::from_str(&delivered).expect("broadcast payload should be valid JSON");
         assert_eq!(decoded["kind"], "totally_unknown_kind");

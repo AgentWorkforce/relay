@@ -49,9 +49,8 @@ use relay_broker::{
     },
     pty::PtySession,
     relaycast_ws::{
-        format_worker_preregistration_error,
-        registration_retry_after_secs, retry_agent_registration, RegRetryOutcome,
-        RelaycastHttpClient, WsControl,
+        format_worker_preregistration_error, registration_retry_after_secs,
+        retry_agent_registration, RegRetryOutcome, RelaycastHttpClient, WsControl,
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
     snippets::{configure_relaycast_mcp_with_token, ensure_relaycast_mcp_config},
@@ -5257,7 +5256,6 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
         _lock: Some(lock_file),
     })
 }
-
 
 /// Write the current process PID to the given path atomically.
 fn write_pid_file(path: &Path) -> Result<()> {
