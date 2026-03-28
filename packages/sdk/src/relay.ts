@@ -2,7 +2,7 @@
  * High-level facade for the Agent Relay SDK.
  *
  * Provides a clean, property-based API on top of the lower-level
- * {@link AgentRelayClient} protocol client.
+ * {@link BrokerClient} protocol client.
  *
  * @example
  * ```ts
@@ -30,11 +30,15 @@ import path from 'node:path';
 import { RelayCast } from '@relaycast/sdk';
 
 import {
-  AgentRelayClient,
+  BrokerClient,
+  type SpawnBrokerOptions,
+} from './broker-client.js';
+import {
   AgentRelayProtocolError,
-  type AgentRelayClientOptions,
-  type SendMessageInput,
-  type SpawnPtyInput,
+} from './transport.js';
+import type {
+  SendMessageInput,
+  SpawnPtyInput,
 } from './client.js';
 import type {
   AgentRuntime,
@@ -381,16 +385,17 @@ export class AgentRelay {
   readonly gemini: AgentSpawner;
   readonly opencode: AgentSpawner;
 
-  private readonly clientOptions: AgentRelayClientOptions;
+  private readonly clientOptions: SpawnBrokerOptions;
   private readonly defaultChannels: string[];
   private readonly requestedWorkspaceId?: string;
   private readonly workspaceName?: string;
   private readonly relaycastBaseUrl?: string;
   private relayApiKey?: string;
   private resolvedWorkspaceId?: string;
-  private client?: AgentRelayClient;
-  private startPromise?: Promise<AgentRelayClient>;
+  private client?: BrokerClient;
+  private startPromise?: Promise<BrokerClient>;
   private unsubEvent?: () => void;
+  private readonly stderrListeners = new Set<(line: string) => void>();
   private readonly knownAgents = new Map<string, Agent>();
   private readonly readyAgents = new Set<string>();
   private readonly messageReadyAgents = new Set<string>();
@@ -428,8 +433,6 @@ export class AgentRelay {
       channels: this.defaultChannels,
       cwd: options.cwd,
       env: options.env,
-      requestTimeoutMs: options.requestTimeoutMs,
-      shutdownTimeoutMs: options.shutdownTimeoutMs,
     };
 
     this.codex = this.createSpawner('codex', 'Codex', 'pty');
@@ -550,22 +553,8 @@ export class AgentRelay {
    * Returns an unsubscribe function.
    */
   onBrokerStderr(listener: (line: string) => void): () => void {
-    if (this.client) {
-      return this.client.onBrokerStderr(listener);
-    }
-    // Queue it: once ensureStarted completes, wire it up
-    let unsub: (() => void) | undefined;
-    const queuedUnsub = () => {
-      unsub?.();
-    };
-    // Use the start promise if one is pending
-    const promise = this.startPromise ?? this.ensureStarted();
-    promise
-      .then((c) => {
-        unsub = c.onBrokerStderr(listener);
-      })
-      .catch(() => {});
-    return queuedUnsub;
+    this.stderrListeners.add(listener);
+    return () => { this.stderrListeners.delete(listener); };
   }
 
   // ── Spawning ────────────────────────────────────────────────────────────
@@ -789,7 +778,7 @@ export class AgentRelay {
   /** Pre-register a batch of agents with Relaycast before steps execute. */
   async preflightAgents(agents: Array<{ name: string; cli: string }>): Promise<void> {
     const client = await this.ensureStarted();
-    await client.preflightAgents(agents);
+    await client.preflight(agents);
   }
 
   /** List agents with PIDs from the broker (for worker registration). */
@@ -802,7 +791,7 @@ export class AgentRelay {
 
   async getStatus(): Promise<BrokerStatus> {
     const client = await this.ensureStarted();
-    return client.getStatus();
+    return client.getStatus() as Promise<BrokerStatus>;
   }
 
   async subscribe(opts: { agent: string; channels: string[] }): Promise<void> {
@@ -1188,12 +1177,19 @@ export class AgentRelay {
     }
   }
 
-  private async ensureStarted(): Promise<AgentRelayClient> {
+  private async ensureStarted(): Promise<BrokerClient> {
     if (this.client) return this.client;
     if (this.startPromise) return this.startPromise;
 
     this.startPromise = this.ensureRelaycastApiKey()
-      .then(() => AgentRelayClient.start(this.clientOptions))
+      .then(() => BrokerClient.spawn({
+        ...this.clientOptions,
+        onStderr: (line) => {
+          for (const listener of this.stderrListeners) {
+            try { listener(line); } catch { /* ignore */ }
+          }
+        },
+      }))
       .then((c) => {
         // Use the workspace key the broker actually connected with.
         // This ensures SDK and workers are always on the same workspace.
@@ -1223,7 +1219,7 @@ export class AgentRelay {
     return this.startPromise;
   }
 
-  private wireEvents(client: AgentRelayClient): void {
+  private wireEvents(client: BrokerClient): void {
     // eslint-disable-next-line complexity
     this.unsubEvent = client.onEvent((event: BrokerEvent) => {
       switch (event.kind) {

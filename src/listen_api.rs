@@ -64,6 +64,53 @@ pub enum ListenApiRequest {
         mode: MessageInjectionMode,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
+    SendInput {
+        name: String,
+        data: String,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    ResizePty {
+        name: String,
+        rows: u16,
+        cols: u16,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    GetMetrics {
+        agent: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    GetStatus {
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    GetCrashInsights {
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    Preflight {
+        agents: Vec<PreflightEntry>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    SubscribeChannels {
+        name: String,
+        channels: Vec<String>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    UnsubscribeChannels {
+        name: String,
+        channels: Vec<String>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    Shutdown {
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    RenewLease {
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PreflightEntry {
+    pub name: String,
+    pub cli: String,
 }
 
 #[derive(Clone)]
@@ -78,6 +125,12 @@ struct ListenApiState {
     workspace_key: Option<String>,
     memberships: Vec<WorkspaceMembershipSummary>,
     default_workspace_id: Option<String>,
+    /// Broker version string (from Cargo.toml)
+    broker_version: String,
+    /// Whether the broker is in persist mode
+    persist: bool,
+    /// When the broker started
+    started_at: std::time::Instant,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -105,6 +158,7 @@ pub fn listen_api_router(
     workspace_key: Option<String>,
     memberships: Vec<WorkspaceMembershipSummary>,
     default_workspace_id: Option<String>,
+    persist: bool,
 ) -> axum::Router {
     listen_api_router_with_auth(
         tx,
@@ -114,6 +168,7 @@ pub fn listen_api_router(
         workspace_key,
         memberships,
         default_workspace_id,
+        persist,
     )
 }
 
@@ -132,6 +187,7 @@ fn listen_api_router_with_auth(
     workspace_key: Option<String>,
     memberships: Vec<WorkspaceMembershipSummary>,
     default_workspace_id: Option<String>,
+    persist: bool,
 ) -> axum::Router {
     use axum::{middleware, routing, Router};
 
@@ -147,9 +203,14 @@ fn listen_api_router_with_auth(
             .filter(|value| !value.is_empty()),
         memberships,
         default_workspace_id,
+        broker_version: env!("CARGO_PKG_VERSION").to_string(),
+        persist,
+        started_at: std::time::Instant::now(),
     };
 
     let protected = Router::new()
+        .route("/api/session", routing::get(listen_api_session))
+        .route("/api/session/renew", routing::post(listen_api_renew_lease))
         .route("/api/spawn", routing::post(listen_api_spawn))
         .route("/api/spawned", routing::get(listen_api_list))
         .route(
@@ -164,6 +225,21 @@ fn listen_api_router_with_auth(
             routing::post(listen_api_interrupt),
         )
         .route("/api/send", routing::post(listen_api_send))
+        .route("/api/input/{name}", routing::post(listen_api_send_input))
+        .route("/api/resize/{name}", routing::post(listen_api_resize_pty))
+        .route("/api/metrics", routing::get(listen_api_metrics))
+        .route("/api/status", routing::get(listen_api_status))
+        .route("/api/crash-insights", routing::get(listen_api_crash_insights))
+        .route("/api/preflight", routing::post(listen_api_preflight))
+        .route("/api/shutdown", routing::post(listen_api_shutdown))
+        .route(
+            "/api/spawned/{name}/subscribe",
+            routing::post(listen_api_subscribe_channels),
+        )
+        .route(
+            "/api/spawned/{name}/unsubscribe",
+            routing::post(listen_api_unsubscribe_channels),
+        )
         .route("/api/history/stats", routing::get(listen_api_history_stats))
         .route("/api/config", routing::get(listen_api_config))
         .route("/ws", routing::get(listen_api_ws))
@@ -226,6 +302,19 @@ async fn listen_api_health(
 /// Authenticated endpoint that returns broker configuration, including the
 /// Relaycast workspace API key.  Unlike /health this endpoint sits behind the
 /// auth middleware so the key is not exposed to unauthenticated callers.
+async fn listen_api_session(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> axum::Json<Value> {
+    axum::Json(json!({
+        "broker_version": state.broker_version,
+        "protocol_version": 1,
+        "workspace_key": state.workspace_key,
+        "default_workspace_id": state.default_workspace_id,
+        "mode": if state.persist { "persist" } else { "ephemeral" },
+        "uptime_secs": state.started_at.elapsed().as_secs(),
+    }))
+}
+
 async fn listen_api_config(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
 ) -> axum::Json<Value> {
@@ -747,6 +836,294 @@ async fn listen_api_history_stats() -> axum::Json<Value> {
     }))
 }
 
+// ---------------------------------------------------------------------------
+// Structured error helper
+// ---------------------------------------------------------------------------
+
+fn api_error(
+    status: axum::http::StatusCode,
+    code: &str,
+    message: impl Into<String>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    (status, axum::Json(json!({ "code": code, "message": message.into() })))
+}
+
+fn internal_error() -> (axum::http::StatusCode, axum::Json<Value>) {
+    api_error(
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        "internal_error",
+        "internal channel closed",
+    )
+}
+
+// ---------------------------------------------------------------------------
+// PTY input / resize
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct SendInputBody {
+    data: String,
+}
+
+async fn listen_api_send_input(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<SendInputBody>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::SendInput {
+            name: name.clone(),
+            data: body.data,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => api_error(axum::http::StatusCode::BAD_REQUEST, "agent_not_found", err),
+        Err(_) => internal_error(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ResizePtyBody {
+    rows: u16,
+    cols: u16,
+}
+
+async fn listen_api_resize_pty(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<ResizePtyBody>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::ResizePty {
+            name: name.clone(),
+            rows: body.rows,
+            cols: body.cols,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => {
+            // Could be agent_not_found, invalid_dimensions, or unsupported_operation
+            api_error(axum::http::StatusCode::BAD_REQUEST, "request_failed", err)
+        }
+        Err(_) => internal_error(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Observability
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Default)]
+struct MetricsQuery {
+    agent: Option<String>,
+}
+
+async fn listen_api_metrics(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Query(query): axum::extract::Query<MetricsQuery>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::GetMetrics {
+            agent: query.agent,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => api_error(axum::http::StatusCode::NOT_FOUND, "agent_not_found", err),
+        Err(_) => internal_error(),
+    }
+}
+
+async fn listen_api_status(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::GetStatus { reply: reply_tx })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "status_error", err),
+        Err(_) => internal_error(),
+    }
+}
+
+async fn listen_api_crash_insights(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::GetCrashInsights { reply: reply_tx })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Err(_) => internal_error(),
+        Ok(Err(err)) => api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "error", err),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct PreflightBody {
+    agents: Vec<PreflightEntry>,
+}
+
+async fn listen_api_preflight(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::Json(body): axum::Json<PreflightBody>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::Preflight {
+            agents: body.agents,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "preflight_error", err),
+        Err(_) => internal_error(),
+    }
+}
+
+async fn listen_api_renew_lease(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::RenewLease { reply: reply_tx })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "lease_error", err),
+        Err(_) => internal_error(),
+    }
+}
+
+async fn listen_api_shutdown(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::Shutdown { reply: reply_tx })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "shutdown_error", err),
+        Err(_) => internal_error(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Channel subscription
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct ChannelSubBody {
+    channels: Vec<String>,
+}
+
+async fn listen_api_subscribe_channels(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<ChannelSubBody>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::SubscribeChannels {
+            name: name.clone(),
+            channels: body.channels,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => api_error(axum::http::StatusCode::NOT_FOUND, "agent_not_found", err),
+        Err(_) => internal_error(),
+    }
+}
+
+async fn listen_api_unsubscribe_channels(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<ChannelSubBody>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::UnsubscribeChannels {
+            name: name.clone(),
+            channels: body.channels,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => api_error(axum::http::StatusCode::NOT_FOUND, "agent_not_found", err),
+        Err(_) => internal_error(),
+    }
+}
+
 async fn listen_api_ws(
     ws: axum::extract::WebSocketUpgrade,
     axum::extract::State(state): axum::extract::State<ListenApiState>,
@@ -845,60 +1222,42 @@ async fn handle_dashboard_ws(
 // Dashboard event broadcasting
 // ---------------------------------------------------------------------------
 
-/// Broadcast an event payload to dashboard WS clients if the event kind is
-/// relevant for real-time UI updates. This is called alongside `send_event`
-/// and does not affect the SDK stdout protocol.
+/// Broadcast an event payload to all connected WS clients. Every event kind
+/// is forwarded so SDK consumers receive the same stream they previously got
+/// over the stdio protocol.
+///
+/// Events are classified as:
+/// - **Ephemeral**: high-frequency, not stored in replay buffer (`worker_stream`,
+///   `delivery_active`). Clients that reconnect will not see missed ephemeral events.
+/// - **Durable**: stored in the replay buffer with a sequence number so clients can
+///   replay missed events on reconnect via `sinceSeq`.
 pub async fn broadcast_if_relevant(
     events_tx: &broadcast::Sender<String>,
     replay_buffer: &ReplayBuffer,
     payload: &Value,
 ) {
-    if let Some(kind) = payload.get("kind").and_then(Value::as_str) {
-        match kind {
-            // High-frequency ephemeral events: broadcast without replay buffer storage
-            "worker_stream" | "delivery_active" => {
-                if let Ok(json) = serde_json::to_string(payload) {
+    let Some(kind) = payload.get("kind").and_then(Value::as_str) else {
+        return;
+    };
+
+    // High-frequency ephemeral events: broadcast without replay buffer storage
+    let is_ephemeral = matches!(kind, "worker_stream" | "delivery_active");
+
+    if is_ephemeral {
+        if let Ok(json) = serde_json::to_string(payload) {
+            let _ = events_tx.send(json);
+        }
+    } else {
+        // Durable events: store in replay buffer (with seq number) and broadcast
+        match replay_buffer.push(payload.clone()).await {
+            Ok((_seq, event_with_seq)) => {
+                if let Ok(json) = serde_json::to_string(&event_with_seq) {
                     let _ = events_tx.send(json);
                 }
             }
-            // Durable events: store in replay buffer and broadcast
-            "relay_inbound"
-            | "agent_spawned"
-            | "agent_exited"
-            | "agent_released"
-            | "worker_ready"
-            | "agent_idle"
-            | "agent_restarting"
-            | "agent_restarted"
-            | "agent_permanently_dead"
-            | "delivery_ack"
-            | "delivery_verified"
-            | "delivery_failed"
-            | "worker_error" => match replay_buffer.push(payload.clone()).await {
-                Ok((_seq, event_with_seq)) => {
-                    if let Ok(json) = serde_json::to_string(&event_with_seq) {
-                        match events_tx.send(json) {
-                            Ok(receivers) => {
-                                tracing::debug!(
-                                    kind = kind,
-                                    receivers = receivers,
-                                    "broadcast event to dashboard WS clients"
-                                );
-                            }
-                            Err(_) => {
-                                tracing::warn!(
-                                    kind = kind,
-                                    "broadcast event dropped — no dashboard WS clients connected"
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(kind = kind, error = %error, "failed to push event to replay buffer");
-                }
-            },
-            _ => {}
+            Err(error) => {
+                tracing::warn!(kind = kind, error = %error, "failed to push event to replay buffer");
+            }
         }
     }
 }
@@ -1005,7 +1364,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn broadcast_if_relevant_ignores_unknown_kind() {
+    async fn broadcast_if_relevant_broadcasts_all_kinds() {
         let (tx, mut rx) = broadcast::channel::<String>(8);
         let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
         let payload = json!({
@@ -1015,10 +1374,15 @@ mod tests {
 
         broadcast_if_relevant(&tx, &replay_buffer, &payload).await;
 
-        assert!(matches!(
-            rx.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
-        ));
+        // All event kinds are now broadcast (full-fidelity for SDK consumers)
+        let delivered = rx
+            .try_recv()
+            .expect("all event kinds should be broadcast");
+        let decoded: Value =
+            serde_json::from_str(&delivered).expect("broadcast payload should be valid JSON");
+        assert_eq!(decoded["kind"], "totally_unknown_kind");
+        // Non-ephemeral events get a seq number from the replay buffer
+        assert!(decoded.get("seq").and_then(Value::as_u64).is_some());
     }
 
     #[tokio::test]
@@ -1067,6 +1431,7 @@ mod auth_tests {
                 None,
                 vec![],
                 None,
+                false,
             ),
             rx,
         )

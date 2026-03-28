@@ -205,6 +205,9 @@ struct RuntimePaths {
     state: PathBuf,
     pending: PathBuf,
     pid: PathBuf,
+    /// Runtime metadata file path (reserved for future use).
+    #[allow(dead_code)]
+    runtime: PathBuf,
     /// Held for process lifetime to prevent concurrent broker instances (persist mode only).
     #[allow(dead_code)]
     _lock: Option<std::fs::File>,
@@ -518,6 +521,9 @@ enum WorkerEvent {
     Message { name: String, value: Value },
 }
 
+// These payload structs were used by the stdio protocol handler (handle_sdk_frame).
+// Kept temporarily for reference; will be removed after HTTP transport is fully validated.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct SpawnPayload {
     agent: AgentSpec,
@@ -535,6 +541,7 @@ struct SpawnPayload {
     skip_relay_prompt: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct ReleasePayload {
     name: String,
@@ -542,6 +549,7 @@ struct ReleasePayload {
     reason: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct SendMessagePayload {
     to: String,
@@ -560,12 +568,14 @@ struct SendMessagePayload {
     mode: MessageInjectionMode,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct SendInputPayload {
     name: String,
     data: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct ResizePtyPayload {
     name: String,
@@ -573,6 +583,7 @@ struct ResizePtyPayload {
     cols: u16,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct SetModelPayload {
     name: String,
@@ -581,6 +592,7 @@ struct SetModelPayload {
     timeout_ms: Option<u64>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct GetMetricsPayload {
     #[serde(default)]
@@ -619,6 +631,7 @@ struct ThreadAccumulator {
     sort_key: i64,
 }
 
+#[allow(dead_code)]
 fn is_system_sender(sender: &str) -> bool {
     sender == "system" || sender == "human:orchestrator" || sender.starts_with("human:")
 }
@@ -1551,7 +1564,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let replay_buffer_for_stdout = replay_buffer.clone();
     tokio::spawn(async move {
         while let Some(frame) = sdk_out_rx.recv().await {
-            // Broadcast dashboard-relevant events to WS clients
+            // Broadcast events to WS clients (the primary SDK transport)
             if frame.msg_type == "event" {
                 broadcast_if_relevant(
                     &events_tx_for_stdout,
@@ -1560,13 +1573,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                 )
                 .await;
             }
-            if let Ok(line) = serde_json::to_string(&frame) {
-                use std::io::Write;
-                let mut stdout = std::io::stdout().lock();
-                let _ = stdout.write_all(line.as_bytes());
-                let _ = stdout.write_all(b"\n");
-                let _ = stdout.flush();
-            }
+            // Note: stdout writing is removed. The HTTP/WS API is the
+            // only SDK transport. Events flow through broadcast_if_relevant
+            // → events_tx → WS clients.
         }
     });
 
@@ -1586,6 +1595,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
         relay_broker::crash_insights::CrashInsights::load(&crash_insights_path);
 
     let mut sdk_lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut stdin_open = true;
     let mut reap_tick = tokio::time::interval(Duration::from_millis(500));
     reap_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut dedup = DedupCache::new(Duration::from_secs(300), 8192);
@@ -1604,8 +1614,32 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
     let mut shutdown = false;
 
-    // Optional HTTP API (for dashboard proxy)
-    let (api_tx, mut api_rx) = if cmd.api_port > 0 {
+    // Owner lease: in ephemeral mode, the broker shuts down if the SDK
+    // doesn't renew the lease within this duration. Replaces stdin EOF
+    // detection. Disabled in persist mode.
+    let lease_duration = if cmd.persist {
+        None
+    } else {
+        Some(Duration::from_secs(120))
+    };
+    let mut last_lease_renewal = Instant::now();
+    let mut lease_check = tokio::time::interval(Duration::from_secs(10));
+    lease_check.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    // HTTP/WS API — always started. This is the primary transport for SDK
+    // consumers, dashboards, and remote clients.  When no explicit API key
+    // is configured, generate a random one so control endpoints are always
+    // authenticated (the key is written to the runtime metadata file for
+    // SDK discovery).
+    let api_key = std::env::var("RELAY_BROKER_API_KEY")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| format!("br_{}", Uuid::new_v4().simple()));
+
+    // Set the env var so listen_api's configured_broker_api_key() picks it up
+    std::env::set_var("RELAY_BROKER_API_KEY", &api_key);
+
+    let (_api_tx, mut api_rx) = {
         let (tx, rx) = mpsc::channel::<ListenApiRequest>(32);
         let router = listen_api_router(
             tx.clone(),
@@ -1614,25 +1648,26 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             Some(relay_workspace_key.clone()),
             workspace_memberships.clone(),
             default_workspace_id.clone(),
+            cmd.persist,
         );
-        let listener = tokio::net::TcpListener::bind(format!("{}:{}", cmd.api_bind, cmd.api_port))
+        let bind_addr = format!("{}:{}", cmd.api_bind, cmd.api_port);
+        let listener = tokio::net::TcpListener::bind(&bind_addr)
             .await
-            .with_context(|| format!("failed to bind API on {}:{}", cmd.api_bind, cmd.api_port))?;
-        eprintln!(
+            .with_context(|| format!("failed to bind API on {}", bind_addr))?;
+        let actual_port = listener.local_addr()?.port();
+        // Machine-readable on stdout (SDK parses this to discover the port).
+        // Diagnostic logs stay on stderr via tracing/eprintln.
+        println!(
             "[agent-relay] API listening on http://{}:{}",
-            cmd.api_bind, cmd.api_port
+            cmd.api_bind, actual_port
         );
         tokio::spawn(async move {
             if let Err(e) = axum::serve(listener, router).await {
                 tracing::error!(error = %e, "HTTP API server error");
             }
         });
-        (Some(tx), Some(rx))
-    } else {
-        (None, None)
+        (tx, rx)
     };
-    // Suppress unused-variable warning when api_tx is created but only used for its lifetime
-    let _ = &api_tx;
 
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
@@ -1642,13 +1677,26 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                 shutdown = true;
             }
 
+            _ = lease_check.tick() => {
+                if let Some(duration) = lease_duration {
+                    if last_lease_renewal.elapsed() > duration {
+                        tracing::info!(
+                            elapsed_secs = last_lease_renewal.elapsed().as_secs(),
+                            lease_secs = duration.as_secs(),
+                            "owner lease expired — shutting down"
+                        );
+                        shutdown = true;
+                    }
+                }
+            }
+
             _ = sigterm.recv() => {
                 tracing::info!("received SIGTERM, shutting down");
                 shutdown = true;
             }
 
             // HTTP API requests (when --api-port is active)
-            result = async { api_rx.as_mut().unwrap().recv().await }, if api_rx.is_some() => {
+            result = api_rx.recv() => {
                 if let Some(req) = result {
                     match req {
                         ListenApiRequest::Spawn {
@@ -2335,47 +2383,144 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             let threads = build_thread_infos(&messages, &self_names);
                             let _ = reply.send(Ok(json!({ "threads": threads })));
                         }
+                        ListenApiRequest::SendInput { name, data, reply } => {
+                            if let Err(err) = workers.send_to_worker(
+                                &name, "write_pty", Some(format!("api_{}", Uuid::new_v4().simple())),
+                                json!({ "data": data }),
+                            ).await {
+                                let _ = reply.send(Err(format!("agent_not_found: {}", err)));
+                            } else {
+                                let _ = reply.send(Ok(json!({
+                                    "name": name,
+                                    "bytes_written": data.len(),
+                                })));
+                            }
+                        }
+                        ListenApiRequest::ResizePty { name, rows, cols, reply } => {
+                            if rows == 0 || cols == 0 {
+                                let _ = reply.send(Err("invalid_dimensions: rows and cols must be >= 1".into()));
+                            } else if let Err(err) = workers.send_to_worker(
+                                &name, "resize_pty", Some(format!("api_{}", Uuid::new_v4().simple())),
+                                json!({ "rows": rows, "cols": cols }),
+                            ).await {
+                                let _ = reply.send(Err(format!("agent_not_found: {}", err)));
+                            } else {
+                                let _ = reply.send(Ok(json!({
+                                    "name": name,
+                                    "rows": rows,
+                                    "cols": cols,
+                                })));
+                            }
+                        }
+                        ListenApiRequest::GetMetrics { agent, reply } => {
+                            if let Some(ref agent_name) = agent {
+                                if let Some(handle) = workers.workers.get(agent_name) {
+                                    let m = build_agent_metrics(handle);
+                                    let _ = reply.send(Ok(json!({ "agents": [m], "broker": workers.metrics.snapshot(workers.workers.len()) })));
+                                } else {
+                                    let _ = reply.send(Err(format!("unknown worker '{}'", agent_name)));
+                                }
+                            } else {
+                                let mut agent_metrics: Vec<AgentMetrics> = workers.workers.values()
+                                    .map(build_agent_metrics)
+                                    .collect();
+                                agent_metrics.sort_by(|a, b| a.name.cmp(&b.name));
+                                let _ = reply.send(Ok(json!({
+                                    "agents": agent_metrics,
+                                    "broker": workers.metrics.snapshot(workers.workers.len()),
+                                })));
+                            }
+                        }
+                        ListenApiRequest::GetStatus { reply } => {
+                            let pending: Vec<Value> = pending_deliveries.values().map(|pd| {
+                                json!({
+                                    "delivery_id": pd.delivery.delivery_id,
+                                    "worker_name": pd.worker_name,
+                                    "event_id": pd.delivery.event_id,
+                                    "attempts": pd.attempts,
+                                })
+                            }).collect();
+                            let _ = reply.send(Ok(json!({
+                                "agent_count": workers.workers.len(),
+                                "agents": workers.list(),
+                                "pending_delivery_count": pending.len(),
+                                "pending_deliveries": pending,
+                            })));
+                        }
+                        ListenApiRequest::GetCrashInsights { reply } => {
+                            let _ = reply.send(Ok(crash_insights.to_json()));
+                        }
+                        ListenApiRequest::Preflight { agents, reply } => {
+                            let count = agents.len();
+                            let _ = reply.send(Ok(json!({ "queued": count })));
+                            // Background preflight — same as stdio handler
+                            for entry in agents {
+                                let http = relaycast_http.clone();
+                                tokio::spawn(async move {
+                                    let _ = tokio::time::timeout(
+                                        Duration::from_secs(30),
+                                        http.register_agent_token(&entry.name, Some(&entry.cli)),
+                                    ).await;
+                                });
+                            }
+                        }
+                        ListenApiRequest::SubscribeChannels { name, channels, reply } => {
+                            let Some(handle) = workers.workers.get_mut(&name) else {
+                                let _ = reply.send(Err(format!("unknown worker '{}'", name)));
+                                continue;
+                            };
+                            let mut added = Vec::new();
+                            for ch in &channels {
+                                let exists = handle.spec.channels.iter()
+                                    .any(|c| c.eq_ignore_ascii_case(ch));
+                                if !exists {
+                                    handle.spec.channels.push(ch.clone());
+                                    added.push(ch.clone());
+                                }
+                            }
+                            let all_channels = handle.spec.channels.clone();
+                            let _ = reply.send(Ok(json!({
+                                "name": name,
+                                "channels": all_channels,
+                            })));
+                        }
+                        ListenApiRequest::UnsubscribeChannels { name, channels, reply } => {
+                            let Some(handle) = workers.workers.get_mut(&name) else {
+                                let _ = reply.send(Err(format!("unknown worker '{}'", name)));
+                                continue;
+                            };
+                            handle.spec.channels.retain(|c| {
+                                !channels.iter().any(|rem| rem.eq_ignore_ascii_case(c))
+                            });
+                            let remaining = handle.spec.channels.clone();
+                            let _ = reply.send(Ok(json!({
+                                "name": name,
+                                "channels": remaining,
+                            })));
+                        }
+                        ListenApiRequest::Shutdown { reply } => {
+                            let _ = reply.send(Ok(json!({ "status": "shutting_down" })));
+                            shutdown = true;
+                        }
+                        ListenApiRequest::RenewLease { reply } => {
+                            last_lease_renewal = Instant::now();
+                            let expires_in = lease_duration.map(|d| d.as_secs()).unwrap_or(0);
+                            let _ = reply.send(Ok(json!({
+                                "renewed": true,
+                                "expires_in_secs": expires_in,
+                                "persist": cmd.persist,
+                            })));
+                        }
                     }
                 }
             }
 
-            line = sdk_lines.next_line() => {
-                match line {
-                    Ok(Some(line)) => {
-                        match handle_sdk_frame(
-                            &line,
-                            &sdk_out_tx,
-                                &mut workers,
-                                &mut state,
-                                &paths.state,
-                                &mut pending_deliveries,
-                                &mut dedup,
-                                &telemetry,
-                                &mut agent_spawn_count,
-                                Some(&relaycast_http),
-                                Some(&ws_control_tx),
-                                &relay_workspace_key,
-                                &workspaces,
-                                default_workspace_id.as_deref(),
-                                &crash_insights,
-                            ).await {
-                            Ok(should_shutdown) => {
-                                if should_shutdown {
-                                    shutdown = true;
-                                }
-                            }
-                            Err(error) => {
-                                let _ = send_error(&sdk_out_tx, None, "invalid_request", error.to_string(), false, None).await;
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        shutdown = true;
-                    }
-                    Err(error) => {
-                        let _ = send_error(&sdk_out_tx, None, "io_error", error.to_string(), true, None).await;
-                        shutdown = true;
-                    }
+            // Stdin is no longer used for SDK communication — all control
+            // goes through the HTTP/WS API. We drain stdin to avoid
+            // blocking if anything writes to it, and stop polling after EOF.
+            result = sdk_lines.next_line(), if stdin_open => {
+                if matches!(result, Ok(None) | Err(_)) {
+                    stdin_open = false;
                 }
             }
 
@@ -3958,6 +4103,7 @@ fn build_agent_metrics(handle: &WorkerHandle) -> AgentMetrics {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 async fn handle_sdk_frame(
     line: &str,
     out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
@@ -4419,7 +4565,68 @@ async fn handle_sdk_frame(
                 return Ok(false);
             };
 
-            if workers.has_worker(&payload.to) {
+            // Resolve targets: broadcast (*), channel (#name), or direct (agent name)
+            let is_broadcast = payload.to == "*";
+            let is_channel = payload.to.starts_with('#');
+
+            if is_broadcast || is_channel {
+                let worker_names = if is_broadcast {
+                    workers.workers.keys()
+                        .filter(|name| *name != &from)
+                        .cloned()
+                        .collect::<Vec<String>>()
+                } else {
+                    workers.worker_names_for_channel_delivery(
+                        &payload.to,
+                        &from,
+                        Some(&selected_workspace.workspace_id),
+                    )
+                };
+
+                for target in &worker_names {
+                    let target_event_id = format!("sdk_{}", Uuid::new_v4().simple());
+                    let _ = queue_and_try_delivery_raw(
+                        workers,
+                        pending_deliveries,
+                        target,
+                        &target_event_id,
+                        &from,
+                        &payload.to,
+                        &payload.text,
+                        payload.thread_id.clone(),
+                        Some(selected_workspace.workspace_id.clone()),
+                        selected_workspace.workspace_alias.clone(),
+                        priority,
+                        payload.mode.clone(),
+                        delivery_retry_interval(),
+                    )
+                    .await;
+                }
+
+                // Also publish to relaycast if connected (channels are mirrored)
+                if is_channel {
+                    if let Some(_http) = relaycast_http {
+                        let _ = selected_workspace
+                            .http_client
+                            .send_with_mode(&payload.to, &payload.text, payload.mode.clone())
+                            .await;
+                    }
+                }
+
+                send_ok(
+                    out_tx,
+                    frame.request_id,
+                    json!({
+                        "delivered": true,
+                        "to": payload.to,
+                        "event_id": event_id,
+                        "targets": worker_names,
+                        "workspace_id": selected_workspace.workspace_id,
+                        "workspace_alias": selected_workspace.workspace_alias,
+                    }),
+                )
+                .await?;
+            } else if workers.has_worker(&payload.to) {
                 queue_and_try_delivery_raw(
                     workers,
                     pending_deliveries,
@@ -5483,6 +5690,7 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn send_ok(
     tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     request_id: Option<String>,
@@ -5813,6 +6021,7 @@ fn note_local_spawn_control_dedup(
     }
 }
 
+#[allow(dead_code)]
 fn remove_local_spawn_control_dedup(
     dedup: &mut DedupCache,
     workspace_id: Option<&str>,
@@ -6341,6 +6550,7 @@ fn ensure_ephemeral_paths(_cwd: &Path, _broker_name: &str) -> Result<RuntimePath
         state: root.join("state.json"),
         pending: root.join("pending.json"),
         pid: PathBuf::new(),
+        runtime: root.join("runtime.json"),
         _lock: None,
     })
 }
@@ -6409,6 +6619,7 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
                             state: root.join(format!("state-{safe_name}.json")),
                             pending: root.join(format!("pending-{safe_name}.json")),
                             pid: pid_path,
+                            runtime: root.join(format!("broker-{safe_name}.runtime.json")),
                             _lock: Some(lock_file),
                         });
                     } else {
@@ -6448,6 +6659,7 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
                 state: root.join(format!("state-{safe_name}.json")),
                 pending: root.join(format!("pending-{safe_name}.json")),
                 pid: pid_path,
+                runtime: root.join(format!("broker-{safe_name}.runtime.json")),
                 _lock: Some(lock_file),
             });
         }
@@ -6461,8 +6673,40 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
         state: root.join(format!("state-{safe_name}.json")),
         pending: root.join(format!("pending-{safe_name}.json")),
         pid: pid_path,
+        runtime: root.join(format!("broker-{safe_name}.runtime.json")),
         _lock: Some(lock_file),
     })
+}
+
+#[allow(dead_code)]
+fn write_runtime_file(
+    path: &Path,
+    port: u16,
+    bind: &str,
+    api_key: Option<&str>,
+    persist: bool,
+) -> Result<()> {
+    let pid = std::process::id();
+    let api_url = format!("http://{}:{}", bind, port);
+    let metadata = json!({
+        "pid": pid,
+        "port": port,
+        "api_url": api_url,
+        "api_key": api_key,
+        "mode": if persist { "persist" } else { "ephemeral" },
+        "started_at": chrono::Utc::now().to_rfc3339(),
+    });
+    let dir = path
+        .parent()
+        .with_context(|| format!("runtime path has no parent: {}", path.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .with_context(|| format!("failed creating temp runtime file in {}", dir.display()))?;
+    use std::io::Write;
+    write!(tmp, "{}", serde_json::to_string_pretty(&metadata)?)?;
+    tmp.persist(path)
+        .with_context(|| format!("failed persisting runtime file to {}", path.display()))?;
+    tracing::info!(path = %path.display(), port = port, "wrote broker runtime metadata file");
+    Ok(())
 }
 
 /// Write the current process PID to the given path atomically.

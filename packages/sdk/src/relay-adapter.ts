@@ -1,7 +1,7 @@
 /**
  * RelayAdapter — high-level interface over the broker SDK.
  *
- * Wraps AgentRelayClient with auto-start, safe result patterns,
+ * Wraps BrokerClient with auto-start, safe result patterns,
  * and convenience methods. Usable by any integration: dashboard,
  * MCP, ACP bridge, CLI, or custom tooling.
  *
@@ -20,11 +20,12 @@
  */
 
 import {
-  AgentRelayClient,
-  type AgentRelayClientOptions,
-  type SpawnPtyInput,
-  type SendMessageInput,
-  type ListAgent,
+  BrokerClient,
+  type SpawnBrokerOptions,
+} from './broker-client.js';
+import type {
+  SpawnPtyInput,
+  SendMessageInput,
 } from './client.js';
 import type { BrokerEvent, BrokerStats, BrokerStatus, CrashInsightsResponse } from './protocol.js';
 
@@ -77,8 +78,6 @@ export interface RelayAdapterOptions {
   channels?: string[];
   /** Environment variables forwarded to the broker process. */
   env?: NodeJS.ProcessEnv;
-  /** Client name reported in the hello handshake. */
-  clientName?: string;
 }
 
 export interface RelaySpawnRequest {
@@ -124,18 +123,23 @@ export interface RelayReleaseResult {
 // ── Adapter ─────────────────────────────────────────────────────────
 
 export class RelayAdapter {
-  private client: AgentRelayClient;
+  private client: BrokerClient | null = null;
   private started = false;
+  private readonly spawnOpts: SpawnBrokerOptions;
+  private readonly stderrListeners = new Set<(line: string) => void>();
 
   constructor(opts: RelayAdapterOptions) {
-    const clientOpts: AgentRelayClientOptions = {
+    this.spawnOpts = {
       binaryPath: opts.binaryPath,
       channels: opts.channels ?? ['general'],
       cwd: opts.cwd,
       env: opts.env,
-      clientName: opts.clientName ?? 'relay-adapter',
     };
-    this.client = new AgentRelayClient(clientOpts);
+  }
+
+  private ensureClient(): BrokerClient {
+    if (!this.client) throw new Error('RelayAdapter not started — call start() first');
+    return this.client;
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────
@@ -143,13 +147,21 @@ export class RelayAdapter {
   /** Start the broker process. Idempotent. */
   async start(): Promise<void> {
     if (this.started) return;
-    await this.client.start();
+    this.client = await BrokerClient.spawn({
+      ...this.spawnOpts,
+      onStderr: (line) => {
+        for (const listener of this.stderrListeners) {
+          try { listener(line); } catch { /* ignore */ }
+        }
+      },
+    });
     this.started = true;
   }
 
   /** Shut down the broker and all spawned agents. */
   async shutdown(): Promise<void> {
-    await this.client.shutdown();
+    await this.ensureClient().shutdown();
+    this.client = null;
     this.started = false;
   }
 
@@ -158,6 +170,7 @@ export class RelayAdapter {
   /** Spawn an agent via the broker's PTY runtime. */
   async spawn(req: RelaySpawnRequest): Promise<RelaySpawnResult> {
     await this.start();
+    const client = this.ensureClient();
     try {
       const input: SpawnPtyInput = {
         name: req.name,
@@ -170,15 +183,14 @@ export class RelayAdapter {
         shadowOf: req.shadowOf,
         shadowMode: req.shadowMode,
       };
-      const result = await this.client.spawnPty(input);
+      const result = await client.spawnPty(input);
 
-      // Try to get PID from agent list
       let pid: number | undefined;
       try {
-        const agents = await this.client.listAgents();
+        const agents = await client.listAgents();
         pid = agents.find((a) => a.name === req.name)?.pid;
       } catch {
-        // Non-fatal — PID is informational
+        // Non-fatal
       }
 
       return { success: true, name: result.name, pid };
@@ -191,7 +203,7 @@ export class RelayAdapter {
   async release(name: string, reason?: string): Promise<RelayReleaseResult> {
     await this.start();
     try {
-      await this.client.release(name, reason);
+      await this.ensureClient().release(name, reason);
       return { success: true, name };
     } catch (err: any) {
       return { success: false, name, error: err?.message ?? String(err) };
@@ -203,10 +215,10 @@ export class RelayAdapter {
   /** List all agents managed by this broker instance. */
   async listAgents(): Promise<RelayAgentInfo[]> {
     await this.start();
-    const agents = await this.client.listAgents();
+    const agents = await this.ensureClient().listAgents();
     return agents.map((a) => ({
       name: a.name,
-      cli: undefined, // Rust binary doesn't track CLI in list_agents response
+      cli: undefined,
       pid: a.pid,
       channels: a.channels,
       parent: a.parent,
@@ -223,7 +235,7 @@ export class RelayAdapter {
   /** Get broker status (agent count, pending deliveries). */
   async getStatus(): Promise<BrokerStatus> {
     await this.start();
-    return this.client.getStatus();
+    return this.ensureClient().getStatus() as Promise<BrokerStatus>;
   }
 
   // ── Messaging ───────────────────────────────────────────────────
@@ -231,24 +243,16 @@ export class RelayAdapter {
   /** Send a message to an agent or channel. */
   async sendMessage(input: SendMessageInput): Promise<{ event_id: string; targets: string[] }> {
     await this.start();
-    return this.client.sendMessage(input);
+    return this.ensureClient().sendMessage(input);
   }
 
   // ── PTY Input ───────────────────────────────────────────────────
 
-  /**
-   * Send raw input to an agent's PTY stdin.
-   * Useful for interrupts (ESC sequences), confirmations, etc.
-   */
   async sendInput(name: string, data: string): Promise<void> {
     await this.start();
-    await this.client.sendInput(name, data);
+    await this.ensureClient().sendInput(name, data);
   }
 
-  /**
-   * Send an interrupt (ESC ESC) to an agent.
-   * Convenience wrapper around sendInput.
-   */
   async interruptAgent(name: string): Promise<boolean> {
     try {
       await this.sendInput(name, '\x1b\x1b');
@@ -260,57 +264,44 @@ export class RelayAdapter {
 
   // ── Model ───────────────────────────────────────────────────────
 
-  /** Switch an agent's model at runtime. */
   async setModel(
     name: string,
     model: string,
     opts?: { timeoutMs?: number }
   ): Promise<{ success: boolean; name: string; model: string }> {
     await this.start();
-    return this.client.setModel(name, model, opts);
+    return this.ensureClient().setModel(name, model, opts);
   }
 
   // ── Metrics ─────────────────────────────────────────────────────
 
-  /** Get resource metrics for agents (memory, uptime) and broker stats. */
   async getMetrics(agent?: string): Promise<{
     agents: Array<{ name: string; pid: number; memory_bytes: number; uptime_secs: number }>;
     broker?: BrokerStats;
   }> {
     await this.start();
-    return this.client.getMetrics(agent);
+    return this.ensureClient().getMetrics(agent);
   }
 
-  /** Get crash insights: recent crashes, patterns, and health score. */
   async getCrashInsights(): Promise<CrashInsightsResponse> {
     await this.start();
-    return this.client.getCrashInsights();
+    return this.ensureClient().getCrashInsights();
   }
 
   // ── Events ──────────────────────────────────────────────────────
 
-  /**
-   * Subscribe to broker events (agent_spawned, agent_released,
-   * relay_inbound, worker_stream, etc.).
-   *
-   * Returns an unsubscribe function.
-   */
   onEvent(listener: (event: BrokerEvent) => void): () => void {
-    return this.client.onEvent(listener);
+    return this.ensureClient().onEvent(listener);
   }
 
-  /**
-   * Subscribe to broker stderr output (debug logs from the Rust binary).
-   * Returns an unsubscribe function.
-   */
   onStderr(listener: (line: string) => void): () => void {
-    return this.client.onBrokerStderr(listener);
+    this.stderrListeners.add(listener);
+    return () => { this.stderrListeners.delete(listener); };
   }
 
   // ── Underlying client (escape hatch) ────────────────────────────
 
-  /** Access the underlying AgentRelayClient for advanced operations. */
-  get raw(): AgentRelayClient {
-    return this.client;
+  get raw(): BrokerClient {
+    return this.ensureClient();
   }
 }
