@@ -26,7 +26,7 @@ import {
 import type {
   SpawnPtyInput,
   SendMessageInput,
-} from './client.js';
+} from './types.js';
 import type { BrokerEvent, BrokerStats, BrokerStatus, CrashInsightsResponse } from './protocol.js';
 
 const WORKFLOW_BOOTSTRAP_TASK =

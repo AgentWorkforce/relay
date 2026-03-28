@@ -16,7 +16,7 @@ import path from 'node:path';
 import { BrokerTransport } from './transport.js';
 import { getBrokerBinaryPath } from './broker-path.js';
 import type { AgentRuntime, BrokerEvent, BrokerStats, CrashInsightsResponse } from './protocol.js';
-import type { SpawnPtyInput, SpawnProviderInput, SendMessageInput, ListAgent } from './client.js';
+import type { SpawnPtyInput, SpawnProviderInput, SendMessageInput, ListAgent } from './types.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 

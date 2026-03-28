@@ -39,7 +39,7 @@ import {
 import type {
   SendMessageInput,
   SpawnPtyInput,
-} from './client.js';
+} from './types.js';
 import type {
   AgentRuntime,
   BrokerEvent,

@@ -1,12 +1,5 @@
 export * from './protocol.js';
-export type {
-  SpawnPtyInput,
-  SpawnHeadlessInput,
-  SpawnProviderInput,
-  AgentTransport,
-  SendMessageInput,
-  ListAgent,
-} from './client.js';
+export * from './types.js';
 export { BrokerTransport, type BrokerTransportOptions, AgentRelayProtocolError } from './transport.js';
 export { BrokerClient, type BrokerClientOptions, type SpawnBrokerOptions, type SessionInfo } from './broker-client.js';
 export * from './models.js';
