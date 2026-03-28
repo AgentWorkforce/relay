@@ -165,6 +165,46 @@ function getPackageVersion(pkgRoot) {
   }
 }
 
+
+function fetchTextWithRedirects(url, maxRedirects = 5) {
+  const attemptFetch = (currentUrl, redirectsRemaining, resolve, reject) => {
+    const request = https.get(currentUrl, res => {
+      const status = res.statusCode ?? 0;
+      const location = res.headers.location;
+      const isRedirect = status >= 300 && status < 400 && location;
+
+      if (isRedirect) {
+        if (redirectsRemaining <= 0) {
+          res.resume();
+          reject(new Error('Too many redirects while fetching text resource'));
+          return;
+        }
+
+        const nextUrl = new URL(location, currentUrl).toString();
+        res.resume();
+        attemptFetch(nextUrl, redirectsRemaining - 1, resolve, reject);
+        return;
+      }
+
+      if (status !== 200) {
+        res.resume();
+        reject(new Error(`Checksums file not available (HTTP ${status})`));
+        return;
+      }
+
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+      res.on('error', reject);
+    });
+    request.on('error', reject);
+  };
+
+  return new Promise((resolve, reject) => {
+    attemptFetch(url, maxRedirects, resolve, reject);
+  });
+}
+
 /**
  * Verify SHA-256 checksum of a downloaded file.
  * Downloads a checksums file from the same release directory and verifies.
@@ -176,20 +216,7 @@ async function verifyChecksum(filePath, downloadUrl) {
   const binaryName = path.basename(downloadUrl);
 
   try {
-    const checksumContent = await new Promise((resolve, reject) => {
-      const chunks = [];
-      const request = https.get(checksumUrl, res => {
-        if (res.statusCode !== 200) {
-          res.resume();
-          reject(new Error(`Checksums file not available (HTTP ${res.statusCode})`));
-          return;
-        }
-        res.on('data', chunk => chunks.push(chunk));
-        res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-        res.on('error', reject);
-      });
-      request.on('error', reject);
-    });
+    const checksumContent = await fetchTextWithRedirects(checksumUrl);
 
     // Parse checksums file (format: "<hash>  <filename>" per line)
     const expectedHash = checksumContent
