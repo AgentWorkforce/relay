@@ -179,6 +179,7 @@ fn configured_broker_api_key() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn listen_api_router_with_auth(
     tx: mpsc::Sender<ListenApiRequest>,
     events_tx: broadcast::Sender<String>,

@@ -23,7 +23,7 @@ async function main(): Promise<void> {
   console.log(`    Duration: ${DURATION_MS / 1000}s, Rate: ${1000 / INTERVAL_MS} msgs/sec`);
   console.log(`    Expected messages: ~${expectedMsgs}\n`);
 
-  const client = await AgentRelayClient.start({
+  const client = await AgentRelayClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ["general"],
     env: process.env,

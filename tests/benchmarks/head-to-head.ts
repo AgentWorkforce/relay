@@ -173,15 +173,14 @@ async function startBrokerWithAgent(
 ): Promise<{ client: AgentRelayClient; name: string }> {
   const binaryPath = resolveBinaryPath();
   console.log(`  [broker] binary: ${binaryPath}`);
-  const client = await AgentRelayClient.start({
+  const client = await AgentRelayClient.spawn({
     binaryPath,
     channels: ["general"],
-    env: process.env,
-  });
-  client.onBrokerStderr((line: string) => {
-    if (line.includes("ERROR") || line.includes("error") || line.includes("panic")) {
-      console.error(`  [broker stderr] ${line}`);
-    }
+    env: process.env as Record<string, string>,
+    onStderr: (line: string) => {
+      if (line.includes("ERROR") || line.includes("error") || line.includes("panic")) {
+        console.error(`  [broker stderr] ${line}`);
+      }
   });
   await client.spawnPty({ name, cli: "cat", channels: ["general"] });
   // Wait for agent to be ready
@@ -420,7 +419,7 @@ async function testMultiAgent(): Promise<void> {
   console.log(`\n--- Test 4: Multi-Agent Scaling (${MULTI_AGENT_COUNT} agents x ${MULTI_AGENT_MSGS} msgs) ---`);
 
   // Broker side — single broker, multiple agents
-  const brokerClient = await AgentRelayClient.start({
+  const brokerClient = await AgentRelayClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ["general"],
     env: process.env,
