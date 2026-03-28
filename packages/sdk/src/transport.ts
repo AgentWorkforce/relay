@@ -43,6 +43,7 @@ export class BrokerTransport {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private sinceSeq = 0;
   private _connected = false;
+  private _intentionalClose = false;
 
   constructor(options: BrokerTransportOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
@@ -97,6 +98,7 @@ export class BrokerTransport {
   }
 
   private _connect(): void {
+    this._intentionalClose = false;
     const url = `${this.wsUrl}?sinceSeq=${this.sinceSeq}`;
     const headers: Record<string, string> = {};
     if (this.apiKey) {
@@ -141,8 +143,10 @@ export class BrokerTransport {
     this.ws.on('close', () => {
       this._connected = false;
       this.ws = null;
-      // Auto-reconnect after 2s
-      this.reconnectTimer = setTimeout(() => this._connect(), 2000);
+      // Auto-reconnect after 2s unless intentionally closed
+      if (!this._intentionalClose) {
+        this.reconnectTimer = setTimeout(() => this._connect(), 2000);
+      }
     });
 
     this.ws.on('error', () => {
@@ -151,6 +155,7 @@ export class BrokerTransport {
   }
 
   disconnect(): void {
+    this._intentionalClose = true;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

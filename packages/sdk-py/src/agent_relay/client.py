@@ -19,6 +19,7 @@ import subprocess
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional
+from urllib.parse import quote
 
 import aiohttp
 
@@ -390,7 +391,7 @@ class AgentRelayClient:
         kwargs: dict[str, Any] = {}
         if reason:
             kwargs["json"] = {"reason": reason}
-        return await self._request("DELETE", f"/api/spawned/{name}", **kwargs)
+        return await self._request("DELETE", f"/api/spawned/{quote(name, safe=str())}", **kwargs)
 
     async def list_agents(self) -> list[dict[str, Any]]:
         result = await self._request("GET", "/api/spawned")
@@ -399,10 +400,10 @@ class AgentRelayClient:
     # ── PTY control ───────────────────────────────────────────────────────
 
     async def send_input(self, name: str, data: str) -> dict[str, Any]:
-        return await self._request("POST", f"/api/input/{name}", json={"data": data})
+        return await self._request("POST", f"/api/input/{quote(name, safe=str())}", json={"data": data})
 
     async def resize_pty(self, name: str, rows: int, cols: int) -> dict[str, Any]:
-        return await self._request("POST", f"/api/resize/{name}", json={"rows": rows, "cols": cols})
+        return await self._request("POST", f"/api/resize/{quote(name, safe=str())}", json={"rows": rows, "cols": cols})
 
     # ── Messaging ─────────────────────────────────────────────────────────
 
@@ -438,15 +439,15 @@ class AgentRelayClient:
         payload: dict[str, Any] = {"model": model}
         if timeout_ms is not None:
             payload["timeout_ms"] = timeout_ms
-        return await self._request("POST", f"/api/spawned/{name}/model", json=payload)
+        return await self._request("POST", f"/api/spawned/{quote(name, safe=str())}/model", json=payload)
 
     # ── Channels ──────────────────────────────────────────────────────────
 
     async def subscribe_channels(self, name: str, channels: list[str]) -> None:
-        await self._request("POST", f"/api/spawned/{name}/subscribe", json={"channels": channels})
+        await self._request("POST", f"/api/spawned/{quote(name, safe=str())}/subscribe", json={"channels": channels})
 
     async def unsubscribe_channels(self, name: str, channels: list[str]) -> None:
-        await self._request("POST", f"/api/spawned/{name}/unsubscribe", json={"channels": channels})
+        await self._request("POST", f"/api/spawned/{quote(name, safe=str())}/unsubscribe", json={"channels": channels})
 
     # ── Observability ─────────────────────────────────────────────────────
 

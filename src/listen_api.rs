@@ -35,6 +35,8 @@ pub enum ListenApiRequest {
         shadow_of: Option<String>,
         shadow_mode: Option<String>,
         continue_from: Option<String>,
+        idle_threshold_secs: Option<u64>,
+        skip_relay_prompt: bool,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     SetModel {
@@ -454,6 +456,15 @@ async fn listen_api_spawn(
         .or_else(|| body.get("continueFrom"))
         .and_then(Value::as_str)
         .map(String::from);
+    let idle_threshold_secs = body
+        .get("idle_threshold_secs")
+        .or_else(|| body.get("idleThresholdSecs"))
+        .and_then(Value::as_u64);
+    let skip_relay_prompt = body
+        .get("skip_relay_prompt")
+        .or_else(|| body.get("skipRelayPrompt"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     if name.is_empty() {
         return (
@@ -477,6 +488,8 @@ async fn listen_api_spawn(
             shadow_of,
             shadow_mode,
             continue_from,
+            idle_threshold_secs,
+            skip_relay_prompt,
             reply: reply_tx,
         })
         .await
@@ -1556,6 +1569,8 @@ mod auth_tests {
                     shadow_of,
                     shadow_mode,
                     continue_from,
+                    idle_threshold_secs: _,
+                    skip_relay_prompt: _,
                     reply,
                 }) => {
                     assert_eq!(name, "worker-a");

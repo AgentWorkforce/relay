@@ -13,7 +13,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
-import { BrokerTransport } from './transport.js';
+import { BrokerTransport, AgentRelayProtocolError } from './transport.js';
 import { getBrokerBinaryPath } from './broker-path.js';
 import type { AgentRuntime, BrokerEvent, BrokerStats, CrashInsightsResponse } from './protocol.js';
 import type { SpawnPtyInput, SpawnProviderInput, SendMessageInput, ListAgent } from './types.js';
@@ -260,20 +260,27 @@ export class AgentRelayClient {
   // ── Messaging ──────────────────────────────────────────────────────
 
   async sendMessage(input: SendMessageInput): Promise<{ event_id: string; targets: string[] }> {
-    return this.transport.request('/api/send', {
-      method: 'POST',
-      body: JSON.stringify({
-        to: input.to,
-        text: input.text,
-        from: input.from,
-        threadId: input.threadId,
-        workspaceId: input.workspaceId,
-        workspaceAlias: input.workspaceAlias,
-        priority: input.priority,
-        data: input.data,
-        mode: input.mode,
-      }),
-    });
+    try {
+      return await this.transport.request('/api/send', {
+        method: 'POST',
+        body: JSON.stringify({
+          to: input.to,
+          text: input.text,
+          from: input.from,
+          threadId: input.threadId,
+          workspaceId: input.workspaceId,
+          workspaceAlias: input.workspaceAlias,
+          priority: input.priority,
+          data: input.data,
+          mode: input.mode,
+        }),
+      });
+    } catch (error) {
+      if (error instanceof AgentRelayProtocolError && error.code === 'unsupported_operation') {
+        return { event_id: 'unsupported_operation', targets: [] };
+      }
+      throw error;
+    }
   }
 
   // ── Model control ──────────────────────────────────────────────────

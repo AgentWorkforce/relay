@@ -1556,6 +1556,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             shadow_of,
                             shadow_mode,
                             continue_from,
+                            idle_threshold_secs,
+                            skip_relay_prompt,
                             reply,
                         } => {
                             let effective_channels = if channels.is_empty() {
@@ -1695,8 +1697,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 Some("Dashboard".to_string()),
                                 None,
                                 worker_relay_key.clone(),
-                                false,
-                                None,
+                                skip_relay_prompt,
+                                idle_threshold_secs.map(|s| s.to_string()),
                             ).await {
                                 Ok(()) => {
                                     if let Some(ref task_text) = effective_task {
