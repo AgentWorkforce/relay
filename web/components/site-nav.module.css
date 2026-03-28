@@ -276,12 +276,13 @@
   display: block;
   padding: 10px 24px;
   font-family: var(--font-geist-sans), sans-serif;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: inherit;
   text-decoration: none;
+  text-align: center;
   white-space: nowrap;
   background: var(--nav-solid-bg);
   border: 1px solid var(--nav-border);
@@ -334,13 +335,14 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding-left: 16px;
+  padding-left: 0;
 }
 
 .mobileProductItems .mobileLink {
-  font-size: 0.95rem;
+  font-size: 1.0625rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  text-align: center;
   opacity: 1;
   background: color-mix(in srgb, var(--nav-solid-bg) 96%, var(--nav-fg) 4%);
 }
