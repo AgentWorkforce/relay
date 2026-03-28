@@ -177,18 +177,27 @@ async function verifyChecksum(filePath, downloadUrl) {
 
   try {
     const checksumContent = await new Promise((resolve, reject) => {
-      const chunks = [];
-      const request = https.get(checksumUrl, res => {
-        if (res.statusCode !== 200) {
-          res.resume();
-          reject(new Error(`Checksums file not available (HTTP ${res.statusCode})`));
-          return;
-        }
-        res.on('data', chunk => chunks.push(chunk));
-        res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-        res.on('error', reject);
-      });
-      request.on('error', reject);
+      const fetchWithRedirects = (url, remaining = 5) => {
+        const chunks = [];
+        const request = https.get(url, res => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            if (remaining <= 0) { reject(new Error('Too many redirects fetching checksums')); return; }
+            res.resume();
+            fetchWithRedirects(res.headers.location, remaining - 1);
+            return;
+          }
+          if (res.statusCode !== 200) {
+            res.resume();
+            reject(new Error(`Checksums file not available (HTTP ${res.statusCode})`));
+            return;
+          }
+          res.on('data', chunk => chunks.push(chunk));
+          res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+          res.on('error', reject);
+        });
+        request.on('error', reject);
+      };
+      fetchWithRedirects(checksumUrl);
     });
 
     // Parse checksums file (format: "<hash>  <filename>" per line)

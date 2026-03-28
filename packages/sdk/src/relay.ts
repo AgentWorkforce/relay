@@ -476,7 +476,7 @@ export class AgentRelay {
   private writeWorkspaceRegistry(registry: WorkspaceRegistry): void {
     const registryPath = this.getWorkspaceRegistryPath();
     mkdirSync(path.dirname(registryPath), { recursive: true });
-    writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, 'utf8');
+    writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   }
 
   private persistWorkspaceMapping(workspaceId: string, apiKey: string): void {
@@ -1131,7 +1131,7 @@ export class AgentRelay {
       const workspaceId = this.getResolvedWorkspaceId();
       if (workspaceId) {
         this.applyWorkspaceEnv(workspaceId, this.relayApiKey);
-        this.persistWorkspaceMapping(workspaceId, this.relayApiKey);
+        try { this.persistWorkspaceMapping(workspaceId, this.relayApiKey); } catch { /* non-critical */ }
       } else {
         this.wireRelaycastBaseUrl();
       }
@@ -1148,7 +1148,7 @@ export class AgentRelay {
       this.relayApiKey = resolvedKey;
       this.resolvedWorkspaceId = requestedWorkspaceId;
       this.applyWorkspaceEnv(requestedWorkspaceId, resolvedKey);
-      this.persistWorkspaceMapping(requestedWorkspaceId, resolvedKey);
+      try { this.persistWorkspaceMapping(requestedWorkspaceId, resolvedKey); } catch { /* non-critical */ }
       return;
     }
 
@@ -1160,7 +1160,7 @@ export class AgentRelay {
     this.relayApiKey = resolvedKey;
     this.resolvedWorkspaceId = resolvedWorkspaceId;
     this.applyWorkspaceEnv(resolvedWorkspaceId, resolvedKey);
-    this.persistWorkspaceMapping(resolvedWorkspaceId, resolvedKey);
+    try { this.persistWorkspaceMapping(resolvedWorkspaceId, resolvedKey); } catch { /* non-critical */ }
   }
 
   /** Inject relaycastBaseUrl into broker env. Explicit option wins over inherited env. */
@@ -1184,11 +1184,7 @@ export class AgentRelay {
           const workspaceId = this.getResolvedWorkspaceId();
           if (workspaceId) {
             this.applyWorkspaceEnv(workspaceId, c.workspaceKey);
-            try {
-              this.persistWorkspaceMapping(workspaceId, c.workspaceKey);
-            } catch {
-              // Best-effort persistence only; do not block event wiring/startup.
-            }
+            try { this.persistWorkspaceMapping(workspaceId, c.workspaceKey); } catch { /* non-critical */ }
           }
         }
         this.wireEvents(c);
