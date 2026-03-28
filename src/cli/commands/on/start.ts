@@ -219,7 +219,12 @@ function readWorkspaceRegistry(relayDir?: string): LocalWorkspaceRegistry {
     return {};
   }
 
-  const parsed = JSON.parse(raw) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return {};
+  }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return {};
   }

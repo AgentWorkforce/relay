@@ -482,7 +482,7 @@ export class AgentRelay {
   private writeWorkspaceRegistry(registry: WorkspaceRegistry): void {
     const registryPath = this.getWorkspaceRegistryPath();
     mkdirSync(path.dirname(registryPath), { recursive: true });
-    writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, 'utf8');
+    writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   }
 
   private persistWorkspaceMapping(workspaceId: string, apiKey: string): void {
@@ -1137,7 +1137,11 @@ export class AgentRelay {
       const workspaceId = this.getResolvedWorkspaceId();
       if (workspaceId) {
         this.applyWorkspaceEnv(workspaceId, this.relayApiKey);
-        this.persistWorkspaceMapping(workspaceId, this.relayApiKey);
+        try {
+          this.persistWorkspaceMapping(workspaceId, this.relayApiKey);
+        } catch {
+          // Best-effort persistence only; env-provided keys must still work in read-only environments.
+        }
       } else {
         this.wireRelaycastBaseUrl();
       }
@@ -1154,7 +1158,11 @@ export class AgentRelay {
       this.relayApiKey = resolvedKey;
       this.resolvedWorkspaceId = requestedWorkspaceId;
       this.applyWorkspaceEnv(requestedWorkspaceId, resolvedKey);
-      this.persistWorkspaceMapping(requestedWorkspaceId, resolvedKey);
+      try {
+        this.persistWorkspaceMapping(requestedWorkspaceId, resolvedKey);
+      } catch {
+        // Best-effort persistence only; creation/join should still succeed on read-only filesystems.
+      }
       return;
     }
 
@@ -1166,7 +1174,11 @@ export class AgentRelay {
     this.relayApiKey = resolvedKey;
     this.resolvedWorkspaceId = resolvedWorkspaceId;
     this.applyWorkspaceEnv(resolvedWorkspaceId, resolvedKey);
-    this.persistWorkspaceMapping(resolvedWorkspaceId, resolvedKey);
+    try {
+      this.persistWorkspaceMapping(resolvedWorkspaceId, resolvedKey);
+    } catch {
+      // Best-effort persistence only; creation/join should still succeed on read-only filesystems.
+    }
   }
 
   /** Inject relaycastBaseUrl into broker env. Explicit option wins over inherited env. */
