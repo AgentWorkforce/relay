@@ -362,24 +362,42 @@ export class AgentRelayClient {
     return this.transport.request('/api/session/renew', { method: 'POST' });
   }
 
-  /** Shut down the broker and clean up. For spawned brokers, waits for the process to exit. */
+  /**
+   * Shut down and clean up.
+   * - For spawned brokers (via .spawn()): sends POST /api/shutdown to kill the broker, waits for exit.
+   * - For connected brokers (via .connect() or constructor): just disconnects the transport.
+   *   Does NOT kill the broker — the caller doesn't own it.
+   */
   async shutdown(): Promise<void> {
     if (this.leaseTimer) {
       clearInterval(this.leaseTimer);
       this.leaseTimer = null;
     }
 
-    try {
-      await this.transport.request('/api/shutdown', { method: 'POST' });
-    } catch {
-      // Broker may already be dead
+    // Only send the shutdown command if we own the broker process
+    if (this.child) {
+      try {
+        await this.transport.request('/api/shutdown', { method: 'POST' });
+      } catch {
+        // Broker may already be dead
+      }
     }
+
     this.transport.disconnect();
 
     if (this.child) {
       await waitForExit(this.child, 5000);
       this.child = null;
     }
+  }
+
+  /** Disconnect without shutting down the broker. Alias for cases where the intent is clear. */
+  disconnect(): void {
+    if (this.leaseTimer) {
+      clearInterval(this.leaseTimer);
+      this.leaseTimer = null;
+    }
+    this.transport.disconnect();
   }
 
   async getConfig(): Promise<{ workspaceKey?: string }> {

@@ -389,7 +389,7 @@ class AgentRelayClient:
 
     async def release(self, name: str, reason: Optional[str] = None) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
-        if reason:
+        if reason is not None:
             kwargs["json"] = {"reason": reason}
         return await self._request("DELETE", f"/api/spawned/{quote(name, safe=str())}", **kwargs)
 
@@ -455,7 +455,7 @@ class AgentRelayClient:
         return await self._request("GET", "/api/status")
 
     async def get_metrics(self, agent: Optional[str] = None) -> dict[str, Any]:
-        query = f"?agent={agent}" if agent else ""
+        query = f"?agent={quote(agent, safe=str())}" if agent else ""
         return await self._request("GET", f"/api/metrics{query}")
 
     async def get_crash_insights(self) -> dict[str, Any]:
