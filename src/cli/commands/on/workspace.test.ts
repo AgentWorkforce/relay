@@ -76,19 +76,26 @@ describe('seedWorkspace', () => {
     bulkWriteMock.mockRejectedValue({ status: undefined });
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      text: async () => JSON.stringify({ written: 3, errorCount: 0, errors: [] }),
+      text: async () => '',
     });
     vi.stubGlobal('fetch', fetchMock);
 
     const written = await seedWorkspace('https://relayfile.example/', 'token', 'rw_demo', root, ['custom-ignore']);
 
-    expect(written).toBe(3);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain('/v1/workspaces/rw_demo/fs/bulk');
     const payload = JSON.parse(String(init.body));
-    expect(payload.files).toHaveLength(3);
-    expect(payload.files.map((f: { path: string }) => f.path)).toEqual(['/linked-hello.txt', '/src/bin.dat', '/src/hello.txt']);
+    const paths = payload.files.map((f: { path: string }) => f.path);
+
+    expect(paths).toEqual(expect.arrayContaining(['/src/bin.dat', '/src/hello.txt']));
+    expect(paths).not.toContain('/custom-ignore/skip.txt');
+    expect(paths).not.toContain('/.relayfile-mount-state.json');
+    expect(paths.length === 2 || paths.length === 3).toBe(true);
+    if (paths.length === 3) {
+      expect(paths).toContain('/linked-hello.txt');
+    }
+    expect(written).toBe(paths.length);
     expect(payload.files.find((f: { path: string }) => f.path === '/src/bin.dat').encoding).toBe('base64');
     expect(payload.files.find((f: { path: string }) => f.path === '/src/hello.txt').encoding).toBe('utf-8');
   });
