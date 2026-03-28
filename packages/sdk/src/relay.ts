@@ -24,7 +24,10 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+
+import { RelayCast } from '@relaycast/sdk';
 
 import {
   AgentRelayClient,
@@ -72,6 +75,71 @@ function buildUnsupportedOperationMessage(
     threadId: input.threadId,
     data: input.data,
     mode: input.mode,
+  };
+}
+
+interface WorkspaceRegistryEntry {
+  relaycastApiKey?: string;
+  relayfileUrl?: string;
+  createdAt?: string;
+  agents?: string[];
+}
+
+type WorkspaceRegistry = Record<string, WorkspaceRegistryEntry>;
+
+const WORKSPACE_ID_PREFIX = 'rw_';
+const WORKSPACE_ID_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
+
+function normalizeWorkspaceId(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function generateWorkspaceId(): string {
+  const alphabetLength = WORKSPACE_ID_ALPHABET.length;
+  const maxUnbiasedValue = Math.floor(256 / alphabetLength) * alphabetLength;
+  let suffix = '';
+
+  while (suffix.length < 8) {
+    const bytes = randomBytes(8 - suffix.length);
+    for (const byte of bytes) {
+      if (byte >= maxUnbiasedValue) continue;
+      suffix += WORKSPACE_ID_ALPHABET[byte % alphabetLength];
+      if (suffix.length === 8) break;
+    }
+  }
+
+  return `${WORKSPACE_ID_PREFIX}${suffix}`;
+}
+
+function toWorkspaceRegistryEntry(value: unknown): WorkspaceRegistryEntry {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+
+  const record = value as Record<string, unknown>;
+  const relaycastApiKey =
+    typeof record.relaycastApiKey === 'string' && record.relaycastApiKey.trim()
+      ? record.relaycastApiKey.trim()
+      : undefined;
+  const relayfileUrl =
+    typeof record.relayfileUrl === 'string' && record.relayfileUrl.trim()
+      ? record.relayfileUrl.trim()
+      : undefined;
+  const createdAt =
+    typeof record.createdAt === 'string' && record.createdAt.trim() ? record.createdAt.trim() : undefined;
+  const agents = Array.isArray(record.agents)
+    ? record.agents
+        .filter((agent): agent is string => typeof agent === 'string')
+        .map((agent) => agent.trim())
+        .filter((agent) => agent.length > 0)
+    : undefined;
+
+  return {
+    ...(relaycastApiKey ? { relaycastApiKey } : {}),
+    ...(relayfileUrl ? { relayfileUrl } : {}),
+    ...(createdAt ? { createdAt } : {}),
+    ...(agents && agents.length > 0 ? { agents } : {}),
   };
 }
 
@@ -201,7 +269,10 @@ export interface Agent {
    * @param options.stream — if provided, only invoke callback when the event stream matches (e.g. 'stdout', 'stderr')
    * @param options.mode — 'chunk' for raw string callbacks, 'structured' for { stream, chunk } callbacks. Auto-detected if omitted.
    */
-  onOutput(callback: AgentOutputCallback, options?: { stream?: string; mode?: 'chunk' | 'structured' }): () => void;
+  onOutput(
+    callback: AgentOutputCallback,
+    options?: { stream?: string; mode?: 'chunk' | 'structured' }
+  ): () => void;
 }
 
 export interface HumanHandle {
@@ -244,9 +315,17 @@ export interface AgentRelayOptions {
   requestTimeoutMs?: number;
   shutdownTimeoutMs?: number;
   /**
-   * Name for the auto-created Relaycast workspace.
-   * If omitted, a random name is generated.
-   * Ignored when RELAY_API_KEY is already set in env or process.env.
+   * Unified workspace ID shared across relayfile, relayauth claims, and
+   * relaycast key lookup.
+   */
+  workspaceId?: string;
+  /**
+   * Display name for an auto-created Relaycast workspace.
+   * If omitted, the unified workspace ID is used.
+   *
+   * @deprecated Since v1.x this field falls back to workspaceId when omitted,
+   * changing prior behavior where it was required for workspace naming.
+   * Callers relying on distinct naming should set this explicitly.
    */
   workspaceName?: string;
   /**
@@ -304,9 +383,11 @@ export class AgentRelay {
 
   private readonly clientOptions: AgentRelayClientOptions;
   private readonly defaultChannels: string[];
+  private readonly requestedWorkspaceId?: string;
   private readonly workspaceName?: string;
   private readonly relaycastBaseUrl?: string;
   private relayApiKey?: string;
+  private resolvedWorkspaceId?: string;
   private client?: AgentRelayClient;
   private startPromise?: Promise<AgentRelayClient>;
   private unsubEvent?: () => void;
@@ -329,13 +410,15 @@ export class AgentRelay {
   private idleResolverSeq = 0;
 
   constructor(options: AgentRelayOptions = {}) {
+    const requestedWorkspaceId = normalizeWorkspaceId(options.workspaceId);
     this.defaultChannels = options.channels ?? ['general'];
+    this.requestedWorkspaceId = requestedWorkspaceId;
     this.workspaceName = options.workspaceName;
     this.relaycastBaseUrl = options.relaycastBaseUrl;
     this.clientOptions = {
       binaryPath: options.binaryPath,
       binaryArgs: options.binaryArgs,
-      brokerName: options.brokerName ?? options.workspaceName,
+      brokerName: options.brokerName ?? options.workspaceName ?? requestedWorkspaceId,
       channels: this.defaultChannels,
       cwd: options.cwd,
       env: options.env,
@@ -347,6 +430,112 @@ export class AgentRelay {
     this.claude = this.createSpawner('claude', 'Claude', 'pty');
     this.gemini = this.createSpawner('gemini', 'Gemini', 'pty');
     this.opencode = this.createSpawner('opencode', 'OpenCode', 'headless');
+  }
+
+  private getWorkspaceRegistryPath(): string {
+    return path.join(this.clientOptions.cwd ?? process.cwd(), '.relay', 'workspaces.json');
+  }
+
+  private readWorkspaceRegistry(): WorkspaceRegistry {
+    const registryPath = this.getWorkspaceRegistryPath();
+    if (!existsSync(registryPath)) {
+      return {};
+    }
+
+    let raw: string;
+    try {
+      raw = readFileSync(registryPath, 'utf8').trim();
+    } catch {
+      return {};
+    }
+    if (!raw) {
+      return {};
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Registry file is corrupted (partial write, disk full, concurrent access).
+      // Return empty registry so callers can re-create it.
+      return {};
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const registry: WorkspaceRegistry = {};
+    for (const [workspaceId, entry] of Object.entries(parsed as Record<string, unknown>)) {
+      const normalizedId = normalizeWorkspaceId(workspaceId);
+      if (!normalizedId) continue;
+      registry[normalizedId] = toWorkspaceRegistryEntry(entry);
+    }
+    return registry;
+  }
+
+  private writeWorkspaceRegistry(registry: WorkspaceRegistry): void {
+    const registryPath = this.getWorkspaceRegistryPath();
+    mkdirSync(path.dirname(registryPath), { recursive: true });
+    writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, 'utf8');
+  }
+
+  private persistWorkspaceMapping(workspaceId: string, apiKey: string): void {
+    const registry = this.readWorkspaceRegistry();
+    const existing = registry[workspaceId] ?? {};
+    registry[workspaceId] = {
+      ...existing,
+      relaycastApiKey: apiKey,
+      relayfileUrl: existing.relayfileUrl,
+      createdAt: existing.createdAt ?? new Date().toISOString(),
+      agents: existing.agents ?? [],
+    };
+    this.writeWorkspaceRegistry(registry);
+  }
+
+  private findMappedWorkspaceIdByApiKey(apiKey: string): string | undefined {
+    const registry = this.readWorkspaceRegistry();
+    for (const [workspaceId, entry] of Object.entries(registry)) {
+      if (entry.relaycastApiKey === apiKey) {
+        return workspaceId;
+      }
+    }
+    return undefined;
+  }
+
+  private getResolvedWorkspaceId(): string | undefined {
+    return this.resolvedWorkspaceId ?? this.requestedWorkspaceId;
+  }
+
+  private getRelaycastBaseUrl(): string {
+    return (
+      this.relaycastBaseUrl ??
+      this.clientOptions.env?.RELAYCAST_BASE_URL ??
+      process.env.RELAYCAST_BASE_URL ??
+      'https://api.relaycast.dev'
+    );
+  }
+
+  private applyWorkspaceEnv(workspaceId: string, apiKey: string): void {
+    const env: NodeJS.ProcessEnv = {
+      ...(this.clientOptions.env ?? process.env),
+      RELAY_API_KEY: apiKey,
+      RELAYFILE_WORKSPACE: workspaceId,
+      RELAY_DEFAULT_WORKSPACE: workspaceId,
+      RELAY_WORKSPACE_ID: workspaceId,
+      RELAY_WORKSPACES_JSON: JSON.stringify([{ workspace_id: workspaceId, api_key: apiKey }]),
+    };
+    if (this.relaycastBaseUrl) {
+      env.RELAYCAST_BASE_URL = this.relaycastBaseUrl;
+    }
+    this.clientOptions.env = env;
+  }
+
+  private async createMappedRelaycastWorkspace(workspaceId: string): Promise<string> {
+    const created = await RelayCast.createWorkspace(
+      this.workspaceName ?? workspaceId,
+      this.getRelaycastBaseUrl()
+    );
+    return created.apiKey;
   }
 
   /**
@@ -939,36 +1128,39 @@ export class AgentRelay {
    */
   private async ensureRelaycastApiKey(): Promise<void> {
     if (this.relayApiKey) {
-      this.wireRelaycastBaseUrl();
+      const workspaceId = this.getResolvedWorkspaceId();
+      if (workspaceId) {
+        this.applyWorkspaceEnv(workspaceId, this.relayApiKey);
+        this.persistWorkspaceMapping(workspaceId, this.relayApiKey);
+      } else {
+        this.wireRelaycastBaseUrl();
+      }
       return;
     }
 
     const envKey = this.clientOptions.env?.RELAY_API_KEY ?? process.env.RELAY_API_KEY;
-    if (envKey) {
-      this.relayApiKey = envKey;
-      // Ensure the broker subprocess inherits the full process env + the key.
-      // Without this, spawning with an explicit binaryPath but no env option
-      // would cause the broker to start with an empty environment (no PATH,
-      // no RELAY_API_KEY), making connect_relay() hang and triggering the
-      // hello-handshake timeout.
-      if (!this.clientOptions.env) {
-        this.clientOptions.env = { ...process.env, RELAY_API_KEY: envKey };
-      } else if (!this.clientOptions.env.RELAY_API_KEY) {
-        this.clientOptions.env.RELAY_API_KEY = envKey;
-      }
-      this.wireRelaycastBaseUrl();
+    const requestedWorkspaceId = this.requestedWorkspaceId;
+    if (requestedWorkspaceId) {
+      const registry = this.readWorkspaceRegistry();
+      const mappedKey = registry[requestedWorkspaceId]?.relaycastApiKey;
+      const resolvedKey =
+        mappedKey ?? envKey ?? (await this.createMappedRelaycastWorkspace(requestedWorkspaceId));
+      this.relayApiKey = resolvedKey;
+      this.resolvedWorkspaceId = requestedWorkspaceId;
+      this.applyWorkspaceEnv(requestedWorkspaceId, resolvedKey);
+      this.persistWorkspaceMapping(requestedWorkspaceId, resolvedKey);
       return;
     }
 
-    // No API key in env — broker will create/select its own workspace.
-    // Ensure the broker process inherits the full environment (PATH, etc.)
-    // so it can connect to Relaycast. The actual workspace key will be
-    // read from the broker's hello_ack response in ensureStarted().
-    if (!this.clientOptions.env) {
-      this.clientOptions.env = { ...process.env };
-    }
+    const resolvedWorkspaceId = envKey
+      ? (this.findMappedWorkspaceIdByApiKey(envKey) ?? generateWorkspaceId())
+      : generateWorkspaceId();
+    const resolvedKey = envKey ?? (await this.createMappedRelaycastWorkspace(resolvedWorkspaceId));
 
-    this.wireRelaycastBaseUrl();
+    this.relayApiKey = resolvedKey;
+    this.resolvedWorkspaceId = resolvedWorkspaceId;
+    this.applyWorkspaceEnv(resolvedWorkspaceId, resolvedKey);
+    this.persistWorkspaceMapping(resolvedWorkspaceId, resolvedKey);
   }
 
   /** Inject relaycastBaseUrl into broker env. Explicit option wins over inherited env. */
@@ -985,17 +1177,27 @@ export class AgentRelay {
     this.startPromise = this.ensureRelaycastApiKey()
       .then(() => AgentRelayClient.start(this.clientOptions))
       .then((c) => {
-        this.client = c;
-        this.startPromise = undefined;
         // Use the workspace key the broker actually connected with.
         // This ensures SDK and workers are always on the same workspace.
         if (c.workspaceKey) {
           this.relayApiKey = c.workspaceKey;
+          const workspaceId = this.getResolvedWorkspaceId();
+          if (workspaceId) {
+            this.applyWorkspaceEnv(workspaceId, c.workspaceKey);
+            try {
+              this.persistWorkspaceMapping(workspaceId, c.workspaceKey);
+            } catch {
+              // Best-effort persistence only; do not block event wiring/startup.
+            }
+          }
         }
         this.wireEvents(c);
+        this.client = c;
+        this.startPromise = undefined;
         return c;
       })
       .catch((err) => {
+        this.client = undefined;
         this.startPromise = undefined;
         throw err;
       });
@@ -1332,7 +1534,10 @@ export class AgentRelay {
       async unsubscribe(channelsToRemove: string[]) {
         await relay.unsubscribe({ agent: name, channels: channelsToRemove });
       },
-      onOutput(callback: AgentOutputCallback, options?: { stream?: string; mode?: 'chunk' | 'structured' }): () => void {
+      onOutput(
+        callback: AgentOutputCallback,
+        options?: { stream?: string; mode?: 'chunk' | 'structured' }
+      ): () => void {
         let listeners = relay.outputListeners.get(name);
         if (!listeners) {
           listeners = new Set();
