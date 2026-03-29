@@ -111,9 +111,8 @@ async function main() {
   console.log(`[sdk] ${timestamp()} Starting SDK lifecycle test`);
   console.log(`[sdk] agent=${args.name} cli=${args.cli} timeout=${args.timeout}s cwd=${args.cwd}`);
 
-  const client = await AgentRelayClient.start({
+  const client = await AgentRelayClient.spawn({
     cwd: args.cwd,
-    requestTimeoutMs: 30_000,
   });
 
   // Track events for debugging
