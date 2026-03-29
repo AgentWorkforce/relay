@@ -176,7 +176,10 @@ fn configured_broker_api_key() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn listen_api_router_with_auth(config: ListenApiConfig, broker_api_key: Option<String>) -> axum::Router {
+fn listen_api_router_with_auth(
+    config: ListenApiConfig,
+    broker_api_key: Option<String>,
+) -> axum::Router {
     use axum::{middleware, routing, Router};
 
     let state = ListenApiState {
@@ -186,7 +189,8 @@ fn listen_api_router_with_auth(config: ListenApiConfig, broker_api_key: Option<S
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
         replay_buffer: config.replay_buffer,
-        workspace_key: config.workspace_key
+        workspace_key: config
+            .workspace_key
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
         memberships: config.memberships,
