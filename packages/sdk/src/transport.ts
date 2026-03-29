@@ -62,12 +62,12 @@ export class BrokerTransport {
   // ── HTTP ─────────────────────────────────────────────────────────────
 
   async request<T = unknown>(path: string, init?: RequestInit): Promise<T> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      ...(init?.headers as Record<string, string> | undefined),
-    };
+    const headers = new Headers(init?.headers);
+    if (!headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
     if (this.apiKey) {
-      headers['X-API-Key'] = this.apiKey;
+      headers.set('X-API-Key', this.apiKey);
     }
 
     const res = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
@@ -93,6 +93,11 @@ export class BrokerTransport {
 
   connect(sinceSeq?: number): void {
     if (this.ws) return;
+    // Clear any pending reconnect timer to avoid duplicate connections
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.sinceSeq = sinceSeq ?? this.sinceSeq;
     this._connect();
   }
