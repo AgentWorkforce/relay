@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Command } from 'commander';
+import { AgentRelayClient } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 import { generateAgentName } from '@agent-relay/utils';
 
@@ -44,7 +45,9 @@ interface ProfileRelayOptions {
 export interface MonitoringDependencies {
   getProjectRoot: () => string;
   createMetricsClient: (cwd: string) => MonitoringMetricsClient | Promise<MonitoringMetricsClient>;
-  createProfilerRelay: (options: ProfileRelayOptions) => MonitoringProfilerRelay | Promise<MonitoringProfilerRelay>;
+  createProfilerRelay: (
+    options: ProfileRelayOptions
+  ) => MonitoringProfilerRelay | Promise<MonitoringProfilerRelay>;
   generateAgentName: () => string;
   fetch: (url: string) => Promise<Response>;
   pathExists: (target: string) => boolean;
@@ -68,8 +71,14 @@ function defaultExit(code: number): never {
 }
 
 async function createDefaultMetricsClient(cwd: string): Promise<MonitoringMetricsClient> {
-  const client = await createAgentRelayClient({ cwd });
-  return client as unknown as MonitoringMetricsClient;
+  // Connect to existing broker for read-only metrics queries
+  try {
+    const client = AgentRelayClient.connect({ cwd });
+    return client as unknown as MonitoringMetricsClient;
+  } catch {
+    const client = await createAgentRelayClient({ cwd });
+    return client as unknown as MonitoringMetricsClient;
+  }
 }
 
 async function createDefaultProfilerRelay(options: ProfileRelayOptions): Promise<MonitoringProfilerRelay> {

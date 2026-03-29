@@ -334,9 +334,10 @@ class AgentSpawner:
         )
 
         try:
-            result = await client.spawn_pty(
+            result = await client.spawn_provider(
                 name=agent_name,
-                cli=self._cli,
+                provider=self._cli,
+                transport=self._transport,
                 args=args or [],
                 channels=agent_channels,
                 task=task,

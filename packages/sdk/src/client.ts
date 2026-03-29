@@ -16,8 +16,20 @@ import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { BrokerTransport, AgentRelayProtocolError } from './transport.js';
 import { getBrokerBinaryPath } from './broker-path.js';
-import type { AgentRuntime, BrokerEvent, BrokerStats, CrashInsightsResponse } from './protocol.js';
-import type { SpawnPtyInput, SpawnProviderInput, SendMessageInput, ListAgent } from './types.js';
+import type {
+  AgentRuntime,
+  BrokerEvent,
+  BrokerStats,
+  CrashInsightsResponse,
+  HeadlessProvider,
+} from './protocol.js';
+import type {
+  AgentTransport,
+  SpawnPtyInput,
+  SpawnProviderInput,
+  SendMessageInput,
+  ListAgent,
+} from './types.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -52,6 +64,27 @@ export interface SessionInfo {
   default_workspace_id?: string;
   mode: string;
   uptime_secs: number;
+}
+
+function isHeadlessProvider(value: string): value is HeadlessProvider {
+  return value === 'claude' || value === 'opencode';
+}
+
+function resolveSpawnTransport(input: SpawnProviderInput): AgentTransport {
+  return input.transport ?? (input.provider === 'opencode' ? 'headless' : 'pty');
+}
+
+function isProcessRunning(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
 }
 
 // ── Client ─────────────────────────────────────────────────────────────
@@ -93,7 +126,24 @@ export class AgentRelayClient {
     }
 
     const raw = readFileSync(connPath, 'utf-8');
-    const conn = JSON.parse(raw) as { url: string; api_key: string; port: number; pid: number };
+    const conn = JSON.parse(raw) as {
+      url?: string;
+      api_key?: string;
+      port?: number;
+      pid?: number;
+    };
+
+    if (typeof conn.url !== 'string' || typeof conn.api_key !== 'string' || typeof conn.pid !== 'number') {
+      throw new Error(
+        `Invalid broker connection metadata in ${connPath}. Remove it and start the broker again.`
+      );
+    }
+
+    if (!isProcessRunning(conn.pid)) {
+      throw new Error(
+        `Stale broker connection file (${connPath}) points to dead pid ${conn.pid}. Start the broker with 'agent-relay up' or use AgentRelayClient.spawn().`
+      );
+    }
 
     return new AgentRelayClient({ baseUrl: conn.url, apiKey: conn.api_key });
   }
@@ -124,12 +174,7 @@ export class AgentRelayClient {
       RELAY_BROKER_API_KEY: apiKey,
     };
 
-    const args = [
-      'init',
-      '--name', brokerName,
-      '--channels', channels.join(','),
-      ...userArgs,
-    ];
+    const args = ['init', '--name', brokerName, '--channels', channels.join(','), ...userArgs];
 
     const child = spawn(binaryPath, args, {
       cwd,
@@ -233,6 +278,13 @@ export class AgentRelayClient {
   }
 
   async spawnProvider(input: SpawnProviderInput): Promise<{ name: string; runtime: AgentRuntime }> {
+    const transport = resolveSpawnTransport(input);
+    if (transport === 'headless' && !isHeadlessProvider(input.provider)) {
+      throw new Error(
+        `provider '${input.provider}' does not support headless transport (supported: claude, opencode)`
+      );
+    }
+
     return this.transport.request('/api/spawn', {
       method: 'POST',
       body: JSON.stringify({
@@ -250,7 +302,7 @@ export class AgentRelayClient {
         idleThresholdSecs: input.idleThresholdSecs,
         restartPolicy: input.restartPolicy,
         skipRelayPrompt: input.skipRelayPrompt,
-        transport: input.transport,
+        transport,
       }),
     });
   }
@@ -276,7 +328,11 @@ export class AgentRelayClient {
     });
   }
 
-  async resizePty(name: string, rows: number, cols: number): Promise<{ name: string; rows: number; cols: number }> {
+  async resizePty(
+    name: string,
+    rows: number,
+    cols: number
+  ): Promise<{ name: string; rows: number; cols: number }> {
     return this.transport.request(`/api/resize/${encodeURIComponent(name)}`, {
       method: 'POST',
       body: JSON.stringify({ rows, cols }),
@@ -311,7 +367,11 @@ export class AgentRelayClient {
 
   // ── Model control ──────────────────────────────────────────────────
 
-  async setModel(name: string, model: string, opts?: { timeoutMs?: number }): Promise<{ name: string; model: string; success: boolean }> {
+  async setModel(
+    name: string,
+    model: string,
+    opts?: { timeoutMs?: number }
+  ): Promise<{ name: string; model: string; success: boolean }> {
     return this.transport.request(`/api/spawned/${encodeURIComponent(name)}/model`, {
       method: 'POST',
       body: JSON.stringify({ model, timeout_ms: opts?.timeoutMs }),
@@ -336,7 +396,12 @@ export class AgentRelayClient {
 
   // ── Observability ──────────────────────────────────────────────────
 
-  async getMetrics(agent?: string): Promise<{ agents: Array<{ name: string; pid: number; memory_bytes: number; uptime_secs: number }>; broker?: BrokerStats }> {
+  async getMetrics(
+    agent?: string
+  ): Promise<{
+    agents: Array<{ name: string; pid: number; memory_bytes: number; uptime_secs: number }>;
+    broker?: BrokerStats;
+  }> {
     const query = agent ? `?agent=${encodeURIComponent(agent)}` : '';
     return this.transport.request(`/api/metrics${query}`);
   }
@@ -411,10 +476,7 @@ export class AgentRelayClient {
  * Parse the API port from the broker's stdout. The broker prints:
  *   [agent-relay] API listening on http://{bind}:{port}
  */
-async function waitForApiPort(
-  child: ChildProcess,
-  timeoutMs: number,
-): Promise<number> {
+async function waitForApiPort(child: ChildProcess, timeoutMs: number): Promise<number> {
   const { createInterface } = await import('node:readline');
 
   return new Promise<number>((resolve, reject) => {

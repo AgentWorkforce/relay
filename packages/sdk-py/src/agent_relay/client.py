@@ -50,6 +50,16 @@ class AgentRelayProcessError(Exception):
 AgentTransport = Literal["pty", "headless"]
 
 
+def _is_headless_provider(value: str) -> bool:
+    return value in {"claude", "opencode"}
+
+
+def _resolve_spawn_transport(provider: str, transport: Optional[AgentTransport]) -> AgentTransport:
+    if transport is not None:
+        return transport
+    return "headless" if provider == "opencode" else "pty"
+
+
 # ── Binary resolution ─────────────────────────────────────────────────────────
 
 
@@ -173,6 +183,7 @@ class AgentRelayClient:
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self._ws_task: Optional[asyncio.Task[None]] = None
         self._lease_task: Optional[asyncio.Task[None]] = None
+        self._stderr_task: Optional[asyncio.Task[None]] = None
         self._process: Optional[asyncio.subprocess.Process] = None
         self._event_listeners: list[Callable[[BrokerEvent], None]] = []
         self._event_buffer: list[BrokerEvent] = []
@@ -237,6 +248,7 @@ class AgentRelayClient:
         port = await _wait_for_api_port(process, startup_timeout_ms)
 
         client = cls(base_url=f"http://127.0.0.1:{port}", api_key=api_key)
+        client._stderr_task = stderr_task
         client._process = process
 
         # Get session metadata
@@ -387,6 +399,50 @@ class AgentRelayClient:
         if skip_relay_prompt is not None: payload["skipRelayPrompt"] = skip_relay_prompt
         return await self._request("POST", "/api/spawn", json=payload)
 
+    async def spawn_provider(
+        self,
+        *,
+        name: str,
+        provider: str,
+        transport: Optional[AgentTransport] = None,
+        args: Optional[list[str]] = None,
+        channels: Optional[list[str]] = None,
+        task: Optional[str] = None,
+        model: Optional[str] = None,
+        cwd: Optional[str] = None,
+        team: Optional[str] = None,
+        shadow_of: Optional[str] = None,
+        shadow_mode: Optional[str] = None,
+        idle_threshold_secs: Optional[int] = None,
+        restart_policy: Optional[dict[str, Any]] = None,
+        continue_from: Optional[str] = None,
+        skip_relay_prompt: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        resolved_transport = _resolve_spawn_transport(provider, transport)
+        if resolved_transport == "headless" and not _is_headless_provider(provider):
+            raise AgentRelayProcessError(
+                f"provider '{provider}' does not support headless transport (supported: claude, opencode)"
+            )
+
+        payload: dict[str, Any] = {
+            "name": name,
+            "cli": provider,
+            "args": args or [],
+            "channels": channels or [],
+            "transport": resolved_transport,
+        }
+        if task is not None: payload["task"] = task
+        if model is not None: payload["model"] = model
+        if cwd is not None: payload["cwd"] = cwd
+        if team is not None: payload["team"] = team
+        if shadow_of is not None: payload["shadowOf"] = shadow_of
+        if shadow_mode is not None: payload["shadowMode"] = shadow_mode
+        if idle_threshold_secs is not None: payload["idleThresholdSecs"] = idle_threshold_secs
+        if restart_policy is not None: payload["restartPolicy"] = restart_policy
+        if continue_from is not None: payload["continueFrom"] = continue_from
+        if skip_relay_prompt is not None: payload["skipRelayPrompt"] = skip_relay_prompt
+        return await self._request("POST", "/api/spawn", json=payload)
+
     async def release(self, name: str, reason: Optional[str] = None) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
         if reason is not None:
@@ -476,15 +532,20 @@ class AgentRelayClient:
             self._lease_task.cancel()
             self._lease_task = None
 
-        try:
-            await self._request("POST", "/api/shutdown")
-        except Exception:
-            pass
+        # Only send shutdown if we own the broker process
+        if self._process:
+            try:
+                await self._request("POST", "/api/shutdown")
+            except Exception:
+                pass
 
         if self._ws and not self._ws.closed:
             await self._ws.close()
         if self._ws_task and not self._ws_task.done():
             self._ws_task.cancel()
+
+        if self._stderr_task and not self._stderr_task.done():
+            self._stderr_task.cancel()
 
         if self._session and not self._session.closed:
             await self._session.close()

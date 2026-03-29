@@ -176,6 +176,78 @@ fn headless_provider_cli_name(provider: &ProtocolHeadlessProvider) -> &'static s
     }
 }
 
+fn headless_provider_from_cli(value: &str) -> Option<ProtocolHeadlessProvider> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "claude" => Some(ProtocolHeadlessProvider::Claude),
+        "opencode" => Some(ProtocolHeadlessProvider::Opencode),
+        _ => None,
+    }
+}
+
+fn runtime_label(runtime: &AgentRuntime) -> &'static str {
+    match runtime {
+        AgentRuntime::Pty => "pty",
+        AgentRuntime::Headless => "headless",
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_http_api_spawn_spec(
+    name: String,
+    cli: String,
+    transport: Option<String>,
+    model: Option<String>,
+    args: Vec<String>,
+    channels: Vec<String>,
+    cwd: Option<String>,
+    team: Option<String>,
+    shadow_of: Option<String>,
+    shadow_mode: Option<String>,
+    restart_policy: Option<Value>,
+) -> Result<AgentSpec> {
+    let runtime = match transport
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+    {
+        None => AgentRuntime::Pty,
+        Some(value) if value == "pty" => AgentRuntime::Pty,
+        Some(value) if value == "headless" => AgentRuntime::Headless,
+        Some(other) => {
+            anyhow::bail!("unsupported transport '{other}' (expected 'pty' or 'headless')")
+        }
+    };
+    let parsed_restart_policy = restart_policy.and_then(|v| serde_json::from_value(v).ok());
+
+    let (provider, cli_command, model) = match runtime {
+        AgentRuntime::Pty => (None, Some(cli), model),
+        AgentRuntime::Headless => {
+            let provider = headless_provider_from_cli(&cli).with_context(|| {
+                format!(
+                    "provider '{cli}' does not support headless transport (supported: claude, opencode)"
+                )
+            })?;
+            (Some(provider), None, None)
+        }
+    };
+
+    Ok(AgentSpec {
+        name,
+        runtime,
+        provider,
+        cli: cli_command,
+        model,
+        cwd,
+        team,
+        shadow_of,
+        shadow_mode,
+        args,
+        channels,
+        restart_policy: parsed_restart_policy,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct BrokerState {
     agents: HashMap<String, PersistedAgent>,
@@ -1565,6 +1637,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         ListenApiRequest::Spawn {
                             name,
                             cli,
+                            transport,
                             model,
                             args,
                             task,
@@ -1576,6 +1649,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             continue_from,
                             idle_threshold_secs,
                             skip_relay_prompt,
+                            restart_policy,
                             reply,
                         } => {
                             let effective_channels = if channels.is_empty() {
@@ -1583,19 +1657,24 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             } else {
                                 channels.clone()
                             };
-                            let spec = AgentSpec {
-                                name: name.clone(),
-                                runtime: AgentRuntime::Pty,
-                                provider: None,
-                                cli: Some(cli.clone()),
-                                model: model.clone(),
+                            let spec = match build_http_api_spawn_spec(
+                                name.clone(),
+                                cli.clone(),
+                                transport,
+                                model.clone(),
+                                args,
+                                effective_channels.clone(),
                                 cwd,
                                 team,
                                 shadow_of,
                                 shadow_mode,
-                                args,
-                                channels: effective_channels.clone(),
-                                restart_policy: None,
+                                restart_policy,
+                            ) {
+                                Ok(spec) => spec,
+                                Err(error) => {
+                                    let _ = reply.send(Err(error.to_string()));
+                                    continue;
+                                }
                             };
                             let spec_for_state = spec.clone();
                             let mut preregistration_warning: Option<String> = None;
@@ -1725,13 +1804,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     agent_spawn_count += 1;
                                     telemetry.track(TelemetryEvent::AgentSpawn {
                                         cli: cli.clone(),
-                                        runtime: "pty".to_string(),
+                                        runtime: runtime_label(&spec_for_state.runtime).to_string(),
                                     });
                                     let pid = workers.worker_pid(&name).unwrap_or(0);
                                     state.agents.insert(
                                         name.clone(),
                                         PersistedAgent {
-                                            runtime: AgentRuntime::Pty,
+                                            runtime: spec_for_state.runtime.clone(),
                                             parent: Some("Dashboard".to_string()),
                                             channels: spec_for_state.channels.clone(),
                                             pid: workers.worker_pid(&name),
@@ -1741,7 +1820,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                     .unwrap_or_default()
                                                     .as_secs(),
                                             ),
-                                            spec: Some(spec_for_state),
+                                            spec: Some(spec_for_state.clone()),
                                             restart_policy: None,
                                             initial_task: effective_task,
 
@@ -1761,9 +1840,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         json!({
                                             "kind":"agent_spawned",
                                             "name":&name,
-                                            "runtime":"pty",
-                                            "cli":&cli,
-                                            "model":&model,
+                                            "runtime":runtime_label(&spec_for_state.runtime),
+                                            "provider": spec_for_state.provider.clone(),
+                                            "cli": spec_for_state.cli.clone(),
+                                            "model": spec_for_state.model.clone(),
                                             "pid":pid,
                                             "source":"http_api",
                                             "pre_registered": worker_relay_key.is_some(),
@@ -1780,6 +1860,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     let _ = reply.send(Ok(json!({
                                         "success": true,
                                         "name": name,
+                                        "runtime": runtime_label(&spec_for_state.runtime),
                                         "pid": pid,
                                         "pre_registered": worker_relay_key.is_some(),
                                         "warning": preregistration_warning,
@@ -5360,17 +5441,17 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        build_agent_state_transition_event, build_thread_infos, channels_from_csv, continuity_dir,
-        delivery_retry_interval, derive_ws_base_url_from_http, detect_bypass_permissions_prompt,
-        detect_claude_trust_prompt, display_target_for_dashboard, drop_pending_for_worker,
-        extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
-        http_api_relaycast_send_timeout, is_auto_suggestion, is_bypass_selection_menu,
-        is_in_editor_mode, is_relaycast_self_control_target, is_unknown_worker_error_message,
-        normalize_channel, normalize_initial_task, normalize_sender,
-        relaycast_spawn_control_dedup_key, relaycast_ws_control_dedup_key,
+        build_agent_state_transition_event, build_http_api_spawn_spec, build_thread_infos,
+        channels_from_csv, continuity_dir, delivery_retry_interval, derive_ws_base_url_from_http,
+        detect_bypass_permissions_prompt, detect_claude_trust_prompt, display_target_for_dashboard,
+        drop_pending_for_worker, extract_mcp_message_ids, http_api_event_emit_timeout,
+        http_api_local_delivery_timeout, http_api_relaycast_send_timeout, is_auto_suggestion,
+        is_bypass_selection_menu, is_in_editor_mode, is_relaycast_self_control_target,
+        is_unknown_worker_error_message, normalize_channel, normalize_initial_task,
+        normalize_sender, relaycast_spawn_control_dedup_key, relaycast_ws_control_dedup_key,
         relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
         sender_is_dashboard_label, should_clear_pending_delivery_for_event, strip_ansi,
-        PendingDelivery, TerminalQueryParser,
+        AgentRuntime, PendingDelivery, ProtocolHeadlessProvider, TerminalQueryParser,
     };
     use crate::helpers::floor_char_boundary;
     use relay_broker::dedup::DedupCache;
@@ -6761,6 +6842,80 @@ mod tests {
         let state_path = std::path::Path::new(".agent-relay/state.json");
         let result = continuity_dir(state_path);
         assert_eq!(result, std::path::PathBuf::from(".agent-relay/continuity"));
+    }
+
+    #[test]
+    fn http_api_spawn_spec_defaults_to_pty_runtime() {
+        let spec = build_http_api_spawn_spec(
+            "worker-a".to_string(),
+            "codex".to_string(),
+            None,
+            Some("o3".to_string()),
+            vec!["--fast".to_string()],
+            vec!["general".to_string()],
+            Some("/tmp/project".to_string()),
+            Some("core".to_string()),
+            Some("Lead".to_string()),
+            Some("subagent".to_string()),
+            None,
+        )
+        .expect("spec should build");
+
+        assert!(matches!(spec.runtime, AgentRuntime::Pty));
+        assert!(spec.provider.is_none());
+        assert_eq!(spec.cli.as_deref(), Some("codex"));
+        assert_eq!(spec.model.as_deref(), Some("o3"));
+    }
+
+    #[test]
+    fn http_api_spawn_spec_uses_headless_runtime_for_supported_providers() {
+        let spec = build_http_api_spawn_spec(
+            "worker-a".to_string(),
+            "opencode".to_string(),
+            Some("headless".to_string()),
+            Some("ignored".to_string()),
+            vec![],
+            vec!["general".to_string()],
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("headless spec should build");
+
+        assert!(matches!(spec.runtime, AgentRuntime::Headless));
+        assert!(matches!(
+            spec.provider,
+            Some(ProtocolHeadlessProvider::Opencode)
+        ));
+        assert!(spec.cli.is_none());
+        assert!(spec.model.is_none());
+    }
+
+    #[test]
+    fn http_api_spawn_spec_rejects_unknown_headless_providers() {
+        let error = build_http_api_spawn_spec(
+            "worker-a".to_string(),
+            "codex".to_string(),
+            Some("headless".to_string()),
+            None,
+            vec![],
+            vec!["general".to_string()],
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect_err("unsupported headless provider should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not support headless transport"),
+            "unexpected error: {error}"
+        );
     }
 
     // ==================== model flag injection tests ====================

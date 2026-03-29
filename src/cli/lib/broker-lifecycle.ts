@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { AgentRelayClient } from '@agent-relay/sdk';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
 import { buildBundledRelaycastMcpCommand } from './relaycast-mcp-command.js';
@@ -26,16 +27,6 @@ const MAX_API_PORT_ATTEMPTS = 25;
 const MAX_DASHBOARD_PORT_ATTEMPTS = 25;
 const MAX_PORT = 65535;
 
-/**
- * Sanitise a broker name the same way the Rust broker does: keep alphanumeric
- * characters (including Unicode) and hyphens, replace everything else with `-`.
- * Rust uses `char::is_alphanumeric()` which includes Unicode letters/digits,
- * so we use the equivalent `\p{L}` (letters) and `\p{N}` (numbers) classes.
- */
-function sanitizeBrokerName(name: string): string {
-  return name.replace(/[^\p{L}\p{N}-]/gu, '-');
-}
-
 /** The broker writes this file with URL, port, API key, and PID. */
 const CONNECTION_FILENAME = 'connection.json';
 
@@ -46,16 +37,20 @@ export interface BrokerConnection {
   pid: number;
 }
 
-/**
- * Read the broker's connection.json file from the data directory.
- * Returns null if the file doesn't exist or is invalid.
- */
-export function readBrokerConnection(dataDir: string): BrokerConnection | null {
-  const connPath = path.join(dataDir, CONNECTION_FILENAME);
+type BrokerConnectionReader = {
+  readFileSync: (filePath: string, encoding: BufferEncoding) => string;
+};
+
+function parseBrokerConnection(raw: string): BrokerConnection | null {
   try {
-    const raw = fs.readFileSync(connPath, 'utf-8');
     const conn = JSON.parse(raw);
-    if (typeof conn.url === 'string' && typeof conn.pid === 'number' && conn.pid > 0) {
+    if (
+      typeof conn.url === 'string' &&
+      typeof conn.port === 'number' &&
+      typeof conn.api_key === 'string' &&
+      typeof conn.pid === 'number' &&
+      conn.pid > 0
+    ) {
       return conn as BrokerConnection;
     }
     return null;
@@ -64,6 +59,26 @@ export function readBrokerConnection(dataDir: string): BrokerConnection | null {
   }
 }
 
+function readBrokerConnectionFromFs(
+  fileSystem: BrokerConnectionReader,
+  dataDir: string
+): BrokerConnection | null {
+  const connPath = path.join(dataDir, CONNECTION_FILENAME);
+  try {
+    const raw = fileSystem.readFileSync(connPath, 'utf-8');
+    return parseBrokerConnection(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the broker's connection.json file from the data directory.
+ * Returns null if the file doesn't exist or is invalid.
+ */
+export function readBrokerConnection(dataDir: string): BrokerConnection | null {
+  return readBrokerConnectionFromFs(fs, dataDir);
+}
 
 function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -94,9 +109,7 @@ async function resolveApiPortWithFallback(
 async function startBrokerWithPortFallback(
   paths: CoreProjectPaths,
   dashboardPort: number,
-  wantsDashboard: boolean,
-  deps: CoreDependencies,
-  verbose: boolean
+  deps: CoreDependencies
 ): Promise<{ relay: CoreRelay; apiPort: number }> {
   // Resolve a free API port BEFORE spawning the broker.  This avoids
   // spawning (and flocking) multiple --persist brokers during retry,
@@ -165,7 +178,7 @@ function safeUnlink(filePath: string, deps: CoreDependencies): void {
 }
 
 function readBrokerPid(dataDir: string, _deps: CoreDependencies): number | null {
-  const conn = readBrokerConnection(dataDir);
+  const conn = readBrokerConnectionFromFs(_deps.fs, dataDir);
   return conn?.pid ?? null;
 }
 
@@ -223,13 +236,6 @@ async function killOrphanedBrokerProcesses(projectRoot: string, deps: CoreDepend
   }
 }
 
-function cleanupConnectionIfStopped(dataDir: string, deps: CoreDependencies): void {
-  const pid = readBrokerPid(dataDir, deps);
-  if (pid === null || !isProcessRunning(pid, deps)) {
-    safeUnlink(path.join(dataDir, CONNECTION_FILENAME), deps);
-  }
-}
-
 function ensureBundledRelaycastMcpCommand(deps: CoreDependencies): void {
   if (deps.env.RELAYCAST_MCP_COMMAND?.trim()) {
     return;
@@ -240,7 +246,6 @@ function ensureBundledRelaycastMcpCommand(deps: CoreDependencies): void {
     deps.env.RELAYCAST_MCP_COMMAND = command;
   }
 }
-
 
 async function waitForProcessExit(pid: number, timeoutMs: number, deps: CoreDependencies): Promise<boolean> {
   const startedAt = deps.now();
@@ -628,9 +633,7 @@ async function refreshDashboardAssetsIfStale(
   // Get installed binary version (async to avoid blocking event loop)
   let binaryVersion: string;
   try {
-    const versionResult = await deps.execCommand(
-      `${JSON.stringify(dashboardBinary)} --version`
-    );
+    const versionResult = await deps.execCommand(`${JSON.stringify(dashboardBinary)} --version`);
     binaryVersion = versionResult.stdout.trim();
   } catch {
     return; // Can't determine version — skip
@@ -689,9 +692,7 @@ async function refreshDashboardAssetsIfStale(
     // Remove old assets and extract (async to avoid blocking event loop)
     deps.fs.rmSync(assetsDir, { recursive: true, force: true });
     deps.fs.mkdirSync(targetDir, { recursive: true });
-    await deps.execCommand(
-      `tar -xzf ${JSON.stringify(tempFile)} -C ${JSON.stringify(targetDir)}`
-    );
+    await deps.execCommand(`tar -xzf ${JSON.stringify(tempFile)} -C ${JSON.stringify(targetDir)}`);
     if (tempFile) deps.fs.unlinkSync(tempFile);
 
     // Write version marker only after confirming extraction succeeded
@@ -736,20 +737,12 @@ async function startDashboardWithFallback(
     preferredBinary,
     relayApiKey
   );
-  let port = await resolveStartedDashboardPort(
-    process as DashboardStartupProcess,
-    dashboardPort,
-    deps
-  );
+  let port = await resolveStartedDashboardPort(process as DashboardStartupProcess, dashboardPort, deps);
 
   if (port === null && preferredBinary) {
     deps.warn('Retrying dashboard startup using npx @agent-relay/dashboard-server@latest');
     process = startDashboard(paths, dashboardPort, apiPort, deps, enableVerboseLogging, null, relayApiKey);
-    port = await resolveStartedDashboardPort(
-      process as DashboardStartupProcess,
-      dashboardPort,
-      deps
-    );
+    port = await resolveStartedDashboardPort(process as DashboardStartupProcess, dashboardPort, deps);
   }
 
   return { process, port };
@@ -1002,13 +995,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     // files (e.g. user deleted .agent-relay/ while broker was running).
     await killOrphanedBrokerProcesses(paths.projectRoot, deps);
 
-    const started = await startBrokerWithPortFallback(
-      paths,
-      dashboardPort,
-      wantsDashboard,
-      deps,
-      Boolean(options.verbose) || isDebugLikeLoggingEnabled(deps)
-    );
+    const started = await startBrokerWithPortFallback(paths, dashboardPort, deps);
     relay = started.relay;
     apiPort = started.apiPort;
     const dashboardRelayUrl = resolveDashboardRelayUrl(apiPort, deps);
@@ -1176,7 +1163,7 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
     return;
   }
 
-  const conn = readBrokerConnection(paths.dataDir);
+  const conn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
   if (!conn) {
     if (options.force) {
       await killOrphanedBrokerProcesses(paths.projectRoot, deps);
@@ -1238,7 +1225,7 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
 
 export async function runStatusCommand(deps: CoreDependencies): Promise<void> {
   const paths = deps.getProjectPaths();
-  const conn = readBrokerConnection(paths.dataDir);
+  const conn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
 
   let running = false;
   let brokerPid: number | undefined;
@@ -1261,21 +1248,19 @@ export async function runStatusCommand(deps: CoreDependencies): Promise<void> {
   deps.log(`PID: ${brokerPid}`);
   deps.log(`Project: ${paths.projectRoot}`);
 
-  // Discover the existing broker's API port instead of spawning a new broker.
-  // Without an API port, createRelay spawns a fresh broker process which
-  // conflicts with the already-running one and can cause the command to fail.
-  const apiPort = await deps.findBrokerApiPort();
-
-  if (apiPort > 0) {
-    const relay = await deps.createRelay(paths.projectRoot, apiPort);
+  // Query the running broker for additional status info
+  const connInfo = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
+  if (connInfo) {
     try {
-      const status = await relay.getStatus() as { agent_count?: number; pending_delivery_count?: number };
+      const client = new AgentRelayClient({ baseUrl: connInfo.url, apiKey: connInfo.api_key });
+      const status = (await client.getStatus()) as { agent_count?: number; pending_delivery_count?: number };
       if (typeof status.agent_count === 'number') {
         deps.log(`Agents: ${status.agent_count}`);
       }
       if (typeof status.pending_delivery_count === 'number' && status.pending_delivery_count > 0) {
         deps.log(`Pending deliveries: ${status.pending_delivery_count}`);
       }
+      client.disconnect();
     } catch {
       // PID-based status is enough when broker query fails.
     }

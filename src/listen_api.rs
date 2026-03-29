@@ -26,6 +26,7 @@ pub enum ListenApiRequest {
     Spawn {
         name: String,
         cli: String,
+        transport: Option<String>,
         model: Option<String>,
         args: Vec<String>,
         task: Option<String>,
@@ -37,6 +38,7 @@ pub enum ListenApiRequest {
         continue_from: Option<String>,
         idle_threshold_secs: Option<u64>,
         skip_relay_prompt: bool,
+        restart_policy: Option<Value>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     SetModel {
@@ -418,6 +420,11 @@ async fn listen_api_spawn(
         .unwrap_or("claude")
         .to_string();
     let model = body.get("model").and_then(Value::as_str).map(String::from);
+    let transport = body
+        .get("transport")
+        .or_else(|| body.get("runtime"))
+        .and_then(Value::as_str)
+        .map(String::from);
     let args: Vec<String> = body
         .get("args")
         .and_then(Value::as_array)
@@ -465,6 +472,10 @@ async fn listen_api_spawn(
         .or_else(|| body.get("skipRelayPrompt"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let restart_policy = body
+        .get("restart_policy")
+        .or_else(|| body.get("restartPolicy"))
+        .cloned();
 
     if name.is_empty() {
         return (
@@ -479,6 +490,7 @@ async fn listen_api_spawn(
         .send(ListenApiRequest::Spawn {
             name: name.clone(),
             cli,
+            transport,
             model,
             args,
             task,
@@ -490,6 +502,7 @@ async fn listen_api_spawn(
             continue_from,
             idle_threshold_secs,
             skip_relay_prompt,
+            restart_policy,
             reply: reply_tx,
         })
         .await
@@ -1560,6 +1573,7 @@ mod auth_tests {
                 Some(ListenApiRequest::Spawn {
                     name,
                     cli,
+                    transport,
                     model,
                     args,
                     task,
@@ -1571,10 +1585,12 @@ mod auth_tests {
                     continue_from,
                     idle_threshold_secs: _,
                     skip_relay_prompt: _,
+                    restart_policy: _,
                     reply,
                 }) => {
                     assert_eq!(name, "worker-a");
                     assert_eq!(cli, "codex");
+                    assert_eq!(transport.as_deref(), Some("headless"));
                     assert_eq!(model.as_deref(), Some("o3"));
                     assert_eq!(args, vec!["--fast".to_string()]);
                     assert_eq!(task.as_deref(), Some("Ship it"));
@@ -1606,6 +1622,7 @@ mod auth_tests {
                         json!({
                             "name": "worker-a",
                             "cli": "codex",
+                            "transport": "headless",
                             "model": "o3",
                             "args": ["--fast"],
                             "task": "Ship it",

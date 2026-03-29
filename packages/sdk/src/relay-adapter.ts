@@ -127,6 +127,7 @@ export class RelayAdapter {
   private started = false;
   private readonly spawnOpts: AgentRelaySpawnOptions;
   private readonly stderrListeners = new Set<(line: string) => void>();
+  private readonly pendingEventListeners: Array<(event: BrokerEvent) => void> = [];
 
   constructor(opts: RelayAdapterOptions) {
     this.spawnOpts = {
@@ -155,6 +156,11 @@ export class RelayAdapter {
         }
       },
     });
+    // Wire any event listeners that were registered before start()
+    for (const listener of this.pendingEventListeners) {
+      this.client.onEvent(listener);
+    }
+    this.pendingEventListeners.length = 0;
     this.started = true;
   }
 
@@ -291,7 +297,15 @@ export class RelayAdapter {
   // ── Events ──────────────────────────────────────────────────────
 
   onEvent(listener: (event: BrokerEvent) => void): () => void {
-    return this.ensureClient().onEvent(listener);
+    if (this.client) {
+      return this.client.onEvent(listener);
+    }
+    // Queue listener — will be wired after start()
+    this.pendingEventListeners.push(listener);
+    return () => {
+      const idx = this.pendingEventListeners.indexOf(listener);
+      if (idx >= 0) this.pendingEventListeners.splice(idx, 1);
+    };
   }
 
   onStderr(listener: (line: string) => void): () => void {

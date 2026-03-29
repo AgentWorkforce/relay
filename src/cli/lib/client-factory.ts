@@ -6,6 +6,7 @@ export interface CreateAgentRelayClientOptions {
   binaryPath?: string;
   binaryArgs?: string[];
   env?: NodeJS.ProcessEnv;
+  preferConnect?: boolean;
 }
 
 export interface ClientSpawnOptions {
@@ -21,14 +22,25 @@ export interface ClientSpawnOptions {
   shadowMode?: 'subagent' | 'process';
 }
 
-export async function createAgentRelayClient(options: CreateAgentRelayClientOptions): Promise<AgentRelayClient> {
+export async function createAgentRelayClient(
+  options: CreateAgentRelayClientOptions
+): Promise<AgentRelayClient> {
   const {
     cwd,
     channels = ['general'],
     binaryPath = process.env.AGENT_RELAY_BIN,
     binaryArgs,
     env = process.env,
+    preferConnect = false,
   } = options;
+
+  if (preferConnect) {
+    try {
+      return AgentRelayClient.connect({ cwd });
+    } catch {
+      // Fall through to spawning a fresh broker.
+    }
+  }
 
   return AgentRelayClient.spawn({
     binaryPath: binaryPath || undefined,

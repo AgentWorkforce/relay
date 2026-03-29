@@ -246,14 +246,25 @@ async function createDefaultRelay(cwd: string, apiPort = 0): Promise<CoreRelay> 
   const client = await createAgentRelayClient({
     cwd,
     binaryArgs: apiPort > 0 ? ['--persist', '--api-port', String(apiPort)] : [],
+    preferConnect: apiPort > 0,
   });
 
   const relay: CoreRelay = {
     spawn: (input) => spawnAgentWithClient(client, input),
-    getStatus: () => client.getStatus(),
+    getStatus: async () => {
+      const status = await client.getStatus();
+      if (!client.workspaceKey) {
+        await client.getSession().catch(() => undefined);
+      }
+      return status;
+    },
     shutdown: () => client.shutdown(),
-    get workspaceKey() { return client.workspaceKey; },
-    get brokerPid() { return client.brokerPid; },
+    get workspaceKey() {
+      return client.workspaceKey;
+    },
+    get brokerPid() {
+      return client.brokerPid;
+    },
   };
   return relay;
 }

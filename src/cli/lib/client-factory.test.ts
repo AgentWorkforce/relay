@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const spawnSpy = vi.fn();
-const mockClient = {
+const connectSpy = vi.fn();
+const mockSpawnedClient = {
+  spawnPty: vi.fn(async () => undefined),
+};
+const mockConnectedClient = {
   spawnPty: vi.fn(async () => undefined),
 };
 
@@ -10,7 +14,11 @@ vi.mock('@agent-relay/sdk', () => {
     AgentRelayClient: {
       spawn: (...args: unknown[]) => {
         spawnSpy(...args);
-        return Promise.resolve(mockClient);
+        return Promise.resolve(mockSpawnedClient);
+      },
+      connect: (...args: unknown[]) => {
+        connectSpy(...args);
+        return mockConnectedClient;
       },
     },
   };
@@ -21,7 +29,9 @@ import { createAgentRelayClient, spawnAgentWithClient } from './client-factory.j
 describe('client-factory', () => {
   beforeEach(() => {
     spawnSpy.mockClear();
-    mockClient.spawnPty.mockClear();
+    connectSpy.mockClear();
+    mockSpawnedClient.spawnPty.mockClear();
+    mockConnectedClient.spawnPty.mockClear();
     delete process.env.AGENT_RELAY_BIN;
   });
 
@@ -37,6 +47,7 @@ describe('client-factory', () => {
         binaryPath: '/tmp/agent-relay-broker',
       })
     );
+    expect(connectSpy).not.toHaveBeenCalled();
   });
 
   it('builds AgentRelayClient with explicit options', async () => {
@@ -56,6 +67,17 @@ describe('client-factory', () => {
         binaryArgs: ['--debug'],
       })
     );
+  });
+
+  it('prefers connecting to an existing broker when requested', async () => {
+    const client = await createAgentRelayClient({
+      cwd: '/tmp/project',
+      preferConnect: true,
+    });
+
+    expect(connectSpy).toHaveBeenCalledWith({ cwd: '/tmp/project' });
+    expect(spawnSpy).not.toHaveBeenCalled();
+    expect(client).toBe(mockConnectedClient);
   });
 
   it('spawns through spawnPty', async () => {

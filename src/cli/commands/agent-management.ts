@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AgentRelayClient } from '@agent-relay/sdk';
+import { AgentRelayClient, spawnFromEnv } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 
 import { runAgentsCommand, runAgentsLogsCommand, runWhoCommand } from '../lib/agent-management-listing.js';
@@ -272,7 +272,6 @@ export function registerAgentManagementCommands(
 
       let exitCode = 0;
       try {
-        const { spawnFromEnv } = await import('@agent-relay/sdk');
         const result = await spawnFromEnv({
           binaryPath: process.env.AGENT_RELAY_BIN,
         });
