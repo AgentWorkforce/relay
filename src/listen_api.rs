@@ -155,25 +155,18 @@ impl ListenReplayQuery {
 // Router
 // ---------------------------------------------------------------------------
 
-pub fn listen_api_router(
-    tx: mpsc::Sender<ListenApiRequest>,
-    events_tx: broadcast::Sender<String>,
-    replay_buffer: ReplayBuffer,
-    workspace_key: Option<String>,
-    memberships: Vec<WorkspaceMembershipSummary>,
-    default_workspace_id: Option<String>,
-    persist: bool,
-) -> axum::Router {
-    listen_api_router_with_auth(
-        tx,
-        events_tx,
-        configured_broker_api_key(),
-        replay_buffer,
-        workspace_key,
-        memberships,
-        default_workspace_id,
-        persist,
-    )
+pub struct ListenApiConfig {
+    pub tx: mpsc::Sender<ListenApiRequest>,
+    pub events_tx: broadcast::Sender<String>,
+    pub replay_buffer: ReplayBuffer,
+    pub workspace_key: Option<String>,
+    pub memberships: Vec<WorkspaceMembershipSummary>,
+    pub default_workspace_id: Option<String>,
+    pub persist: bool,
+}
+
+pub fn listen_api_router(config: ListenApiConfig) -> axum::Router {
+    listen_api_router_with_auth(config, configured_broker_api_key())
 }
 
 fn configured_broker_api_key() -> Option<String> {
@@ -183,33 +176,23 @@ fn configured_broker_api_key() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn listen_api_router_with_auth(
-    tx: mpsc::Sender<ListenApiRequest>,
-    events_tx: broadcast::Sender<String>,
-    broker_api_key: Option<String>,
-    replay_buffer: ReplayBuffer,
-    workspace_key: Option<String>,
-    memberships: Vec<WorkspaceMembershipSummary>,
-    default_workspace_id: Option<String>,
-    persist: bool,
-) -> axum::Router {
+fn listen_api_router_with_auth(config: ListenApiConfig, broker_api_key: Option<String>) -> axum::Router {
     use axum::{middleware, routing, Router};
 
     let state = ListenApiState {
-        tx,
-        events_tx,
+        tx: config.tx,
+        events_tx: config.events_tx,
         broker_api_key: broker_api_key
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
-        replay_buffer,
-        workspace_key: workspace_key
+        replay_buffer: config.replay_buffer,
+        workspace_key: config.workspace_key
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
-        memberships,
-        default_workspace_id,
+        memberships: config.memberships,
+        default_workspace_id: config.default_workspace_id,
         broker_version: env!("CARGO_PKG_VERSION").to_string(),
-        persist,
+        persist: config.persist,
         started_at: std::time::Instant::now(),
     };
 
@@ -1461,7 +1444,7 @@ mod auth_tests {
     use tokio::sync::{broadcast, mpsc};
     use tower::ServiceExt;
 
-    use super::{listen_api_router_with_auth, ListenApiRequest};
+    use super::{listen_api_router_with_auth, ListenApiConfig, ListenApiRequest};
 
     fn test_router(
         broker_api_key: Option<&str>,
@@ -1471,14 +1454,16 @@ mod auth_tests {
         let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
         (
             listen_api_router_with_auth(
-                tx,
-                events_tx,
+                ListenApiConfig {
+                    tx,
+                    events_tx,
+                    replay_buffer,
+                    workspace_key: None,
+                    memberships: vec![],
+                    default_workspace_id: None,
+                    persist: false,
+                },
                 broker_api_key.map(ToString::to_string),
-                replay_buffer,
-                None,
-                vec![],
-                None,
-                false,
             ),
             rx,
         )

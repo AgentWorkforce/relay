@@ -21,7 +21,7 @@ use helpers::{
     is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode, is_self_name,
     normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
-use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiRequest};
+use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiConfig, ListenApiRequest};
 use routing::display_target_for_dashboard;
 
 use anyhow::{Context, Result};
@@ -1557,15 +1557,15 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
     let (_api_tx, mut api_rx) = {
         let (tx, rx) = mpsc::channel::<ListenApiRequest>(32);
-        let router = listen_api_router(
-            tx.clone(),
-            events_tx.clone(),
-            replay_buffer.clone(),
-            Some(relay_workspace_key.clone()),
-            workspace_memberships.clone(),
-            default_workspace_id.clone(),
-            cmd.persist,
-        );
+        let router = listen_api_router(ListenApiConfig {
+            tx: tx.clone(),
+            events_tx: events_tx.clone(),
+            replay_buffer: replay_buffer.clone(),
+            workspace_key: Some(relay_workspace_key.clone()),
+            memberships: workspace_memberships.clone(),
+            default_workspace_id: default_workspace_id.clone(),
+            persist: cmd.persist,
+        });
         let bind_addr = format!("{}:{}", cmd.api_bind, cmd.api_port);
         let listener = tokio::net::TcpListener::bind(&bind_addr)
             .await

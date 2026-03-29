@@ -241,7 +241,7 @@ export class RelayAdapter {
   /** Get broker status (agent count, pending deliveries). */
   async getStatus(): Promise<BrokerStatus> {
     await this.start();
-    return this.ensureClient().getStatus() as Promise<BrokerStatus>;
+    return this.ensureClient().getStatus();
   }
 
   // ── Messaging ───────────────────────────────────────────────────

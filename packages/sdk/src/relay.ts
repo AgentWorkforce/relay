@@ -791,7 +791,7 @@ export class AgentRelay {
 
   async getStatus(): Promise<BrokerStatus> {
     const client = await this.ensureStarted();
-    return client.getStatus() as Promise<BrokerStatus>;
+    return client.getStatus();
   }
 
   async subscribe(opts: { agent: string; channels: string[] }): Promise<void> {

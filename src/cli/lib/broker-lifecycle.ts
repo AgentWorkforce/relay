@@ -1253,7 +1253,7 @@ export async function runStatusCommand(deps: CoreDependencies): Promise<void> {
   if (connInfo) {
     try {
       const client = new AgentRelayClient({ baseUrl: connInfo.url, apiKey: connInfo.api_key });
-      const status = (await client.getStatus()) as { agent_count?: number; pending_delivery_count?: number };
+      const status = await client.getStatus();
       if (typeof status.agent_count === 'number') {
         deps.log(`Agents: ${status.agent_count}`);
       }

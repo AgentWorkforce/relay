@@ -20,6 +20,7 @@ import type {
   AgentRuntime,
   BrokerEvent,
   BrokerStats,
+  BrokerStatus,
   CrashInsightsResponse,
   HeadlessProvider,
 } from './protocol.js';
@@ -307,6 +308,29 @@ export class AgentRelayClient {
     });
   }
 
+  async spawnHeadless(input: {
+    name: string;
+    provider: HeadlessProvider;
+    args?: string[];
+    channels?: string[];
+    task?: string;
+    skipRelayPrompt?: boolean;
+  }): Promise<{ name: string; runtime: AgentRuntime }> {
+    return this.spawnProvider({ ...input, transport: 'headless' });
+  }
+
+  async spawnClaude(
+    input: Omit<SpawnProviderInput, 'provider'>
+  ): Promise<{ name: string; runtime: AgentRuntime }> {
+    return this.spawnProvider({ ...input, provider: 'claude' });
+  }
+
+  async spawnOpencode(
+    input: Omit<SpawnProviderInput, 'provider'>
+  ): Promise<{ name: string; runtime: AgentRuntime }> {
+    return this.spawnProvider({ ...input, provider: 'opencode' });
+  }
+
   async release(name: string, reason?: string): Promise<{ name: string }> {
     return this.transport.request(`/api/spawned/${encodeURIComponent(name)}`, {
       method: 'DELETE',
@@ -406,8 +430,8 @@ export class AgentRelayClient {
     return this.transport.request(`/api/metrics${query}`);
   }
 
-  async getStatus(): Promise<unknown> {
-    return this.transport.request('/api/status');
+  async getStatus(): Promise<BrokerStatus> {
+    return this.transport.request<BrokerStatus>('/api/status');
   }
 
   async getCrashInsights(): Promise<CrashInsightsResponse> {
