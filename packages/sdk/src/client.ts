@@ -123,7 +123,9 @@ export class AgentRelayClient {
    */
   static connect(options?: { cwd?: string; connectionPath?: string }): AgentRelayClient {
     const cwd = options?.cwd ?? process.cwd();
-    const connPath = options?.connectionPath ?? path.join(cwd, '.agent-relay', 'connection.json');
+    const stateDir = process.env.AGENT_RELAY_STATE_DIR;
+    const connPath =
+      options?.connectionPath ?? path.join(stateDir ?? path.join(cwd, '.agent-relay'), 'connection.json');
 
     if (!existsSync(connPath)) {
       throw new Error(
