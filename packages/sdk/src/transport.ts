@@ -28,6 +28,8 @@ export class AgentRelayProtocolError extends Error {
 export interface BrokerTransportOptions {
   baseUrl: string;
   apiKey?: string;
+  /** Timeout in ms for HTTP requests. Default: 30000. */
+  requestTimeoutMs?: number;
   /** Maximum number of events to buffer in memory for queryEvents/getLastEvent */
   maxBufferSize?: number;
 }
@@ -35,6 +37,7 @@ export interface BrokerTransportOptions {
 export class BrokerTransport {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
+  private readonly requestTimeoutMs: number;
   private readonly maxBufferSize: number;
 
   private ws: WebSocket | null = null;
@@ -48,6 +51,7 @@ export class BrokerTransport {
   constructor(options: BrokerTransportOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.apiKey = options.apiKey;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
     this.maxBufferSize = options.maxBufferSize ?? 1000;
   }
 
@@ -70,7 +74,8 @@ export class BrokerTransport {
       headers.set('X-API-Key', this.apiKey);
     }
 
-    const res = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+    const signal = init?.signal ?? AbortSignal.timeout(this.requestTimeoutMs);
+    const res = await fetch(`${this.baseUrl}${path}`, { ...init, headers, signal });
 
     if (!res.ok) {
       let body: { code?: string; message?: string; error?: string } | undefined;

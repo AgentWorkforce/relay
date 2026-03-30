@@ -309,7 +309,6 @@ export interface AgentRelayOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   requestTimeoutMs?: number;
-  shutdownTimeoutMs?: number;
   /**
    * Unified workspace ID shared across relayfile, relayauth claims, and
    * relaycast key lookup.
@@ -425,6 +424,7 @@ export class AgentRelay {
       channels: this.defaultChannels,
       cwd: options.cwd,
       env: options.env,
+      requestTimeoutMs: options.requestTimeoutMs,
     };
 
     this.codex = this.createSpawner('codex', 'Codex', 'pty');

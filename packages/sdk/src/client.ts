@@ -37,6 +37,8 @@ import type {
 export interface AgentRelayClientOptions {
   baseUrl: string;
   apiKey?: string;
+  /** Timeout in ms for HTTP requests. Default: 30000. */
+  requestTimeoutMs?: number;
 }
 
 export interface AgentRelaySpawnOptions {
@@ -56,6 +58,8 @@ export interface AgentRelaySpawnOptions {
   onStderr?: (line: string) => void;
   /** Timeout in ms to wait for broker to become ready. Default: 15000. */
   startupTimeoutMs?: number;
+  /** Timeout in ms for HTTP requests to the broker. Default: 30000. */
+  requestTimeoutMs?: number;
 }
 
 export interface SessionInfo {
@@ -104,6 +108,7 @@ export class AgentRelayClient {
     this.transport = new BrokerTransport({
       baseUrl: options.baseUrl,
       apiKey: options.apiKey,
+      requestTimeoutMs: options.requestTimeoutMs,
     });
   }
 
@@ -193,7 +198,11 @@ export class AgentRelayClient {
     // Parse the API URL from stdout (the broker prints it after binding)
     const baseUrl = await waitForApiUrl(child, timeoutMs);
 
-    const client = new AgentRelayClient({ baseUrl, apiKey });
+    const client = new AgentRelayClient({
+      baseUrl,
+      apiKey,
+      requestTimeoutMs: options?.requestTimeoutMs,
+    });
     client.child = child;
 
     await client.getSession();
