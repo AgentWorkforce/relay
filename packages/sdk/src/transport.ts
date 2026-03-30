@@ -75,7 +75,7 @@ export class BrokerTransport {
     if (!res.ok) {
       let body: { code?: string; message?: string; error?: string } | undefined;
       try {
-        body = await res.json() as { code?: string; message?: string; error?: string };
+        body = (await res.json()) as { code?: string; message?: string; error?: string };
       } catch {
         // non-JSON error
       }
@@ -179,12 +179,7 @@ export class BrokerTransport {
     };
   }
 
-  queryEvents(filter?: {
-    kind?: string;
-    name?: string;
-    since?: number;
-    limit?: number;
-  }): BrokerEvent[] {
+  queryEvents(filter?: { kind?: string; name?: string; since?: number; limit?: number }): BrokerEvent[] {
     let events = [...this.eventBuffer];
     if (filter?.kind) {
       events = events.filter((e) => e.kind === filter.kind);
@@ -195,7 +190,7 @@ export class BrokerTransport {
     if (filter?.since !== undefined) {
       const since = filter.since;
       events = events.filter(
-        (e) => 'timestamp' in e && typeof e.timestamp === 'number' && e.timestamp >= since,
+        (e) => 'timestamp' in e && typeof e.timestamp === 'number' && e.timestamp >= since
       );
     }
     if (filter?.limit !== undefined) {

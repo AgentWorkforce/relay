@@ -19,14 +19,8 @@
  *   await relay.shutdown();
  */
 
-import {
-  AgentRelayClient,
-  type AgentRelaySpawnOptions,
-} from './client.js';
-import type {
-  SpawnPtyInput,
-  SendMessageInput,
-} from './types.js';
+import { AgentRelayClient, type AgentRelaySpawnOptions } from './client.js';
+import type { SpawnPtyInput, SendMessageInput } from './types.js';
 import type { BrokerEvent, BrokerStats, BrokerStatus, CrashInsightsResponse } from './protocol.js';
 
 const WORKFLOW_BOOTSTRAP_TASK =
@@ -43,7 +37,11 @@ const WORKFLOW_CONVENTIONS = [
 
 function hasWorkflowConventions(task: string): boolean {
   const lower = task.toLowerCase();
-  return lower.includes('mcp__relaycast__message_dm_send(') || lower.includes('relay_send(') || (lower.includes('ack:') && lower.includes('done:'));
+  return (
+    lower.includes('mcp__relaycast__message_dm_send(') ||
+    lower.includes('relay_send(') ||
+    (lower.includes('ack:') && lower.includes('done:'))
+  );
 }
 
 function buildSpawnTask(
@@ -152,7 +150,11 @@ export class RelayAdapter {
       ...this.spawnOpts,
       onStderr: (line) => {
         for (const listener of this.stderrListeners) {
-          try { listener(line); } catch { /* ignore */ }
+          try {
+            listener(line);
+          } catch {
+            /* ignore */
+          }
         }
       },
     });
@@ -310,7 +312,9 @@ export class RelayAdapter {
 
   onStderr(listener: (line: string) => void): () => void {
     this.stderrListeners.add(listener);
-    return () => { this.stderrListeners.delete(listener); };
+    return () => {
+      this.stderrListeners.delete(listener);
+    };
   }
 
   // ── Underlying client (escape hatch) ────────────────────────────

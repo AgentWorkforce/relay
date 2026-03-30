@@ -1865,6 +1865,290 @@ mod auth_tests {
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    // ----- New endpoint tests (session, lease, status, metrics, crash-insights, preflight, shutdown, input, resize) -----
+
+    #[tokio::test]
+    async fn session_route_returns_broker_info() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/session")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["broker_version"].is_string());
+        assert_eq!(body["protocol_version"], 1);
+        assert_eq!(body["mode"], "ephemeral");
+    }
+
+    #[tokio::test]
+    async fn renew_lease_route_forwards_request() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::RenewLease { reply }) => {
+                    let _ = reply.send(Ok(json!({ "renewed": true })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/session/renew")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["renewed"], json!(true));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn status_route_forwards_request() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::GetStatus { reply }) => {
+                    let _ = reply.send(Ok(json!({ "agent_count": 3 })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/status")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["agent_count"], 3);
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn metrics_route_forwards_agent_query() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::GetMetrics { agent, reply }) => {
+                    assert_eq!(agent.as_deref(), Some("worker-a"));
+                    let _ = reply.send(Ok(json!({ "lines_written": 42 })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/metrics?agent=worker-a")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["lines_written"], 42);
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn crash_insights_route_forwards_request() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::GetCrashInsights { reply }) => {
+                    let _ = reply.send(Ok(json!({ "crashes": [] })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/crash-insights")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["crashes"], json!([]));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn preflight_route_forwards_agents() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::Preflight { agents, reply }) => {
+                    assert_eq!(agents.len(), 1);
+                    let _ = reply.send(Ok(json!({ "ok": true })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/preflight")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "agents": [{ "name": "worker-a", "cli": "claude" }]
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], json!(true));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn shutdown_route_forwards_request() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::Shutdown { reply }) => {
+                    let _ = reply.send(Ok(json!({ "shutting_down": true })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/shutdown")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["shutting_down"], json!(true));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn resize_pty_route_forwards_dimensions() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::ResizePty {
+                    name,
+                    rows,
+                    cols,
+                    reply,
+                }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(rows, 40);
+                    assert_eq!(cols, 120);
+                    let _ = reply.send(Ok(json!({ "resized": true })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/resize/worker-a")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "rows": 40, "cols": 120 }).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["resized"], json!(true));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn input_route_forwards_data() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::SendInput { name, data, reply }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(data, "hello\n");
+                    let _ = reply.send(Ok(json!({ "sent": true })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/input/worker-a")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "data": "hello\n" }).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["sent"], json!(true));
+        replier.await.expect("replier should complete");
+    }
+
     #[tokio::test]
     async fn interrupt_route_returns_501_when_auth_valid() {
         let (router, _rx) = test_router(Some("secret"));

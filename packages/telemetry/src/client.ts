@@ -15,11 +15,7 @@ import {
   isDisabledByEnv,
   loadPrefs,
 } from './config.js';
-import type {
-  CommonProperties,
-  TelemetryEventName,
-  TelemetryEventMap,
-} from './events.js';
+import type { CommonProperties, TelemetryEventName, TelemetryEventMap } from './events.js';
 import { getPostHogConfig } from './posthog-config.js';
 
 let client: PostHog | null = null;
@@ -105,10 +101,7 @@ export function initTelemetry(options: { showNotice?: boolean } = {}): void {
   anonymousId = getAnonymousId();
 }
 
-export function track<E extends TelemetryEventName>(
-  event: E,
-  properties?: TelemetryEventMap[E]
-): void {
+export function track<E extends TelemetryEventName>(event: E, properties?: TelemetryEventMap[E]): void {
   if (!client || !commonProps || !anonymousId) return;
 
   client.capture({

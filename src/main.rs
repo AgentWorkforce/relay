@@ -122,6 +122,12 @@ struct InitCommand {
     /// stale-name collisions across short-lived sessions.
     #[arg(long, default_value_t = false)]
     persist: bool,
+
+    /// Override the directory used for broker state files (connection.json,
+    /// locks, state, pending-deliveries). Defaults to `.agent-relay/` in the
+    /// working directory when `--persist` is set, or a temp directory otherwise.
+    #[arg(long)]
+    state_dir: Option<String>,
 }
 
 #[derive(Debug, clap::Args, Clone)]
@@ -218,7 +224,10 @@ fn build_http_api_spawn_spec(
             anyhow::bail!("unsupported transport '{other}' (expected 'pty' or 'headless')")
         }
     };
-    let parsed_restart_policy = restart_policy.and_then(|v| serde_json::from_value(v).ok());
+    let parsed_restart_policy = match restart_policy {
+        Some(v) => Some(serde_json::from_value(v).context("invalid restart_policy")?),
+        None => None,
+    };
 
     let (provider, cli_command, model) = match runtime {
         AgentRuntime::Pty => (None, Some(cli), model),
@@ -1311,8 +1320,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     } else {
         cmd.name.trim().to_string()
     };
-    let paths = if cmd.persist {
-        ensure_runtime_paths(&runtime_cwd, &resolved_name)?
+    let custom_state_dir = cmd.state_dir.as_ref().map(PathBuf::from);
+    let paths = if cmd.persist || custom_state_dir.is_some() {
+        ensure_runtime_paths(&runtime_cwd, &resolved_name, custom_state_dir.as_deref())?
     } else {
         // Warn if a stale .agent-relay/ dir exists from a previous persist run.
         // Agents can read files from it directly (logs, state) and get confused.
@@ -1329,7 +1339,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
         }
         ensure_ephemeral_paths(&runtime_cwd, &resolved_name)?
     };
-    let mut state = if cmd.persist {
+    let mut state = if cmd.persist || custom_state_dir.is_some() {
         BrokerState::load(&paths.state).unwrap_or_default()
     } else {
         BrokerState::default()
@@ -5238,8 +5248,14 @@ fn ensure_ephemeral_paths(_cwd: &Path, _broker_name: &str) -> Result<RuntimePath
     })
 }
 
-fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
-    let root = cwd.join(".agent-relay");
+fn ensure_runtime_paths(
+    cwd: &Path,
+    broker_name: &str,
+    state_dir: Option<&Path>,
+) -> Result<RuntimePaths> {
+    let root = state_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| cwd.join(".agent-relay"));
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create runtime dir {}", root.display()))?;
 

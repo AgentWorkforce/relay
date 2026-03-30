@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 
-import { AgentRelayClient } from "@agent-relay/sdk";
+import { AgentRelayClient } from '@agent-relay/sdk';
 
 function usage() {
   console.error(
-    "Usage: node scripts/e2e-sdk-lifecycle.mjs --name <agent> --cli <cli> --task <text> [--timeout <seconds>] [--cwd <path>]"
+    'Usage: node scripts/e2e-sdk-lifecycle.mjs --name <agent> --cli <cli> --task <text> [--timeout <seconds>] [--cwd <path>]'
   );
 }
 
 function parseArgs(argv) {
   const out = {
-    name: "",
-    cli: "claude",
-    task: "",
+    name: '',
+    cli: 'claude',
+    task: '',
     timeout: 120,
     cwd: process.cwd(),
   };
@@ -20,22 +20,22 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = argv[i + 1];
-    if (arg === "--name" && next) {
+    if (arg === '--name' && next) {
       out.name = next;
       i += 1;
       continue;
     }
-    if (arg === "--cli" && next) {
+    if (arg === '--cli' && next) {
       out.cli = next;
       i += 1;
       continue;
     }
-    if (arg === "--task" && next) {
+    if (arg === '--task' && next) {
       out.task = next;
       i += 1;
       continue;
     }
-    if (arg === "--timeout" && next) {
+    if (arg === '--timeout' && next) {
       const parsed = Number.parseInt(next, 10);
       if (!Number.isNaN(parsed) && parsed > 0) {
         out.timeout = parsed;
@@ -43,7 +43,7 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
-    if (arg === "--cwd" && next) {
+    if (arg === '--cwd' && next) {
       out.cwd = next;
       i += 1;
       continue;
@@ -58,10 +58,10 @@ function sleep(ms) {
 }
 
 function isUserAgent(agent) {
-  const name = agent?.name ?? "";
+  const name = agent?.name ?? '';
   if (!name) return false;
-  if (name === "Dashboard" || name === "zed-bridge") return false;
-  if (name.startsWith("__")) return false;
+  if (name === 'Dashboard' || name === 'zed-bridge') return false;
+  if (name.startsWith('__')) return false;
   return true;
 }
 
@@ -119,7 +119,7 @@ async function main() {
   const events = [];
   client.onEvent((event) => {
     events.push(event);
-    if (event.kind === "agent_released" || event.kind === "agent_exited") {
+    if (event.kind === 'agent_released' || event.kind === 'agent_exited') {
       console.log(`[sdk] event: ${event.kind} name=${event.name}`);
     }
   });
@@ -135,7 +135,7 @@ async function main() {
     await client.spawnPty({
       name: args.name,
       cli: args.cli,
-      channels: ["general"],
+      channels: ['general'],
       task: args.task,
       cwd: args.cwd,
     });
@@ -143,7 +143,7 @@ async function main() {
 
     const seenAfterSpawn = await pollUntil(args.timeout, async () => {
       const agents = await client.listAgents();
-      const names = agents.map((agent) => agent.name).join(", ");
+      const names = agents.map((agent) => agent.name).join(', ');
       console.log(`[sdk] polling registration: [${names}]`);
       const found = agents.some((agent) => agent.name === args.name);
       if (!found) return { done: false };
@@ -161,23 +161,23 @@ async function main() {
     }
 
     // Release the agent
-    await client.release(args.name, "released via sdk e2e lifecycle");
+    await client.release(args.name, 'released via sdk e2e lifecycle');
     console.log(`[sdk] release request accepted for ${args.name}`);
 
     // Primary verification: wait for agent_released event (more reliable than polling list)
     const releaseTimeoutSecs = 30;
-    const releaseEvent = await waitForEvent(client, "agent_released", args.name, releaseTimeoutSecs);
+    const releaseEvent = await waitForEvent(client, 'agent_released', args.name, releaseTimeoutSecs);
 
     if (releaseEvent) {
       console.log(`[sdk] agent_released event received for ${args.name}`);
     } else {
       // Check if agent_exited was received instead
-      const exitEvent = await waitForEvent(client, "agent_exited", args.name, 5);
+      const exitEvent = await waitForEvent(client, 'agent_exited', args.name, 5);
       if (exitEvent) {
         console.log(`[sdk] agent_exited event received for ${args.name}`);
       } else {
         console.log(`[sdk] WARNING: No release/exit event received within ${releaseTimeoutSecs}s`);
-        console.log(`[sdk] Events received: ${events.map(e => e.kind).join(", ")}`);
+        console.log(`[sdk] Events received: ${events.map((e) => e.kind).join(', ')}`);
       }
     }
 
@@ -192,9 +192,11 @@ async function main() {
     } else {
       // Log warning but don't fail - the release request succeeded and event may have been received
       // The agent may still show in list briefly due to async cleanup
-      const stillPresent = usersAfterRelease.some(a => a.name === args.name);
+      const stillPresent = usersAfterRelease.some((a) => a.name === args.name);
       if (stillPresent) {
-        console.log(`[sdk] WARNING: Agent '${args.name}' still in list after release (async cleanup pending)`);
+        console.log(
+          `[sdk] WARNING: Agent '${args.name}' still in list after release (async cleanup pending)`
+        );
         console.log(`[sdk] This is a known timing issue in CI environments`);
       } else {
         console.log(`[sdk] user agents after release: ${usersAfterRelease.length}`);

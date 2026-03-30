@@ -1,7 +1,12 @@
 export * from './protocol.js';
 export * from './types.js';
 export { BrokerTransport, type BrokerTransportOptions, AgentRelayProtocolError } from './transport.js';
-export { AgentRelayClient, type AgentRelayClientOptions, type AgentRelaySpawnOptions, type SessionInfo } from './client.js';
+export {
+  AgentRelayClient,
+  type AgentRelayClientOptions,
+  type AgentRelaySpawnOptions,
+  type SessionInfo,
+} from './client.js';
 export * from './models.js';
 export { RelayCast, RelayError, AgentClient } from '@relaycast/sdk';
 export type { RelayCastOptions, ClientOptions } from '@relaycast/sdk';

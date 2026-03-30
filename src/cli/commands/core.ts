@@ -243,9 +243,17 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
 }
 
 async function createDefaultRelay(cwd: string, apiPort = 0): Promise<CoreRelay> {
+  const binaryArgs: string[] = [];
+  if (apiPort > 0) {
+    binaryArgs.push('--persist', '--api-port', String(apiPort));
+  }
+  const stateDir = process.env.AGENT_RELAY_STATE_DIR;
+  if (stateDir) {
+    binaryArgs.push('--state-dir', stateDir);
+  }
   const client = await createAgentRelayClient({
     cwd,
-    binaryArgs: apiPort > 0 ? ['--persist', '--api-port', String(apiPort)] : [],
+    binaryArgs,
     preferConnect: apiPort > 0,
   });
 
@@ -449,15 +457,17 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--force', 'Force cleanup even if process is stuck')
     .option('--all', 'Kill all agent-relay processes system-wide')
     .option('--timeout <ms>', 'Timeout waiting for graceful shutdown', '5000')
-    .action(async (options: { force?: boolean; all?: boolean; timeout?: string }) => {
+    .option('--state-dir <path>', 'Directory for broker state and connection files')
+    .action(async (options: { force?: boolean; all?: boolean; timeout?: string; stateDir?: string }) => {
       await runDownCommand(options, deps);
     });
 
   program
     .command('status')
     .description('Check broker status')
-    .action(async () => {
-      await runStatusCommand(deps);
+    .option('--state-dir <path>', 'Directory for broker state and connection files')
+    .action(async (options: { stateDir?: string }) => {
+      await runStatusCommand(deps, options);
     });
 
   program

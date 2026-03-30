@@ -127,12 +127,12 @@ export class AgentRelayClient {
     }
 
     const raw = readFileSync(connPath, 'utf-8');
-    const conn = JSON.parse(raw) as {
-      url?: string;
-      api_key?: string;
-      port?: number;
-      pid?: number;
-    };
+    let conn: { url?: string; api_key?: string; port?: number; pid?: number };
+    try {
+      conn = JSON.parse(raw);
+    } catch {
+      throw new Error(`Corrupt broker connection file (${connPath}). Remove it and start the broker again.`);
+    }
 
     if (typeof conn.url !== 'string' || typeof conn.api_key !== 'string' || typeof conn.pid !== 'number') {
       throw new Error(
@@ -190,10 +190,10 @@ export class AgentRelayClient {
       rl.on('line', (line) => options.onStderr!(line));
     }
 
-    // Parse the API port from stdout (the broker prints it after binding)
-    const port = await waitForApiPort(child, timeoutMs);
+    // Parse the API URL from stdout (the broker prints it after binding)
+    const baseUrl = await waitForApiUrl(child, timeoutMs);
 
-    const client = new AgentRelayClient({ baseUrl: `http://127.0.0.1:${port}`, apiKey });
+    const client = new AgentRelayClient({ baseUrl, apiKey });
     client.child = child;
 
     await client.getSession();
@@ -420,9 +420,7 @@ export class AgentRelayClient {
 
   // ── Observability ──────────────────────────────────────────────────
 
-  async getMetrics(
-    agent?: string
-  ): Promise<{
+  async getMetrics(agent?: string): Promise<{
     agents: Array<{ name: string; pid: number; memory_bytes: number; uptime_secs: number }>;
     broker?: BrokerStats;
   }> {
@@ -497,13 +495,14 @@ export class AgentRelayClient {
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 /**
- * Parse the API port from the broker's stdout. The broker prints:
+ * Parse the API URL from the broker's stdout. The broker prints:
  *   [agent-relay] API listening on http://{bind}:{port}
+ * Returns the full URL (e.g. "http://127.0.0.1:3889").
  */
-async function waitForApiPort(child: ChildProcess, timeoutMs: number): Promise<number> {
+async function waitForApiUrl(child: ChildProcess, timeoutMs: number): Promise<string> {
   const { createInterface } = await import('node:readline');
 
-  return new Promise<number>((resolve, reject) => {
+  return new Promise<string>((resolve, reject) => {
     if (!child.stdout) {
       reject(new Error('Broker stdout not available'));
       return;
@@ -532,11 +531,12 @@ async function waitForApiPort(child: ChildProcess, timeoutMs: number): Promise<n
     rl.on('line', (line) => {
       if (resolved) return;
 
-      const match = line.match(/API listening on https?:\/\/[^:]+:(\d+)/);
+      const match = line.match(/API listening on (https?:\/\/[^\s]+)/);
       if (match) {
         resolved = true;
         clearTimeout(timer);
-        resolve(parseInt(match[1], 10));
+        rl.close();
+        resolve(match[1]);
       }
     });
   });

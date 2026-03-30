@@ -15,12 +15,14 @@ type UpOptions = {
   dashboardPath?: string;
   reuseExistingBroker?: boolean;
   workspaceKey?: string;
+  stateDir?: string;
 };
 
 type DownOptions = {
   force?: boolean;
   all?: boolean;
   timeout?: string;
+  stateDir?: string;
 };
 
 const MAX_API_PORT_ATTEMPTS = 25;
@@ -840,6 +842,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   }
 
   const paths = deps.getProjectPaths();
+  // --state-dir overrides where the broker writes state / connection files
+  if (options.stateDir) {
+    const resolved = path.resolve(options.stateDir);
+    paths.dataDir = resolved;
+    deps.env.AGENT_RELAY_STATE_DIR = resolved;
+  }
   const wantsDashboard = options.dashboard !== false;
   const requestedDashboardPort = Number.parseInt(options.port ?? '3888', 10) || 3888;
   const shouldReuseExistingBroker = options.reuseExistingBroker === true;
@@ -1112,6 +1120,9 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 // eslint-disable-next-line complexity, max-depth
 export async function runDownCommand(options: DownOptions, deps: CoreDependencies): Promise<void> {
   const paths = deps.getProjectPaths();
+  if (options.stateDir) {
+    paths.dataDir = path.resolve(options.stateDir);
+  }
   const timeout = Number.parseInt(options.timeout ?? '5000', 10) || 5000;
 
   if (options.all) {
@@ -1223,8 +1234,14 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
   }
 }
 
-export async function runStatusCommand(deps: CoreDependencies): Promise<void> {
+export async function runStatusCommand(
+  deps: CoreDependencies,
+  options?: { stateDir?: string }
+): Promise<void> {
   const paths = deps.getProjectPaths();
+  if (options?.stateDir) {
+    paths.dataDir = path.resolve(options.stateDir);
+  }
   const conn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
 
   let running = false;
