@@ -123,6 +123,7 @@ export interface RelayReleaseResult {
 export class RelayAdapter {
   private client: AgentRelayClient | null = null;
   private started = false;
+  private startPromise: Promise<void> | null = null;
   private readonly spawnOpts: AgentRelaySpawnOptions;
   private readonly stderrListeners = new Set<(line: string) => void>();
   private readonly pendingEventListeners: Array<(event: BrokerEvent) => void> = [];
@@ -143,9 +144,19 @@ export class RelayAdapter {
 
   // ── Lifecycle ───────────────────────────────────────────────────
 
-  /** Start the broker process. Idempotent. */
+  /** Start the broker process. Idempotent — concurrent calls share one spawn. */
   async start(): Promise<void> {
     if (this.started) return;
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this.doStart();
+    try {
+      await this.startPromise;
+    } finally {
+      this.startPromise = null;
+    }
+  }
+
+  private async doStart(): Promise<void> {
     this.client = await AgentRelayClient.spawn({
       ...this.spawnOpts,
       onStderr: (line) => {
