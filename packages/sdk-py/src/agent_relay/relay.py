@@ -424,8 +424,6 @@ class AgentRelay:
             "channels": self._default_channels,
             "cwd": cwd,
             "env": env,
-            "request_timeout_ms": request_timeout_ms,
-            "shutdown_timeout_ms": shutdown_timeout_ms,
         }
 
         self._client: Optional[AgentRelayClient] = None
@@ -477,8 +475,7 @@ class AgentRelay:
 
             # Remove None values to use defaults
             kwargs = {k: v for k, v in self._client_kwargs.items() if v is not None}
-            client = AgentRelayClient(**kwargs)
-            await client.start_client()
+            client = await AgentRelayClient.spawn(**kwargs)
 
             self._client = client
             if client.workspace_key:

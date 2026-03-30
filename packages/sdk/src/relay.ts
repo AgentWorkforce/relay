@@ -29,13 +29,9 @@ import path from 'node:path';
 
 import { RelayCast } from '@relaycast/sdk';
 
-import {
-  AgentRelayClient,
-  AgentRelayProtocolError,
-  type AgentRelayClientOptions,
-  type SendMessageInput,
-  type SpawnPtyInput,
-} from './client.js';
+import { AgentRelayClient, type AgentRelaySpawnOptions } from './client.js';
+import { AgentRelayProtocolError } from './transport.js';
+import type { SendMessageInput, SpawnPtyInput } from './types.js';
 import type {
   AgentRuntime,
   BrokerEvent,
@@ -313,7 +309,6 @@ export interface AgentRelayOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   requestTimeoutMs?: number;
-  shutdownTimeoutMs?: number;
   /**
    * Unified workspace ID shared across relayfile, relayauth claims, and
    * relaycast key lookup.
@@ -381,7 +376,7 @@ export class AgentRelay {
   readonly gemini: AgentSpawner;
   readonly opencode: AgentSpawner;
 
-  private readonly clientOptions: AgentRelayClientOptions;
+  private readonly clientOptions: AgentRelaySpawnOptions;
   private readonly defaultChannels: string[];
   private readonly requestedWorkspaceId?: string;
   private readonly workspaceName?: string;
@@ -391,6 +386,7 @@ export class AgentRelay {
   private client?: AgentRelayClient;
   private startPromise?: Promise<AgentRelayClient>;
   private unsubEvent?: () => void;
+  private readonly stderrListeners = new Set<(line: string) => void>();
   private readonly knownAgents = new Map<string, Agent>();
   private readonly readyAgents = new Set<string>();
   private readonly messageReadyAgents = new Set<string>();
@@ -417,7 +413,7 @@ export class AgentRelay {
     if (options.workspaceName && !options.workspaceId) {
       console.warn(
         '[AgentRelay] workspaceName without workspaceId is deprecated and will be removed in a future major version. ' +
-        'Set workspaceId explicitly to avoid silent behavior changes.',
+          'Set workspaceId explicitly to avoid silent behavior changes.'
       );
     }
     this.relaycastBaseUrl = options.relaycastBaseUrl;
@@ -429,7 +425,6 @@ export class AgentRelay {
       cwd: options.cwd,
       env: options.env,
       requestTimeoutMs: options.requestTimeoutMs,
-      shutdownTimeoutMs: options.shutdownTimeoutMs,
     };
 
     this.codex = this.createSpawner('codex', 'Codex', 'pty');
@@ -550,22 +545,10 @@ export class AgentRelay {
    * Returns an unsubscribe function.
    */
   onBrokerStderr(listener: (line: string) => void): () => void {
-    if (this.client) {
-      return this.client.onBrokerStderr(listener);
-    }
-    // Queue it: once ensureStarted completes, wire it up
-    let unsub: (() => void) | undefined;
-    const queuedUnsub = () => {
-      unsub?.();
+    this.stderrListeners.add(listener);
+    return () => {
+      this.stderrListeners.delete(listener);
     };
-    // Use the start promise if one is pending
-    const promise = this.startPromise ?? this.ensureStarted();
-    promise
-      .then((c) => {
-        unsub = c.onBrokerStderr(listener);
-      })
-      .catch(() => {});
-    return queuedUnsub;
   }
 
   // ── Spawning ────────────────────────────────────────────────────────────
@@ -789,7 +772,7 @@ export class AgentRelay {
   /** Pre-register a batch of agents with Relaycast before steps execute. */
   async preflightAgents(agents: Array<{ name: string; cli: string }>): Promise<void> {
     const client = await this.ensureStarted();
-    await client.preflightAgents(agents);
+    await client.preflight(agents);
   }
 
   /** List agents with PIDs from the broker (for worker registration). */
@@ -1193,7 +1176,20 @@ export class AgentRelay {
     if (this.startPromise) return this.startPromise;
 
     this.startPromise = this.ensureRelaycastApiKey()
-      .then(() => AgentRelayClient.start(this.clientOptions))
+      .then(() =>
+        AgentRelayClient.spawn({
+          ...this.clientOptions,
+          onStderr: (line) => {
+            for (const listener of this.stderrListeners) {
+              try {
+                listener(line);
+              } catch {
+                /* ignore */
+              }
+            }
+          },
+        })
+      )
       .then((c) => {
         // Use the workspace key the broker actually connected with.
         // This ensures SDK and workers are always on the same workspace.

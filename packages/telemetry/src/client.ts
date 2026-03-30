@@ -15,11 +15,7 @@ import {
   isDisabledByEnv,
   loadPrefs,
 } from './config.js';
-import type {
-  CommonProperties,
-  TelemetryEventName,
-  TelemetryEventMap,
-} from './events.js';
+import type { CommonProperties, TelemetryEventName, TelemetryEventMap } from './events.js';
 import { getPostHogConfig } from './posthog-config.js';
 
 let client: PostHog | null = null;
@@ -75,7 +71,7 @@ function showFirstRunNotice(): void {
   console.log('');
   console.log('Agent Relay collects anonymous usage data to improve the product.');
   console.log('Run `agent-relay telemetry disable` to opt out.');
-  console.log('Learn more: https://agent-relay.com/telemetry');
+  console.log('Learn more: https://agentrelay.dev/telemetry');
   console.log('');
 
   markNotified();
@@ -105,10 +101,7 @@ export function initTelemetry(options: { showNotice?: boolean } = {}): void {
   anonymousId = getAnonymousId();
 }
 
-export function track<E extends TelemetryEventName>(
-  event: E,
-  properties?: TelemetryEventMap[E]
-): void {
+export function track<E extends TelemetryEventName>(event: E, properties?: TelemetryEventMap[E]): void {
   if (!client || !commonProps || !anonymousId) return;
 
   client.capture({

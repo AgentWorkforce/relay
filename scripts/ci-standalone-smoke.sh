@@ -79,7 +79,7 @@ else
 fi
 
 UP_OUTPUT="$(cat "$UP_LOG")"
-assert_exact_count "$UP_OUTPUT" '^\[broker\] Starting:' 1 'broker start line'
+assert_exact_count "$UP_OUTPUT" 'Broker started\.' 1 'broker start line'
 
 if printf '%s\n' "$UP_OUTPUT" | grep -q 'Broker already running for this project'; then
   echo "Standalone CLI reported a false already-running error" >&2
