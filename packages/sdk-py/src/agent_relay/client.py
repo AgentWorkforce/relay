@@ -244,10 +244,10 @@ class AgentRelayClient:
 
         stderr_task = asyncio.create_task(_read_stderr())
 
-        # Parse port from stdout
-        port = await _wait_for_api_port(process, startup_timeout_ms)
+        # Parse API URL from stdout
+        base_url = await _wait_for_api_url(process, startup_timeout_ms)
 
-        client = cls(base_url=f"http://127.0.0.1:{port}", api_key=api_key)
+        client = cls(base_url=base_url, api_key=api_key)
         client._stderr_task = stderr_task
         client._process = process
 
@@ -569,14 +569,21 @@ class AgentRelayClient:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-async def _wait_for_api_port(
+async def _wait_for_api_url(
     process: asyncio.subprocess.Process,
     timeout_ms: int,
-) -> int:
-    """Parse the API port from the broker's stdout."""
-    assert process.stdout
+) -> str:
+    """Parse the API URL from the broker's stdout.
 
-    async def _read() -> int:
+    The broker prints: [agent-relay] API listening on http://{bind}:{port}
+    Returns the full URL (e.g. "http://127.0.0.1:3889").
+    """
+    import re
+
+    assert process.stdout
+    pattern = re.compile(r"API listening on (https?://\S+)")
+
+    async def _read() -> str:
         assert process.stdout
         while True:
             line_bytes = await process.stdout.readline()
@@ -585,17 +592,13 @@ async def _wait_for_api_port(
                     f"Broker process exited with code {process.returncode} before becoming ready"
                 )
             line = line_bytes.decode("utf-8", errors="replace").rstrip("\n")
-            # Match: [agent-relay] API listening on http://127.0.0.1:12345
-            if "API listening on" in line:
-                parts = line.split(":")
-                try:
-                    return int(parts[-1])
-                except ValueError:
-                    continue
+            match = pattern.search(line)
+            if match:
+                return match.group(1)
 
     try:
         return await asyncio.wait_for(_read(), timeout=timeout_ms / 1000)
     except asyncio.TimeoutError:
         raise AgentRelayProcessError(
-            f"Broker did not report API port within {timeout_ms}ms"
+            f"Broker did not report API URL within {timeout_ms}ms"
         ) from None
