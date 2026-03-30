@@ -539,6 +539,15 @@ async function waitForApiUrl(child: ChildProcess, timeoutMs: number): Promise<st
       }
     });
 
+    child.on('error', (err) => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        rl.close();
+        reject(new Error(`Failed to start broker: ${err.message}`));
+      }
+    });
+
     rl.on('line', (line) => {
       if (resolved) return;
 
