@@ -868,6 +868,19 @@ fn api_error(
     )
 }
 
+/// Parse an error string like "agent_not_found: worker-a" into a (code, status) pair.
+fn classify_error(err: &str) -> (axum::http::StatusCode, &str) {
+    if err.starts_with("agent_not_found") {
+        (axum::http::StatusCode::NOT_FOUND, "agent_not_found")
+    } else if err.starts_with("unsupported_operation") {
+        (axum::http::StatusCode::BAD_REQUEST, "unsupported_operation")
+    } else if err.starts_with("invalid_") {
+        (axum::http::StatusCode::BAD_REQUEST, "invalid_request")
+    } else {
+        (axum::http::StatusCode::BAD_REQUEST, "request_failed")
+    }
+}
+
 fn internal_error() -> (axum::http::StatusCode, axum::Json<Value>) {
     api_error(
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -937,9 +950,9 @@ async fn listen_api_resize_pty(
     }
     match reply_rx.await {
         Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
-        Ok(Err(err)) => {
-            // Could be agent_not_found, invalid_dimensions, or unsupported_operation
-            api_error(axum::http::StatusCode::BAD_REQUEST, "request_failed", err)
+        Ok(Err(ref err)) => {
+            let (status, code) = classify_error(err);
+            api_error(status, code, err.clone())
         }
         Err(_) => internal_error(),
     }
