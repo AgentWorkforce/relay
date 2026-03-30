@@ -212,7 +212,7 @@ class AgentRelayClient:
 
         api_key = f"br_{secrets.token_hex(16)}"
 
-        spawn_env = dict(env) if env else dict(os.environ)
+        spawn_env = {**os.environ, **env} if env else dict(os.environ)
         spawn_env["RELAY_BROKER_API_KEY"] = api_key
 
         args = [
