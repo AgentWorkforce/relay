@@ -17,6 +17,7 @@ import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { mintToken } from './token.js';
 import { seedWorkspace as seedWorkspaceFiles } from './workspace.js';
+import { ensureAuthenticated, readStoredAuth } from '@agent-relay/cloud';
 
 interface OnOptions {
   agent?: string;
@@ -272,12 +273,30 @@ async function postWorkspaceApi(
   url: string,
   body: Record<string, unknown>
 ): Promise<unknown> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Correlation-Id': `agent-relay-on-${Date.now()}`,
+  };
+
+  // Attach cloud auth token for remote endpoints
+  if (!isLocalBaseUrl(url)) {
+    const auth = await readStoredAuth();
+    if (!auth?.accessToken) {
+      // Trigger browser login flow, then read the stored token
+      const parsed = new URL(url);
+      await ensureAuthenticated(`${parsed.protocol}//${parsed.host}`);
+      const freshAuth = await readStoredAuth();
+      if (freshAuth?.accessToken) {
+        headers['Authorization'] = `Bearer ${freshAuth.accessToken}`;
+      }
+    } else {
+      headers['Authorization'] = `Bearer ${auth.accessToken}`;
+    }
+  }
+
   const response = await fetchFn(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Correlation-Id': `agent-relay-on-${Date.now()}`,
-    },
+    headers,
     body: JSON.stringify(body),
   });
 
