@@ -32,6 +32,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
+## [4.0.0] - 2026-03-31
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Default agent-relay on to production cloud endpoints (#667)** (#667)
+- **Unified workspace ID across relay services (#664)** (#664)
+
+### Technical Perspective
+#### Releases
+- v4.0.0
+
+---
+
 ## [3.2.22] - 2026-03-27
 
 ### Technical Perspective
