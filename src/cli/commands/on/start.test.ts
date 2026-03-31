@@ -4,8 +4,7 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@agent-relay/cloud', () => ({
-  readStoredAuth: vi.fn().mockResolvedValue({ accessToken: 'test-token' }),
-  ensureAuthenticated: vi.fn().mockResolvedValue(undefined),
+  ensureAuthenticated: vi.fn().mockResolvedValue({ accessToken: 'test-token' }),
 }));
 
 import { requestWorkspaceSession } from './start.js';
