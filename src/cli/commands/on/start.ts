@@ -15,9 +15,10 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { compileDotfiles, hasDotfiles } from './dotfiles.js';
 import { ensureRelayfileMountBinary } from './relayfile-binary.js';
 import { mintToken } from './token.js';
-import { seedWorkspace as seedWorkspaceFiles } from './workspace.js';
+import { seedWorkspace as seedWorkspaceFiles, seedAclRules } from './workspace.js';
 import { ensureAuthenticated } from '@agent-relay/cloud';
 
 interface OnOptions {
@@ -1205,14 +1206,47 @@ export async function goOnTheRelay(
     fetchFn: deps.fetch,
   });
 
+  // Compile dotfile permissions for this agent
+  const hasDots = hasDotfiles(projectDir);
+  const dotfileAcl = hasDots
+    ? compileDotfiles(projectDir, agent.name, workspaceSession.workspaceId)
+    : null;
+
   if (workspaceSession.created) {
+    const seedExcludes = [...DEFAULT_SEED_EXCLUDES];
+    if (dotfileAcl) {
+      // Add ignored patterns so ignored files are never uploaded
+      for (const [dir, rules] of Object.entries(dotfileAcl.acl)) {
+        if (rules.some(r => r.startsWith('deny:agent:'))) {
+          seedExcludes.push(dir.replace(/^\//, ''));
+        }
+      }
+    }
     await seedWorkspaceFiles(
       workspaceSession.relayfileUrl,
       workspaceSession.token,
       workspaceSession.workspaceId,
       projectDir,
-      DEFAULT_SEED_EXCLUDES
+      seedExcludes
     );
+
+    if (dotfileAcl && Object.keys(dotfileAcl.acl).length > 0) {
+      await seedAclRules(
+        workspaceSession.relayfileUrl,
+        workspaceSession.token,
+        workspaceSession.workspaceId,
+        dotfileAcl.acl
+      );
+
+      // Write compiled ACL for mount to read
+      const bundlePath = path.join(relayDir, 'compiled-acl.json');
+      writeFileSync(bundlePath, JSON.stringify({
+        workspace: workspaceSession.workspaceId,
+        acl: dotfileAcl.acl,
+        summary: dotfileAcl.summary,
+        agents: [{ name: agent.name, summary: dotfileAcl.summary }],
+      }, null, 2) + '\n', { encoding: 'utf8' });
+    }
   }
 
   const mountDir = path.join(
