@@ -165,46 +165,6 @@ function getPackageVersion(pkgRoot) {
   }
 }
 
-
-function fetchTextWithRedirects(url, maxRedirects = 5) {
-  const attemptFetch = (currentUrl, redirectsRemaining, resolve, reject) => {
-    const request = https.get(currentUrl, res => {
-      const status = res.statusCode ?? 0;
-      const location = res.headers.location;
-      const isRedirect = status >= 300 && status < 400 && location;
-
-      if (isRedirect) {
-        if (redirectsRemaining <= 0) {
-          res.resume();
-          reject(new Error('Too many redirects while fetching text resource'));
-          return;
-        }
-
-        const nextUrl = new URL(location, currentUrl).toString();
-        res.resume();
-        attemptFetch(nextUrl, redirectsRemaining - 1, resolve, reject);
-        return;
-      }
-
-      if (status !== 200) {
-        res.resume();
-        reject(new Error(`Checksums file not available (HTTP ${status})`));
-        return;
-      }
-
-      const chunks = [];
-      res.on('data', chunk => chunks.push(chunk));
-      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-      res.on('error', reject);
-    });
-    request.on('error', reject);
-  };
-
-  return new Promise((resolve, reject) => {
-    attemptFetch(url, maxRedirects, resolve, reject);
-  });
-}
-
 /**
  * Verify SHA-256 checksum of a downloaded file.
  * Downloads a checksums file from the same release directory and verifies.
@@ -216,7 +176,29 @@ async function verifyChecksum(filePath, downloadUrl) {
   const binaryName = path.basename(downloadUrl);
 
   try {
-    const checksumContent = await fetchTextWithRedirects(checksumUrl);
+    const checksumContent = await new Promise((resolve, reject) => {
+      const fetchWithRedirects = (url, remaining = 5) => {
+        const chunks = [];
+        const request = https.get(url, res => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            if (remaining <= 0) { res.resume(); reject(new Error('Too many redirects fetching checksums')); return; }
+            res.resume();
+            fetchWithRedirects(new URL(res.headers.location, url).toString(), remaining - 1);
+            return;
+          }
+          if (res.statusCode !== 200) {
+            res.resume();
+            reject(new Error(`Checksums file not available (HTTP ${res.statusCode})`));
+            return;
+          }
+          res.on('data', chunk => chunks.push(chunk));
+          res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+          res.on('error', reject);
+        });
+        request.on('error', reject);
+      };
+      fetchWithRedirects(checksumUrl);
+    });
 
     // Parse checksums file (format: "<hash>  <filename>" per line)
     const expectedHash = checksumContent
@@ -774,23 +756,6 @@ function patchAgentTrajectories() {
     return;
   }
 
-  // Verify each needle appears exactly once to prevent unexpected multi-match corruption
-  const optionCount = content.split(optionNeedle).length - 1;
-  const createCount = content.split(createNeedle).length - 1;
-  if (optionCount !== 1 || createCount !== 1) {
-    warn(`agent-trajectories patch aborted: needle matched ${optionCount}/${createCount} times (expected 1/1)`);
-    return;
-  }
-
-  // Back up original before patching so corruption can be recovered
-  const backupPath = `${cliPath}.pre-relay-patch`;
-  try {
-    fs.copyFileSync(cliPath, backupPath);
-  } catch (backupErr) {
-    warn(`Failed to back up agent-trajectories before patching: ${backupErr.message}`);
-    return;
-  }
-
   const updated = content
     .replace(optionNeedle, optionReplacement)
     .replace(createNeedle, createReplacement);
@@ -798,7 +763,6 @@ function patchAgentTrajectories() {
   // Verify the patch produced exactly the expected changes (no double-application or corruption)
   if (updated === content) {
     warn('agent-trajectories patch produced no changes, skipping write');
-    try { fs.unlinkSync(backupPath); } catch { /* ignore */ }
     return;
   }
 
@@ -821,15 +785,6 @@ function patchRelayauthCoreExports() {
 
     if (rootExport.require === './dist/index.js' && rootExport.default === './dist/index.js') {
       info('@relayauth/core already supports require()');
-      return;
-    }
-
-    // Back up original before patching so corruption can be recovered
-    const backupPath = `${packageJsonPath}.pre-relay-patch`;
-    try {
-      fs.copyFileSync(packageJsonPath, backupPath);
-    } catch (backupErr) {
-      warn(`Failed to back up @relayauth/core before patching: ${backupErr.message}`);
       return;
     }
 
