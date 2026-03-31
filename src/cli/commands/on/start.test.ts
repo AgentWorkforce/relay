@@ -7,6 +7,11 @@ vi.mock('@agent-relay/cloud', () => ({
   ensureAuthenticated: vi.fn().mockResolvedValue({ accessToken: 'test-token' }),
 }));
 
+vi.mock('./dotfiles.js', () => ({
+  hasDotfiles: () => false,
+  compileDotfiles: vi.fn(),
+}));
+
 import { requestWorkspaceSession } from './start.js';
 
 function jsonResponse(payload: unknown, status = 200): Response {
