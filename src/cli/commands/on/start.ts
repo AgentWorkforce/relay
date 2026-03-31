@@ -15,6 +15,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { ensureRelayfileMountBinary } from './relayfile-binary.js';
 import { mintToken } from './token.js';
 import { seedWorkspace as seedWorkspaceFiles } from './workspace.js';
 import { ensureAuthenticated } from '@agent-relay/cloud';
@@ -666,21 +667,6 @@ function resolveConfig(projectDir: string, relayDir: string, requestedAgent?: st
   return writeGeneratedZeroConfig(generatedPath, projectDir, requestedAgent);
 }
 
-function resolveRelayfileRoot(projectDir: string): string {
-  const candidates = [
-    process.env.RELAYFILE_ROOT,
-    path.resolve(projectDir, '..', 'relayfile'),
-    path.resolve(projectDir, '..', '..', 'relayfile'),
-    path.resolve(process.cwd(), '..', 'relayfile'),
-  ].filter((value): value is string => !!value);
-
-  for (const candidate of candidates) {
-    const mountBin = path.join(candidate, 'bin', 'relayfile-mount');
-    if (existsSync(mountBin)) return candidate;
-  }
-  return candidates[0] ?? path.resolve(projectDir, 'relayfile');
-}
-
 function isCommandAvailable(command: string): boolean {
   const checker = process.platform === 'win32' ? 'where' : 'sh';
   const args = process.platform === 'win32' ? [command] : ['-lc', `command -v "${command}" >/dev/null 2>&1`];
@@ -1196,8 +1182,9 @@ export async function goOnTheRelay(
   const agent = findAgentConfig(config, defaultAgentName);
   const authBase = normalizeBaseUrl(options.portAuth);
   const fileBase = normalizeBaseUrl(options.portFile);
-  const relayfileRoot = resolveRelayfileRoot(projectDir);
-  const mountBin = path.join(relayfileRoot, 'bin', 'relayfile-mount');
+  const mountBin = process.env.RELAYFILE_ROOT
+    ? path.join(process.env.RELAYFILE_ROOT, 'bin', 'relayfile-mount')
+    : await ensureRelayfileMountBinary();
 
   if (!existsSync(mountBin)) {
     throw new Error(`missing relayfile mount binary: ${mountBin}`);
