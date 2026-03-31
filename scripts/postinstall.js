@@ -181,7 +181,7 @@ async function verifyChecksum(filePath, downloadUrl) {
         const chunks = [];
         const request = https.get(url, res => {
           if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-            if (remaining <= 0) { reject(new Error('Too many redirects fetching checksums')); return; }
+            if (remaining <= 0) { res.resume(); reject(new Error('Too many redirects fetching checksums')); return; }
             res.resume();
             fetchWithRedirects(new URL(res.headers.location, url).toString(), remaining - 1);
             return;
