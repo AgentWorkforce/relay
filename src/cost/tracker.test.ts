@@ -75,13 +75,13 @@ describe('CostTracker', () => {
       stepName: 'compile',
       agent: 'worker-a',
       cli: 'codex exec',
-      model: 'o3',
+      model: 'gpt-5.4',
       startedAt: '2026-01-01T00:00:00.000Z',
       endedAt: '2026-01-01T00:00:02.000Z',
       durationMs: 2_000,
       estimatedInputTokens: 400,
       estimatedOutputTokens: 150,
-      estimatedCostUsd: 0.001,
+      estimatedCostUsd: 0.0025,
     });
     expect(fsMock.mkdirSync).toHaveBeenCalledWith(path.dirname(usageFilePath), { recursive: true });
     expect(files.get(usageFilePath)).toBe(`${JSON.stringify(record)}\n`);
@@ -122,7 +122,7 @@ describe('CostTracker', () => {
       durationMs: 2_000,
       estimatedInputTokens: 400,
       estimatedOutputTokens: 150,
-      estimatedCostUsd: 0.001,
+      estimatedCostUsd: 0.0025,
     });
     const thirdRecord = createRecord({
       runId: 'run-1',
@@ -132,7 +132,7 @@ describe('CostTracker', () => {
       durationMs: 2_000,
       estimatedInputTokens: 400,
       estimatedOutputTokens: 150,
-      estimatedCostUsd: 0.001,
+      estimatedCostUsd: 0.0025,
     });
 
     files.set(
@@ -147,7 +147,7 @@ describe('CostTracker', () => {
 
     expect(tracker.getRunSummary('run-1')).toEqual({
       runId: 'run-1',
-      totalCostUsd: 0.0015,
+      totalCostUsd: 0.003,
       totalDurationMs: 3_000,
       steps: [firstRecord, thirdRecord],
     });
@@ -160,7 +160,7 @@ function createRecord(overrides: Partial<StepCostRecord> = {}): StepCostRecord {
     stepName: 'step',
     agent: 'worker-a',
     cli: 'codex exec',
-    model: 'o3',
+    model: 'gpt-5.4',
     startedAt: '2026-01-01T00:00:00.000Z',
     endedAt: '2026-01-01T00:00:01.000Z',
     durationMs: 1_000,
