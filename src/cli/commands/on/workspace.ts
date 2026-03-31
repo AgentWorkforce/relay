@@ -97,6 +97,11 @@ function collectSeedPaths(
     const nextRelative = currentRelative ? `${currentRelative}/${entry.name}` : entry.name;
     const absolutePath = path.join(rootDir, nextRelative);
 
+    // Check full relative path so nested excluded dirs (e.g. "src/private") are matched
+    if (excludeDirs.has(nextRelative)) {
+      continue;
+    }
+
     if (entry.isDirectory()) {
       collectSeedPaths(rootDir, nextRelative, excludeDirs, output);
       continue;
