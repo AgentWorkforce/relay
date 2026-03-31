@@ -37,8 +37,8 @@ export function registerOnCommands(program: Command, overrides: Partial<OnDepend
     .option('--workspace <id>', 'Join an existing relay workspace')
     .option('--scan', 'Preview what the agent will see without launching')
     .option('--doctor', 'Check prerequisites and exit')
-    .option('--port-auth <port>', 'Relayauth port', '8787')
-    .option('--port-file <port>', 'Relayfile port', '8080')
+    .option('--port-auth <port>', 'Auth service URL or local port', process.env.RELAY_AUTH_URL ?? 'https://agentrelay.dev')
+    .option('--port-file <port>', 'Relayfile service URL or local port', process.env.RELAY_FILE_URL ?? 'https://api.relayfile.dev')
     .allowUnknownOption(true) // pass extra args to agent CLI
     .action(async (cli: string | undefined, options: any, command: Command) => {
       if (options.doctor) {
