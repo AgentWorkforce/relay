@@ -4,7 +4,7 @@ import readline from 'node:readline';
 import { execFileSync, spawn as spawnProcess } from 'node:child_process';
 import { Command } from 'commander';
 import { getProjectPaths } from '@agent-relay/config';
-import { brokerPidFilename } from '../lib/broker-lifecycle.js';
+import { readBrokerConnection } from '../lib/broker-lifecycle.js';
 import { enableTelemetry, disableTelemetry, getStatus, isDisabledByEnv } from '@agent-relay/telemetry';
 import { runWorkflow } from '@agent-relay/sdk/workflows';
 import type { WorkflowEvent } from '@agent-relay/sdk/workflows';
@@ -37,7 +37,14 @@ export interface SetupDependencies {
   runTelemetry: (action?: string) => Promise<void> | void;
   runYamlWorkflow: (
     filePath: string,
-    options: { workflow?: string; dryRun?: boolean; resume?: string; startFrom?: string; previousRunId?: string; onEvent: (event: WorkflowEvent) => void }
+    options: {
+      workflow?: string;
+      dryRun?: boolean;
+      resume?: string;
+      startFrom?: string;
+      previousRunId?: string;
+      onEvent: (event: WorkflowEvent) => void;
+    }
   ) => Promise<WorkflowRunResult>;
   runScriptWorkflow: (
     filePath: string,
@@ -81,7 +88,14 @@ function logWorkflowEvent(event: WorkflowEvent, log: (...args: unknown[]) => voi
 }
 async function runYamlWorkflowDefault(
   filePath: string,
-  options: { workflow?: string; dryRun?: boolean; resume?: string; startFrom?: string; previousRunId?: string; onEvent: (event: WorkflowEvent) => void }
+  options: {
+    workflow?: string;
+    dryRun?: boolean;
+    resume?: string;
+    startFrom?: string;
+    previousRunId?: string;
+    onEvent: (event: WorkflowEvent) => void;
+  }
 ): Promise<WorkflowRunResult> {
   const result = await runWorkflow(filePath, options);
   // DryRunReport has 'valid' instead of 'status'
@@ -117,14 +131,19 @@ export function findLocalSdkWorkspace(startDir: string): LocalSdkWorkspace | nul
   }
 }
 
-export function ensureLocalSdkWorkflowRuntime(startDir: string, execRunner: ExecFileSyncLike = execFileSync): void {
+export function ensureLocalSdkWorkflowRuntime(
+  startDir: string,
+  execRunner: ExecFileSyncLike = execFileSync
+): void {
   const workspace = findLocalSdkWorkspace(startDir);
   if (!workspace) return;
 
   const workflowsEntry = path.join(workspace.sdkDir, 'dist', 'workflows', 'index.js');
   if (fs.existsSync(workflowsEntry)) return;
 
-  console.log('[agent-relay] Detected local @agent-relay/sdk workspace without built workflows runtime; building packages/sdk...');
+  console.log(
+    '[agent-relay] Detected local @agent-relay/sdk workspace without built workflows runtime; building packages/sdk...'
+  );
   execRunner('npm', ['run', 'build:sdk'], {
     cwd: workspace.rootDir,
     stdio: 'inherit',
@@ -145,7 +164,11 @@ function runScriptFile(
     throw new Error(`File not found: ${resolved}`);
   }
   const ext = path.extname(resolved).toLowerCase();
-  const runIdFile = path.join(process.cwd(), '.agent-relay', `script-run-id-${process.pid}-${Date.now()}.txt`);
+  const runIdFile = path.join(
+    process.cwd(),
+    '.agent-relay',
+    `script-run-id-${process.pid}-${Date.now()}.txt`
+  );
   try {
     fs.mkdirSync(path.dirname(runIdFile), { recursive: true });
   } catch {
@@ -178,7 +201,11 @@ Run ID: ${runId}`;
     throw err;
   };
   const cleanupRunIdFile = () => {
-    try { fs.rmSync(runIdFile, { force: true }); } catch { /* ignore */ }
+    try {
+      fs.rmSync(runIdFile, { force: true });
+    } catch {
+      /* ignore */
+    }
   };
 
   if (ext === '.ts' || ext === '.tsx') {
@@ -259,24 +286,14 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
   io.log('  ℹ  Detected: Local environment');
   io.log('');
   const paths = getProjectPaths();
-  const brokerPidPath = path.join(paths.dataDir, brokerPidFilename(paths.projectRoot));
-  const legacyBrokerPidPath = path.join(paths.dataDir, 'broker.pid');
   let brokerRunning = false;
-  for (const pidPath of [brokerPidPath, legacyBrokerPidPath]) {
-    if (!fs.existsSync(pidPath)) {
-      continue;
-    }
-    const brokerPid = Number(fs.readFileSync(pidPath, 'utf-8').trim());
+  const conn = readBrokerConnection(paths.dataDir);
+  if (conn && conn.pid > 0) {
     try {
-      process.kill(brokerPid, 0);
+      process.kill(conn.pid, 0);
       brokerRunning = true;
-      break;
     } catch {
-      try {
-        fs.unlinkSync(pidPath);
-      } catch {
-        // ignore
-      }
+      // Process dead — stale connection file
     }
   }
   if (brokerRunning) {
@@ -370,7 +387,7 @@ function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
   io.log('  agent-relay telemetry enable   - Opt in to telemetry');
   io.log('  agent-relay telemetry disable  - Opt out of telemetry');
   io.log('');
-  io.log('Learn more: https://agent-relay.com/telemetry');
+  io.log('Learn more: https://agentrelay.dev/telemetry');
 }
 export function registerSetupCommands(program: Command, overrides: Partial<SetupDependencies> = {}): void {
   const deps = withDefaults(overrides);
@@ -379,10 +396,7 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
     .description('First-time setup wizard - start broker')
     .option('-y, --yes', 'Accept all defaults (non-interactive)')
     .option('--skip-broker', 'Skip broker startup prompt')
-    .addHelpText(
-      'after',
-      '\nBREAKING CHANGE: daemon options were removed. Use broker terminology only.'
-    )
+    .addHelpText('after', '\nBREAKING CHANGE: daemon options were removed. Use broker terminology only.')
     .action(async (options: RunInitOptions) => {
       await deps.runInit(options);
     });
@@ -391,10 +405,7 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
     .description('Alias for "init" - first-time setup wizard')
     .option('-y, --yes', 'Accept all defaults')
     .option('--skip-broker', 'Skip broker startup')
-    .addHelpText(
-      'after',
-      '\nBREAKING CHANGE: daemon options were removed. Use broker terminology only.'
-    )
+    .addHelpText('after', '\nBREAKING CHANGE: daemon options were removed. Use broker terminology only.')
     .action(async (options: RunInitOptions) => {
       await deps.runInit(options);
     });
@@ -431,7 +442,9 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
               deps.log('\nWorkflow resumed and completed successfully.');
             } else {
               deps.error(`\nWorkflow ${result.status}${result.error ? `: ${result.error}` : ''}`);
-              deps.error(`Run ID: ${result.id} — resume with: agent-relay run ${filePath} --resume ${result.id}`);
+              deps.error(
+                `Run ID: ${result.id} — resume with: agent-relay run ${filePath} --resume ${result.id}`
+              );
               deps.exit(1);
             }
             return;
@@ -457,7 +470,9 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
             deps.log('\nWorkflow completed successfully.');
           } else {
             deps.error(`\nWorkflow ${result.status}${result.error ? `: ${result.error}` : ''}`);
-            deps.error(`Run ID: ${result.id} — resume with: agent-relay run ${filePath} --resume ${result.id}`);
+            deps.error(
+              `Run ID: ${result.id} — resume with: agent-relay run ${filePath} --resume ${result.id}`
+            );
             deps.exit(1);
           }
           return;
@@ -477,9 +492,7 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
       } catch (err: any) {
         deps.error(`Error: ${err.message}`);
         if (isScriptWorkflow) {
-          const runIdMatch = typeof err?.message === 'string'
-            ? err.message.match(/Run ID:\s*(\S+)/)
-            : null;
+          const runIdMatch = typeof err?.message === 'string' ? err.message.match(/Run ID:\s*(\S+)/) : null;
           if (runIdMatch?.[1]) {
             deps.error(
               `Run ID: ${runIdMatch[1]} — resume with: agent-relay run ${filePath} --resume ${runIdMatch[1]}`
@@ -488,11 +501,11 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
           deps.error(
             `Script workflows can be retried with:
 ` +
-            `  agent-relay run ${filePath} --resume <run-id>
+              `  agent-relay run ${filePath} --resume <run-id>
 ` +
-            `or start from a specific step with:
+              `or start from a specific step with:
 ` +
-            `  agent-relay run ${filePath} --start-from <step> [--previous-run-id <run-id>]`
+              `  agent-relay run ${filePath} --start-from <step> [--previous-run-id <run-id>]`
           );
         }
         deps.exit(1);

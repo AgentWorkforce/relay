@@ -183,7 +183,7 @@ async function verifyChecksum(filePath, downloadUrl) {
           if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
             if (remaining <= 0) { reject(new Error('Too many redirects fetching checksums')); return; }
             res.resume();
-            fetchWithRedirects(res.headers.location, remaining - 1);
+            fetchWithRedirects(new URL(res.headers.location, url).toString(), remaining - 1);
             return;
           }
           if (res.statusCode !== 200) {

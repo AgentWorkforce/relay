@@ -68,12 +68,8 @@ export interface CoreRelay {
     shadowOf?: string;
     shadowMode?: 'subagent' | 'process';
   }) => Promise<unknown>;
-  getStatus: () => Promise<{
-    agent_count?: number;
-    pending_delivery_count?: number;
-  }>;
+  getStatus: () => Promise<unknown>;
   shutdown: () => Promise<unknown>;
-  onBrokerStderr?: (listener: (line: string) => void) => () => void;
   /** Relaycast workspace API key, available after the hello handshake. */
   workspaceKey?: string;
   /** PID of the underlying broker process, when available. */
@@ -106,7 +102,7 @@ export interface CoreDependencies {
     missing: BridgeProject[];
   };
   getAgentOutboxTemplate: () => string;
-  createRelay: (cwd: string, apiPort?: number) => CoreRelay;
+  createRelay: (cwd: string, apiPort?: number) => CoreRelay | Promise<CoreRelay>;
   findDashboardBinary: () => string | null;
   spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
   execCommand: (command: string) => Promise<{ stdout: string; stderr: string }>;
@@ -246,23 +242,37 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
   return null;
 }
 
-function createDefaultRelay(cwd: string, apiPort = 0): CoreRelay {
-  const configuredTimeout = Number.parseInt(process.env.AGENT_RELAY_REQUEST_TIMEOUT_MS ?? '', 10);
-  const requestTimeoutMs =
-    Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 30_000;
-  const client = createAgentRelayClient({
+async function createDefaultRelay(cwd: string, apiPort = 0): Promise<CoreRelay> {
+  const binaryArgs: string[] = [];
+  if (apiPort > 0) {
+    binaryArgs.push('--persist', '--api-port', String(apiPort));
+  }
+  const stateDir = process.env.AGENT_RELAY_STATE_DIR;
+  if (stateDir) {
+    binaryArgs.push('--state-dir', stateDir);
+  }
+  const client = await createAgentRelayClient({
     cwd,
-    binaryArgs: apiPort > 0 ? ['--persist', '--api-port', String(apiPort)] : [],
-    requestTimeoutMs,
+    binaryArgs,
+    preferConnect: apiPort > 0,
   });
 
   const relay: CoreRelay = {
     spawn: (input) => spawnAgentWithClient(client, input),
-    getStatus: () => client.getStatus(),
+    getStatus: async () => {
+      const status = await client.getStatus();
+      if (!client.workspaceKey) {
+        await client.getSession().catch(() => undefined);
+      }
+      return status;
+    },
     shutdown: () => client.shutdown(),
-    onBrokerStderr: (listener: (line: string) => void) => client.onBrokerStderr(listener),
-    get workspaceKey() { return client.workspaceKey; },
-    get brokerPid() { return client.brokerPid; },
+    get workspaceKey() {
+      return client.workspaceKey;
+    },
+    get brokerPid() {
+      return client.brokerPid;
+    },
   };
   return relay;
 }
@@ -398,6 +408,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--background', 'Run broker in the background (detached)')
     .option('--verbose', 'Enable verbose logging')
     .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
+    .option('--state-dir <path>', 'Directory for broker state and connection files (default: .agent-relay/)')
     .action(
       async (options: {
         dashboard?: boolean;
@@ -406,6 +417,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
         background?: boolean;
         verbose?: boolean;
         workspaceKey?: string;
+        stateDir?: string;
       }) => {
         await runUpCommand(options, deps);
       }
@@ -445,15 +457,17 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--force', 'Force cleanup even if process is stuck')
     .option('--all', 'Kill all agent-relay processes system-wide')
     .option('--timeout <ms>', 'Timeout waiting for graceful shutdown', '5000')
-    .action(async (options: { force?: boolean; all?: boolean; timeout?: string }) => {
+    .option('--state-dir <path>', 'Directory for broker state and connection files')
+    .action(async (options: { force?: boolean; all?: boolean; timeout?: string; stateDir?: string }) => {
       await runDownCommand(options, deps);
     });
 
   program
     .command('status')
     .description('Check broker status')
-    .action(async () => {
-      await runStatusCommand(deps);
+    .option('--state-dir <path>', 'Directory for broker state and connection files')
+    .action(async (options: { stateDir?: string }) => {
+      await runStatusCommand(deps, options);
     });
 
   program

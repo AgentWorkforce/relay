@@ -1,7 +1,7 @@
-"""Low-level async client for the Agent Relay broker subprocess.
+"""Low-level async client for the Agent Relay broker.
 
-Manages the broker process lifecycle, line-delimited JSON protocol,
-request/response correlation, and event dispatch.
+Communicates with the broker over HTTP/WS. Can either connect to a
+running broker (remote) or spawn a local broker process.
 
 Mirrors packages/sdk/src/client.ts.
 """
@@ -12,21 +12,20 @@ import asyncio
 import json
 import os
 import platform
+import secrets
 import shutil
 import stat
 import subprocess
-import sys
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional
+from urllib.parse import quote
+
+import aiohttp
 
 from .protocol import (
-    PROTOCOL_VERSION,
-    AgentSpec,
     BrokerEvent,
-    HeadlessProvider,
     MessageInjectionMode,
-    ProtocolEnvelope,
 )
 
 # ── Errors ────────────────────────────────────────────────────────────────────
@@ -51,54 +50,20 @@ class AgentRelayProcessError(Exception):
 AgentTransport = Literal["pty", "headless"]
 
 
-# ── CLI / model helpers ───────────────────────────────────────────────────────
-
-_CLI_MODEL_FLAG_CLIS = {"claude", "codex", "gemini", "goose", "aider"}
-
-_CLI_DEFAULT_ARGS: dict[str, list[str]] = {
-    "codex": ["-c", "check_for_update_on_startup=false"],
-}
+def _is_headless_provider(value: str) -> bool:
+    return value in {"claude", "opencode"}
 
 
-def _has_model_arg(args: list[str]) -> bool:
-    for arg in args:
-        if arg == "--model" or arg.startswith("--model="):
-            return True
-    return False
+def _resolve_spawn_transport(provider: str, transport: Optional[AgentTransport]) -> AgentTransport:
+    if transport is not None:
+        return transport
+    return "headless" if provider == "opencode" else "pty"
 
 
-def _build_pty_args_with_model(
-    cli: str, args: list[str], model: Optional[str] = None
-) -> list[str]:
-    cli_name = cli.split(":")[0].strip().lower()
-    default_args = _CLI_DEFAULT_ARGS.get(cli_name, [])
-    base_args = [*default_args, *args]
-    if not model:
-        return base_args
-    if cli_name not in _CLI_MODEL_FLAG_CLIS:
-        return base_args
-    if _has_model_arg(base_args):
-        return base_args
-    return ["--model", model, *base_args]
-
-
-def _expand_tilde(p: str) -> str:
-    if p == "~" or p.startswith("~/") or p.startswith("~\\"):
-        return str(Path.home() / p[2:])
-    return p
-
-
-def _is_explicit_path(binary_path: str) -> bool:
-    return (
-        "/" in binary_path
-        or "\\" in binary_path
-        or binary_path.startswith(".")
-        or binary_path.startswith("~")
-    )
+# ── Binary resolution ─────────────────────────────────────────────────────────
 
 
 def _detect_platform() -> str:
-    """Detect platform string matching GitHub release binary names."""
     system = platform.system().lower()
     machine = platform.machine().lower()
 
@@ -120,7 +85,6 @@ def _detect_platform() -> str:
 
 
 def _get_latest_version() -> str:
-    """Fetch the latest release version tag from GitHub."""
     url = "https://api.github.com/repos/AgentWorkforce/relay/releases/latest"
     headers = {"Accept": "application/vnd.github.v3+json"}
     token = os.environ.get("GITHUB_TOKEN")
@@ -134,7 +98,6 @@ def _get_latest_version() -> str:
 
 
 def _install_broker_binary() -> str:
-    """Download the broker binary from GitHub releases. Returns the installed path."""
     install_dir = Path.home() / ".agent-relay"
     bin_dir = install_dir / "bin"
     target_path = bin_dir / "agent-relay-broker"
@@ -152,56 +115,32 @@ def _install_broker_binary() -> str:
     download_url = f"https://github.com/AgentWorkforce/relay/releases/download/v{version}/{binary_name}"
 
     bin_dir.mkdir(parents=True, exist_ok=True)
-
     print(f"[agent-relay] Downloading v{version} from {download_url}")
     try:
         urllib.request.urlretrieve(download_url, str(target_path))
     except Exception as e:
         target_path.unlink(missing_ok=True)
-        raise AgentRelayProcessError(
-            f"Failed to download broker binary: {e}\n"
-            f"You can install manually: curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash"
-        ) from e
+        raise AgentRelayProcessError(f"Failed to download broker binary: {e}") from e
 
-    # Make executable
     target_path.chmod(
         target_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
     )
 
-    # macOS: strip quarantine and re-sign to avoid Gatekeeper issues
     if platform.system() == "Darwin":
         try:
             subprocess.run(
                 ["xattr", "-d", "com.apple.quarantine", str(target_path)],
-                capture_output=True,
-                timeout=10,
+                capture_output=True, timeout=10,
             )
         except Exception:
-            pass  # Non-fatal — attribute may not exist
+            pass
         try:
             subprocess.run(
                 ["codesign", "--force", "--sign", "-", str(target_path)],
-                capture_output=True,
-                timeout=10,
+                capture_output=True, timeout=10,
             )
         except Exception:
-            pass  # Non-fatal — binary may still work
-
-    # Verify
-    try:
-        result = subprocess.run(
-            [str(target_path), "--help"],
-            capture_output=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            target_path.unlink(missing_ok=True)
-            raise AgentRelayProcessError("Downloaded broker binary failed verification")
-    except subprocess.TimeoutExpired:
-        target_path.unlink(missing_ok=True)
-        raise AgentRelayProcessError(
-            "Downloaded broker binary timed out during verification"
-        )
+            pass
 
     print(f"[agent-relay] Broker installed to {target_path}")
     return str(target_path)
@@ -209,47 +148,51 @@ def _install_broker_binary() -> str:
 
 def _resolve_default_binary_path() -> str:
     broker_exe = "agent-relay-broker"
-
-    # 1. Check ~/.agent-relay/bin/
-    home = Path.home()
-    standalone = home / ".agent-relay" / "bin" / broker_exe
+    standalone = Path.home() / ".agent-relay" / "bin" / broker_exe
     if standalone.exists():
         return str(standalone)
-
-    # 2. Fall back to PATH
     found = shutil.which(broker_exe)
     if found:
         return found
-
-    # 3. Auto-install from GitHub releases
     return _install_broker_binary()
-
-
-# ── Pending request tracking ─────────────────────────────────────────────────
-
-
-class _PendingRequest:
-    __slots__ = ("expected_type", "future", "timeout_handle")
-
-    def __init__(
-        self,
-        expected_type: str,
-        future: asyncio.Future[ProtocolEnvelope],
-        timeout_handle: asyncio.TimerHandle,
-    ):
-        self.expected_type = expected_type
-        self.future = future
-        self.timeout_handle = timeout_handle
 
 
 # ── Client ────────────────────────────────────────────────────────────────────
 
 
 class AgentRelayClient:
-    """Manages a broker subprocess and communicates over line-delimited JSON."""
+    """Communicates with a broker over HTTP/WS.
+
+    Usage:
+        # Remote broker
+        client = AgentRelayClient(base_url="http://...", api_key="br_...")
+
+        # Local broker (spawn)
+        client = await AgentRelayClient.spawn(cwd="/my/project")
+    """
 
     def __init__(
         self,
+        *,
+        base_url: str,
+        api_key: Optional[str] = None,
+    ):
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
+        self._ws_task: Optional[asyncio.Task[None]] = None
+        self._lease_task: Optional[asyncio.Task[None]] = None
+        self._stderr_task: Optional[asyncio.Task[None]] = None
+        self._process: Optional[asyncio.subprocess.Process] = None
+        self._event_listeners: list[Callable[[BrokerEvent], None]] = []
+        self._event_buffer: list[BrokerEvent] = []
+        self._max_buffer_size = 1000
+        self.workspace_key: Optional[str] = None
+
+    @classmethod
+    async def spawn(
+        cls,
         *,
         binary_path: Optional[str] = None,
         binary_args: Optional[list[str]] = None,
@@ -257,67 +200,138 @@ class AgentRelayClient:
         channels: Optional[list[str]] = None,
         cwd: Optional[str] = None,
         env: Optional[dict[str, str]] = None,
-        request_timeout_ms: int = 10_000,
-        shutdown_timeout_ms: int = 3_000,
-        client_name: str = "agent-relay-sdk-py",
-        client_version: str = "0.3.0",
-    ):
-        self._binary_path = binary_path or _resolve_default_binary_path()
-        self._binary_args = binary_args or []
-        self._broker_name = (
-            broker_name or os.path.basename(cwd or os.getcwd()) or "project"
+        on_stderr: Optional[Callable[[str], None]] = None,
+        startup_timeout_ms: int = 15_000,
+    ) -> AgentRelayClient:
+        """Spawn a local broker process and return a connected client."""
+        resolved_binary = binary_path or _resolve_default_binary_path()
+        resolved_cwd = cwd or os.getcwd()
+        resolved_name = broker_name or os.path.basename(resolved_cwd) or "project"
+        resolved_channels = channels or ["general"]
+        user_args = binary_args or []
+
+        api_key = f"br_{secrets.token_hex(16)}"
+
+        spawn_env = {**os.environ, **env} if env else dict(os.environ)
+        spawn_env["RELAY_BROKER_API_KEY"] = api_key
+
+        args = [
+            "init",
+            "--name", resolved_name,
+            "--channels", ",".join(resolved_channels),
+            *user_args,
+        ]
+
+        process = await asyncio.create_subprocess_exec(
+            resolved_binary, *args,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=resolved_cwd,
+            env=spawn_env,
         )
-        self._channels = channels or ["general"]
-        self._cwd = cwd or os.getcwd()
-        self._env = env
-        self._request_timeout_ms = request_timeout_ms
-        self._shutdown_timeout_ms = shutdown_timeout_ms
-        self._client_name = client_name
-        self._client_version = client_version
 
-        self._process: Optional[asyncio.subprocess.Process] = None
-        self._request_seq = 0
-        self._pending: dict[str, _PendingRequest] = {}
-        self._event_listeners: list[Callable[[BrokerEvent], None]] = []
-        self._stderr_listeners: list[Callable[[str], None]] = []
-        self._event_buffer: list[BrokerEvent] = []
-        self._max_buffer_size = 1000
-        self._last_stderr_line: Optional[str] = None
-        self._starting_lock = asyncio.Lock()
-        self._started = False
-        self._reader_task: Optional[asyncio.Task[None]] = None
-        self._stderr_task: Optional[asyncio.Task[None]] = None
-        self._exit_future: Optional[asyncio.Future[None]] = None
-        self.workspace_key: Optional[str] = None
+        # Forward stderr
+        async def _read_stderr() -> None:
+            assert process.stderr
+            while True:
+                line = await process.stderr.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").rstrip("\n")
+                if on_stderr:
+                    on_stderr(text)
 
-    @classmethod
-    async def start(cls, **kwargs: Any) -> AgentRelayClient:
-        client = cls(**kwargs)
-        await client.start_client()
+        stderr_task = asyncio.create_task(_read_stderr())
+
+        # Parse API URL from stdout
+        base_url = await _wait_for_api_url(process, startup_timeout_ms)
+
+        client = cls(base_url=base_url, api_key=api_key)
+        client._stderr_task = stderr_task
+        client._process = process
+
+        # Get session metadata
+        session = await client.get_session()
+        client.workspace_key = session.get("workspace_key")
+
+        # Start event stream
+        await client._connect_ws()
+
+        # Start lease renewal
+        client._lease_task = asyncio.create_task(client._renew_lease_loop())
+
         return client
+
+    # ── HTTP helpers ──────────────────────────────────────────────────────
+
+    async def _ensure_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            headers: dict[str, str] = {"Content-Type": "application/json"}
+            if self._api_key:
+                headers["X-API-Key"] = self._api_key
+            self._session = aiohttp.ClientSession(headers=headers)
+        return self._session
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        session = await self._ensure_session()
+        async with session.request(method, f"{self._base_url}{path}", **kwargs) as resp:
+            body = await resp.json() if resp.content_type == "application/json" else None
+            if not resp.ok:
+                code = body.get("code", f"http_{resp.status}") if body else f"http_{resp.status}"
+                message = body.get("message", resp.reason) if body else (resp.reason or "unknown error")
+                raise AgentRelayProtocolError(
+                    code=code,
+                    message=message,
+                    retryable=resp.status >= 500,
+                )
+            return body
+
+    # ── WebSocket events ──────────────────────────────────────────────────
+
+    async def _connect_ws(self) -> None:
+        session = await self._ensure_session()
+        ws_url = self._base_url.replace("http://", "ws://").replace("https://", "wss://") + "/ws"
+        self._ws = await session.ws_connect(ws_url)
+        self._ws_task = asyncio.create_task(self._ws_reader())
+
+    async def _ws_reader(self) -> None:
+        if not self._ws:
+            return
+        async for msg in self._ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                try:
+                    event: BrokerEvent = json.loads(msg.data)
+                    self._event_buffer.append(event)
+                    if len(self._event_buffer) > self._max_buffer_size:
+                        self._event_buffer.pop(0)
+                    for listener in self._event_listeners:
+                        try:
+                            listener(event)
+                        except Exception:
+                            pass
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                break
+
+    async def _renew_lease_loop(self) -> None:
+        while True:
+            await asyncio.sleep(60)
+            try:
+                await self.renew_lease()
+            except Exception:
+                pass
 
     # ── Event subscription ────────────────────────────────────────────────
 
     def on_event(self, listener: Callable[[BrokerEvent], None]) -> Callable[[], None]:
         self._event_listeners.append(listener)
-
         def unsubscribe() -> None:
             try:
                 self._event_listeners.remove(listener)
             except ValueError:
                 pass
-
-        return unsubscribe
-
-    def on_broker_stderr(self, listener: Callable[[str], None]) -> Callable[[], None]:
-        self._stderr_listeners.append(listener)
-
-        def unsubscribe() -> None:
-            try:
-                self._stderr_listeners.remove(listener)
-            except ValueError:
-                pass
-
         return unsubscribe
 
     def query_events(
@@ -336,219 +350,18 @@ class AgentRelayClient:
             events = events[-limit:]
         return events
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────
+    # ── Session ───────────────────────────────────────────────────────────
 
-    async def start_client(self) -> None:
-        if self._started:
-            return
-        async with self._starting_lock:
-            if self._started:
-                return
-            await self._start_internal()
+    async def get_session(self) -> dict[str, Any]:
+        result = await self._request("GET", "/api/session")
+        if result and result.get("workspace_key"):
+            self.workspace_key = result["workspace_key"]
+        return result
 
-    async def _start_internal(self) -> None:
-        resolved_binary = _expand_tilde(self._binary_path)
-        if _is_explicit_path(self._binary_path) and not Path(resolved_binary).exists():
-            raise AgentRelayProcessError(
-                f"broker binary not found: {self._binary_path}"
-            )
+    async def health_check(self) -> dict[str, Any]:
+        return await self._request("GET", "/health")
 
-        args = [
-            "init",
-            "--name",
-            self._broker_name,
-            "--channels",
-            ",".join(self._channels),
-            *self._binary_args,
-        ]
-
-        env = dict(self._env) if self._env else dict(os.environ)
-        if _is_explicit_path(self._binary_path):
-            bin_dir = str(Path(resolved_binary).resolve().parent)
-            current_path = env.get("PATH", "")
-            if bin_dir not in current_path.split(os.pathsep):
-                env["PATH"] = f"{bin_dir}{os.pathsep}{current_path}"
-
-        self._last_stderr_line = None
-
-        self._process = await asyncio.create_subprocess_exec(
-            resolved_binary,
-            *args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=self._cwd,
-            env=env,
-        )
-
-        loop = asyncio.get_running_loop()
-        self._exit_future = loop.create_future()
-
-        self._reader_task = asyncio.create_task(self._read_stdout())
-        self._stderr_task = asyncio.create_task(self._read_stderr())
-
-        # Monitor process exit
-        asyncio.create_task(self._monitor_exit())
-
-        # Hello handshake
-        hello_ack = await self._request_hello()
-        self._started = True
-        if hello_ack.get("workspace_key"):
-            self.workspace_key = hello_ack["workspace_key"]
-
-    async def _monitor_exit(self) -> None:
-        if not self._process:
-            return
-        code = await self._process.wait()
-        detail = f": {self._last_stderr_line}" if self._last_stderr_line else ""
-        error = AgentRelayProcessError(f"broker exited (code={code}){detail}")
-        self._fail_all_pending(error)
-        if self._exit_future and not self._exit_future.done():
-            self._exit_future.set_result(None)
-
-    async def _read_stdout(self) -> None:
-        assert self._process and self._process.stdout
-        while True:
-            line = await self._process.stdout.readline()
-            if not line:
-                break
-            self._handle_stdout_line(
-                line.decode("utf-8", errors="replace").rstrip("\n")
-            )
-
-    async def _read_stderr(self) -> None:
-        assert self._process and self._process.stderr
-        while True:
-            line = await self._process.stderr.readline()
-            if not line:
-                break
-            text = line.decode("utf-8", errors="replace").rstrip("\n")
-            trimmed = text.strip()
-            if trimmed:
-                self._last_stderr_line = trimmed
-            for listener in self._stderr_listeners:
-                listener(text)
-
-    def _handle_stdout_line(self, line: str) -> None:
-        try:
-            parsed = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
-            return
-
-        if not isinstance(parsed, dict):
-            return
-        if parsed.get("v") != PROTOCOL_VERSION or not isinstance(
-            parsed.get("type"), str
-        ):
-            return
-
-        envelope = ProtocolEnvelope.from_dict(parsed)
-
-        # Events are dispatched to listeners (no request_id)
-        if envelope.type == "event":
-            event: BrokerEvent = envelope.payload
-            self._event_buffer.append(event)
-            if len(self._event_buffer) > self._max_buffer_size:
-                self._event_buffer.pop(0)
-            for listener in self._event_listeners:
-                listener(event)
-            return
-
-        # Responses are correlated to pending requests
-        if not envelope.request_id:
-            return
-
-        pending = self._pending.pop(envelope.request_id, None)
-        if not pending:
-            return
-
-        pending.timeout_handle.cancel()
-
-        if envelope.type == "error":
-            payload = envelope.payload
-            pending.future.set_exception(
-                AgentRelayProtocolError(
-                    code=payload.get("code", "unknown"),
-                    message=payload.get("message", "unknown error"),
-                    retryable=payload.get("retryable", False),
-                    data=payload.get("data"),
-                )
-            )
-            return
-
-        if envelope.type != pending.expected_type:
-            pending.future.set_exception(
-                AgentRelayProcessError(
-                    f"unexpected response type '{envelope.type}' for request "
-                    f"'{envelope.request_id}' (expected '{pending.expected_type}')"
-                )
-            )
-            return
-
-        pending.future.set_result(envelope)
-
-    def _fail_all_pending(self, error: Exception) -> None:
-        for pending in self._pending.values():
-            pending.timeout_handle.cancel()
-            if not pending.future.done():
-                pending.future.set_exception(error)
-        self._pending.clear()
-
-    # ── Request helpers ───────────────────────────────────────────────────
-
-    async def _send_request(
-        self, type_: str, payload: Any, expected_type: str
-    ) -> ProtocolEnvelope:
-        if not self._process or not self._process.stdin:
-            raise AgentRelayProcessError("broker is not running")
-
-        self._request_seq += 1
-        request_id = f"req_{self._request_seq}"
-
-        envelope = ProtocolEnvelope(
-            v=PROTOCOL_VERSION,
-            type=type_,
-            payload=payload,
-            request_id=request_id,
-        )
-
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[ProtocolEnvelope] = loop.create_future()
-
-        def on_timeout() -> None:
-            self._pending.pop(request_id, None)
-            if not future.done():
-                future.set_exception(
-                    AgentRelayProcessError(
-                        f"request timed out after {self._request_timeout_ms}ms "
-                        f"(type='{type_}', request_id='{request_id}')"
-                    )
-                )
-
-        timeout_handle = loop.call_later(self._request_timeout_ms / 1000, on_timeout)
-        self._pending[request_id] = _PendingRequest(
-            expected_type, future, timeout_handle
-        )
-
-        line = json.dumps(envelope.to_dict()) + "\n"
-        self._process.stdin.write(line.encode("utf-8"))
-        await self._process.stdin.drain()
-
-        return await future
-
-    async def _request_hello(self) -> dict[str, Any]:
-        payload = {
-            "client_name": self._client_name,
-            "client_version": self._client_version,
-        }
-        frame = await self._send_request("hello", payload, "hello_ack")
-        return frame.payload
-
-    async def _request_ok(self, type_: str, payload: Any) -> Any:
-        frame = await self._send_request(type_, payload, "ok")
-        return frame.payload.get("result")
-
-    # ── Public API methods ────────────────────────────────────────────────
+    # ── Agent lifecycle ───────────────────────────────────────────────────
 
     async def spawn_pty(
         self,
@@ -568,61 +381,23 @@ class AgentRelayClient:
         continue_from: Optional[str] = None,
         skip_relay_prompt: Optional[bool] = None,
     ) -> dict[str, Any]:
-        await self.start_client()
-        built_args = _build_pty_args_with_model(cli, args or [], model)
-        from .protocol import RestartPolicy as ProtocolRestartPolicy
-
-        rp = None
-        if restart_policy:
-            rp = ProtocolRestartPolicy(**restart_policy)
-        agent = AgentSpec(
-            name=name,
-            runtime="pty",
-            cli=cli,
-            args=built_args,
-            channels=channels or [],
-            model=model,
-            cwd=cwd or self._cwd,
-            team=team,
-            shadow_of=shadow_of,
-            shadow_mode=shadow_mode,
-            restart_policy=rp,
-        )
-        request_payload: dict[str, Any] = {"agent": agent.to_dict()}
-        if task is not None:
-            request_payload["initial_task"] = task
-        if idle_threshold_secs is not None:
-            request_payload["idle_threshold_secs"] = idle_threshold_secs
-        if continue_from is not None:
-            request_payload["continue_from"] = continue_from
-        if skip_relay_prompt is not None:
-            request_payload["skip_relay_prompt"] = skip_relay_prompt
-        return await self._request_ok("spawn_agent", request_payload)
-
-    async def spawn_headless(
-        self,
-        *,
-        name: str,
-        provider: HeadlessProvider,
-        args: Optional[list[str]] = None,
-        channels: Optional[list[str]] = None,
-        task: Optional[str] = None,
-        skip_relay_prompt: Optional[bool] = None,
-    ) -> dict[str, Any]:
-        await self.start_client()
-        agent = AgentSpec(
-            name=name,
-            runtime="headless",
-            provider=provider,
-            args=args or [],
-            channels=channels or [],
-        )
-        request_payload: dict[str, Any] = {"agent": agent.to_dict()}
-        if task is not None:
-            request_payload["initial_task"] = task
-        if skip_relay_prompt is not None:
-            request_payload["skip_relay_prompt"] = skip_relay_prompt
-        return await self._request_ok("spawn_agent", request_payload)
+        payload: dict[str, Any] = {
+            "name": name,
+            "cli": cli,
+            "args": args or [],
+            "channels": channels or [],
+        }
+        if task is not None: payload["task"] = task
+        if model is not None: payload["model"] = model
+        if cwd is not None: payload["cwd"] = cwd
+        if team is not None: payload["team"] = team
+        if shadow_of is not None: payload["shadowOf"] = shadow_of
+        if shadow_mode is not None: payload["shadowMode"] = shadow_mode
+        if idle_threshold_secs is not None: payload["idleThresholdSecs"] = idle_threshold_secs
+        if restart_policy is not None: payload["restartPolicy"] = restart_policy
+        if continue_from is not None: payload["continueFrom"] = continue_from
+        if skip_relay_prompt is not None: payload["skipRelayPrompt"] = skip_relay_prompt
+        return await self._request("POST", "/api/spawn", json=payload)
 
     async def spawn_provider(
         self,
@@ -643,69 +418,50 @@ class AgentRelayClient:
         continue_from: Optional[str] = None,
         skip_relay_prompt: Optional[bool] = None,
     ) -> dict[str, Any]:
-        resolved_transport: AgentTransport = transport or (
-            "headless" if provider == "opencode" else "pty"
-        )
-
-        if resolved_transport == "headless":
-            if provider not in ("claude", "opencode"):
-                raise AgentRelayProcessError(
-                    f"provider '{provider}' does not support headless transport (supported: claude, opencode)"
-                )
-            headless_provider: HeadlessProvider = (
-                "claude" if provider == "claude" else "opencode"
-            )
-            return await self.spawn_headless(
-                name=name,
-                provider=headless_provider,
-                args=args,
-                channels=channels,
-                task=task,
-                skip_relay_prompt=skip_relay_prompt,
+        resolved_transport = _resolve_spawn_transport(provider, transport)
+        if resolved_transport == "headless" and not _is_headless_provider(provider):
+            raise AgentRelayProcessError(
+                f"provider '{provider}' does not support headless transport (supported: claude, opencode)"
             )
 
-        return await self.spawn_pty(
-            name=name,
-            cli=provider,
-            args=args,
-            channels=channels,
-            task=task,
-            model=model,
-            cwd=cwd,
-            team=team,
-            shadow_of=shadow_of,
-            shadow_mode=shadow_mode,
-            idle_threshold_secs=idle_threshold_secs,
-            restart_policy=restart_policy,
-            continue_from=continue_from,
-            skip_relay_prompt=skip_relay_prompt,
-        )
-
-    async def spawn_claude(self, **kwargs: Any) -> dict[str, Any]:
-        return await self.spawn_provider(provider="claude", **kwargs)
-
-    async def spawn_opencode(self, **kwargs: Any) -> dict[str, Any]:
-        return await self.spawn_provider(provider="opencode", **kwargs)
+        payload: dict[str, Any] = {
+            "name": name,
+            "cli": provider,
+            "args": args or [],
+            "channels": channels or [],
+            "transport": resolved_transport,
+        }
+        if task is not None: payload["task"] = task
+        if model is not None: payload["model"] = model
+        if cwd is not None: payload["cwd"] = cwd
+        if team is not None: payload["team"] = team
+        if shadow_of is not None: payload["shadowOf"] = shadow_of
+        if shadow_mode is not None: payload["shadowMode"] = shadow_mode
+        if idle_threshold_secs is not None: payload["idleThresholdSecs"] = idle_threshold_secs
+        if restart_policy is not None: payload["restartPolicy"] = restart_policy
+        if continue_from is not None: payload["continueFrom"] = continue_from
+        if skip_relay_prompt is not None: payload["skipRelayPrompt"] = skip_relay_prompt
+        return await self._request("POST", "/api/spawn", json=payload)
 
     async def release(self, name: str, reason: Optional[str] = None) -> dict[str, Any]:
-        await self.start_client()
-        payload: dict[str, Any] = {"name": name}
+        kwargs: dict[str, Any] = {}
         if reason is not None:
-            payload["reason"] = reason
-        return await self._request_ok("release_agent", payload)
+            kwargs["json"] = {"reason": reason}
+        return await self._request("DELETE", f"/api/spawned/{quote(name, safe=str())}", **kwargs)
+
+    async def list_agents(self) -> list[dict[str, Any]]:
+        result = await self._request("GET", "/api/spawned")
+        return result.get("agents", []) if isinstance(result, dict) else []
+
+    # ── PTY control ───────────────────────────────────────────────────────
 
     async def send_input(self, name: str, data: str) -> dict[str, Any]:
-        await self.start_client()
-        return await self._request_ok("send_input", {"name": name, "data": data})
+        return await self._request("POST", f"/api/input/{quote(name, safe=str())}", json={"data": data})
 
-    async def set_model(
-        self, name: str, model: str, *, timeout_ms: Optional[int] = None
-    ) -> dict[str, Any]:
-        await self.start_client()
-        payload: dict[str, Any] = {"name": name, "model": model}
-        if timeout_ms is not None:
-            payload["timeout_ms"] = timeout_ms
-        return await self._request_ok("set_model", payload)
+    async def resize_pty(self, name: str, rows: int, cols: int) -> dict[str, Any]:
+        return await self._request("POST", f"/api/resize/{quote(name, safe=str())}", json={"rows": rows, "cols": cols})
+
+    # ── Messaging ─────────────────────────────────────────────────────────
 
     async def send_message(
         self,
@@ -718,80 +474,131 @@ class AgentRelayClient:
         data: Optional[dict[str, Any]] = None,
         mode: Optional[MessageInjectionMode] = None,
     ) -> dict[str, Any]:
-        await self.start_client()
         payload: dict[str, Any] = {"to": to, "text": text}
-        if from_ is not None:
-            payload["from"] = from_
-        if thread_id is not None:
-            payload["thread_id"] = thread_id
-        if priority is not None:
-            payload["priority"] = priority
-        if data is not None:
-            payload["data"] = data
-        if mode is not None:
-            payload["mode"] = mode
+        if from_ is not None: payload["from"] = from_
+        if thread_id is not None: payload["threadId"] = thread_id
+        if priority is not None: payload["priority"] = priority
+        if data is not None: payload["data"] = data
+        if mode is not None: payload["mode"] = mode
         try:
-            return await self._request_ok("send_message", payload)
+            return await self._request("POST", "/api/send", json=payload)
         except AgentRelayProtocolError as e:
             if e.code == "unsupported_operation":
                 return {"event_id": "unsupported_operation", "targets": []}
             raise
 
-    async def list_agents(self) -> list[dict[str, Any]]:
-        await self.start_client()
-        result = await self._request_ok("list_agents", {})
-        return result.get("agents", []) if isinstance(result, dict) else []
+    # ── Model control ─────────────────────────────────────────────────────
+
+    async def set_model(
+        self, name: str, model: str, *, timeout_ms: Optional[int] = None
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"model": model}
+        if timeout_ms is not None:
+            payload["timeout_ms"] = timeout_ms
+        return await self._request("POST", f"/api/spawned/{quote(name, safe=str())}/model", json=payload)
+
+    # ── Channels ──────────────────────────────────────────────────────────
+
+    async def subscribe_channels(self, name: str, channels: list[str]) -> None:
+        await self._request("POST", f"/api/spawned/{quote(name, safe=str())}/subscribe", json={"channels": channels})
+
+    async def unsubscribe_channels(self, name: str, channels: list[str]) -> None:
+        await self._request("POST", f"/api/spawned/{quote(name, safe=str())}/unsubscribe", json={"channels": channels})
+
+    # ── Observability ─────────────────────────────────────────────────────
 
     async def get_status(self) -> dict[str, Any]:
-        await self.start_client()
-        return await self._request_ok("get_status", {})
+        return await self._request("GET", "/api/status")
 
     async def get_metrics(self, agent: Optional[str] = None) -> dict[str, Any]:
-        await self.start_client()
-        return await self._request_ok("get_metrics", {"agent": agent} if agent else {})
+        query = f"?agent={quote(agent, safe=str())}" if agent else ""
+        return await self._request("GET", f"/api/metrics{query}")
 
     async def get_crash_insights(self) -> dict[str, Any]:
-        await self.start_client()
-        return await self._request_ok("get_crash_insights", {})
+        return await self._request("GET", "/api/crash-insights")
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────
 
     async def preflight_agents(self, agents: list[dict[str, str]]) -> None:
         if not agents:
             return
-        await self.start_client()
-        await self._request_ok("preflight_agents", {"agents": agents})
+        await self._request("POST", "/api/preflight", json={"agents": agents})
+
+    async def renew_lease(self) -> dict[str, Any]:
+        return await self._request("POST", "/api/session/renew")
 
     async def shutdown(self) -> None:
-        if not self._process:
-            return
+        if self._lease_task and not self._lease_task.done():
+            self._lease_task.cancel()
+            self._lease_task = None
 
-        try:
-            await self._request_ok("shutdown", {})
-        except Exception:
-            pass
+        # Only send shutdown if we own the broker process
+        if self._process:
+            try:
+                await self._request("POST", "/api/shutdown")
+            except Exception:
+                pass
 
-        process = self._process
-        try:
-            await asyncio.wait_for(
-                self._exit_future if self._exit_future else asyncio.sleep(0),
-                timeout=self._shutdown_timeout_ms / 1000,
-            )
-        except asyncio.TimeoutError:
-            if process.returncode is None:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=2.0)
-                except asyncio.TimeoutError:
-                    process.kill()
+        if self._ws and not self._ws.closed:
+            await self._ws.close()
+        if self._ws_task and not self._ws_task.done():
+            self._ws_task.cancel()
 
-        # Clean up reader tasks
-        if self._reader_task and not self._reader_task.done():
-            self._reader_task.cancel()
         if self._stderr_task and not self._stderr_task.done():
             self._stderr_task.cancel()
 
-        self._process = None
-        self._started = False
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+        if self._process:
+            try:
+                await asyncio.wait_for(self._process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                self._process.kill()
+            self._process = None
 
     async def wait_for_exit(self) -> None:
-        if self._exit_future:
-            await self._exit_future
+        if self._process:
+            await self._process.wait()
+
+    @property
+    def broker_pid(self) -> Optional[int]:
+        return self._process.pid if self._process else None
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+async def _wait_for_api_url(
+    process: asyncio.subprocess.Process,
+    timeout_ms: int,
+) -> str:
+    """Parse the API URL from the broker's stdout.
+
+    The broker prints: [agent-relay] API listening on http://{bind}:{port}
+    Returns the full URL (e.g. "http://127.0.0.1:3889").
+    """
+    import re
+
+    assert process.stdout
+    pattern = re.compile(r"API listening on (https?://\S+)")
+
+    async def _read() -> str:
+        assert process.stdout
+        while True:
+            line_bytes = await process.stdout.readline()
+            if not line_bytes:
+                raise AgentRelayProcessError(
+                    f"Broker process exited with code {process.returncode} before becoming ready"
+                )
+            line = line_bytes.decode("utf-8", errors="replace").rstrip("\n")
+            match = pattern.search(line)
+            if match:
+                return match.group(1)
+
+    try:
+        return await asyncio.wait_for(_read(), timeout=timeout_ms / 1000)
+    except asyncio.TimeoutError:
+        raise AgentRelayProcessError(
+            f"Broker did not report API URL within {timeout_ms}ms"
+        ) from None
