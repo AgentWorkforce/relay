@@ -845,7 +845,46 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
-  it('human.sendMessage auto-registers once and sends from the canonical identity', async () => {
+  it('human.sendMessage preserves legacy non-registering behavior by default', async () => {
+    const { client, mock } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay({
+      env: { ...process.env, RELAY_API_KEY: 'relay-key' },
+    });
+
+    try {
+      const human = relay.human({ name: 'Reviewer' });
+
+      const first = await human.sendMessage({ to: 'worker-1', text: 'status?' });
+      const second = await human.sendMessage({ to: 'worker-1', text: 'report back' });
+
+      expect(relayCastMocks.mockRelayCastRegisterAgent).not.toHaveBeenCalled();
+      expect(mock.sendMessage).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          to: 'worker-1',
+          text: 'status?',
+          from: 'Reviewer',
+        })
+      );
+      expect(mock.sendMessage).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          to: 'worker-1',
+          text: 'report back',
+          from: 'Reviewer',
+        })
+      );
+      expect(first.from).toBe('Reviewer');
+      expect(second.from).toBe('Reviewer');
+      expect(human.name).toBe('Reviewer');
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('registered human.sendMessage auto-registers once and sends from the canonical identity', async () => {
     const { client, mock } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
     relayCastMocks.mockRelayCastRegisterAgent.mockResolvedValue({
@@ -861,7 +900,7 @@ describe('AgentRelay orchestration handles', () => {
     });
 
     try {
-      const human = relay.human({ name: 'Reviewer' });
+      const human = await relay.human({ name: 'Reviewer', ensureRegistered: true });
 
       const first = await human.sendMessage({ to: 'worker-1', text: 'status?' });
       const second = await human.sendMessage({ to: 'worker-1', text: 'report back' });
@@ -891,7 +930,7 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
-  it('human.sendMessage surfaces a clear SDK-level registration error', async () => {
+  it('human.ensureRegistered surfaces a clear SDK-level registration error', async () => {
     const { client, mock } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
     relayCastMocks.mockRelayCastRegisterAgent.mockRejectedValue(new Error('name conflict upstream'));
@@ -903,11 +942,11 @@ describe('AgentRelay orchestration handles', () => {
     try {
       const human = relay.human({ name: 'Reviewer' });
 
-      await expect(human.sendMessage({ to: 'worker-1', text: 'status?' })).rejects.toMatchObject({
+      await expect(human.ensureRegistered()).rejects.toMatchObject({
         name: 'HumanRegistrationError',
         requestedName: 'Reviewer',
       });
-      await expect(human.sendMessage({ to: 'worker-1', text: 'status?' })).rejects.toThrow(
+      await expect(human.ensureRegistered()).rejects.toThrow(
         'Failed to register human identity "Reviewer": name conflict upstream'
       );
       expect(mock.sendMessage).not.toHaveBeenCalled();

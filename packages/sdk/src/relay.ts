@@ -673,7 +673,7 @@ export class AgentRelay {
   human(opts: { name: string; ensureRegistered: true }): Promise<HumanHandle>;
   human(opts: { name: string; ensureRegistered?: false | undefined }): HumanHandle;
   human(opts: { name: string; ensureRegistered?: boolean }): HumanHandle | Promise<HumanHandle> {
-    const handle = this.createHumanHandle(opts.name, 'human', true);
+    const handle = this.createHumanHandle(opts.name, 'human', !!opts.ensureRegistered);
     if (opts.ensureRegistered) {
       return handle.ensureRegistered().then(() => handle);
     }
