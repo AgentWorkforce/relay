@@ -16,7 +16,7 @@ function makeTempDir(prefix: string): string {
 
 async function importCollectorsWithHome(homeDir: string) {
   process.env.HOME = homeDir;
-  vi.resetModules();
+  vi.restoreAllMocks();
   const [claudeModule, opencodeModule] = await Promise.all([
     import('../collectors/claude.js'),
     import('../collectors/opencode.js'),
@@ -28,7 +28,7 @@ async function importCollectorsWithHome(homeDir: string) {
 }
 
 afterEach(() => {
-  vi.resetModules();
+  vi.restoreAllMocks();
   process.env.HOME = originalHome;
   while (tempDirs.length > 0) {
     rmSync(tempDirs.pop()!, { recursive: true, force: true });

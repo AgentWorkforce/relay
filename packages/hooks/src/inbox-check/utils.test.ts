@@ -38,7 +38,6 @@ describe('Inbox Check Utils', () => {
     if (tempDir) {
       cleanup(tempDir);
     }
-    vi.unstubAllEnvs();
   });
 
   describe('DEFAULT_INBOX_DIR', () => {
@@ -54,7 +53,7 @@ describe('Inbox Check Utils', () => {
     });
 
     it('returns agent name from environment variable', () => {
-      vi.stubEnv('AGENT_RELAY_NAME', 'TestAgent');
+      process.env.AGENT_RELAY_NAME = 'TestAgent';
       expect(getAgentName()).toBe('TestAgent');
     });
   });
@@ -66,7 +65,7 @@ describe('Inbox Check Utils', () => {
     });
 
     it('uses env var when agentName not in config', () => {
-      vi.stubEnv('AGENT_RELAY_NAME', 'EnvAgent');
+      process.env.AGENT_RELAY_NAME = 'EnvAgent';
       const result = getInboxPath({ inboxDir: tempDir });
       expect(result).toBe(path.join(tempDir, 'EnvAgent', 'inbox.md'));
     });

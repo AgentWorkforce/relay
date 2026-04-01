@@ -692,7 +692,7 @@ describe('SwarmCoordinator', () => {
   describe('createRun', () => {
     it('should insert a run and emit run:created', async () => {
       const run = makeRunRow();
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [run] });
+      (db.query as any).mockResolvedValueOnce({ rows: [run] });
 
       const spy = vi.fn();
       coordinator.on('run:created', spy);
@@ -707,7 +707,7 @@ describe('SwarmCoordinator', () => {
   describe('startRun', () => {
     it('should transition pending run to running', async () => {
       const run = makeRunRow({ status: 'running' });
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [run] });
+      (db.query as any).mockResolvedValueOnce({ rows: [run] });
 
       const spy = vi.fn();
       coordinator.on('run:started', spy);
@@ -718,7 +718,7 @@ describe('SwarmCoordinator', () => {
     });
 
     it('should throw when run not found', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await expect(coordinator.startRun('nonexistent')).rejects.toThrow('not found or not in pending state');
     });
   });
@@ -726,7 +726,7 @@ describe('SwarmCoordinator', () => {
   describe('completeRun', () => {
     it('should transition run to completed and emit event', async () => {
       const run = makeRunRow({ status: 'completed' });
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [run] });
+      (db.query as any).mockResolvedValueOnce({ rows: [run] });
 
       const spy = vi.fn();
       coordinator.on('run:completed', spy);
@@ -737,7 +737,7 @@ describe('SwarmCoordinator', () => {
     });
 
     it('should throw when run not found', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await expect(coordinator.completeRun('nonexistent')).rejects.toThrow('not found');
     });
   });
@@ -745,7 +745,7 @@ describe('SwarmCoordinator', () => {
   describe('failRun', () => {
     it('should transition run to failed with error', async () => {
       const run = makeRunRow({ status: 'failed', error: 'boom' });
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [run] });
+      (db.query as any).mockResolvedValueOnce({ rows: [run] });
 
       const spy = vi.fn();
       coordinator.on('run:failed', spy);
@@ -758,7 +758,7 @@ describe('SwarmCoordinator', () => {
   describe('cancelRun', () => {
     it('should transition run to cancelled', async () => {
       const run = makeRunRow({ status: 'cancelled' });
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [run] });
+      (db.query as any).mockResolvedValueOnce({ rows: [run] });
 
       const spy = vi.fn();
       coordinator.on('run:cancelled', spy);
@@ -773,7 +773,7 @@ describe('SwarmCoordinator', () => {
   describe('createSteps', () => {
     it('should create steps from workflow config', async () => {
       const step = makeStepRow();
-      vi.mocked(db.query).mockResolvedValue({ rows: [step] });
+      (db.query as any).mockResolvedValue({ rows: [step] });
 
       const config = makeConfig({
         workflows: [
@@ -796,7 +796,7 @@ describe('SwarmCoordinator', () => {
   describe('startStep', () => {
     it('should transition step to running and emit event', async () => {
       const step = makeStepRow({ status: 'running' });
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [step] });
+      (db.query as any).mockResolvedValueOnce({ rows: [step] });
 
       const spy = vi.fn();
       coordinator.on('step:started', spy);
@@ -807,7 +807,7 @@ describe('SwarmCoordinator', () => {
     });
 
     it('should throw for non-pending step', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await expect(coordinator.startStep('bad')).rejects.toThrow('not found or not in pending state');
     });
   });
@@ -815,7 +815,7 @@ describe('SwarmCoordinator', () => {
   describe('completeStep', () => {
     it('should transition step to completed with output', async () => {
       const step = makeStepRow({ status: 'completed', output: 'result data' });
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [step] });
+      (db.query as any).mockResolvedValueOnce({ rows: [step] });
 
       const spy = vi.fn();
       coordinator.on('step:completed', spy);
@@ -829,7 +829,7 @@ describe('SwarmCoordinator', () => {
   describe('failStep', () => {
     it('should transition step to failed with error', async () => {
       const step = makeStepRow({ status: 'failed', error: 'timeout' });
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [step] });
+      (db.query as any).mockResolvedValueOnce({ rows: [step] });
 
       const spy = vi.fn();
       coordinator.on('step:failed', spy);
@@ -842,7 +842,7 @@ describe('SwarmCoordinator', () => {
   describe('skipStep', () => {
     it('should mark step as skipped', async () => {
       const step = makeStepRow({ status: 'skipped' });
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [step] });
+      (db.query as any).mockResolvedValueOnce({ rows: [step] });
 
       const result = await coordinator.skipStep('step_1');
       expect(result.status).toBe('skipped');
@@ -853,11 +853,11 @@ describe('SwarmCoordinator', () => {
 
   describe('getRun', () => {
     it('should return run or null', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       expect(await coordinator.getRun('nonexistent')).toBeNull();
 
       const run = makeRunRow();
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [run] });
+      (db.query as any).mockResolvedValueOnce({ rows: [run] });
       expect(await coordinator.getRun('run_test_1')).toEqual(run);
     });
   });
@@ -869,7 +869,7 @@ describe('SwarmCoordinator', () => {
         makeStepRow({ id: 's2', stepName: 'step-2', status: 'pending', dependsOn: ['step-1'] }),
         makeStepRow({ id: 's3', stepName: 'step-3', status: 'pending', dependsOn: ['step-2'] }),
       ];
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: steps });
+      (db.query as any).mockResolvedValueOnce({ rows: steps });
 
       const ready = await coordinator.getReadySteps('run_test_1');
       expect(ready).toHaveLength(1);
@@ -881,7 +881,7 @@ describe('SwarmCoordinator', () => {
         makeStepRow({ id: 's1', stepName: 'a', status: 'pending', dependsOn: [] }),
         makeStepRow({ id: 's2', stepName: 'b', status: 'pending', dependsOn: [] }),
       ];
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: steps });
+      (db.query as any).mockResolvedValueOnce({ rows: steps });
 
       const ready = await coordinator.getReadySteps('run_test_1');
       expect(ready).toHaveLength(2);
@@ -890,7 +890,7 @@ describe('SwarmCoordinator', () => {
 
   describe('getRunsByWorkspace', () => {
     it('should query by workspace with optional status filter', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await coordinator.getRunsByWorkspace('ws-1', 'running');
       expect(db.query).toHaveBeenCalledWith(
         expect.stringContaining('status = $2'),
@@ -899,7 +899,7 @@ describe('SwarmCoordinator', () => {
     });
 
     it('should query without status filter', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await coordinator.getRunsByWorkspace('ws-1');
       expect(db.query).toHaveBeenCalledWith(
         expect.not.stringContaining('status ='),
