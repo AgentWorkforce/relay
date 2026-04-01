@@ -2954,11 +2954,10 @@ export class WorkflowRunner {
         }
 
         const absoluteWorktreePath = path.resolve(stepCwd, worktreePath);
-        const checkBranchCmd = `git rev-parse --verify --quiet ${branch} 2>/dev/null`;
         let branchExists = false;
 
         await new Promise<void>((resolve) => {
-          const checkChild = cpSpawn('sh', ['-c', checkBranchCmd], {
+          const checkChild = cpSpawn('git', ['rev-parse', '--verify', '--quiet', branch], {
             stdio: 'pipe',
             cwd: stepCwd,
             env: { ...process.env },
@@ -2970,11 +2969,11 @@ export class WorkflowRunner {
           checkChild.on('error', () => resolve());
         });
 
-        let worktreeCmd: string;
+        let worktreeArgs: string[];
         if (branchExists) {
-          worktreeCmd = `git worktree add "${absoluteWorktreePath}" ${branch}`;
+          worktreeArgs = ['worktree', 'add', absoluteWorktreePath, branch];
         } else if (createBranch) {
-          worktreeCmd = `git worktree add -b ${branch} "${absoluteWorktreePath}" ${baseBranch}`;
+          worktreeArgs = ['worktree', 'add', '-b', branch, absoluteWorktreePath, baseBranch];
         } else {
           throw new Error(`Branch "${branch}" does not exist and createBranch is false`);
         }
@@ -2982,7 +2981,7 @@ export class WorkflowRunner {
         let commandStdout = '';
         let commandStderr = '';
         const output = await new Promise<string>((resolve, reject) => {
-          const child = cpSpawn('sh', ['-c', worktreeCmd], {
+          const child = cpSpawn('git', worktreeArgs, {
             stdio: 'pipe',
             cwd: stepCwd,
             env: { ...process.env },

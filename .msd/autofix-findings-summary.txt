@@ -1,31 +1,18 @@
-1. [CRITICAL] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
-2. [HIGH] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
-3. [HIGH] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
-4. [HIGH] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
-5. [HIGH] src/cli/commands/on/workspace.ts — src/cli/commands/on/workspace.ts
-6. [HIGH] src/cli/commands/on/workspace.ts — src/cli/commands/on/workspace.ts
-7. [HIGH] src/cli/commands/on/provision.ts — src/cli/commands/on/provision.ts
-8. [HIGH] scripts/postinstall.js — scripts/postinstall.js
-9. [HIGH] src/cli/commands/on/services.ts — src/cli/commands/on/services.ts
-10. [HIGH] packages/sdk/src/relay.ts — packages/sdk/src/relay.ts
-11. [MEDIUM] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
-12. [MEDIUM] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
-13. [MEDIUM] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
-14. [MEDIUM] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
-15. [MEDIUM] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
-16. [MEDIUM] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
-17. [MEDIUM] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
-18. [MEDIUM] src/cli/commands/on/workspace.ts — src/cli/commands/on/workspace.ts
-19. [MEDIUM] src/cli/commands/on/workspace.ts — src/cli/commands/on/workspace.ts
-20. [MEDIUM] src/cli/commands/on/provision.ts — src/cli/commands/on/provision.ts
-21. [MEDIUM] scripts/postinstall.js — scripts/postinstall.js
-22. [MEDIUM] src/cli/commands/on/services.ts — src/cli/commands/on/services.ts
-23. [MEDIUM] packages/sdk/src/relay.ts — packages/sdk/src/relay.ts
-24. [MEDIUM] src/cli/commands/on/dotfiles.ts — src/cli/commands/on/dotfiles.ts
-25. [MEDIUM] src/cli/commands/on/token.ts — src/cli/commands/on/token.ts
-26. [LOW] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
-27. [LOW] src/cli/commands/on/start.ts — src/cli/commands/on/start.ts
-28. [LOW] src/cli/commands/on/services.ts — src/cli/commands/on/services.ts
-29. [LOW] src/cli/commands/on/dotfiles.ts — src/cli/commands/on/dotfiles.ts
-30. [LOW] src/cli/commands/on/prereqs.ts — src/cli/commands/on/prereqs.ts
-31. [LOW] src/cli/commands/on/start.test.ts — src/cli/commands/on/start.test.ts
+1. [HIGH] src/cost/tracker.ts:156 — <!-- devin-review-comment {"id": "BUG_pr-review-job-66ca60872fbb42e6b01041bf3c20090a_0001", "file_path": "src/cost/track
+2. [HIGH] workflows/refactor/run-refactor.ts:50 — <!-- devin-review-comment {"id": "BUG_pr-review-job-66ca60872fbb42e6b01041bf3c20090a_0002", "file_path": "workflows/refa
+3. [HIGH] packages/sdk/src/workflows/step-executor.ts:515 — <!-- devin-review-comment {"id": "BUG_pr-review-job-64ea63c72a3c45f295b96731dc2fe127_0001", "file_path": "packages/sdk/s
+4. [HIGH] packages/sdk/src/workflows/channel-messenger.ts:48 — ## Polynomial regular expression used on uncontrolled data
+
+This [regular expression](1) that depends on [library input]
+5. [HIGH] packages/sdk/src/workflows/runner.ts:3097 — ## Unsafe shell command constructed from library input
+
+This path concatenation which depends on [library input](1) is l
+6. [HIGH] packages/sdk/src/workflows/runner.ts:3131 — ## Unsafe shell command constructed from library input
+
+This string concatenation which depends on [library input](1) is
+7. [HIGH] packages/sdk/src/workflows/runner.ts:2983 — ## Unsafe shell command constructed from library input
+
+This string concatenation which depends on [library input](1) is
+8. [HIGH] workflows/refactor/run-refactor.ts:50 — ✅ **Resolved**: The run-refactor.ts code at lines 49-62 now has a proper IIFE that handles --wave=N via eqValue, handles
+9. [HIGH] src/cost/tracker.ts:156 — ✅ **Resolved**: The resolveModel function at tracker.ts:141-153 now calls normalizeModel(normalizedAgent) and checks the
+10. [HIGH] packages/sdk/src/workflows/process-spawner.ts:127 — <!-- devin-review-comment {"id": "BUG_pr-review-job-e637d12c27df48018dcf7f822a5bafc9_0001", "file_path": "packages/sdk/s

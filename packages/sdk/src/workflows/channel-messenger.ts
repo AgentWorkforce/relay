@@ -43,10 +43,22 @@ export function formatError(stepName: string, error: unknown): string {
 }
 
 export function scrubForChannel(text: string): string {
-  // Strip system-reminder blocks (closed or unclosed)
-  const withoutSystemReminders = text
-    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/giu, '')
-    .replace(/<system-reminder>[\s\S]*/giu, '');
+  // Strip system-reminder blocks (closed or unclosed) iteratively to avoid
+  // polynomial backtracking (ReDoS) with [\s\S]*? on adversarial input.
+  let withoutSystemReminders = text;
+  const openTag = '<system-reminder>';
+  const closeTag = '</system-reminder>';
+  let idx: number;
+  while ((idx = withoutSystemReminders.toLowerCase().indexOf(openTag)) !== -1) {
+    const closeIdx = withoutSystemReminders.toLowerCase().indexOf(closeTag, idx + openTag.length);
+    if (closeIdx !== -1) {
+      withoutSystemReminders = withoutSystemReminders.slice(0, idx) + withoutSystemReminders.slice(closeIdx + closeTag.length);
+    } else {
+      // Unclosed tag — strip everything from the opening tag onward
+      withoutSystemReminders = withoutSystemReminders.slice(0, idx);
+      break;
+    }
+  }
 
   // Normalize CRLF and bare \r before stripping ANSI — PTY output often
   // contains \r\r\n which leaves stray \r after stripping that confuse line splitting.

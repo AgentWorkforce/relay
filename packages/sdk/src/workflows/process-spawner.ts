@@ -117,17 +117,19 @@ async function runCommand(command: SpawnCommand, opts: ShellOpts): Promise<Spawn
   const exitPromise = new Promise<{ exitCode?: number; exitSignal?: string }>((resolve, reject) => {
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
 
     if (opts.timeoutMs) {
       timer = setTimeout(() => {
         timedOut = true;
         child.kill('SIGTERM');
-        setTimeout(() => child.kill('SIGKILL'), 5000);
+        killTimer = setTimeout(() => child.kill('SIGKILL'), 5000);
       }, opts.timeoutMs);
     }
 
     const clearTimer = () => {
       if (timer) clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
     };
 
     child.once('error', (error) => {

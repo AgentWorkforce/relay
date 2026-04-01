@@ -512,7 +512,7 @@ export class StepExecutor<TState extends StateLike = StateLike> {
       },
       toCompletionResult: (spawnResult, attempt) => {
         const failOnError = step.failOnError !== false;
-        const failed = failOnError && (spawnResult.exitCode ?? 0) !== 0;
+        const failed = failOnError && ((spawnResult.exitCode ?? 0) !== 0 || (spawnResult.exitCode === undefined && spawnResult.exitSignal !== undefined));
         const output =
           step.captureOutput === false
             ? `Command completed (exit code ${spawnResult.exitCode ?? 0})`
