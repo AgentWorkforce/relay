@@ -11,6 +11,22 @@ import { PROTOCOL_VERSION, type BrokerEvent } from '../protocol.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const relayCastMocks = vi.hoisted(() => {
+  const mockRelayCastRegisterAgent = vi.fn();
+  const mockRelayCastSystem = vi.fn();
+  const RelayCastCtor = vi.fn().mockImplementation(() => ({
+    agents: {
+      registerAgent: mockRelayCastRegisterAgent,
+    },
+    system: mockRelayCastSystem,
+  }));
+  return { mockRelayCastRegisterAgent, mockRelayCastSystem, RelayCastCtor };
+});
+
+vi.mock('@relaycast/sdk', () => ({
+  RelayCast: relayCastMocks.RelayCastCtor,
+}));
+
 function readWave0Fixture<T>(name: string): T {
   const fixturePath = path.resolve(__dirname, '../../../../tests/fixtures/contracts/wave0', name);
   return JSON.parse(fs.readFileSync(fixturePath, 'utf8')) as T;
@@ -66,7 +82,16 @@ function emitClientEvent(client: AgentRelayClient, event: BrokerEvent): void {
 }
 
 afterEach(() => {
+  relayCastMocks.mockRelayCastRegisterAgent.mockReset();
+  relayCastMocks.mockRelayCastSystem.mockReset();
   vi.restoreAllMocks();
+  relayCastMocks.RelayCastCtor.mockReset();
+  relayCastMocks.RelayCastCtor.mockImplementation(() => ({
+    agents: {
+      registerAgent: relayCastMocks.mockRelayCastRegisterAgent,
+    },
+    system: relayCastMocks.mockRelayCastSystem,
+  }));
 });
 
 describe('AgentRelayClient orchestration payloads', () => {
@@ -759,6 +784,133 @@ describe('AgentRelay orchestration handles', () => {
         })
       );
       expect(message.from).toBe('system');
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('registerHuman returns the canonical routable identity', async () => {
+    const { client } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    relayCastMocks.mockRelayCastRegisterAgent.mockResolvedValue({
+      id: 'agt_human_1',
+      name: 'human:Alice-7f3c',
+      token: 'tok_1',
+      status: 'online',
+      createdAt: '2026-04-01T00:00:00.000Z',
+    });
+
+    const relay = new AgentRelay({
+      env: { ...process.env, RELAY_API_KEY: 'relay-key' },
+    });
+
+    try {
+      const human = await relay.registerHuman({ name: 'Alice' });
+
+      expect(relayCastMocks.RelayCastCtor).toHaveBeenCalledWith({ apiKey: 'relay-key' });
+      expect(relayCastMocks.mockRelayCastRegisterAgent).toHaveBeenCalledWith({
+        name: 'Alice',
+        type: 'human',
+        strict: false,
+      });
+      await expect(human.ensureRegistered()).resolves.toBe('human:Alice-7f3c');
+      expect(human.name).toBe('human:Alice-7f3c');
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('human({ ensureRegistered: true }) resolves to the canonical handle', async () => {
+    const { client } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    relayCastMocks.mockRelayCastRegisterAgent.mockResolvedValue({
+      id: 'agt_human_2',
+      name: 'human:Owner-2',
+      token: 'tok_2',
+      status: 'online',
+      createdAt: '2026-04-01T00:00:00.000Z',
+    });
+
+    const relay = new AgentRelay({
+      env: { ...process.env, RELAY_API_KEY: 'relay-key' },
+    });
+
+    try {
+      const human = await relay.human({ name: 'Owner', ensureRegistered: true });
+
+      expect(human.name).toBe('human:Owner-2');
+      expect(relayCastMocks.mockRelayCastRegisterAgent).toHaveBeenCalledTimes(1);
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('human.sendMessage auto-registers once and sends from the canonical identity', async () => {
+    const { client, mock } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    relayCastMocks.mockRelayCastRegisterAgent.mockResolvedValue({
+      id: 'agt_human_3',
+      name: 'human:Reviewer-canon',
+      token: 'tok_3',
+      status: 'online',
+      createdAt: '2026-04-01T00:00:00.000Z',
+    });
+
+    const relay = new AgentRelay({
+      env: { ...process.env, RELAY_API_KEY: 'relay-key' },
+    });
+
+    try {
+      const human = relay.human({ name: 'Reviewer' });
+
+      const first = await human.sendMessage({ to: 'worker-1', text: 'status?' });
+      const second = await human.sendMessage({ to: 'worker-1', text: 'report back' });
+
+      expect(relayCastMocks.mockRelayCastRegisterAgent).toHaveBeenCalledTimes(1);
+      expect(mock.sendMessage).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          to: 'worker-1',
+          text: 'status?',
+          from: 'human:Reviewer-canon',
+        })
+      );
+      expect(mock.sendMessage).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          to: 'worker-1',
+          text: 'report back',
+          from: 'human:Reviewer-canon',
+        })
+      );
+      expect(first.from).toBe('human:Reviewer-canon');
+      expect(second.from).toBe('human:Reviewer-canon');
+      expect(human.name).toBe('human:Reviewer-canon');
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('human.sendMessage surfaces a clear SDK-level registration error', async () => {
+    const { client, mock } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    relayCastMocks.mockRelayCastRegisterAgent.mockRejectedValue(new Error('name conflict upstream'));
+
+    const relay = new AgentRelay({
+      env: { ...process.env, RELAY_API_KEY: 'relay-key' },
+    });
+
+    try {
+      const human = relay.human({ name: 'Reviewer' });
+
+      await expect(human.sendMessage({ to: 'worker-1', text: 'status?' })).rejects.toMatchObject({
+        name: 'HumanRegistrationError',
+        requestedName: 'Reviewer',
+      });
+      await expect(human.sendMessage({ to: 'worker-1', text: 'status?' })).rejects.toThrow(
+        'Failed to register human identity "Reviewer": name conflict upstream'
+      );
+      expect(mock.sendMessage).not.toHaveBeenCalled();
     } finally {
       await relay.shutdown();
     }

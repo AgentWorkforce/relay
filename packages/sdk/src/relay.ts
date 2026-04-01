@@ -273,6 +273,7 @@ export interface Agent {
 
 export interface HumanHandle {
   readonly name: string;
+  ensureRegistered(): Promise<string>;
   sendMessage(input: {
     to: string;
     text: string;
@@ -281,6 +282,18 @@ export interface HumanHandle {
     data?: Record<string, unknown>;
     mode?: MessageInjectionMode;
   }): Promise<Message>;
+}
+
+export class HumanRegistrationError extends Error {
+  readonly requestedName: string;
+  readonly cause?: unknown;
+
+  constructor(requestedName: string, message: string, cause?: unknown) {
+    super(message);
+    this.name = 'HumanRegistrationError';
+    this.requestedName = requestedName;
+    this.cause = cause;
+  }
 }
 
 export interface AgentSpawner {
@@ -340,6 +353,12 @@ type InternalAgent = Agent & {
   _setChannels: (channels: string[]) => void;
 };
 
+type HumanIdentityKind = 'human' | 'system';
+type HumanRegistrationState = {
+  canonicalName?: string;
+  pending?: Promise<string>;
+};
+
 // ── AgentRelay facade ───────────────────────────────────────────────────────
 
 export class AgentRelay {
@@ -394,6 +413,7 @@ export class AgentRelay {
   private readonly idleAgents = new Set<string>();
   private readonly deliveryStates = new Map<string, DeliveryState>();
   private readonly outputListeners = new Map<string, Set<OutputListener>>();
+  private readonly humanRegistrations = new Map<string, HumanRegistrationState>();
   private readonly exitResolvers = new Map<
     string,
     { resolve: (reason: 'exited' | 'released') => void; token: number }
@@ -644,17 +664,52 @@ export class AgentRelay {
 
   // ── Human source ────────────────────────────────────────────────────────
 
-  human(opts: { name: string }): HumanHandle {
+  async registerHuman(opts: { name: string }): Promise<HumanHandle> {
+    const handle = this.createHumanHandle(opts.name, 'human', true);
+    await handle.ensureRegistered();
+    return handle;
+  }
+
+  human(opts: { name: string; ensureRegistered: true }): Promise<HumanHandle>;
+  human(opts: { name: string; ensureRegistered?: false | undefined }): HumanHandle;
+  human(opts: { name: string; ensureRegistered?: boolean }): HumanHandle | Promise<HumanHandle> {
+    const handle = this.createHumanHandle(opts.name, 'human', true);
+    if (opts.ensureRegistered) {
+      return handle.ensureRegistered().then(() => handle);
+    }
+    return handle;
+  }
+
+  private createHumanHandle(
+    requestedName: string,
+    kind: HumanIdentityKind,
+    autoEnsureRegistration: boolean
+  ): HumanHandle {
+    const normalizedRequestedName = this.normalizeHumanRequestedName(requestedName);
+    const stateKey = this.humanRegistrationKey(normalizedRequestedName, kind);
+    const resolveName = () => this.humanRegistrations.get(stateKey)?.canonicalName ?? normalizedRequestedName;
+
     return {
-      name: opts.name,
+      get name() {
+        return resolveName();
+      },
+      ensureRegistered: async () => {
+        if (!autoEnsureRegistration) {
+          return resolveName();
+        }
+        return this.ensureHumanRegistered(normalizedRequestedName, kind);
+      },
       sendMessage: async (input) => {
         const client = await this.ensureStarted();
+        const from = autoEnsureRegistration
+          ? await this.ensureHumanRegistered(normalizedRequestedName, kind)
+          : resolveName();
         let result: Awaited<ReturnType<typeof client.sendMessage>>;
         try {
           result = await client.sendMessage({
             to: input.to,
             text: input.text,
-            from: opts.name,
+            from,
             threadId: input.threadId,
             priority: input.priority,
             data: input.data,
@@ -662,18 +717,18 @@ export class AgentRelay {
           });
         } catch (error) {
           if (isUnsupportedOperation(error)) {
-            return buildUnsupportedOperationMessage(opts.name, input);
+            return buildUnsupportedOperationMessage(from, input);
           }
           throw error;
         }
         if (result?.event_id === 'unsupported_operation') {
-          return buildUnsupportedOperationMessage(opts.name, input);
+          return buildUnsupportedOperationMessage(from, input);
         }
 
         const eventId = result?.event_id ?? randomBytes(8).toString('hex');
         const msg: Message = {
           eventId,
-          from: opts.name,
+          from,
           to: input.to,
           text: input.text,
           threadId: input.threadId,
@@ -687,7 +742,7 @@ export class AgentRelay {
   }
 
   system(): HumanHandle {
-    return this.human({ name: 'system' });
+    return this.createHumanHandle('system', 'system', false);
   }
 
   // ── Messaging ─────────────────────────────────────────────────────────
@@ -1157,6 +1212,70 @@ export class AgentRelay {
     if (this.relaycastBaseUrl && this.clientOptions.env) {
       this.clientOptions.env.RELAYCAST_BASE_URL = this.relaycastBaseUrl;
     }
+  }
+
+  private humanRegistrationKey(name: string, kind: HumanIdentityKind): string {
+    return `${kind}:${name}`;
+  }
+
+  private normalizeHumanRequestedName(name: string): string {
+    const normalized = name.trim();
+    if (!normalized) {
+      throw new HumanRegistrationError(name, 'Human registration requires a non-empty name.');
+    }
+    return normalized;
+  }
+
+  private async ensureHumanRegistered(name: string, kind: HumanIdentityKind): Promise<string> {
+    const stateKey = this.humanRegistrationKey(name, kind);
+    const existing = this.humanRegistrations.get(stateKey);
+    if (existing?.canonicalName) {
+      return existing.canonicalName;
+    }
+    if (existing?.pending) {
+      return existing.pending;
+    }
+
+    const state = existing ?? {};
+    const pending = (async () => {
+      try {
+        await this.ensureStarted();
+        if (!this.relayApiKey) {
+          throw new HumanRegistrationError(
+            name,
+            `Failed to register human identity "${name}": no Relaycast workspace key is available.`
+          );
+        }
+
+        const relaycast = new RelayCast({
+          apiKey: this.relayApiKey,
+          ...(this.relaycastBaseUrl ? { baseUrl: this.relaycastBaseUrl } : {}),
+        });
+
+        const registration =
+          kind === 'system'
+            ? await relaycast.system({ name })
+            : await relaycast.agents.registerAgent({ name, type: 'human', strict: false });
+        state.canonicalName = registration.name;
+        return registration.name;
+      } catch (error) {
+        if (error instanceof HumanRegistrationError) {
+          throw error;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        throw new HumanRegistrationError(
+          name,
+          `Failed to register human identity "${name}": ${message}`,
+          error
+        );
+      } finally {
+        state.pending = undefined;
+      }
+    })();
+
+    state.pending = pending;
+    this.humanRegistrations.set(stateKey, state);
+    return pending;
   }
 
   private async ensureStarted(): Promise<AgentRelayClient> {
