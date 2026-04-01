@@ -86,4 +86,6 @@ __pycache__/
 web/waitlist.json
 web/.open-next
 .msd/
-/workflows/
+/workflows/*
+!/workflows/ci/
+!/workflows/refactor/
