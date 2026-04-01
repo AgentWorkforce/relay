@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@agent-relay/cloud', () => ({
+  readStoredAuth: vi.fn().mockResolvedValue(null),
   ensureAuthenticated: vi.fn().mockResolvedValue({ accessToken: 'test-token' }),
 }));
 
