@@ -12,7 +12,12 @@ import type {
   WorkflowStepRow,
   WorkflowStepStatus,
 } from './types.js';
-import { runVerification, type VerificationOptions, type VerificationResult } from './verification.js';
+import {
+  runVerification,
+  type VerificationOptions,
+  type VerificationResult,
+  type VerificationSideEffects,
+} from './verification.js';
 
 type StateLike = {
   row: WorkflowStepRow;
@@ -55,7 +60,8 @@ export interface StepExecutorDeps<TState extends StateLike = StateLike> {
     output: string,
     stepName: string,
     injectedTaskText?: string,
-    options?: VerificationOptions
+    options?: VerificationOptions,
+    sideEffects?: VerificationSideEffects
   ) => VerificationResult;
   executeStep?: (
     step: WorkflowStep,
@@ -100,8 +106,7 @@ export class StepExecutor<TState extends StateLike = StateLike> {
 
   constructor(private readonly deps: StepExecutorDeps<TState>) {
     this.templateResolver = deps.templateResolver ?? new TemplateResolver();
-    this.channelMessenger =
-      deps.channelMessenger ?? new ChannelMessenger({ postFn: deps.postToChannel });
+    this.channelMessenger = deps.channelMessenger ?? new ChannelMessenger({ postFn: deps.postToChannel });
     this.verificationRunner = deps.verificationRunner ?? runVerification;
   }
 
@@ -122,6 +127,7 @@ export class StepExecutor<TState extends StateLike = StateLike> {
     });
   }
 
+  /** @deprecated Use {@link findReady} instead. This is an alias kept for backward compatibility. */
   findReadySteps(
     steps: WorkflowStep[],
     statuses: Map<string, WorkflowStepStatus> | Map<string, TState>
@@ -129,10 +135,7 @@ export class StepExecutor<TState extends StateLike = StateLike> {
     return this.findReady(steps, statuses);
   }
 
-  scheduleStep(
-    step: WorkflowStep,
-    options: { readyAt?: number; staggerDelay?: number } = {}
-  ): StepSchedule {
+  scheduleStep(step: WorkflowStep, options: { readyAt?: number; staggerDelay?: number } = {}): StepSchedule {
     return {
       step,
       readyAt: options.readyAt ?? Date.now(),
@@ -170,11 +173,7 @@ export class StepExecutor<TState extends StateLike = StateLike> {
     await this.deps.onStepRetried?.(step, state, attempt, maxRetries);
   }
 
-  async completeStep(
-    step: WorkflowStep,
-    state: TState,
-    result: Partial<StepResult>
-  ): Promise<StepResult> {
+  async completeStep(step: WorkflowStep, state: TState, result: Partial<StepResult>): Promise<StepResult> {
     const completedAt = new Date().toISOString();
     const finalResult: StepResult = {
       status: result.status ?? 'completed',
@@ -336,9 +335,8 @@ export class StepExecutor<TState extends StateLike = StateLike> {
           continue;
         }
 
-        const error = settledResult.reason instanceof Error
-          ? settledResult.reason.message
-          : String(settledResult.reason);
+        const error =
+          settledResult.reason instanceof Error ? settledResult.reason.message : String(settledResult.reason);
         if (state) {
           const failed =
             state.row.status === 'failed'
@@ -512,7 +510,10 @@ export class StepExecutor<TState extends StateLike = StateLike> {
       },
       toCompletionResult: (spawnResult, attempt) => {
         const failOnError = step.failOnError !== false;
-        const failed = failOnError && ((spawnResult.exitCode ?? 0) !== 0 || (spawnResult.exitCode === undefined && spawnResult.exitSignal !== undefined));
+        const failed =
+          failOnError &&
+          ((spawnResult.exitCode ?? 0) !== 0 ||
+            (spawnResult.exitCode === undefined && spawnResult.exitSignal !== undefined));
         const output =
           step.captureOutput === false
             ? `Command completed (exit code ${spawnResult.exitCode ?? 0})`

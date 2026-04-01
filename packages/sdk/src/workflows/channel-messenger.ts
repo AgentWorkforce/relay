@@ -38,8 +38,55 @@ export function formatStepOutput(stepName: string, output: string, maxLength = 2
 }
 
 export function formatError(stepName: string, error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
+  const raw = error instanceof Error ? error.message : String(error);
+  // Strip absolute paths that could leak internal directory structure
+  const message = raw.replace(/(?:\/[\w.-]+){3,}/g, '[path]');
   return `**[${stepName}]** Failed: ${message}`;
+}
+
+// Common secret patterns to redact from channel output.
+const SECRET_PATTERNS = [
+  /(?:api[_-]?key|apikey|secret[_-]?key|access[_-]?token|auth[_-]?token|bearer)\s*[:=]\s*\S+/gi,
+  /(?:sk|pk|rk|ak)[-_][a-zA-Z0-9]{20,}/g,
+  /ghp_[a-zA-Z0-9]{36,}/g,
+  /gho_[a-zA-Z0-9]{36,}/g,
+  /github_pat_[a-zA-Z0-9_]{22,}/g,
+  /xox[bpors]-[a-zA-Z0-9-]+/g,
+  /-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END/g,
+];
+
+// Unicode spinner / ornament characters used by Claude TUI animations.
+// Includes block-element chars (▗▖▘▝) used in the Claude Code header bar.
+const SPINNER =
+  '\\u2756\\u2738\\u2739\\u273a\\u273b\\u273c\\u273d\\u2731\\u2732\\u2733\\u2734\\u2735\\u2736\\u2737\\u2743\\u2745\\u2746\\u25d6\\u25d7\\u25d8\\u25d9\\u2022\\u25cf\\u25cb\\u25a0\\u25a1\\u25b6\\u25c0\\u23f5\\u23f6\\u23f7\\u23f8\\u23f9\\u25e2\\u25e3\\u25e4\\u25e5\\u2597\\u2596\\u2598\\u259d\\u2bc8\\u2bc7\\u2bc5\\u2bc6\\u00b7' +
+  '\\u2590\\u258c\\u2588\\u2584\\u2580\\u259a\\u259e' +
+  '\\u2b21\\u2b22';
+
+// Pre-compiled regex constants — hoisted to module level to avoid recompilation per call.
+const SPINNER_RE = new RegExp(`[${SPINNER}]`, 'gu');
+const SPINNER_CLASS_RE = new RegExp(`^[\\s${SPINNER}]*$`, 'u');
+const BOX_DRAWING_ONLY_RE = /^[\s\u2500-\u257f\u2580-\u259f\u25a0-\u25ff\-_=~]{3,}$/u;
+const BROKER_LOG_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+(?:INFO|WARN|ERROR|DEBUG)\s/u;
+const CLAUDE_HEADER_RE =
+  /^(?:[\s\u2580-\u259f✢*·▗▖▘▝]+\s*)?(?:Claude\s+Code(?:\s+v?[\d.]+)?|(?:Sonnet|Haiku|Opus)\s*[\d.]+|claude-(?:sonnet|haiku|opus)-[\w.-]+|Running\s+on\s+claude)/iu;
+const DIR_BREADCRUMB_RE = /^\s*~[\\/]/u;
+const UI_HINT_RE =
+  /\b(?:Press\s+up\s+to\s+edit|tab\s+to\s+queue|bypass\s+permissions|esc\s+to\s+interrupt)\b/iu;
+const THINKING_LINE_RE = new RegExp(`^[\\s${SPINNER}]*\\s*\\w[\\w\\s]*\\u2026\\s*$`, 'u');
+const CURSOR_ONLY_RE = /^[\s❯⎿›»◀▶←→↑↓⟨⟩⟪⟫·]+$/u;
+const CURSOR_AGENT_RE =
+  /^(?:Cursor Agent|[\s⬡⬢]*Generating[.\s]|\[Pasted text|Auto-run all|Add a follow-up|ctrl\+c to stop|shift\+tab|Auto$|\/\s*commands|@\s*files|!\s*shell|follow-ups?\s|The user ha)/iu;
+const SLASH_COMMAND_RE = /^\/\w+\s*$/u;
+const MCP_JSON_KV_RE =
+  /^\s*"(?:type|method|params|result|id|jsonrpc|tool|name|arguments|content|role|metadata)"\s*:/u;
+const MEANINGFUL_CONTENT_RE = /[a-zA-Z0-9]/u;
+
+export function scrubSecrets(text: string): string {
+  let result = text;
+  for (const pattern of SECRET_PATTERNS) {
+    result = result.replace(pattern, '[REDACTED]');
+  }
+  return result;
 }
 
 export function scrubForChannel(text: string): string {
@@ -52,7 +99,8 @@ export function scrubForChannel(text: string): string {
   while ((idx = withoutSystemReminders.toLowerCase().indexOf(openTag)) !== -1) {
     const closeIdx = withoutSystemReminders.toLowerCase().indexOf(closeTag, idx + openTag.length);
     if (closeIdx !== -1) {
-      withoutSystemReminders = withoutSystemReminders.slice(0, idx) + withoutSystemReminders.slice(closeIdx + closeTag.length);
+      withoutSystemReminders =
+        withoutSystemReminders.slice(0, idx) + withoutSystemReminders.slice(closeIdx + closeTag.length);
     } else {
       // Unclosed tag — strip everything from the opening tag onward
       withoutSystemReminders = withoutSystemReminders.slice(0, idx);
@@ -65,30 +113,8 @@ export function scrubForChannel(text: string): string {
   const normalized = withoutSystemReminders.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const ansiStripped = stripAnsiFn(normalized);
 
-  // Unicode spinner / ornament characters used by Claude TUI animations.
-  // Includes block-element chars (▗▖▘▝) used in the Claude Code header bar.
-  const SPINNER =
-    '\\u2756\\u2738\\u2739\\u273a\\u273b\\u273c\\u273d\\u2731\\u2732\\u2733\\u2734\\u2735\\u2736\\u2737\\u2743\\u2745\\u2746\\u25d6\\u25d7\\u25d8\\u25d9\\u2022\\u25cf\\u25cb\\u25a0\\u25a1\\u25b6\\u25c0\\u23f5\\u23f6\\u23f7\\u23f8\\u23f9\\u25e2\\u25e3\\u25e4\\u25e5\\u2597\\u2596\\u2598\\u259d\\u2bc8\\u2bc7\\u2bc5\\u2bc6\\u00b7' +
-    '\\u2590\\u258c\\u2588\\u2584\\u2580\\u259a\\u259e' +
-    '\\u2b21\\u2b22';
-  const spinnerRe = new RegExp(`[${SPINNER}]`, 'gu');
-  const spinnerClassRe = new RegExp(`^[\\s${SPINNER}]*$`, 'u');
-
-  const boxDrawingOnlyRe = /^[\s\u2500-\u257f\u2580-\u259f\u25a0-\u25ff\-_=~]{3,}$/u;
-  const brokerLogRe = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+(?:INFO|WARN|ERROR|DEBUG)\s/u;
-  const claudeHeaderRe =
-    /^(?:[\s\u2580-\u259f✢*·▗▖▘▝]+\s*)?(?:Claude\s+Code(?:\s+v?[\d.]+)?|(?:Sonnet|Haiku|Opus)\s*[\d.]+|claude-(?:sonnet|haiku|opus)-[\w.-]+|Running\s+on\s+claude)/iu;
-  const dirBreadcrumbRe = /^\s*~[\\/]/u;
-  const uiHintRe =
-    /\b(?:Press\s+up\s+to\s+edit|tab\s+to\s+queue|bypass\s+permissions|esc\s+to\s+interrupt)\b/iu;
-  const thinkingLineRe = new RegExp(`^[\\s${SPINNER}]*\\s*\\w[\\w\\s]*\\u2026\\s*$`, 'u');
-  const cursorOnlyRe = /^[\s❯⎿›»◀▶←→↑↓⟨⟩⟪⟫·]+$/u;
-  const cursorAgentRe =
-    /^(?:Cursor Agent|[\s⬡⬢]*Generating[.\s]|\[Pasted text|Auto-run all|Add a follow-up|ctrl\+c to stop|shift\+tab|Auto$|\/\s*commands|@\s*files|!\s*shell|follow-ups?\s|The user ha)/iu;
-  const slashCommandRe = /^\/\w+\s*$/u;
-  const mcpJsonKvRe =
-    /^\s*"(?:type|method|params|result|id|jsonrpc|tool|name|arguments|content|role|metadata)"\s*:/u;
-  const meaningfulContentRe = /[a-zA-Z0-9]/u;
+  // Redact secrets before further processing
+  const secretsRedacted = scrubSecrets(ansiStripped);
 
   const countJsonDepth = (line: string): number => {
     let depth = 0;
@@ -99,7 +125,7 @@ export function scrubForChannel(text: string): string {
     return depth;
   };
 
-  const lines = ansiStripped.split('\n');
+  const lines = secretsRedacted.split('\n');
   const meaningful: string[] = [];
   let jsonDepth = 0;
 
@@ -119,20 +145,20 @@ export function scrubForChannel(text: string): string {
       continue;
     }
 
-    if (mcpJsonKvRe.test(line)) continue;
-    if (spinnerClassRe.test(trimmed)) continue;
-    if (boxDrawingOnlyRe.test(trimmed)) continue;
-    if (brokerLogRe.test(trimmed)) continue;
-    if (claudeHeaderRe.test(trimmed)) continue;
-    if (dirBreadcrumbRe.test(trimmed)) continue;
-    if (uiHintRe.test(trimmed)) continue;
-    if (thinkingLineRe.test(trimmed)) continue;
-    if (cursorOnlyRe.test(trimmed)) continue;
-    if (cursorAgentRe.test(trimmed)) continue;
-    if (slashCommandRe.test(trimmed)) continue;
-    if (!meaningfulContentRe.test(trimmed)) continue;
+    if (MCP_JSON_KV_RE.test(line)) continue;
+    if (SPINNER_CLASS_RE.test(trimmed)) continue;
+    if (BOX_DRAWING_ONLY_RE.test(trimmed)) continue;
+    if (BROKER_LOG_RE.test(trimmed)) continue;
+    if (CLAUDE_HEADER_RE.test(trimmed)) continue;
+    if (DIR_BREADCRUMB_RE.test(trimmed)) continue;
+    if (UI_HINT_RE.test(trimmed)) continue;
+    if (THINKING_LINE_RE.test(trimmed)) continue;
+    if (CURSOR_ONLY_RE.test(trimmed)) continue;
+    if (CURSOR_AGENT_RE.test(trimmed)) continue;
+    if (SLASH_COMMAND_RE.test(trimmed)) continue;
+    if (!MEANINGFUL_CONTENT_RE.test(trimmed)) continue;
 
-    const alphanum = trimmed.replace(spinnerRe, '').replace(/\s+/g, '');
+    const alphanum = trimmed.replace(SPINNER_RE, '').replace(/\s+/g, '');
     if (alphanum.replace(/[^a-zA-Z0-9]/g, '').length <= 3) continue;
 
     meaningful.push(line);
@@ -277,7 +303,9 @@ export class ChannelMessenger {
       '',
       '### Steps',
       ...completed.map((outcome) => `- **${outcome.name}** (${outcome.agent}) — passed`),
-      ...failed.map((outcome) => `- **${outcome.name}** (${outcome.agent}) — FAILED: ${outcome.error ?? 'unknown'}`),
+      ...failed.map(
+        (outcome) => `- **${outcome.name}** (${outcome.agent}) — FAILED: ${outcome.error ?? 'unknown'}`
+      ),
       ...skipped.map((outcome) => `- **${outcome.name}** — skipped`),
     ];
 

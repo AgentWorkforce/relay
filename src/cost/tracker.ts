@@ -2,7 +2,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { CLI_DEFAULT_MODEL, MODEL_PRICING, estimateCost, estimateTokensFromDuration, normalizeModel } from './pricing.js';
+import {
+  CLI_DEFAULT_MODEL,
+  MODEL_PRICING,
+  estimateCost,
+  estimateTokensFromDuration,
+  normalizeModel,
+} from './pricing.js';
 import type { CostTrackerOptions, RunCostSummary, StepCostRecord } from './types.js';
 
 interface StartedStep {
@@ -61,7 +67,11 @@ export class CostTracker {
       durationMs,
       estimatedInputTokens: tokenEstimate.inputTokens,
       estimatedOutputTokens: tokenEstimate.outputTokens,
-      estimatedCostUsd: estimateCost(startedStep.model, tokenEstimate.inputTokens, tokenEstimate.outputTokens),
+      estimatedCostUsd: estimateCost(
+        startedStep.model,
+        tokenEstimate.inputTokens,
+        tokenEstimate.outputTokens
+      ),
     };
 
     this.appendRecord(record);
@@ -87,8 +97,8 @@ export class CostTracker {
   }
 
   private appendRecord(record: StepCostRecord): void {
-    fs.mkdirSync(path.dirname(this.usageFilePath), { recursive: true });
-    fs.appendFileSync(this.usageFilePath, `${JSON.stringify(record)}\n`, 'utf8');
+    fs.mkdirSync(path.dirname(this.usageFilePath), { recursive: true, mode: 0o700 });
+    fs.appendFileSync(this.usageFilePath, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 });
   }
 
   private getStepKey(runId: string, stepName: string): string {
