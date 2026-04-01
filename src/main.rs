@@ -4470,7 +4470,6 @@ fn extract_mcp_message_ids(buffer: &str) -> Vec<String> {
     ids
 }
 
-
 /// Returns the continuity directory path derived from the state file path.
 /// State path is always `{cwd}/.agent-relay/state.json`, so parent is `{cwd}/.agent-relay/`.
 fn continuity_dir(state_path: &Path) -> PathBuf {
@@ -6001,7 +6000,10 @@ mod tests {
         child.wait().expect("failed to wait on child");
         // After the child exits, its PID should not be alive
         // (the PID may be recycled, but on macOS/Linux it won't be immediately)
-        assert!(!crate::broker::is_pid_alive(pid), "exited child PID should be dead");
+        assert!(
+            !crate::broker::is_pid_alive(pid),
+            "exited child PID should be dead"
+        );
     }
 
     #[test]
