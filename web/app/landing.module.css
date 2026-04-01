@@ -18,7 +18,7 @@
   background: transparent;
   transition: background 0.3s ease;
   overflow: hidden;
-  margin-top: -60px;
+  margin-top: -40px;
   padding-top: 60px;
 }
 
@@ -64,7 +64,7 @@
   max-width: 1280px;
   width: 100%;
   margin: 0 auto;
-  padding: 28px 40px 48px;
+  padding: 44px 40px 48px;
   min-height: auto;
 }
 
@@ -1047,7 +1047,7 @@
 @media (max-width: 960px) {
   .hero {
     grid-template-columns: 1fr;
-    padding: 52px 32px 52px;
+    padding: 64px 32px 52px;
     gap: 24px;
     min-height: auto;
   }
@@ -1102,7 +1102,7 @@
 
 @media (max-width: 600px) {
   .hero {
-    padding: 64px 28px 56px;
+    padding: 76px 28px 56px;
     gap: 28px;
   }
 

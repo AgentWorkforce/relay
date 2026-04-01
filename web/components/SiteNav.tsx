@@ -47,8 +47,6 @@ export function LogoWordmark() {
 export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [productOpen, setProductOpen] = useState(false);
-
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 20);
     onScroll();
@@ -69,19 +67,10 @@ export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
 
       <div className={s.navRight}>
         <ul className={s.links}>
-          <li className={s.productDropdown}>
-            <span className={s.link} role="button" tabIndex={0}>
-              Features
-              <svg className={s.chevron} width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M2.5 4L5 6.5L7.5 4" />
-              </svg>
-            </span>
-            <div className={s.dropdownMenu}>
-              <Link href="/auth" className={s.dropdownItem}>Auth</Link>
-              <Link href="/file" className={s.dropdownItem}>File</Link>
-              <Link href="/message" className={s.dropdownItem}>Message</Link>
-              <Link href="/schedule" className={s.dropdownItem}>Schedule</Link>
-            </div>
+          <li>
+            <Link href="/primitives" className={s.link}>
+              Primitives
+            </Link>
           </li>
           <li>
             <Link href="/docs" className={s.link}>
@@ -124,20 +113,7 @@ export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
     {/* Mobile menu dropdown */}
     {menuOpen && (
       <div className={s.mobileMenu}>
-        <button className={s.mobileProductToggle} onClick={() => setProductOpen(!productOpen)}>
-          Features
-          <svg className={`${s.chevron} ${productOpen ? s.chevronOpen : ''}`} width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M2.5 4L5 6.5L7.5 4" />
-          </svg>
-        </button>
-        {productOpen && (
-          <div className={s.mobileProductItems}>
-            <Link href="/auth" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Auth</Link>
-            <Link href="/file" className={s.mobileLink} onClick={() => setMenuOpen(false)}>File</Link>
-            <Link href="/message" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Message</Link>
-            <Link href="/schedule" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Schedule</Link>
-          </div>
-        )}
+        <Link href="/primitives" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Primitives</Link>
         <Link href="/docs" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Docs</Link>
         <Link href="/blog" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Blog</Link>
         <a href="https://github.com/agentworkforce/relay" target="_blank" rel="noopener noreferrer" className={s.mobileLink} onClick={() => setMenuOpen(false)}>GitHub</a>
