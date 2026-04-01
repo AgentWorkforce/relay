@@ -20,10 +20,11 @@ import type {
   WorkflowRunRow,
   WorkflowStep,
 } from './types.js';
-import { WorkflowRunner, type WorkflowEventListener, type VariableContext, type StepExecutor } from './runner.js';
+import { WorkflowRunner, type WorkflowEventListener, type StepExecutor } from './runner.js';
 import { formatDryRunReport } from './dry-run-format.js';
 import { createDefaultEventLogger, type LogLevel } from './default-logger.js';
 import { runInCloud, type CloudRunOptions } from './cloud-runner.js';
+import type { VariableContext } from './template-resolver.js';
 
 // ── Option types for the builder API ────────────────────────────────────────
 

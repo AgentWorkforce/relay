@@ -83,4 +83,5 @@ __pycache__/
 .sst
 web/waitlist.json
 web/.open-next
+.relay/
 .trajectories/
