@@ -20,8 +20,8 @@ Spawn and control agents from your code:
 
 ```typescript TypeScript
 import { AgentRelayClient } from '@agent-relay/sdk';
-const client = new AgentRelayClient();
-const agent = await client.spawnPty({ cli: 'claude', task: 'Review the PR' });
+const client = await AgentRelayClient.spawn();
+const agent = await client.spawnPty({ name: 'reviewer', cli: 'claude', task: 'Review the PR' });
 ```
 
 ```python Python

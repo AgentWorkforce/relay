@@ -21,15 +21,13 @@ async function main(): Promise<void> {
   const xName = process.env.AGENT_X_NAME ?? "CodexX";
   const oName = process.env.AGENT_O_NAME ?? "CodexO";
 
-  const client = await AgentRelayClient.start({
+  const client = await AgentRelayClient.spawn({
     channels: [channel],
+    onStderr: (line) => console.log(`[${now()}] broker:stderr ${line}`),
   });
 
   const stopLogging = client.onEvent((event) => {
     console.log(`[${now()}] event`, JSON.stringify(event));
-  });
-  const stopStderrLogging = client.onBrokerStderr((line) => {
-    console.log(`[${now()}] broker:stderr ${line}`);
   });
 
   const cleanup = async () => {
@@ -46,7 +44,6 @@ async function main(): Promise<void> {
     }
     await client.shutdown();
     stopLogging();
-    stopStderrLogging();
   };
 
   process.on("SIGINT", async () => {

@@ -10,7 +10,7 @@ import path from 'node:path';
 
 import {
   AgentRelayClient,
-  type AgentRelayClientOptions,
+  type AgentRelaySpawnOptions,
   type ListAgent,
   type SendMessageInput,
   type BrokerEvent,
@@ -110,19 +110,17 @@ export class BrokerHarness {
     const apiKey = await ensureApiKey();
     this.opts.env = { ...this.opts.env, RELAY_API_KEY: apiKey };
 
-    const clientOpts: AgentRelayClientOptions = {
+    const clientOpts: AgentRelaySpawnOptions = {
       binaryPath: this.opts.binaryPath,
       binaryArgs: this.opts.binaryArgs,
       brokerName: this.opts.brokerName,
       channels: this.opts.channels,
       cwd: this.opts.cwd,
-      requestTimeoutMs: this.opts.requestTimeoutMs,
-      shutdownTimeoutMs: this.opts.shutdownTimeoutMs,
       env: this.opts.env,
     };
 
     // Start the low-level client (spawns broker process)
-    this.client = await AgentRelayClient.start(clientOpts);
+    this.client = await AgentRelayClient.spawn(clientOpts);
 
     // Wire event collection
     this.unsubEvent = this.client.onEvent((event: BrokerEvent) => {

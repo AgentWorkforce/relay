@@ -10,6 +10,7 @@
  */
 
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import https from 'node:https';
 import path from 'node:path';
@@ -161,6 +162,74 @@ function getPackageVersion(pkgRoot) {
       }`
     );
     return null;
+  }
+}
+
+/**
+ * Verify SHA-256 checksum of a downloaded file.
+ * Downloads a checksums file from the same release directory and verifies.
+ * Returns true if verified, false if checksums file not found (graceful fallback).
+ * Throws if checksums file exists but verification fails.
+ */
+async function verifyChecksum(filePath, downloadUrl) {
+  const checksumUrl = downloadUrl.replace(/\/[^/]+$/, '/checksums.sha256');
+  const binaryName = path.basename(downloadUrl);
+
+  try {
+    const checksumContent = await new Promise((resolve, reject) => {
+      const fetchWithRedirects = (url, remaining = 5) => {
+        const chunks = [];
+        const request = https.get(url, res => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            if (remaining <= 0) { res.resume(); reject(new Error('Too many redirects fetching checksums')); return; }
+            res.resume();
+            fetchWithRedirects(new URL(res.headers.location, url).toString(), remaining - 1);
+            return;
+          }
+          if (res.statusCode !== 200) {
+            res.resume();
+            reject(new Error(`Checksums file not available (HTTP ${res.statusCode})`));
+            return;
+          }
+          res.on('data', chunk => chunks.push(chunk));
+          res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+          res.on('error', reject);
+        });
+        request.on('error', reject);
+      };
+      fetchWithRedirects(checksumUrl);
+    });
+
+    // Parse checksums file (format: "<hash>  <filename>" per line)
+    const expectedHash = checksumContent
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.endsWith(binaryName))
+      .map(line => line.split(/\s+/)[0])[0];
+
+    if (!expectedHash) {
+      warn(`No checksum entry found for ${binaryName} in checksums file`);
+      return false;
+    }
+
+    const fileBuffer = fs.readFileSync(filePath);
+    const actualHash = createHash('sha256').update(fileBuffer).digest('hex');
+
+    if (actualHash !== expectedHash) {
+      throw new Error(
+        `Checksum mismatch for ${binaryName}: expected ${expectedHash}, got ${actualHash}`
+      );
+    }
+
+    info(`Checksum verified for ${binaryName}`);
+    return true;
+  } catch (err) {
+    if (err.message.includes('Checksum mismatch')) {
+      throw err; // Re-throw verification failures — this is a supply chain risk
+    }
+    // Checksums file not available — log warning but allow installation
+    warn(`Checksum verification skipped for ${binaryName}: ${err.message}`);
+    return false;
   }
 }
 
@@ -341,6 +410,7 @@ async function installBrokerBinary() {
 
       try {
         await downloadBinary(downloadUrl, targetPath);
+        await verifyChecksum(targetPath, downloadUrl);
         fs.chmodSync(targetPath, 0o755);
         resignBinaryForMacOS(targetPath);
         success(`Downloaded broker binary for ${os.platform()}-${os.arch()}`);
@@ -348,6 +418,8 @@ async function installBrokerBinary() {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         warn(`Failed to download broker binary: ${message}`);
+        // Clean up partial/untrusted download
+        try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
       }
     }
   }
@@ -414,6 +486,7 @@ async function installDashboardBinary() {
   try {
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     await downloadBinary(downloadUrl, targetPath);
+    await verifyChecksum(targetPath, downloadUrl);
     fs.chmodSync(targetPath, 0o755);
     resignBinaryForMacOS(targetPath);
     success('Downloaded dashboard-server binary');
@@ -421,6 +494,7 @@ async function installDashboardBinary() {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     info(`Dashboard binary not available (${message}) — will use npx fallback`);
+    try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
     return false;
   }
 }
@@ -468,6 +542,7 @@ async function installRelayAcpBinary() {
   try {
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     await downloadBinary(downloadUrl, targetPath);
+    await verifyChecksum(targetPath, downloadUrl);
     fs.chmodSync(targetPath, 0o755);
     resignBinaryForMacOS(targetPath);
     success('Downloaded relay-acp binary');
@@ -475,6 +550,7 @@ async function installRelayAcpBinary() {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     info(`relay-acp binary not available (${message}) — Zed integration requires manual install`);
+    try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
     return false;
   }
 }
@@ -676,7 +752,7 @@ function patchAgentTrajectories() {
     await storage.save(trajectory);`;
 
   if (!content.includes(optionNeedle) || !content.includes(createNeedle)) {
-    warn('agent-trajectories CLI format changed, skipping patch');
+    warn('agent-trajectories CLI format changed, skipping patch (expected needle not found)');
     return;
   }
 
@@ -684,8 +760,49 @@ function patchAgentTrajectories() {
     .replace(optionNeedle, optionReplacement)
     .replace(createNeedle, createReplacement);
 
+  // Verify the patch produced exactly the expected changes (no double-application or corruption)
+  if (updated === content) {
+    warn('agent-trajectories patch produced no changes, skipping write');
+    return;
+  }
+
   fs.writeFileSync(cliPath, updated, 'utf-8');
   success('Patched agent-trajectories to record agent on trail start');
+}
+
+function patchRelayauthCoreExports() {
+  const pkgRoot = getPackageRoot();
+  const packageJsonPath = path.join(pkgRoot, 'node_modules', '@relayauth', 'core', 'package.json');
+
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+    const rootExport = packageJson?.exports?.['.'];
+
+    if (!rootExport || typeof rootExport !== 'object' || Array.isArray(rootExport)) {
+      warn('@relayauth/core exports format changed, skipping require() compatibility patch');
+      return;
+    }
+
+    if (rootExport.require === './dist/index.js' && rootExport.default === './dist/index.js') {
+      info('@relayauth/core already supports require()');
+      return;
+    }
+
+    packageJson.exports['.'] = {
+      ...rootExport,
+      require: rootExport.require ?? './dist/index.js',
+      default: rootExport.default ?? './dist/index.js',
+    };
+
+    fs.writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf-8');
+    success('Patched @relayauth/core package exports for require() compatibility');
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      info('@relayauth/core not installed, skipping require() compatibility patch');
+    } else {
+      warn(`Failed to patch @relayauth/core package exports: ${err.message}`);
+    }
+  }
 }
 
 function logPostinstallDiagnostics(hasBrokerBinary, sqliteStatus, linkResult) {
@@ -741,6 +858,9 @@ async function main() {
 
   // Ensure trail CLI captures agent info on start
   patchAgentTrajectories();
+
+  // Make the published @relayauth/core package work with CommonJS require()
+  patchRelayauthCoreExports();
 
   // Always install dashboard dependencies (needed for build)
   installDashboardDeps();

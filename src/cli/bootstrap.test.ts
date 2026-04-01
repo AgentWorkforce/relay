@@ -32,6 +32,8 @@ const expectedLeafCommands = [
   'setup',
   'swarm',
   'telemetry',
+  'on',
+  'off',
   'run',
   'connect',
   'workflows list',
@@ -104,6 +106,8 @@ describe('bootstrap CLI', () => {
         'setup',
         'swarm',
         'telemetry',
+        'on',
+        'off',
         'run',
         'workflows',
       ])
@@ -115,7 +119,7 @@ describe('bootstrap CLI', () => {
     const program = createProgram();
     const leafCommandPaths = collectLeafCommandPaths(program);
 
-    expect(leafCommandPaths).toHaveLength(39);
+    expect(leafCommandPaths).toHaveLength(41);
     expect(leafCommandPaths).toEqual(expect.arrayContaining(expectedLeafCommands));
     expect(leafCommandPaths).not.toContain('create-agent');
   });

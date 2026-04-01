@@ -35,7 +35,7 @@ export function randomName(prefix: string): string {
 }
 
 export async function startBroker(): Promise<AgentRelayClient> {
-  return AgentRelayClient.start({
+  return AgentRelayClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ["general"],
     env: process.env,

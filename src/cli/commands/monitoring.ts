@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Command } from 'commander';
+import { AgentRelayClient } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 import { generateAgentName } from '@agent-relay/utils';
 
@@ -43,8 +44,10 @@ interface ProfileRelayOptions {
 
 export interface MonitoringDependencies {
   getProjectRoot: () => string;
-  createMetricsClient: (cwd: string) => MonitoringMetricsClient;
-  createProfilerRelay: (options: ProfileRelayOptions) => MonitoringProfilerRelay;
+  createMetricsClient: (cwd: string) => MonitoringMetricsClient | Promise<MonitoringMetricsClient>;
+  createProfilerRelay: (
+    options: ProfileRelayOptions
+  ) => MonitoringProfilerRelay | Promise<MonitoringProfilerRelay>;
   generateAgentName: () => string;
   fetch: (url: string) => Promise<Response>;
   pathExists: (target: string) => boolean;
@@ -67,12 +70,19 @@ function defaultExit(code: number): never {
   process.exit(code);
 }
 
-function createDefaultMetricsClient(cwd: string): MonitoringMetricsClient {
-  return createAgentRelayClient({ cwd }) as unknown as MonitoringMetricsClient;
+async function createDefaultMetricsClient(cwd: string): Promise<MonitoringMetricsClient> {
+  // Connect to existing broker for read-only metrics queries
+  try {
+    const client = AgentRelayClient.connect({ cwd });
+    return client as unknown as MonitoringMetricsClient;
+  } catch {
+    const client = await createAgentRelayClient({ cwd });
+    return client as unknown as MonitoringMetricsClient;
+  }
 }
 
-function createDefaultProfilerRelay(options: ProfileRelayOptions): MonitoringProfilerRelay {
-  const client = createAgentRelayClient({
+async function createDefaultProfilerRelay(options: ProfileRelayOptions): Promise<MonitoringProfilerRelay> {
+  const client = await createAgentRelayClient({
     cwd: options.cwd,
     env: options.env,
   });
@@ -152,7 +162,7 @@ export function registerMonitoringCommands(
         interval?: string;
       }) => {
         const fetchMetrics = async (): Promise<MetricsResponse> => {
-          const client = deps.createMetricsClient(deps.getProjectRoot());
+          const client = await deps.createMetricsClient(deps.getProjectRoot());
           try {
             return await client.getMetrics(options.agent);
           } catch (err: any) {
@@ -407,7 +417,7 @@ export function registerMonitoringCommands(
         deps.log('Starting profiled agent...');
         deps.log('');
 
-        const relay = deps.createProfilerRelay({
+        const relay = await deps.createProfilerRelay({
           cwd: deps.getProjectRoot(),
           env: profileEnv,
         });
