@@ -21,6 +21,7 @@ export const docsNav: NavGroup[] = [
     items: [
       { title: 'TypeScript SDK Reference', slug: 'reference-sdk' },
       { title: 'Python SDK Reference', slug: 'reference-sdk-py' },
+      { title: 'Workflow Reference', slug: 'reference-workflows' },
     ],
   },
   {
@@ -42,6 +43,7 @@ const ALL_SLUGS = [
   'communicate-openai-agents',
   'communicate-swarms',
   'communicate-crewai',
+  'reference-workflows',
 ];
 
 /** Flat list of all doc slugs for static generation */

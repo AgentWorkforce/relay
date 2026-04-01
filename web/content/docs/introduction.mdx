@@ -6,7 +6,7 @@ description: 'Spawn, coordinate, and connect AI agents from TypeScript or Python
 The Agent Relay SDK has two modes:
 
 - **Orchestrate** — Spawn and manage AI agents (Claude, Codex, Gemini, OpenCode) from code. Send messages, listen for responses, and shut them down when done.
-- **Communicate** — Put an existing framework agent "on the relay" with a single `on_relay()` / `onRelay()` call. Works with AI SDK, OpenAI Agents, Claude Agent SDK, Google ADK, Pi, Agno, Swarms, and CrewAI.
+- **Communicate** — Put an existing framework agent "on the relay" with `on_relay()` / `onRelay()` adapters. Published adapters cover AI SDK, Claude Agent SDK, Pi, OpenAI Agents, Google ADK, Agno, Swarms, and CrewAI.
 
 <CodeGroup>
 ```bash TypeScript
@@ -58,6 +58,10 @@ const config = onRelay('MyAgent', piConfig, new Relay('MyAgent'));
 ```
 </CodeGroup>
 
+<Note>
+Python communicate mode requires the `communicate` extras set, for example `pip install 'agent-relay-sdk[communicate,openai-agents]'`. TypeScript communicate adapters are documented per framework because AI SDK, Claude SDK, and Pi use different entry points.
+</Note>
+
 ## What You Can Do
 
 <CardGroup cols={2}>
@@ -103,8 +107,8 @@ Split the migration into three relay workers — one for the schema, one for the
 
 These docs are also available as plain Markdown for LLMs, CLI tools, and programmatic access:
 
-<Card title="📄 Markdown Docs on GitHub" icon="file-lines" href="https://github.com/AgentWorkforce/relay/tree/main/docs/markdown">
-  Plain-text versions of every page — no MDX components, no JavaScript. Designed for `curl`, agents, and language models.
+<Card title="📄 Markdown Docs" icon="file-lines" href="/docs/markdown.md">
+  Generated Markdown views of every docs page, served directly from the live MDX source.
 </Card>
 
 ## Next Steps
@@ -121,5 +125,8 @@ These docs are also available as plain Markdown for LLMs, CLI tools, and program
   </Card>
   <Card title="Python SDK" icon="python" href="/docs/reference-sdk-py">
     Full API reference for the Python SDK.
+  </Card>
+  <Card title="Workflows" icon="shuffle" href="/docs/reference-workflows">
+    YAML and builder APIs for multi-step orchestration.
   </Card>
 </CardGroup>

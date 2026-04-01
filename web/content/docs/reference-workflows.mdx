@@ -1,0 +1,180 @@
+---
+title: Workflow Reference
+description: YAML and builder APIs for Relay workflows
+---
+
+Workflows orchestrate multi-step, multi-agent execution across Relay workers. You can run them from YAML, TypeScript, Python, or the CLI.
+
+## Entry Points
+
+<CodeGroup>
+```bash CLI
+agent-relay run workflows/feature-dev.yaml
+```
+
+```typescript TypeScript
+import { runWorkflow, workflow } from '@agent-relay/sdk/workflows';
+```
+
+```python Python
+from agent_relay import workflow, run_yaml
+```
+</CodeGroup>
+
+## YAML Runner
+
+Use `runWorkflow()` from TypeScript or `run_yaml()` from Python to execute an existing YAML file.
+
+```typescript
+import { runWorkflow } from '@agent-relay/sdk/workflows';
+
+const result = await runWorkflow('workflows/feature-dev.yaml', {
+  workflow: 'default',
+  vars: { repo: 'app', task: 'Ship the feature' },
+  dryRun: false,
+});
+```
+
+```python
+from agent_relay import run_yaml
+
+result = run_yaml("workflows/feature-dev.yaml")
+```
+
+### `runWorkflow(path, options?)`
+
+| Option | Description |
+|--------|-------------|
+| `workflow` | Named workflow within the YAML file |
+| `vars` | Template vars for `{{var}}` placeholders |
+| `cwd` | Working directory override |
+| `relay` | `AgentRelayOptions` passed to the orchestrator |
+| `onEvent` | Workflow event listener |
+| `trajectories` | Trajectory config override or `false` to disable |
+| `dryRun` | Validate and print the plan without executing |
+| `resume` | Resume a failed run by ID |
+| `startFrom` | Skip to a step and reuse cached outputs |
+| `previousRunId` | Previous run whose cached outputs should be reused |
+
+## TypeScript Builder
+
+```typescript
+import { workflow } from '@agent-relay/sdk/workflows';
+
+const result = await workflow('ship-feature')
+  .pattern('dag')
+  .agent('planner', { cli: 'claude', role: 'Plans implementation' })
+  .agent('developer', { cli: 'codex', role: 'Writes code' })
+  .step('plan', {
+    agent: 'planner',
+    task: 'Create the implementation plan',
+  })
+  .step('implement', {
+    agent: 'developer',
+    task: 'Implement the approved plan',
+    dependsOn: ['plan'],
+  })
+  .run();
+```
+
+## Python Builder
+
+```python
+from agent_relay import workflow
+
+result = (
+    workflow("ship-feature")
+    .pattern("dag")
+    .agent("planner", cli="claude", role="Plans implementation")
+    .agent("developer", cli="codex", role="Writes code")
+    .step("plan", agent="planner", task="Create the implementation plan")
+    .step("implement", agent="developer", task="Implement the approved plan", depends_on=["plan"])
+    .run()
+)
+```
+
+### Common builder methods
+
+- `.description(text)`
+- `.pattern(name)`
+- `.max_concurrency(n)`
+- `.timeout(ms)`
+- `.channel(name)`
+- `.idle_nudge(...)`
+- `.coordination(...)`
+- `.state(...)`
+- `.trajectories(...)`
+- `.agent(...)`
+- `.step(...)`
+- `.on_error(...)`
+- `.to_config()`
+- `.to_yaml()`
+- `.dry_run()`
+- `.run()`
+
+## YAML Shape
+
+```yaml
+version: "1.0"
+name: ship-feature
+
+swarm:
+  pattern: dag
+  maxConcurrency: 3
+  timeoutMs: 3600000
+  channel: feature-dev
+
+agents:
+  - name: planner
+    cli: claude
+    role: "Plans implementation"
+
+  - name: developer
+    cli: codex
+    role: "Writes code"
+
+workflows:
+  - name: default
+    steps:
+      - name: plan
+        agent: planner
+        task: "Create the implementation plan for {{task}}"
+
+      - name: implement
+        agent: developer
+        dependsOn: [plan]
+        task: "Implement: {{steps.plan.output}}"
+        verification:
+          type: exit_code
+          value: "0"
+```
+
+## Step Types
+
+- **Agent step**: runs a task through a named worker
+- **Deterministic step**: shell command step with `type: deterministic`
+- **Worktree step**: git worktree management step with `type: worktree`
+
+## Completion Signals
+
+The runner can complete a step from several signals:
+
+- deterministic verification
+- owner decisions
+- evidence gathered from messages, output, and artifacts
+- explicit completion markers as a fast-path
+
+## Verification Types
+
+| Type | Description |
+|------|-------------|
+| `exit_code` | Process exited with the expected code |
+| `file_exists` | Required artifact exists |
+| `output_contains` | Output includes a marker string |
+| `custom` | Reserved for external callers |
+
+## See Also
+
+- [TypeScript SDK Reference](/docs/reference-sdk) — High-level `AgentRelay` API
+- [Python SDK Reference](/docs/reference-sdk-py) — Python facade and builder exports
+- [Communicate Mode](/docs/communicate) — Connect existing framework agents to Relaycast

@@ -5,12 +5,12 @@ description: 'Connect Swarms agents to the relay.'
 
 Connect a [Swarms](https://github.com/kyegomez/swarms) agent to Relaycast with a single `on_relay()` call.
 
-**Tier 2 (Poll)** -- Python only. Uses tools and an `on_message` callback.
+**Hybrid** -- Python only. Uses poll tools and an `on_message` callback.
 
 ## Installation
 
 ```bash
-pip install agent-relay swarms
+pip install 'agent-relay-sdk[communicate,swarms]'
 ```
 
 ## Quick Example
@@ -44,7 +44,7 @@ In addition to the standard poll tools, `on_relay` registers an `on_message` cal
 This hybrid approach means the agent can both poll with `relay_inbox` and receive pushed messages via the callback.
 
 <Note>
-The `on_message` callback bridges Tier 1 push delivery into Swarms' `receive_message()` method. If the agent is mid-execution, the message is queued until the next processing step.
+The `on_message` callback bridges push delivery into Swarms' `receive_message()` method, while `relay_inbox` still works for explicit polling.
 </Note>
 
 ## API Reference

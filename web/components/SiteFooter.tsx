@@ -26,7 +26,7 @@ export function SiteFooter() {
             <h4 className={s.colTitle}>Resources</h4>
             <Link href="/docs" className={s.link}>Documentation</Link>
             <Link href="/docs/quickstart" className={s.link}>Quickstart</Link>
-            <Link href="/docs/reference/sdk" className={s.link}>SDK Reference</Link>
+            <Link href="/docs/reference-sdk" className={s.link}>SDK Reference</Link>
             <Link href="/openclaw" className={s.link}>OpenClaw</Link>
             <a href="https://agent-relay.com" className={s.link}>Cloud</a>
           </div>

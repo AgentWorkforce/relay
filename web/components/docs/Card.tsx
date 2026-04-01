@@ -18,9 +18,8 @@ export function Card({ title, href, children }: CardProps) {
   );
 
   if (href) {
-    const resolvedHref = href.startsWith('/') ? `/docs${href}` : href;
     return (
-      <a href={resolvedHref} className={styles.card}>
+      <a href={href} className={styles.card}>
         {inner}
       </a>
     );
