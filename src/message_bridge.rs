@@ -727,6 +727,7 @@ fn parse_sender_kind(accessor: EventAccessor<'_>) -> SenderKind {
 fn parse_sender_kind_label(raw: &str) -> Option<SenderKind> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "human" | "user" => Some(SenderKind::Human),
+        "system" => Some(SenderKind::System),
         "agent" | "bot" | "assistant" => Some(SenderKind::Agent),
         _ => None,
     }
@@ -1091,6 +1092,26 @@ mod tests {
 
         assert_eq!(event.from, "bob");
         assert_eq!(event.sender_kind, crate::types::SenderKind::Agent);
+    }
+
+    #[test]
+    fn sender_kind_parses_system_role() {
+        let event = map_event(&json!({
+            "type": "message.created",
+            "event_id": "evt-system",
+            "channel": "ops",
+            "payload": {
+                "text": "maintenance window",
+                "from": {
+                    "name": "system",
+                    "role": "system"
+                }
+            }
+        }))
+        .expect("system payload should map");
+
+        assert_eq!(event.from, "system");
+        assert_eq!(event.sender_kind, crate::types::SenderKind::System);
     }
 
     #[test]

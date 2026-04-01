@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use relay_broker::{
     multi_workspace::WorkspaceMembershipSummary, protocol::MessageInjectionMode,
     replay_buffer::ReplayBuffer,
+    types::SenderKind,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -62,6 +63,7 @@ pub enum ListenApiRequest {
         to: String,
         text: String,
         from: Option<String>,
+        sender_kind: Option<SenderKind>,
         thread_id: Option<String>,
         workspace_id: Option<String>,
         workspace_alias: Option<String>,
@@ -678,6 +680,29 @@ async fn listen_api_send(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let sender_kind = match body
+        .get("senderKind")
+        .or_else(|| body.get("sender_kind"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("agent") => Some(SenderKind::Agent),
+        Some("human") => Some(SenderKind::Human),
+        Some("system") => Some(SenderKind::System),
+        Some("unknown") | None => None,
+        Some(other) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({
+                    "success": false,
+                    "error": format!("invalid sender kind '{other}'. expected 'agent', 'human', or 'system'"),
+                })),
+            );
+        }
+    };
     let workspace_id = body
         .get("workspaceId")
         .or_else(|| body.get("workspace_id"))
@@ -718,6 +743,7 @@ async fn listen_api_send(
         request_id = %request_id,
         to = %to,
         from = ?from,
+        sender_kind = ?sender_kind,
         thread_id = ?thread_id,
         workspace_id = ?workspace_id,
         workspace_alias = ?workspace_alias,
@@ -746,6 +772,7 @@ async fn listen_api_send(
             to: to.clone(),
             text,
             from,
+            sender_kind,
             thread_id,
             workspace_id,
             workspace_alias,
@@ -1707,11 +1734,17 @@ mod auth_tests {
         let (router, mut rx) = test_router(Some("secret"));
         let send_replier = tokio::spawn(async move {
             match rx.recv().await {
-                Some(ListenApiRequest::Send { mode, reply, .. }) => {
+                Some(ListenApiRequest::Send {
+                    mode,
+                    sender_kind,
+                    reply,
+                    ..
+                }) => {
                     assert!(matches!(
                         mode,
                         relay_broker::protocol::MessageInjectionMode::Wait
                     ));
+                    assert_eq!(sender_kind, None);
                     let _ = reply.send(Ok(json!({ "success": true, "event_id": "evt_1" })));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
@@ -1742,11 +1775,17 @@ mod auth_tests {
         let (router, mut rx) = test_router(Some("secret"));
         let send_replier = tokio::spawn(async move {
             match rx.recv().await {
-                Some(ListenApiRequest::Send { mode, reply, .. }) => {
+                Some(ListenApiRequest::Send {
+                    mode,
+                    sender_kind,
+                    reply,
+                    ..
+                }) => {
                     assert!(matches!(
                         mode,
                         relay_broker::protocol::MessageInjectionMode::Steer
                     ));
+                    assert_eq!(sender_kind, None);
                     let _ = reply.send(Ok(json!({ "success": true, "event_id": "evt_2" })));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
@@ -1763,6 +1802,50 @@ mod auth_tests {
                     .body(Body::from(
                         json!({ "to": "worker-a", "text": "interrupt", "mode": "steer" })
                             .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        send_replier.await.expect("send replier should complete");
+    }
+
+    #[tokio::test]
+    async fn send_route_forwards_system_sender_kind() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let send_replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::Send {
+                    from,
+                    sender_kind,
+                    reply,
+                    ..
+                }) => {
+                    assert_eq!(from.as_deref(), Some("system"));
+                    assert_eq!(sender_kind, Some(SenderKind::System));
+                    let _ = reply.send(Ok(json!({ "success": true, "event_id": "evt_3" })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/send")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "to": "worker-a",
+                            "text": "system notice",
+                            "from": "system",
+                            "senderKind": "system"
+                        })
+                        .to_string(),
                     ))
                     .expect("request should build"),
             )

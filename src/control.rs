@@ -26,6 +26,7 @@ mod tests {
     fn human_sender_detection() {
         assert!(is_human_sender("alice", SenderKind::Human));
         assert!(is_human_sender("human:alice", SenderKind::Unknown));
+        assert!(!is_human_sender("system", SenderKind::System));
         assert!(!is_human_sender("Worker1", SenderKind::Agent));
         // Explicit Agent kind overrides string heuristic
         assert!(!is_human_sender("human:spoofed", SenderKind::Agent));

@@ -561,13 +561,27 @@ struct ThreadAccumulator {
     sort_key: i64,
 }
 
-fn normalize_sender(sender: Option<String>) -> String {
+fn normalize_sender(sender: Option<String>, sender_kind: Option<SenderKind>) -> String {
+    let default_sender = match sender_kind {
+        Some(SenderKind::System) => "system",
+        _ => "human:orchestrator",
+    };
     let raw = sender
-        .unwrap_or_else(|| "human:orchestrator".to_string())
+        .unwrap_or_else(|| default_sender.to_string())
         .trim()
         .to_string();
     if raw.is_empty() {
-        return "human:orchestrator".to_string();
+        return default_sender.to_string();
+    }
+    if matches!(sender_kind, Some(SenderKind::System)) {
+        if let Some(rest) = raw.strip_prefix("system:") {
+            let normalized_rest = rest.trim();
+            if normalized_rest.is_empty() {
+                return "system".to_string();
+            }
+            return format!("system:{normalized_rest}");
+        }
+        return raw;
     }
     if let Some(rest) = raw.strip_prefix("human:") {
         let normalized_rest = rest.trim();
@@ -577,6 +591,15 @@ fn normalize_sender(sender: Option<String>) -> String {
         return format!("human:{normalized_rest}");
     }
     raw
+}
+
+fn sender_kind_label(sender_kind: SenderKind) -> &'static str {
+    match sender_kind {
+        SenderKind::Agent => "agent",
+        SenderKind::Human => "human",
+        SenderKind::System => "system",
+        SenderKind::Unknown => "unknown",
+    }
 }
 
 fn sender_is_dashboard_label(sender: &str, self_name: &str) -> bool {
@@ -1991,6 +2014,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             to,
                             text,
                             from,
+                            sender_kind,
                             thread_id,
                             workspace_id,
                             workspace_alias,
@@ -2034,7 +2058,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             let selected_workspace_id = selected_workspace.workspace_id.clone();
                             let selected_workspace_alias = selected_workspace.workspace_alias.clone();
                             let workspace_self_name = selected_workspace.self_name.clone();
-                            let normalized_sender = normalize_sender(from.clone());
+                            let normalized_sender =
+                                normalize_sender(from.clone(), sender_kind);
                             let from_dashboard =
                                 sender_is_dashboard_label(&normalized_sender, &workspace_self_name);
                             let delivery_from = if from_dashboard {
@@ -2167,6 +2192,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "kind": "relay_inbound",
                                         "event_id": event_id,
                                         "from": ui_from,
+                                        "sender_kind": sender_kind
+                                            .map(sender_kind_label)
+                                            .unwrap_or("unknown"),
                                         "target": normalized_to,
                                         "body": text,
                                         "thread_id": thread_id.clone(),
@@ -2231,6 +2259,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 "kind": "relay_inbound",
                                                 "event_id": event_id,
                                                 "from": ui_from,
+                                                "sender_kind": sender_kind
+                                                    .map(sender_kind_label)
+                                                    .unwrap_or("unknown"),
                                                 "target": normalized_to,
                                                 "body": text,
                                                 "thread_id": thread_id.clone(),
@@ -6088,10 +6119,13 @@ mod tests {
 
     #[test]
     fn normalize_sender_defaults_to_human_orchestrator() {
-        assert_eq!(normalize_sender(None), "human:orchestrator");
-        assert_eq!(normalize_sender(Some(String::new())), "human:orchestrator");
+        assert_eq!(normalize_sender(None, None), "human:orchestrator");
         assert_eq!(
-            normalize_sender(Some("   ".to_string())),
+            normalize_sender(Some(String::new()), None),
+            "human:orchestrator"
+        );
+        assert_eq!(
+            normalize_sender(Some("   ".to_string()), None),
             "human:orchestrator"
         );
     }
@@ -6099,7 +6133,7 @@ mod tests {
     #[test]
     fn normalize_sender_normalizes_human_prefix() {
         assert_eq!(
-            normalize_sender(Some("human:  Dashboard  ".to_string())),
+            normalize_sender(Some("human:  Dashboard  ".to_string()), None),
             "human:Dashboard"
         );
     }
@@ -6107,8 +6141,20 @@ mod tests {
     #[test]
     fn normalize_sender_preserves_worker_names() {
         assert_eq!(
-            normalize_sender(Some("WorkerOne".to_string())),
+            normalize_sender(Some("WorkerOne".to_string()), None),
             "WorkerOne".to_string()
+        );
+    }
+
+    #[test]
+    fn normalize_sender_defaults_and_normalizes_system_sender() {
+        assert_eq!(normalize_sender(None, Some(SenderKind::System)), "system");
+        assert_eq!(
+            normalize_sender(
+                Some("system:  planner  ".to_string()),
+                Some(SenderKind::System)
+            ),
+            "system:planner"
         );
     }
 

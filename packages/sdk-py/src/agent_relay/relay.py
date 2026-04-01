@@ -13,10 +13,10 @@ import inspect
 import os
 import secrets
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 
 from .client import AgentRelayClient
-from .protocol import AgentRuntime, BrokerEvent, MessageInjectionMode
+from .protocol import AgentRuntime, BrokerEvent, MessageInjectionMode, SenderKind
 
 # ── Public types ──────────────────────────────────────────────────────────────
 
@@ -32,6 +32,7 @@ class Message:
 
     event_id: str
     from_name: str
+    from_kind: Optional[SenderKind]
     to: str
     text: str
     thread_id: Optional[str] = None
@@ -215,6 +216,7 @@ class Agent:
         msg = Message(
             event_id=event_id,
             from_name=self._name,
+            from_kind="agent",
             to=to,
             text=text,
             thread_id=thread_id,
@@ -241,19 +243,24 @@ class Agent:
         return unsubscribe
 
 
-# ── Human handle ──────────────────────────────────────────────────────────────
+# ── Human/system handles ──────────────────────────────────────────────────────
 
 
-class HumanHandle:
-    """A messaging handle for human/system messages."""
+class _ParticipantHandle:
+    """Shared messaging handle for non-agent participants."""
 
-    def __init__(self, name: str, relay: AgentRelay):
+    def __init__(self, name: str, kind: Literal["human", "system"], relay: AgentRelay):
         self._name = name
+        self._kind = kind
         self._relay = relay
 
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def kind(self) -> Literal["human", "system"]:
+        return self._kind
 
     async def send_message(
         self,
@@ -270,6 +277,7 @@ class HumanHandle:
             to=to,
             text=text,
             from_=self._name,
+            from_kind=self._kind,
             thread_id=thread_id,
             priority=priority,
             data=data,
@@ -280,6 +288,7 @@ class HumanHandle:
         msg = Message(
             event_id=event_id,
             from_name=self._name,
+            from_kind=self._kind,
             to=to,
             text=text,
             thread_id=thread_id,
@@ -290,6 +299,20 @@ class HumanHandle:
         if event_id != "unsupported_operation" and self._relay.on_message_sent:
             self._relay.on_message_sent(msg)
         return msg
+
+
+class HumanHandle(_ParticipantHandle):
+    """A messaging handle for human participants."""
+
+    def __init__(self, name: str, relay: AgentRelay):
+        super().__init__(name, "human", relay)
+
+
+class SystemHandle(_ParticipantHandle):
+    """A messaging handle for deterministic system-origin messages."""
+
+    def __init__(self, relay: AgentRelay):
+        super().__init__("system", "system", relay)
 
 
 # ── Agent spawner ─────────────────────────────────────────────────────────────
@@ -573,8 +596,8 @@ class AgentRelay:
     def human(self, name: str) -> HumanHandle:
         return HumanHandle(name, self)
 
-    def system(self) -> HumanHandle:
-        return HumanHandle("system", self)
+    def system(self) -> SystemHandle:
+        return SystemHandle(self)
 
     async def broadcast(self, text: str, *, from_name: str = "human:orchestrator") -> Message:
         return await self.human(from_name).send_message(to="*", text=text)
@@ -773,6 +796,7 @@ class AgentRelay:
                 msg = Message(
                     event_id=event.get("event_id", ""),
                     from_name=event.get("from", ""),
+                    from_kind=event.get("sender_kind"),
                     to=event.get("target", ""),
                     text=event.get("body", ""),
                     thread_id=event.get("thread_id"),

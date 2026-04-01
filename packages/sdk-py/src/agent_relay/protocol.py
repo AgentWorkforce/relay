@@ -10,6 +10,8 @@ from typing import Any, Literal
 AgentRuntime = Literal["pty", "headless"]
 HeadlessProvider = Literal["claude", "opencode"]
 MessageInjectionMode = Literal["wait", "steer"]
+ParticipantKind = Literal["agent", "human", "system"]
+SenderKind = Literal["agent", "human", "system", "unknown"]
 
 # BrokerEvent is a dict with a 'kind' field discriminator.
 # Event kinds: agent_spawned, agent_released, agent_exit, agent_exited,

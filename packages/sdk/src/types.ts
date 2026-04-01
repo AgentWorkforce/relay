@@ -2,7 +2,13 @@
  * Shared input/output types for the broker SDK.
  */
 
-import type { AgentRuntime, HeadlessProvider, MessageInjectionMode, RestartPolicy } from './protocol.js';
+import type {
+  AgentRuntime,
+  HeadlessProvider,
+  MessageInjectionMode,
+  ParticipantKind,
+  RestartPolicy,
+} from './protocol.js';
 
 export interface SpawnPtyInput {
   name: string;
@@ -54,6 +60,7 @@ export interface SendMessageInput {
   to: string;
   text: string;
   from?: string;
+  fromKind?: ParticipantKind;
   threadId?: string;
   workspaceId?: string;
   workspaceAlias?: string;

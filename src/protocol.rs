@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::supervisor::RestartPolicy;
+use crate::types::SenderKind;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
@@ -98,6 +99,8 @@ pub enum SdkToBroker {
         #[serde(default)]
         from: Option<String>,
         #[serde(default)]
+        from_kind: Option<SenderKind>,
+        #[serde(default)]
         thread_id: Option<String>,
         #[serde(default)]
         workspace_id: Option<String>,
@@ -175,6 +178,8 @@ pub enum BrokerEvent {
     RelayInbound {
         event_id: String,
         from: String,
+        #[serde(default)]
+        sender_kind: Option<SenderKind>,
         target: String,
         body: String,
         thread_id: Option<String>,

@@ -38,6 +38,7 @@ pub enum InboundKind {
 pub enum SenderKind {
     Agent,
     Human,
+    System,
     Unknown,
 }
 
