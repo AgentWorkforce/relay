@@ -8,8 +8,7 @@ use std::time::{Duration, Instant};
 
 use relay_broker::{
     multi_workspace::WorkspaceMembershipSummary, protocol::MessageInjectionMode,
-    replay_buffer::ReplayBuffer,
-    types::SenderKind,
+    replay_buffer::ReplayBuffer, types::SenderKind,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
