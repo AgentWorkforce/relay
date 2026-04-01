@@ -1,0 +1,20 @@
+{
+  "id": "traj_x14t8w8rn7xg",
+  "version": 1,
+  "task": {
+    "title": "Fix trajectory agents array population",
+    "source": {
+      "system": "plain",
+      "id": "agent-relay-452"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-01-03T13:36:06.506Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-03T13:36:55.892Z"
+}

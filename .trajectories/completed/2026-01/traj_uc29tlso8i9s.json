@@ -1,0 +1,186 @@
+{
+  "id": "traj_uc29tlso8i9s",
+  "version": 1,
+  "task": {
+    "title": "Production-ready SSH tunneling for Codex OAuth with security hardening"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-07T10:08:04.299Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-01-07T10:08:04.300Z"
+    },
+    {
+      "name": "default",
+      "role": "contributor",
+      "joinedAt": "2026-01-07T10:08:04.710Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_8omowh9k21wa",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-07T10:08:04.710Z",
+      "events": [
+        {
+          "ts": 1767780484710,
+          "type": "decision",
+          "content": "Changed UsageBanner intro bonus from purple to cyan: Changed UsageBanner intro bonus from purple to cyan",
+          "raw": {
+            "question": "Changed UsageBanner intro bonus from purple to cyan",
+            "chosen": "Changed UsageBanner intro bonus from purple to cyan",
+            "alternatives": [],
+            "reasoning": "Brand consistency - cyan is primary accent color, purple was off-brand"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767780493469,
+          "type": "decision",
+          "content": "Added landing page auth check - shows Go to App when logged in: Added landing page auth check - shows Go to App when logged in",
+          "raw": {
+            "question": "Added landing page auth check - shows Go to App when logged in",
+            "chosen": "Added landing page auth check - shows Go to App when logged in",
+            "alternatives": [],
+            "reasoning": "Better UX for returning users who shouldn't see Sign In buttons"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767780494224,
+          "type": "decision",
+          "content": "Expose SSH port 2222 publicly on Fly.io via TCP service: Expose SSH port 2222 publicly on Fly.io via TCP service",
+          "raw": {
+            "question": "Expose SSH port 2222 publicly on Fly.io via TCP service",
+            "chosen": "Expose SSH port 2222 publicly on Fly.io via TCP service",
+            "alternatives": [],
+            "reasoning": "Internal .internal hostnames aren't routable from user machines. Public SSH with unique passwords per workspace is secure enough for production."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767780500783,
+          "type": "decision",
+          "content": "Updated CTA terminal to show realistic CLI flow (cloud link + send): Updated CTA terminal to show realistic CLI flow (cloud link + send)",
+          "raw": {
+            "question": "Updated CTA terminal to show realistic CLI flow (cloud link + send)",
+            "chosen": "Updated CTA terminal to show realistic CLI flow (cloud link + send)",
+            "alternatives": [],
+            "reasoning": "Previous mock commands were inaccurate. Now shows actual agent-relay cloud commands"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767780501007,
+          "type": "decision",
+          "content": "Use deterministic password derivation instead of storage: Use deterministic password derivation instead of storage",
+          "raw": {
+            "question": "Use deterministic password derivation instead of storage",
+            "chosen": "Use deterministic password derivation instead of storage",
+            "alternatives": [],
+            "reasoning": "SHA-256(workspaceId + salt) produces unique passwords without database storage. Both cloud server and container can derive the same password independently. 96 bits of entropy is sufficient."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767780508469,
+          "type": "decision",
+          "content": "Create shared ssh-security.ts utility: Create shared ssh-security.ts utility",
+          "raw": {
+            "question": "Create shared ssh-security.ts utility",
+            "chosen": "Create shared ssh-security.ts utility",
+            "alternatives": [],
+            "reasoning": "Password derivation was duplicated in provisioner and codex-auth-helper. Single source of truth prevents bugs if algorithm changes. Also adds startup validation."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767780510961,
+          "type": "decision",
+          "content": "Fixed TypeScript error: Promise<never> to Promise<void>: Fixed TypeScript error: Promise<never> to Promise<void>",
+          "raw": {
+            "question": "Fixed TypeScript error: Promise<never> to Promise<void>",
+            "chosen": "Fixed TypeScript error: Promise<never> to Promise<void>",
+            "alternatives": [],
+            "reasoning": "Promise<never> caused control flow analysis to mark subsequent code as unreachable"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767780517965,
+          "type": "decision",
+          "content": "Keep password-based SSH for now, defer key-based auth: Keep password-based SSH for now, defer key-based auth",
+          "raw": {
+            "question": "Keep password-based SSH for now, defer key-based auth",
+            "chosen": "Keep password-based SSH for now, defer key-based auth",
+            "alternatives": [],
+            "reasoning": "Password-based is simpler to implement and per-workspace unique passwords provide reasonable security. Key-based auth would require container-side authorized_keys management - tracked as future improvement in agent-relay-476."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767780523070,
+          "type": "decision",
+          "content": "Settings page: replaced sidebar with always-visible horizontal tabs: Settings page: replaced sidebar with always-visible horizontal tabs",
+          "raw": {
+            "question": "Settings page: replaced sidebar with always-visible horizontal tabs",
+            "chosen": "Settings page: replaced sidebar with always-visible horizontal tabs",
+            "alternatives": [],
+            "reasoning": "Desktop sidebar wasn't rendering for user. Horizontal tabs provide consistent navigation on all screen sizes"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767780530293,
+          "type": "decision",
+          "content": "Billing API: respect database user.plan when no Stripe subscription: Billing API: respect database user.plan when no Stripe subscription",
+          "raw": {
+            "question": "Billing API: respect database user.plan when no Stripe subscription",
+            "chosen": "Billing API: respect database user.plan when no Stripe subscription",
+            "alternatives": [],
+            "reasoning": "Allows manual plan overrides in database to take effect without Stripe subscription"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767780538628,
+          "type": "decision",
+          "content": "Billing panel: dynamic tier descriptions and smart plan recommendations: Billing panel: dynamic tier descriptions and smart plan recommendations",
+          "raw": {
+            "question": "Billing panel: dynamic tier descriptions and smart plan recommendations",
+            "chosen": "Billing panel: dynamic tier descriptions and smart plan recommendations",
+            "alternatives": [],
+            "reasoning": "Fixed hardcoded Free tier text. Only highlight upgrades, not downgrades (no Pro promotion to Team users)"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767780548294,
+          "type": "decision",
+          "content": "Aligned workspace Codex auth with /app onboarding: Aligned workspace Codex auth with /app onboarding",
+          "raw": {
+            "question": "Aligned workspace Codex auth with /app onboarding",
+            "chosen": "Aligned workspace Codex auth with /app onboarding",
+            "alternatives": [],
+            "reasoning": "Added supportsDeviceFlow prop to ProviderAuthFlow to match /app page props"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-07T10:09:10.870Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-07T10:09:10.870Z",
+  "retrospective": {
+    "summary": "Implemented production-ready SSH tunneling for Codex OAuth. Key changes: (1) Exposed SSH port 2222 publicly on Fly.io via TCP service, (2) Changed from .internal to .fly.dev hostname for public routing, (3) Created shared ssh-security.ts with deterministic password derivation (SHA-256 of workspaceId + salt), (4) Added startup validation for SSH_PASSWORD_SALT env var, (5) Created beads for future improvements: rate limiting, key-based auth, time-limited access.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  }
+}

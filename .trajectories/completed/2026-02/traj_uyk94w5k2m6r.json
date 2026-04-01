@@ -1,0 +1,25 @@
+{
+  "id": "traj_uyk94w5k2m6r",
+  "version": 1,
+  "task": {
+    "title": "Wave 3 extract core CLI commands with DI and tests"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-20T09:09:02.119Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": [],
+  "_trace": {
+    "startRef": "21ec7a4e4778a5d0549d18c0b5f200352aebd0ac",
+    "endRef": "21ec7a4e4778a5d0549d18c0b5f200352aebd0ac"
+  },
+  "completedAt": "2026-02-20T09:18:35.176Z",
+  "retrospective": {
+    "summary": "Added core command extraction with DI: create-agent/up/down/status/uninstall/version/update/bridge, plus 14 TDD tests and passing typecheck",
+    "approach": "Standard approach",
+    "confidence": 0.87
+  }
+}

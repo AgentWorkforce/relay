@@ -1,0 +1,49 @@
+{
+  "id": "traj_1rp3rges5811",
+  "version": 1,
+  "task": {
+    "title": "Improve trajectory viewer design"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-03T14:09:55.255Z",
+  "agents": [
+    {
+      "name": "LogFixer",
+      "role": "lead",
+      "joinedAt": "2026-01-03T14:09:55.255Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_qy4e6s6q9rw2",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-03T14:09:58.790Z",
+      "events": [
+        {
+          "ts": 1767449398791,
+          "type": "decision",
+          "content": "Hide TrajectoryViewer action when no onStepClick provided: Hide TrajectoryViewer action when no onStepClick provided",
+          "raw": {
+            "question": "Hide TrajectoryViewer action when no onStepClick provided",
+            "chosen": "Hide TrajectoryViewer action when no onStepClick provided",
+            "alternatives": [],
+            "reasoning": "Prevents empty expanded panes and removes dead View Details button when parent has no detail handler"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-03T14:10:29.755Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-03T14:10:29.755Z",
+  "retrospective": {
+    "summary": "Trimmed TrajectoryViewer detail UX: hide View Details button when no handler, only render detail panel when content exists; rebuilt dashboard and reran targeted vitest.",
+    "approach": "Standard approach",
+    "confidence": 0.78
+  }
+}

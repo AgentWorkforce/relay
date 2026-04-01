@@ -1,0 +1,22 @@
+{
+  "id": "traj_hhxte7w4gjjx",
+  "version": 1,
+  "task": {
+    "title": "test"
+  },
+  "status": "abandoned",
+  "startedAt": "2026-01-05T20:14:01.563Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-01-05T20:14:01.564Z"
+    }
+  ],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-05T20:14:01.617Z"
+}

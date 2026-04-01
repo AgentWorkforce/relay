@@ -1,0 +1,20 @@
+{
+  "id": "traj_c55yptnf407o",
+  "version": 1,
+  "task": {
+    "title": "Implement postAction feature for PR #527"
+  },
+  "status": "abandoned",
+  "startedAt": "2026-03-10T14:02:43.243Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "572fe206f8e2eb6c083359da0a1c96c3c85dff4a",
+    "endRef": "572fe206f8e2eb6c083359da0a1c96c3c85dff4a"
+  },
+  "completedAt": "2026-03-10T21:48:27.425Z"
+}

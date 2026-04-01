@@ -1,0 +1,61 @@
+{
+  "id": "compact_qwdugchjh3my",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-03-04T21:40:24.281Z",
+  "sourceTrajectories": [
+    "traj_ygwd7ep8ab1e"
+  ],
+  "dateRange": {
+    "start": "2026-03-04T21:01:07.410Z",
+    "end": "2026-03-04T21:12:10.460Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Moved agents/who/history JSON assertions from process-level CLI test to deterministic unit tests",
+          "chosen": "Moved agents/who/history JSON assertions from process-level CLI test to deterministic unit tests",
+          "reasoning": "direct handler tests avoid broker startup/network timing and remove CI timeout flake while keeping one end-to-end smoke check",
+          "fromTrajectory": "traj_ygwd7ep8ab1e"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    ".github/workflows/build-broker-binary.yml",
+    ".trajectories/active/traj_ygwd7ep8ab1e.json",
+    ".trajectories/index.json",
+    "CHANGELOG.md",
+    "package-lock.json",
+    "package.json",
+    "packages/acp-bridge/package.json",
+    "packages/config/package.json",
+    "packages/hooks/package.json",
+    "packages/memory/package.json",
+    "packages/openclaw/package.json",
+    "packages/policy/package.json",
+    "packages/sdk-py/pyproject.toml",
+    "packages/sdk/package.json",
+    "packages/telemetry/package.json",
+    "packages/trajectory/package.json",
+    "packages/user-directory/package.json",
+    "packages/utils/package.json",
+    "src/cli/commands/agent-management.ts",
+    "src/cli/index.test.ts"
+  ],
+  "commits": [
+    "be51324e",
+    "4e2a8934"
+  ]
+}

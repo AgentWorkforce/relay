@@ -1,0 +1,68 @@
+{
+  "id": "traj_1773147602283_4c5fbed4",
+  "version": 1,
+  "task": {
+    "title": "test-exit run #ff55093d",
+    "source": {
+      "system": "workflow-runner",
+      "id": "ff55093da67ba6f1dfe162e7"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-03-10T13:00:02.283Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-10T13:00:02.283Z"
+    },
+    {
+      "name": "failing-worker",
+      "role": "specialist",
+      "joinedAt": "2026-03-10T13:00:05.653Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_2916e74e",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-10T13:00:02.283Z",
+      "events": [
+        {
+          "ts": 1773147602283,
+          "type": "note",
+          "content": "Approach: 1-step sequential workflow — Parsed 1 steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1773147605655,
+          "type": "note",
+          "content": "\"exit-with-code\": This should fail with exit 42",
+          "raw": {
+            "agent": "failing-worker"
+          }
+        },
+        {
+          "ts": 1773147606363,
+          "type": "error",
+          "content": "\"exit-with-code\" failed [exit_nonzero]: The agent process exited with a non-zero exit code. Check stderr for the root cause.",
+          "significance": "high",
+          "raw": {
+            "cause": "exit_nonzero",
+            "rawError": "Step \"exit-with-code\" exited with code 42",
+            "attempt": 1,
+            "maxRetries": 0
+          }
+        },
+        {
+          "ts": 1773147606365,
+          "type": "error",
+          "content": "Workflow abandoned: Step \"exit-with-code\" failed: Step \"exit-with-code\" failed after 0 retries: Step \"exit-with-code\" exited with code 42",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-10T13:00:06.365Z"
+    }
+  ],
+  "completedAt": "2026-03-10T13:00:06.365Z"
+}

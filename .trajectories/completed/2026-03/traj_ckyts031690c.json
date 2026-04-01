@@ -1,0 +1,53 @@
+{
+  "id": "traj_ckyts031690c",
+  "version": 1,
+  "task": {
+    "title": "fix-if-broken-4b7d51de"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-03T14:49:59.788Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-03-03T14:59:04.646Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_u3ow3xv22k0g",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-03T14:59:04.646Z",
+      "events": [
+        {
+          "ts": 1772549944647,
+          "type": "decision",
+          "content": "Adjusted idle-nudge timeout test to use delayed waitForExit mock: Adjusted idle-nudge timeout test to use delayed waitForExit mock",
+          "raw": {
+            "question": "Adjusted idle-nudge timeout test to use delayed waitForExit mock",
+            "chosen": "Adjusted idle-nudge timeout test to use delayed waitForExit mock",
+            "alternatives": [],
+            "reasoning": "Immediate timeout mock let nudge loop force-release before timeout budget elapsed, causing false failure."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-03T14:59:21.220Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "f00b18059ddf99f4c14c9da8c3d15ab18ec5b4a8",
+    "endRef": "f00b18059ddf99f4c14c9da8c3d15ab18ec5b4a8"
+  },
+  "completedAt": "2026-03-03T14:59:21.220Z",
+  "retrospective": {
+    "summary": "Fixed idle-nudge timeout test mock to correctly consume timeout budget and pass idle-nudge suite",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "id": "traj_jn7q75ckw8cs",
+  "version": 1,
+  "task": {
+    "title": "Review PR #651 for performance issues"
+  },
+  "status": "active",
+  "startedAt": "2026-03-27T14:01:12.512Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "2e3aa1d7de2e28359eb4a0c6a177ac7b86209180",
+    "endRef": "2e3aa1d7de2e28359eb4a0c6a177ac7b86209180"
+  }
+}

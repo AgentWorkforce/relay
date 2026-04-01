@@ -1,0 +1,48 @@
+{
+  "id": "traj_6fgiwdoklvym",
+  "version": 1,
+  "task": {
+    "title": "Wire up TrajectoryViewer component",
+    "source": {
+      "system": "plain",
+      "id": "agent-relay-311"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-01-03T13:25:38.257Z",
+  "agents": [],
+  "chapters": [
+    {
+      "id": "chap_5a0m1gyhg4gc",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-03T13:26:50.947Z",
+      "events": [
+        {
+          "ts": 1767446810948,
+          "type": "decision",
+          "content": "Add Trajectory button to Header for consistent access: Add Trajectory button to Header for consistent access",
+          "raw": {
+            "question": "Add Trajectory button to Header for consistent access",
+            "chosen": "Add Trajectory button to Header for consistent access",
+            "alternatives": [],
+            "reasoning": "Current implementation only shows toggle when trajectory is active, making it hard to discover"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767446921392,
+          "type": "note",
+          "content": "Abandoned: Orphaned trajectory from previous session, starting new task",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-03T13:28:41.392Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-03T13:28:41.392Z"
+}

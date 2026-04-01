@@ -1,0 +1,25 @@
+{
+  "id": "traj_ho4fqeupp7wk",
+  "version": 1,
+  "task": {
+    "title": "Review end-to-end broker/dashboard/relaycast flow after concurrent changes"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-23T19:16:38.015Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": [],
+  "_trace": {
+    "startRef": "868e73b848fb78af479d75a278ace75762bef346",
+    "endRef": "868e73b848fb78af479d75a278ace75762bef346"
+  },
+  "completedAt": "2026-02-23T19:25:28.931Z",
+  "retrospective": {
+    "summary": "Reviewed current broker/dashboard/relaycast flow and identified concrete remaining logic gaps with file-level references; reran unit/integration suites across repos.",
+    "approach": "Standard approach",
+    "confidence": 0.89
+  }
+}

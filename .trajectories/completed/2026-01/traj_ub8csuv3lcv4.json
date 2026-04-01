@@ -1,0 +1,53 @@
+{
+  "id": "traj_ub8csuv3lcv4",
+  "version": 1,
+  "task": {
+    "title": "Fix WebSocket disconnections for workspace instances",
+    "source": {
+      "system": "plain",
+      "id": "workspace-websocket-stability"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-01-06T18:13:23.603Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-01-06T18:13:35.723Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_e4vj0j8ig7ma",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-06T18:13:35.723Z",
+      "events": [
+        {
+          "ts": 1767723215725,
+          "type": "decision",
+          "content": "Add ping/pong keepalive to main and bridge WebSockets: Add ping/pong keepalive to main and bridge WebSockets",
+          "raw": {
+            "question": "Add ping/pong keepalive to main and bridge WebSockets",
+            "chosen": "Add ping/pong keepalive to main and bridge WebSockets",
+            "alternatives": [],
+            "reasoning": "Main dashboard and bridge WebSocket endpoints were missing ping/pong keepalive, while logs and presence endpoints had it. Without keepalive, TCP/proxy timeouts kill idle connections (typically 60-120s)."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-06T18:16:51.462Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/home/user/relay",
+  "tags": [],
+  "completedAt": "2026-01-06T18:16:51.462Z",
+  "retrospective": {
+    "summary": "Added ping/pong keepalive to main and bridge WebSockets to fix connection instability",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

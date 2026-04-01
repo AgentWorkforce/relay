@@ -1,0 +1,53 @@
+{
+  "id": "traj_j1gfm3qid9fc",
+  "version": 1,
+  "task": {
+    "title": "Fix local dashboard proxy/trajectory failures in up mode"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-23T07:43:21.022Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-23T07:43:27.015Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_5ydga2r0mpqh",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-23T07:43:27.015Z",
+      "events": [
+        {
+          "ts": 1771832607016,
+          "type": "decision",
+          "content": "Default local JS dashboard launches to standalone mode with local API fallbacks: Default local JS dashboard launches to standalone mode with local API fallbacks",
+          "raw": {
+            "question": "Default local JS dashboard launches to standalone mode with local API fallbacks",
+            "chosen": "Default local JS dashboard launches to standalone mode with local API fallbacks",
+            "alternatives": [],
+            "reasoning": "local dashboard 2.0.82 assumes relay proxy on :3889 by default, but CLI up uses stdio broker init; forcing standalone avoids dead proxy/ws paths while preserving explicit relay override"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-23T07:43:27.074Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": [],
+  "_trace": {
+    "startRef": "e0c3cbdf20f4e7d08e69f5a5490594bf5a186e03",
+    "endRef": "e0c3cbdf20f4e7d08e69f5a5490594bf5a186e03"
+  },
+  "completedAt": "2026-02-23T07:43:27.074Z",
+  "retrospective": {
+    "summary": "Started broker before dashboard in up mode, adjusted local dashboard launch env/args to avoid dead :3889 proxy, added local bridge/trajectory endpoints in dashboard-server, and verified /api/bridge /api/trajectory* /ws",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  }
+}

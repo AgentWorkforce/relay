@@ -1,0 +1,193 @@
+{
+  "id": "traj_1773090241646_c3ce5400",
+  "version": 1,
+  "task": {
+    "title": "multi-utility-build run #b463a62e",
+    "source": {
+      "system": "workflow-runner",
+      "id": "b463a62e4db4a5690a67d01c"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-03-09T21:04:01.646Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-09T21:04:01.646Z"
+    },
+    {
+      "name": "lead",
+      "role": "lead",
+      "joinedAt": "2026-03-09T21:04:05.523Z"
+    },
+    {
+      "name": "github-bot",
+      "role": "github-bot",
+      "joinedAt": "2026-03-09T21:04:05.523Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_28b785c0",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-09T21:04:01.646Z",
+      "events": [
+        {
+          "ts": 1773090241646,
+          "type": "note",
+          "content": "Purpose: Complex real-world E2E test for PR #511. Multiple agents with DAG dependencies,\nauto step owner assignment, review gating, and parallel execution.\nInspired by build-plan patterns. Uses real CLI agents."
+        },
+        {
+          "ts": 1773090241646,
+          "type": "note",
+          "content": "Approach: 7-step dag workflow — Parsed 7 steps, 6 dependent steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-09T21:04:05.521Z"
+    },
+    {
+      "id": "ch_e47b713e",
+      "title": "Execution: architecture, github-status",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-09T21:04:05.521Z",
+      "events": [
+        {
+          "ts": 1773090245523,
+          "type": "note",
+          "content": "\"architecture\": Context: {{steps.setup.output}}",
+          "raw": {
+            "agent": "lead"
+          }
+        },
+        {
+          "ts": 1773090245523,
+          "type": "note",
+          "content": "\"github-status\": You are github-bot",
+          "raw": {
+            "agent": "github-bot"
+          }
+        },
+        {
+          "ts": 1773090250132,
+          "type": "error",
+          "content": "\"github-status\" failed [verification_mismatch]: Agent completed but did not output the expected sentinel \"GITHUB_STATUS_DONE\". The task prompt may not clearly specify the required output format, or the agent produced correct work but did not emit the signal.",
+          "significance": "high",
+          "raw": {
+            "cause": "verification_mismatch",
+            "rawError": "Verification failed for \"github-status\": output does not contain \"GITHUB_STATUS_DONE\" (token found only in task injection — agent must output it explicitly)",
+            "attempt": 1,
+            "maxRetries": 0
+          }
+        },
+        {
+          "ts": 1773090401298,
+          "type": "error",
+          "content": "\"architecture\" failed [unknown]: Unexpected failure. Review the error and step definition.",
+          "significance": "high",
+          "raw": {
+            "cause": "unknown",
+            "rawError": "Step \"architecture\" owner completion marker missing: \"STEP_COMPLETE:architecture\"",
+            "attempt": 1,
+            "maxRetries": 0
+          }
+        },
+        {
+          "ts": 1773090401304,
+          "type": "note",
+          "content": "\"string-utils\" skipped — Upstream dependency \"architecture\" failed"
+        },
+        {
+          "ts": 1773090401308,
+          "type": "decision",
+          "content": "Whether to skip string-utils → skip: Upstream dependency \"architecture\" failed",
+          "significance": "medium",
+          "raw": {
+            "question": "Whether to skip string-utils",
+            "chosen": "skip",
+            "reasoning": "Upstream dependency \"architecture\" failed"
+          }
+        },
+        {
+          "ts": 1773090401309,
+          "type": "note",
+          "content": "\"array-utils\" skipped — Upstream dependency \"architecture\" failed"
+        },
+        {
+          "ts": 1773090401311,
+          "type": "decision",
+          "content": "Whether to skip array-utils → skip: Upstream dependency \"architecture\" failed",
+          "significance": "medium",
+          "raw": {
+            "question": "Whether to skip array-utils",
+            "chosen": "skip",
+            "reasoning": "Upstream dependency \"architecture\" failed"
+          }
+        },
+        {
+          "ts": 1773090401311,
+          "type": "note",
+          "content": "\"final-check\" skipped — Upstream dependency \"architecture\" failed"
+        },
+        {
+          "ts": 1773090401312,
+          "type": "decision",
+          "content": "Whether to skip final-check → skip: Upstream dependency \"architecture\" failed",
+          "significance": "medium",
+          "raw": {
+            "question": "Whether to skip final-check",
+            "chosen": "skip",
+            "reasoning": "Upstream dependency \"architecture\" failed"
+          }
+        },
+        {
+          "ts": 1773090401313,
+          "type": "note",
+          "content": "\"integration\" skipped — Upstream dependency \"string-utils\" failed"
+        },
+        {
+          "ts": 1773090401314,
+          "type": "decision",
+          "content": "Whether to skip integration → skip: Upstream dependency \"string-utils\" failed",
+          "significance": "medium",
+          "raw": {
+            "question": "Whether to skip integration",
+            "chosen": "skip",
+            "reasoning": "Upstream dependency \"string-utils\" failed"
+          }
+        }
+      ],
+      "endedAt": "2026-03-09T21:06:41.315Z"
+    },
+    {
+      "id": "ch_d79909b4",
+      "title": "Convergence: architecture + github-status",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-09T21:06:41.315Z",
+      "events": [
+        {
+          "ts": 1773090401315,
+          "type": "reflection",
+          "content": "architecture + github-status resolved. 0/2 steps completed. 2 step(s) failed: architecture, github-status.",
+          "significance": "high",
+          "raw": {
+            "confidence": 0,
+            "focalPoints": [
+              "architecture: failed",
+              "github-status: failed"
+            ]
+          }
+        },
+        {
+          "ts": 1773090401317,
+          "type": "error",
+          "content": "Workflow abandoned: Step \"architecture\" owner completion marker missing: \"STEP_COMPLETE:architecture\"",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-09T21:06:41.317Z"
+    }
+  ],
+  "completedAt": "2026-03-09T21:06:41.317Z"
+}

@@ -1,0 +1,89 @@
+{
+  "id": "traj_x2sva3bv7zn0",
+  "version": 1,
+  "task": {
+    "title": "Route all agent spawning through SDK/daemon instead of dashboard AgentSpawner",
+    "source": {
+      "system": "plain",
+      "id": "github-374"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-02-05T11:45:37.973Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-05T11:45:44.334Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ojg8vn52o6hn",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-05T11:45:44.334Z",
+      "events": [
+        {
+          "ts": 1770291944334,
+          "type": "decision",
+          "content": "Three-layer refactor approach: protocol+SDK, daemon+wrapper, dashboard: Three-layer refactor approach: protocol+SDK, daemon+wrapper, dashboard",
+          "raw": {
+            "question": "Three-layer refactor approach: protocol+SDK, daemon+wrapper, dashboard",
+            "chosen": "Three-layer refactor approach: protocol+SDK, daemon+wrapper, dashboard",
+            "alternatives": [],
+            "reasoning": "Need to thread spawn/release through every layer. Protocol types first (foundation), then SDK client methods + daemon handlers (Layer 1-2), then dashboard refactor (Layer 3). Each layer can be type-checked independently."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1770291950265,
+          "type": "decision",
+          "content": "Added SEND_INPUT and LIST_WORKERS protocol messages: Added SEND_INPUT and LIST_WORKERS protocol messages",
+          "raw": {
+            "question": "Added SEND_INPUT and LIST_WORKERS protocol messages",
+            "chosen": "Added SEND_INPUT and LIST_WORKERS protocol messages",
+            "alternatives": [],
+            "reasoning": "Dashboard needs to read worker state (logs, hasWorker, getActiveWorkers) and send input to PTYs. These operations go through the daemon socket when using external SpawnManager, so need protocol-level support."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1770291957283,
+          "type": "decision",
+          "content": "SpawnManagerLike duck-typed interface instead of importing from daemon: SpawnManagerLike duck-typed interface instead of importing from daemon",
+          "raw": {
+            "question": "SpawnManagerLike duck-typed interface instead of importing from daemon",
+            "chosen": "SpawnManagerLike duck-typed interface instead of importing from daemon",
+            "alternatives": [],
+            "reasoning": "Dashboard-server and daemon are separate packages. Using a duck-typed interface avoids a hard dependency on @agent-relay/daemon while still providing type-safe read operations (hasWorker, getActiveWorkers, getWorkerOutput, getWorkerRawOutput, sendWorkerInput)."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1770291964830,
+          "type": "decision",
+          "content": "Daemon-first fallback chain: daemon socket → dashboard API → onSpawn callback: Daemon-first fallback chain: daemon socket → dashboard API → onSpawn callback",
+          "raw": {
+            "question": "Daemon-first fallback chain: daemon socket → dashboard API → onSpawn callback",
+            "chosen": "Daemon-first fallback chain: daemon socket → dashboard API → onSpawn callback",
+            "alternatives": [],
+            "reasoning": "Daemon always has access to relay-pty binary (it resolves from its own install location). Dashboard API is second fallback for standalone mode. onSpawn callback is final fallback for custom spawn logic. Only fall through on transport errors, not on explicit daemon rejection (prevents policy bypass)."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-05T11:48:05.238Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-02-05T11:48:05.238Z",
+  "retrospective": {
+    "summary": "Routed all agent spawning through SDK/daemon, added SEND_INPUT and LIST_WORKERS protocol messages, refactored dashboard to use SpawnManagerLike for reads. Fixed fleet endpoints, spawn fallback policy bypass, spawnerName passthrough. Updated protocol/daemon/SDK docs.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  }
+}

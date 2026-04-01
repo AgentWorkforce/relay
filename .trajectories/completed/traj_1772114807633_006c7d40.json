@@ -1,0 +1,48 @@
+{
+  "id": "traj_1772114807633_006c7d40",
+  "version": 1,
+  "task": {
+    "title": "harden-workflows run #eb9a8982",
+    "source": {
+      "system": "workflow-runner",
+      "id": "eb9a8982331801ff1ecf39fb"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-02-26T14:06:47.633Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T14:06:47.633Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_64be5470",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T14:06:47.633Z",
+      "events": [
+        {
+          "ts": 1772114807633,
+          "type": "note",
+          "content": "Purpose: Systematically exercises every swarm pattern across all CLIs and model permutations from cli-registry.yaml. Seven parallel pattern-testing teams and three CLI-model teams run concurrently, aggregate failures, fix any issues found in the codebase, and write hardened integration tests."
+        },
+        {
+          "ts": 1772114807633,
+          "type": "note",
+          "content": "Approach: 34-step dag workflow — Resumed run: 0 pending steps of 34 total"
+        },
+        {
+          "ts": 1772114811427,
+          "type": "error",
+          "content": "Workflow abandoned: One or more steps failed",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-26T14:06:51.427Z"
+    }
+  ],
+  "completedAt": "2026-02-26T14:06:51.427Z"
+}

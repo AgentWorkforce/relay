@@ -1,0 +1,3588 @@
+{
+  "version": 1,
+  "id": "trace_ih1eqm04g0m7",
+  "timestamp": "2026-02-19T07:42:35.048Z",
+  "trajectory": "traj_cg4ihv6ph68u",
+  "files": [
+    {
+      "path": ".claude/rules/rust.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 52,
+              "end_line": 55,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/choosing-swarm-patterns/SKILL.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 229,
+              "end_line": 302,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/package-validation.yml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 60,
+              "end_line": 73,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/publish.yml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 127,
+              "end_line": 190,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 503,
+              "end_line": 508,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 957,
+              "end_line": 963,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 999,
+              "end_line": 1011,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1131,
+              "end_line": 1143,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1210,
+              "end_line": 1216,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/rust-ci.yml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 22,
+              "end_line": 62,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 83,
+              "end_line": 89,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".gitignore",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 64,
+              "end_line": 74,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".trajectories/active/traj_cg4ihv6ph68u.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 19,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".trajectories/completed/2026-02/traj_4blqophly998.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 65,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".trajectories/completed/2026-02/traj_4blqophly998.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 36,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".trajectories/index.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 295,
+              "end_line": 313,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Cargo.lock",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 552,
+              "end_line": 557,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 689,
+              "end_line": 694,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 767,
+              "end_line": 772,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 927,
+              "end_line": 932,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1084,
+              "end_line": 1089,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1113,
+              "end_line": 1118,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1130,
+              "end_line": 1139,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1479,
+              "end_line": 1484,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1541,
+              "end_line": 1552,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1636,
+              "end_line": 1641,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1717,
+              "end_line": 1723,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1754,
+              "end_line": 1760,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1901,
+              "end_line": 1915,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1920,
+              "end_line": 1925,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1984,
+              "end_line": 1993,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 2047,
+              "end_line": 2052,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 2054,
+              "end_line": 2060,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 2367,
+              "end_line": 2372,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 2511,
+              "end_line": 2516,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 2537,
+              "end_line": 2542,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 2749,
+              "end_line": 2754,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 2949,
+              "end_line": 2954,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Cargo.toml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 24,
+              "end_line": 30,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "README.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 194,
+              "end_line": 200,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "TELEMETRY.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 91,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "install.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 152,
+              "end_line": 184,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 629,
+              "end_line": 637,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 768,
+              "end_line": 775,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "package-lock.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 15,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 33,
+              "end_line": 56,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 67,
+              "end_line": 73,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 111,
+              "end_line": 122,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 228,
+              "end_line": 233,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1211,
+              "end_line": 1216,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1350,
+              "end_line": 1370,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1716,
+              "end_line": 1721,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 2478,
+              "end_line": 2483,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 2964,
+              "end_line": 2969,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 3237,
+              "end_line": 3242,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 3724,
+              "end_line": 3729,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 4085,
+              "end_line": 4090,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 4122,
+              "end_line": 4127,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 4292,
+              "end_line": 4300,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 4399,
+              "end_line": 4404,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 4761,
+              "end_line": 4766,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 5042,
+              "end_line": 5047,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 5171,
+              "end_line": 5176,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 5209,
+              "end_line": 5214,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 5245,
+              "end_line": 5250,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 5293,
+              "end_line": 5298,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 5390,
+              "end_line": 5395,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 5671,
+              "end_line": 5676,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 6007,
+              "end_line": 6012,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 6558,
+              "end_line": 6563,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 6860,
+              "end_line": 6887,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 6893,
+              "end_line": 6901,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 6907,
+              "end_line": 6915,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 6921,
+              "end_line": 6929,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 6935,
+              "end_line": 6943,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 6949,
+              "end_line": 6957,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 6981,
+              "end_line": 6986,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 7022,
+              "end_line": 7027,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 8002,
+              "end_line": 8011,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 8271,
+              "end_line": 8294,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 8305,
+              "end_line": 8311,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 8318,
+              "end_line": 8324,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 8333,
+              "end_line": 8339,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 8348,
+              "end_line": 8354,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 8361,
+              "end_line": 8367,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 8376,
+              "end_line": 8389,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 8396,
+              "end_line": 8402,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 8406,
+              "end_line": 8412,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 8416,
+              "end_line": 8422,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 8439,
+              "end_line": 8445,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 8512,
+              "end_line": 8518,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 8539,
+              "end_line": 8563,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 8818,
+              "end_line": 8826,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 9081,
+              "end_line": 9099,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 9360,
+              "end_line": 9370,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 9625,
+              "end_line": 9636,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 9639,
+              "end_line": 9645,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 9655,
+              "end_line": 9663,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 9918,
+              "end_line": 9926,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 10181,
+              "end_line": 10187,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 10444,
+              "end_line": 10450,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 10704,
+              "end_line": 10714,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 10718,
+              "end_line": 10723,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 10727,
+              "end_line": 10732,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 10980,
+              "end_line": 10986,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 11243,
+              "end_line": 11249,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 11503,
+              "end_line": 11511,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 11774,
+              "end_line": 11780,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 12037,
+              "end_line": 12045,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 12300,
+              "end_line": 12308,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 12563,
+              "end_line": 12572,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 12828,
+              "end_line": 12840,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 25,
+              "end_line": 68,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 73,
+              "end_line": 79,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 97,
+              "end_line": 104,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 118,
+              "end_line": 126,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 146,
+              "end_line": 151,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 170,
+              "end_line": 193,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 204,
+              "end_line": 210,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 240,
+              "end_line": 246,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/acp-bridge/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 46,
+              "end_line": 52,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/.trajectories/active/traj_xbsvuzogscey.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/.trajectories/index.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/scripts/generate-openapi.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/index.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/agent.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/agent.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/api.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/api.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/decision.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/decision.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/fleet.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/fleet.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/history.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/history.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/index.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/message.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/message.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/session.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/session.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/task.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/src/schemas/task.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/tsconfig.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/api-types/vitest.config.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/README.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/datasets/coding-tasks.yaml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/datasets/coordination-tasks.yaml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/datasets/quick-test.yaml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/src/benchmark.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/src/cli.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/src/harbor.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/src/index.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/src/runners/base.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/src/runners/index.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/src/runners/single.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/src/runners/subagent.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/src/runners/swarm.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/src/types.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/benchmark/tsconfig.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/bridge/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 22,
+              "end_line": 33,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/README.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 6,
+              "end_line": 12,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 36,
+              "end_line": 74,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 81,
+              "end_line": 95,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 44,
+              "end_line": 54,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 75,
+              "end_line": 81,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/scripts/bundle-agent-relay.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/__tests__/error-scenarios.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 682,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/__tests__/facade.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 296,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/__tests__/integration.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/__tests__/quickstart.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/__tests__/swarm-coordinator.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 416,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/__tests__/unit.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 155,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/__tests__/workflow-runner.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 333,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/browser.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/client.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 34,
+              "end_line": 49,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 119,
+              "end_line": 125,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 171,
+              "end_line": 178,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 189,
+              "end_line": 195,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 489,
+              "end_line": 510,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/consensus-helpers.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/consensus.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/examples/demo.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/examples/example.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/examples/quickstart.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/examples/ralph-loop.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/examples/sample-prd.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/index.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 6,
+              "end_line": 9,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/logs.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/protocol.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 34,
+              "end_line": 40,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 201,
+              "end_line": 211,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/pty.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/relay.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 6,
+              "end_line": 12,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 34,
+              "end_line": 40,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 67,
+              "end_line": 85,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 103,
+              "end_line": 109,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 129,
+              "end_line": 138,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 145,
+              "end_line": 160,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 185,
+              "end_line": 192,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 234,
+              "end_line": 254,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 270,
+              "end_line": 326,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 333,
+              "end_line": 346,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 416,
+              "end_line": 449,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 454,
+              "end_line": 469,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 481,
+              "end_line": 488,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 500,
+              "end_line": 550,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 597,
+              "end_line": 608,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/relaycast.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 2,
+              "end_line": 8,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 85,
+              "end_line": 91,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/shadow.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/README.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 450,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/barrier.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 254,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/builder.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 241,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/builtin-templates/bug-fix.yaml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 75,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/builtin-templates/code-review.yaml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 82,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/builtin-templates/documentation.yaml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 70,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/builtin-templates/feature-dev.yaml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 76,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/builtin-templates/refactor.yaml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 82,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/builtin-templates/security-audit.yaml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 84,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/cli.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 93,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/coordinator.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 520,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/index.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 9,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/memory-db.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 39,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/run.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 47,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/runner.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 950,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/schema.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 321,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/state.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 279,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/templates.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 544,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/src/workflows/types.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 180,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-sdk/tsconfig.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 12,
+              "end_line": 21,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/README.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/docker/Dockerfile",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/docker/docker-compose.yml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/docker/entrypoint.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/scripts/clear-auth.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/scripts/inject-message.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/scripts/start.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/scripts/test-cli.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/scripts/test-full-spawn.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/scripts/test-registration.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/scripts/test-setup-flow.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/scripts/test-spawn.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/scripts/test-with-daemon.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/scripts/verify-auth.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/src/index.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/src/utils/credential-check.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/src/utils/socket-client.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/tests/credential-check.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli-tester/tsconfig.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/config/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 83,
+              "end_line": 89,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/config/src/cloud-config.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 42,
+              "end_line": 48,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 138,
+              "end_line": 144,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/config/src/schemas.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 41,
+              "end_line": 94,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/config/src/schemas.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 152,
+              "end_line": 158,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/continuity/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 22,
+              "end_line": 28,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/daemon/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 22,
+              "end_line": 38,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/hooks/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 37,
+              "end_line": 45,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/mcp/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 47,
+              "end_line": 61,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/memory/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 22,
+              "end_line": 28,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/policy/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 22,
+              "end_line": 28,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/protocol/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/resiliency/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-py/README.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 56,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-py/pyproject.toml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 23,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-py/src/agent_relay/__init__.py",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 27,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-py/src/agent_relay/builder.py",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 371,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-py/src/agent_relay/types.py",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 94,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-py/tests/__init__.py",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-py/tests/test_builder.py",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 101,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-ts/IMPLEMENTATION_PLAN.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-ts/WORKFLOWS_SPEC.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 10,
+              "end_line": 15,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 20,
+              "end_line": 25,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 47,
+              "end_line": 53,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 60,
+              "end_line": 67,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 74,
+              "end_line": 79,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/browser-client.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/browser-framing.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/browser-framing.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/index.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 3,
+              "end_line": 9,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 11,
+              "end_line": 16,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 24,
+              "end_line": 29,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/standalone.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/transports/index.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/transports/socket-transport.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/transports/types.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/transports/websocket-transport.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/spawner/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/state/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/storage/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 56,
+              "end_line": 62,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/telemetry/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/trajectory/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 22,
+              "end_line": 28,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/user-directory/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 22,
+              "end_line": 28,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/utils/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 112,
+              "end_line": 119,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/wrapper/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 30,
+              "end_line": 39,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/postinstall.js",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 359,
+              "end_line": 366,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 378,
+              "end_line": 418,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 441,
+              "end_line": 459,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/run-swarm-implementation.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "scripts/spawn-reviewers.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 40,
+              "end_line": 46,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 56,
+              "end_line": 62,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/auth.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 141,
+              "end_line": 202,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 703,
+              "end_line": 781,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/cli/index.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 42,
+              "end_line": 48,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 4162,
+              "end_line": 4169,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 4200,
+              "end_line": 4206,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 4260,
+              "end_line": 4278,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 4307,
+              "end_line": 4313,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 4352,
+              "end_line": 4360,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 4365,
+              "end_line": 4374,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 4734,
+              "end_line": 4746,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 4750,
+              "end_line": 4761,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 5481,
+              "end_line": 5575,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/main.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 98,
+              "end_line": 107,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 373,
+              "end_line": 383,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 407,
+              "end_line": 413,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 416,
+              "end_line": 422,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 443,
+              "end_line": 449,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 456,
+              "end_line": 464,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 599,
+              "end_line": 605,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 648,
+              "end_line": 654,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1073,
+              "end_line": 1113,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1438,
+              "end_line": 1487,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 1801,
+              "end_line": 1810,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 2351,
+              "end_line": 2388,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 2671,
+              "end_line": 2678,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 3156,
+              "end_line": 3288,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/protocol.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 160,
+              "end_line": 169,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/pty_worker.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 44,
+              "end_line": 55,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 192,
+              "end_line": 198,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 482,
+              "end_line": 496,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/relaycast_ws.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 215,
+              "end_line": 221,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/wrap.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 17,
+              "end_line": 24,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 53,
+              "end_line": 60,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 76,
+              "end_line": 82,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            },
+            {
+              "start_line": 255,
+              "end_line": 278,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/integration/mcp/26-mcp-relaycast-spawn.js",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 317,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tsconfig.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 46,
+              "end_line": 54,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "vitest.config.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 99,
+              "end_line": 105,
+              "revision": "bd6a21b1523670607b789fba8afed47f7b5f6763"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

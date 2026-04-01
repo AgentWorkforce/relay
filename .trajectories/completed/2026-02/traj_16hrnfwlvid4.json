@@ -1,0 +1,61 @@
+{
+  "id": "traj_16hrnfwlvid4",
+  "version": 1,
+  "task": {
+    "title": "Fix thread messages not delivered to agents and not rendered in dashboard"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-24T21:53:33.678Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-02-24T21:53:33.678Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_k3z84enjxw9w",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-24T21:53:39.513Z",
+      "events": [
+        {
+          "ts": 1771970019514,
+          "type": "decision",
+          "content": "Added channel field to Rust SDK ThreadReplyEvent: Added channel field to Rust SDK ThreadReplyEvent",
+          "raw": {
+            "question": "Added channel field to Rust SDK ThreadReplyEvent",
+            "chosen": "Added channel field to Rust SDK ThreadReplyEvent",
+            "alternatives": [],
+            "reasoning": "The server sends channel in thread.reply events but the Rust SDK struct was missing it, causing the broker to fall back to synthetic target 'thread' which broke dashboard routing"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1771970024756,
+          "type": "decision",
+          "content": "Override display_target in broker main loop for thread replies: Override display_target in broker main loop for thread replies",
+          "raw": {
+            "question": "Override display_target in broker main loop for thread replies",
+            "chosen": "Override display_target in broker main loop for thread replies",
+            "alternatives": [],
+            "reasoning": "Even with the SDK fix, added a safety net in main.rs that extracts the raw WS channel field and overrides display_target when it is 'thread' (synthetic) so the dashboard routes messages correctly"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-24T21:53:49.432Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": [],
+  "completedAt": "2026-02-24T21:53:49.432Z",
+  "retrospective": {
+    "summary": "Previous incomplete work",
+    "approach": "Standard approach",
+    "confidence": 0.5
+  }
+}
