@@ -697,10 +697,10 @@ export class AgentRelay {
         return this.ensureHumanRegistered(normalizedRequestedName, kind);
       },
       sendMessage: async (input) => {
-        const client = await this.ensureStarted();
         const from = autoEnsureRegistration
           ? await this.ensureHumanRegistered(normalizedRequestedName, kind)
           : resolveName();
+        const client = await this.ensureStarted();
         let result: Awaited<ReturnType<typeof client.sendMessage>>;
         try {
           result = await client.sendMessage({
@@ -1079,6 +1079,7 @@ export class AgentRelay {
     this.idleAgents.clear();
     this.deliveryStates.clear();
     this.outputListeners.clear();
+    this.humanRegistrations.clear();
     for (const entry of this.exitResolvers.values()) {
       entry.resolve('released');
     }
@@ -1235,6 +1236,17 @@ export class AgentRelay {
     return name === 'system' ? 'system' : name.trim() || 'system';
   }
 
+  private hasConfiguredRelaycastRegistration(): boolean {
+    if (this.relayApiKey) {
+      return true;
+    }
+    const envKey = this.clientOptions.env?.RELAY_API_KEY ?? process.env.RELAY_API_KEY;
+    if (typeof envKey === 'string' && envKey.trim().length > 0) {
+      return true;
+    }
+    return typeof this.requestedWorkspaceId === 'string' && this.requestedWorkspaceId.trim().length > 0;
+  }
+
   private async ensureHumanRegistered(name: string, kind: HumanIdentityKind): Promise<string> {
     const stateKey = this.humanRegistrationKey(name, kind);
     const existing = this.humanRegistrations.get(stateKey);
@@ -1248,13 +1260,14 @@ export class AgentRelay {
     const state = existing ?? {};
     const pending = (async () => {
       try {
-        await this.ensureStarted();
-        if (!this.relayApiKey) {
+        if (!this.hasConfiguredRelaycastRegistration()) {
           const canonicalName =
             kind === 'system' ? this.localCanonicalSystemName(name) : this.localCanonicalHumanName(name);
           state.canonicalName = canonicalName;
           return canonicalName;
         }
+
+        await this.ensureStarted();
         const relaycast = new RelayCast({
           apiKey: this.relayApiKey,
           ...(this.relaycastBaseUrl ? { baseUrl: this.relaycastBaseUrl } : {}),
