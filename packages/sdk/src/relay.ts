@@ -699,9 +699,6 @@ export class AgentRelay {
         return resolveName();
       },
       ensureRegistered: async () => {
-        if (!autoEnsureRegistration) {
-          return resolveName();
-        }
         return this.ensureHumanRegistered(normalizedRequestedName, kind);
       },
       sendMessage: async (input) => {
