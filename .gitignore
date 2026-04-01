@@ -86,4 +86,4 @@ web/.open-next
 .relay/
 .trajectories/
 .msd/
-workflows/
+/workflows/
