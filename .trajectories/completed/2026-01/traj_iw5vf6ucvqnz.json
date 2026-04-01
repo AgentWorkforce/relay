@@ -1,0 +1,109 @@
+{
+  "id": "traj_iw5vf6ucvqnz",
+  "version": 1,
+  "task": {
+    "title": "Add swarm primitives and SDK competitive enhancements"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-26T20:13:08.103Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-01-26T20:13:16.472Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_bfuaep50y7av",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-26T20:13:16.472Z",
+      "events": [
+        {
+          "ts": 1769458396473,
+          "type": "decision",
+          "content": "Positioned SDK as primitives-based framework vs prescriptive swarm frameworks: Positioned SDK as primitives-based framework vs prescriptive swarm frameworks",
+          "raw": {
+            "question": "Positioned SDK as primitives-based framework vs prescriptive swarm frameworks",
+            "chosen": "Positioned SDK as primitives-based framework vs prescriptive swarm frameworks",
+            "alternatives": [],
+            "reasoning": "Competitors like OpenAI Agents, Swarms.ai, and Strands impose specific orchestration patterns. Agent Relay provides flexible communication primitives that let developers build any swarm architecture. This differentiation is sustainable and appeals to power users."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1769458415801,
+          "type": "decision",
+          "content": "Added query operations (listAgents, getMetrics, getHealth, getInbox, getStatus) to SDK: Added query operations (listAgents, getMetrics, getHealth, getInbox, getStatus) to SDK",
+          "raw": {
+            "question": "Added query operations (listAgents, getMetrics, getHealth, getInbox, getStatus) to SDK",
+            "chosen": "Added query operations (listAgents, getMetrics, getHealth, getInbox, getStatus) to SDK",
+            "alternatives": [],
+            "reasoning": "These were MCP tool features but not in the SDK. Essential for discovery, monitoring, and auto-scaling patterns in swarm orchestration."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1769458417189,
+          "type": "decision",
+          "content": "Added consensus primitives (createProposal, vote) for external daemon mode: Added consensus primitives (createProposal, vote) for external daemon mode",
+          "raw": {
+            "question": "Added consensus primitives (createProposal, vote) for external daemon mode",
+            "chosen": "Added consensus primitives (createProposal, vote) for external daemon mode",
+            "alternatives": [],
+            "reasoning": "Native consensus is a unique differentiator - no other framework has built-in voting. Disabled in standalone mode due to complexity, but available when running external daemon."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1769458418229,
+          "type": "decision",
+          "content": "Prioritized Memory System and Guardrails as P0 new primitives: Prioritized Memory System and Guardrails as P0 new primitives",
+          "raw": {
+            "question": "Prioritized Memory System and Guardrails as P0 new primitives",
+            "chosen": "Prioritized Memory System and Guardrails as P0 new primitives",
+            "alternatives": [],
+            "reasoning": "Competitive analysis showed all major frameworks (LangGraph, CrewAI, OpenAI Agents) have structured memory. Guardrails essential for production safety. Both are table-stakes for enterprise adoption."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1769458429213,
+          "type": "decision",
+          "content": "Designed 8 swarm patterns documentation based on AgentSwarm architecture: Designed 8 swarm patterns documentation based on AgentSwarm architecture",
+          "raw": {
+            "question": "Designed 8 swarm patterns documentation based on AgentSwarm architecture",
+            "chosen": "Designed 8 swarm patterns documentation based on AgentSwarm architecture",
+            "alternatives": [],
+            "reasoning": "AgentSwarm is a production orchestrator built on Agent Relay using Conductor/Planner/Workers/Judge pattern. Used this as reference plus competitive research to document patterns: Hierarchical, Fan-out/Fan-in, Handoff/Routing, Pipeline, Consensus, Self-Organizing, Supervisor/Shadow, Map-Reduce."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1769458430156,
+          "type": "decision",
+          "content": "Created comprehensive primitives roadmap with 8 new capabilities: Created comprehensive primitives roadmap with 8 new capabilities",
+          "raw": {
+            "question": "Created comprehensive primitives roadmap with 8 new capabilities",
+            "chosen": "Created comprehensive primitives roadmap with 8 new capabilities",
+            "alternatives": [],
+            "reasoning": "Gap analysis against OpenAI Agents, LangGraph, CrewAI revealed missing primitives: Memory, Guardrails, Tracing, HITL, Backpressure, Attachments, Roles, Task Queues. Spec includes protocol messages, SDK API, database schemas, and usage examples for each."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-26T20:13:57.229Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-26T20:13:57.229Z",
+  "retrospective": {
+    "summary": "Enhanced SDK with swarm primitives and created comprehensive roadmap for new capabilities. Added query operations, consensus support, swarm patterns documentation, and 8 new primitive specifications (Memory, Guardrails, Tracing, HITL, Backpressure, Attachments, Roles, Task Queues). SDK now positioned as flexible primitives framework vs prescriptive competitors.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  }
+}

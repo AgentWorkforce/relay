@@ -1,0 +1,55 @@
+{
+  "id": "traj_sgp3uu616s79",
+  "version": 1,
+  "task": {
+    "title": "Gate initial PTY task injection until Codex is ready after MCP boot"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-27T20:31:10.575Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-27T20:35:15.956Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_oe3p62pjxizr",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-27T20:35:15.956Z",
+      "events": [
+        {
+          "ts": 1772224515957,
+          "type": "decision",
+          "content": "Gate PTY worker_ready on startup readiness for Codex with relaycast MCP: Gate PTY worker_ready on startup readiness for Codex with relaycast MCP",
+          "raw": {
+            "question": "Gate PTY worker_ready on startup readiness for Codex with relaycast MCP",
+            "chosen": "Gate PTY worker_ready on startup readiness for Codex with relaycast MCP",
+            "alternatives": [],
+            "reasoning": "worker_ready previously fired on init_worker before Codex completed MCP boot, causing broker to inject initial_task too early. Gate now requires post-boot prompt detection (or timeout fallback) before emitting worker_ready."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-27T20:35:20.389Z"
+    }
+  ],
+  "commits": [
+    "6aa7883a"
+  ],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "a8cbdeae4fee36f3bf5c5b863d14c198cc1cc31c",
+    "endRef": "a8cbdeae4fee36f3bf5c5b863d14c198cc1cc31c"
+  },
+  "completedAt": "2026-02-27T20:35:20.389Z",
+  "retrospective": {
+    "summary": "Confirmed premature worker_ready flow and implemented PTY startup gating so worker_ready emits only after Codex relaycast MCP boot returns to prompt (with timeout fallback). Added tests for boot gating and prompt detection.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

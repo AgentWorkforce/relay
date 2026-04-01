@@ -1,0 +1,39 @@
+{
+  "id": "compact_cfhcbxo7ub6j",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-03-02T09:55:56.703Z",
+  "sourceTrajectories": [
+    "traj_sgp3uu616s79"
+  ],
+  "dateRange": {
+    "start": "2026-02-27T20:31:10.575Z",
+    "end": "2026-02-27T20:35:20.389Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Gate PTY worker_ready on startup readiness for Codex with relaycast MCP",
+          "chosen": "Gate PTY worker_ready on startup readiness for Codex with relaycast MCP",
+          "reasoning": "worker_ready previously fired on init_worker before Codex completed MCP boot, causing broker to inject initial_task too early. Gate now requires post-boot prompt detection (or timeout fallback) before emitting worker_ready.",
+          "fromTrajectory": "traj_sgp3uu616s79"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": [
+    "6aa7883a"
+  ]
+}

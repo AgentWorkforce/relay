@@ -1,0 +1,65 @@
+{
+  "id": "traj_dc3uiqhsxjnd",
+  "version": 1,
+  "task": {
+    "title": "Delete unused legacy packages after broker SDK migration"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-18T09:23:19.221Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-18T09:32:16.730Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_cfmtz0b1p6kh",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-18T09:32:16.730Z",
+      "events": [
+        {
+          "ts": 1771407136734,
+          "type": "decision",
+          "content": "Replaced residual protocol/resiliency imports in kept packages with broker-sdk or local compatibility types: Replaced residual protocol/resiliency imports in kept packages with broker-sdk or local compatibility types",
+          "raw": {
+            "question": "Replaced residual protocol/resiliency imports in kept packages with broker-sdk or local compatibility types",
+            "chosen": "Replaced residual protocol/resiliency imports in kept packages with broker-sdk or local compatibility types",
+            "alternatives": [],
+            "reasoning": "Allowed deleting legacy packages without breaking kept package builds and minimized API churn outside removed workspaces."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1771407139429,
+          "type": "decision",
+          "content": "Removed root legacy re-export shims tied to deleted packages: Removed root legacy re-export shims tied to deleted packages",
+          "raw": {
+            "question": "Removed root legacy re-export shims tied to deleted packages",
+            "chosen": "Removed root legacy re-export shims tied to deleted packages",
+            "alternatives": [],
+            "reasoning": "These shims imported removed workspaces directly; keeping them would break TypeScript build after package deletion."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-18T09:34:54.361Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "72cac787203e9fc9a69de6cf5e5a305406bd31b7",
+    "endRef": "72cac787203e9fc9a69de6cf5e5a305406bd31b7"
+  },
+  "completedAt": "2026-02-18T09:34:54.361Z",
+  "retrospective": {
+    "summary": "Deleted legacy daemon/sdk/wrapper/bridge/spawner/protocol/state/resiliency/continuity packages, migrated remaining references in kept packages, updated build/workflow configs, and verified full build passes.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  }
+}

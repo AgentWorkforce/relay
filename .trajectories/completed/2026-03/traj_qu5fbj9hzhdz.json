@@ -1,0 +1,25 @@
+{
+  "id": "traj_qu5fbj9hzhdz",
+  "version": 1,
+  "task": {
+    "title": "Align Claude relay plugin worker/bootstrap prompts with multi-agent session fix"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-14T21:15:58.670Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "fa73b1a3cbec6d91166fdec1e0321c2b3508e6f0",
+    "endRef": "fa73b1a3cbec6d91166fdec1e0321c2b3508e6f0"
+  },
+  "completedAt": "2026-03-14T21:19:05.548Z",
+  "retrospective": {
+    "summary": "Updated Claude relay worker/bootstrap/skill prompts with explicit as attribution guidance and removed the new prompt-level setup dependency.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "id": "traj_itn5hyej5mi6",
+  "version": 1,
+  "task": {
+    "title": "Fix @agent-relay/wrapper module resolution issues - 17 test failures",
+    "source": {
+      "system": "plain",
+      "id": "PR-357"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-02-02T10:32:24.710Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-02T15:13:33.203Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_g5zlcodg305k",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-02T15:13:33.203Z",
+      "events": [
+        {
+          "ts": 1770045213205,
+          "type": "decision",
+          "content": "Thread shadowMode, shadowAgent, shadowTriggers through protocol, SDK, daemon, and CLI layers: Thread shadowMode, shadowAgent, shadowTriggers through protocol, SDK, daemon, and CLI layers",
+          "raw": {
+            "question": "Thread shadowMode, shadowAgent, shadowTriggers through protocol, SDK, daemon, and CLI layers",
+            "chosen": "Thread shadowMode, shadowAgent, shadowTriggers through protocol, SDK, daemon, and CLI layers",
+            "alternatives": [],
+            "reasoning": "Devin review found these fields were silently dropped in daemon spawn path. Both the spawner and bridge packages already support them, but protocol SpawnPayload and SDK client.spawn() were missing them, creating silent data loss when using daemon-based spawning vs HTTP API fallback."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1770045235751,
+          "type": "decision",
+          "content": "Created sdk-daemon-parity.md Claude rule: Created sdk-daemon-parity.md Claude rule",
+          "raw": {
+            "question": "Created sdk-daemon-parity.md Claude rule",
+            "chosen": "Created sdk-daemon-parity.md Claude rule",
+            "alternatives": [],
+            "reasoning": "Codifies the requirement that all spawn fields must be threaded through protocol, SDK, daemon, and CLI layers to prevent future silent data loss bugs."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-02T15:14:01.719Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/data/repos/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "2bf129eb8935904951b0aeb866ddba268611e009",
+    "endRef": "f637ba5a9d194aff545001bbe091c45fc0c3413d",
+    "traceId": "trace_17kspa6zdv77"
+  },
+  "completedAt": "2026-02-02T15:14:01.719Z",
+  "retrospective": {
+    "summary": "Fixed Devin review issue: threaded shadowMode, shadowAgent, shadowTriggers through protocol SpawnPayload, SDK client.spawn(), daemon SpawnManager, and CLI. Added SDK test for shadow options. Created sdk-daemon-parity Claude rule.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "id": "traj_xt3iuim9goh4",
+  "version": 1,
+  "task": {
+    "title": "Implement Activity Feed v1 - unified timeline of workspace events"
+  },
+  "status": "abandoned",
+  "startedAt": "2026-01-20T20:15:04.250Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-01-20T20:15:04.251Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_7uafrea54k12",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-20T20:16:00.265Z",
+      "events": [
+        {
+          "ts": 1768940160266,
+          "type": "decision",
+          "content": "Activity Feed v1 will show: agent spawned/released, user joined/left, and broadcasts. Data flows through existing presence WebSocket with new event types.: Activity Feed v1 will show: agent spawned/released, user joined/left, and broadcasts. Data flows through existing presence WebSocket with new event types.",
+          "raw": {
+            "question": "Activity Feed v1 will show: agent spawned/released, user joined/left, and broadcasts. Data flows through existing presence WebSocket with new event types.",
+            "chosen": "Activity Feed v1 will show: agent spawned/released, user joined/left, and broadcasts. Data flows through existing presence WebSocket with new event types.",
+            "alternatives": [],
+            "reasoning": "Leverages existing WebSocket infrastructure, minimal backend changes, covers most valuable events for monitoring agents"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768940468642,
+          "type": "note",
+          "content": "Abandoned: Interrupted to fix channel members bug - will restart when resuming activity feed work",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-20T20:21:08.641Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-20T20:21:08.641Z"
+}

@@ -1,0 +1,124 @@
+{
+  "id": "traj_1772092589075_eec73425",
+  "version": 1,
+  "task": {
+    "title": "test-v1-basic-coord run #57fbd37d",
+    "source": {
+      "system": "workflow-runner",
+      "id": "57fbd37d95a249ec18f5217a"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-02-26T07:56:29.075Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T07:56:29.075Z"
+    },
+    {
+      "name": "codex-lead",
+      "role": "codex-lead",
+      "joinedAt": "2026-02-26T07:56:33.504Z"
+    },
+    {
+      "name": "claude-worker",
+      "role": "claude-worker",
+      "joinedAt": "2026-02-26T07:56:33.504Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_ea1e99eb",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T07:56:29.075Z",
+      "events": [
+        {
+          "ts": 1772092589075,
+          "type": "note",
+          "content": "Workflow \"test-v1-basic-coord\" started with 2 steps"
+        },
+        {
+          "ts": 1772092589075,
+          "type": "note",
+          "content": "Parsed 2 steps, 2 parallel tracks, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-02-26T07:56:33.503Z"
+    },
+    {
+      "id": "ch_a0689b81",
+      "title": "Execution: lead, worker",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T07:56:33.503Z",
+      "events": [
+        {
+          "ts": 1772092593504,
+          "type": "note",
+          "content": "Step \"lead\" assigned to agent \"codex-lead\""
+        },
+        {
+          "ts": 1772092593504,
+          "type": "note",
+          "content": "Step \"worker\" assigned to agent \"claude-worker\""
+        },
+        {
+          "ts": 1772092773497,
+          "type": "finding",
+          "content": "Step \"lead\" completed: >7u\r\n╭─────────────────────────────────────────────────╮\r\n│ ✨ Update available! 0.104.0 -> 0.105.0         │\r\n│ Run brew upgrade --cask codex to update.        │\r\n│                                    ...",
+          "significance": "medium"
+        },
+        {
+          "ts": 1772092782881,
+          "type": "finding",
+          "content": "Step \"worker\" completed: \r\r\n▗ ▗   ▖ ▖  Claude Code v2.1.52\r\r\n           Sonnet 4.6 · Claude Max\r\r\n  ▘▘ ▝▝    ~/Projects/agent-workforce/relay-cli-uses-broker\r\r\n\r\r\n──────────────────────────────────────────────────────────────...",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-02-26T07:59:42.902Z"
+    },
+    {
+      "id": "ch_5b2fded0",
+      "title": "Convergence: lead + worker",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T07:59:42.903Z",
+      "events": [
+        {
+          "ts": 1772092782904,
+          "type": "reflection",
+          "content": "lead + worker resolved. 2/2 steps completed. All steps completed on first attempt.",
+          "significance": "high",
+          "raw": {
+            "confidence": 1,
+            "focalPoints": ["lead: completed", "worker: completed"]
+          }
+        }
+      ],
+      "endedAt": "2026-02-26T07:59:42.904Z"
+    },
+    {
+      "id": "ch_52820d0f",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T07:59:42.904Z",
+      "events": [
+        {
+          "ts": 1772092782904,
+          "type": "reflection",
+          "content": "Workflow completed in 3 minutes. 2/2 steps passed. (completed in 3 minutes)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-26T07:59:42.904Z"
+    }
+  ],
+  "completedAt": "2026-02-26T07:59:42.904Z",
+  "retrospective": {
+    "summary": "Workflow completed in 3 minutes. 2/2 steps passed.",
+    "approach": "workflow-runner DAG execution",
+    "confidence": 1,
+    "learnings": [],
+    "challenges": []
+  }
+}

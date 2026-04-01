@@ -1,0 +1,74 @@
+{
+  "id": "traj_munpuaqqcqoa",
+  "version": 1,
+  "task": {
+    "title": "Investigate DM leakage into relay-dashboard message feed"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-11T10:16:40.974Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-03-11T10:23:17.827Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_lgd8zv7hd5vz",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-11T10:23:17.827Z",
+      "events": [
+        {
+          "ts": 1773224597827,
+          "type": "decision",
+          "content": "Scoped the local agent feed to viewer-agent messages plus broadcasts: Scoped the local agent feed to viewer-agent messages plus broadcasts",
+          "raw": {
+            "question": "Scoped the local agent feed to viewer-agent messages plus broadcasts",
+            "chosen": "Scoped the local agent feed to viewer-agent messages plus broadcasts",
+            "alternatives": [],
+            "reasoning": "Relaycast snapshots intentionally merge channel history and DMs, but the local useMessages hook was rendering any message involving the selected agent, including third-party private DMs. Filtering in the client preserves history access while preventing feed leakage."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-11T10:23:38.131Z"
+    }
+  ],
+  "commits": [
+    "75aa63ac",
+    "54a556f8",
+    "dc846a21"
+  ],
+  "filesChanged": [
+    ".trajectories/active/traj_munpuaqqcqoa.json",
+    ".trajectories/completed/2026-03/traj_42vchw32lfux.json",
+    ".trajectories/completed/2026-03/traj_42vchw32lfux.md",
+    ".trajectories/completed/2026-03/traj_42vchw32lfux.trace.json",
+    ".trajectories/completed/2026-03/traj_gvn35p8l5u4d.json",
+    ".trajectories/completed/2026-03/traj_gvn35p8l5u4d.md",
+    ".trajectories/completed/2026-03/traj_lpyzzqwa2lwe.json",
+    ".trajectories/completed/2026-03/traj_lpyzzqwa2lwe.md",
+    ".trajectories/completed/2026-03/traj_qy8m968k2ilc.json",
+    ".trajectories/completed/2026-03/traj_qy8m968k2ilc.md",
+    ".trajectories/completed/2026-03/traj_vvvmso7e0yw4.json",
+    ".trajectories/completed/2026-03/traj_vvvmso7e0yw4.md",
+    ".trajectories/index.json",
+    "packages/shared/cli-registry.yaml",
+    "scripts/postinstall.js"
+  ],
+  "projectId": "/Users/khaliqgant/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "43c701e14312e46fe11153b75990a45899d8129d",
+    "endRef": "75aa63ac1b0eabf698a3b9c3df8dfa8e4c2d937e",
+    "traceId": "trace_e2ob1g09qbjk"
+  },
+  "completedAt": "2026-03-11T10:23:38.131Z",
+  "retrospective": {
+    "summary": "Fixed relay-dashboard local feed leakage by filtering third-party private DMs out of selected-agent views and added regression tests",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  }
+}

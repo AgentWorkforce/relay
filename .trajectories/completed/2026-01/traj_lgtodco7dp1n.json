@@ -1,0 +1,61 @@
+{
+  "id": "traj_lgtodco7dp1n",
+  "version": 1,
+  "task": {
+    "title": "DM routing/flow cleanup"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-07T21:41:28.024Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-01-07T21:41:32.714Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_9jwop5gckdrk",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-07T21:41:32.714Z",
+      "events": [
+        {
+          "ts": 1767822092715,
+          "type": "decision",
+          "content": "Removed DirectMessageModal: Removed DirectMessageModal",
+          "raw": {
+            "question": "Removed DirectMessageModal",
+            "chosen": "Removed DirectMessageModal",
+            "alternatives": [],
+            "reasoning": "Inline DM flow replaces modal; deleted dead component"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767822099837,
+          "type": "decision",
+          "content": "Dedup DM messages: Dedup DM messages",
+          "raw": {
+            "question": "Dedup DM messages",
+            "chosen": "Dedup DM messages",
+            "alternatives": [],
+            "reasoning": "Filter duplicates when human channel active to avoid multi-recipient echo"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-07T21:41:49.080Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-07T21:41:49.080Z",
+  "retrospective": {
+    "summary": "Inline DM flow cleanup: removed modal, sticky invite controls, deduped DM messages",
+    "approach": "Standard approach",
+    "confidence": 0.7
+  }
+}

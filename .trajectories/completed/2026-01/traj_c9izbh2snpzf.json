@@ -1,0 +1,49 @@
+{
+  "id": "traj_c9izbh2snpzf",
+  "version": 1,
+  "task": {
+    "title": "Fix sshd startup for Codex tunnel"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-07T16:17:28.232Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-01-07T16:17:32.534Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_qmv0yinkqhe1",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-07T16:17:32.534Z",
+      "events": [
+        {
+          "ts": 1767802652535,
+          "type": "decision",
+          "content": "Run workspace image as root for sshd: Run workspace image as root for sshd",
+          "raw": {
+            "question": "Run workspace image as root for sshd",
+            "chosen": "Run workspace image as root for sshd",
+            "alternatives": [],
+            "reasoning": "entrypoint sshd block only runs as root; we drop to workspace via gosu so app still non-root"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-07T16:17:39.267Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-07T16:17:39.267Z",
+  "retrospective": {
+    "summary": "Set workspace image to run entrypoint as root so sshd starts for Codex tunnel",
+    "approach": "Standard approach",
+    "confidence": 0.62
+  }
+}

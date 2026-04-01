@@ -1,0 +1,142 @@
+{
+  "id": "traj_1773304492871_00b7e135",
+  "version": 1,
+  "task": {
+    "title": "codex-lead-worker",
+    "source": {
+      "system": "workflow-runner",
+      "id": "86be312386a01ac4c47c1697"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-03-12T08:34:52.871Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-12T08:34:52.871Z"
+    },
+    {
+      "name": "codex-lead",
+      "role": "specialist",
+      "joinedAt": "2026-03-12T08:34:57.258Z"
+    },
+    {
+      "name": "codex-worker",
+      "role": "specialist",
+      "joinedAt": "2026-03-12T08:34:57.258Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_2044d981",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-12T08:34:52.871Z",
+      "events": [
+        {
+          "ts": 1773304492871,
+          "type": "note",
+          "content": "Purpose: Real Codex lead/worker coordination workflow."
+        },
+        {
+          "ts": 1773304492871,
+          "type": "note",
+          "content": "Approach: 2-step dag workflow — Parsed 2 steps, 2 parallel tracks, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-12T08:34:57.252Z"
+    },
+    {
+      "id": "ch_ced454f0",
+      "title": "Execution: lead, worker",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-12T08:34:57.252Z",
+      "events": [],
+      "endedAt": "2026-03-12T08:34:57.263Z"
+    },
+    {
+      "id": "ch_80f5784f",
+      "title": "Execution: lead",
+      "agentName": "codex-lead",
+      "startedAt": "2026-03-12T08:34:57.263Z",
+      "events": [
+        {
+          "ts": 1773304497263,
+          "type": "note",
+          "content": "\"lead\": You are the lead on #test-codex-lead-worker",
+          "raw": {
+            "agent": "codex-lead"
+          }
+        }
+      ],
+      "endedAt": "2026-03-12T08:34:57.263Z"
+    },
+    {
+      "id": "ch_431afa98",
+      "title": "Execution: worker",
+      "agentName": "codex-worker",
+      "startedAt": "2026-03-12T08:34:57.263Z",
+      "events": [
+        {
+          "ts": 1773304497263,
+          "type": "note",
+          "content": "\"worker\": You are the worker on #test-codex-lead-worker",
+          "raw": {
+            "agent": "codex-worker"
+          }
+        },
+        {
+          "ts": 1773304514565,
+          "type": "finding",
+          "content": "\"worker\" completed → WORKER_COMPLETE",
+          "significance": "medium"
+        },
+        {
+          "ts": 1773304716119,
+          "type": "error",
+          "content": "\"lead\" failed [unknown]: Unexpected failure. Review the error and step definition.",
+          "significance": "high",
+          "raw": {
+            "cause": "unknown",
+            "rawError": "Step \"lead\" review response malformed from \"codex-lead\" (missing REVIEW_DECISION)",
+            "attempt": 1,
+            "maxRetries": 0
+          }
+        }
+      ],
+      "endedAt": "2026-03-12T08:38:36.130Z"
+    },
+    {
+      "id": "ch_9ad4de4c",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-12T08:38:36.130Z",
+      "events": [
+        {
+          "ts": 1773304716130,
+          "type": "reflection",
+          "content": "Failed at \"lead\" [unknown] after 4min. 1/2 steps completed before failure. (abandoned after 4 minutes)",
+          "significance": "high"
+        },
+        {
+          "ts": 1773304716130,
+          "type": "error",
+          "content": "Workflow abandoned: Step \"lead\" failed: Step \"lead\" failed after 0 retries: Step \"lead\" review response malformed from \"codex-lead\" (missing REVIEW_DECISION)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-12T08:38:36.130Z"
+    }
+  ],
+  "completedAt": "2026-03-12T08:38:36.130Z",
+  "retrospective": {
+    "summary": "Failed at \"lead\" [unknown] after 4min. 1/2 steps completed before failure.",
+    "approach": "dag workflow (2 agents)",
+    "confidence": 0.5,
+    "learnings": [],
+    "challenges": [
+      "Unexpected failure. Review the error and step definition."
+    ]
+  }
+}

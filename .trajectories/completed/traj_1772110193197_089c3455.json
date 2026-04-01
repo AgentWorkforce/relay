@@ -1,0 +1,144 @@
+{
+  "id": "traj_1772110193197_089c3455",
+  "version": 1,
+  "task": {
+    "title": "test run #3e47ff8d",
+    "source": {
+      "system": "workflow-runner",
+      "id": "3e47ff8dfc2b905db5471e4d"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-02-26T12:49:53.197Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T12:49:53.197Z"
+    },
+    {
+      "name": "dev",
+      "role": "dev",
+      "joinedAt": "2026-02-26T12:49:59.019Z"
+    },
+    {
+      "name": "lead",
+      "role": "lead",
+      "joinedAt": "2026-02-26T12:50:03.171Z"
+    },
+    {
+      "name": "qa",
+      "role": "qa",
+      "joinedAt": "2026-02-26T12:50:05.063Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_43d925db",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T12:49:53.197Z",
+      "events": [
+        {
+          "ts": 1772110193197,
+          "type": "note",
+          "content": "Approach: 5-step cascade workflow — Parsed 5 steps, 4 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1772110199019,
+          "type": "note",
+          "content": "\"implement\": implement",
+          "raw": {
+            "agent": "dev"
+          }
+        },
+        {
+          "ts": 1772110200697,
+          "type": "finding",
+          "content": "\"implement\" completed → DONE",
+          "significance": "medium"
+        },
+        {
+          "ts": 1772110200701,
+          "type": "note",
+          "content": "\"unit\": unit",
+          "raw": {
+            "agent": "dev"
+          }
+        },
+        {
+          "ts": 1772110203159,
+          "type": "finding",
+          "content": "\"unit\" completed → DONE",
+          "significance": "medium"
+        },
+        {
+          "ts": 1772110203171,
+          "type": "note",
+          "content": "\"gate-dev\": gate dev",
+          "raw": {
+            "agent": "lead"
+          }
+        },
+        {
+          "ts": 1772110205058,
+          "type": "finding",
+          "content": "\"gate-dev\" completed → DONE",
+          "significance": "medium"
+        },
+        {
+          "ts": 1772110205063,
+          "type": "note",
+          "content": "\"integration\": integration",
+          "raw": {
+            "agent": "qa"
+          }
+        },
+        {
+          "ts": 1772110206034,
+          "type": "finding",
+          "content": "\"integration\" completed → DONE",
+          "significance": "medium"
+        },
+        {
+          "ts": 1772110206037,
+          "type": "note",
+          "content": "\"gate-qa\": gate qa",
+          "raw": {
+            "agent": "lead"
+          }
+        },
+        {
+          "ts": 1772110208499,
+          "type": "finding",
+          "content": "\"gate-qa\" completed → DONE",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-02-26T12:50:08.502Z"
+    },
+    {
+      "id": "ch_2c361587",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T12:50:08.502Z",
+      "events": [
+        {
+          "ts": 1772110208502,
+          "type": "reflection",
+          "content": "All 5 steps completed in 15s. (completed in 15 seconds)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-26T12:50:08.502Z"
+    }
+  ],
+  "completedAt": "2026-02-26T12:50:08.502Z",
+  "retrospective": {
+    "summary": "All 5 steps completed in 15s.",
+    "approach": "cascade workflow (3 agents)",
+    "confidence": 0.75,
+    "learnings": [],
+    "challenges": []
+  }
+}

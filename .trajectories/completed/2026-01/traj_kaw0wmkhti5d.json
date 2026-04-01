@@ -1,0 +1,20 @@
+{
+  "id": "traj_kaw0wmkhti5d",
+  "version": 1,
+  "task": {
+    "title": "Add Rust tests to CI workflow",
+    "source": {
+      "system": "plain",
+      "id": "agent-relay-506"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-01-17T08:30:10.206Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/data/repos/relay",
+  "tags": [],
+  "completedAt": "2026-01-18T16:44:23.163Z"
+}

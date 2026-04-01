@@ -1,0 +1,84 @@
+{
+  "id": "traj_tmux_orchestrator_analysis",
+  "title": "Tmux-Orchestrator competitive analysis",
+  "task": "analyze-tmux-orchestrator",
+  "status": "completed",
+  "startedAt": "2026-01-04T09:00:00.000Z",
+  "completedAt": "2026-01-04T09:30:00.000Z",
+  "confidence": 0.9,
+  "summary": "Competitive analysis of Tmux-Orchestrator validated our architecture - real-time messaging + continuity already covers their solutions",
+  "decisions": [
+    {
+      "decision": "Continuity context already works on spawn - no new feature needed",
+      "reasoning": "PtyWrapper.injectContinuityContext() already loads ledger + handoff and injects on agent spawn",
+      "timestamp": "2026-01-04T09:15:00.000Z"
+    },
+    {
+      "decision": "Use trajectories for learnings instead of separate learning repository",
+      "reasoning": "Trajectories already capture learnings via trail complete --learnings. Just need search functionality.",
+      "timestamp": "2026-01-04T09:20:00.000Z"
+    },
+    {
+      "decision": "Self-scheduling is the key missing feature for 24/7 autonomy",
+      "reasoning": "Tmux-Orchestrator's schedule_with_note.sh enables agents to wake themselves up. We need ->relay:schedule command.",
+      "timestamp": "2026-01-04T09:25:00.000Z"
+    },
+    {
+      "decision": "Skip git commit tracking - requires git worktree architecture we don't have",
+      "reasoning": "Tmux-Orchestrator's 30-minute commit rule assumes per-agent git worktrees. Not applicable to our current single-repo model.",
+      "timestamp": "2026-01-04T09:28:00.000Z"
+    },
+    {
+      "decision": "No beads needed - our architecture already covers their solutions",
+      "reasoning": "Self-scheduling solved by real-time messaging (agents wake each other). Context notes solved by continuity. Analysis validated our approach rather than finding gaps.",
+      "timestamp": "2026-01-04T09:35:00.000Z"
+    }
+  ],
+  "learnings": [
+    "Tmux-Orchestrator pioneered 24/7 autonomous agent operation using tmux persistence + self-scheduling",
+    "Real-time messaging replaces scheduling - agents can wake each other instantly instead of scheduling delayed self-messages",
+    "Our continuity system (ledger + handoff injection on spawn) covers their context notes pattern",
+    "Fixed 3-tier hierarchy (Orchestrator→PM→Engineer) solves context window limits but is less flexible than relay's any-topology approach",
+    "Shell script + timing delays (~500ms) is simpler but 100x slower than our Unix socket (<5ms)",
+    "Self-scheduling with context notes is the killer feature for autonomous operation",
+    "Our continuity system (ledger + handoff) already covers spawn context injection",
+    "Trajectory learnings field already exists - just need search/index functionality"
+  ],
+  "chapters": [
+    {
+      "phase": "plan",
+      "agent": "default",
+      "events": [
+        "Fetched Tmux-Orchestrator README and CLAUDE.md from GitHub",
+        "Reviewed existing competitive analyses format (GASTOWN.md, MCP_AGENT_MAIL.md)"
+      ]
+    },
+    {
+      "phase": "execute",
+      "agent": "default",
+      "events": [
+        "Created docs/competitive/TMUX_ORCHESTRATOR.md with full analysis",
+        "Updated OVERVIEW.md comparison matrix with Tmux-Orchestrator",
+        "Updated README.md with new analysis link"
+      ]
+    },
+    {
+      "phase": "execute",
+      "agent": "default",
+      "events": [
+        "Created 5 beads for features to adopt",
+        "Reviewed existing continuity system - found spawn context already works",
+        "Updated beads to reflect existing functionality"
+      ]
+    },
+    {
+      "phase": "review",
+      "agent": "default",
+      "events": [
+        "Confirmed PtyWrapper.injectContinuityContext() handles spawn context",
+        "Confirmed trajectories already capture learnings field",
+        "Identified self-scheduling as the truly new feature needed"
+      ]
+    }
+  ]
+}

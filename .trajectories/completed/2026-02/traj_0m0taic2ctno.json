@@ -1,0 +1,49 @@
+{
+  "id": "traj_0m0taic2ctno",
+  "version": 1,
+  "task": {
+    "title": "Stabilize build and tests for relay-cli-uses-broker"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-26T14:16:04.906Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-02-26T14:16:04.907Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ifa5dduqkq6i",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-26T14:21:44.951Z",
+      "events": [
+        {
+          "ts": 1772115704952,
+          "type": "decision",
+          "content": "Restored strict active-broker guard for up; only start/dashboard reuses existing broker: Restored strict active-broker guard for up; only start/dashboard reuses existing broker",
+          "raw": {
+            "question": "Restored strict active-broker guard for up; only start/dashboard reuses existing broker",
+            "chosen": "Restored strict active-broker guard for up; only start/dashboard reuses existing broker",
+            "alternatives": [],
+            "reasoning": "Prevent duplicate broker starts while preserving intentional start dashboard reuse behavior"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-26T14:21:53.887Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": [],
+  "completedAt": "2026-02-26T14:21:53.887Z",
+  "retrospective": {
+    "summary": "Fixed failing test suite by correcting up command broker-guard regression and aligning tests with current CLI/dashboard and relay-pty path behavior",
+    "approach": "Standard approach",
+    "confidence": 0.91
+  }
+}

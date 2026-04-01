@@ -1,0 +1,49 @@
+{
+  "id": "traj_4qwd4zmhfwp4",
+  "version": 1,
+  "task": {
+    "title": "gh-relay 401 retry + delivery tracker refactor"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-11T10:59:19.370Z",
+  "completedAt": "2026-01-11T10:59:52.187Z",
+  "agents": [
+    {
+      "name": "Lead",
+      "role": "lead",
+      "joinedAt": "2026-01-11T10:59:19.371Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_t417254nt2eh",
+      "title": "Initial work",
+      "agentName": "Lead",
+      "startedAt": "2026-01-11T10:59:19.371Z",
+      "endedAt": "2026-01-11T10:59:52.187Z",
+      "events": [
+        {
+          "ts": 1768129186879,
+          "type": "decision",
+          "content": "Committed gh-relay 401 retry and delivery-tracker refactor with associated UI/trajectory updates: Committed gh-relay 401 retry and delivery-tracker refactor with associated UI/trajectory updates",
+          "raw": {
+            "question": "Committed gh-relay 401 retry and delivery-tracker refactor with associated UI/trajectory updates",
+            "chosen": "Committed gh-relay 401 retry and delivery-tracker refactor with associated UI/trajectory updates",
+            "alternatives": [],
+            "reasoning": "User requested keeping all current-branch changes together"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Pushed commit with gh-relay 401 retry, delivery tracker refactor/tests, and trajectory viewer updates",
+    "approach": "Standard approach",
+    "confidence": 0.76
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "84085b56a3fa",
+  "tags": []
+}

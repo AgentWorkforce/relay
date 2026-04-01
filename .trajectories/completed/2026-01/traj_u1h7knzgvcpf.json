@@ -1,0 +1,65 @@
+{
+  "id": "traj_u1h7knzgvcpf",
+  "version": 1,
+  "task": {
+    "title": "Fix AI provider name casing in WorkspaceSettingsPanel",
+    "source": {
+      "system": "plain",
+      "id": "provider-credentials-fix"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-01-20T12:35:09.581Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-01-20T12:35:09.582Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_bgcwtvmj3tpq",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-20T12:35:15.717Z",
+      "events": [
+        {
+          "ts": 1768912515718,
+          "type": "decision",
+          "content": "Use lowercase provider names in AI_PROVIDERS: Use lowercase provider names in AI_PROVIDERS",
+          "raw": {
+            "question": "Use lowercase provider names in AI_PROVIDERS",
+            "chosen": "Use lowercase provider names in AI_PROVIDERS",
+            "alternatives": [],
+            "reasoning": "Backend /api/onboarding/mark-connected validates against lowercase provider names. Onboarding PROVIDER_CONFIGS already uses lowercase, so aligning settings panel to match."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768912521450,
+          "type": "decision",
+          "content": "Add opencode and factory to valid providers: Add opencode and factory to valid providers",
+          "raw": {
+            "question": "Add opencode and factory to valid providers",
+            "chosen": "Add opencode and factory to valid providers",
+            "alternatives": [],
+            "reasoning": "New providers added to frontend AI_PROVIDERS list need corresponding backend validation entries"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-20T12:35:27.556Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-20T12:35:27.556Z",
+  "retrospective": {
+    "summary": "Fixed name casing in AI_PROVIDERS (Anthropic->anthropic, OpenAI->openai, etc.) to match backend validation. Added opencode and factory to valid providers list.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}
