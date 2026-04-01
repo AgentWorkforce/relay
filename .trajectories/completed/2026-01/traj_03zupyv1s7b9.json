@@ -1,0 +1,49 @@
+{
+  "id": "traj_03zupyv1s7b9",
+  "version": 1,
+  "task": {
+    "title": "Fix intra-workspace messaging delivery and sidebar/notification visibility"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-07T14:15:50.956Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-01-07T14:15:50.958Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_tjvxqsmefdcm",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-07T14:15:56.071Z",
+      "events": [
+        {
+          "ts": 1767795356072,
+          "type": "decision",
+          "content": "Route direct messages to user connections and surface human users in sidebar data: Route direct messages to user connections and surface human users in sidebar data",
+          "raw": {
+            "question": "Route direct messages to user connections and surface human users in sidebar data",
+            "chosen": "Route direct messages to user connections and surface human users in sidebar data",
+            "alternatives": [],
+            "reasoning": "User-to-user DMs were ignored because the router only looked at agents; combining human users into dashboard agent data ensures conversations appear in sidebar/notifications"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-07T14:16:39.455Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-07T14:16:39.455Z",
+  "retrospective": {
+    "summary": "Enabled user-to-user DMs and surfaced human conversations in the dashboard",
+    "approach": "Standard approach",
+    "confidence": 0.78
+  }
+}

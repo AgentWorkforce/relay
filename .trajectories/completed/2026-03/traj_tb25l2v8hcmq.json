@@ -1,0 +1,53 @@
+{
+  "id": "traj_tb25l2v8hcmq",
+  "version": 1,
+  "task": {
+    "title": "Evaluate using ACP instead of broker PTY injection"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-03T17:47:00.331Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-03-03T17:48:45.439Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_3ox4xr2vyww7",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-03T17:48:45.439Z",
+      "events": [
+        {
+          "ts": 1772560125440,
+          "type": "decision",
+          "content": "ACP is feasible as a new runtime but not a drop-in replacement for PTY injection: ACP is feasible as a new runtime but not a drop-in replacement for PTY injection",
+          "raw": {
+            "question": "ACP is feasible as a new runtime but not a drop-in replacement for PTY injection",
+            "chosen": "ACP is feasible as a new runtime but not a drop-in replacement for PTY injection",
+            "alternatives": [],
+            "reasoning": "ACP is client↔agent JSON-RPC and can carry prompts/responses, but current broker relies on raw terminal stdin injection semantics for existing CLI workers; ACP terminal methods are command-exec oriented, so existing PTY path must remain for non-ACP CLIs."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-03T17:48:47.796Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "a968f429eea259ba8d7aff21d65334b72e15b334",
+    "endRef": "a968f429eea259ba8d7aff21d65334b72e15b334"
+  },
+  "completedAt": "2026-03-03T17:48:47.796Z",
+  "retrospective": {
+    "summary": "Assessed ACP vs PTY injection: recommend hybrid runtime. Keep PTY for CLI compatibility; add AgentRuntime::Acp for ACP-native agents and route deliveries via ACP session/prompt.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

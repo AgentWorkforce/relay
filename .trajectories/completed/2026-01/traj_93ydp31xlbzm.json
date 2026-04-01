@@ -1,0 +1,65 @@
+{
+  "id": "traj_93ydp31xlbzm",
+  "version": 1,
+  "task": {
+    "title": "Fix channel messages routing in cloud mode",
+    "source": {
+      "system": "plain",
+      "id": "PR-251"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-01-21T10:05:26.839Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-01-21T10:05:58.040Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_w3oqmg34jglo",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-21T10:05:58.040Z",
+      "events": [
+        {
+          "ts": 1768989958113,
+          "type": "decision",
+          "content": "Identified routing mismatch: POST uses workspace.publicUrl but GET used getLocalDashboardUrl(): Identified routing mismatch: POST uses workspace.publicUrl but GET used getLocalDashboardUrl()",
+          "raw": {
+            "question": "Identified routing mismatch: POST uses workspace.publicUrl but GET used getLocalDashboardUrl()",
+            "chosen": "Identified routing mismatch: POST uses workspace.publicUrl but GET used getLocalDashboardUrl()",
+            "alternatives": [],
+            "reasoning": "Messages are stored in workspace daemon SQLite, so both endpoints need to route to the same place"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768989985399,
+          "type": "decision",
+          "content": "Applied same routing pattern from POST endpoint to GET endpoint: Applied same routing pattern from POST endpoint to GET endpoint",
+          "raw": {
+            "question": "Applied same routing pattern from POST endpoint to GET endpoint",
+            "chosen": "Applied same routing pattern from POST endpoint to GET endpoint",
+            "alternatives": [],
+            "reasoning": "Consistent routing ensures messages are read from the same SQLite where they were written"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-21T10:06:49.641Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/data/repos/relay",
+  "tags": [],
+  "completedAt": "2026-01-21T10:06:49.641Z",
+  "retrospective": {
+    "summary": "Fixed channel messages not persisting in cloud mode by routing GET endpoint to workspace.publicUrl instead of local dashboard",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

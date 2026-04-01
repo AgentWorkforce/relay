@@ -1,0 +1,78 @@
+{
+  "id": "traj_1772111876475_f425f9cb",
+  "version": 1,
+  "task": {
+    "title": "workflow-mm3hnlr1-040t21 run #215f63c9",
+    "source": {
+      "system": "workflow-runner",
+      "id": "215f63c95c7455cb4a3a4bd1"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-02-26T13:17:56.475Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T13:17:56.475Z"
+    },
+    {
+      "name": "worker",
+      "role": "worker",
+      "joinedAt": "2026-02-26T13:17:59.279Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_4f5e796b",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T13:17:56.475Z",
+      "events": [
+        {
+          "ts": 1772111876475,
+          "type": "note",
+          "content": "Approach: 1-step dag workflow — Parsed 1 steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1772111879279,
+          "type": "note",
+          "content": "\"step-1\": Do a thing",
+          "raw": {
+            "agent": "worker"
+          }
+        },
+        {
+          "ts": 1772111881250,
+          "type": "finding",
+          "content": "\"step-1\" completed → <system-reminder>\r\nRelaycast MCP tools are available for replies.\r\nYou are pre-registered by the broker under your assig",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-02-26T13:18:01.253Z"
+    },
+    {
+      "id": "ch_7d710aa6",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T13:18:01.253Z",
+      "events": [
+        {
+          "ts": 1772111881253,
+          "type": "reflection",
+          "content": "All 1 steps completed in 5s. (completed in 5 seconds)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-26T13:18:01.253Z"
+    }
+  ],
+  "completedAt": "2026-02-26T13:18:01.253Z",
+  "retrospective": {
+    "summary": "All 1 steps completed in 5s.",
+    "approach": "dag workflow (1 agents)",
+    "confidence": 0.75,
+    "learnings": [],
+    "challenges": []
+  }
+}

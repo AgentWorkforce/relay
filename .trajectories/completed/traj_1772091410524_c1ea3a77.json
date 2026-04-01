@@ -1,0 +1,80 @@
+{
+  "id": "traj_1772091410524_c1ea3a77",
+  "version": 1,
+  "task": {
+    "title": "test-v5-self-release run #f31b59dd",
+    "source": {
+      "system": "workflow-runner",
+      "id": "f31b59dd9dd6e261ced90a33"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-02-26T07:36:50.524Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-26T07:36:50.524Z"
+    },
+    {
+      "name": "codex-worker",
+      "role": "codex-worker",
+      "joinedAt": "2026-02-26T07:36:53.479Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_b8ea1559",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T07:36:50.524Z",
+      "events": [
+        {
+          "ts": 1772091410524,
+          "type": "note",
+          "content": "Workflow \"test-v5-self-release\" started with 1 steps"
+        },
+        {
+          "ts": 1772091410524,
+          "type": "note",
+          "content": "Parsed 1 steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1772091413479,
+          "type": "note",
+          "content": "Step \"do-and-self-release\" assigned to agent \"codex-worker\""
+        },
+        {
+          "ts": 1772091430669,
+          "type": "finding",
+          "content": "Step \"do-and-self-release\" completed: >7u\r\n╭─────────────────────────────────────────────────╮\r\n│ ✨ Update available! 0.104.0 -> 0.105.0         │\r\n│ Run brew upgrade --cask codex to update.        │\r\n│                                    ...",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-02-26T07:37:10.670Z"
+    },
+    {
+      "id": "ch_fd54e111",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-26T07:37:10.670Z",
+      "events": [
+        {
+          "ts": 1772091430670,
+          "type": "reflection",
+          "content": "Workflow completed in 20 seconds. 1/1 steps passed. (completed in 20 seconds)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-26T07:37:10.670Z"
+    }
+  ],
+  "completedAt": "2026-02-26T07:37:10.670Z",
+  "retrospective": {
+    "summary": "Workflow completed in 20 seconds. 1/1 steps passed.",
+    "approach": "workflow-runner DAG execution",
+    "confidence": 1,
+    "learnings": [],
+    "challenges": []
+  }
+}

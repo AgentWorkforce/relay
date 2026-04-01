@@ -1,0 +1,92 @@
+{
+  "id": "traj_1773303582214_6538313a",
+  "version": 1,
+  "task": {
+    "title": "gemini-simple",
+    "source": {
+      "system": "workflow-runner",
+      "id": "3abc9f222415e0450adbfd47"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-03-12T08:19:42.214Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-12T08:19:42.214Z"
+    },
+    {
+      "name": "gemini-worker",
+      "role": "specialist",
+      "joinedAt": "2026-03-12T08:19:46.288Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_e8ecbac9",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-12T08:19:42.214Z",
+      "events": [
+        {
+          "ts": 1773303582214,
+          "type": "note",
+          "content": "Purpose: Minimal Gemini-backed workflow sanity check."
+        },
+        {
+          "ts": 1773303582214,
+          "type": "note",
+          "content": "Approach: 1-step pipeline workflow — Parsed 1 steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-12T08:19:46.291Z"
+    },
+    {
+      "id": "ch_65793bbc",
+      "title": "Execution: gemini-step",
+      "agentName": "gemini-worker",
+      "startedAt": "2026-03-12T08:19:46.291Z",
+      "events": [
+        {
+          "ts": 1773303586291,
+          "type": "note",
+          "content": "\"gemini-step\": Output exactly these two lines and nothing else:",
+          "raw": {
+            "agent": "gemini-worker"
+          }
+        },
+        {
+          "ts": 1773303612810,
+          "type": "finding",
+          "content": "\"gemini-step\" completed → DONE",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-03-12T08:20:12.812Z"
+    },
+    {
+      "id": "ch_601c1df3",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-12T08:20:12.812Z",
+      "events": [
+        {
+          "ts": 1773303612812,
+          "type": "reflection",
+          "content": "All 1 steps completed in 31s. (completed in 31 seconds)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-12T08:20:12.812Z"
+    }
+  ],
+  "completedAt": "2026-03-12T08:20:12.812Z",
+  "retrospective": {
+    "summary": "All 1 steps completed in 31s.",
+    "approach": "pipeline workflow (1 agents)",
+    "confidence": 1,
+    "learnings": [],
+    "challenges": []
+  }
+}

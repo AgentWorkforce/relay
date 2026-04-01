@@ -1,0 +1,53 @@
+{
+  "id": "traj_z7rab0i4p1vt",
+  "version": 1,
+  "task": {
+    "title": "Add broker HTTP /api/send for local worker delivery"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-23T10:53:46.503Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-23T11:04:03.137Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_5a7im5zurqm8",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-23T11:04:03.137Z",
+      "events": [
+        {
+          "ts": 1771844643139,
+          "type": "decision",
+          "content": "Fix worker visibility by broker-managed Relaycast lifecycle: Fix worker visibility by broker-managed Relaycast lifecycle",
+          "raw": {
+            "question": "Fix worker visibility by broker-managed Relaycast lifecycle",
+            "chosen": "Fix worker visibility by broker-managed Relaycast lifecycle",
+            "alternatives": [],
+            "reasoning": "Direct messaging resolution is Relaycast-based in dashboard, so workers must be explicit Relaycast agents during their runtime, not inferred from local spawn state."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-23T11:04:08.491Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": [],
+  "_trace": {
+    "startRef": "815433126c81ba692879465f91a8a600db9664b8",
+    "endRef": "815433126c81ba692879465f91a8a600db9664b8"
+  },
+  "completedAt": "2026-02-23T11:04:08.491Z",
+  "retrospective": {
+    "summary": "Registered worker agents in Relaycast on spawn/restart and released them on exit/release so dashboard direct messaging resolves via Relaycast presence",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

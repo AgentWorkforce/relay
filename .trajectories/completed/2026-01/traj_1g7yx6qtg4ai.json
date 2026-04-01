@@ -1,0 +1,49 @@
+{
+  "id": "traj_1g7yx6qtg4ai",
+  "version": 1,
+  "task": {
+    "title": "Inline DM conversation with agent invites"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-07T19:32:42.245Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-01-07T19:32:47.144Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_fcmd8ybzbjhi",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-07T19:32:47.144Z",
+      "events": [
+        {
+          "ts": 1767814367146,
+          "type": "decision",
+          "content": "Reintroduce DM participants inline: Reintroduce DM participants inline",
+          "raw": {
+            "question": "Reintroduce DM participants inline",
+            "chosen": "Reintroduce DM participants inline",
+            "alternatives": [],
+            "reasoning": "Inline DM view now supports inviting/removing agents with toggles, filters messages to human+participants, and sends to human plus invited agents"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-07T19:32:52.650Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-07T19:32:52.650Z",
+  "retrospective": {
+    "summary": "DMs now inline: human channel shows agent toggles, filters messages to participants, and sends to human + invited agents",
+    "approach": "Standard approach",
+    "confidence": 0.71
+  }
+}

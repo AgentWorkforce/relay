@@ -1,0 +1,48 @@
+{
+  "id": "traj_1772052978062_dbe696c5",
+  "version": 1,
+  "task": {
+    "title": "build-integration-tests run #b23ba6d8",
+    "source": {
+      "system": "workflow-runner",
+      "id": "b23ba6d851db682027c229ed"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-02-25T20:56:18.062Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-25T20:56:18.062Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_bd946862",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-25T20:56:18.062Z",
+      "events": [
+        {
+          "ts": 1772052978062,
+          "type": "note",
+          "content": "Workflow \"build-integration-tests\" started with 24 steps"
+        },
+        {
+          "ts": 1772052978062,
+          "type": "note",
+          "content": "Parsed 24 steps, 23 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1772052981156,
+          "type": "error",
+          "content": "Workflow abandoned: Preflight check failed: Preflight failed: output is non-empty\nM .claude/skills/writing-agent-relay-workflows/SKILL.md",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-25T20:56:21.156Z"
+    }
+  ],
+  "completedAt": "2026-02-25T20:56:21.156Z"
+}

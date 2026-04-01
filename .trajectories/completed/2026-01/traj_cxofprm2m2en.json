@@ -1,0 +1,49 @@
+{
+  "id": "traj_cxofprm2m2en",
+  "version": 1,
+  "task": {
+    "title": "Fix Nango popup blocked by browser - use constructor pattern"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-03T21:18:15.384Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-01-03T21:18:15.384Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_5n4ibkpf4je1",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-03T21:18:25.048Z",
+      "events": [
+        {
+          "ts": 1767475105049,
+          "type": "decision",
+          "content": "Pass connectSessionToken to Nango constructor instead of using setSessionToken(): Pass connectSessionToken to Nango constructor instead of using setSessionToken()",
+          "raw": {
+            "question": "Pass connectSessionToken to Nango constructor instead of using setSessionToken()",
+            "chosen": "Pass connectSessionToken to Nango constructor instead of using setSessionToken()",
+            "alternatives": [],
+            "reasoning": "The prpm app pattern works: new Nango({ connectSessionToken }) followed by openConnectUI(). This differs from our broken approach of new Nango() + setSessionToken() + open(). When the token is passed via constructor, Nango internally handles the popup differently and avoids browser popup blockers."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-03T21:18:33.901Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-03T21:18:33.901Z",
+  "retrospective": {
+    "summary": "Fixed popup:blocked_by_browser error by using Nango constructor pattern: new Nango({ connectSessionToken }) instead of setSessionToken(). Updated login, signup, and connect-repos pages to match prpm app pattern.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "id": "traj_j8qiccwfq78w",
+  "version": 1,
+  "task": {
+    "title": "Fix SDK publish to include freshly built broker binary"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-27T19:26:08.951Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-27T19:26:14.305Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_diyticui20qw",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-27T19:26:14.305Z",
+      "events": [
+        {
+          "ts": 1772220374305,
+          "type": "decision",
+          "content": "publish-sdk-only job was missing broker binary download: publish-sdk-only job was missing broker binary download",
+          "raw": {
+            "question": "publish-sdk-only job was missing broker binary download",
+            "chosen": "publish-sdk-only job was missing broker binary download",
+            "alternatives": [],
+            "reasoning": "The job only depended on 'build' (TS compilation) and used --ignore-scripts which skipped prepack/bundle:binary. It shipped whatever stale binary was checked into packages/sdk/bin/ instead of the freshly compiled one from the build-broker CI job."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1772220378884,
+          "type": "decision",
+          "content": "Removed 13MB broker binary from git tracking: Removed 13MB broker binary from git tracking",
+          "raw": {
+            "question": "Removed 13MB broker binary from git tracking",
+            "chosen": "Removed 13MB broker binary from git tracking",
+            "alternatives": [],
+            "reasoning": "Binary is built fresh by CI during every publish (build-broker job). Local dev resolves to target/release/ via client.ts resolveDefaultBinaryPath(). No reason to bloat the repo with a stale binary."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1772220382916,
+          "type": "decision",
+          "content": "Updated .gitignore from stale packages/broker-sdk/bin/ to packages/sdk/bin/agent-relay-broker*: Updated .gitignore from stale packages/broker-sdk/bin/ to packages/sdk/bin/agent-relay-broker*",
+          "raw": {
+            "question": "Updated .gitignore from stale packages/broker-sdk/bin/ to packages/sdk/bin/agent-relay-broker*",
+            "chosen": "Updated .gitignore from stale packages/broker-sdk/bin/ to packages/sdk/bin/agent-relay-broker*",
+            "alternatives": [],
+            "reasoning": "The old entry referenced a renamed package. Updated to match the current SDK path and prevent the binary from being re-committed."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-27T19:26:26.792Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "0106e187ebb02dfbe663c735294a2d62c39b3822",
+    "endRef": "0106e187ebb02dfbe663c735294a2d62c39b3822"
+  },
+  "completedAt": "2026-02-27T19:26:26.792Z",
+  "retrospective": {
+    "summary": "Fixed publish-sdk-only CI job to download freshly built broker binaries from build-broker artifacts into packages/sdk/bin/. Removed stale 13MB binary from git tracking and updated .gitignore.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

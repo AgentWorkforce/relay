@@ -1,0 +1,49 @@
+{
+  "id": "traj_9c0r3tnzzjsc",
+  "version": 1,
+  "task": {
+    "title": "Add agent-controlled blocking syntax"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-16T09:36:54.645Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-01-16T09:36:54.646Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_8ctnaglfcqgi",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-16T09:37:01.823Z",
+      "events": [
+        {
+          "ts": 1768556221824,
+          "type": "decision",
+          "content": "Agent chooses blocking vs fire-and-forget via [await] syntax: Agent chooses blocking vs fire-and-forget via [await] syntax",
+          "raw": {
+            "question": "Agent chooses blocking vs fire-and-forget via [await] syntax",
+            "chosen": "Agent chooses blocking vs fire-and-forget via [await] syntax",
+            "alternatives": [],
+            "reasoning": "Default remains fire-and-forget for backwards compatibility. Agent adds [await] or [await:30s] to opt into blocking. Receiving agent sees [awaiting] tag to know response expected. Created agent-relay-492 for parser implementation."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-16T09:37:03.584Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-16T09:37:03.584Z",
+  "retrospective": {
+    "summary": "Designed agent-controlled blocking syntax: [await] for blocking, default for fire-and-forget. Added agent-relay-492 for parser support.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

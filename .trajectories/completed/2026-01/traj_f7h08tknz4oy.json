@@ -1,0 +1,20 @@
+{
+  "id": "traj_f7h08tknz4oy",
+  "version": 1,
+  "task": {
+    "title": "Model selection hookup - wire up model field from agent profiles to spawner",
+    "source": {
+      "system": "plain",
+      "id": "agent-relay-510"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-01-17T08:27:07.035Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/data/repos/relay",
+  "tags": [],
+  "completedAt": "2026-01-17T08:27:46.876Z"
+}

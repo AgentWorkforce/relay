@@ -1,0 +1,26 @@
+{
+  "id": "traj_d2hhz3k0vrhn",
+  "version": 1,
+  "task": {
+    "title": "Coordinate backend logic with Frontend",
+    "source": {
+      "system": "plain",
+      "id": "backend-frontend-coordination"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-01-03T13:40:25.915Z",
+  "agents": [
+    {
+      "name": "Backend",
+      "role": "lead",
+      "joinedAt": "2026-01-03T13:40:25.916Z"
+    }
+  ],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-03T13:48:57.609Z"
+}

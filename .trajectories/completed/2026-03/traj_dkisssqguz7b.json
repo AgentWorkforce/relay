@@ -1,0 +1,53 @@
+{
+  "id": "traj_dkisssqguz7b",
+  "version": 1,
+  "task": {
+    "title": "Move invite-token explicit instructions into setup phase"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-04T22:18:50.031Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-03-04T22:19:21.276Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_68wwvm2d0v0s",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-03-04T22:19:21.276Z",
+      "events": [
+        {
+          "ts": 1772662761277,
+          "type": "decision",
+          "content": "Inject explicit token language inside setup sections instead of prepending at top: Inject explicit token language inside setup sections instead of prepending at top",
+          "raw": {
+            "question": "Inject explicit token language inside setup sections instead of prepending at top",
+            "chosen": "Inject explicit token language inside setup sections instead of prepending at top",
+            "alternatives": [],
+            "reasoning": "Keeps the guide structure intact while making token usage explicit exactly where setup actions are performed"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-04T22:19:21.294Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "88e921a8ab6ea9c602cb36fca0931662da9b9d96",
+    "endRef": "88e921a8ab6ea9c602cb36fca0931662da9b9d96"
+  },
+  "completedAt": "2026-03-04T22:19:21.294Z",
+  "retrospective": {
+    "summary": "Removed top-of-page token block and moved explicit 'Your workspace key is ...' guidance into setup phase sections with exact command usage.",
+    "approach": "Standard approach",
+    "confidence": 0.99
+  }
+}

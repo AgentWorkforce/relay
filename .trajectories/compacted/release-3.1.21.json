@@ -1,0 +1,69 @@
+{
+  "id": "compact_7ilaq2lfjpif",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-03-11T08:59:31.668Z",
+  "sourceTrajectories": [
+    "traj_6gwpf0ojo18g"
+  ],
+  "dateRange": {
+    "start": "2026-03-09T15:18:48.507Z",
+    "end": "2026-03-09T15:53:02.973Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 2,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "performance",
+      "decisions": [
+        {
+          "question": "Scoped dedup and DM participant caches by workspace",
+          "chosen": "Scoped dedup and DM participant caches by workspace",
+          "reasoning": "Merged websocket fan-in can reuse event IDs or conversation IDs across workspaces, so broker-side dedup and participant resolution must include workspace identity to avoid cross-workspace drops and cache poisoning.",
+          "fromTrajectory": "traj_6gwpf0ojo18g"
+        }
+      ]
+    },
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Kept legacy single-workspace envs as default-workspace compatibility surfaces",
+          "chosen": "Kept legacy single-workspace envs as default-workspace compatibility surfaces",
+          "reasoning": "Child processes and older dashboards still expect RELAY_API_KEY/workspaceKey semantics, so the runtime now exposes multi-workspace memberships while preserving a default workspace for legacy flows.",
+          "fromTrajectory": "traj_6gwpf0ojo18g"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    "src/auth.rs",
+    "src/conversation_log.rs",
+    "src/helpers.rs",
+    "src/inject.rs",
+    "src/lib.rs",
+    "src/listen_api.rs",
+    "src/main.rs",
+    "src/message_bridge.rs",
+    "src/multi_workspace.rs",
+    "src/priorities.rs",
+    "src/protocol.rs",
+    "src/pty_worker.rs",
+    "src/routing.rs",
+    "src/scheduler.rs",
+    "src/spawner.rs",
+    "src/types.rs",
+    "src/wrap.rs"
+  ],
+  "commits": [
+    "2db2dc34",
+    "240f7296"
+  ]
+}

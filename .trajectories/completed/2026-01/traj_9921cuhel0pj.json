@@ -1,0 +1,48 @@
+{
+  "id": "traj_9921cuhel0pj",
+  "version": 1,
+  "task": {
+    "title": "Fix empty continuity handoff files",
+    "source": {
+      "system": "plain",
+      "id": "agent-relay-451"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-01-03T13:28:47.101Z",
+  "agents": [],
+  "chapters": [
+    {
+      "id": "chap_wu3s5ndn9jo2",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-03T13:29:43.241Z",
+      "events": [
+        {
+          "ts": 1767446983241,
+          "type": "decision",
+          "content": "Pass SESSION_END content to autoSave for handoff population: Pass SESSION_END content to autoSave for handoff population",
+          "raw": {
+            "question": "Pass SESSION_END content to autoSave for handoff population",
+            "chosen": "Pass SESSION_END content to autoSave for handoff population",
+            "alternatives": [],
+            "reasoning": "autoSave creates handoff from ledger which is often empty - need to use SESSION_END JSON data instead"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767447003924,
+          "type": "note",
+          "content": "Abandoned: Stale trajectory - no work recorded, reassigning issue",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-03T13:30:03.924Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-03T13:30:03.924Z"
+}

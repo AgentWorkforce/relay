@@ -1,0 +1,25 @@
+{
+  "id": "traj_0tpnkhfba4eo",
+  "version": 1,
+  "task": {
+    "title": "Fix SDK test regressions from latest run"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-03T15:49:34.606Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "f00b18059ddf99f4c14c9da8c3d15ab18ec5b4a8",
+    "endRef": "f00b18059ddf99f4c14c9da8c3d15ab18ec5b4a8"
+  },
+  "completedAt": "2026-03-03T15:51:46.210Z",
+  "retrospective": {
+    "summary": "Fixed SDK test regressions by updating stale expectations and excluding node:test suite from Vitest discovery",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  }
+}

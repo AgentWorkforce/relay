@@ -1,0 +1,53 @@
+{
+  "id": "traj_jm1njxs1o0th",
+  "version": 1,
+  "task": {
+    "title": "Review Wave 2 migration output"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-18T09:18:02.517Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-18T09:22:44.595Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_h1xtqctay9sr",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-18T09:22:44.595Z",
+      "events": [
+        {
+          "ts": 1771406564596,
+          "type": "decision",
+          "content": "Mark Wave 2 as FAIL: Mark Wave 2 as FAIL",
+          "raw": {
+            "question": "Mark Wave 2 as FAIL",
+            "chosen": "Mark Wave 2 as FAIL",
+            "alternatives": [],
+            "reasoning": "Required SDK test command fails and MCP adapter leaves multiple exposed tools non-functional after migration"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-18T09:22:44.629Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "72cac787203e9fc9a69de6cf5e5a305406bd31b7",
+    "endRef": "72cac787203e9fc9a69de6cf5e5a305406bd31b7"
+  },
+  "completedAt": "2026-02-18T09:22:44.629Z",
+  "retrospective": {
+    "summary": "Reviewed Wave 2 migration across CLI/ACP/MCP, executed required verification commands, and found MCP regressions plus protocol type drift; build matrix not fully green due SDK npm test failure.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

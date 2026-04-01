@@ -1,0 +1,145 @@
+{
+  "id": "traj_z7m9mahtdri8",
+  "version": 1,
+  "task": {
+    "title": "Relay messaging reliability architecture decisions"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-16T09:14:53.389Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-01-16T09:14:53.389Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_pwcnkvifa5b8",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-16T09:15:00.208Z",
+      "events": [
+        {
+          "ts": 1768554900209,
+          "type": "decision",
+          "content": "Chose Rust PTY direct writes over tmux send-keys for message injection: Chose Rust PTY direct writes over tmux send-keys for message injection",
+          "raw": {
+            "question": "Chose Rust PTY direct writes over tmux send-keys for message injection",
+            "chosen": "Chose Rust PTY direct writes over tmux send-keys for message injection",
+            "alternatives": [],
+            "reasoning": "tmux send-keys spawns shell subprocess per injection (~1700ms latency), requires fragile shell escaping, has race conditions. Rust PTY writes directly to file descriptor (~550ms), no escaping, atomic operations. Direct syscall removes all indirection layers."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768554911700,
+          "type": "decision",
+          "content": "Push-based messaging (PTY injection) over pull-based (file polling, MCP tools): Push-based messaging (PTY injection) over pull-based (file polling, MCP tools)",
+          "raw": {
+            "question": "Push-based messaging (PTY injection) over pull-based (file polling, MCP tools)",
+            "chosen": "Push-based messaging (PTY injection) over pull-based (file polling, MCP tools)",
+            "alternatives": [],
+            "reasoning": "Agents forget to poll. File-based inbox requires agent to remember to check. PTY injection forces message into terminal view - agent cannot miss it. The 'weakness' of PTY (timing) is actually a strength for guaranteed visibility."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768554912662,
+          "type": "decision",
+          "content": "Keep parseRelayMetadataFromOutput despite being unused in production: Keep parseRelayMetadataFromOutput despite being unused in production",
+          "raw": {
+            "question": "Keep parseRelayMetadataFromOutput despite being unused in production",
+            "chosen": "Keep parseRelayMetadataFromOutput despite being unused in production",
+            "alternatives": [],
+            "reasoning": "The [[RELAY_METADATA]] feature includes importance field which aligns with planned escalating retry feature. Agent can specify message priority, injector uses it for retry urgency. Removing would require reimplementing later."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768554913422,
+          "type": "decision",
+          "content": "Remove formatIncomingMessage as dead code: Remove formatIncomingMessage as dead code",
+          "raw": {
+            "question": "Remove formatIncomingMessage as dead code",
+            "chosen": "Remove formatIncomingMessage as dead code",
+            "alternatives": [],
+            "reasoning": "Function only used in tests. Production code uses buildInjectionString from shared.ts instead. Created cleanup task agent-relay-482."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768554922851,
+          "type": "decision",
+          "content": "Planned improvement: Escalating retry with visibility markers (agent-relay-480): Planned improvement: Escalating retry with visibility markers (agent-relay-480)",
+          "raw": {
+            "question": "Planned improvement: Escalating retry with visibility markers (agent-relay-480)",
+            "chosen": "Planned improvement: Escalating retry with visibility markers (agent-relay-480)",
+            "alternatives": [],
+            "reasoning": "Addresses timing edge case where agent misses initial injection. Retry with increasing urgency: normal -> [RETRY] -> [URGENT] -> alert operator. Combines with existing idle detection for robust delivery."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768554923641,
+          "type": "decision",
+          "content": "Planned improvement: Unread message indicator in output (agent-relay-481): Planned improvement: Unread message indicator in output (agent-relay-481)",
+          "raw": {
+            "question": "Planned improvement: Unread message indicator in output (agent-relay-481)",
+            "chosen": "Planned improvement: Unread message indicator in output (agent-relay-481)",
+            "alternatives": [],
+            "reasoning": "During long tasks agent processes tool outputs without noticing pending messages. Appending unread count to all output ensures visibility without requiring agent to poll. Push-based reminder in every response."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768554924877,
+          "type": "decision",
+          "content": "Identified need for turn-based synchronization protocol: Identified need for turn-based synchronization protocol",
+          "raw": {
+            "question": "Identified need for turn-based synchronization protocol",
+            "chosen": "Identified need for turn-based synchronization protocol",
+            "alternatives": [],
+            "reasoning": "Hearts game demo showed messages arriving after coordinator moved on. 4 agents sending simultaneously causes queue backlog. Fire-and-forget messaging insufficient for coordinated workflows. Need request-response semantics with ackRequired flag and blocking wait."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768554966027,
+          "type": "decision",
+          "content": "Protocol has ACK types but daemon doesn't implement blocking waits: Protocol has ACK types but daemon doesn't implement blocking waits",
+          "raw": {
+            "question": "Protocol has ACK types but daemon doesn't implement blocking waits",
+            "chosen": "Protocol has ACK types but daemon doesn't implement blocking waits",
+            "alternatives": [],
+            "reasoning": "SendMeta.requires_ack exists in protocol/types.ts but daemon/connection.ts handleSend() doesn't process it. ACK/NACK message types exist but aren't used for synchronization. The plumbing exists, implementation is missing."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768555046446,
+          "type": "decision",
+          "content": "Designed request-response messaging protocol with correlationId tracking: Designed request-response messaging protocol with correlationId tracking",
+          "raw": {
+            "question": "Designed request-response messaging protocol with correlationId tracking",
+            "chosen": "Designed request-response messaging protocol with correlationId tracking",
+            "alternatives": [],
+            "reasoning": "Protocol extension adds sync.correlationId to SendMeta, daemon tracks pendingAcks Map, resolves when matching ACK arrives. Client gets sendAndWait() and broadcastAndWait() APIs. Auto-ACK in wrapper for transparent operation. Created epic agent-relay-487 with 4 implementation tasks."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-16T09:17:27.393Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-16T09:17:27.393Z",
+  "retrospective": {
+    "summary": "Analyzed relay messaging reliability: chose Rust PTY over tmux, documented escalating retry and unread indicator improvements, identified dead code, designed synchronous request-response protocol for multi-agent coordination",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  }
+}

@@ -1,0 +1,178 @@
+{
+  "id": "traj_1773304492874_19babe26",
+  "version": 1,
+  "task": {
+    "title": "codex-supervisor",
+    "source": {
+      "system": "workflow-runner",
+      "id": "ae6c22c0746da7f25c3cd20b"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-03-12T08:34:52.874Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-12T08:34:52.874Z"
+    },
+    {
+      "name": "codex-worker-a",
+      "role": "specialist",
+      "joinedAt": "2026-03-12T08:34:57.258Z"
+    },
+    {
+      "name": "codex-worker-b",
+      "role": "specialist",
+      "joinedAt": "2026-03-12T08:34:57.258Z"
+    },
+    {
+      "name": "codex-reviewer",
+      "role": "specialist",
+      "joinedAt": "2026-03-12T08:35:14.568Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_7b5eeb29",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-12T08:34:52.874Z",
+      "events": [
+        {
+          "ts": 1773304492875,
+          "type": "note",
+          "content": "Purpose: Real Codex supervisor workflow with two workers and a merge."
+        },
+        {
+          "ts": 1773304492875,
+          "type": "note",
+          "content": "Approach: 4-step dag workflow — Parsed 4 steps, 2 parallel tracks, 2 dependent steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-12T08:34:57.252Z"
+    },
+    {
+      "id": "ch_7de0154d",
+      "title": "Execution: worker-a, worker-b",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-12T08:34:57.252Z",
+      "events": [],
+      "endedAt": "2026-03-12T08:34:57.263Z"
+    },
+    {
+      "id": "ch_9824bf3c",
+      "title": "Execution: worker-b",
+      "agentName": "codex-worker-b",
+      "startedAt": "2026-03-12T08:34:57.263Z",
+      "events": [
+        {
+          "ts": 1773304497263,
+          "type": "note",
+          "content": "\"worker-b\": Output exactly:",
+          "raw": {
+            "agent": "codex-worker-b"
+          }
+        }
+      ],
+      "endedAt": "2026-03-12T08:34:57.263Z"
+    },
+    {
+      "id": "ch_42477547",
+      "title": "Execution: worker-a",
+      "agentName": "codex-worker-a",
+      "startedAt": "2026-03-12T08:34:57.263Z",
+      "events": [
+        {
+          "ts": 1773304497263,
+          "type": "note",
+          "content": "\"worker-a\": Output exactly:",
+          "raw": {
+            "agent": "codex-worker-a"
+          }
+        },
+        {
+          "ts": 1773304509375,
+          "type": "finding",
+          "content": "\"worker-b\" completed → WORKER_B_DONE",
+          "significance": "medium"
+        },
+        {
+          "ts": 1773304514561,
+          "type": "finding",
+          "content": "\"worker-a\" completed → WORKER_A_DONE",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-03-12T08:35:14.565Z"
+    },
+    {
+      "id": "ch_66630a04",
+      "title": "Convergence: worker-a + worker-b",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-12T08:35:14.565Z",
+      "events": [
+        {
+          "ts": 1773304514566,
+          "type": "reflection",
+          "content": "worker-a + worker-b resolved. 2/2 steps completed. All steps completed on first attempt. Unblocking: supervisor.",
+          "significance": "high",
+          "raw": {
+            "confidence": 1,
+            "focalPoints": [
+              "worker-a: completed",
+              "worker-b: completed"
+            ]
+          }
+        }
+      ],
+      "endedAt": "2026-03-12T08:35:14.570Z"
+    },
+    {
+      "id": "ch_94e0fc96",
+      "title": "Execution: supervisor",
+      "agentName": "codex-reviewer",
+      "startedAt": "2026-03-12T08:35:14.570Z",
+      "events": [
+        {
+          "ts": 1773304514570,
+          "type": "note",
+          "content": "\"supervisor\": Review these worker outputs:",
+          "raw": {
+            "agent": "codex-reviewer"
+          }
+        },
+        {
+          "ts": 1773304531477,
+          "type": "finding",
+          "content": "\"supervisor\" completed → ITEMS=2",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-03-12T08:35:31.500Z"
+    },
+    {
+      "id": "ch_024bc827",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-12T08:35:31.500Z",
+      "events": [
+        {
+          "ts": 1773304531500,
+          "type": "reflection",
+          "content": "All 4 steps completed in 39s. (completed in 39 seconds)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-12T08:35:31.500Z"
+    }
+  ],
+  "completedAt": "2026-03-12T08:35:31.500Z",
+  "retrospective": {
+    "summary": "All 4 steps completed in 39s.",
+    "approach": "dag workflow (3 agents)",
+    "confidence": 0.9375,
+    "learnings": [],
+    "challenges": []
+  }
+}

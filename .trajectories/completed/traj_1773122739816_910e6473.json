@@ -1,0 +1,122 @@
+{
+  "id": "traj_1773122739816_910e6473",
+  "version": 1,
+  "task": {
+    "title": "supervised-build run #572954e5",
+    "source": {
+      "system": "workflow-runner",
+      "id": "572954e57aa2627c8c69fcd4"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-03-10T06:05:39.816Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-10T06:05:39.816Z"
+    },
+    {
+      "name": "coder",
+      "role": "specialist",
+      "joinedAt": "2026-03-10T06:05:43.534Z"
+    },
+    {
+      "name": "reviewer",
+      "role": "specialist",
+      "joinedAt": "2026-03-10T06:06:32.000Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_3a68e7ab",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-10T06:05:39.816Z",
+      "events": [
+        {
+          "ts": 1773122739816,
+          "type": "note",
+          "content": "Purpose: Tests the owner-supervisor model with real agents. Validates that the lead agent is auto-assigned as supervisor for worker steps, runs concurrently with the specialist, and signals STEP_COMPLETE independently."
+        },
+        {
+          "ts": 1773122739816,
+          "type": "note",
+          "content": "Approach: 4-step dag workflow — Parsed 4 steps, 3 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1773122743536,
+          "type": "note",
+          "content": "\"implement\": Create a file at /tmp/supervisor-test/utils.ts with a simple",
+          "raw": {
+            "agent": "coder"
+          }
+        },
+        {
+          "ts": 1773122759229,
+          "type": "finding",
+          "content": "\"implement\" completed → IMPLEMENT_DONE",
+          "significance": "medium"
+        },
+        {
+          "ts": 1773122759231,
+          "type": "note",
+          "content": "\"test-it\": Create a test file at /tmp/supervisor-test/utils.test.ts",
+          "raw": {
+            "agent": "coder"
+          }
+        },
+        {
+          "ts": 1773122791999,
+          "type": "finding",
+          "content": "\"test-it\" completed → TESTS_DONE",
+          "significance": "medium"
+        },
+        {
+          "ts": 1773122792002,
+          "type": "note",
+          "content": "\"review\": Review the implementation and tests:",
+          "raw": {
+            "agent": "reviewer"
+          }
+        },
+        {
+          "ts": 1773122821521,
+          "type": "error",
+          "content": "\"review\" failed [verification_mismatch]: Agent completed but did not output the expected sentinel \"REVIEW_COMPLETE\". The task prompt may not clearly specify the required output format, or the agent produced correct work but did not emit the signal.",
+          "significance": "high",
+          "raw": {
+            "cause": "verification_mismatch",
+            "rawError": "Verification failed for \"review\": output does not contain \"REVIEW_COMPLETE\" (token found only in task injection — agent must output it explicitly)",
+            "attempt": 1,
+            "maxRetries": 0
+          }
+        },
+        {
+          "ts": 1773122821523,
+          "type": "note",
+          "content": "\"final-check\" skipped — Upstream dependency \"review\" failed"
+        },
+        {
+          "ts": 1773122821525,
+          "type": "decision",
+          "content": "Whether to skip final-check → skip: Upstream dependency \"review\" failed",
+          "significance": "medium",
+          "raw": {
+            "question": "Whether to skip final-check",
+            "chosen": "skip",
+            "reasoning": "Upstream dependency \"review\" failed"
+          }
+        },
+        {
+          "ts": 1773122821526,
+          "type": "error",
+          "content": "Workflow abandoned: Step \"review\" failed: Step \"review\" failed after 0 retries: Verification failed for \"review\": output does not contain \"REVIEW_COMPLETE\" (token found only in task injection — agent must output it explicitly)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-10T06:07:01.526Z"
+    }
+  ],
+  "completedAt": "2026-03-10T06:07:01.526Z"
+}

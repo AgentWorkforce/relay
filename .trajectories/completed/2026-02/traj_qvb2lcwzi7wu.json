@@ -1,0 +1,65 @@
+{
+  "id": "traj_qvb2lcwzi7wu",
+  "version": 1,
+  "task": {
+    "title": "Implement unified project identity broker routing + human registration"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-23T23:44:32.281Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-23T23:44:40.251Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_a6p1n1ozaal3",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-23T23:44:40.251Z",
+      "events": [
+        {
+          "ts": 1771890280252,
+          "type": "decision",
+          "content": "Broker registers as human using project directory basename; self-echo bypass only when event targets local workers/channels: Broker registers as human using project directory basename; self-echo bypass only when event targets local workers/channels",
+          "raw": {
+            "question": "Broker registers as human using project directory basename; self-echo bypass only when event targets local workers/channels",
+            "chosen": "Broker registers as human using project directory basename; self-echo bypass only when event targets local workers/channels",
+            "alternatives": [],
+            "reasoning": "Unifies Dashboard and broker Relaycast identity while preserving echo suppression for true broker-originated traffic"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1771891636345,
+          "type": "decision",
+          "content": "Normalized self-identity display without weakening self-echo detection: Normalized self-identity display without weakening self-echo detection",
+          "raw": {
+            "question": "Normalized self-identity display without weakening self-echo detection",
+            "chosen": "Normalized self-identity display without weakening self-echo detection",
+            "alternatives": [],
+            "reasoning": "Kept routing checks on canonical sender while mapping UI sender to Dashboard to preserve behavior"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-24T00:07:16.389Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": [],
+  "_trace": {
+    "startRef": "18058b1b33cae5ffd37e117ea3bd859f8af54e02",
+    "endRef": "18058b1b33cae5ffd37e117ea3bd859f8af54e02"
+  },
+  "completedAt": "2026-02-24T00:07:16.389Z",
+  "retrospective": {
+    "summary": "Completed broker identity follow-ups: self-name dashboard detection, sender normalization for UI, and SDK brokerName project-basename default.",
+    "approach": "Standard approach",
+    "confidence": 0.83
+  }
+}
