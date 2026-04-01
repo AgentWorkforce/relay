@@ -400,6 +400,7 @@ export class AgentRelay {
   private readonly requestedWorkspaceId?: string;
   private readonly workspaceName?: string;
   private readonly relaycastBaseUrl?: string;
+  private readonly prefersRelaycastHumanRegistration: boolean;
   private relayApiKey?: string;
   private resolvedWorkspaceId?: string;
   private client?: AgentRelayClient;
@@ -437,6 +438,10 @@ export class AgentRelay {
       );
     }
     this.relaycastBaseUrl = options.relaycastBaseUrl;
+    this.prefersRelaycastHumanRegistration =
+      typeof options.env?.RELAY_API_KEY === 'string'
+        ? options.env.RELAY_API_KEY.trim().length > 0
+        : typeof process.env.RELAY_API_KEY === 'string' && process.env.RELAY_API_KEY.trim().length > 0;
     this.clientOptions = {
       binaryPath: options.binaryPath,
       binaryArgs: options.binaryArgs,
@@ -1226,6 +1231,17 @@ export class AgentRelay {
     return normalized;
   }
 
+  private localCanonicalHumanName(name: string, kind: HumanIdentityKind): string {
+    if (kind === 'system') {
+      return 'system';
+    }
+    if (name.startsWith('human:')) {
+      const normalizedRest = name.slice('human:'.length).trim();
+      return normalizedRest ? `human:${normalizedRest}` : 'human:orchestrator';
+    }
+    return `human:${name}`;
+  }
+
   private async ensureHumanRegistered(name: string, kind: HumanIdentityKind): Promise<string> {
     const stateKey = this.humanRegistrationKey(name, kind);
     const existing = this.humanRegistrations.get(stateKey);
@@ -1240,6 +1256,11 @@ export class AgentRelay {
     const pending = (async () => {
       try {
         await this.ensureStarted();
+        if (!this.prefersRelaycastHumanRegistration) {
+          const canonicalName = this.localCanonicalHumanName(name, kind);
+          state.canonicalName = canonicalName;
+          return canonicalName;
+        }
         if (!this.relayApiKey) {
           throw new HumanRegistrationError(
             name,

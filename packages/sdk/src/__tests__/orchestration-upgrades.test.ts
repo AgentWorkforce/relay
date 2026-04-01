@@ -298,7 +298,7 @@ describe('AgentRelayClient orchestration payloads', () => {
 describe('AgentRelay orchestration handles', () => {
   it('agent.waitForReady resolves after worker_ready event', async () => {
     const { client, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
 
@@ -320,7 +320,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('waitForAgentMessage waits for relay_inbound from the agent', async () => {
     const { client, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
 
@@ -357,7 +357,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('spawnAndWait can wait for first agent message', async () => {
     const { client, mock, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
 
@@ -394,7 +394,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('spawnAndWait falls back to worker_ready when waitForMessage is false', async () => {
     const { client, mock, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
 
@@ -430,7 +430,7 @@ describe('AgentRelay orchestration handles', () => {
         channels: ['general'],
       },
     ]);
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
 
@@ -449,7 +449,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('spawn lifecycle hooks fire for success', async () => {
     const { client } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     const callOrder: string[] = [];
@@ -488,7 +488,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('spawn lifecycle hooks await async callbacks', async () => {
     const { client } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     let startDone = false;
@@ -516,7 +516,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('spawn lifecycle hooks fire on error', async () => {
     const { client, mock } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
     mock.spawnPty.mockRejectedValueOnce(new Error('spawn failed'));
 
     const relay = new AgentRelay();
@@ -555,7 +555,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('agent.release passes reason to the broker client', async () => {
     const { client, mock } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
 
@@ -576,7 +576,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('agent.release lifecycle hooks fire for success', async () => {
     const { client, mock } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     const callOrder: string[] = [];
@@ -616,7 +616,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('agent.release is a no-op success after agent_exited', async () => {
     const { client, mock, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
 
@@ -638,7 +638,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('agent.release treats broker agent_not_found as idempotent success', async () => {
     const { client, mock } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
     mock.release.mockRejectedValueOnce(
       new AgentRelayProtocolError({
         code: 'agent_not_found',
@@ -665,7 +665,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('agent.release lifecycle hooks fire on error', async () => {
     const { client, mock } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
     mock.release.mockRejectedValueOnce(new Error('release failed'));
 
     const relay = new AgentRelay();
@@ -705,7 +705,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('agent.release lifecycle hooks await async callbacks', async () => {
     const { client } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     let successDone = false;
@@ -733,7 +733,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('agent.release does not fire lifecycle hooks if broker startup fails before release begins', async () => {
     const { client } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     const onStart = vi.fn();
@@ -765,7 +765,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('system() sends messages from the system identity', async () => {
     const { client, mock } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
 
@@ -791,7 +791,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('registerHuman returns the canonical routable identity', async () => {
     const { client } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
     relayCastMocks.mockRelayCastRegisterAgent.mockResolvedValue({
       id: 'agt_human_1',
       name: 'human:Alice-7f3c',
@@ -820,9 +820,30 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
+  it('registerHuman returns a canonical local identity without RelayCast registration', async () => {
+    const { client } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
+    const envWithoutRelayKey = { ...process.env };
+    delete envWithoutRelayKey.RELAY_API_KEY;
+
+    const relay = new AgentRelay({
+      env: envWithoutRelayKey,
+    });
+
+    try {
+      const human = await relay.registerHuman({ name: 'Alice' });
+
+      expect(relayCastMocks.mockRelayCastRegisterAgent).not.toHaveBeenCalled();
+      await expect(human.ensureRegistered()).resolves.toBe('human:Alice');
+      expect(human.name).toBe('human:Alice');
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
   it('human({ ensureRegistered: true }) resolves to the canonical handle', async () => {
     const { client } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
     relayCastMocks.mockRelayCastRegisterAgent.mockResolvedValue({
       id: 'agt_human_2',
       name: 'human:Owner-2',
@@ -845,9 +866,50 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
+  it('human({ ensureRegistered: true }) sends from the canonical local identity', async () => {
+    const { client, mock } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
+    const envWithoutRelayKey = { ...process.env };
+    delete envWithoutRelayKey.RELAY_API_KEY;
+
+    const relay = new AgentRelay({
+      env: envWithoutRelayKey,
+    });
+
+    try {
+      const human = await relay.human({ name: 'Reviewer', ensureRegistered: true });
+
+      const first = await human.sendMessage({ to: 'worker-1', text: 'status?' });
+      const second = await human.sendMessage({ to: 'worker-1', text: 'report back' });
+
+      expect(relayCastMocks.mockRelayCastRegisterAgent).not.toHaveBeenCalled();
+      expect(mock.sendMessage).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          to: 'worker-1',
+          text: 'status?',
+          from: 'human:Reviewer',
+        })
+      );
+      expect(mock.sendMessage).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          to: 'worker-1',
+          text: 'report back',
+          from: 'human:Reviewer',
+        })
+      );
+      expect(first.from).toBe('human:Reviewer');
+      expect(second.from).toBe('human:Reviewer');
+      expect(human.name).toBe('human:Reviewer');
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
   it('human.sendMessage preserves legacy non-registering behavior by default', async () => {
     const { client, mock } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay({
       env: { ...process.env, RELAY_API_KEY: 'relay-key' },
@@ -886,7 +948,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('registered human.sendMessage auto-registers once and sends from the canonical identity', async () => {
     const { client, mock } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
     relayCastMocks.mockRelayCastRegisterAgent.mockResolvedValue({
       id: 'agt_human_3',
       name: 'human:Reviewer-canon',
@@ -932,7 +994,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('human.ensureRegistered surfaces a clear SDK-level registration error', async () => {
     const { client, mock } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
     relayCastMocks.mockRelayCastRegisterAgent.mockRejectedValue(new Error('name conflict upstream'));
 
     const relay = new AgentRelay({
@@ -957,7 +1019,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('sendAndWaitForDelivery waits for delivery ack with typed response', async () => {
     const { client, mock, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     try {
@@ -995,7 +1057,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('sendAndWaitForDelivery timeout remains terminal in delivery state timeline (Wave 0 contract)', async () => {
     const { client, mock, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const timeoutFixture = readWave0Fixture<{
       event_id: string;
@@ -1041,7 +1103,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('relay_inbound normalizes broker identities to Dashboard across repos (Wave 0 contract)', async () => {
     const { client, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const identityFixture = readWave0Fixture<{
       cases: Array<{ input: string; normalized: string }>;
@@ -1076,7 +1138,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('tracks per-event delivery state transitions', async () => {
     const { client, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     try {
@@ -1145,7 +1207,7 @@ describe('AgentRelay orchestration handles', () => {
 describe('Agent.status computed getter', () => {
   it('returns spawning before worker_ready fires', async () => {
     const { client } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     try {
@@ -1163,7 +1225,7 @@ describe('Agent.status computed getter', () => {
 
   it('returns ready after worker_ready event', async () => {
     const { client, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     try {
@@ -1183,7 +1245,7 @@ describe('Agent.status computed getter', () => {
 
   it('returns idle after agent_idle event', async () => {
     const { client, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     try {
@@ -1205,7 +1267,7 @@ describe('Agent.status computed getter', () => {
 
   it('returns exited after agent_exited event', async () => {
     const { client, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     try {
@@ -1226,7 +1288,7 @@ describe('Agent.status computed getter', () => {
 
   it('transitions from idle back to ready on worker_stream', async () => {
     const { client, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     try {
@@ -1251,7 +1313,7 @@ describe('Agent.status computed getter', () => {
 describe('Agent.onOutput', () => {
   it('receives output chunks for the correct agent', async () => {
     const { client, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     try {
@@ -1275,7 +1337,7 @@ describe('Agent.onOutput', () => {
 
   it('does not receive output for other agents', async () => {
     const { client, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     try {
@@ -1299,7 +1361,7 @@ describe('Agent.onOutput', () => {
 
   it('unsubscribe stops receiving output', async () => {
     const { client, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     try {
@@ -1324,7 +1386,7 @@ describe('Agent.onOutput', () => {
 
   it('onOutput with { stream: "stdout" } only receives stdout events', async () => {
     const { client, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     try {
@@ -1349,7 +1411,7 @@ describe('Agent.onOutput', () => {
 
   it('onOutput without filter receives all streams', async () => {
     const { client, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     try {
@@ -1373,7 +1435,7 @@ describe('Agent.onOutput', () => {
 
   it('onOutput with { stream: "stderr" } ignores stdout events', async () => {
     const { client, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     try {
@@ -1397,7 +1459,7 @@ describe('Agent.onOutput', () => {
 
   it('onOutput with explicit mode: "structured" receives { stream, chunk } objects', async () => {
     const { client, emit } = createMockFacadeClient();
-    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+    vi.spyOn(AgentRelayClient, 'spawn').mockResolvedValue(client);
 
     const relay = new AgentRelay();
     try {
