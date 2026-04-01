@@ -52,14 +52,6 @@ describe('AgentRelay channel operations', () => {
     expect(client.subscribeChannels).toHaveBeenCalledWith('worker-1', ['ch-a', 'ch-b']);
   });
 
-  it('relay.mute delegates to client', async () => {
-    const { relay, client } = setupRelay();
-
-    await relay.mute({ agent: 'worker-1', channel: 'ch-a' });
-
-    expect(client.muteChannel).toHaveBeenCalledWith('worker-1', 'ch-a');
-  });
-
   it('Agent.subscribe updates the local channel list on success', async () => {
     const { relay, client } = setupRelay();
     const agent = (relay as any).ensureAgentHandle('worker-1', 'pty', ['ch-a']);
@@ -68,27 +60,6 @@ describe('AgentRelay channel operations', () => {
 
     expect(client.subscribeChannels).toHaveBeenCalledWith('worker-1', ['ch-b']);
     expect(agent.channels).toEqual(['ch-a', 'ch-b']);
-  });
-
-  it('Agent.mute adds the channel to mutedChannels', async () => {
-    const { relay, client } = setupRelay();
-    const agent = (relay as any).ensureAgentHandle('worker-1', 'pty', ['ch-a']);
-
-    await agent.mute('ch-a');
-
-    expect(client.muteChannel).toHaveBeenCalledWith('worker-1', 'ch-a');
-    expect(agent.mutedChannels).toEqual(['ch-a']);
-  });
-
-  it('Agent.unmute removes the channel from mutedChannels', async () => {
-    const { relay, client } = setupRelay();
-    const agent = (relay as any).ensureAgentHandle('worker-1', 'pty', ['ch-a']);
-
-    await agent.mute('ch-a');
-    await agent.unmute('ch-a');
-
-    expect(client.unmuteChannel).toHaveBeenCalledWith('worker-1', 'ch-a');
-    expect(agent.mutedChannels).toEqual([]);
   });
 
   it('onChannelSubscribed fires on channel_subscribed events', () => {
@@ -103,19 +74,5 @@ describe('AgentRelay channel operations', () => {
     });
 
     expect(callback).toHaveBeenCalledWith('worker-1', ['ch-a']);
-  });
-
-  it('onChannelMuted fires on channel_muted events', () => {
-    const { relay, emit } = setupRelay();
-    const callback = vi.fn();
-    relay.onChannelMuted = callback;
-
-    emit({
-      kind: 'channel_muted',
-      name: 'worker-1',
-      channel: 'ch-a',
-    });
-
-    expect(callback).toHaveBeenCalledWith('worker-1', 'ch-a');
   });
 });

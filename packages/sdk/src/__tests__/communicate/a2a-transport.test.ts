@@ -356,7 +356,7 @@ describe('A2ATransport', () => {
           if (req.url === '/.well-known/agent.json') {
             discoveryCount++;
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ...mockCard, url: '' }));
+            res.end(JSON.stringify(mockCard));
             return;
           }
           if (req.method === 'POST') {

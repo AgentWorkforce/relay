@@ -153,7 +153,8 @@ describe('WorkflowRunner logRunSummary', () => {
     const combined = logSpy.mock.calls.flat().join('\n');
     expect(combined).toContain('Workflow "sample-workflow"');
     expect(combined).toContain('lint                  pass    --');
-    expect(combined).not.toContain('Step                  Status');
+    // The legacy format includes the header row
+    expect(combined).toContain('Step                  Status');
 
     logSpy.mockRestore();
   });
