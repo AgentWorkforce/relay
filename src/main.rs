@@ -4470,18 +4470,6 @@ fn extract_mcp_message_ids(buffer: &str) -> Vec<String> {
     ids
 }
 
-/// Check if a process with the given PID is alive.
-#[cfg(unix)]
-pub(crate) fn is_pid_alive(pid: u32) -> bool {
-    // kill(pid, 0) checks existence without sending a signal
-    let rc = unsafe { nix::libc::kill(pid as i32, 0) };
-    if rc == 0 {
-        return true;
-    }
-    // EPERM means the process exists but we can't signal it (different user)
-    let err = std::io::Error::last_os_error();
-    err.raw_os_error() == Some(nix::libc::EPERM)
-}
 
 /// Returns the continuity directory path derived from the state file path.
 /// State path is always `{cwd}/.agent-relay/state.json`, so parent is `{cwd}/.agent-relay/`.
@@ -4565,7 +4553,7 @@ fn ensure_runtime_paths(
                 .and_then(|v| v.get("pid").and_then(|p| p.as_u64()))
                 .map(|p| p as u32);
             if let Some(old_pid) = old_pid {
-                if !is_pid_alive(old_pid) {
+                if !broker::is_pid_alive(old_pid) {
                     tracing::warn!(
                         old_pid = old_pid,
                         "stale broker lock detected (PID {} is dead), recovering",
@@ -4655,6 +4643,11 @@ fn derive_ws_base_url_from_http(http_base: &str) -> String {
         trimmed.to_string()
     }
 }
+
+#[cfg(test)]
+mod broker_tests;
+#[cfg(test)]
+mod worker_tests;
 
 #[cfg(test)]
 mod tests {
@@ -5992,7 +5985,7 @@ mod tests {
     fn is_pid_alive_returns_true_for_self() {
         let pid = std::process::id();
         assert!(
-            super::is_pid_alive(pid),
+            crate::broker::is_pid_alive(pid),
             "current process PID should be alive"
         );
     }
@@ -6008,7 +6001,7 @@ mod tests {
         child.wait().expect("failed to wait on child");
         // After the child exits, its PID should not be alive
         // (the PID may be recycled, but on macOS/Linux it won't be immediately)
-        assert!(!super::is_pid_alive(pid), "exited child PID should be dead");
+        assert!(!crate::broker::is_pid_alive(pid), "exited child PID should be dead");
     }
 
     #[test]
@@ -6018,7 +6011,7 @@ mod tests {
         // On macOS pid_max is ~99999; on Linux it's typically 32768 or 4194304.
         // 4_000_000 is unlikely to be in use.
         assert!(
-            !super::is_pid_alive(4_000_000),
+            !crate::broker::is_pid_alive(4_000_000),
             "bogus PID 4_000_000 should not be alive (ESRCH)"
         );
     }
@@ -6035,7 +6028,7 @@ mod tests {
             return;
         }
         assert!(
-            super::is_pid_alive(1),
+            crate::broker::is_pid_alive(1),
             "PID 1 (init/launchd) should report alive via EPERM"
         );
     }

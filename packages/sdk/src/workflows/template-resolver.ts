@@ -1,9 +1,24 @@
 import type { RelayYamlConfig } from './types.js';
 
+/**
+ * Escape a string for safe inclusion in a shell command passed to `sh -c`.
+ * Wraps the value in single quotes and escapes any embedded single quotes.
+ */
+export function shellEscape(value: string): string {
+  return "'" + value.replace(/'/g, "'\\''") + "'";
+}
+
 const TEMPLATE_VARIABLE_PATTERN = /\{\{([\w][\w.\-]*)\}\}/g;
 const STEP_OUTPUT_TEMPLATE_PATTERN = /\{\{(steps\.[\w\-]+\.output)\}\}/g;
 const STEP_OUTPUT_REF_PATTERN = /^steps\.([\w\-]+)\.output$/;
 
+/**
+ * Variable context for template resolution.
+ * Values are typed as `unknown` to accommodate dynamic step-output contexts;
+ * only scalar values (string | number | boolean) are interpolated — complex
+ * objects are coerced via String(). Shell-bound templates are escaped by
+ * {@link resolveTemplateForShell}.
+ */
 export interface VariableContext {
   [key: string]: unknown;
 }
@@ -24,7 +39,7 @@ export function resolveVariables(config: RelayYamlConfig, vars: VariableContext)
           step.task = resolveTemplate(step.task, vars);
         }
         if (step.command) {
-          step.command = resolveTemplate(step.command, vars);
+          step.command = resolveTemplateForShell(step.command, vars);
         }
         if (step.params && typeof step.params === 'object') {
           for (const key of Object.keys(step.params)) {
@@ -52,6 +67,24 @@ export function resolveTemplate(template: string, context: VariableContext): str
       throw new Error(`Unresolved variable: {{${key}}}`);
     }
     return String(value);
+  });
+}
+
+/**
+ * Like resolveTemplate but shell-escapes interpolated values.
+ * Use this when the result will be passed to `sh -c` to prevent injection.
+ */
+export function resolveTemplateForShell(template: string, context: VariableContext): string {
+  return template.replace(TEMPLATE_VARIABLE_PATTERN, (match, key: string) => {
+    if (key.startsWith('steps.')) {
+      return match;
+    }
+
+    const value = resolveDotPath(key, context);
+    if (value === undefined) {
+      throw new Error(`Unresolved variable: {{${key}}}`);
+    }
+    return shellEscape(String(value));
   });
 }
 

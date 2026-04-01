@@ -37,7 +37,9 @@ export interface VerificationSideEffects {
     stepName: string,
     effect: Omit<CompletionEvidenceToolSideEffect, 'observedAt'> & { observedAt?: string }
   ) => void;
-  getOrCreateStepEvidenceRecord?: (stepName: string) => { evidence: { coordinationSignals: CompletionEvidenceSignal[] } };
+  getOrCreateStepEvidenceRecord?: (stepName: string) => {
+    evidence: { coordinationSignals: CompletionEvidenceSignal[] };
+  };
   log?: (message: string) => void;
 }
 
@@ -107,7 +109,9 @@ export function runVerification(
   }
 
   if (options.completionMarkerFound === false) {
-    sideEffects.log?.(`[${stepName}] Verification passed without legacy STEP_COMPLETE marker; allowing completion`);
+    sideEffects.log?.(
+      `[${stepName}] Verification passed without legacy STEP_COMPLETE marker; allowing completion`
+    );
   }
 
   const observedAt = new Date().toISOString();
@@ -135,7 +139,7 @@ export function runVerification(
   };
 }
 
-function stripInjectedTaskEcho(output: string, injectedTaskText?: string): string {
+export function stripInjectedTaskEcho(output: string, injectedTaskText?: string): string {
   if (!injectedTaskText) {
     return output;
   }
@@ -162,11 +166,7 @@ export function checkExitCode(_expectedExitCode: string): boolean {
   return true;
 }
 
-export function checkOutputContains(
-  output: string,
-  token: string,
-  injectedTaskText?: string
-): boolean {
+export function checkOutputContains(output: string, token: string, injectedTaskText?: string): boolean {
   if (!token) {
     return false;
   }
@@ -174,5 +174,12 @@ export function checkOutputContains(
 }
 
 export function checkFileExists(filePath: string, cwd = process.cwd()): boolean {
-  return existsSync(path.resolve(cwd, filePath));
+  const resolved = path.resolve(cwd, filePath);
+  // Prevent relative path traversal outside the working directory
+  if (!path.isAbsolute(filePath)) {
+    if (!resolved.startsWith(cwd + path.sep) && resolved !== cwd) {
+      return false;
+    }
+  }
+  return existsSync(resolved);
 }

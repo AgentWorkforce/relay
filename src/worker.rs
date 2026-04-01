@@ -78,7 +78,15 @@ impl WorkerRegistry {
     }
 
     pub(crate) fn worker_log_path(&self, worker_name: &str) -> Option<PathBuf> {
-        if worker_name.contains('/') || worker_name.contains('\\') || worker_name.contains('\0') {
+        // Reject path traversal: slashes, backslashes, null bytes, and ".." components
+        if worker_name.contains('/')
+            || worker_name.contains('\\')
+            || worker_name.contains('\0')
+            || worker_name == ".."
+            || worker_name.starts_with("../")
+            || worker_name.ends_with("/..")
+            || worker_name.contains("/../")
+        {
             tracing::warn!(
                 worker = %worker_name,
                 "skipping worker log file creation due to invalid worker name"
@@ -168,6 +176,9 @@ impl WorkerRegistry {
                 let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
                 let is_codex = cli_lower == "codex";
                 let is_gemini = cli_lower == "gemini";
+                // NOTE: Permission-bypass flags are auto-injected for all spawned agents.
+                // This means any actor who can trigger agent.add gets agents with no permission
+                // guardrails. Future work should make this an explicit opt-in per step/agent.
                 let bypass_flag: Option<&str> = if is_claude
                     && !effective_args
                         .iter()
@@ -185,6 +196,14 @@ impl WorkerRegistry {
                 } else {
                     None
                 };
+
+                if let Some(flag) = bypass_flag {
+                    tracing::warn!(
+                        worker = %spec.name,
+                        flag = %flag,
+                        "auto-injecting permission-bypass flag for spawned agent"
+                    );
+                }
 
                 let mcp_args = if skip_relay_prompt {
                     vec![]
@@ -290,6 +309,8 @@ impl WorkerRegistry {
             command.env("RELAY_AGENT_TYPE", "agent");
             command.env("RELAY_STRICT_AGENT_NAME", "1");
         }
+        // Remove CLAUDECODE from child env to prevent nested Claude Code instances
+        // from interfering with the parent's session management
         command.env_remove("CLAUDECODE");
         if let Some(cwd) = spec.cwd.as_ref() {
             command.current_dir(cwd);
@@ -451,6 +472,9 @@ impl WorkerRegistry {
                             #[cfg(unix)]
                             {
                                 if let Some(pid) = handle.child.id() {
+                                    // Safety: kill(pid, 0) is a POSIX-safe probe that checks
+                                    // process existence without sending a signal. ESRCH means
+                                    // the process no longer exists.
                                     let ret = unsafe { libc::kill(pid as libc::pid_t, 0) };
                                     if ret == -1 {
                                         let errno = std::io::Error::last_os_error()

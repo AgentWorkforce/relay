@@ -6,6 +6,9 @@ import os from 'node:os';
 // The module under test — does not exist yet (red phase).
 import {
   runVerification,
+  stripInjectedTaskEcho,
+  checkOutputContains,
+  checkFileExists,
   type VerificationCheck,
   type VerificationResult,
   type VerificationOptions,
@@ -65,24 +68,21 @@ describe('verification logic', () => {
     });
 
     it('should fail when output does not contain the token', () => {
-      expect(() =>
-        run({ type: 'output_contains', value: 'BUILD_SUCCESS' }, 'build failed')
-      ).toThrow(WorkflowCompletionError);
+      expect(() => run({ type: 'output_contains', value: 'BUILD_SUCCESS' }, 'build failed')).toThrow(
+        WorkflowCompletionError
+      );
     });
 
     it('should be case-sensitive', () => {
-      expect(() =>
-        run({ type: 'output_contains', value: 'BUILD_SUCCESS' }, 'build_success')
-      ).toThrow(WorkflowCompletionError);
+      expect(() => run({ type: 'output_contains', value: 'BUILD_SUCCESS' }, 'build_success')).toThrow(
+        WorkflowCompletionError
+      );
     });
 
     it('should return failure result instead of throwing when allowFailure is set', () => {
-      const result = run(
-        { type: 'output_contains', value: 'MISSING' },
-        'no match here',
-        'test-step',
-        { allowFailure: true }
-      );
+      const result = run({ type: 'output_contains', value: 'MISSING' }, 'no match here', 'test-step', {
+        allowFailure: true,
+      });
       expect(result.passed).toBe(false);
       expect(result.completionReason).toBe('failed_verification');
       expect(result.error).toContain('MISSING');
@@ -111,9 +111,9 @@ describe('verification logic', () => {
     });
 
     it('should fail when the file does not exist', () => {
-      expect(() =>
-        run({ type: 'file_exists', value: path.join(tmpDir, 'nope.txt') }, '')
-      ).toThrow(WorkflowCompletionError);
+      expect(() => run({ type: 'file_exists', value: path.join(tmpDir, 'nope.txt') }, '')).toThrow(
+        WorkflowCompletionError
+      );
     });
   });
 
@@ -128,10 +128,7 @@ describe('verification logic', () => {
   // 5. Invalid/unknown verification type — falls through gracefully
   describe('unknown type', () => {
     it('should fall through and pass for unknown verification types', () => {
-      const result = run(
-        { type: 'nonexistent' as VerificationCheck['type'], value: 'x' },
-        'output'
-      );
+      const result = run({ type: 'nonexistent' as VerificationCheck['type'], value: 'x' }, 'output');
       // falls through the switch with no match, reaches success path
       expect(result.passed).toBe(true);
     });
@@ -140,16 +137,93 @@ describe('verification logic', () => {
   // 6. completionMarkerFound option
   describe('completionMarkerFound option', () => {
     it('should log legacy marker message when completionMarkerFound is false', () => {
-      const result = run(
-        { type: 'exit_code', value: '0' },
-        'output',
-        'my-step',
-        { completionMarkerFound: false }
-      );
+      const result = run({ type: 'exit_code', value: '0' }, 'output', 'my-step', {
+        completionMarkerFound: false,
+      });
       expect(result.passed).toBe(true);
       expect(noopSideEffects.log).toHaveBeenCalledWith(
         expect.stringContaining('without legacy STEP_COMPLETE marker')
       );
+    });
+  });
+
+  // 7. stripInjectedTaskEcho
+  describe('stripInjectedTaskEcho', () => {
+    it('should return output unchanged when no injectedTaskText', () => {
+      expect(stripInjectedTaskEcho('hello world')).toBe('hello world');
+      expect(stripInjectedTaskEcho('hello world', undefined)).toBe('hello world');
+    });
+
+    it('should strip the injected task text from output', () => {
+      const task = 'Please run the build';
+      const output = 'Starting...\nPlease run the build\nBUILD_SUCCESS';
+      expect(stripInjectedTaskEcho(output, task)).toBe('Starting...\n\nBUILD_SUCCESS');
+    });
+
+    it('should handle CRLF normalization', () => {
+      const task = 'Run task\r\nwith newlines';
+      const output = 'prefix Run task\nwith newlines suffix';
+      expect(stripInjectedTaskEcho(output, task)).toBe('prefix  suffix');
+    });
+
+    it('should handle LF to CRLF normalization', () => {
+      const task = 'Run task\nwith newlines';
+      const output = 'prefix Run task\r\nwith newlines suffix';
+      expect(stripInjectedTaskEcho(output, task)).toBe('prefix  suffix');
+    });
+
+    it('should return output unchanged when task text is not found', () => {
+      expect(stripInjectedTaskEcho('output text', 'not present')).toBe('output text');
+    });
+
+    it('should handle empty injected task text', () => {
+      expect(stripInjectedTaskEcho('output', '')).toBe('output');
+    });
+  });
+
+  // 8. checkOutputContains with injectedTaskText
+  describe('checkOutputContains with injectedTaskText', () => {
+    it('should not match token that only appears in injected task echo', () => {
+      const task = 'Verify BUILD_SUCCESS appears';
+      const output = 'Verify BUILD_SUCCESS appears\nDone.';
+      expect(checkOutputContains(output, 'BUILD_SUCCESS', task)).toBe(false);
+    });
+
+    it('should match token that appears outside injected task echo', () => {
+      const task = 'Run the build';
+      const output = 'Run the build\nBUILD_SUCCESS';
+      expect(checkOutputContains(output, 'BUILD_SUCCESS', task)).toBe(true);
+    });
+
+    it('should return false for empty token', () => {
+      expect(checkOutputContains('anything', '', undefined)).toBe(false);
+    });
+  });
+
+  // 9. checkFileExists path traversal protection
+  describe('checkFileExists path traversal', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'verify-traversal-'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('should reject path traversal with ../', () => {
+      expect(checkFileExists('../../etc/passwd', tmpDir)).toBe(false);
+    });
+
+    it('should reject relative path with .. that resolves outside cwd', () => {
+      expect(checkFileExists('../../../etc/passwd', tmpDir)).toBe(false);
+    });
+
+    it('should allow files within cwd', () => {
+      const file = path.join(tmpDir, 'ok.txt');
+      fs.writeFileSync(file, 'ok');
+      expect(checkFileExists('ok.txt', tmpDir)).toBe(true);
     });
   });
 });

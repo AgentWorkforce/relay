@@ -23,8 +23,10 @@ export interface ShellOpts {
   timeoutMs?: number;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface AgentOpts extends ShellOpts {}
 
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface InteractiveOpts extends ShellOpts {}
 
 export interface ProcessSpawnerDeps {
@@ -68,6 +70,7 @@ export function spawnProcess(command: string[], options: SpawnOptions): ChildPro
 
 export function collectOutput(process: ChildProcess): Promise<string> {
   return new Promise<string>((resolve, reject) => {
+    let settled = false;
     const stdout: string[] = [];
     const stderr: string[] = [];
 
@@ -79,9 +82,17 @@ export function collectOutput(process: ChildProcess): Promise<string> {
       stderr.push(chunk.toString());
     });
 
-    process.once('error', reject);
+    process.once('error', (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
     process.once('close', () => {
-      resolve(`${stdout.join('')}${stderr.join('')}`);
+      if (!settled) {
+        settled = true;
+        resolve(`${stdout.join('')}${stderr.join('')}`);
+      }
     });
   });
 }

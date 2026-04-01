@@ -7,6 +7,19 @@ use relay_broker::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Check if a process with the given PID is alive.
+#[cfg(unix)]
+pub(crate) fn is_pid_alive(pid: u32) -> bool {
+    // kill(pid, 0) checks existence without sending a signal
+    let rc = unsafe { nix::libc::kill(pid as i32, 0) };
+    if rc == 0 {
+        return true;
+    }
+    // EPERM means the process exists but we can't signal it (different user)
+    let err = std::io::Error::last_os_error();
+    err.raw_os_error() == Some(nix::libc::EPERM)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct BrokerState {
     pub(crate) agents: HashMap<String, PersistedAgent>,
@@ -61,7 +74,7 @@ impl BrokerState {
             .iter()
             .filter(|(_, agent)| {
                 if let Some(pid) = agent.pid {
-                    !crate::is_pid_alive(pid)
+                    !is_pid_alive(pid)
                 } else {
                     // No PID recorded — stale entry from before PID tracking, remove it
                     true

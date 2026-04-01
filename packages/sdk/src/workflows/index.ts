@@ -8,6 +8,8 @@ export * from './run-summary-table.js';
 export * from './template-resolver.js';
 export * from './verification.js';
 export {
+  StepExecutor,
+  /** @deprecated Use {@link StepExecutor} instead. */
   StepExecutor as WorkflowStepLifecycleExecutor,
   type StepExecutorDeps,
   type StepResult,
