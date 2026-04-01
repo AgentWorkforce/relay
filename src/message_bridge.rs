@@ -665,7 +665,15 @@ fn target_value_to_string(value: &Value) -> Option<String> {
     }
 
     let obj = value.as_object()?;
-    for key in ["id", "agent_id", "agentId", "handle", "name", "display_name", "username"] {
+    for key in [
+        "id",
+        "agent_id",
+        "agentId",
+        "handle",
+        "name",
+        "display_name",
+        "username",
+    ] {
         if let Some(v) = obj.get(key) {
             if let Some(s) = scalar_to_string(v) {
                 if !s.is_empty() {
