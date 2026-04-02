@@ -1,0 +1,46 @@
+{
+  "id": "traj_0dzj6tewabm3",
+  "version": 1,
+  "task": {
+    "title": "Add tools section and React SDK coming soon page"
+  },
+  "status": "active",
+  "startedAt": "2026-04-02T12:51:09.979Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-04-02T12:51:50.032Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_lsdaah2c1mt6",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-04-02T12:51:50.032Z",
+      "events": [
+        {
+          "ts": 1775134310033,
+          "type": "decision",
+          "content": "Added docs slugs relay-dashboard, observer, and react-sdk under new Tools/SDKs nav groups: Added docs slugs relay-dashboard, observer, and react-sdk under new Tools/SDKs nav groups",
+          "raw": {
+            "question": "Added docs slugs relay-dashboard, observer, and react-sdk under new Tools/SDKs nav groups",
+            "chosen": "Added docs slugs relay-dashboard, observer, and react-sdk under new Tools/SDKs nav groups",
+            "alternatives": [],
+            "reasoning": "Keeps product names readable in nav while using short stable slugs that match existing docs routing conventions."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "a4c21cb6f0e00f2bd2665730fff2f3b7b89f3dcc",
+    "endRef": "a4c21cb6f0e00f2bd2665730fff2f3b7b89f3dcc"
+  }
+}

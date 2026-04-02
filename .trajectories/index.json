@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-02T12:30:00.664Z",
+  "lastUpdated": "2026-04-02T12:51:50.034Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -947,6 +947,19 @@
       "startedAt": "2026-04-02T12:28:08.828Z",
       "completedAt": "2026-04-02T12:30:00.540Z",
       "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_hvwew67txec2.json"
+    },
+    "traj_ncaub0g31t0w": {
+      "title": "Fix code fence meta delimiter collision",
+      "status": "completed",
+      "startedAt": "2026-04-02T12:47:28.695Z",
+      "completedAt": "2026-04-02T12:49:12.869Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_ncaub0g31t0w.json"
+    },
+    "traj_0dzj6tewabm3": {
+      "title": "Add tools section and React SDK coming soon page",
+      "status": "active",
+      "startedAt": "2026-04-02T12:51:09.979Z",
+      "path": "/Users/will/Projects/relay/.trajectories/active/traj_0dzj6tewabm3.json"
     }
   }
 }

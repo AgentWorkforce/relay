@@ -5,7 +5,6 @@ export interface CodeFenceMeta {
 }
 
 const META_PREFIX = 'ar-meta__';
-const META_SEPARATOR = '__';
 const LANGUAGE_CLASS_PREFIX = 'language-';
 
 function safeDecode(value: string): string {
@@ -17,17 +16,36 @@ function safeDecode(value: string): string {
 }
 
 export function encodeCodeFenceMeta({ language, label, filename }: CodeFenceMeta): string {
-  const parts = [`lang=${encodeURIComponent(language)}`];
+  const params = new URLSearchParams();
+  params.set('lang', language);
 
   if (label) {
-    parts.push(`label=${encodeURIComponent(label)}`);
+    params.set('label', label);
   }
 
   if (filename) {
-    parts.push(`file=${encodeURIComponent(filename)}`);
+    params.set('file', filename);
   }
 
-  return `${META_PREFIX}${parts.join(META_SEPARATOR)}`;
+  return `${META_PREFIX}${params.toString()}`;
+}
+
+function parseLegacyMetaPayload(payload: string): Record<string, string> {
+  return payload.split('__').reduce<Record<string, string>>((acc, segment) => {
+    const separator = segment.indexOf('=');
+    if (separator === -1) {
+      return acc;
+    }
+
+    const key = segment.slice(0, separator);
+    const value = segment.slice(separator + 1);
+    if (!key || !value) {
+      return acc;
+    }
+
+    acc[key] = safeDecode(value);
+    return acc;
+  }, {});
 }
 
 export function parseCodeFenceMetaToken(token: string): CodeFenceMeta {
@@ -35,24 +53,10 @@ export function parseCodeFenceMetaToken(token: string): CodeFenceMeta {
     return { language: token };
   }
 
-  const meta = token
-    .slice(META_PREFIX.length)
-    .split(META_SEPARATOR)
-    .reduce<Record<string, string>>((acc, segment) => {
-      const separator = segment.indexOf('=');
-      if (separator === -1) {
-        return acc;
-      }
-
-      const key = segment.slice(0, separator);
-      const value = segment.slice(separator + 1);
-      if (!key || !value) {
-        return acc;
-      }
-
-      acc[key] = safeDecode(value);
-      return acc;
-    }, {});
+  const payload = token.slice(META_PREFIX.length);
+  const meta = payload.includes('&')
+    ? Object.fromEntries(new URLSearchParams(payload).entries())
+    : parseLegacyMetaPayload(payload);
 
   return {
     language: meta.lang || 'text',
