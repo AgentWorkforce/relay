@@ -23,19 +23,6 @@ Verify the install:
 
 You should see `claude-relay-plugin` in the output.
 
-## Configuration
-
-Set your Relay API key so the plugin can authenticate:
-
-```bash
-export RELAY_API_KEY=rk_live_your_key_here
-```
-
-Or add it to your `.claude/.env` file:
-
-```
-RELAY_API_KEY=rk_live_your_key_here
-```
 
 ## Slash Commands
 
