@@ -81,14 +81,23 @@ export async function HighlightedPre({ children, ...props }: React.DetailedHTMLP
   }
 
   const meta = parseCodeFenceMetaToken(token);
-  const highlighted = await highlightCode(raw.trimEnd(), meta.language.toLowerCase());
+  const normalizedLanguage = meta.language.toLowerCase();
+  const highlighted = await highlightCode(raw.trimEnd(), normalizedLanguage);
   const shikiStyle = parseInlineStyle(highlighted.preStyle);
   const preClassName = [props.className, highlighted.preClassName].filter(Boolean).join(' ');
   const wrapperClassName = meta.filename
     ? `${styles.codeWrapper} ${styles.codeWrapperWithHeader}`
     : styles.codeWrapper;
-  const codeClassName = `language-${meta.language.toLowerCase()}`;
-  const badgeKey = meta.filename?.split('/').pop()?.split('.').pop()?.toLowerCase() || meta.language.toLowerCase();
+  const normalizedLanguageClass = `language-${normalizedLanguage}`;
+  const codeClassName = Array.from(
+    new Set(
+      className
+        .split(/\s+/)
+        .filter(Boolean)
+        .concat(normalizedLanguageClass)
+    )
+  ).join(' ');
+  const badgeKey = meta.filename?.split('/').pop()?.split('.').pop()?.toLowerCase() || normalizedLanguage;
   const BadgeIcon = codeBadgeIcons[badgeKey];
 
   return (
@@ -117,6 +126,7 @@ export async function HighlightedPre({ children, ...props }: React.DetailedHTMLP
       >
         <code
           className={codeClassName}
+          data-language={normalizedLanguage}
           dangerouslySetInnerHTML={{ __html: highlighted.codeHtml }}
         />
       </pre>

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   encodeCodeFenceMeta,
+  extractCodeFenceToken,
   parseCodeFenceMetaToken,
 } from '../../web/lib/code-fence-meta';
 
@@ -30,5 +31,17 @@ describe('code fence meta encoding', () => {
       label: 'TypeScript',
       filename: 'src/agent.ts',
     });
+  });
+
+  it('prefers the metadata token when multiple language classes are present', () => {
+    const token = encodeCodeFenceMeta({
+      language: 'npm',
+      label: 'npm',
+      filename: 'package.json',
+    });
+
+    expect(
+      extractCodeFenceToken(`language-bash language-${token} prose`)
+    ).toBe(token);
   });
 });

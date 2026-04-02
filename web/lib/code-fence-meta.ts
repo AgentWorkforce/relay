@@ -66,10 +66,12 @@ export function parseCodeFenceMetaToken(token: string): CodeFenceMeta {
 }
 
 export function extractCodeFenceToken(className?: string): string | undefined {
-  return className
+  const languageClasses = className
     ?.split(/\s+/)
-    .find((value) => value.startsWith(LANGUAGE_CLASS_PREFIX))
-    ?.slice(LANGUAGE_CLASS_PREFIX.length);
+    .filter((value) => value.startsWith(LANGUAGE_CLASS_PREFIX))
+    .map((value) => value.slice(LANGUAGE_CLASS_PREFIX.length));
+
+  return languageClasses?.find((value) => value.startsWith(META_PREFIX)) ?? languageClasses?.[0];
 }
 
 export function humanizeCodeFenceLanguage(language: string): string {
