@@ -152,13 +152,13 @@ function resolveModel(agent: string, cli: string): string {
   const normalizedAgent = normalizeValue(agent);
   if (normalizedAgent) {
     const resolved = normalizeModel(normalizedAgent);
-    if (resolved in MODEL_PRICING) {
+    if (Object.hasOwn(MODEL_PRICING, resolved)) {
       return resolved;
     }
   }
 
   const normalizedCli = normalizeCli(cli);
-  if (normalizedCli && normalizedCli in CLI_DEFAULT_MODEL) {
+  if (normalizedCli && Object.hasOwn(CLI_DEFAULT_MODEL, normalizedCli)) {
     return CLI_DEFAULT_MODEL[normalizedCli as keyof typeof CLI_DEFAULT_MODEL];
   }
 

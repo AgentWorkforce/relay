@@ -83,7 +83,10 @@ describe('CostTracker', () => {
       estimatedOutputTokens: 150,
       estimatedCostUsd: 0.0025,
     });
-    expect(fsMock.mkdirSync).toHaveBeenCalledWith(path.dirname(usageFilePath), { recursive: true });
+    expect(fsMock.mkdirSync).toHaveBeenCalledWith(path.dirname(usageFilePath), {
+      recursive: true,
+      mode: 0o700,
+    });
     expect(files.get(usageFilePath)).toBe(`${JSON.stringify(record)}\n`);
   });
 

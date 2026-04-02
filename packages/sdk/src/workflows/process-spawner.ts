@@ -163,11 +163,17 @@ async function runCommand(command: SpawnCommand, opts: ShellOpts): Promise<Spawn
     });
   });
 
-  const [output, exit] = await Promise.all([outputPromise, exitPromise]);
+  const [outputResult, exitResult] = await Promise.allSettled([outputPromise, exitPromise]);
+  const output = outputResult.status === 'fulfilled' ? outputResult.value : '';
+  if (exitResult.status === 'rejected') {
+    const err = exitResult.reason instanceof Error ? exitResult.reason : new Error(String(exitResult.reason));
+    (err as Error & { partialOutput?: string }).partialOutput = output;
+    throw err;
+  }
   return {
     output,
-    exitCode: exit.exitCode,
-    exitSignal: exit.exitSignal,
+    exitCode: exitResult.value.exitCode,
+    exitSignal: exitResult.value.exitSignal,
   };
 }
 

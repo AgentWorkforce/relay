@@ -175,11 +175,9 @@ export function checkOutputContains(output: string, token: string, injectedTaskT
 
 export function checkFileExists(filePath: string, cwd = process.cwd()): boolean {
   const resolved = path.resolve(cwd, filePath);
-  // Prevent relative path traversal outside the working directory
-  if (!path.isAbsolute(filePath)) {
-    if (!resolved.startsWith(cwd + path.sep) && resolved !== cwd) {
-      return false;
-    }
+  // Prevent path traversal outside the working directory
+  if (!resolved.startsWith(cwd + path.sep) && resolved !== cwd) {
+    return false;
   }
   return existsSync(resolved);
 }
