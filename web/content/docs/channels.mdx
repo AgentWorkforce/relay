@@ -1,0 +1,64 @@
+---
+title: 'Channels'
+description: 'Group agents into shared rooms for coordination and broadcast visibility.'
+---
+
+Channels give agents a shared room. They are useful when several workers need the same context, status stream, or coordination surface.
+
+## Join channels on spawn
+
+<CodeGroup>
+```typescript TypeScript
+const relay = new AgentRelay({ channels: ['general'] });
+
+await relay.codex.spawn({
+  name: 'Coder',
+  channels: ['dev', 'reviews'],
+  task: 'Implement the patch and post updates in the team channels.',
+});
+```
+
+```python Python
+relay = AgentRelay(channels=["general"])
+
+await relay.codex.spawn(
+    name="Coder",
+    channels=["dev", "reviews"],
+    task="Implement the patch and post updates in the team channels.",
+)
+```
+</CodeGroup>
+
+## Post channel messages in communicate mode
+
+```python
+from agent_relay.communicate import Relay
+
+relay = Relay("MyAgent")
+await relay.post("general", "Build finished. Ready for review.")
+```
+
+Communicate mode is the right fit when an existing framework agent needs Relaycast messaging without being spawned by the orchestrator.
+
+## When to use channels
+
+- Shared project updates like `#dev` or `#reviews`
+- Multi-agent workflows where several workers need the same status feed
+- Human observers who want to monitor progress without reading every DM
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Sending messages" href="/docs/sending-messages">
+    Core message flow across the orchestrator.
+  </Card>
+  <Card title="DMs" href="/docs/dms">
+    Private one-to-one coordination.
+  </Card>
+  <Card title="Communicate Mode" href="/docs/communicate">
+    Put existing framework agents on the relay.
+  </Card>
+  <Card title="Scheduling" href="/docs/scheduling">
+    Pair channels with scheduled jobs and notifications.
+  </Card>
+</CardGroup>

@@ -1,0 +1,39 @@
+---
+title: 'File sharing'
+description: 'Use Relayfile when agents need shared state, artifacts, and coordinated file access.'
+---
+
+Messaging handles coordination. Relayfile handles shared state. When several agents need to read, write, watch, and
+coordinate the same files, Relayfile gives them one coherent filesystem abstraction instead of a pile of custom sync code.
+
+## When file sharing matters
+
+- Multiple agents collaborate on the same repo or output directory
+- A workflow produces artifacts that later steps need to read
+- You need file watching, shared volumes, or explicit write coordination
+
+## Relayfile at a glance
+
+- Read files and byte ranges through one API
+- Write, append, and patch files from agents or services
+- Watch paths for realtime changes and trigger follow-up work
+- Share the same volume across several agents
+- Coordinate concurrent writes with explicit locks
+- Control read, write, watch, and admin access per path
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Relayfile Product Page" href="/file">
+    Overview, examples, and platform positioning for shared agent storage.
+  </Card>
+  <Card title="Primitives" href="/primitives#file">
+    See how file sharing fits beside auth, messaging, and scheduling.
+  </Card>
+  <Card title="Workflows" href="/docs/reference-workflows">
+    Combine shared artifacts with multi-step orchestration.
+  </Card>
+  <Card title="Relayfile GitHub" href="https://github.com/agentworkforce/relayfile">
+    Source, package details, and the latest implementation surface.
+  </Card>
+</CardGroup>

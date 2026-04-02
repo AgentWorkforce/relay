@@ -1,0 +1,64 @@
+---
+title: 'Run workflows'
+description: 'Execute local workflow files, resume failed runs, and inspect built-in workflow templates.'
+---
+
+The CLI can execute workflow files directly, whether they are written in YAML, TypeScript, or Python.
+
+## Run a workflow file
+
+```bash
+agent-relay run relay.yaml
+```
+
+Supported file types:
+
+- `.yaml` and `.yml`
+- `.ts` and `.tsx`
+- `.py`
+
+## Validate before running
+
+```bash
+agent-relay run relay.yaml --dry-run
+```
+
+Dry runs validate the workflow and show the execution plan without starting the real run.
+
+## Resume or restart from a step
+
+```bash
+agent-relay run relay.yaml --resume <run-id>
+agent-relay run relay.yaml --start-from implement --previous-run-id <run-id>
+```
+
+Use these options when a long workflow fails late and you want to retry without repeating earlier successful work.
+
+## List built-in templates
+
+```bash
+agent-relay workflows list
+```
+
+This prints the built-in YAML templates bundled with the CLI.
+
+## When to use cloud instead
+
+Use `agent-relay run` when the workflow should execute locally against your current machine. Use `agent-relay cloud run` when you want the same workflow model in a sandboxed cloud environment.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Workflows" href="/docs/reference-workflows">
+    Author workflow files in TypeScript, Python, or YAML.
+  </Card>
+  <Card title="Cloud commands" href="/docs/cli-cloud-commands">
+    Submit the same workflow model to cloud sandboxes.
+  </Card>
+  <Card title="CLI Overview" href="/docs/cli-overview">
+    Full CLI command map.
+  </Card>
+  <Card title="Cloud" href="/docs/cloud">
+    Conceptual local-vs-cloud framing.
+  </Card>
+</CardGroup>

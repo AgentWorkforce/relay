@@ -1,64 +1,87 @@
 'use client';
 
-import { useState, type ReactNode, type ReactElement, Children, isValidElement } from 'react';
+import { useEffect, useState, type ReactNode, type ReactElement, Children, isValidElement } from 'react';
 
+import { normalizeDocsLanguageLabel, useDocsLanguage } from './DocsLanguageContext';
 import styles from './docs.module.css';
 
 interface CodeGroupProps {
   children: ReactNode;
 }
 
+function findCodeElement(node: ReactNode): ReactElement | null {
+  if (!isValidElement(node)) {
+    return null;
+  }
+
+  if (node.type === 'code') {
+    return node;
+  }
+
+  for (const child of Children.toArray(node.props.children)) {
+    const found = findCodeElement(child);
+    if (found) {
+      return found;
+    }
+  }
+
+  return null;
+}
+
 function getLabel(block: ReactElement, index: number): string {
   if (block.props['data-label']) {
     return block.props['data-label'] as string;
   }
-  const code = Children.toArray(block.props.children).find(
-    (c): c is ReactElement => isValidElement(c) && c.type === 'code'
-  );
+  const code = findCodeElement(block);
   if (!code) return `Tab ${index + 1}`;
   const className = code.props.className || '';
   const match = className.match(/language-(\S+)/);
   return match ? match[1] : `Tab ${index + 1}`;
 }
 
-const TS_NAMES = new Set(['typescript', 'ts', 'tsx', 'TypeScript']);
-
-/**
- * Tabbed code blocks — replaces Mintlify's <CodeGroup>.
- * TypeScript tabs are always shown first.
- */
 export function CodeGroup({ children }: CodeGroupProps) {
+  const { language, setLanguage } = useDocsLanguage();
   const rawBlocks = Children.toArray(children).filter(
-    (child): child is ReactElement => isValidElement(child) && child.type === 'pre'
+    (child): child is ReactElement => isValidElement(child)
   );
 
-  const [active, setActive] = useState(0);
-
   if (rawBlocks.length <= 1) {
-    return <>{rawBlocks}</>;
+    return <>{children}</>;
   }
 
-  // Pair blocks with labels, then sort TypeScript first
   const pairs = rawBlocks.map((block, i) => ({ block, label: getLabel(block, i) }));
-  pairs.sort((a, b) => {
-    const aTs = TS_NAMES.has(a.label) ? 0 : 1;
-    const bTs = TS_NAMES.has(b.label) ? 0 : 1;
-    return aTs - bTs;
-  });
-
   const labels = pairs.map((p) => p.label);
   const blocks = pairs.map((p) => p.block);
+  const preferredIndex = labels.findIndex((label) => normalizeDocsLanguageLabel(label) === language);
+  const isLanguageOnlyGroup = labels.every((label) => normalizeDocsLanguageLabel(label) !== null);
+  const [active, setActive] = useState(preferredIndex === -1 ? 0 : preferredIndex);
+
+  useEffect(() => {
+    if (preferredIndex !== -1) {
+      setActive(preferredIndex);
+    }
+  }, [preferredIndex]);
 
   return (
     <div className={styles.codeGroup}>
-      <div className={styles.codeGroupTabs} role="tablist">
+      <div
+        className={`${styles.codeGroupTabs} ${isLanguageOnlyGroup ? styles.codeGroupTabsHidden : ''}`}
+        role="tablist"
+        aria-hidden={isLanguageOnlyGroup}
+      >
         {labels.map((label, i) => (
           <button
             key={label + i}
             role="tab"
             aria-selected={i === active}
             className={`${styles.codeGroupTab} ${i === active ? styles.codeGroupTabActive : ''}`}
-            onClick={() => setActive(i)}
+            onClick={() => {
+              const nextLanguage = normalizeDocsLanguageLabel(label);
+              if (nextLanguage) {
+                setLanguage(nextLanguage);
+              }
+              setActive(i);
+            }}
           >
             {label}
           </button>

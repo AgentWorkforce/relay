@@ -116,28 +116,13 @@
   text-decoration: none;
   padding-bottom: 4px;
   border-bottom: 2.5px solid transparent;
-  transition: opacity 0.2s, border-color 0.2s;
+  transition: color 0.2s, opacity 0.2s, border-color 0.2s;
   opacity: 1;
 }
 
 .link:hover {
   color: var(--nav-link-hover);
-  border-bottom-color: transparent;
-}
-
-.link::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: 6px;
-  background: var(--nav-surface);
-  opacity: 0;
-  transition: opacity 0.15s;
-  z-index: -1;
-}
-
-.link:hover::before {
-  opacity: 1;
+  border-bottom-color: currentColor;
 }
 
 @media (max-width: 960px) {

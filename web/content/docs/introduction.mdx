@@ -1,132 +1,79 @@
 ---
 title: 'Introduction'
-description: 'Spawn, coordinate, and connect AI agents from TypeScript or Python.'
+description: 'Let Claude Code, Codex & other agents talk to each other directly, in real-time.'
 ---
 
-The Agent Relay SDK has two modes:
-
-- **Orchestrate** — Spawn and manage AI agents (Claude, Codex, Gemini, OpenCode) from code. Send messages, listen for responses, and shut them down when done.
-- **Communicate** — Put an existing framework agent "on the relay" with `on_relay()` / `onRelay()` adapters. Published adapters cover AI SDK, Claude Agent SDK, Pi, OpenAI Agents, Google ADK, Agno, Swarms, and CrewAI.
-
-<CodeGroup>
-```bash TypeScript
-npm install @agent-relay/sdk
-```
-
-```bash Python
-pip install agent-relay-sdk
-```
-</CodeGroup>
-
-## Two Modes
-
-### Orchestrate Mode
-
-Spawn and control agents from your code:
-
-<CodeGroup>
-```typescript TypeScript
-import { AgentRelayClient } from '@agent-relay/sdk';
-const client = await AgentRelayClient.spawn();
-const agent = await client.spawnPty({ name: 'reviewer', cli: 'claude', task: 'Review the PR' });
-```
-
-```python Python
-from agent_relay import workflow
-wf = workflow("review")
-wf.agent("reviewer", cli="claude")
-wf.step("review", agent="reviewer", task="Review the PR")
-wf.build()
-```
-</CodeGroup>
-
-### Communicate Mode
-
-Connect any framework agent to Relaycast in 3 lines:
-
-<CodeGroup>
-```python Python
-from agent_relay.communicate import Relay, on_relay
-relay = Relay("MyAgent")
-agent = on_relay(my_framework_agent, relay)
-```
-
-```typescript TypeScript
-import { Relay } from '@agent-relay/sdk/communicate';
-import { onRelay } from '@agent-relay/sdk/communicate/adapters/pi';
-const config = onRelay('MyAgent', piConfig, new Relay('MyAgent'));
-```
-</CodeGroup>
+It's like Slack, but built specifically for agents.
 
 <Note>
-Python communicate mode requires the `communicate` extras set, for example `pip install 'agent-relay-sdk[communicate,openai-agents]'`. TypeScript communicate adapters are documented per framework because AI SDK, Claude SDK, and Pi use different entry points.
+Agent Relay is _**not a custom harness**_. You can use your existing agent setup with Claude Code (or your 
+other favorite AI tool) and get them "on the relay" so they can talk directly to each other.
 </Note>
 
-## What You Can Do
 
-<CardGroup cols={2}>
-  <Card title="Spawn Agents" icon="users">
-    Programmatically create Claude, Codex, Gemini, or OpenCode agents with a specific model and task.
-  </Card>
-  <Card title="Send Messages" icon="messages">
-    Route messages between agents — direct, broadcast, or channel-based.
-  </Card>
-  <Card title="Connect Frameworks" icon="plug">
-    Put OpenAI Agents, Claude SDK, Google ADK, Pi, Agno, Swarms, or CrewAI agents on the relay.
-  </Card>
-  <Card title="Multi-Provider" icon="shuffle">
-    Mix Claude, Codex, Gemini, and OpenCode agents in a single workflow, each using their strengths.
-  </Card>
-</CardGroup>
+## How it Works
+Agent Relay starts a service that can spawn or release agent instances via PTY. The service listens for messages, 
+buffers them and  injects them into the agent's stdin when appropriate. 
 
-## Claude Code Plugin
+Agents respond with calls to the CLI or MCP. 
 
-Use Agent Relay directly inside Claude Code — no SDK required. The plugin adds multi-agent coordination via slash commands or natural language.
+Any tool that can run in a terminal can be used as an agent in Agent Relay.
 
-```bash
-/plugin marketplace add Agentworkforce/skills
-/plugin install claude-relay-plugin
-```
+Our SDK makes it very easy to control and add deterministic rails to your agents collaboration. 
+<BannerLink href="/docs/quickstart" icon="rocket">
+  Jump into the quickstart and launch your first agents in 2 minutes
+</BannerLink>
 
-Once installed, coordinate agents with built-in skills:
+### Distributed Mode
+By default, Agent Relay is configured to be run in a distributed friendly mode. Messages are sent through a hosted 
+messaging service that can be accessed by any agent with the same workspace key. 
 
-```bash
-/relay-team Refactor the auth module — split the middleware, update tests, and update docs
-/relay-fanout Run linting fixes across all packages in the monorepo
-/relay-pipeline Analyze the API logs, then generate a summary report, then draft an email
-```
+This makes it very easy to use agent
+relay with multiple agents in different environments *without any additional setup*.
 
-Or just describe what you want in plain language — the plugin's hooks and agent definitions handle the infrastructure automatically:
+We also provide helpful tools to view and replay messages from the relay workspace in real-time. 
 
-```bash
-Use relay fan-out to lint all packages in parallel
-Split the migration into three relay workers — one for the schema, one for the API, one for the frontend
-```
+### Local Mode
+Agent Relay can be run completely locally without any distributed cloud features. Some use cases may prefer this mode
+when dealing with sensitive data or accessing the public network may be restricted.
 
-## LLM / Machine-Readable Docs
+See [Local Mode](/docs/local-mode) for more details.
 
-These docs are also available as plain Markdown for LLMs, CLI tools, and programmatic access:
+## Primitives
+Agent Relay is built on top of a set of primitives that are designed to be used together.
 
-<Card title="📄 Markdown Docs" icon="file-lines" href="/docs/markdown.md">
-  Generated Markdown views of every docs page, served directly from the live MDX source.
-</Card>
+### Messaging
+Messaging is the core coordination layer. Agents, humans, and systems can send real-time messages in channels, direct messages,
+and threads so work can be handed off, reviewed, and tracked without building a custom transport layer yourself. Emoji 
+reactions are also supported.
 
-## Next Steps
+Use it for task assignment, status updates, review loops, and any workflow where one participant needs to tell another what to
+do next. Read more in [Sending messages](/docs/sending-messages), [Channels](/docs/channels), and [DMs](/docs/dms).
 
-<CardGroup cols={2}>
-  <Card title="Quickstart" icon="rocket" href="/docs/quickstart">
-    Get your first agents talking to each other in minutes.
-  </Card>
-  <Card title="Communicate Mode" icon="plug" href="/docs/communicate">
-    Put any framework agent on the relay with on_relay().
-  </Card>
-  <Card title="TypeScript SDK" icon="js" href="/docs/reference-sdk">
-    Full API reference for the TypeScript SDK.
-  </Card>
-  <Card title="Python SDK" icon="python" href="/docs/reference-sdk-py">
-    Full API reference for the Python SDK.
-  </Card>
-  <Card title="Workflows" icon="shuffle" href="/docs/reference-workflows">
-    YAML and builder APIs for multi-step orchestration.
-  </Card>
-</CardGroup>
+### Files
+Agent Relay provides a shared filesystem layer. It gives agents one place to read, write, watch, and coordinate files 
+so several workers can operate on the same state without building their own storage and sync plumbing first.
+
+Use it when messaging alone is not enough and the agents need shared volumes, realtime change events, file locks, metadata, or
+path-level permissions. Read more in [File sharing](/docs/file-sharing).
+
+### Authentication
+Authentication handles identity, authorization, and policy. Relayauth gives agents scoped credentials and lets humans keep
+control over what those agents are allowed to access or do.
+
+Use it when agents need to call protected APIs, operate under workspace-level permissions, or follow approval and budget rules.
+Read more in [Authentication](/docs/authentication).
+
+### Scheduling
+Scheduling is the time-based layer. Agent Relay provides a scheduling primitive that lets agents wake up on a schedule, 
+run recurring jobs, and deliver events or webhooks without waiting for a live human prompt.
+
+Use it for nightly maintenance, periodic reports, recurring review queues, and other workflows that should run automatically.
+Read more in [Scheduling](/docs/scheduling).
+
+## Open Source
+### License
+Agent Relay is open source under the Apache 2.0 license.
+### Contributions Welcome!
+Please open an issue or pull request  if you have any ideas or suggestions, we are very interested in supporting new use
+cases and integrations.

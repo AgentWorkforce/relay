@@ -18,7 +18,7 @@
   background: transparent;
   transition: background 0.3s ease;
   overflow: hidden;
-  margin-top: -40px;
+  margin-top: 0px;
   padding-top: 60px;
 }
 
@@ -147,7 +147,7 @@
   letter-spacing: 0.01em;
   padding: 12px 28px;
   background: var(--btn-bg);
-  color: #fff;
+  color: var(--primary-fg);
   border: none;
   border-radius: 100px;
   text-decoration: none;
@@ -1011,10 +1011,100 @@
   color: #67c8d9;
 }
 
+/* ---- FAQ SECTION ---- */
+
+.faqWrapper {
+  background: var(--section-bg);
+  transition: background 0.3s ease;
+}
+
+.faqSection {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 80px 40px 96px;
+}
+
+.faqTitle {
+  font-family: var(--font-heading), sans-serif;
+  font-size: clamp(1.8rem, 3.5vw, 2.6rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--fg);
+  opacity: 0.85;
+  text-align: center;
+  margin: 0 0 48px;
+}
+
+:global(html[data-theme='dark']) .faqTitle {
+  opacity: 1;
+}
+
+.faqList {
+  display: flex;
+  flex-direction: column;
+}
+
+.faqItem {
+  border-bottom: 1px solid var(--line);
+}
+
+.faqQuestion {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  padding: 24px 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--fg);
+  text-align: left;
+  line-height: 1.5;
+  transition: color 0.15s ease;
+}
+
+.faqQuestion:hover {
+  color: var(--primary);
+}
+
+.faqNumber {
+  color: var(--primary);
+  font-size: 0.82rem;
+  font-weight: 600;
+  flex-shrink: 0;
+  min-width: 24px;
+}
+
+.faqQuestionText {
+  flex: 1;
+}
+
+.faqChevron {
+  flex-shrink: 0;
+  font-size: 1.1rem;
+  color: var(--fg-muted);
+  transition: color 0.15s ease;
+}
+
+.faqQuestion:hover .faqChevron {
+  color: var(--primary);
+}
+
+.faqAnswer {
+  font-size: 0.94rem;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0;
+  padding: 0 0 24px 40px;
+}
+
 /* ---- WAITLIST SECTION ---- */
 
 .waitlistWrapper {
-  background: var(--section-bg);
+  background: var(--bg);
   transition: background 0.3s ease;
 }
 
@@ -1049,11 +1139,13 @@
     grid-template-columns: 1fr;
     padding: 64px 32px 52px;
     gap: 24px;
+    margin-top: -80px;
     min-height: auto;
   }
 
   .heroLeft {
     gap: 22px;
+    padding-top: 0;
   }
 
   .heroRight {
@@ -1087,6 +1179,11 @@
     grid-template-columns: 1fr;
     padding: 60px 24px;
     gap: 36px;
+  }
+
+  .faqSection {
+    padding-left: 24px;
+    padding-right: 24px;
   }
 
   .byohLogos {

@@ -56,9 +56,10 @@ result = run_yaml("workflows/feature-dev.yaml")
 | `startFrom` | Skip to a step and reuse cached outputs |
 | `previousRunId` | Previous run whose cached outputs should be reused |
 
-## TypeScript Builder
+## Builder API
 
-```typescript
+<CodeGroup>
+```typescript TypeScript
 import { workflow } from '@agent-relay/sdk/workflows';
 
 const result = await workflow('ship-feature')
@@ -77,9 +78,7 @@ const result = await workflow('ship-feature')
   .run();
 ```
 
-## Python Builder
-
-```python
+```python Python
 from agent_relay import workflow
 
 result = (
@@ -92,6 +91,7 @@ result = (
     .run()
 )
 ```
+</CodeGroup>
 
 ### Common builder methods
 

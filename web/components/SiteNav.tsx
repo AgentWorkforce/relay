@@ -68,11 +68,6 @@ export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
       <div className={s.navRight}>
         <ul className={s.links}>
           <li>
-            <Link href="/primitives" className={s.link}>
-              Primitives
-            </Link>
-          </li>
-          <li>
             <Link href="/docs" className={s.link}>
               Docs
             </Link>
@@ -113,7 +108,6 @@ export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
     {/* Mobile menu dropdown */}
     {menuOpen && (
       <div className={s.mobileMenu}>
-        <Link href="/primitives" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Primitives</Link>
         <Link href="/docs" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Docs</Link>
         <Link href="/blog" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Blog</Link>
         <a href="https://github.com/agentworkforce/relay" target="_blank" rel="noopener noreferrer" className={s.mobileLink} onClick={() => setMenuOpen(false)}>GitHub</a>

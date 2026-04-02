@@ -245,7 +245,7 @@
   letter-spacing: 0.01em;
   padding: 12px 28px;
   background: var(--btn-bg);
-  color: #fff;
+  color: var(--primary-fg);
   border-radius: 100px;
   text-decoration: none;
   box-shadow: 0 2px 12px color-mix(in srgb, var(--btn-bg) 25%, transparent);

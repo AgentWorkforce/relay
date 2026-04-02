@@ -43,6 +43,42 @@
             "reasoning": "The previous change only increased inner hero padding. Reducing the negative hero-section offset adds actual separation between the nav and the hero block so the top whitespace reads closer to the hero's bottom spacing."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1775050453431,
+          "type": "decision",
+          "content": "Reduced homepage hero overlap slightly further: Reduced homepage hero overlap slightly further",
+          "raw": {
+            "question": "Reduced homepage hero overlap slightly further",
+            "chosen": "Reduced homepage hero overlap slightly further",
+            "alternatives": [],
+            "reasoning": "A small follow-up change tightens the visual balance between the nav gap and the bottom of the hero without reworking the hero internals."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775050696197,
+          "type": "decision",
+          "content": "Removed the homepage text column's top offset on mobile: Removed the homepage text column's top offset on mobile",
+          "raw": {
+            "question": "Removed the homepage text column's top offset on mobile",
+            "chosen": "Removed the homepage text column's top offset on mobile",
+            "alternatives": [],
+            "reasoning": "The desktop hero uses extra top offset to balance the two-column layout, but once the hero collapses to one column that offset creates unnecessary empty space above the headline."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775050884234,
+          "type": "decision",
+          "content": "Made the shared dark secondary CTA surface opaque: Made the shared dark secondary CTA surface opaque",
+          "raw": {
+            "question": "Made the shared dark secondary CTA surface opaque",
+            "chosen": "Made the shared dark secondary CTA surface opaque",
+            "alternatives": [],
+            "reasoning": "Secondary buttons already use a solid background in light theme. Switching the dark theme token from rgba to a solid surface fixes the see-through effect across all matching CTAs without duplicating button-specific overrides."
+          },
+          "significance": "high"
         }
       ]
     }

@@ -8,6 +8,7 @@ import remarkGfm from 'remark-gfm';
 
 import { Card } from '../../../components/docs/Card';
 import { CardGroup } from '../../../components/docs/CardGroup';
+import { BannerLink } from '../../../components/docs/BannerLink';
 import { CodeGroup } from '../../../components/docs/CodeGroup';
 import { DocsPageActions } from '../../../components/docs/DocsPageActions';
 import { HighlightedPre } from '../../../components/docs/HighlightedCode';
@@ -35,6 +36,7 @@ const components = {
   CodeGroup,
   Card,
   CardGroup,
+  BannerLink,
   Note,
   pre: HighlightedPre,
   h2: HeadingWithId(2),
@@ -97,9 +99,6 @@ export default async function DocsPage({ params }: PageProps) {
         <div className={styles.articleHeader}>
           <div className={styles.articleHeading}>
             <h1>{doc.frontmatter.title}</h1>
-            {doc.frontmatter.description && (
-              <p className={styles.articleDescription}>{doc.frontmatter.description}</p>
-            )}
           </div>
           <DocsPageActions
             title={doc.frontmatter.title}
@@ -108,15 +107,16 @@ export default async function DocsPage({ params }: PageProps) {
             markdownUrl={markdownUrl}
           />
         </div>
+        {doc.frontmatter.description && (
+          <p className={styles.articleDescription}>{doc.frontmatter.description}</p>
+        )}
         <div className={styles.articleBody}>
           <MDXContent components={components} />
         </div>
       </article>
-      {doc.toc.length > 0 && (
-        <aside className={styles.tocSidebar}>
-          <TableOfContents items={doc.toc} />
-        </aside>
-      )}
+      <aside className={styles.tocSidebar}>
+        <TableOfContents items={doc.toc} />
+      </aside>
     </div>
   );
 }

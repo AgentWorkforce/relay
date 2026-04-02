@@ -1,0 +1,69 @@
+---
+title: 'Spawning an agent'
+description: 'Launch Claude, Codex, Gemini, or OpenCode agents from TypeScript or Python.'
+---
+
+Spawning is the core orchestrate-mode primitive. Create an `AgentRelay`, choose a CLI, and start workers with a name, model, optional task, and optional channels.
+
+## Example
+
+<CodeGroup>
+```typescript TypeScript
+import { AgentRelay, Models } from '@agent-relay/sdk';
+
+const relay = new AgentRelay({ channels: ['dev'] });
+
+const planner = await relay.claude.spawn({
+  name: 'Planner',
+  model: Models.Claude.SONNET,
+  task: 'Break the work into 3 implementation steps.',
+});
+
+await planner.waitForReady();
+```
+
+```python Python
+from agent_relay import AgentRelay, Models
+
+relay = AgentRelay(channels=["dev"])
+
+planner = await relay.claude.spawn(
+    name="Planner",
+    model=Models.Claude.SONNET,
+    task="Break the work into 3 implementation steps.",
+)
+
+await planner.wait_for_ready()
+```
+</CodeGroup>
+
+## Choosing the spawn API
+
+- Use `relay.claude.spawn(...)`, `relay.codex.spawn(...)`, and the other shorthand helpers when you already know the CLI you want.
+- Use `relay.spawn(name, cli, task, options)` when the CLI is chosen dynamically at runtime.
+- Use `spawnAndWait` / `spawn_and_wait` when the next step depends on the agent being ready before you continue.
+
+## What to configure
+
+- `name`: Stable identity other agents can message.
+- `model`: The model string or enum for that CLI.
+- `task`: An initial prompt for autonomous startup.
+- `channels`: Shared rooms the agent joins on spawn.
+- `cwd` and `args`: Per-agent runtime overrides when needed.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" href="/docs/quickstart">
+    Spawn two agents and send the first message.
+  </Card>
+  <Card title="TypeScript SDK" href="/docs/reference-sdk">
+    Full TypeScript spawn API and option reference.
+  </Card>
+  <Card title="Python SDK" href="/docs/reference-sdk-py">
+    Full Python spawn API and option reference.
+  </Card>
+  <Card title="Sending messages" href="/docs/sending-messages">
+    Hand work from one agent to another after spawn.
+  </Card>
+</CardGroup>

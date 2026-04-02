@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { FadeIn } from '../components/FadeIn';
+import { FaqSection } from '../components/FaqSection';
 import { MessageRelayAnimation } from '../components/MessageRelayAnimation';
 import { SiteFooter } from '../components/SiteFooter';
 import { SiteNav } from '../components/SiteNav';
@@ -387,6 +388,9 @@ export default function HomePage() {
           </FadeIn>
         </section>
       </div>
+
+      {/* ---- FAQ SECTION ---- */}
+      <FaqSection />
 
       {/* ---- WAITLIST SECTION ---- */}
       <div className={s.waitlistWrapper}>

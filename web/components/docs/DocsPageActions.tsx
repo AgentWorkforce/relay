@@ -8,11 +8,9 @@ import {
   ChevronUp,
   Copy,
   ExternalLink,
-  FileText,
-  MessageSquare,
-  Search,
-  Sparkles,
+  Link2,
 } from 'lucide-react';
+import { SiClaude, SiOpenai } from 'react-icons/si';
 
 import styles from './docs.module.css';
 
@@ -25,7 +23,6 @@ type DocsPageActionsProps = {
 
 type ActionItem = {
   title: string;
-  description: string;
   href: string;
   icon: React.ComponentType<{ className?: string }>;
 };
@@ -73,7 +70,7 @@ async function copyToClipboard(text: string) {
 
 export function DocsPageActions({ title, pageUrl, markdownPath, markdownUrl }: DocsPageActionsProps) {
   const [open, setOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copiedAction, setCopiedAction] = useState<'markdown' | 'markdown-link' | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
 
@@ -101,13 +98,13 @@ export function DocsPageActions({ title, pageUrl, markdownPath, markdownUrl }: D
   }, [open]);
 
   useEffect(() => {
-    if (!copied) return;
+    if (!copiedAction) return;
 
-    const timeoutId = window.setTimeout(() => setCopied(false), 1800);
+    const timeoutId = window.setTimeout(() => setCopiedAction(null), 1800);
     return () => window.clearTimeout(timeoutId);
-  }, [copied]);
+  }, [copiedAction]);
 
-  async function handleCopy() {
+  async function handleCopyMarkdown() {
     try {
       const response = await fetch(markdownPath, {
         headers: { Accept: 'text/markdown' },
@@ -119,7 +116,7 @@ export function DocsPageActions({ title, pageUrl, markdownPath, markdownUrl }: D
 
       const markdown = (await response.text()).replace(/\r\n/g, '\n').trimEnd();
       await copyToClipboard(`${markdown}\n`);
-      setCopied(true);
+      setCopiedAction('markdown');
       setOpen(false);
     } catch {
       window.open(markdownPath, '_blank', 'noopener,noreferrer');
@@ -127,31 +124,28 @@ export function DocsPageActions({ title, pageUrl, markdownPath, markdownUrl }: D
     }
   }
 
+  async function handleCopyMarkdownLink() {
+    try {
+      await copyToClipboard(markdownUrl);
+      setCopiedAction('markdown-link');
+      setOpen(false);
+    } catch {
+      window.open(markdownUrl, '_blank', 'noopener,noreferrer');
+      setOpen(false);
+    }
+  }
+
   const prompt = encodeURIComponent(buildPrompt(title, pageUrl, markdownUrl));
   const actionItems: ActionItem[] = [
     {
-      title: 'View as Markdown',
-      description: 'View this page as plain text',
-      href: markdownPath,
-      icon: FileText,
-    },
-    {
       title: 'Open in ChatGPT',
-      description: 'Ask questions about this page',
       href: `https://chatgpt.com/?q=${prompt}`,
-      icon: MessageSquare,
+      icon: SiOpenai,
     },
     {
       title: 'Open in Claude',
-      description: 'Ask questions about this page',
       href: `https://claude.ai/new?q=${prompt}`,
-      icon: Sparkles,
-    },
-    {
-      title: 'Open in Perplexity',
-      description: 'Ask questions about this page',
-      href: `https://www.perplexity.ai/search?q=${prompt}`,
-      icon: Search,
+      icon: SiClaude,
     },
   ];
 
@@ -161,11 +155,11 @@ export function DocsPageActions({ title, pageUrl, markdownPath, markdownUrl }: D
         <button
           type="button"
           className={styles.pageActionPrimary}
-          onClick={handleCopy}
-          aria-label="Copy page text for pasting into an LLM"
+          onClick={handleCopyMarkdown}
+          aria-label="Copy markdown for this page"
         >
           <Copy className={styles.pageActionPrimaryIcon} />
-          <span>{copied ? 'Copied' : 'Copy page'}</span>
+          <span>{copiedAction === 'markdown' ? 'Copied' : 'Copy Markdown'}</span>
         </button>
         <button
           type="button"
@@ -185,15 +179,40 @@ export function DocsPageActions({ title, pageUrl, markdownPath, markdownUrl }: D
           <button
             type="button"
             className={styles.pageActionItem}
-            onClick={handleCopy}
+            onClick={handleCopyMarkdown}
             role="menuitem"
           >
             <span className={styles.pageActionIconFrame}>
-              {copied ? <Check className={styles.pageActionItemIcon} /> : <Copy className={styles.pageActionItemIcon} />}
+              {copiedAction === 'markdown' ? (
+                <Check className={styles.pageActionItemIcon} />
+              ) : (
+                <Copy className={styles.pageActionItemIcon} />
+              )}
             </span>
             <span className={styles.pageActionCopyBody}>
-              <span className={styles.pageActionItemTitle}>{copied ? 'Copied page' : 'Copy page'}</span>
-              <span className={styles.pageActionItemDescription}>Copy page text you can paste into an LLM</span>
+              <span className={styles.pageActionItemTitle}>
+                {copiedAction === 'markdown' ? 'Copied Markdown' : 'Copy Markdown'}
+              </span>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            className={styles.pageActionItem}
+            onClick={handleCopyMarkdownLink}
+            role="menuitem"
+          >
+            <span className={styles.pageActionIconFrame}>
+              {copiedAction === 'markdown-link' ? (
+                <Check className={styles.pageActionItemIcon} />
+              ) : (
+                <Link2 className={styles.pageActionItemIcon} />
+              )}
+            </span>
+            <span className={styles.pageActionCopyBody}>
+              <span className={styles.pageActionItemTitle}>
+                {copiedAction === 'markdown-link' ? 'Copied Markdown Link' : 'Copy link to Markdown'}
+              </span>
             </span>
           </button>
 
@@ -217,7 +236,6 @@ export function DocsPageActions({ title, pageUrl, markdownPath, markdownUrl }: D
                     {item.title}
                     <ExternalLink className={styles.pageActionExternal} />
                   </span>
-                  <span className={styles.pageActionItemDescription}>{item.description}</span>
                 </span>
               </a>
             );
