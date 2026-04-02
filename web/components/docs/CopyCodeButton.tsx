@@ -4,7 +4,7 @@ import { useState } from 'react';
 
 import s from './docs.module.css';
 
-export function CopyCodeButton({ code }: { code: string }) {
+export function CopyCodeButton({ code, inline = false }: { code: string; inline?: boolean }) {
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
@@ -14,7 +14,12 @@ export function CopyCodeButton({ code }: { code: string }) {
   }
 
   return (
-    <button className={s.copyBtn} onClick={handleCopy} aria-label="Copy code" title="Copy code">
+    <button
+      className={`${s.copyBtn} ${inline ? s.copyBtnInline : ''}`}
+      onClick={handleCopy}
+      aria-label="Copy code"
+      title="Copy code"
+    >
       {copied ? (
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="20 6 9 17 4 12" />

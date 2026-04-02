@@ -11,12 +11,13 @@
   font-size: 0.82rem;
   font-weight: 500;
   animation: throb 3s ease-in-out infinite;
-  transition: background 0.25s, color 0.25s;
+  transition: background 0.25s, border-color 0.25s, color 0.25s;
 }
 
 .badge:hover {
-  background: var(--surface-strong);
-  color: var(--nav-bg);
+  background: var(--nav-surface-hover);
+  border-color: var(--nav-border-strong);
+  color: var(--nav-link-hover);
   animation: none;
   transform: scale(1.04);
 }

@@ -1,0 +1,53 @@
+{
+  "id": "traj_g1yst5qetz91",
+  "version": 1,
+  "task": {
+    "title": "Rename SDK doc slugs to cleaner public paths"
+  },
+  "status": "completed",
+  "startedAt": "2026-04-02T13:00:35.740Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-04-02T13:00:49.323Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_88ipue4mfh3b",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-04-02T13:00:49.323Z",
+      "events": [
+        {
+          "ts": 1775134849324,
+          "type": "decision",
+          "content": "Renamed SDK docs to public slugs typescript-sdk and python-sdk, while preserving old reference URLs via rewrites: Renamed SDK docs to public slugs typescript-sdk and python-sdk, while preserving old reference URLs via rewrites",
+          "raw": {
+            "question": "Renamed SDK docs to public slugs typescript-sdk and python-sdk, while preserving old reference URLs via rewrites",
+            "chosen": "Renamed SDK docs to public slugs typescript-sdk and python-sdk, while preserving old reference URLs via rewrites",
+            "alternatives": [],
+            "reasoning": "Keeps the docs IA cleaner without breaking existing links or bookmarked routes."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-04-02T13:02:01.523Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "bcfd7dc9925af6a0140988eb7e6d2d5e285e6041",
+    "endRef": "bcfd7dc9925af6a0140988eb7e6d2d5e285e6041"
+  },
+  "completedAt": "2026-04-02T13:02:01.523Z",
+  "retrospective": {
+    "summary": "Renamed SDK docs to /docs/typescript-sdk and /docs/python-sdk, updated internal links, and kept compatibility rewrites from the old reference URLs.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "id": "traj_fo6yc6res1we",
+  "version": 1,
+  "task": {
+    "title": "Preserve highlighted code metadata token in HighlightedPre"
+  },
+  "status": "completed",
+  "startedAt": "2026-04-02T15:58:51.825Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-04-02T15:59:45.854Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_gb6x0qvxyvqa",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-04-02T15:59:45.854Z",
+      "events": [
+        {
+          "ts": 1775145585855,
+          "type": "decision",
+          "content": "Preserve encoded code-fence token on rendered code blocks and add normalized language metadata alongside it: Preserve encoded code-fence token on rendered code blocks and add normalized language metadata alongside it",
+          "raw": {
+            "question": "Preserve encoded code-fence token on rendered code blocks and add normalized language metadata alongside it",
+            "chosen": "Preserve encoded code-fence token on rendered code blocks and add normalized language metadata alongside it",
+            "alternatives": [],
+            "reasoning": "CodeGroup and other downstream consumers recover labels and filenames from the rendered code class token, so HighlightedPre must not replace that token when adding syntax-highlighting metadata."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-04-02T16:00:49.512Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "54857fcd46000d35b93c16e95f12ed4544fa5fb2",
+    "endRef": "54857fcd46000d35b93c16e95f12ed4544fa5fb2"
+  },
+  "completedAt": "2026-04-02T16:00:49.512Z",
+  "retrospective": {
+    "summary": "Preserved encoded docs code-fence metadata on HighlightedPre output while adding normalized language metadata and regression tests for mixed language classes.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  }
+}

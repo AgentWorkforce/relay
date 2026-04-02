@@ -1,10 +1,10 @@
-import { AgentRelayClient } from '@agent-relay/sdk';
+import { AgentRelayClient, type AgentRelayBrokerInitArgs } from '@agent-relay/sdk';
 
 export interface CreateAgentRelayClientOptions {
   cwd: string;
   channels?: string[];
   binaryPath?: string;
-  binaryArgs?: string[];
+  binaryArgs?: AgentRelayBrokerInitArgs;
   env?: NodeJS.ProcessEnv;
   preferConnect?: boolean;
 }

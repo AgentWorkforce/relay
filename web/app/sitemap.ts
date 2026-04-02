@@ -37,6 +37,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: 'weekly',
       priority: 0.8,
     },
+    {
+      url: absoluteUrl('/primitives'),
+      lastModified: now,
+      changeFrequency: 'weekly',
+      priority: 0.9,
+    },
   ];
 
   const docsRoutes: MetadataRoute.Sitemap = getAllDocSlugs().map((slug) => ({

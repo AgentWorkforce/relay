@@ -1,0 +1,25 @@
+{
+  "id": "traj_jnpn5j12er03",
+  "version": 1,
+  "task": {
+    "title": "Hide local-mode page from docs sidebar while keeping route active"
+  },
+  "status": "completed",
+  "startedAt": "2026-04-02T16:59:19.014Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "d1dd4cd4f8f0bcf7e2f9a0b2f32b9d8b7c68c0fc",
+    "endRef": "d1dd4cd4f8f0bcf7e2f9a0b2f32b9d8b7c68c0fc"
+  },
+  "completedAt": "2026-04-02T16:59:40.621Z",
+  "retrospective": {
+    "summary": "Removed local-mode from the docs sidebar and kept it as a hidden routable docs page.",
+    "approach": "Standard approach",
+    "confidence": 0.96
+  }
+}

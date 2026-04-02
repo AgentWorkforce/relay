@@ -25,8 +25,8 @@ See the [Python SDK](./packages/sdk-py) for full documentation.
 
 ## Documentation
 
-- **Web:** [docs.agent-relay.com](https://docs.agent-relay.com/)
-- **Markdown:** [docs/markdown/](docs/markdown/) — plain-text docs for LLMs and terminal use
+- **Web:** [agentrelay.dev/docs](https://agentrelay.dev/docs)
+- **Markdown:** [agentrelay.dev/docs/markdown](https://agentrelay.dev/docs/markdown) — plain-text docs for LLMs and terminal use
 
 ## Usage
 
@@ -107,9 +107,9 @@ Apache-2.0 — Copyright 2026 Agent Workforce Incorporated
 
 ---
 
-**Links:** [Documentation](https://docs.agent-relay.com/) · [Docs (Markdown)](https://github.com/AgentWorkforce/relay/tree/main/README.md) · [Issues](https://github.com/AgentWorkforce/relay/issues) · [Discord](https://discord.gg/6E6CTxM8um)
+**Links:** [Documentation](https://agentrelay.dev/docs) · [Docs (Markdown)](https://agentrelay.dev/docs/markdown.md) · [Issues](https://github.com/AgentWorkforce/relay/issues) · [Discord](https://discord.gg/6E6CTxM8um)
 
-> **Plain-text docs:** All documentation is available as Markdown directly in this repository. Browse the repo on GitHub for the raw `.md` files, or fetch from your terminal:
+> **Plain-text docs:** Every docs page is available as generated Markdown from the website, backed by the same MDX source as the rendered docs:
 > ```bash
-> curl https://raw.githubusercontent.com/AgentWorkforce/relay/main/README.md
+> curl https://agentrelay.dev/docs/markdown/introduction.md
 > ```

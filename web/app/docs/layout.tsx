@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 
+import { DocsLanguageProvider } from '../../components/docs/DocsLanguageContext';
 import { DocsNav } from '../../components/docs/DocsNav';
 import { DocsSearch } from '../../components/docs/DocsSearch';
 import { SiteFooter } from '../../components/SiteFooter';
@@ -11,15 +12,17 @@ const searchIndex = getSearchIndex();
 
 export default function DocsLayout({ children }: { children: ReactNode }) {
   return (
-    <div className={styles.docsPage}>
-      <SiteNav center={<DocsSearch index={searchIndex} />} />
-      <div className={styles.docsBody}>
-        <div className={styles.sidebarCol}>
-          <DocsNav />
+    <DocsLanguageProvider>
+      <div className={styles.docsPage}>
+        <SiteNav center={<DocsSearch index={searchIndex} />} />
+        <div className={styles.docsBody}>
+          <div className={styles.sidebarCol}>
+            <DocsNav />
+          </div>
+          <main className={styles.content}>{children}</main>
         </div>
-        <main className={styles.content}>{children}</main>
+        <SiteFooter />
       </div>
-      <SiteFooter />
-    </div>
+    </DocsLanguageProvider>
   );
 }

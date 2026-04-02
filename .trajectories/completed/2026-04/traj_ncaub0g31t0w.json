@@ -1,0 +1,53 @@
+{
+  "id": "traj_ncaub0g31t0w",
+  "version": 1,
+  "task": {
+    "title": "Fix code fence meta delimiter collision"
+  },
+  "status": "completed",
+  "startedAt": "2026-04-02T12:47:28.695Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-04-02T12:49:02.122Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_tqxrocf9nz2n",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-04-02T12:49:02.122Z",
+      "events": [
+        {
+          "ts": 1775134142123,
+          "type": "decision",
+          "content": "Use URLSearchParams for code fence metadata payloads: Use URLSearchParams for code fence metadata payloads",
+          "raw": {
+            "question": "Use URLSearchParams for code fence metadata payloads",
+            "chosen": "Use URLSearchParams for code fence metadata payloads",
+            "alternatives": [],
+            "reasoning": "Double underscores are not escaped by encodeURIComponent, so the old delimiter-based format could corrupt filenames or labels containing __. Querystring encoding removes delimiter collisions while preserving readable tokens, and the parser stays backward-compatible with legacy payloads."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-04-02T12:49:12.869Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "a4c21cb6f0e00f2bd2665730fff2f3b7b89f3dcc",
+    "endRef": "a4c21cb6f0e00f2bd2665730fff2f3b7b89f3dcc"
+  },
+  "completedAt": "2026-04-02T12:49:12.869Z",
+  "retrospective": {
+    "summary": "Fixed code fence metadata delimiter collisions",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  }
+}

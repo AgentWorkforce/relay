@@ -116,13 +116,13 @@
   text-decoration: none;
   padding-bottom: 4px;
   border-bottom: 2.5px solid transparent;
-  transition: opacity 0.2s, border-color 0.2s;
+  transition: color 0.2s, opacity 0.2s, border-color 0.2s;
   opacity: 1;
 }
 
 .link:hover {
   color: var(--nav-link-hover);
-  border-bottom-color: var(--nav-link-hover);
+  border-bottom-color: currentColor;
 }
 
 @media (max-width: 960px) {
@@ -241,7 +241,8 @@
 .dropdownMenu {
   position: absolute;
   top: 100%;
-  left: 0;
+  left: 50%;
+  transform: translateX(-50%);
   padding-top: 10px;
   z-index: 100;
   opacity: 0;
@@ -260,16 +261,19 @@
   display: block;
   padding: 10px 24px;
   font-family: var(--font-geist-sans), sans-serif;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: inherit;
   text-decoration: none;
+  text-align: center;
   white-space: nowrap;
   background: var(--nav-solid-bg);
   border: 1px solid var(--nav-border);
   border-top: none;
-  transition: background 0.15s, opacity 0.15s;
-  opacity: 0.85;
+  transition: background 0.15s;
+  opacity: 1;
 }
 
 .dropdownMenu a:first-child {
@@ -282,7 +286,7 @@
 }
 
 .dropdownItem:hover {
-  background: var(--nav-surface);
+  background: color-mix(in srgb, var(--nav-solid-bg) 88%, var(--primary) 12%);
   opacity: 1;
 }
 
@@ -313,14 +317,22 @@
 }
 
 .mobileProductItems {
-  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 0;
 }
 
 .mobileProductItems .mobileLink {
-  font-size: 0.95rem;
-  opacity: 0.75;
+  font-size: 1.0625rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: center;
+  opacity: 1;
+  background: color-mix(in srgb, var(--nav-solid-bg) 96%, var(--nav-fg) 4%);
 }
 
 .mobileProductItems .mobileLink:hover {
+  background: color-mix(in srgb, var(--nav-solid-bg) 88%, var(--primary) 12%);
   opacity: 1;
 }

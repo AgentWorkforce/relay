@@ -241,14 +241,14 @@
 .brandCtaPrimary {
   border: none !important;
   background: var(--btn-bg) !important;
-  color: #fff !important;
+  color: var(--primary-fg) !important;
   box-shadow: 0 2px 12px color-mix(in srgb, var(--btn-bg) 25%, transparent) !important;
 }
 
 .brandCtaPrimary:hover,
 .brandCtaPrimary[data-state='hover'] {
   background: var(--btn-hover) !important;
-  box-shadow: 0 4px 20px color-mix(in srgb, var(--btn-bg) 35%, transparent) !important;
+  box-shadow: 0 2px 12px color-mix(in srgb, var(--btn-bg) 25%, transparent) !important;
   transform: translateY(-1px);
 }
 
@@ -772,7 +772,7 @@
 .primaryButton {
   border: none;
   background: var(--btn-bg);
-  color: var(--nav-fg);
+  color: var(--primary-fg);
 }
 
 .secondaryButton {

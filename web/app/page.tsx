@@ -2,7 +2,8 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { FadeIn } from '../components/FadeIn';
-import { NodeRelayAnimation } from '../components/NodeRelayAnimation';
+import { FaqSection } from '../components/FaqSection';
+import { MessageRelayAnimation } from '../components/MessageRelayAnimation';
 import { SiteFooter } from '../components/SiteFooter';
 import { SiteNav } from '../components/SiteNav';
 import { WaitlistForm } from '../components/WaitlistForm';
@@ -122,7 +123,7 @@ export default function HomePage() {
           </div>
 
           <div className={s.heroRight}>
-            <NodeRelayAnimation />
+            <MessageRelayAnimation />
           </div>
         </section>
       </div>
@@ -246,7 +247,7 @@ export default function HomePage() {
       <div className={s.byohWrapper}>
         <section className={s.byohSection}>
           <FadeIn direction="up" className={s.byohText}>
-            <h2 className={s.byohTitle}>Bring your own harness</h2>
+            <h2 className={s.byohTitle}>Works with every AI tool</h2>
             <p className={s.byohSubtitle}>
               Agent Relay works with all CLI coding agents and their subscriptions.
               We aren&apos;t a harness&mdash;you can plug into Relay directly.
@@ -387,6 +388,9 @@ export default function HomePage() {
           </FadeIn>
         </section>
       </div>
+
+      {/* ---- FAQ SECTION ---- */}
+      <FaqSection />
 
       {/* ---- WAITLIST SECTION ---- */}
       <div className={s.waitlistWrapper}>
