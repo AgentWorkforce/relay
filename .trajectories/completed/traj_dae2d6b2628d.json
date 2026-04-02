@@ -1,5 +1,5 @@
 {
-  "id": "traj_1774639368603_646d2f85",
+  "id": "traj_dae2d6b2628d",
   "version": 1,
   "task": {
     "title": "autofix-swarm-Agentworkforce-relay-workflow",
@@ -8,48 +8,48 @@
       "id": "5fdf224138c9949eb1be8a50"
     }
   },
-  "status": "active",
+  "status": "abandoned",
   "startedAt": "2026-03-27T19:22:48.603Z",
   "agents": [
     {
       "name": "orchestrator",
-      "role": "workflow-runner",
+      "role": "lead",
       "joinedAt": "2026-03-27T19:22:48.603Z"
     },
     {
       "name": "lead",
-      "role": "specialist",
+      "role": "contributor",
       "joinedAt": "2026-03-27T19:22:52.447Z"
     },
     {
       "name": "fix-worker-1",
-      "role": "specialist",
+      "role": "contributor",
       "joinedAt": "2026-03-27T19:25:28.620Z"
     },
     {
       "name": "fix-worker-2",
-      "role": "specialist",
+      "role": "contributor",
       "joinedAt": "2026-03-27T19:25:30.621Z"
     },
     {
       "name": "fix-worker-3",
-      "role": "specialist",
+      "role": "contributor",
       "joinedAt": "2026-03-27T19:25:32.621Z"
     },
     {
       "name": "fix-worker-4",
-      "role": "specialist",
+      "role": "contributor",
       "joinedAt": "2026-03-27T19:25:34.621Z"
     },
     {
       "name": "verifier",
-      "role": "specialist",
+      "role": "contributor",
       "joinedAt": "2026-03-27T19:32:59.554Z"
     }
   ],
   "chapters": [
     {
-      "id": "ch_1c514ae7",
+      "id": "chap_60aff73e45bd",
       "title": "Planning",
       "agentName": "orchestrator",
       "startedAt": "2026-03-27T19:22:48.603Z",
@@ -68,7 +68,7 @@
       "endedAt": "2026-03-27T19:22:52.303Z"
     },
     {
-      "id": "ch_0ea427ca",
+      "id": "chap_aada6969c35b",
       "title": "Execution: init-msd-dir, read-context",
       "agentName": "orchestrator",
       "startedAt": "2026-03-27T19:22:52.304Z",
@@ -76,7 +76,7 @@
       "endedAt": "2026-03-27T19:22:52.427Z"
     },
     {
-      "id": "ch_c8eb70fe",
+      "id": "chap_b134d08a3538",
       "title": "Convergence: init-msd-dir + read-context",
       "agentName": "orchestrator",
       "startedAt": "2026-03-27T19:22:52.427Z",
@@ -98,7 +98,7 @@
       "endedAt": "2026-03-27T19:22:52.448Z"
     },
     {
-      "id": "ch_cdb00736",
+      "id": "chap_79dc1a2e5380",
       "title": "Execution: plan",
       "agentName": "lead",
       "startedAt": "2026-03-27T19:22:52.448Z",
@@ -113,7 +113,7 @@
         },
         {
           "ts": 1774639528542,
-          "type": "completion-marker",
+          "type": "note",
           "content": "\"plan\" marker-based completion — Legacy STEP_COMPLETE marker observed (6 signal(s), 1 relevant channel post(s), 3 file change(s); signals=plan, COMPLETE, >0q>4m<u▗ ▗   ▖ ▖  Claude Code v2.1.85, Verification passed without legacy STEP_COMPLETE marker, COMPLETE, **[plan] Output:**; channel=**[plan] Output:**\n```\ns/on/start.test.ts —               \nsrc/cli/commands/on/start.test.ts                                               \nRead .msd/autofix-fi; files=modified:.claude/settings.json, created:.claude/settings.local.json, modified:.msd/autofix-plan.json)",
           "significance": "medium",
           "raw": {
@@ -151,7 +151,7 @@
       "endedAt": "2026-03-27T19:25:28.618Z"
     },
     {
-      "id": "ch_0f2bff3f",
+      "id": "chap_c7bfae17f788",
       "title": "Execution: fix-worker-1-step, fix-worker-2-step, fix-worker-3-step, fix-worker-4-step",
       "agentName": "orchestrator",
       "startedAt": "2026-03-27T19:25:28.618Z",
@@ -159,7 +159,7 @@
       "endedAt": "2026-03-27T19:25:28.620Z"
     },
     {
-      "id": "ch_eea40392",
+      "id": "chap_afe6b7d49c04",
       "title": "Execution: fix-worker-1-step",
       "agentName": "fix-worker-1",
       "startedAt": "2026-03-27T19:25:28.620Z",
@@ -176,7 +176,7 @@
       "endedAt": "2026-03-27T19:25:30.622Z"
     },
     {
-      "id": "ch_51b27e69",
+      "id": "chap_7df77adfaa3a",
       "title": "Execution: fix-worker-2-step",
       "agentName": "fix-worker-2",
       "startedAt": "2026-03-27T19:25:30.622Z",
@@ -193,7 +193,7 @@
       "endedAt": "2026-03-27T19:25:32.621Z"
     },
     {
-      "id": "ch_9d075519",
+      "id": "chap_78213faf7d4e",
       "title": "Execution: fix-worker-3-step",
       "agentName": "fix-worker-3",
       "startedAt": "2026-03-27T19:25:32.621Z",
@@ -210,7 +210,7 @@
       "endedAt": "2026-03-27T19:25:34.622Z"
     },
     {
-      "id": "ch_92e682d0",
+      "id": "chap_21296f2c9f43",
       "title": "Execution: fix-worker-4-step",
       "agentName": "fix-worker-4",
       "startedAt": "2026-03-27T19:25:34.622Z",
@@ -225,7 +225,7 @@
         },
         {
           "ts": 1774639607950,
-          "type": "completion-evidence",
+          "type": "note",
           "content": "\"fix-worker-2-step\" verification-based completion — Verification passed (3 signal(s), 6 file change(s), exit=0; signals=0, All fixes applied and verified. Here is the summary:, Verification passed; files=modified:.claude/settings.json, modified:scripts/postinstall.js, modified:src/cli/commands/on/dotfiles.ts, modified:src/cli/commands/on/prereqs.ts, modified:src/cli/commands/on/provision.ts, modified:src/cli/commands/on/services.ts; exit=0)",
           "significance": "medium",
           "raw": {
@@ -259,7 +259,7 @@
         },
         {
           "ts": 1774639678745,
-          "type": "completion-evidence",
+          "type": "note",
           "content": "\"fix-worker-4-step\" verification-based completion — Verification passed (3 signal(s), 6 file change(s), exit=0; signals=0, All fixes verified. Here's the complete summary:, Verification passed; files=modified:.claude/settings.json, created:packages/sdk/bin/agent-relay-broker, modified:packages/sdk/src/relay.ts, modified:scripts/postinstall.js, modified:src/cli/commands/on/dotfiles.ts, modified:src/cli/commands/on/prereqs.ts; exit=0)",
           "significance": "medium",
           "raw": {
@@ -293,7 +293,7 @@
         },
         {
           "ts": 1774639715616,
-          "type": "completion-evidence",
+          "type": "note",
           "content": "\"fix-worker-3-step\" verification-based completion — Verification passed (4 signal(s), 1 relevant channel post(s), 6 file change(s), exit=0; signals=0, All changes are clean and correct. Here's my summary:, Verification passed, **[fix-worker-3-step] Output:**; channel=**[fix-worker-3-step] Output:**\n```\nAll changes are clean and correct. Here's my summary:\n## fix-worker-3 — Group 3: services, dotfiles, token, and prereqs fixe; files=modified:.claude/settings.json, created:packages/sdk/bin/agent-relay-broker, modified:packages/sdk/src/relay.ts, modified:scripts/postinstall.js, modified:src/cli/commands/on/dotfiles.ts, modified:src/cli/commands/on/prereqs.ts; exit=0)",
           "significance": "medium",
           "raw": {
@@ -331,7 +331,7 @@
         },
         {
           "ts": 1774639978945,
-          "type": "completion-evidence",
+          "type": "note",
           "content": "\"fix-worker-1-step\" verification-based completion — Verification passed (3 signal(s), 6 file change(s), exit=0; signals=0, All changes compile cleanly. Here's the complete summary:, Verification passed; files=modified:.claude/settings.json, created:packages/sdk/bin/agent-relay-broker, modified:packages/sdk/src/relay.ts, modified:scripts/postinstall.js, modified:src/cli/commands/on/dotfiles.ts, modified:src/cli/commands/on/prereqs.ts; exit=0)",
           "significance": "medium",
           "raw": {
@@ -367,7 +367,7 @@
       "endedAt": "2026-03-27T19:32:58.949Z"
     },
     {
-      "id": "ch_9f547d91",
+      "id": "chap_a14fdfb2db11",
       "title": "Convergence: fix-worker-1-step + fix-worker-2-step + fix-worker-3-step + fix-worker-4-step",
       "agentName": "orchestrator",
       "startedAt": "2026-03-27T19:32:58.949Z",
@@ -391,7 +391,7 @@
       "endedAt": "2026-03-27T19:32:59.554Z"
     },
     {
-      "id": "ch_a32b9d3a",
+      "id": "chap_d7bdd9652f72",
       "title": "Execution: verify-and-finalize",
       "agentName": "verifier",
       "startedAt": "2026-03-27T19:32:59.554Z",
@@ -404,7 +404,21 @@
             "agent": "verifier"
           }
         }
-      ]
+      ],
+      "endedAt": "2026-04-02T12:06:35.784Z"
     }
-  ]
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "completedAt": "2026-04-02T12:06:35.784Z",
+  "retrospective": {
+    "summary": "Legacy workflow-runner trajectory was auto-abandoned after being left active during schema migration.",
+    "approach": "dag workflow (6 agents)",
+    "confidence": 0,
+    "challenges": [
+      "Workflow runner left the trajectory active without a completion record."
+    ]
+  }
 }

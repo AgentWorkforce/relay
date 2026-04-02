@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-01T13:41:24.235Z",
+  "lastUpdated": "2026-04-02T12:14:44.033Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -936,9 +936,10 @@
     },
     "traj_jn7q75ckw8cs": {
       "title": "Review PR #651 for performance issues",
-      "status": "active",
+      "status": "abandoned",
       "startedAt": "2026-03-27T14:01:12.512Z",
-      "path": "/Users/will/Projects/relay/.trajectories/active/traj_jn7q75ckw8cs.json"
+      "completedAt": "2026-04-02T12:14:44.020Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_jn7q75ckw8cs.json"
     }
   }
 }
