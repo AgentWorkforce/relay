@@ -25,6 +25,9 @@ describe('SpawnOptionsTable', () => {
     expect(screen.getByText('onStderr')).toBeInTheDocument();
     expect(screen.getByText('startupTimeoutMs')).toBeInTheDocument();
     expect(screen.getByText('requestTimeoutMs')).toBeInTheDocument();
+    expect(
+      screen.getByText('Extra args passed to `broker init` (for example `{ persist: true }`).')
+    ).toBeInTheDocument();
     expect(screen.queryByText('binary_path')).not.toBeInTheDocument();
   });
 
@@ -79,6 +82,9 @@ describe('SpawnOptionsTable', () => {
     expect(screen.getByText('on_stderr')).toBeInTheDocument();
     expect(screen.getByText('startup_timeout_ms')).toBeInTheDocument();
     expect(screen.getByText('request_timeout_ms')).toBeInTheDocument();
+    expect(
+      screen.getByText('Extra args passed to `broker init` (for example `["--persist"]`).')
+    ).toBeInTheDocument();
     expect(screen.queryByText('binaryPath')).not.toBeInTheDocument();
   });
 });

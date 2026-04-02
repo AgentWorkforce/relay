@@ -13,7 +13,7 @@ describe('docs markdown export for spawn options', () => {
       '| `binaryPath` | Path to the agent-relay-broker binary. Auto-resolved if omitted. |'
     );
     expect(doc?.markdown).toContain(
-      '| `binaryArgs` | Extra args passed to `broker init` (for example `["--persist"]`). |'
+      '| `binaryArgs` | Extra args passed to `broker init` (for example `{ persist: true }`). |'
     );
     expect(doc?.markdown).toContain(
       '| `startupTimeoutMs` | Timeout in ms to wait for the broker to become ready. Defaults to `15000`. |'

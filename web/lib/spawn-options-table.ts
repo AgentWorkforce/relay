@@ -1,10 +1,11 @@
 export type SpawnOptionsTableVariant = 'relay-startup' | 'common' | 'advanced';
 export type SpawnOptionsLanguage = 'typescript' | 'python';
+type SpawnOptionDescription = string | Partial<Record<SpawnOptionsLanguage, string>>;
 
 export type SpawnOptionRow = {
   typescript?: string[];
   python?: string[];
-  description: string;
+  description: SpawnOptionDescription;
 };
 
 const RELAY_STARTUP_ROWS: SpawnOptionRow[] = [
@@ -16,7 +17,10 @@ const RELAY_STARTUP_ROWS: SpawnOptionRow[] = [
   {
     typescript: ['binaryArgs'],
     python: ['binary_args'],
-    description: 'Extra args passed to `broker init` (for example `["--persist"]`).',
+    description: {
+      typescript: 'Extra args passed to `broker init` (for example `{ persist: true }`).',
+      python: 'Extra args passed to `broker init` (for example `["--persist"]`).',
+    },
   },
   {
     typescript: ['brokerName'],
@@ -125,4 +129,15 @@ export function getSpawnOptionName(
   language: SpawnOptionsLanguage
 ): string[] {
   return (language === 'python' ? row.python : row.typescript) ?? [];
+}
+
+export function getSpawnOptionDescription(
+  row: SpawnOptionRow,
+  language: SpawnOptionsLanguage
+): string {
+  if (typeof row.description === 'string') {
+    return row.description;
+  }
+
+  return row.description[language] ?? row.description.typescript ?? row.description.python ?? '';
 }

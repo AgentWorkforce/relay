@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import matter from 'gray-matter';
 
 import {
+  getSpawnOptionDescription,
   getSpawnOptionName,
   getSpawnOptionRows,
   type SpawnOptionsTableVariant,
@@ -108,8 +109,9 @@ function renderSpawnOptionsTable(attrs: string): string {
       const option = getSpawnOptionName(row, 'typescript')
         .map((name) => `\`${name}\``)
         .join(', ');
+      const description = getSpawnOptionDescription(row, 'typescript');
 
-      return `| ${option} | ${row.description} |`;
+      return `| ${option} | ${description} |`;
     }),
   ];
 

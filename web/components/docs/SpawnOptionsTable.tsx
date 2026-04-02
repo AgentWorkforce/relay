@@ -3,6 +3,7 @@
 import React, { Fragment } from 'react';
 
 import {
+  getSpawnOptionDescription,
   getSpawnOptionName,
   getSpawnOptionRows,
   type SpawnOptionsTableVariant,
@@ -28,6 +29,7 @@ export function SpawnOptionsTable({ variant }: SpawnOptionsTableProps) {
       <tbody>
         {rows.map((row) => {
           const optionNames = getSpawnOptionName(row, language);
+          const description = getSpawnOptionDescription(row, language);
           return (
             <tr key={`${variant}:${optionNames.join(',')}`}>
               <td>
@@ -38,7 +40,7 @@ export function SpawnOptionsTable({ variant }: SpawnOptionsTableProps) {
                   </Fragment>
                 ))}
               </td>
-              <td>{row.description}</td>
+              <td>{description}</td>
             </tr>
           );
         })}
