@@ -1,6 +1,7 @@
 'use client';
 
 import type { ComponentType, SVGProps } from 'react';
+import { useEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 import {
   Activity,
@@ -69,9 +70,51 @@ const navIcons: Record<string, NavIcon> = {
 
 export function DocsNav() {
   const pathname = usePathname();
+  const navRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const nav = navRef.current;
+    const container = nav?.parentElement;
+    const docsBody = container?.parentElement;
+
+    if (!nav || !container || !docsBody) return;
+
+    const restingTop = docsBody.getBoundingClientRect().top;
+
+    const syncWheel = (event: WheelEvent) => {
+      if (event.deltaY === 0) return;
+
+      const target = event.target;
+      if (target instanceof Node && container.contains(target)) {
+        return;
+      }
+
+      const scrollMax = container.scrollHeight - container.clientHeight;
+      if (scrollMax <= 0) return;
+
+      const docsBodyRect = docsBody.getBoundingClientRect();
+      const atBoundary =
+        event.deltaY > 0
+          ? docsBodyRect.bottom <= window.innerHeight + 1
+          : docsBodyRect.top >= restingTop - 1;
+
+      if (!atBoundary) return;
+
+      const nextScrollTop = Math.max(0, Math.min(scrollMax, container.scrollTop + event.deltaY));
+      if (Math.abs(nextScrollTop - container.scrollTop) < 0.5) return;
+
+      container.scrollTop = nextScrollTop;
+    };
+
+    window.addEventListener('wheel', syncWheel, { passive: true });
+
+    return () => {
+      window.removeEventListener('wheel', syncWheel);
+    };
+  }, []);
 
   return (
-    <nav className={styles.sidebar} aria-label="Documentation">
+    <nav ref={navRef} className={styles.sidebar} aria-label="Documentation">
       {docsNav.map((group) => (
         <div key={group.title} className={styles.navGroup}>
           <h4 className={styles.navGroupTitle}>{group.title}</h4>
