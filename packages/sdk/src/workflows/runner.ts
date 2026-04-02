@@ -249,7 +249,7 @@ export interface WorkflowRunnerOptions {
   relay?: AgentRelayOptions;
   cwd?: string;
   summaryDir?: string;
-  executor?: StepExecutor;
+  executor?: RunnerStepExecutor;
   envSecrets?: Record<string, string>;
 }
 
@@ -260,7 +260,7 @@ export interface WorkflowRunnerOptions {
  * (e.g. Daytona sandboxes) while keeping the runner's DAG/retry/verification
  * machinery intact.
  */
-export interface StepExecutor {
+export interface RunnerStepExecutor {
   executeAgentStep(
     step: WorkflowStep,
     agentDef: AgentDefinition,
@@ -367,7 +367,7 @@ export class WorkflowRunner {
   private readonly relayOptions: AgentRelayOptions;
   private readonly cwd: string;
   private readonly summaryDir: string;
-  private readonly executor?: StepExecutor;
+  private readonly executor?: RunnerStepExecutor;
   private readonly envSecrets?: Record<string, string>;
   private readonly templateResolver: TemplateResolver;
   private readonly channelMessenger: ChannelMessenger;
