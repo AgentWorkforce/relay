@@ -1,6 +1,6 @@
 'use client';
 
-import type { ComponentType, SVGProps } from 'react';
+import type { ComponentType } from 'react';
 import { useEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 import {
@@ -33,7 +33,7 @@ import { SiClaude, SiPython, SiTypescript } from 'react-icons/si';
 import { docsNav } from '../../lib/docs-nav';
 import styles from './docs.module.css';
 
-type NavIcon = ComponentType<SVGProps<SVGSVGElement>>;
+type NavIcon = ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' | 'false' }>;
 
 const navIcons: Record<string, NavIcon> = {
   introduction: Compass,
