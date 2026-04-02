@@ -142,7 +142,87 @@
       "sourceFormat": "claude",
       "sourceSubtype": "skill",
       "installedPath": ".agents/skills/creating-agent-skills-skill/SKILL.md"
+    },
+    "@agent-relay/choosing-swarm-patterns#claude": {
+      "version": "1.0.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fchoosing-swarm-patterns/1.0.0.tar.gz",
+      "integrity": "sha256-2b28661abb540c56b46ad980b238589c6dcf59faaa3e66c80c72f72c01407f38",
+      "format": "claude",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".claude/skills/choosing-swarm-patterns/SKILL.md"
+    },
+    "@agent-relay/writing-agent-relay-workflows#claude": {
+      "version": "1.2.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fwriting-agent-relay-workflows/1.2.0.tar.gz",
+      "integrity": "sha256-426e8353842261c32a93fad228cb6aab6c27a66923e21585e51d6f497511095b",
+      "format": "claude",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".claude/skills/writing-agent-relay-workflows/SKILL.md"
+    },
+    "@agent-relay/running-headless-orchestrator#claude": {
+      "version": "1.0.1",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Frunning-headless-orchestrator/1.0.1.tar.gz",
+      "integrity": "sha256-afb7cdb67ffb22a648de756cffcac881126ec5d0bad77a524345cf083bd0d6d2",
+      "format": "claude",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".claude/skills/running-headless-orchestrator/SKILL.md"
+    },
+    "@agent-relay/using-agent-relay#claude": {
+      "version": "1.2.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fusing-agent-relay/1.2.0.tar.gz",
+      "integrity": "sha256-bb68bcd7bf1af535b9e435033ba7e8efccc29210aad53111a0f84838a95667f8",
+      "format": "claude",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".claude/skills/using-agent-relay/SKILL.md"
+    },
+    "@agent-relay/choosing-swarm-patterns#codex": {
+      "version": "1.0.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fchoosing-swarm-patterns/1.0.0.tar.gz",
+      "integrity": "sha256-2b28661abb540c56b46ad980b238589c6dcf59faaa3e66c80c72f72c01407f38",
+      "format": "codex",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".agents/skills/choosing-swarm-patterns/SKILL.md"
+    },
+    "@agent-relay/writing-agent-relay-workflows#codex": {
+      "version": "1.2.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fwriting-agent-relay-workflows/1.2.0.tar.gz",
+      "integrity": "sha256-426e8353842261c32a93fad228cb6aab6c27a66923e21585e51d6f497511095b",
+      "format": "codex",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".agents/skills/writing-agent-relay-workflows/SKILL.md"
+    },
+    "@agent-relay/using-agent-relay#codex": {
+      "version": "1.2.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fusing-agent-relay/1.2.0.tar.gz",
+      "integrity": "sha256-bb68bcd7bf1af535b9e435033ba7e8efccc29210aad53111a0f84838a95667f8",
+      "format": "codex",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".agents/skills/using-agent-relay/SKILL.md"
+    },
+    "@agent-relay/running-headless-orchestrator#codex": {
+      "version": "1.0.1",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Frunning-headless-orchestrator/1.0.1.tar.gz",
+      "integrity": "sha256-afb7cdb67ffb22a648de756cffcac881126ec5d0bad77a524345cf083bd0d6d2",
+      "format": "codex",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".agents/skills/running-headless-orchestrator/SKILL.md"
     }
   },
-  "generated": "2026-03-13T09:55:30.873Z"
+  "generated": "2026-03-31T10:30:25.962Z"
 }

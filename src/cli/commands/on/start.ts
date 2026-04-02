@@ -15,8 +15,11 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { compileDotfiles, hasDotfiles } from './dotfiles.js';
+import { ensureRelayfileMountBinary } from './relayfile-binary.js';
 import { mintToken } from './token.js';
-import { seedWorkspace as seedWorkspaceFiles } from './workspace.js';
+import { seedWorkspace as seedWorkspaceFiles, seedAclRules } from './workspace.js';
+import { ensureAuthenticated } from '@agent-relay/cloud';
 
 interface OnOptions {
   agent?: string;
@@ -272,12 +275,21 @@ async function postWorkspaceApi(
   url: string,
   body: Record<string, unknown>
 ): Promise<unknown> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Correlation-Id': `agent-relay-on-${Date.now()}`,
+  };
+
+  // Attach cloud auth token for remote endpoints
+  if (!isLocalBaseUrl(url)) {
+    const parsed = new URL(url);
+    const auth = await ensureAuthenticated(`${parsed.protocol}//${parsed.host}`);
+    headers['Authorization'] = `Bearer ${auth.accessToken}`;
+  }
+
   const response = await fetchFn(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Correlation-Id': `agent-relay-on-${Date.now()}`,
-    },
+    headers,
     body: JSON.stringify(body),
   });
 
@@ -654,21 +666,6 @@ function resolveConfig(projectDir: string, relayDir: string, requestedAgent?: st
 
   const generatedPath = path.join(relayDir, 'generated', 'relay-zero-config.json');
   return writeGeneratedZeroConfig(generatedPath, projectDir, requestedAgent);
-}
-
-function resolveRelayfileRoot(projectDir: string): string {
-  const candidates = [
-    process.env.RELAYFILE_ROOT,
-    path.resolve(projectDir, '..', 'relayfile'),
-    path.resolve(projectDir, '..', '..', 'relayfile'),
-    path.resolve(process.cwd(), '..', 'relayfile'),
-  ].filter((value): value is string => !!value);
-
-  for (const candidate of candidates) {
-    const mountBin = path.join(candidate, 'bin', 'relayfile-mount');
-    if (existsSync(mountBin)) return candidate;
-  }
-  return candidates[0] ?? path.resolve(projectDir, 'relayfile');
 }
 
 function isCommandAvailable(command: string): boolean {
@@ -1186,8 +1183,9 @@ export async function goOnTheRelay(
   const agent = findAgentConfig(config, defaultAgentName);
   const authBase = normalizeBaseUrl(options.portAuth);
   const fileBase = normalizeBaseUrl(options.portFile);
-  const relayfileRoot = resolveRelayfileRoot(projectDir);
-  const mountBin = path.join(relayfileRoot, 'bin', 'relayfile-mount');
+  const mountBin = process.env.RELAYFILE_ROOT
+    ? path.join(process.env.RELAYFILE_ROOT, 'bin', 'relayfile-mount')
+    : await ensureRelayfileMountBinary();
 
   if (!existsSync(mountBin)) {
     throw new Error(`missing relayfile mount binary: ${mountBin}`);
@@ -1208,14 +1206,47 @@ export async function goOnTheRelay(
     fetchFn: deps.fetch,
   });
 
+  // Compile dotfile permissions for this agent
+  const hasDots = hasDotfiles(projectDir);
+  const dotfileAcl = hasDots
+    ? compileDotfiles(projectDir, agent.name, workspaceSession.workspaceId)
+    : null;
+
   if (workspaceSession.created) {
+    const seedExcludes = [...DEFAULT_SEED_EXCLUDES];
+    if (dotfileAcl) {
+      // Add ignored patterns so ignored files are never uploaded
+      for (const [dir, rules] of Object.entries(dotfileAcl.acl)) {
+        if (rules.some(r => r.startsWith('deny:agent:'))) {
+          seedExcludes.push(dir.replace(/^\//, ''));
+        }
+      }
+    }
     await seedWorkspaceFiles(
       workspaceSession.relayfileUrl,
       workspaceSession.token,
       workspaceSession.workspaceId,
       projectDir,
-      DEFAULT_SEED_EXCLUDES
+      seedExcludes
     );
+
+    if (dotfileAcl && Object.keys(dotfileAcl.acl).length > 0) {
+      await seedAclRules(
+        workspaceSession.relayfileUrl,
+        workspaceSession.token,
+        workspaceSession.workspaceId,
+        dotfileAcl.acl
+      );
+
+      // Write compiled ACL for mount to read
+      const bundlePath = path.join(relayDir, 'compiled-acl.json');
+      writeFileSync(bundlePath, JSON.stringify({
+        workspace: workspaceSession.workspaceId,
+        acl: dotfileAcl.acl,
+        summary: dotfileAcl.summary,
+        agents: [{ name: agent.name, summary: dotfileAcl.summary }],
+      }, null, 2) + '\n', { encoding: 'utf8' });
+    }
   }
 
   const mountDir = path.join(
