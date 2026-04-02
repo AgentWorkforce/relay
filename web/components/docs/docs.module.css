@@ -10,6 +10,8 @@
 }
 
 .docsBody {
+  --docs-rail-top-padding: 1.5rem;
+  --docs-content-top-padding: 2.75rem;
   display: grid;
   grid-template-columns: 260px 1fr;
   max-width: 1280px;
@@ -22,7 +24,7 @@
   top: 88px;
   height: calc(100vh - 88px);
   overflow-y: auto;
-  padding: 1.5rem 1.25rem 2rem;
+  padding: var(--docs-rail-top-padding) 1.25rem 2rem;
   border-right: 1px solid var(--line);
 }
 
@@ -34,7 +36,7 @@
 
 .content {
   min-width: 0;
-  padding: 2.75rem 3rem 5rem;
+  padding: var(--docs-content-top-padding) 3rem 5rem;
 }
 
 /* ── Article + TOC wrapper ── */
@@ -53,12 +55,12 @@
   align-self: start;
   height: fit-content;
   min-width: 0;
+  margin-top: calc(var(--docs-rail-top-padding) - var(--docs-content-top-padding));
 }
 
 .toc {
   max-height: calc(100vh - 100px);
   overflow-y: auto;
-  padding-top: 0.5rem;
 }
 
 .tocControl {
@@ -107,7 +109,7 @@
 }
 
 .tocNav {
-  margin-top: 0.85rem;
+  margin-top: 1.3rem;
 }
 
 .tocTitle {

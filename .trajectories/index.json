@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-02T16:59:40.771Z",
+  "lastUpdated": "2026-04-02T17:13:41.753Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -1024,6 +1024,20 @@
       "startedAt": "2026-04-02T16:59:19.014Z",
       "completedAt": "2026-04-02T16:59:40.621Z",
       "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_jnpn5j12er03.json"
+    },
+    "traj_i55qaqvfj319": {
+      "title": "Align docs right sidebar language block with left sidebar section heading",
+      "status": "completed",
+      "startedAt": "2026-04-02T17:03:06.614Z",
+      "completedAt": "2026-04-02T17:05:19.300Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_i55qaqvfj319.json"
+    },
+    "traj_oy2t01rlaevs": {
+      "title": "Fix ScheduleContent code highlighter nesting bug from chained replace calls",
+      "status": "completed",
+      "startedAt": "2026-04-02T17:10:08.640Z",
+      "completedAt": "2026-04-02T17:13:41.569Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_oy2t01rlaevs.json"
     }
   }
 }

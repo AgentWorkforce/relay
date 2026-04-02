@@ -26,7 +26,7 @@ const faqs = [
   },
   {
     q: "Why can't I just vibe code this myself?",
-    a: "You absolutely can. But once you get past the demo, you'll hit the hard parts. Agents stop sending each other messages, flake out on work mid-task, lose track of who's doing what. We've spent months solving exactly those problems so you don't have to.",
+    a: "You absolutely can. But once you get past the demo, you'll hit the hard parts. Agents stop sending each other messages, flake out on work mid-task, lose track of who's doing what. We've spent many iterations solving exactly those problems so you don't have to.",
   },
 ];
 
