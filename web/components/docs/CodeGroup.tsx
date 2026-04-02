@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ReactNode, type ReactElement, Children, isValidElement } from 'react';
 
+import { extractCodeFenceToken, humanizeCodeFenceLanguage, parseCodeFenceMetaToken } from '../../lib/code-fence-meta';
 import { normalizeDocsLanguageLabel, useDocsLanguage } from './DocsLanguageContext';
 import styles from './docs.module.css';
 
@@ -34,9 +35,13 @@ function getLabel(block: ReactElement, index: number): string {
   }
   const code = findCodeElement(block);
   if (!code) return `Tab ${index + 1}`;
-  const className = code.props.className || '';
-  const match = className.match(/language-(\S+)/);
-  return match ? match[1] : `Tab ${index + 1}`;
+  const token = extractCodeFenceToken(code.props.className || '');
+  if (!token) {
+    return `Tab ${index + 1}`;
+  }
+
+  const meta = parseCodeFenceMetaToken(token);
+  return meta.label ?? humanizeCodeFenceLanguage(meta.language);
 }
 
 export function CodeGroup({ children }: CodeGroupProps) {

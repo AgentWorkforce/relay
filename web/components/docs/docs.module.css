@@ -420,8 +420,68 @@
   margin: 1rem 0;
 }
 
+.codeWrapperWithHeader {
+  overflow: hidden;
+  border-radius: 0.75rem;
+}
+
 .codeWrapper pre {
   margin: 0;
+}
+
+.codeWrapperWithHeader pre {
+  border-top: none;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.codeBlockHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem;
+  padding: 0.38rem 0.65rem;
+  border: 1px solid var(--line);
+  border-bottom: none;
+  border-radius: 0.75rem 0.75rem 0 0;
+  background: color-mix(in srgb, var(--surface-strong) 38%, var(--code-bg));
+}
+
+.codeBlockHeaderMeta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.codeBlockBadge {
+  width: 1.4rem;
+  height: 1.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 0.28rem;
+  background: color-mix(in srgb, var(--bg) 22%, var(--surface-strong));
+  color: var(--fg-muted);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.codeBlockBadgeIcon {
+  width: 0.82rem;
+  height: 0.82rem;
+}
+
+.codeBlockFilename {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: 0.84rem;
+  font-weight: 600;
 }
 
 .copyBtn {
@@ -443,9 +503,26 @@
   transition: opacity 0.15s, color 0.15s, background 0.15s;
 }
 
+.copyBtnInline {
+  position: static;
+  top: auto;
+  right: auto;
+  z-index: auto;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-color: transparent;
+  background: transparent;
+}
+
 .copyBtn:hover {
   color: var(--primary);
   background: var(--bg);
+}
+
+.copyBtnInline:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--surface) 65%, transparent);
 }
 
 .article pre {
@@ -506,6 +583,16 @@
 
 .codeGroupPanel .codeWrapper {
   margin: 0;
+}
+
+.codeGroupPanel .codeWrapperWithHeader {
+  border-radius: 0;
+}
+
+.codeGroupPanel .codeBlockHeader {
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
 }
 
 .codeGroupPanel pre {

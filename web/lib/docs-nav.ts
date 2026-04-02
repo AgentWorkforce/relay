@@ -21,8 +21,11 @@ export const docsNav: NavGroup[] = [
     items: [
       { title: 'Spawning an agent', slug: 'spawning-an-agent' },
       { title: 'Sending messages', slug: 'sending-messages' },
+      { title: 'Event handlers', slug: 'event-handlers' },
       { title: 'Channels', slug: 'channels' },
       { title: 'DMs', slug: 'dms' },
+      { title: 'Threads', slug: 'threads' },
+      { title: 'Emoji reactions', slug: 'emoji-reactions' },
       { title: 'File sharing', slug: 'file-sharing' },
       { title: 'Authentication', slug: 'authentication' },
       { title: 'Scheduling', slug: 'scheduling' },

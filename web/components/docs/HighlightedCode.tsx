@@ -1,8 +1,22 @@
 import React, { type ReactElement, Children, isValidElement } from 'react';
+import { SiPython, SiTypescript } from 'react-icons/si';
 
+import {
+  extractCodeFenceToken,
+  getCodeFenceBadgeLabel,
+  parseCodeFenceMetaToken,
+} from '../../lib/code-fence-meta';
 import { highlightCode } from '../../lib/syntax';
 import { CopyCodeButton } from './CopyCodeButton';
 import styles from './docs.module.css';
+
+const codeBadgeIcons: Record<string, React.ComponentType<{ className?: string; 'aria-hidden'?: boolean }>> = {
+  py: SiPython,
+  python: SiPython,
+  ts: SiTypescript,
+  tsx: SiTypescript,
+  typescript: SiTypescript,
+};
 
 function parseInlineStyle(styleText?: string): React.CSSProperties | undefined {
   if (!styleText) {
@@ -55,9 +69,9 @@ export async function HighlightedPre({ children, ...props }: React.DetailedHTMLP
   }
 
   const className = codeChild.props.className || '';
-  const langMatch = className.match(/language-(\S+)/);
+  const token = extractCodeFenceToken(className);
 
-  if (!langMatch) {
+  if (!token) {
     return (
       <div className={styles.codeWrapper}>
         <CopyCodeButton code={raw} />
@@ -66,21 +80,43 @@ export async function HighlightedPre({ children, ...props }: React.DetailedHTMLP
     );
   }
 
-  const lang = langMatch[1].toLowerCase();
-  const highlighted = await highlightCode(raw.trimEnd(), lang);
+  const meta = parseCodeFenceMetaToken(token);
+  const highlighted = await highlightCode(raw.trimEnd(), meta.language.toLowerCase());
   const shikiStyle = parseInlineStyle(highlighted.preStyle);
   const preClassName = [props.className, highlighted.preClassName].filter(Boolean).join(' ');
+  const wrapperClassName = meta.filename
+    ? `${styles.codeWrapper} ${styles.codeWrapperWithHeader}`
+    : styles.codeWrapper;
+  const codeClassName = `language-${meta.language.toLowerCase()}`;
+  const badgeKey = meta.filename?.split('/').pop()?.split('.').pop()?.toLowerCase() || meta.language.toLowerCase();
+  const BadgeIcon = codeBadgeIcons[badgeKey];
 
   return (
-    <div className={styles.codeWrapper}>
-      <CopyCodeButton code={raw} />
+    <div className={wrapperClassName}>
+      {meta.filename ? (
+        <div className={styles.codeBlockHeader}>
+          <div className={styles.codeBlockHeaderMeta}>
+            <span className={styles.codeBlockBadge}>
+              {BadgeIcon ? (
+                <BadgeIcon className={styles.codeBlockBadgeIcon} aria-hidden={true} />
+              ) : (
+                getCodeFenceBadgeLabel(meta.language, meta.filename)
+              )}
+            </span>
+            <span className={styles.codeBlockFilename}>{meta.filename}</span>
+          </div>
+          <CopyCodeButton code={raw} inline />
+        </div>
+      ) : (
+        <CopyCodeButton code={raw} />
+      )}
       <pre
         {...props}
         className={preClassName || undefined}
         style={{ ...shikiStyle, ...props.style }}
       >
         <code
-          className={className}
+          className={codeClassName}
           dangerouslySetInnerHTML={{ __html: highlighted.codeHtml }}
         />
       </pre>
