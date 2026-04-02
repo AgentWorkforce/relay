@@ -76,6 +76,17 @@ function renderCard(attrs: string, body: string): string {
   return `- ${label}${summary ? `: ${summary}` : ''}`;
 }
 
+function renderBannerLink(attrs: string, body: string): string {
+  const href = resolveHref(attrs.match(/href="([^"]+)"/)?.[1]);
+  const label = collapseInline(body);
+
+  if (!label) {
+    return '';
+  }
+
+  return href ? `[${label}](${href})` : label;
+}
+
 function renderMarkdownBody(content: string): string {
   let output = content;
 
@@ -86,6 +97,7 @@ function renderMarkdownBody(content: string): string {
 
   output = output.replace(/<Note>\s*([\s\S]*?)\s*<\/Note>/g, (_match, body: string) => `\n${toBlockquote(body)}\n`);
   output = output.replace(/<Card\s+([^>]*)>([\s\S]*?)<\/Card>/g, (_match, attrs: string, body: string) => renderCard(attrs, body));
+  output = output.replace(/<BannerLink\s+([^>]*)>([\s\S]*?)<\/BannerLink>/g, (_match, attrs: string, body: string) => `\n${renderBannerLink(attrs, body)}\n`);
 
   output = output.replace(/\n{3,}/g, '\n\n');
   return output.trim();
