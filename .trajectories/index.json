@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-02T16:00:49.666Z",
+  "lastUpdated": "2026-04-02T16:59:40.771Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -1010,6 +1010,20 @@
       "startedAt": "2026-04-02T15:58:51.825Z",
       "completedAt": "2026-04-02T16:00:49.512Z",
       "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_fo6yc6res1we.json"
+    },
+    "traj_ngj41z7schgz": {
+      "title": "Add local-mode docs page and fix introduction link",
+      "status": "completed",
+      "startedAt": "2026-04-02T16:54:28.931Z",
+      "completedAt": "2026-04-02T16:57:39.346Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_ngj41z7schgz.json"
+    },
+    "traj_jnpn5j12er03": {
+      "title": "Hide local-mode page from docs sidebar while keeping route active",
+      "status": "completed",
+      "startedAt": "2026-04-02T16:59:19.014Z",
+      "completedAt": "2026-04-02T16:59:40.621Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_jnpn5j12er03.json"
     }
   }
 }

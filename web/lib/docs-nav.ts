@@ -90,6 +90,7 @@ const ALL_SLUGS = [
   'communicate-openai-agents',
   'communicate-swarms',
   'communicate-crewai',
+  'local-mode',
   'reference-openclaw',
   'reference-workflows',
 ];
