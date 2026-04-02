@@ -29,7 +29,11 @@ import path from 'node:path';
 
 import { RelayCast } from '@relaycast/sdk';
 
-import { AgentRelayClient, type AgentRelaySpawnOptions } from './client.js';
+import {
+  AgentRelayClient,
+  type AgentRelayBrokerInitArgs,
+  type AgentRelaySpawnOptions,
+} from './client.js';
 import { AgentRelayProtocolError } from './transport.js';
 import type { SendMessageInput, SpawnPtyInput } from './types.js';
 import type {
@@ -303,7 +307,7 @@ export type EventHook<T> = ((value: T) => void) | null;
 
 export interface AgentRelayOptions {
   binaryPath?: string;
-  binaryArgs?: string[];
+  binaryArgs?: AgentRelayBrokerInitArgs;
   brokerName?: string;
   channels?: string[];
   cwd?: string;

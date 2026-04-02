@@ -1,0 +1,25 @@
+{
+  "id": "traj_o1qjr6nxhfg5",
+  "version": 1,
+  "task": {
+    "title": "Add docs nav icons for Relay Dashboard and Observer"
+  },
+  "status": "completed",
+  "startedAt": "2026-04-02T12:58:12.673Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "bcfd7dc9925af6a0140988eb7e6d2d5e285e6041",
+    "endRef": "bcfd7dc9925af6a0140988eb7e6d2d5e285e6041"
+  },
+  "completedAt": "2026-04-02T12:59:12.984Z",
+  "retrospective": {
+    "summary": "Updated docs nav icons for Relay Dashboard, Observer, and React SDK, and moved React SDK after Python SDK.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  }
+}

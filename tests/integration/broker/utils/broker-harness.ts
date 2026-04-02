@@ -10,6 +10,7 @@ import path from 'node:path';
 
 import {
   AgentRelayClient,
+  type AgentRelayBrokerInitArgs,
   type AgentRelaySpawnOptions,
   type ListAgent,
   type SendMessageInput,
@@ -45,8 +46,8 @@ export async function ensureApiKey(): Promise<string> {
 export interface BrokerHarnessOptions {
   /** Path to the agent-relay-broker binary. Auto-resolved if not set. */
   binaryPath?: string;
-  /** Extra CLI args passed to the broker binary. */
-  binaryArgs?: string[];
+  /** Structured broker init options mapped to the Rust CLI flags. */
+  binaryArgs?: AgentRelayBrokerInitArgs;
   /** Unique broker name registered in Relaycast. Auto-generated if not set. */
   brokerName?: string;
   /** Channels for the broker to subscribe to. Default: ["general"] */
@@ -85,7 +86,7 @@ export class BrokerHarness {
   constructor(options: BrokerHarnessOptions = {}) {
     this.opts = {
       binaryPath: options.binaryPath ?? resolveBinaryPath(),
-      binaryArgs: options.binaryArgs ?? [],
+      binaryArgs: options.binaryArgs ?? {},
       brokerName:
         options.brokerName ??
         `test-harness-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -138,7 +139,6 @@ export class BrokerHarness {
       channels: this.opts.channels,
       cwd: this.opts.cwd,
       requestTimeoutMs: this.opts.requestTimeoutMs,
-      shutdownTimeoutMs: this.opts.shutdownTimeoutMs,
       env: this.opts.env,
     });
 

@@ -7,7 +7,6 @@ import {
   Bot,
   Cloud,
   Clock3,
-  Code2,
   Compass,
   FolderOpen,
   Hash,
@@ -24,7 +23,10 @@ import {
   Workflow,
 } from 'lucide-react';
 import { BsChatRightText } from 'react-icons/bs';
+import { FaReact } from 'react-icons/fa';
 import { GrSwift } from 'react-icons/gr';
+import { PiBroadcastFill } from 'react-icons/pi';
+import { RiLayout5Line } from 'react-icons/ri';
 import { SiClaude, SiPython, SiTypescript } from 'react-icons/si';
 
 import { docsNav } from '../../lib/docs-nav';
@@ -48,6 +50,8 @@ const navIcons: Record<string, NavIcon> = {
   'reference-workflows': Workflow,
   cloud: Cloud,
   workforce: Users,
+  'relay-dashboard': RiLayout5Line,
+  observer: PiBroadcastFill,
   'cli-overview': Terminal,
   'cli-broker-lifecycle': Power,
   'cli-agent-management': Bot,
@@ -55,8 +59,9 @@ const navIcons: Record<string, NavIcon> = {
   'cli-workflows': Workflow,
   'cli-cloud-commands': Cloud,
   'cli-on-the-relay': Plug,
-  'reference-sdk': SiTypescript,
-  'reference-sdk-py': SiPython,
+  'typescript-sdk': SiTypescript,
+  'react-sdk': FaReact,
+  'python-sdk': SiPython,
   'swift-sdk': GrSwift,
   'plugin-claude-code': SiClaude,
   'typescript-examples': PlayCircle,

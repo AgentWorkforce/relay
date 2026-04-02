@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-02T12:51:50.034Z",
+  "lastUpdated": "2026-04-02T15:53:48.880Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -957,9 +957,52 @@
     },
     "traj_0dzj6tewabm3": {
       "title": "Add tools section and React SDK coming soon page",
-      "status": "active",
+      "status": "completed",
       "startedAt": "2026-04-02T12:51:09.979Z",
-      "path": "/Users/will/Projects/relay/.trajectories/active/traj_0dzj6tewabm3.json"
+      "completedAt": "2026-04-02T12:52:45.683Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_0dzj6tewabm3.json"
+    },
+    "traj_o1qjr6nxhfg5": {
+      "title": "Add docs nav icons for Relay Dashboard and Observer",
+      "status": "completed",
+      "startedAt": "2026-04-02T12:58:12.673Z",
+      "completedAt": "2026-04-02T12:59:12.984Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_o1qjr6nxhfg5.json"
+    },
+    "traj_g1yst5qetz91": {
+      "title": "Rename SDK doc slugs to cleaner public paths",
+      "status": "completed",
+      "startedAt": "2026-04-02T13:00:35.740Z",
+      "completedAt": "2026-04-02T13:02:01.523Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_g1yst5qetz91.json"
+    },
+    "traj_u05ilabxbmmy": {
+      "title": "Make spawn options docs language-aware",
+      "status": "completed",
+      "startedAt": "2026-04-02T15:33:57.558Z",
+      "completedAt": "2026-04-02T15:34:44.216Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_u05ilabxbmmy.json"
+    },
+    "traj_11m95t4y88f0": {
+      "title": "Split spawn lifecycle hooks into separate doc rows",
+      "status": "completed",
+      "startedAt": "2026-04-02T15:44:12.854Z",
+      "completedAt": "2026-04-02T15:45:08.469Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_11m95t4y88f0.json"
+    },
+    "traj_tbvzeayprjmh": {
+      "title": "Align AgentRelaySpawnOptions.binaryArgs with Rust binary args type",
+      "status": "completed",
+      "startedAt": "2026-04-02T15:48:49.836Z",
+      "completedAt": "2026-04-02T15:52:13.612Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_tbvzeayprjmh.json"
+    },
+    "traj_390xo8gs58xo": {
+      "title": "Align spawn options docs with relay startup options",
+      "status": "completed",
+      "startedAt": "2026-04-02T15:52:43.418Z",
+      "completedAt": "2026-04-02T15:53:48.758Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_390xo8gs58xo.json"
     }
   }
 }

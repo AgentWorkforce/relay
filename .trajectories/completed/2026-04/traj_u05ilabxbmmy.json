@@ -1,0 +1,53 @@
+{
+  "id": "traj_u05ilabxbmmy",
+  "version": 1,
+  "task": {
+    "title": "Make spawn options docs language-aware"
+  },
+  "status": "completed",
+  "startedAt": "2026-04-02T15:33:57.558Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-04-02T15:34:26.067Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_8ad4nj51prvb",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-04-02T15:34:26.067Z",
+      "events": [
+        {
+          "ts": 1775144066068,
+          "type": "decision",
+          "content": "Use a language-aware component for spawn options tables: Use a language-aware component for spawn options tables",
+          "raw": {
+            "question": "Use a language-aware component for spawn options tables",
+            "chosen": "Use a language-aware component for spawn options tables",
+            "alternatives": [],
+            "reasoning": "The docs already have a shared TypeScript/Python language context, so the options table should consume that context and show one canonical option column instead of forcing readers to scan both naming styles in every row."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-04-02T15:34:44.216Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "bcfd7dc9925af6a0140988eb7e6d2d5e285e6041",
+    "endRef": "bcfd7dc9925af6a0140988eb7e6d2d5e285e6041"
+  },
+  "completedAt": "2026-04-02T15:34:44.216Z",
+  "retrospective": {
+    "summary": "Made spawn options docs language-aware",
+    "approach": "Standard approach",
+    "confidence": 0.96
+  }
+}

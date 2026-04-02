@@ -1,30 +1,11 @@
 ---
 title: 'Spawning an agent'
-description: 'Launch Claude, Codex, Gemini, or OpenCode agents from TypeScript or Python, then wait, message, and manage them cleanly.'
+description: 'Spawn an agent on the relay deterministically or dynamically.'
 ---
 
-Spawning starts a CLI-backed worker on the relay and returns an `Agent` handle you can wait on, message, observe, and release later.
+Spawning starts an agent "on the relay" and returns an `Agent` handle you can wait on, message, observe, and release later.
 
-Use it when your application needs to create workers on demand instead of asking the user to launch Claude Code, Codex, Gemini, or OpenCode manually.
-
-## Spawn APIs
-
-| API | Use it when | Returns |
-| --- | --- | --- |
-| `relay.claude.spawn(...)`, `relay.codex.spawn(...)`, `relay.gemini.spawn(...)`, `relay.opencode.spawn(...)` | The provider is fixed in code | `Agent` |
-| `relay.spawn(name, cli, task?, options?)` | The provider is chosen dynamically or you need advanced options | `Agent` |
-| `relay.spawnAndWait(...)` / `relay.spawn_and_wait(...)` | The next step depends on the agent being ready before you continue | `Agent` |
-
-<Note>
-All of these APIs return an `Agent` handle. After spawn, the most common next steps are `waitForReady` / `wait_for_ready`, `sendMessage` / `send_message`, `onOutput` / `on_output`, and `release`.
-</Note>
-
-<Note>
-If you omit `channels`, spawned agents default to `general`. Set channels explicitly when you want workflow isolation. Also note that `opencode` uses a headless runtime, while the other built-in shorthand helpers are PTY-backed.
-</Note>
-
-## Spawn a named worker
-
+## Spawn
 <CodeGroup>
 ```typescript TypeScript file="spawn-agent.ts"
 import { AgentRelay, Models } from '@agent-relay/sdk';
@@ -38,13 +19,6 @@ const planner = await relay.claude.spawn({
   task: 'Break the work into 3 implementation steps.',
 });
 
-await planner.waitForReady();
-
-const system = relay.system();
-await system.sendMessage({
-  to: 'Planner',
-  text: 'Start by proposing the plan, then hand implementation to Coder.',
-});
 ```
 
 ```python Python file="spawn_agent.py"
@@ -59,48 +33,21 @@ planner = await relay.claude.spawn(
     task="Break the work into 3 implementation steps.",
 )
 
-await planner.wait_for_ready()
-
-system = relay.system()
-await system.send_message(
-    to="Planner",
-    text="Start by proposing the plan, then hand implementation to Coder.",
-)
 ```
 </CodeGroup>
 
-## Choosing the spawn API
+Spawned agents are either headless (Claude Code, OpenCode) or PTY-backed (Codex, Gemini all others). Agent Relay ensures
+that messages are routed and injected into the agent's runtime as needed.
 
-- Use `relay.claude.spawn(...)`, `relay.codex.spawn(...)`, and the other shorthand helpers when you already know the CLI you want.
-- Use `relay.spawn(name, cli, task?, options?)` when the CLI is chosen dynamically at runtime or when you need advanced relay-managed options.
-- Use `spawnAndWait` / `spawn_and_wait` when the next step depends on the agent being ready before you continue.
-- Use `waitForMessage` / `wait_for_message` on `spawnAndWait` when the next step depends on the agent producing its first reply, not just reaching the ready state.
+<Note>
+Agents can also spawn other agents via the CLI or MCP.
+</Note>
 
-## Built-in shorthand spawners
-
+### Dynamic spawn
 <CodeGroup>
-```typescript TypeScript file="spawners.ts"
-const claudeWorker = await relay.claude.spawn({ name: 'Planner' });
-const codexWorker = await relay.codex.spawn({ name: 'Coder' });
-const geminiWorker = await relay.gemini.spawn({ name: 'Researcher' });
-const opencodeWorker = await relay.opencode.spawn({ name: 'Reviewer' });
-```
+```typescript TypeScript file="dynamicspawn.ts"
 
-```python Python file="spawners.py"
-claude_worker = await relay.claude.spawn(name="Planner")
-codex_worker = await relay.codex.spawn(name="Coder")
-gemini_worker = await relay.gemini.spawn(name="Researcher")
-opencode_worker = await relay.opencode.spawn(name="Reviewer")
-```
-</CodeGroup>
-
-These are the fastest way to spawn when the provider is fixed in code. If the provider is selected dynamically, use the generic API below.
-
-## Generic `relay.spawn(...)`
-
-<CodeGroup>
-```typescript TypeScript file="dynamic-spawn.ts"
-const cli = process.env.AGENT_CLI ?? 'claude';
+const cli = 'claude';
 
 const reviewer = await relay.spawn(
   'Reviewer',
@@ -132,100 +79,32 @@ reviewer = await relay.spawn(
 ```
 </CodeGroup>
 
-Use this form when:
-
-- The CLI is chosen from config or user input
-- You want one code path that can spawn different providers
-- You need advanced options such as `team`, `shadowOf` / `shadow_of`, `idleThresholdSecs` / `idle_threshold_secs`, or `restartPolicy` / `restart_policy`
-
-## `spawnAndWait` / `spawn_and_wait`
+### Named Spawn
 
 <CodeGroup>
-```typescript TypeScript file="spawn-and-wait.ts"
-const analyst = await relay.spawnAndWait(
-  'Analyst',
-  'claude',
-  'Summarize the codebase structure before implementation starts.',
-  {
-    channels: ['planning'],
-    timeoutMs: 30_000,
-    waitForMessage: false,
-  }
-);
+```typescript TypeScript file="spawners.ts"
+const claudeWorker = await relay.claude.spawn({ name: 'Planner' });
+const codexWorker = await relay.codex.spawn({ name: 'Coder' });
+const geminiWorker = await relay.gemini.spawn({ name: 'Researcher' });
+const opencodeWorker = await relay.opencode.spawn({ name: 'Reviewer' });
 ```
 
-```python Python file="spawn_and_wait.py"
-from agent_relay import SpawnOptions
-
-analyst = await relay.spawn_and_wait(
-    "Analyst",
-    "claude",
-    "Summarize the codebase structure before implementation starts.",
-    SpawnOptions(channels=["planning"]),
-    timeout_ms=30_000,
-    wait_for_message=False,
-)
+```python Python file="spawners.py"
+claude_worker = await relay.claude.spawn(name="Planner")
+codex_worker = await relay.codex.spawn(name="Coder")
+gemini_worker = await relay.gemini.spawn(name="Researcher")
+opencode_worker = await relay.opencode.spawn(name="Reviewer")
 ```
 </CodeGroup>
 
-- `waitForMessage: false` / `wait_for_message=False` waits for broker readiness.
-- `waitForMessage: true` / `wait_for_message=True` waits for the agent's first message instead.
+## Relay startup options
 
-## Common spawn options
+These options control how the local broker/client is started before any agents are spawned:
+
+<SpawnOptionsTable variant="relay-startup" />
+
+## Per-agent spawn options
 
 These options are available on the shorthand helpers and on `relay.spawn(...)`:
 
-| Option | TypeScript | Python | What it does |
-| --- | --- | --- | --- |
-| Name | `name` | `name` | Stable identity other agents can message |
-| Model | `model` | `model` | Model string or enum for that provider |
-| Task | `task` | `task` | Initial prompt for autonomous startup |
-| Channels | `channels` | `channels` | Rooms the agent joins on spawn |
-| CLI args | `args` | `args` | Extra CLI arguments |
-| Working directory | `cwd` | `cwd` | Per-agent working directory override |
-| Skip relay prompt | `skipRelayPrompt` | `skip_relay_prompt` | Skip MCP/protocol prompt injection when relay messaging is not needed |
-| Lifecycle hooks | `onStart`, `onSuccess`, `onError` | `on_start`, `on_success`, `on_error` | Run code before spawn, after success, or on error |
-
-## Advanced options on `relay.spawn(...)`
-
-These are available on the generic API and `SpawnOptions`, not on the shorthand helpers:
-
-| Option | TypeScript | Python | What it does |
-| --- | --- | --- | --- |
-| Team routing | `team` | `team` | Attach the agent to a team-aware workflow or relay-managed grouping |
-| Shadow source | `shadowOf` | `shadow_of` | Spawn a shadow worker linked to another agent |
-| Shadow mode | `shadowMode` | `shadow_mode` | Configure shadow behavior |
-| Idle threshold | `idleThresholdSecs` | `idle_threshold_secs` | Control when idle lifecycle events fire |
-| Restart policy | `restartPolicy` | `restart_policy` | Configure broker-managed restart behavior |
-
-## What to do after spawn
-
-- Wait for readiness with `agent.waitForReady()` / `agent.wait_for_ready()` or by name with `relay.waitForAgentReady(name)` / `relay.wait_for_agent_ready(name)`.
-- Send the first message from `relay.system()` or a named human handle with `relay.human(...)`.
-- Subscribe to output with `agent.onOutput(...)` / `agent.on_output(...)` if you want live PTY output.
-- Use `waitForIdle()` / `wait_for_idle()` when you care about the first idle point after work begins.
-- Use `release()` when the worker is no longer needed.
-
-## Common patterns
-
-- Omit `task` when you want to spawn a passive worker and message it later.
-- Include `task` when the agent should begin autonomously as soon as it starts.
-- Set `channels` explicitly on every worker in a collaboration so they all join the same room.
-- Prefer `spawnAndWait` when the next step is blocked on startup; otherwise spawn first and wait later in parallel with other setup.
-
-## See also
-
-<CardGroup cols={2}>
-  <Card title="Quickstart" href="/docs/quickstart">
-    Spawn two agents and send the first message.
-  </Card>
-  <Card title="TypeScript SDK" href="/docs/reference-sdk">
-    Full TypeScript spawn API and option reference.
-  </Card>
-  <Card title="Python SDK" href="/docs/reference-sdk-py">
-    Full Python spawn API and option reference.
-  </Card>
-  <Card title="Sending messages" href="/docs/sending-messages">
-    Hand work from one agent to another after spawn.
-  </Card>
-</CardGroup>
+<SpawnOptionsTable variant="common" />

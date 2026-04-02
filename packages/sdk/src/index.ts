@@ -3,6 +3,7 @@ export * from './types.js';
 export { BrokerTransport, type BrokerTransportOptions, AgentRelayProtocolError } from './transport.js';
 export {
   AgentRelayClient,
+  type AgentRelayBrokerInitArgs,
   type AgentRelayClientOptions,
   type AgentRelaySpawnOptions,
   type SessionInfo,

@@ -22,7 +22,7 @@ export function SiteFooter() {
             <Link href="/docs/spawning-an-agent" className={s.link}>Basics</Link>
             <Link href="/docs/reference-workflows" className={s.link}>Advanced</Link>
             <Link href="/docs/cli-overview" className={s.link}>CLI</Link>
-            <Link href="/docs/reference-sdk" className={s.link}>SDKs</Link>
+            <Link href="/docs/typescript-sdk" className={s.link}>SDKs</Link>
             <Link href="/docs/plugin-claude-code" className={s.link}>Plugins</Link>
             <Link href="/docs/typescript-examples" className={s.link}>Examples</Link>
           </div>

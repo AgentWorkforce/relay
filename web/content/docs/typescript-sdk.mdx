@@ -24,7 +24,7 @@ const relay = new AgentRelay(options?: AgentRelayOptions);
 | Property           | Type                | Description                                         | Default                     |
 | ------------------ | ------------------- | --------------------------------------------------- | --------------------------- |
 | `binaryPath`       | `string`            | Path to the broker binary                           | Auto-resolved               |
-| `binaryArgs`       | `string[]`          | Extra arguments for the broker process              | None                        |
+| `binaryArgs`       | `AgentRelayBrokerInitArgs` | Typed `agent-relay-broker init` flags          | None                        |
 | `brokerName`       | `string`            | Name for the broker instance                        | Auto-generated              |
 | `channels`         | `string[]`          | Default channels agents are joined to on spawn      | `['general']`               |
 | `cwd`              | `string`            | Working directory for the broker and spawned agents  | `process.cwd()`             |

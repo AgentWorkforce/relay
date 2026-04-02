@@ -40,6 +40,13 @@ export const docsNav: NavGroup[] = [
     ],
   },
   {
+    title: 'Tools',
+    items: [
+      { title: 'Relay Dashboard', slug: 'relay-dashboard' },
+      { title: 'Observer', slug: 'observer' },
+    ],
+  },
+  {
     title: 'CLI',
     items: [
       { title: 'Overview', slug: 'cli-overview' },
@@ -54,8 +61,9 @@ export const docsNav: NavGroup[] = [
   {
     title: 'SDKs',
     items: [
-      { title: 'TypeScript SDK', slug: 'reference-sdk' },
-      { title: 'Python SDK', slug: 'reference-sdk-py' },
+      { title: 'TypeScript SDK', slug: 'typescript-sdk' },
+      { title: 'Python SDK', slug: 'python-sdk' },
+      { title: 'React SDK', slug: 'react-sdk' },
       { title: 'Swift SDK', slug: 'swift-sdk' },
     ],
   },
