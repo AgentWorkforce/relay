@@ -42,6 +42,14 @@ export default defineConfig({
         find: '@agent-relay/user-directory',
         replacement: path.resolve(__dirname, './packages/user-directory/dist/index.js'),
       },
+      {
+        find: '@agent-relay/telemetry',
+        replacement: path.resolve(__dirname, './packages/telemetry/dist/index.js'),
+      },
+      {
+        find: '@agent-relay/cloud',
+        replacement: path.resolve(__dirname, './packages/cloud/dist/index.js'),
+      },
     ],
   },
   test: {

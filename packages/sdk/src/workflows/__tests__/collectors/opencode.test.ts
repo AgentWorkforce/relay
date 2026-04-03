@@ -93,7 +93,7 @@ function createOpenCodeFixture(homeDir: string, cwd: string, sessionCreatedAt: n
 
 async function importCollectorWithHome(homeDir: string) {
   process.env.HOME = homeDir;
-  vi.resetModules();
+  vi.restoreAllMocks();
   vi.doMock('node:module', () => ({
     createRequire: () => (id: string) => {
       if (id !== 'better-sqlite3') {
@@ -134,7 +134,7 @@ async function importCollectorWithHome(homeDir: string) {
 }
 
 afterEach(() => {
-  vi.resetModules();
+  vi.restoreAllMocks();
   process.env.HOME = originalHome;
   while (tempDirs.length > 0) {
     rmSync(tempDirs.pop()!, { recursive: true, force: true });

@@ -1942,13 +1942,14 @@ export class WorkflowRunner {
       }
     }
 
-    return this.runWorkflowCore({
+    await this.runWorkflowCore({
       run,
       workflow: resolvedWorkflow,
       config: resolved,
       stepStates,
       isResume: false,
     });
+    return (await this.db.getRun(runId)) ?? run;
   }
 
   /** Resume a previously paused or partially completed run. */

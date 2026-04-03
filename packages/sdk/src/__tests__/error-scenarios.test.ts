@@ -62,7 +62,7 @@ describe('StateStore error scenarios', () => {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [entry] });
+      (db.query as any).mockResolvedValueOnce({ rows: [entry] });
       store.setConsensusGate(async () => true);
 
       const result = await store.set('run_1', 'key', 'value', 'agent-1');
@@ -83,7 +83,7 @@ describe('StateStore error scenarios', () => {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [entry] });
+      (db.query as any).mockResolvedValueOnce({ rows: [entry] });
 
       await expect(store.set('run_1', 'key', 'value', 'agent-1')).resolves.toBeDefined();
     });
@@ -91,24 +91,24 @@ describe('StateStore error scenarios', () => {
 
   describe('DB failures', () => {
     it('should propagate DB errors on set', async () => {
-      vi.mocked(db.query).mockRejectedValueOnce(new Error('connection lost'));
+      (db.query as any).mockRejectedValueOnce(new Error('connection lost'));
       await expect(store.set('run_1', 'key', 'v', 'agent')).rejects.toThrow('connection lost');
     });
 
     it('should propagate DB errors on get', async () => {
-      vi.mocked(db.query).mockRejectedValueOnce(new Error('timeout'));
+      (db.query as any).mockRejectedValueOnce(new Error('timeout'));
       await expect(store.get('run_1', 'key')).rejects.toThrow('timeout');
     });
 
     it('should propagate DB errors on delete', async () => {
-      vi.mocked(db.query).mockRejectedValueOnce(new Error('disk full'));
+      (db.query as any).mockRejectedValueOnce(new Error('disk full'));
       await expect(store.delete('run_1', 'key')).rejects.toThrow('disk full');
     });
   });
 
   describe('namespace isolation', () => {
     it('should use custom namespace when provided', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await store.get('run_1', 'key', { namespace: 'custom' });
       expect(db.query).toHaveBeenCalledWith(
         expect.any(String),
@@ -117,7 +117,7 @@ describe('StateStore error scenarios', () => {
     });
 
     it('should use default namespace when not provided', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await store.get('run_1', 'key');
       expect(db.query).toHaveBeenCalledWith(
         expect.any(String),
@@ -138,7 +138,7 @@ describe('StateStore error scenarios', () => {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [entry] });
+      (db.query as any).mockResolvedValueOnce({ rows: [entry] });
 
       const result = await store.set('run_1', 'key', 'v', 'agent', { ttlMs: 5000 });
       expect(result.expiresAt).not.toBeNull();
@@ -157,7 +157,7 @@ describe('StateStore error scenarios', () => {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [entry] });
+      (db.query as any).mockResolvedValueOnce({ rows: [entry] });
 
       const spy = vi.fn();
       store.on('state:set', spy);
@@ -167,7 +167,7 @@ describe('StateStore error scenarios', () => {
     });
 
     it('should emit state:deleted on successful delete', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ id: 'st_1' }] });
+      (db.query as any).mockResolvedValueOnce({ rows: [{ id: 'st_1' }] });
 
       const spy = vi.fn();
       store.on('state:deleted', spy);
@@ -177,7 +177,7 @@ describe('StateStore error scenarios', () => {
     });
 
     it('should not emit state:deleted when key not found', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
 
       const spy = vi.fn();
       store.on('state:deleted', spy);
@@ -189,7 +189,7 @@ describe('StateStore error scenarios', () => {
 
   describe('snapshot', () => {
     it('should return empty object for no entries', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       const snapshot = await store.snapshot('run_1');
       expect(snapshot).toEqual({});
     });
@@ -199,7 +199,7 @@ describe('StateStore error scenarios', () => {
         { id: '1', runId: 'run_1', namespace: 'default', key: 'a', value: 1, expiresAt: null, createdAt: '', updatedAt: '' },
         { id: '2', runId: 'run_1', namespace: 'default', key: 'b', value: 'hello', expiresAt: null, createdAt: '', updatedAt: '' },
       ];
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: entries });
+      (db.query as any).mockResolvedValueOnce({ rows: entries });
 
       const snapshot = await store.snapshot('run_1');
       expect(snapshot).toEqual({ a: 1, b: 'hello' });
@@ -235,7 +235,7 @@ describe('BarrierManager error scenarios', () => {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [barrier] });
+      (db.query as any).mockResolvedValueOnce({ rows: [barrier] });
 
       const spy = vi.fn();
       manager.on('barrier:created', spy);
@@ -261,7 +261,7 @@ describe('BarrierManager error scenarios', () => {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      vi.mocked(db.query).mockResolvedValue({ rows: [barrier] });
+      (db.query as any).mockResolvedValue({ rows: [barrier] });
 
       const results = await manager.createBarriers('run_1', [
         { name: 'b1', waitFor: ['a'] },
@@ -287,7 +287,7 @@ describe('BarrierManager error scenarios', () => {
       };
 
       // First, create the barrier to set the mode
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [barrier] });
+      (db.query as any).mockResolvedValueOnce({ rows: [barrier] });
       await manager.createBarrier('run_1', {
         name: 'b1',
         waitFor: ['agent-a', 'agent-b'],
@@ -295,7 +295,7 @@ describe('BarrierManager error scenarios', () => {
       });
 
       // Now resolve with partial (not satisfied yet)
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [barrier] });
+      (db.query as any).mockResolvedValueOnce({ rows: [barrier] });
       const result = await manager.resolve('run_1', 'b1', 'agent-a');
       expect(result.satisfied).toBe(false);
     });
@@ -314,7 +314,7 @@ describe('BarrierManager error scenarios', () => {
       };
 
       // Create barrier in "any" mode
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [barrier] });
+      (db.query as any).mockResolvedValueOnce({ rows: [barrier] });
       await manager.createBarrier('run_1', {
         name: 'b1',
         waitFor: ['agent-a', 'agent-b'],
@@ -322,7 +322,7 @@ describe('BarrierManager error scenarios', () => {
       });
 
       // Resolve — should satisfy immediately since mode is "any"
-      vi.mocked(db.query)
+      (db.query as any)
         .mockResolvedValueOnce({ rows: [barrier] }) // resolve UPDATE
         .mockResolvedValueOnce({ rows: [{ ...barrier, isSatisfied: true }] }); // markSatisfied UPDATE
 
@@ -336,9 +336,9 @@ describe('BarrierManager error scenarios', () => {
 
     it('should throw when barrier not found during resolve', async () => {
       // resolve UPDATE returns empty
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       // getBarrier also returns empty
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
 
       await expect(
         manager.resolve('run_1', 'nonexistent', 'agent-a'),
@@ -359,9 +359,9 @@ describe('BarrierManager error scenarios', () => {
       };
 
       // resolve UPDATE returns empty (already satisfied, WHERE is_satisfied=FALSE doesn't match)
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       // getBarrier returns the already-satisfied barrier
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [barrier] });
+      (db.query as any).mockResolvedValueOnce({ rows: [barrier] });
 
       const result = await manager.resolve('run_1', 'b1', 'a');
       expect(result.satisfied).toBe(true);
@@ -384,7 +384,7 @@ describe('BarrierManager error scenarios', () => {
         updatedAt: '',
       };
 
-      vi.mocked(db.query).mockResolvedValue({ rows: [barrier] });
+      (db.query as any).mockResolvedValue({ rows: [barrier] });
 
       const timeoutSpy = vi.fn();
       manager.on('barrier:timeout', timeoutSpy);
@@ -416,7 +416,7 @@ describe('BarrierManager error scenarios', () => {
         createdAt: '',
         updatedAt: '',
       };
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [barrier] });
+      (db.query as any).mockResolvedValueOnce({ rows: [barrier] });
 
       await manager.createBarrier('run_1', {
         name: 'b1',
@@ -430,19 +430,19 @@ describe('BarrierManager error scenarios', () => {
 
   describe('queries', () => {
     it('getBarrier should return null for missing barrier', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       const result = await manager.getBarrier('run_1', 'nonexistent');
       expect(result).toBeNull();
     });
 
     it('isSatisfied should return false when barrier does not exist', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       const result = await manager.isSatisfied('run_1', 'missing');
       expect(result).toBe(false);
     });
 
     it('getUnsatisfiedBarriers should query with is_satisfied = FALSE', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await manager.getUnsatisfiedBarriers('run_1');
       expect(db.query).toHaveBeenCalledWith(
         expect.stringContaining('is_satisfied = FALSE'),
@@ -465,51 +465,51 @@ describe('SwarmCoordinator error scenarios', () => {
 
   describe('run lifecycle errors', () => {
     it('should throw when starting a non-pending run', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await expect(coordinator.startRun('run_1')).rejects.toThrow('not found or not in pending');
     });
 
     it('should throw when completing a non-existent run', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await expect(coordinator.completeRun('bad')).rejects.toThrow('not found');
     });
 
     it('should throw when failing a non-existent run', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await expect(coordinator.failRun('bad', 'error')).rejects.toThrow('not found');
     });
 
     it('should throw when cancelling a non-existent run', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await expect(coordinator.cancelRun('bad')).rejects.toThrow('not found');
     });
   });
 
   describe('step lifecycle errors', () => {
     it('should throw when starting a non-pending step', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await expect(coordinator.startStep('step_bad')).rejects.toThrow('not in pending state');
     });
 
     it('should throw when completing a non-running step', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await expect(coordinator.completeStep('step_bad')).rejects.toThrow('not in running state');
     });
 
     it('should throw when failing a non-running step', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await expect(coordinator.failStep('step_bad', 'err')).rejects.toThrow('not in running state');
     });
 
     it('should throw when skipping a non-existent step', async () => {
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
+      (db.query as any).mockResolvedValueOnce({ rows: [] });
       await expect(coordinator.skipStep('step_bad')).rejects.toThrow('not found');
     });
   });
 
   describe('DB propagation', () => {
     it('should propagate DB errors from createRun', async () => {
-      vi.mocked(db.query).mockRejectedValueOnce(new Error('connection refused'));
+      (db.query as any).mockRejectedValueOnce(new Error('connection refused'));
       await expect(coordinator.createRun('ws-1', {
         version: '1',
         name: 'test',
@@ -519,7 +519,7 @@ describe('SwarmCoordinator error scenarios', () => {
     });
 
     it('should propagate DB errors from getSteps', async () => {
-      vi.mocked(db.query).mockRejectedValueOnce(new Error('query timeout'));
+      (db.query as any).mockRejectedValueOnce(new Error('query timeout'));
       await expect(coordinator.getSteps('run_1')).rejects.toThrow('query timeout');
     });
   });
