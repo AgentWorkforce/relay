@@ -1,7 +1,9 @@
 import type { Metadata } from 'next';
+import { PostHogProvider } from '@posthog/next';
 import { Geist_Mono, Inter, Sora } from 'next/font/google';
 import type { ReactNode } from 'react';
 
+import { WebsitePostHogPageView } from './PostHogPageView';
 import './globals.css';
 
 const inter = Inter({
@@ -27,15 +29,8 @@ export const metadata: Metadata = {
     template: '%s | Agent Relay',
   },
   description:
-    'Spawn, coordinate, and connect AI agents from TypeScript or Python.',
-  keywords: [
-    'Agent Relay',
-    'multi-agent',
-    'agent communication',
-    'MCP',
-    'AI SDK',
-    'agent relay',
-  ],
+    'Build AI systems where agents communicate, share context, and coordinate work through channels, messages, files, and workflows.',
+  keywords: ['Agent Relay', 'multi-agent', 'agent communication', 'MCP', 'AI SDK', 'agent relay', 'slack for agents'],
   robots: {
     index: true,
     follow: true,
@@ -70,14 +65,30 @@ const themeScript = `
 `;
 
 export default function RootLayout({ children }: { children: ReactNode }) {
+  const postHogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
+  const content = postHogKey ? (
+    <PostHogProvider
+      clientOptions={{
+        api_host: '/ingest',
+        autocapture: true,
+        capture_exceptions: true,
+        capture_heatmaps: true,
+        capture_pageleave: true,
+      }}
+    >
+      <WebsitePostHogPageView />
+      {children}
+    </PostHogProvider>
+  ) : (
+    children
+  );
+
   return (
     <html lang="en" data-theme="dark" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className={`${inter.variable} ${geistMono.variable} ${sora.variable}`}>
-        {children}
-      </body>
+      <body className={`${inter.variable} ${geistMono.variable} ${sora.variable}`}>{content}</body>
     </html>
   );
 }
