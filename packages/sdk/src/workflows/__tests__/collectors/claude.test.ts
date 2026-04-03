@@ -56,13 +56,13 @@ function createClaudeFixture(homeDir: string, cwd: string, timestamp: number): s
 
 async function importCollectorWithHome(homeDir: string) {
   process.env.HOME = homeDir;
-  vi.resetModules();
+  vi.restoreAllMocks();
   const module = await import('../../collectors/claude.js');
   return module.ClaudeCodeCollector;
 }
 
 afterEach(() => {
-  vi.resetModules();
+  vi.restoreAllMocks();
   process.env.HOME = originalHome;
   while (tempDirs.length > 0) {
     rmSync(tempDirs.pop()!, { recursive: true, force: true });
