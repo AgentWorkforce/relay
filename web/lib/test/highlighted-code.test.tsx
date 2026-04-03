@@ -1,8 +1,8 @@
 import React from 'react';
 import { describe, expect, it } from 'vitest';
 
-import { HighlightedPre } from '../../web/components/docs/HighlightedCode';
-import { encodeCodeFenceMeta } from '../../web/lib/code-fence-meta';
+import { HighlightedPre } from '../../components/docs/HighlightedCode';
+import { encodeCodeFenceMeta } from '../code-fence-meta';
 
 function findElementByType(node: React.ReactNode, type: string): React.ReactElement | null {
   if (!React.isValidElement(node)) {

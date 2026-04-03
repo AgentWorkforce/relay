@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { getDocMarkdown } from '../../web/lib/docs-markdown';
+import { getDocMarkdown } from '../docs-markdown';
 
 describe('docs markdown export for spawn options', () => {
   it('renders SpawnOptionsTable without leaking JSX', () => {

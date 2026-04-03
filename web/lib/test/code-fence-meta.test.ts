@@ -4,7 +4,7 @@ import {
   encodeCodeFenceMeta,
   extractCodeFenceToken,
   parseCodeFenceMetaToken,
-} from '../../web/lib/code-fence-meta';
+} from '../code-fence-meta';
 
 describe('code fence meta encoding', () => {
   it('round-trips filenames and labels that contain double underscores', () => {

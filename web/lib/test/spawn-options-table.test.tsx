@@ -4,8 +4,8 @@ import React from 'react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 
-import { DocsLanguageProvider } from '../../web/components/docs/DocsLanguageContext';
-import { SpawnOptionsTable } from '../../web/components/docs/SpawnOptionsTable';
+import { DocsLanguageProvider } from '../../components/docs/DocsLanguageContext';
+import { SpawnOptionsTable } from '../../components/docs/SpawnOptionsTable';
 
 describe('SpawnOptionsTable', () => {
   beforeEach(() => {

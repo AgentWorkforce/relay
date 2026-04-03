@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { getWebsiteAnalyticsPage } from '../../web/lib/site-analytics';
+import { getWebsiteAnalyticsPage } from '../site-analytics';
 
 describe('getWebsiteAnalyticsPage', () => {
   it('tracks docs routes', () => {
