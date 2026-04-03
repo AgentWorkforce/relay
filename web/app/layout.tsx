@@ -22,7 +22,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://agentrelay.dev'),
+  metadataBase: new URL('https://agentrelay.com'),
   applicationName: 'Agent Relay',
   title: {
     default: 'Agent Relay',
@@ -69,7 +69,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   const content = postHogKey ? (
     <PostHogProvider
       clientOptions={{
-        api_host: '/ingest',
+        api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? 'https://i.agentrelay.com',
         autocapture: true,
         capture_exceptions: true,
         capture_heatmaps: true,
