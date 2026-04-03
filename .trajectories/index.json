@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-02T17:57:29.765Z",
+  "lastUpdated": "2026-04-02T22:52:35.048Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -1052,6 +1052,69 @@
       "startedAt": "2026-04-02T17:56:19.956Z",
       "completedAt": "2026-04-02T17:57:29.605Z",
       "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_b0bxoir38g0a.json"
+    },
+    "traj_kr697br8wk3x": {
+      "title": "Ensure PostHog tracking is set up on docs, blog, and catalog pages",
+      "status": "completed",
+      "startedAt": "2026-04-02T18:30:54.413Z",
+      "completedAt": "2026-04-02T18:36:18.998Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_kr697br8wk3x.json"
+    },
+    "traj_s958y0cq80nh": {
+      "title": "Remove PostHog key from preview web deploys",
+      "status": "completed",
+      "startedAt": "2026-04-02T18:37:22.116Z",
+      "completedAt": "2026-04-02T18:37:30.587Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_s958y0cq80nh.json"
+    },
+    "traj_bamhgragxzv4": {
+      "title": "Align web PostHog integration with the official PostHog Next.js guide",
+      "status": "completed",
+      "startedAt": "2026-04-02T18:38:19.368Z",
+      "completedAt": "2026-04-02T18:40:50.072Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_bamhgragxzv4.json"
+    },
+    "traj_1eyjykzyiupd": {
+      "title": "Default website PostHog host to i.agentrelay.dev",
+      "status": "completed",
+      "startedAt": "2026-04-02T18:42:32.014Z",
+      "completedAt": "2026-04-02T18:43:03.565Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_1eyjykzyiupd.json"
+    },
+    "traj_ft1pow2z4cum": {
+      "title": "Loosen website PostHog client config to capture more",
+      "status": "completed",
+      "startedAt": "2026-04-02T18:56:01.910Z",
+      "completedAt": "2026-04-02T18:57:06.549Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_ft1pow2z4cum.json"
+    },
+    "traj_9donja81noeb": {
+      "title": "Verify homepage metadata overrides root layout defaults",
+      "status": "completed",
+      "startedAt": "2026-04-02T22:09:49.968Z",
+      "completedAt": "2026-04-02T22:09:55.182Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_9donja81noeb.json"
+    },
+    "traj_d6delw8t2ddn": {
+      "title": "Improve shared layout metadata description",
+      "status": "completed",
+      "startedAt": "2026-04-02T22:10:58.491Z",
+      "completedAt": "2026-04-02T22:11:10.345Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_d6delw8t2ddn.json"
+    },
+    "traj_gkscurq38szl": {
+      "title": "Add 'slack for agents' to shared metadata keywords",
+      "status": "completed",
+      "startedAt": "2026-04-02T22:11:43.247Z",
+      "completedAt": "2026-04-02T22:11:49.942Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_gkscurq38szl.json"
+    },
+    "traj_ncgpkt8u7ffv": {
+      "title": "Pass PostHog env vars into SST Nextjs environment",
+      "status": "completed",
+      "startedAt": "2026-04-02T22:51:49.615Z",
+      "completedAt": "2026-04-02T22:52:34.907Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_ncgpkt8u7ffv.json"
     }
   }
 }
