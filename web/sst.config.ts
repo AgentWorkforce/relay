@@ -17,7 +17,7 @@ export default $config({
     const isProd = $app.stage === 'production';
     const domain = isProd ? 'agentrelay.net' : `${$app.stage}.agentrelay.net`;
     const NEXT_PUBLIC_POSTHOG_HOST = process.env.NEXT_PUBLIC_POSTHOG_HOST ?? 'https://i.agentrelay.dev';
-    const NEXT_PUBLIC_POSTHOG_KEY = process.env.NEXT_PUBLIC_POSTHOG_HOST ?? '';
+    const NEXT_PUBLIC_POSTHOG_KEY = process.env.NEXT_PUBLIC_POSTHOG_KEY ?? '';
 
     new sst.aws.Nextjs('Web', {
       path: '.',
