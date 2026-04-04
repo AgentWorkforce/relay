@@ -288,7 +288,9 @@ async function postWorkspaceApi(
   // fall back to interactive login and retry once.
   if (!isLocalBaseUrl(url)) {
     const stored = await readStoredAuth().catch(() => null);
-    if (stored) {
+    const parsed = new URL(url);
+    const targetOrigin = `${parsed.protocol}//${parsed.host}`;
+    if (stored && stored.apiUrl === targetOrigin) {
       headers['Authorization'] = `Bearer ${stored.accessToken}`;
     }
   }
