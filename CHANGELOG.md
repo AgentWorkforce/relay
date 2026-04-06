@@ -32,6 +32,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
+## [4.0.1] - 2026-04-06
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **TDD refactoring workflows for runner.ts + main.rs decomposition (#675)** (#675)
+- **/schedule — RelayCron landing page**
+- **Auto-download relayfile-mount binary on first use (#670)** (#670)
+
+#### User-Impacting Fixes
+- Allow anonymous workspace creation in agent-relay on (#683) (#683)
+- Wire .agentignore/.agentreadonly enforcement into agent-relay on (#671) (#671)
+
+### Technical Perspective
+#### Dependencies & Tooling
+- Gitignore .trajectories/ (automated run artifacts) (#676) (#676)
+
+#### Releases
+- v4.0.1
+
+---
+
 ## [4.0.0] - 2026-03-31
 
 ### Product Perspective
