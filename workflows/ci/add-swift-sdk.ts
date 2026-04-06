@@ -41,8 +41,8 @@ const [result] = await Promise.all([
   workflow('add-swift-sdk')
     .description(
       'Create a native Swift SDK (SPM) for the Agent Relay broker — ' +
-      'WebSocket transport, typed events, channel pub/sub, and agent registration. ' +
-      'Mirrors the TypeScript and Python SDK surface.',
+        'WebSocket transport, typed events, channel pub/sub, and agent registration. ' +
+        'Mirrors the TypeScript and Python SDK surface.'
     )
     .pattern('dag')
     .channel('wf-add-swift-sdk')
@@ -84,8 +84,7 @@ const [result] = await Promise.all([
 
     .step('create-branch', {
       type: 'deterministic',
-      command:
-        'git checkout -b feature/swift-sdk 2>&1 || git checkout feature/swift-sdk 2>&1',
+      command: 'git checkout -b feature/swift-sdk 2>&1 || git checkout feature/swift-sdk 2>&1',
       captureOutput: true,
       failOnError: false,
     })
@@ -184,8 +183,7 @@ PLAN_COMPLETE`,
       type: 'deterministic',
       dependsOn: ['plan'],
       command:
-        'mkdir -p packages/sdk-swift/Sources/AgentRelaySDK ' +
-        'packages/sdk-swift/Tests/AgentRelaySDKTests',
+        'mkdir -p packages/sdk-swift/Sources/AgentRelaySDK ' + 'packages/sdk-swift/Tests/AgentRelaySDKTests',
       captureOutput: true,
       failOnError: true,
     })
@@ -434,8 +432,7 @@ echo "All files present"`,
     .step('swift-build', {
       type: 'deterministic',
       dependsOn: ['verify-files'],
-      command:
-        'cd packages/sdk-swift && swift build 2>&1 | tail -50',
+      command: 'cd packages/sdk-swift && swift build 2>&1 | tail -50',
       captureOutput: true,
       failOnError: false, // lead will diagnose and fix errors
     })

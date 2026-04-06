@@ -20,10 +20,11 @@ import type {
   WorkflowRunRow,
   WorkflowStep,
 } from './types.js';
-import { WorkflowRunner, type WorkflowEventListener, type VariableContext, type StepExecutor } from './runner.js';
+import { WorkflowRunner, type WorkflowEventListener, type RunnerStepExecutor } from './runner.js';
 import { formatDryRunReport } from './dry-run-format.js';
 import { createDefaultEventLogger, type LogLevel } from './default-logger.js';
 import { runInCloud, type CloudRunOptions } from './cloud-runner.js';
+import type { VariableContext } from './template-resolver.js';
 
 // ── Option types for the builder API ────────────────────────────────────────
 
@@ -105,7 +106,7 @@ export interface WorkflowRunOptions {
   /** Validate and print execution plan without spawning agents. */
   dryRun?: boolean;
   /** External step executor (e.g. Daytona sandbox backend). */
-  executor?: StepExecutor;
+  executor?: RunnerStepExecutor;
   /** Start from a specific step, skipping all predecessors. */
   startFrom?: string;
   /** Previous run ID whose cached outputs are used with startFrom. */
@@ -196,7 +197,7 @@ export class WorkflowBuilder {
     if (!CHANNEL_RE.test(ch)) {
       throw new Error(
         `Invalid channel name "${ch}". Channel names must be lowercase alphanumeric and hyphens, starting with a letter or number. ` +
-        `Fix: use .toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')`
+          `Fix: use .toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')`
       );
     }
     this._channel = ch;
@@ -419,9 +420,8 @@ export class WorkflowBuilder {
     // Wire up default console logger unless explicitly disabled
     // renderer: "listr" owns the terminal — skip console logger to avoid garbled output
     // renderer: false implies no output at all
-    const logLevel = options.renderer === 'listr' || options.renderer === false
-      ? false
-      : (options.logLevel ?? 'normal');
+    const logLevel =
+      options.renderer === 'listr' || options.renderer === false ? false : (options.logLevel ?? 'normal');
     if (logLevel !== false) {
       runner.on(createDefaultEventLogger(logLevel));
     }

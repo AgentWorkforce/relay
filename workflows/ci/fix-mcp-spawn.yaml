@@ -33,7 +33,6 @@ agents:
 workflows:
   - name: default
     steps:
-
       # ── Read relevant source code ─────────────────────────────────────────
       - name: read-snippets
         type: deterministic

@@ -2,7 +2,19 @@ export * from './types.js';
 export * from './runner.js';
 export * from './custom-steps.js';
 export * from './cli-session-collector.js';
+export * from './channel-messenger.js';
+export * from './process-spawner.js';
 export * from './run-summary-table.js';
+export * from './template-resolver.js';
+export * from './verification.js';
+export {
+  StepExecutor,
+  /** @deprecated Use {@link StepExecutor} instead. */
+  StepExecutor as WorkflowStepLifecycleExecutor,
+  type StepExecutorDeps,
+  type StepResult,
+  type StepSchedule,
+} from './step-executor.js';
 export {
   Models,
   ClaudeModels,

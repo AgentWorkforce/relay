@@ -366,15 +366,13 @@ Use vitest. Mock file system paths to point at temp fixtures. Do NOT hit real us
 
   // ── Run ─────────────────────────────────────────────────────────────────
 
-  const result = await wf
-    .onError('retry', { maxRetries: 2, retryDelayMs: 10_000 })
-    .run({
-      onEvent: (e) => {
-        if (e.type.startsWith('step:')) {
-          console.log(`[${e.type}] ${e.stepName ?? ''}`);
-        }
-      },
-    });
+  const result = await wf.onError('retry', { maxRetries: 2, retryDelayMs: 10_000 }).run({
+    onEvent: (e) => {
+      if (e.type.startsWith('step:')) {
+        console.log(`[${e.type}] ${e.stepName ?? ''}`);
+      }
+    },
+  });
 
   console.log(`Done: ${result.status} (${result.id})`);
 }
