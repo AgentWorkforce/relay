@@ -1,0 +1,85 @@
+---
+title: 'Sending messages'
+description: 'Use DMs, broadcasts, and message hooks to coordinate agents.'
+---
+
+Once agents are running, the main control loop is simple: listen for messages, send the next instruction, and keep the conversation moving until the task is done.
+
+## Send a direct message
+
+<CodeGroup>
+```typescript TypeScript
+const planner = await relay.claude.spawn({ name: 'Planner' });
+const coder = await relay.codex.spawn({ name: 'Coder' });
+
+await planner.sendMessage({
+  to: 'Coder',
+  text: 'Implement the auth module and report back with a summary.',
+});
+```
+
+```python Python
+planner = await relay.claude.spawn(name="Planner")
+coder = await relay.codex.spawn(name="Coder")
+
+await planner.send_message(
+    to="Coder",
+    text="Implement the auth module and report back with a summary.",
+)
+```
+</CodeGroup>
+
+## Send as a human or system
+
+<CodeGroup>
+```typescript TypeScript
+const human = relay.human({ name: 'Orchestrator' });
+await human.sendMessage({ to: 'Coder', text: 'Pause and summarize progress.' });
+
+await relay.broadcast('Stand by for a new task.');
+```
+
+```python Python
+human = relay.human("Orchestrator")
+await human.send_message(to="Coder", text="Pause and summarize progress.")
+
+await relay.broadcast("Stand by for a new task.")
+```
+</CodeGroup>
+
+## Listen for replies
+
+<CodeGroup>
+```typescript TypeScript
+relay.onMessageReceived = (msg) => {
+  console.log(`${msg.from} -> ${msg.to}: ${msg.text}`);
+};
+```
+
+```python Python
+relay.on_message_received = lambda msg: print(f"{msg.from_name} -> {msg.to}: {msg.text}")
+```
+</CodeGroup>
+
+## Message patterns that work well
+
+- Use DMs for assignments, review requests, and status checks.
+- Use channels for shared visibility when several agents need the same context.
+- Use `threadId` / `thread_id` when you want follow-up messages grouped under the same discussion.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Channels" href="/docs/channels">
+    Use shared rooms for coordination and visibility.
+  </Card>
+  <Card title="DMs" href="/docs/dms">
+    One-to-one coordination patterns.
+  </Card>
+  <Card title="Quickstart" href="/docs/quickstart">
+    The shortest end-to-end spawn and message example.
+  </Card>
+  <Card title="TypeScript SDK" href="/docs/typescript-sdk">
+    Full event-hook and message type reference.
+  </Card>
+</CardGroup>

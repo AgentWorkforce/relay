@@ -1,0 +1,97 @@
+---
+title: 'Local Mode'
+description: 'Run Agent Relay on your own machine with local broker state, local services, and no hosted control plane.'
+---
+
+Local mode is the all-local operating model for Agent Relay. Use it when you want the broker, workspace state, file layer, and auth layer to stay on your machine instead of depending on hosted coordination surfaces.
+
+<Note>
+If you are running agents against sensitive code, working offline, or iterating on relay-aware tooling locally, this is the mode to start with.
+</Note>
+
+## What local mode means
+
+- The broker runs on your machine and can persist runtime state under `.agent-relay/`.
+- The relay-aware sandbox path uses local Relayauth and Relayfile services on `127.0.0.1`.
+- Agent work happens against a mounted local workspace, not a hosted sandbox.
+- Cloud-specific surfaces such as Observer and `cloud` workflow execution are optional and out of scope.
+
+## When to use it
+
+- Your repo or data should stay inside one machine or one trusted local network boundary.
+- You want fast iteration and easier debugging with local logs and local state files.
+- You are developing relay-aware permissions, ACLs, or workspace policies.
+- You do not need remote execution or cross-machine workspace access.
+
+## Fastest local paths
+
+### Start a local broker
+
+Use this when you want spawned agents talking to each other on the same machine:
+
+```bash
+agent-relay up --no-dashboard
+agent-relay spawn planner claude "Break the work into steps"
+agent-relay spawn coder codex "Implement the approved plan"
+agent-relay send planner "Coordinate with coder and keep updates concise."
+agent-relay status
+```
+
+Useful flags:
+
+- `--dashboard` starts the local dashboard if the dashboard components are installed.
+- `--state-dir <path>` moves persisted broker state out of the default `.agent-relay/` directory.
+- `--no-spawn` starts the broker without auto-spawning configured agents.
+
+### Run inside the local relay sandbox
+
+Use this when you want a relay-aware mounted workspace with local auth and file services:
+
+```bash
+agent-relay on --scan
+agent-relay on codex --agent reviewer -- --model gpt-5.4
+```
+
+Useful commands:
+
+- `agent-relay on --doctor` checks prerequisites without launching a session.
+- `agent-relay on --scan` previews what the agent will be able to see.
+- `agent-relay off` stops the local relay services and cleans up mounts.
+- `--port-auth <port>` and `--port-file <port>` move the local service ports when defaults clash.
+
+## Local state and services
+
+- Persisted broker state lives in `.agent-relay/` unless you override it with `--state-dir`.
+- The default local service ports are `127.0.0.1:8787` for Relayauth and `127.0.0.1:8080` for Relayfile.
+- If you have not authored a relay config yet, `agent-relay on` can generate one under `.relay/generated/relay-zero-config.json`.
+- Permission details for the mounted workspace are written to `_PERMISSIONS.md`.
+- If `.agentdeny` exists in your project, it is copied into the mounted workspace so local runs enforce the same deny rules.
+
+## Local mode vs cloud mode
+
+- Local mode keeps runtime, services, and state close to your repo for low-latency, single-machine operation.
+- Cloud mode is for sandboxed remote execution, longer-running jobs, and distributed access patterns.
+- Start local unless you specifically need hosted execution or a shared remote workspace.
+
+## Related docs
+
+<CardGroup cols={2}>
+  <Card title="Broker lifecycle" href="/docs/cli-broker-lifecycle">
+    Start, inspect, and stop the local broker.
+  </Card>
+  <Card title="On the relay" href="/docs/cli-on-the-relay">
+    Launch an agent into the relay-aware local sandbox.
+  </Card>
+  <Card title="File sharing" href="/docs/file-sharing">
+    Understand the shared file layer used by local workspaces.
+  </Card>
+  <Card title="Authentication" href="/docs/authentication">
+    See the auth layer that backs local relay sessions.
+  </Card>
+  <Card title="Relay Dashboard" href="/docs/relay-dashboard">
+    Optional local UI for watching and operating a workspace.
+  </Card>
+  <Card title="Cloud" href="/docs/cloud">
+    Switch mental models when you do need remote execution.
+  </Card>
+</CardGroup>

@@ -26,7 +26,11 @@ git push origin main  # NO!
 
 This ensures the user maintains control over what goes into the main branch.
 
+## .trajectories Must Be Tracked
 
+**CRITICAL: Never add `.trajectories/` to `.gitignore`.**
+
+The `.trajectories/` directory must remain tracked in git. It contains trajectory records from the `trail` tool that provide valuable context for future agents and humans about past decisions, reasoning, and work history.
 
 <!-- prpm:snippet:start @agent-workforce/trail-snippet@1.1.0 -->
 # Trail

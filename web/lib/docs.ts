@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import matter from 'gray-matter';
+import { encodeCodeFenceMeta } from './code-fence-meta';
 
 const moduleFilename = fileURLToPath(import.meta.url);
 const moduleDirname = path.dirname(moduleFilename);
@@ -36,22 +37,60 @@ export interface DocContent {
 }
 
 /**
- * Preprocess MDX to preserve code block meta labels.
- * Mintlify uses ```lang Label where Label is a tab title (e.g. ```bash TypeScript).
- * We swap the language with the label so CodeGroup can display the right tab name.
- * The actual syntax highlighting language is less important than the tab label.
+ * Preprocess MDX to preserve code fence metadata that MDX would otherwise drop.
+ * Supported patterns:
+ * - ```lang Label
+ * - ```lang file="path/to/file.ts"
+ * - ```lang Label file="path/to/file.ts"
  */
 function preprocessMdx(source: string): string {
-  // Inside CodeGroup blocks, replace ```lang Label with ```Label
-  // so the code element gets className="language-Label" which CodeGroup reads
-  return source.replace(
-    /(<CodeGroup>[\s\S]*?<\/CodeGroup>)/g,
-    (codeGroupBlock) =>
-      codeGroupBlock.replace(
-        /```\w+\s+([A-Za-z][\w .+-]*)\n/g,
-        (_, label: string) => `\`\`\`${label.trim()}\n`
-      )
-  );
+  return source.replace(/^```([^\n]*)$/gm, (line, rawInfo: string) => {
+    const info = rawInfo.trim();
+    if (!info) {
+      return line;
+    }
+
+    const firstWhitespace = info.search(/\s/);
+    if (firstWhitespace === -1) {
+      return line;
+    }
+
+    const language = info.slice(0, firstWhitespace).trim();
+    let remainder = info.slice(firstWhitespace + 1).trim();
+    let filename: string | undefined;
+    let explicitLabel: string | undefined;
+
+    remainder = remainder
+      .replace(/(?:^|\s)(?:file|filename|title)=(["'])(.*?)\1/g, (_, __, value: string) => {
+        if (!filename) {
+          filename = value.trim();
+        }
+        return ' ';
+      })
+      .replace(/(?:^|\s)(?:file|filename|title)=([^\s"'=]+)/g, (_, value: string) => {
+        const normalizedValue = value.trim();
+
+        // Recover from malformed shorthand like `file=TypeScript` that was intended
+        // to act as a tab label, while still allowing unquoted filenames such as `file=agent.ts`.
+        if (!filename && /[./\\]/.test(normalizedValue)) {
+          filename = normalizedValue;
+        } else if (!explicitLabel) {
+          explicitLabel = normalizedValue;
+        }
+
+        return ' ';
+      })
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const label = explicitLabel ?? (remainder && !/[=]/.test(remainder) ? remainder : undefined);
+
+    if (!label && !filename) {
+      return line;
+    }
+
+    return `\`\`\`${encodeCodeFenceMeta({ language, label, filename })}`;
+  });
 }
 
 function stripInlineMarkdown(text: string): string {

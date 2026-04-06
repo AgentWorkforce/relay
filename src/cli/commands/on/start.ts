@@ -15,10 +15,11 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { compileDotfiles, hasDotfiles } from './dotfiles.js';
 import { ensureRelayfileMountBinary } from './relayfile-binary.js';
 import { mintToken } from './token.js';
-import { seedWorkspace as seedWorkspaceFiles } from './workspace.js';
-import { ensureAuthenticated } from '@agent-relay/cloud';
+import { seedWorkspace as seedWorkspaceFiles, seedAclRules } from './workspace.js';
+import { ensureAuthenticated, readStoredAuth } from '@agent-relay/cloud';
 
 interface OnOptions {
   agent?: string;
@@ -242,7 +243,10 @@ function readWorkspaceRegistry(relayDir?: string): LocalWorkspaceRegistry {
 
 function writeWorkspaceRegistry(relayDir: string, registry: LocalWorkspaceRegistry): void {
   ensureDirectory(relayDir);
-  writeFileSync(getWorkspaceRegistryPath(relayDir), `${JSON.stringify(registry, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  writeFileSync(getWorkspaceRegistryPath(relayDir), `${JSON.stringify(registry, null, 2)}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
 }
 
 function updateWorkspaceRegistry(
@@ -279,18 +283,35 @@ async function postWorkspaceApi(
     'X-Correlation-Id': `agent-relay-on-${Date.now()}`,
   };
 
-  // Attach cloud auth token for remote endpoints
+  // For remote endpoints, try anonymous first — attach existing auth if
+  // available but never force a browser login. If the server returns 401,
+  // fall back to interactive login and retry once.
   if (!isLocalBaseUrl(url)) {
+    const stored = await readStoredAuth().catch(() => null);
     const parsed = new URL(url);
-    const auth = await ensureAuthenticated(`${parsed.protocol}//${parsed.host}`);
-    headers['Authorization'] = `Bearer ${auth.accessToken}`;
+    const targetOrigin = `${parsed.protocol}//${parsed.host}`;
+    if (stored && stored.apiUrl === targetOrigin) {
+      headers['Authorization'] = `Bearer ${stored.accessToken}`;
+    }
   }
 
-  const response = await fetchFn(url, {
+  let response = await fetchFn(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
   });
+
+  // Retry with interactive login if the server requires auth
+  if (response.status === 401 && !isLocalBaseUrl(url)) {
+    const parsed = new URL(url);
+    const auth = await ensureAuthenticated(`${parsed.protocol}//${parsed.host}`);
+    headers['Authorization'] = `Bearer ${auth.accessToken}`;
+    response = await fetchFn(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  }
 
   const raw = await response.text();
   if (!response.ok) {
@@ -616,7 +637,10 @@ function loadConfigFromFile(configPath: string, projectDir: string): RelayConfig
   const fallbackWorkspace = path.basename(projectDir);
 
   const workspace = toString(payload.workspace, toString(root.workspace, fallbackWorkspace));
-  const signing_secret = toString(payload.signing_secret, toString(root.signing_secret, process.env.SIGNING_KEY ?? ''));
+  const signing_secret = toString(
+    payload.signing_secret,
+    toString(root.signing_secret, process.env.SIGNING_KEY ?? '')
+  );
   if (!signing_secret) {
     throw new Error(
       `relay config at ${configPath} is missing signing_secret and SIGNING_KEY env var is not set. ` +
@@ -1027,7 +1051,11 @@ interface GoOnRelayDeps {
   exit?: (code: number) => never | void;
   fetch?: FetchFn;
   provision?: (config: RelayConfig, agent: RelayConfigAgent) => Promise<void>;
-  provisionAgentToken?: (opts: { config: RelayConfig; agent: RelayConfigAgent; tokenPath: string }) => Promise<string | undefined>;
+  provisionAgentToken?: (opts: {
+    config: RelayConfig;
+    agent: RelayConfigAgent;
+    tokenPath: string;
+  }) => Promise<string | undefined>;
   ensureServicesRunning?: (authBase: string, fileBase: string) => Promise<void>;
   startServices?: (opts: { authBase: string; fileBase: string }) => Promise<void>;
 }
@@ -1205,14 +1233,53 @@ export async function goOnTheRelay(
     fetchFn: deps.fetch,
   });
 
+  // Compile dotfile permissions for this agent
+  const hasDots = hasDotfiles(projectDir);
+  const dotfileAcl = hasDots ? compileDotfiles(projectDir, agent.name, workspaceSession.workspaceId) : null;
+
   if (workspaceSession.created) {
+    const seedExcludes = [...DEFAULT_SEED_EXCLUDES];
+    if (dotfileAcl) {
+      // Add ignored patterns so ignored files are never uploaded
+      for (const [dir, rules] of Object.entries(dotfileAcl.acl)) {
+        if (rules.some((r) => r.startsWith('deny:agent:'))) {
+          seedExcludes.push(dir.replace(/^\//, ''));
+        }
+      }
+    }
     await seedWorkspaceFiles(
       workspaceSession.relayfileUrl,
       workspaceSession.token,
       workspaceSession.workspaceId,
       projectDir,
-      DEFAULT_SEED_EXCLUDES
+      seedExcludes
     );
+
+    if (dotfileAcl && Object.keys(dotfileAcl.acl).length > 0) {
+      await seedAclRules(
+        workspaceSession.relayfileUrl,
+        workspaceSession.token,
+        workspaceSession.workspaceId,
+        dotfileAcl.acl
+      );
+
+      // Write compiled ACL for mount to read
+      const bundlePath = path.join(relayDir, 'compiled-acl.json');
+      writeFileSync(
+        bundlePath,
+        JSON.stringify(
+          {
+            workspace: workspaceSession.workspaceId,
+            acl: dotfileAcl.acl,
+            summary: dotfileAcl.summary,
+            agents: [{ name: agent.name, summary: dotfileAcl.summary }],
+          },
+          null,
+          2
+        ) + '\n',
+        { encoding: 'utf8' }
+      );
+    }
   }
 
   const mountDir = path.join(
@@ -1362,10 +1429,18 @@ export async function goOnTheRelay(
         // Wait for the agent process to exit so agentExitCode is set by the close handler,
         // then ensure cleanup completes before resolving — avoids data loss from premature exit
         cleanupInProgress = new Promise<void>((r) => {
-          if (!agentProc || agentProc.exitCode !== null) { r(); return; }
+          if (!agentProc || agentProc.exitCode !== null) {
+            r();
+            return;
+          }
           const t = setTimeout(r, 2000);
-          agentProc.once('close', () => { clearTimeout(t); r(); });
-        }).then(() => finalizeCleanup()).then(() => resolve());
+          agentProc.once('close', () => {
+            clearTimeout(t);
+            r();
+          });
+        })
+          .then(() => finalizeCleanup())
+          .then(() => resolve());
       };
 
       process.once('SIGINT', cleanupHook);

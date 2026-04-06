@@ -17,25 +17,18 @@ export function SiteFooter() {
 
         <div className={s.columns}>
           <div className={s.col}>
-            <h4 className={s.colTitle}>Products</h4>
-            <Link href="/message" className={s.link}>Message</Link>
-            <Link href="/auth" className={s.link}>Auth</Link>
-            <Link href="/file" className={s.link}>File</Link>
-          </div>
-          <div className={s.col}>
             <h4 className={s.colTitle}>Resources</h4>
-            <Link href="/docs" className={s.link}>Documentation</Link>
-            <Link href="/docs/quickstart" className={s.link}>Quickstart</Link>
-            <Link href="/docs/reference/sdk" className={s.link}>SDK Reference</Link>
-            <Link href="/openclaw" className={s.link}>OpenClaw</Link>
-            <a href="https://agent-relay.com" className={s.link}>Cloud</a>
-          </div>
-          <div className={s.col}>
-            <h4 className={s.colTitle}>Community</h4>
-            <Link href="/blog" className={s.link}>Blog</Link>
+            <Link href="/docs/introduction" className={s.link}>Getting Started</Link>
+            <Link href="/docs/spawning-an-agent" className={s.link}>Basics</Link>
+            <Link href="/docs/reference-workflows" className={s.link}>Advanced</Link>
+            <Link href="/docs/cli-overview" className={s.link}>CLI</Link>
+            <Link href="/docs/typescript-sdk" className={s.link}>SDKs</Link>
+            <Link href="/docs/plugin-claude-code" className={s.link}>Plugins</Link>
+            <Link href="/docs/typescript-examples" className={s.link}>Examples</Link>
           </div>
           <div className={s.col}>
             <h4 className={s.colTitle}>Company</h4>
+            <Link href="/blog" className={s.link}>Blog</Link>
             <a href="mailto:hello@agentrelay.dev" className={s.link}>Contact</a>
           </div>
         </div>

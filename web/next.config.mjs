@@ -19,6 +19,8 @@ const nextConfig = {
       { source: '/relayauth/:path*', destination: '/auth/:path*' },
       { source: '/relaycast', destination: '/message' },
       { source: '/relaycast/:path*', destination: '/message/:path*' },
+      { source: '/docs/reference-sdk', destination: '/docs/typescript-sdk' },
+      { source: '/docs/reference-sdk-py', destination: '/docs/python-sdk' },
     ];
   },
 };

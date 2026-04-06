@@ -41,11 +41,22 @@ export interface AgentRelayClientOptions {
   requestTimeoutMs?: number;
 }
 
+export interface AgentRelayBrokerInitArgs {
+  /** Optional HTTP API port for dashboard proxy (0 = disabled). */
+  apiPort?: number;
+  /** Bind address for the HTTP API. Defaults to 127.0.0.1 in the broker. */
+  apiBind?: string;
+  /** Enable persistence for broker state under the working directory. */
+  persist?: boolean;
+  /** Override the directory used for broker state files. */
+  stateDir?: string;
+}
+
 export interface AgentRelaySpawnOptions {
   /** Path to the agent-relay-broker binary. Auto-resolved if omitted. */
   binaryPath?: string;
-  /** Extra args passed to `broker init` (e.g. ['--persist']). */
-  binaryArgs?: string[];
+  /** Structured options mapped to the broker's Rust `init` CLI flags. */
+  binaryArgs?: AgentRelayBrokerInitArgs;
   /** Broker name. Defaults to cwd basename. */
   brokerName?: string;
   /** Default channels for spawned agents. */
@@ -90,6 +101,29 @@ function isProcessRunning(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
+}
+
+function buildBrokerInitArgs(args?: AgentRelayBrokerInitArgs): string[] {
+  if (!args) {
+    return [];
+  }
+
+  const cliArgs: string[] = [];
+
+  if (args.persist) {
+    cliArgs.push('--persist');
+  }
+  if (args.apiPort !== undefined) {
+    cliArgs.push('--api-port', String(args.apiPort));
+  }
+  if (args.apiBind !== undefined) {
+    cliArgs.push('--api-bind', args.apiBind);
+  }
+  if (args.stateDir !== undefined) {
+    cliArgs.push('--state-dir', args.stateDir);
+  }
+
+  return cliArgs;
 }
 
 // ── Client ─────────────────────────────────────────────────────────────
@@ -172,7 +206,7 @@ export class AgentRelayClient {
     const brokerName = options?.brokerName ?? (path.basename(cwd) || 'project');
     const channels = options?.channels ?? ['general'];
     const timeoutMs = options?.startupTimeoutMs ?? 15_000;
-    const userArgs = options?.binaryArgs ?? [];
+    const userArgs = buildBrokerInitArgs(options?.binaryArgs);
 
     const apiKey = `br_${randomBytes(16).toString('hex')}`;
 

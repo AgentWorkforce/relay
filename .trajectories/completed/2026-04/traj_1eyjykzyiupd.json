@@ -1,0 +1,25 @@
+{
+  "id": "traj_1eyjykzyiupd",
+  "version": 1,
+  "task": {
+    "title": "Default website PostHog host to i.agentrelay.dev"
+  },
+  "status": "completed",
+  "startedAt": "2026-04-02T18:42:32.014Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "870ff6b15e6a55ca718d9e15fe4bd63c566002c8",
+    "endRef": "870ff6b15e6a55ca718d9e15fe4bd63c566002c8"
+  },
+  "completedAt": "2026-04-02T18:43:03.565Z",
+  "retrospective": {
+    "summary": "Defaulted the website PostHog proxy host to https://i.agentrelay.dev when NEXT_PUBLIC_POSTHOG_HOST is unset, and updated the env example to match.",
+    "approach": "Standard approach",
+    "confidence": 0.97
+  }
+}

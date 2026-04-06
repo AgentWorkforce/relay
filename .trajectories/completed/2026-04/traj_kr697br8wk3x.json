@@ -1,0 +1,53 @@
+{
+  "id": "traj_kr697br8wk3x",
+  "version": 1,
+  "task": {
+    "title": "Ensure PostHog tracking is set up on docs, blog, and catalog pages"
+  },
+  "status": "completed",
+  "startedAt": "2026-04-02T18:30:54.413Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-04-02T18:33:10.666Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_no23nlbf8fmj",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-04-02T18:33:10.666Z",
+      "events": [
+        {
+          "ts": 1775154790667,
+          "type": "decision",
+          "content": "Use manual, allowlisted PostHog pageviews in the web app: Use manual, allowlisted PostHog pageviews in the web app",
+          "raw": {
+            "question": "Use manual, allowlisted PostHog pageviews in the web app",
+            "chosen": "Use manual, allowlisted PostHog pageviews in the web app",
+            "alternatives": [],
+            "reasoning": "The web app has private invite-token routes, so blanket autocapture or automatic pageview tracking could leak sensitive URLs. Manual route-matched pageviews cover docs/blog/catalog while excluding invite paths."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-04-02T18:36:18.998Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "870ff6b15e6a55ca718d9e15fe4bd63c566002c8",
+    "endRef": "870ff6b15e6a55ca718d9e15fe4bd63c566002c8"
+  },
+  "completedAt": "2026-04-02T18:36:18.998Z",
+  "retrospective": {
+    "summary": "Added PostHog pageview tracking for the public docs/blog/catalog-style web routes using NEXT_PUBLIC_POSTHOG_KEY from GitHub Actions, with invite-token routes excluded and verification via tests plus next build.",
+    "approach": "Standard approach",
+    "confidence": 0.91
+  }
+}

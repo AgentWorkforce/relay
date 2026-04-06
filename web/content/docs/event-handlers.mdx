@@ -1,0 +1,146 @@
+---
+title: 'Event handlers'
+description: 'Subscribe to relay events so your app can react to messages, agent lifecycle changes, output, and delivery updates.'
+---
+
+Event handlers are the main way to observe what the relay is doing in real time. Attach callbacks to the `AgentRelay` instance to log activity, update UI, trigger follow-up work, or keep your own state in sync.
+
+## Basic pattern
+
+Assign a function to subscribe. Set the handler back to `null` / `None` to clear it.
+
+<CodeGroup>
+```typescript TypeScript
+const relay = new AgentRelay();
+
+relay.onMessageReceived = (msg) => {
+  console.log(`${msg.from} -> ${msg.to}: ${msg.text}`);
+};
+
+relay.onAgentReady = (agent) => {
+  console.log(`ready: ${agent.name}`);
+};
+```
+
+```python Python
+relay = AgentRelay()
+
+relay.on_message_received = lambda msg: print(f"{msg.from_name} -> {msg.to}: {msg.text}")
+relay.on_agent_ready = lambda agent: print(f"ready: {agent.name}")
+```
+</CodeGroup>
+
+## Message handlers
+
+Use these when you want to react to communication events.
+
+<CodeGroup>
+```typescript TypeScript
+relay.onMessageReceived = (msg) => {
+  console.log('received', msg.threadId, msg.text);
+};
+
+relay.onMessageSent = (msg) => {
+  console.log('sent', msg.to, msg.text);
+};
+```
+
+```python Python
+relay.on_message_received = lambda msg: print("received", msg.thread_id, msg.text)
+relay.on_message_sent = lambda msg: print("sent", msg.to, msg.text)
+```
+</CodeGroup>
+
+- `onMessageReceived` / `on_message_received`: fires when the relay delivers a message into your session.
+- `onMessageSent` / `on_message_sent`: fires after your app or agent sends a message through the relay.
+
+## Agent lifecycle handlers
+
+Use lifecycle handlers when you care about worker state transitions.
+
+<CodeGroup>
+```typescript TypeScript
+relay.onAgentSpawned = (agent) => {
+  console.log(`spawned: ${agent.name}`);
+};
+
+relay.onAgentReady = (agent) => {
+  console.log(`ready: ${agent.name}`);
+};
+
+relay.onAgentReleased = (agent) => {
+  console.log(`released: ${agent.name}`);
+};
+
+relay.onAgentExited = (agent) => {
+  console.log(`exited: ${agent.name}`, agent.exitCode, agent.exitSignal);
+};
+
+relay.onAgentExitRequested = ({ name, reason }) => {
+  console.log(`exit requested: ${name}`, reason);
+};
+
+relay.onAgentIdle = ({ name, idleSecs }) => {
+  console.log(`idle: ${name}`, idleSecs);
+};
+```
+
+```python Python
+relay.on_agent_spawned = lambda agent: print(f"spawned: {agent.name}")
+relay.on_agent_ready = lambda agent: print(f"ready: {agent.name}")
+relay.on_agent_released = lambda agent: print(f"released: {agent.name}")
+relay.on_agent_exited = lambda agent: print(f"exited: {agent.name}")
+relay.on_agent_exit_requested = lambda event: print(f"exit requested: {event['name']}", event["reason"])
+relay.on_agent_idle = lambda event: print(f"idle: {event['name']}", event["idleSecs"])
+```
+</CodeGroup>
+
+These hooks are useful for status dashboards, retry logic, timeout nudges, and cleanup when a worker finishes or requests exit.
+
+## Output and delivery handlers
+
+Use these when you need low-level visibility into what the relay is streaming.
+
+<CodeGroup>
+```typescript TypeScript
+relay.onWorkerOutput = ({ name, stream, chunk }) => {
+  console.log(`[${name}] ${stream}: ${chunk}`);
+};
+
+relay.onDeliveryUpdate = (event) => {
+  console.log('delivery update', event.type, event);
+};
+```
+
+```python Python
+relay.on_worker_output = lambda event: print(f"[{event['name']}] {event['stream']}: {event['chunk']}")
+relay.on_delivery_update = lambda event: print("delivery update", event["type"])
+```
+</CodeGroup>
+
+- `onWorkerOutput` / `on_worker_output`: raw stdout or stderr from a worker.
+- `onDeliveryUpdate` / `on_delivery_update`: broker-level delivery events when you need transport visibility.
+
+## Good uses for handlers
+
+- Update a UI timeline or status panel without polling.
+- Capture logs and metrics while agents run.
+- Trigger follow-up work when a message arrives or a worker becomes ready.
+- Detect exit conditions and clean up local resources.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Sending messages" href="/docs/sending-messages">
+    Pair live handlers with direct messages and broadcasts.
+  </Card>
+  <Card title="Spawning an agent" href="/docs/spawning-an-agent">
+    Start workers whose lifecycle you want to observe.
+  </Card>
+  <Card title="TypeScript SDK" href="/docs/typescript-sdk">
+    Full TypeScript API reference, including hook names and types.
+  </Card>
+  <Card title="Python SDK" href="/docs/python-sdk">
+    Full Python API reference for the same callbacks.
+  </Card>
+</CardGroup>

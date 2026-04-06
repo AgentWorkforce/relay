@@ -1,0 +1,25 @@
+{
+  "id": "traj_hvwew67txec2",
+  "version": 1,
+  "task": {
+    "title": "Handle BannerLink in docs markdown export"
+  },
+  "status": "completed",
+  "startedAt": "2026-04-02T12:28:08.828Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "ab4dd4d5d7bb2f062257b669f7dfbe8d7b6f9779",
+    "endRef": "ab4dd4d5d7bb2f062257b669f7dfbe8d7b6f9779"
+  },
+  "completedAt": "2026-04-02T12:30:00.540Z",
+  "retrospective": {
+    "summary": "Handled BannerLink in docs markdown export",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

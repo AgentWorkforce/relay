@@ -1,0 +1,25 @@
+{
+  "id": "traj_ngj41z7schgz",
+  "version": 1,
+  "task": {
+    "title": "Add local-mode docs page and fix introduction link"
+  },
+  "status": "completed",
+  "startedAt": "2026-04-02T16:54:28.931Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "d1dd4cd4f8f0bcf7e2f9a0b2f32b9d8b7c68c0fc",
+    "endRef": "d1dd4cd4f8f0bcf7e2f9a0b2f32b9d8b7c68c0fc"
+  },
+  "completedAt": "2026-04-02T16:57:39.346Z",
+  "retrospective": {
+    "summary": "Added a local-mode docs page and wired it into the docs navigation so the introduction link resolves.",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  }
+}

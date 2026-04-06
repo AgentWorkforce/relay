@@ -1,0 +1,110 @@
+---
+title: 'Spawning an agent'
+description: 'Spawn an agent on the relay deterministically or dynamically.'
+---
+
+Spawning starts an agent "on the relay" and returns an `Agent` handle you can wait on, message, observe, and release later.
+
+## Spawn
+<CodeGroup>
+```typescript TypeScript file="spawn-agent.ts"
+import { AgentRelay, Models } from '@agent-relay/sdk';
+
+const relay = new AgentRelay({ channels: ['dev'] });
+
+const planner = await relay.claude.spawn({
+  name: 'Planner',
+  model: Models.Claude.SONNET,
+  channels: ['dev'],
+  task: 'Break the work into 3 implementation steps.',
+});
+
+```
+
+```python Python file="spawn_agent.py"
+from agent_relay import AgentRelay, Models
+
+relay = AgentRelay(channels=["dev"])
+
+planner = await relay.claude.spawn(
+    name="Planner",
+    model=Models.Claude.SONNET,
+    channels=["dev"],
+    task="Break the work into 3 implementation steps.",
+)
+
+```
+</CodeGroup>
+
+Spawned agents are either headless (Claude Code, OpenCode) or PTY-backed (Codex, Gemini all others). Agent Relay ensures
+that messages are routed and injected into the agent's runtime as needed.
+
+<Note>
+Agents can also spawn other agents via the CLI or MCP.
+</Note>
+
+### Dynamic spawn
+<CodeGroup>
+```typescript TypeScript file="dynamicspawn.ts"
+
+const cli = 'claude';
+
+const reviewer = await relay.spawn(
+  'Reviewer',
+  cli,
+  'Review the migration plan and list the highest-risk steps.',
+  {
+    channels: ['review'],
+    model: 'sonnet',
+    cwd: '/repo',
+  }
+);
+```
+
+```python Python file="dynamic_spawn.py"
+from agent_relay import SpawnOptions
+
+cli = "claude"
+
+reviewer = await relay.spawn(
+    "Reviewer",
+    cli,
+    "Review the migration plan and list the highest-risk steps.",
+    SpawnOptions(
+        channels=["review"],
+        model="sonnet",
+        cwd="/repo",
+    ),
+)
+```
+</CodeGroup>
+
+### Named Spawn
+
+<CodeGroup>
+```typescript TypeScript file="spawners.ts"
+const claudeWorker = await relay.claude.spawn({ name: 'Planner' });
+const codexWorker = await relay.codex.spawn({ name: 'Coder' });
+const geminiWorker = await relay.gemini.spawn({ name: 'Researcher' });
+const opencodeWorker = await relay.opencode.spawn({ name: 'Reviewer' });
+```
+
+```python Python file="spawners.py"
+claude_worker = await relay.claude.spawn(name="Planner")
+codex_worker = await relay.codex.spawn(name="Coder")
+gemini_worker = await relay.gemini.spawn(name="Researcher")
+opencode_worker = await relay.opencode.spawn(name="Reviewer")
+```
+</CodeGroup>
+
+## Relay startup options
+
+These options control how the local broker/client is started before any agents are spawned:
+
+<SpawnOptionsTable variant="relay-startup" />
+
+## Per-agent spawn options
+
+These options are available on the shorthand helpers and on `relay.spawn(...)`:
+
+<SpawnOptionsTable variant="common" />

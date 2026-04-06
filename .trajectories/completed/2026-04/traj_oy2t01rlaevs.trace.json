@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "id": "trace_3hqtlzphyc8z",
+  "timestamp": "2026-04-02T17:13:41.650Z",
+  "trajectory": "traj_oy2t01rlaevs",
+  "files": [
+    {
+      "path": "docs/plugin-claude-code.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 23,
+              "end_line": 28,
+              "revision": "fcfa7b83464054d6463527a02468bf832725b847"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

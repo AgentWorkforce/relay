@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "id": "trace_x27mkgi2j61b",
+  "timestamp": "2026-04-02T12:52:45.756Z",
+  "trajectory": "traj_0dzj6tewabm3",
+  "files": [
+    {
+      "path": ".trajectories/active/traj_0dzj6tewabm3.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 46,
+              "revision": "bcfd7dc9925af6a0140988eb7e6d2d5e285e6041"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".trajectories/completed/2026-04/traj_ncaub0g31t0w.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 53,
+              "revision": "bcfd7dc9925af6a0140988eb7e6d2d5e285e6041"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".trajectories/completed/2026-04/traj_ncaub0g31t0w.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 31,
+              "revision": "bcfd7dc9925af6a0140988eb7e6d2d5e285e6041"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".trajectories/index.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "bcfd7dc9925af6a0140988eb7e6d2d5e285e6041"
+            },
+            {
+              "start_line": 947,
+              "end_line": 965,
+              "revision": "bcfd7dc9925af6a0140988eb7e6d2d5e285e6041"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "test/web/code-fence-meta.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 34,
+              "revision": "bcfd7dc9925af6a0140988eb7e6d2d5e285e6041"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "web/lib/code-fence-meta.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 5,
+              "end_line": 10,
+              "revision": "bcfd7dc9925af6a0140988eb7e6d2d5e285e6041"
+            },
+            {
+              "start_line": 16,
+              "end_line": 51,
+              "revision": "bcfd7dc9925af6a0140988eb7e6d2d5e285e6041"
+            },
+            {
+              "start_line": 53,
+              "end_line": 62,
+              "revision": "bcfd7dc9925af6a0140988eb7e6d2d5e285e6041"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

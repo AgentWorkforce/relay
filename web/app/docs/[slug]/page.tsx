@@ -8,12 +8,16 @@ import remarkGfm from 'remark-gfm';
 
 import { Card } from '../../../components/docs/Card';
 import { CardGroup } from '../../../components/docs/CardGroup';
+import { BannerLink } from '../../../components/docs/BannerLink';
 import { CodeGroup } from '../../../components/docs/CodeGroup';
+import { DocsPageActions } from '../../../components/docs/DocsPageActions';
 import { HighlightedPre } from '../../../components/docs/HighlightedCode';
 import { Note } from '../../../components/docs/Note';
+import { SpawnOptionsTable } from '../../../components/docs/SpawnOptionsTable';
 import { TableOfContents } from '../../../components/docs/TableOfContents';
 import styles from '../../../components/docs/docs.module.css';
 import { getDoc } from '../../../lib/docs';
+import { getDocMarkdownUrl } from '../../../lib/docs-markdown';
 import { getAllDocSlugs } from '../../../lib/docs-nav';
 
 function slugify(text: string): string {
@@ -33,7 +37,9 @@ const components = {
   CodeGroup,
   Card,
   CardGroup,
+  BannerLink,
   Note,
+  SpawnOptionsTable,
   pre: HighlightedPre,
   h2: HeadingWithId(2),
   h3: HeadingWithId(3),
@@ -85,20 +91,34 @@ export default async function DocsPage({ params }: PageProps) {
     remarkPlugins: [remarkGfm],
   } as Parameters<typeof evaluate>[1]);
 
+  const pageUrl = `https://agentrelay.dev/docs/${slug}`;
+  const markdownPath = `/docs/markdown/${slug}.md`;
+  const markdownUrl = getDocMarkdownUrl(slug);
+
   return (
     <div className={styles.articleWrapper}>
       <article className={styles.article}>
-        <h1>{doc.frontmatter.title}</h1>
+        <div className={styles.articleHeader}>
+          <div className={styles.articleHeading}>
+            <h1>{doc.frontmatter.title}</h1>
+          </div>
+          <DocsPageActions
+            title={doc.frontmatter.title}
+            pageUrl={pageUrl}
+            markdownPath={markdownPath}
+            markdownUrl={markdownUrl}
+          />
+        </div>
         {doc.frontmatter.description && (
           <p className={styles.articleDescription}>{doc.frontmatter.description}</p>
         )}
-        <MDXContent components={components} />
+        <div className={styles.articleBody}>
+          <MDXContent components={components} />
+        </div>
       </article>
-      {doc.toc.length > 0 && (
-        <aside className={styles.tocSidebar}>
-          <TableOfContents items={doc.toc} />
-        </aside>
-      )}
+      <aside className={styles.tocSidebar}>
+        <TableOfContents items={doc.toc} />
+      </aside>
     </div>
   );
 }

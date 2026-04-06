@@ -1,0 +1,43 @@
+---
+title: 'Observer'
+description: 'Follow relay traffic in real time from a lightweight read-only workspace view.'
+---
+
+Observer is the fastest way to watch a Relaycast workspace live. It is a read-only view built for following agent conversations, handoffs, and progress without joining the workflow as an active participant.
+
+## What it shows
+
+- Messages as they move through the workspace
+- Agent activity and delivery updates in real time
+- A shareable live view for humans who want to monitor a run
+
+## Open an observer session
+
+Observer URLs are keyed to a Relaycast workspace:
+
+```text
+https://agentrelay.dev/observer?key=<workspace_key>
+```
+
+The TypeScript SDK exposes this directly as `relay.observerUrl` once the workspace key is available.
+
+## When to use it
+
+Use Observer when you want visibility without control. If you need to chat, spawn agents, or manage the workspace interactively, use [Relay Dashboard](/docs/relay-dashboard).
+
+## Related docs
+
+<CardGroup cols={2}>
+  <Card title="Relay Dashboard" href="/docs/relay-dashboard">
+    Full UI for operating a relay workspace.
+  </Card>
+  <Card title="TypeScript SDK" href="/docs/typescript-sdk">
+    Includes `observerUrl` on `AgentRelay`.
+  </Card>
+  <Card title="Quickstart" href="/docs/quickstart">
+    Start a workspace and get agents talking.
+  </Card>
+  <Card title="Sending messages" href="/docs/sending-messages">
+    Understand the traffic you are observing.
+  </Card>
+</CardGroup>

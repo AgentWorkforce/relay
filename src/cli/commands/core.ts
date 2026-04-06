@@ -13,6 +13,7 @@ import {
   validateBrokers,
   getAgentOutboxTemplate,
 } from '@agent-relay/config';
+import type { AgentRelayBrokerInitArgs } from '@agent-relay/sdk';
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
 
 import { runBridgeCommand } from '../lib/bridge.js';
@@ -243,13 +244,14 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
 }
 
 async function createDefaultRelay(cwd: string, apiPort = 0): Promise<CoreRelay> {
-  const binaryArgs: string[] = [];
+  const binaryArgs: AgentRelayBrokerInitArgs = {};
   if (apiPort > 0) {
-    binaryArgs.push('--persist', '--api-port', String(apiPort));
+    binaryArgs.persist = true;
+    binaryArgs.apiPort = apiPort;
   }
   const stateDir = process.env.AGENT_RELAY_STATE_DIR;
   if (stateDir) {
-    binaryArgs.push('--state-dir', stateDir);
+    binaryArgs.stateDir = stateDir;
   }
   const client = await createAgentRelayClient({
     cwd,

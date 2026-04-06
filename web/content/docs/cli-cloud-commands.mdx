@@ -1,0 +1,77 @@
+---
+title: 'Cloud commands'
+description: 'Authenticate with Agent Relay Cloud, connect providers, run workflows remotely, and sync patches back.'
+---
+
+The `cloud` subcommands handle authentication, sandbox provider setup, remote workflow execution, and syncing code changes back to your machine.
+
+## Log in and inspect account state
+
+```bash
+agent-relay cloud login
+agent-relay cloud whoami
+agent-relay cloud logout
+```
+
+- `login` opens the browser-based cloud auth flow.
+- `whoami` prints the current user, organization, workspace, and scopes.
+- `logout` clears stored cloud credentials.
+
+## Connect a provider
+
+```bash
+agent-relay cloud connect claude --language typescript
+```
+
+This command opens an interactive SSH-backed auth session for a provider sandbox. It requires a real TTY. The CLI also accepts provider aliases:
+
+- `claude` maps to `anthropic`
+- `codex` maps to `openai`
+- `gemini` maps to `google`
+
+## Run a workflow remotely
+
+```bash
+agent-relay cloud run relay.yaml --sync-code
+```
+
+Useful follow-up commands:
+
+```bash
+agent-relay cloud status <run-id>
+agent-relay cloud logs <run-id> --follow
+agent-relay cloud sync <run-id>
+```
+
+- `status` fetches the latest state for a run.
+- `logs` streams workflow or per-agent output.
+- `sync` downloads the generated patch and applies it locally.
+
+## Inspect a patch before applying it
+
+```bash
+agent-relay cloud sync <run-id> --dry-run
+```
+
+Use `--dir <path>` if the patch should apply somewhere other than the current directory.
+
+## Deprecated alias
+
+The top-level `agent-relay connect <provider>` command is deprecated. Use `agent-relay cloud connect <provider>` instead.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Run workflows" href="/docs/cli-workflows">
+    Local workflow execution from the CLI.
+  </Card>
+  <Card title="Cloud" href="/docs/cloud">
+    Conceptual overview of local versus cloud execution.
+  </Card>
+  <Card title="Authentication" href="/docs/authentication">
+    Relayauth and credentials at the product level.
+  </Card>
+  <Card title="Workflows" href="/docs/reference-workflows">
+    Author the workflow files you submit to cloud.
+  </Card>
+</CardGroup>

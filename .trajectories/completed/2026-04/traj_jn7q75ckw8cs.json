@@ -1,0 +1,102 @@
+{
+  "id": "traj_jn7q75ckw8cs",
+  "version": 1,
+  "task": {
+    "title": "Review PR #651 for performance issues"
+  },
+  "status": "abandoned",
+  "startedAt": "2026-03-27T14:01:12.512Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-04-01T13:25:29.360Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_tibsob1ozi62",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-04-01T13:25:29.360Z",
+      "events": [
+        {
+          "ts": 1775049929361,
+          "type": "decision",
+          "content": "Adjusted homepage hero top padding at the container level: Adjusted homepage hero top padding at the container level",
+          "raw": {
+            "question": "Adjusted homepage hero top padding at the container level",
+            "chosen": "Adjusted homepage hero top padding at the container level",
+            "alternatives": [],
+            "reasoning": "This increases spacing below the sticky nav for both hero columns without shifting later sections or only the text column."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775050147340,
+          "type": "decision",
+          "content": "Reduced homepage hero overlap with the sticky nav: Reduced homepage hero overlap with the sticky nav",
+          "raw": {
+            "question": "Reduced homepage hero overlap with the sticky nav",
+            "chosen": "Reduced homepage hero overlap with the sticky nav",
+            "alternatives": [],
+            "reasoning": "The previous change only increased inner hero padding. Reducing the negative hero-section offset adds actual separation between the nav and the hero block so the top whitespace reads closer to the hero's bottom spacing."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775050453431,
+          "type": "decision",
+          "content": "Reduced homepage hero overlap slightly further: Reduced homepage hero overlap slightly further",
+          "raw": {
+            "question": "Reduced homepage hero overlap slightly further",
+            "chosen": "Reduced homepage hero overlap slightly further",
+            "alternatives": [],
+            "reasoning": "A small follow-up change tightens the visual balance between the nav gap and the bottom of the hero without reworking the hero internals."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775050696197,
+          "type": "decision",
+          "content": "Removed the homepage text column's top offset on mobile: Removed the homepage text column's top offset on mobile",
+          "raw": {
+            "question": "Removed the homepage text column's top offset on mobile",
+            "chosen": "Removed the homepage text column's top offset on mobile",
+            "alternatives": [],
+            "reasoning": "The desktop hero uses extra top offset to balance the two-column layout, but once the hero collapses to one column that offset creates unnecessary empty space above the headline."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775050884234,
+          "type": "decision",
+          "content": "Made the shared dark secondary CTA surface opaque: Made the shared dark secondary CTA surface opaque",
+          "raw": {
+            "question": "Made the shared dark secondary CTA surface opaque",
+            "chosen": "Made the shared dark secondary CTA surface opaque",
+            "alternatives": [],
+            "reasoning": "Secondary buttons already use a solid background in light theme. Switching the dark theme token from rgba to a solid surface fixes the see-through effect across all matching CTAs without duplicating button-specific overrides."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775132084021,
+          "type": "note",
+          "content": "Abandoned: User requested abandoning active trajectory traj_jn7q75ckw8cs",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-04-02T12:14:44.020Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "2e3aa1d7de2e28359eb4a0c6a177ac7b86209180",
+    "endRef": "2e3aa1d7de2e28359eb4a0c6a177ac7b86209180"
+  },
+  "completedAt": "2026-04-02T12:14:44.020Z"
+}

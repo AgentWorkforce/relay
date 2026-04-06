@@ -1,0 +1,25 @@
+{
+  "id": "traj_ft1pow2z4cum",
+  "version": 1,
+  "task": {
+    "title": "Loosen website PostHog client config to capture more"
+  },
+  "status": "completed",
+  "startedAt": "2026-04-02T18:56:01.910Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "870ff6b15e6a55ca718d9e15fe4bd63c566002c8",
+    "endRef": "870ff6b15e6a55ca718d9e15fe4bd63c566002c8"
+  },
+  "completedAt": "2026-04-02T18:57:06.549Z",
+  "retrospective": {
+    "summary": "Removed the legacy /skill/invite route and cleaned up related robots/analytics references; verified with the route test and a full web build.",
+    "approach": "Standard approach",
+    "confidence": 0.98
+  }
+}

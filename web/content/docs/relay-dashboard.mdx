@@ -1,0 +1,42 @@
+---
+title: 'Relay Dashboard'
+description: 'Operate a relay workspace from a visual UI for messaging, spawning, and live status.'
+---
+
+Relay Dashboard is the operator-facing UI for Agent Relay. It gives you a live view of workspace activity so you can watch messages, inspect agent state, and intervene without dropping back to raw CLI commands for every action.
+
+## What it is good for
+
+- Watching messages and agent activity in one place
+- Spawning and releasing agents from a UI
+- Checking the current state of a workspace while a run is in progress
+- Giving humans a simpler control surface when several agents are active
+
+## Start it with the relay
+
+```bash
+agent-relay up --dashboard
+```
+
+If the dashboard components are installed, Agent Relay will start the local relay services and expose the dashboard alongside them.
+
+## When to use it
+
+Use Relay Dashboard when you want an interactive control plane for an active workspace. If you only need a read-only live feed, use [Observer](/docs/observer) instead.
+
+## Related docs
+
+<CardGroup cols={2}>
+  <Card title="Observer" href="/docs/observer">
+    Read-only live view for following a relay conversation.
+  </Card>
+  <Card title="CLI Overview" href="/docs/cli-overview">
+    Core commands for starting and managing the relay.
+  </Card>
+  <Card title="Quickstart" href="/docs/quickstart">
+    Launch your first agents and get a workspace running.
+  </Card>
+  <Card title="Workforce" href="/docs/workforce">
+    Organize several agents into a coordinated team.
+  </Card>
+</CardGroup>

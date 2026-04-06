@@ -1,0 +1,55 @@
+---
+title: 'On the relay'
+description: 'Launch an agent into the sandboxed relay environment, preview permissions, and shut the services down.'
+---
+
+`agent-relay on` is the CLI entry point for running an agent inside the relay sandbox, with mounted services and permission-aware workspace access.
+
+## Launch an agent
+
+```bash
+agent-relay on codex --agent reviewer -- --model gpt-5.4
+```
+
+Common options:
+
+- `--agent <name>` sets the relay identity name.
+- `--workspace <id>` joins an existing relay workspace.
+- `--port-auth <port>` overrides the Relayauth port.
+- `--port-file <port>` overrides the Relayfile port.
+- any extra args after `--` are passed through to the underlying CLI.
+
+## Preview or diagnose the environment
+
+```bash
+agent-relay on --scan
+agent-relay on --doctor
+```
+
+- `--scan` previews what the agent will be able to see before launch.
+- `--doctor` checks prerequisites and exits without starting a session.
+
+## Stop relay services
+
+```bash
+agent-relay off
+```
+
+Use `off` when you are done with the mounted relay environment and want a clean shutdown.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="CLI Overview" href="/docs/cli-overview">
+    Full map of the CLI command surface.
+  </Card>
+  <Card title="Cloud commands" href="/docs/cli-cloud-commands">
+    Run workflows remotely instead of entering the sandbox yourself.
+  </Card>
+  <Card title="Authentication" href="/docs/authentication">
+    Understand the auth service used by relay-aware environments.
+  </Card>
+  <Card title="File sharing" href="/docs/file-sharing">
+    Shared filesystem concepts used by the relay environment.
+  </Card>
+</CardGroup>
