@@ -172,7 +172,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '22.14.0'
           cache: 'npm'
 
       - name: Install dependencies
@@ -256,7 +256,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '22.14.0'
           cache: 'npm'
 
       - name: Install dependencies
@@ -320,7 +320,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '22.14.0'
           cache: 'npm'
           cache-dependency-path: package-lock.json
           registry-url: 'https://registry.npmjs.org'
@@ -469,7 +469,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '22.14.0'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download build artifacts
@@ -526,7 +526,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '22.14.0'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download build artifacts
@@ -564,7 +564,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '22.14.0'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download build artifacts
@@ -888,7 +888,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '22.14.0'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download build artifacts
@@ -1031,7 +1031,7 @@ jobs:
       - name: Setup Node.js for changelog
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '22.14.0'
 
       - name: Generate changelog entry
         run: |
