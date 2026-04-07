@@ -162,7 +162,6 @@ export default async function BlogPostPage({ params }: PageProps) {
     jsx,
     jsxs,
     remarkPlugins: [remarkGfm],
-    components: mdxComponents,
   } as Parameters<typeof evaluate>[1]);
 
   return (
@@ -205,7 +204,7 @@ export default async function BlogPostPage({ params }: PageProps) {
             )}
 
             <article className={styles.article}>
-              <MDXContent />
+              <MDXContent components={mdxComponents} />
             </article>
 
             {otherPosts.length > 0 && (
