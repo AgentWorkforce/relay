@@ -385,7 +385,8 @@ function getDashboardSpawnEnv(
   deps: CoreDependencies,
   relayUrl: string,
   enableVerboseLogging: boolean,
-  relayApiKey?: string
+  relayApiKey?: string,
+  brokerApiKey?: string
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...deps.env,
@@ -396,6 +397,11 @@ function getDashboardSpawnEnv(
   // (e.g. posting thread replies) without requiring a relaycast.json file.
   if (relayApiKey && !env.RELAY_API_KEY) {
     env.RELAY_API_KEY = relayApiKey;
+  }
+  // Pass the broker API key so the dashboard can authenticate with the
+  // broker's HTTP API (e.g. /api/spawn, /api/spawned).
+  if (brokerApiKey) {
+    env.RELAY_BROKER_API_KEY = brokerApiKey;
   }
   return env;
 }
@@ -450,7 +456,8 @@ function startDashboard(
   deps: CoreDependencies,
   enableVerboseLogging: boolean,
   dashboardBinaryOverride?: string | null,
-  relayApiKey?: string
+  relayApiKey?: string,
+  brokerApiKey?: string
 ): DashboardStartupProcess {
   const dashboardBinary =
     dashboardBinaryOverride === undefined ? deps.findDashboardBinary() : dashboardBinaryOverride;
@@ -473,7 +480,7 @@ function startDashboard(
 
   const spawnOpts = {
     stdio: ['ignore', 'pipe', 'pipe'] as unknown,
-    env: getDashboardSpawnEnv(deps, relayUrl, shouldEnableVerbose, relayApiKey),
+    env: getDashboardSpawnEnv(deps, relayUrl, shouldEnableVerbose, relayApiKey, brokerApiKey),
   };
   if (shouldEnableVerbose) {
     deps.log(`[dashboard] Starting: ${launchTarget} ${args.join(' ')}`);
@@ -726,7 +733,8 @@ async function startDashboardWithFallback(
   apiPort: number,
   deps: CoreDependencies,
   enableVerboseLogging: boolean,
-  relayApiKey?: string
+  relayApiKey?: string,
+  brokerApiKey?: string
 ): Promise<{ process: SpawnedProcess; port: number | null }> {
   const preferredBinary = deps.findDashboardBinary();
   await refreshDashboardAssetsIfStale(preferredBinary, deps);
@@ -737,13 +745,23 @@ async function startDashboardWithFallback(
     deps,
     enableVerboseLogging,
     preferredBinary,
-    relayApiKey
+    relayApiKey,
+    brokerApiKey
   );
   let port = await resolveStartedDashboardPort(process as DashboardStartupProcess, dashboardPort, deps);
 
   if (port === null && preferredBinary) {
     deps.warn('Retrying dashboard startup using npx @agent-relay/dashboard-server@latest');
-    process = startDashboard(paths, dashboardPort, apiPort, deps, enableVerboseLogging, null, relayApiKey);
+    process = startDashboard(
+      paths,
+      dashboardPort,
+      apiPort,
+      deps,
+      enableVerboseLogging,
+      null,
+      relayApiKey,
+      brokerApiKey
+    );
     port = await resolveStartedDashboardPort(process as DashboardStartupProcess, dashboardPort, deps);
   }
 
@@ -933,13 +951,15 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
           deps.log('Broker already running for this project; reusing existing broker.');
 
           if (wantsDashboard) {
+            const brokerConn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
             const dashboardStart = await startDashboardWithFallback(
               paths,
               dashboardPort,
               apiPort,
               deps,
               dashboardVerbose,
-              relay?.workspaceKey
+              relay?.workspaceKey,
+              brokerConn?.api_key
             );
             dashboardProcess = dashboardStart.process;
             const startedDashboardPort = dashboardStart.port;
@@ -1029,13 +1049,15 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.log('Broker started.');
 
     if (wantsDashboard) {
+      const brokerConn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
       const dashboardStart = await startDashboardWithFallback(
         paths,
         dashboardPort,
         apiPort,
         deps,
         dashboardVerbose,
-        relay?.workspaceKey
+        relay?.workspaceKey,
+        brokerConn?.api_key
       );
       dashboardProcess = dashboardStart.process;
       const startedDashboardPort = dashboardStart.port;
