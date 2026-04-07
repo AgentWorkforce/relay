@@ -30,15 +30,30 @@ const relay = new AgentRelay();
 
 // Log messages as they flow between agents.
 relay.onMessageReceived = (msg) => {
-if (msg.text) console.log(`${msg.from} → ${msg.to}: ${msg.text}`);
+if (msg.text) {
+console.log(`${msg.from} → ${msg.to}: ${msg.text}`);
+}
 };
 
 // Spawn three agents.
-const planner = await relay.claude.spawn({ name: 'Planner', model: Models.Claude.OPUS });
-const coder = await relay.codex.spawn({ name: 'Coder', model: Models.Codex.GPT_5_3_CODEX });
-const reviewer = await relay.opencode.spawn({ name: 'Reviewer', model: Models.Opencode.OPENAI_GPT_5_2 });
+const planner = await relay.claude.spawn({
+name: 'Planner',
+model: Models.Claude.OPUS,
+});
+const coder = await relay.codex.spawn({
+name: 'Coder',
+model: Models.Codex.GPT_5_3_CODEX,
+});
+const reviewer = await relay.opencode.spawn({
+name: 'Reviewer',
+model: Models.Opencode.OPENAI_GPT_5_2,
+});
 
-await Promise.all([planner.waitForReady(), coder.waitForReady(), reviewer.waitForReady()]);
+await Promise.all([
+planner.waitForReady(),
+coder.waitForReady(),
+reviewer.waitForReady(),
+]);
 
 // Kick off the collaboration.
 await relay.system().sendMessage({
@@ -47,7 +62,11 @@ text: 'Collaborate with Coder and Reviewer to implement feature ID 7.',
 });
 
 // Wait for everyone to finish, then shut down.
-await Promise.all([planner.waitForIdle(), coder.waitForIdle(), reviewer.waitForIdle()]);
+await Promise.all([
+planner.waitForIdle(),
+coder.waitForIdle(),
+reviewer.waitForIdle(),
+]);
 await relay.shutdown();
 
 ````
@@ -61,13 +80,20 @@ async def main():
 
     # Log messages as they flow between agents.
     relay.on_message_received = lambda msg: (
-        print(f"{msg.from_name} → {msg.to}: {msg.text}") if msg.text else None
+        print(f"{msg.from_name} → {msg.to}: {msg.text}")
+        if msg.text else None
     )
 
     # Spawn three agents.
-    planner  = await relay.claude.spawn(name="Planner", model=Models.Claude.OPUS)
-    coder    = await relay.codex.spawn(name="Coder", model=Models.Codex.GPT_5_3_CODEX)
-    reviewer = await relay.opencode.spawn(name="Reviewer", model=Models.Opencode.OPENAI_GPT_5_2)
+    planner = await relay.claude.spawn(
+        name="Planner", model=Models.Claude.OPUS,
+    )
+    coder = await relay.codex.spawn(
+        name="Coder", model=Models.Codex.GPT_5_3_CODEX,
+    )
+    reviewer = await relay.opencode.spawn(
+        name="Reviewer", model=Models.Opencode.OPENAI_GPT_5_2,
+    )
 
     await asyncio.gather(
         relay.wait_for_agent_ready("Planner"),
