@@ -4984,10 +4984,18 @@ export class WorkflowRunner {
         exitCode,
         exitSignal,
       } = await new Promise<{ stdout: string; exitCode?: number; exitSignal?: string }>((resolve, reject) => {
+        const baseEnv = this.getRelayEnv() ?? filteredEnv();
+        const spawnEnv =
+          agentDef.cli === 'opencode'
+            ? {
+                ...baseEnv,
+                OPENCODE_PERMISSION: JSON.stringify({ '*': 'allow', external_directory: { '*': 'allow' } }),
+              }
+            : baseEnv;
         const child = spawnProcess([cmd, ...args], {
           stdio: ['ignore', 'pipe', 'pipe'],
           cwd: this.resolveEffectiveCwd(step, agentDef),
-          env: this.getRelayEnv() ?? filteredEnv(),
+          env: spawnEnv,
         });
 
         // Update workers.json with PID now that we have it
