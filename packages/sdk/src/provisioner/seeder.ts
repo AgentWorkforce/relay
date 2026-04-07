@@ -485,6 +485,7 @@ function collectAllFiles(rootDir: string, excludeDirs: Set<string>): string[] {
 
     for (const entry of entries) {
       if (excludeDirs.has(entry.name)) continue;
+      if (DEFAULT_EXCLUDED_FILES.has(entry.name)) continue;
       const nextRelative = currentRelative ? `${currentRelative}/${entry.name}` : entry.name;
       if (excludeDirs.has(nextRelative)) continue;
 
