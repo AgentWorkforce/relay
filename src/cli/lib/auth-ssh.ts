@@ -219,7 +219,7 @@ export async function runAuthCommand(
     options.cloudUrl ||
     process.env.AGENT_RELAY_CLOUD_URL ||
     cloudConfig.cloudUrl ||
-    'https://agentrelay.com'
+    'https://agentrelay.com/cloud'
   ).replace(/\/$/, '');
 
   const requestedWorkspaceId = options.workspace || process.env.WORKSPACE_ID;

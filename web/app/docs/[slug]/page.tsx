@@ -13,6 +13,7 @@ import { CodeGroup } from '../../../components/docs/CodeGroup';
 import { DocsPageActions } from '../../../components/docs/DocsPageActions';
 import { HighlightedPre } from '../../../components/docs/HighlightedCode';
 import { Note } from '../../../components/docs/Note';
+import { Warning } from '../../../components/docs/Warning';
 import { SpawnOptionsTable } from '../../../components/docs/SpawnOptionsTable';
 import { TableOfContents } from '../../../components/docs/TableOfContents';
 import styles from '../../../components/docs/docs.module.css';
@@ -48,6 +49,7 @@ const components = {
   CardGroup,
   BannerLink,
   Note,
+  Warning,
   SpawnOptionsTable,
   pre: HighlightedPre,
   h2: HeadingWithId(2),
