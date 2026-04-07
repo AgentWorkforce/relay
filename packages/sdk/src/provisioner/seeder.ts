@@ -1,6 +1,8 @@
 import { RelayFileClient } from '@relayfile/sdk';
+import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import * as tar from 'tar';
 
 interface BulkWriteResponseShape {
   written?: number;
@@ -445,4 +447,125 @@ export async function seedWorkflowAcls({
   }
 
   await seedAclRules(relayfileUrl, adminToken, workspace, aclRules);
+}
+
+// ── Tar-based bulk upload ───────────────────────────────────────────────────
+
+interface ImportResponseShape {
+  imported?: number;
+}
+
+function getGitTrackedFiles(rootDir: string): string[] | null {
+  try {
+    const output = execSync('git ls-files -z --cached --others --exclude-standard', {
+      cwd: rootDir,
+      encoding: 'utf-8',
+      maxBuffer: 50 * 1024 * 1024,
+    });
+    const files = output.split('\0').filter(Boolean);
+    return files;
+  } catch {
+    return null;
+  }
+}
+
+function collectAllFiles(rootDir: string, excludeDirs: Set<string>): string[] {
+  const files: string[] = [];
+  const stack = [''];
+
+  while (stack.length > 0) {
+    const currentRelative = stack.pop()!;
+    const absoluteDir = path.join(rootDir, currentRelative);
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(absoluteDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (excludeDirs.has(entry.name)) continue;
+      if (DEFAULT_EXCLUDED_FILES.has(entry.name)) continue;
+      const nextRelative = currentRelative ? `${currentRelative}/${entry.name}` : entry.name;
+      if (excludeDirs.has(nextRelative)) continue;
+
+      if (entry.isDirectory()) {
+        stack.push(nextRelative);
+      } else if (entry.isFile()) {
+        files.push(nextRelative);
+      }
+    }
+  }
+
+  return files;
+}
+
+async function createTarBuffer(rootDir: string, files: string[]): Promise<Buffer> {
+  const tarStream = tar.create({ gzip: true, cwd: rootDir, portable: true, follow: true }, files);
+  const chunks: Buffer[] = [];
+  for await (const chunk of tarStream) {
+    chunks.push(Buffer.from(chunk as Uint8Array));
+  }
+  return Buffer.concat(chunks);
+}
+
+export async function seedWorkspaceTar(
+  baseUrl: string,
+  token: string,
+  workspaceId: string,
+  projectDir: string,
+  excludeDirs: string[]
+): Promise<number> {
+  const workspace = normalizeWorkspaceId(workspaceId);
+  const rootDir = path.resolve(projectDir);
+  const excludes = normalizeExcludeDirs([...DEFAULT_EXCLUDED_DIRS, ...excludeDirs]);
+
+  const gitFiles = getGitTrackedFiles(rootDir);
+  const rawFiles = gitFiles ?? collectAllFiles(rootDir, excludes);
+  const files = gitFiles
+    ? rawFiles.filter((f) => {
+        const segments = f.split('/');
+        if (DEFAULT_EXCLUDED_FILES.has(segments[segments.length - 1])) return false;
+        return !segments.some((seg) => excludes.has(seg));
+      })
+    : rawFiles;
+
+  if (files.length === 0) {
+    return 0;
+  }
+
+  const tarball = await createTarBuffer(rootDir, files);
+
+  const url = `${normalizeBaseUrl(baseUrl)}/v1/workspaces/${encodeURIComponent(workspace)}/fs/import`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/gzip',
+      'X-Correlation-Id': `seed-tar-${workspace}-${Date.now()}`,
+    },
+    body: tarball.buffer.slice(tarball.byteOffset, tarball.byteOffset + tarball.byteLength) as ArrayBuffer,
+  });
+
+  if (response.status === 404) {
+    // Tar import not supported — fall back to batch upload
+    return seedWorkspace(baseUrl, token, workspaceId, projectDir, excludeDirs);
+  }
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`tar import failed for workspace ${workspace}: HTTP ${response.status} ${body}`.trim());
+  }
+
+  const raw = await response.text();
+  if (!raw.trim()) {
+    return files.length;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as ImportResponseShape;
+    return typeof parsed.imported === 'number' ? parsed.imported : files.length;
+  } catch {
+    return files.length;
+  }
 }

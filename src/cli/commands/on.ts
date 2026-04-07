@@ -35,10 +35,25 @@ export function registerOnCommands(program: Command, overrides: Partial<OnDepend
     .argument('[cli]', 'Agent CLI to launch (codex, claude, gemini, aider)')
     .option('--agent <name>', 'Agent identity name (default: CLI basename)')
     .option('--workspace <id>', 'Join an existing relay workspace')
+    .option('--shared', 'Enable multi-agent shared workspace via relayfile (local)')
+    .option('--cloud', 'Run in cloud mode with remote relayfile')
+    .option(
+      '--url <url>',
+      'Cloud API URL (used with --cloud)',
+      process.env.RELAY_AUTH_URL ?? 'https://agentrelay.dev/cloud'
+    )
     .option('--scan', 'Preview what the agent will see without launching')
     .option('--doctor', 'Check prerequisites and exit')
-    .option('--port-auth <port>', 'Auth service URL or local port', process.env.RELAY_AUTH_URL ?? 'https://agentrelay.dev/cloud')
-    .option('--port-file <port>', 'Relayfile service URL or local port', process.env.RELAY_FILE_URL ?? 'https://api.relayfile.dev')
+    .option(
+      '--port-auth <port>',
+      'Auth service URL or local port',
+      process.env.RELAY_AUTH_URL ?? 'https://agentrelay.dev/cloud'
+    )
+    .option(
+      '--port-file <port>',
+      'Relayfile service URL or local port',
+      process.env.RELAY_FILE_URL ?? 'https://api.relayfile.dev'
+    )
     .allowUnknownOption(true) // pass extra args to agent CLI
     .action(async (cli: string | undefined, options: any, command: Command) => {
       if (options.doctor) {

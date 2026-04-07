@@ -108,6 +108,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
+    "@types/tar": "^6.1.13",
     "@types/ws": "^8.5.10",
     "typescript": "^5.7.3"
   },
@@ -120,6 +121,7 @@
     "ignore": "^7.0.5",
     "listr2": "^10.2.1",
     "ws": "^8.18.3",
+    "tar": "^7.5.10",
     "yaml": "^2.7.0"
   },
   "peerDependencies": {
