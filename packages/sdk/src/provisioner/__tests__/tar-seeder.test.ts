@@ -164,7 +164,7 @@ describe('seedWorkspaceTar', () => {
 
     await expect(
       seedWorkspaceTar('https://relayfile.example/', 'token', 'rw_demo', projectDir, [])
-    ).rejects.toThrow('tar seed failed for workspace rw_demo: HTTP 500 boom');
+    ).rejects.toThrow('tar import failed for workspace rw_demo: HTTP 500 boom');
   });
 
   it('works for non-git directories via the directory-walk fallback path', async () => {
@@ -244,8 +244,6 @@ describe('seedWorkspaceTar', () => {
 
     expect(imported).toBe(0);
 
-    const [, init] = fetchMock.mock.calls[0];
-    const entries = await extractTarballEntries(init.body);
-    expect(entries).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

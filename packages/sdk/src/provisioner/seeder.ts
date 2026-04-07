@@ -501,7 +501,7 @@ function collectAllFiles(rootDir: string, excludeDirs: Set<string>): string[] {
 }
 
 async function createTarBuffer(rootDir: string, files: string[]): Promise<Buffer> {
-  const tarStream = tar.create({ gzip: true, cwd: rootDir, portable: true }, files);
+  const tarStream = tar.create({ gzip: true, cwd: rootDir, portable: true, follow: true }, files);
   const chunks: Buffer[] = [];
   for await (const chunk of tarStream) {
     chunks.push(Buffer.from(chunk as Uint8Array));
