@@ -162,12 +162,16 @@ download_broker_binary() {
     local target_path="$INSTALL_DIR/bin/agent-relay-broker"
 
     mkdir -p "$INSTALL_DIR/bin"
+    mkdir -p "$BIN_DIR"
 
     if curl -fsSL "$download_url" -o "$target_path" 2>/dev/null; then
         chmod +x "$target_path"
         strip_quarantine "$target_path"
         # Verify binary works (Rust clap binary supports --help)
         if "$target_path" --help &>/dev/null; then
+            # Also install to BIN_DIR so it's discoverable on PATH
+            cp "$target_path" "$BIN_DIR/agent-relay-broker"
+            chmod +x "$BIN_DIR/agent-relay-broker"
             success "Downloaded broker binary (workflow agent spawning)"
             return 0
         else
