@@ -5529,14 +5529,13 @@ export class WorkflowRunner {
         exitCode,
         exitSignal,
       } = await new Promise<{ stdout: string; exitCode?: number; exitSignal?: string }>((resolve, reject) => {
-        const baseEnv = this.getRelayEnv() ?? filteredEnv();
         const spawnEnv =
           agentDef.cli === 'opencode'
             ? {
-                ...baseEnv,
+                ...env,
                 OPENCODE_PERMISSION: JSON.stringify({ '*': 'allow', external_directory: { '*': 'allow' } }),
               }
-            : baseEnv;
+            : env;
         const child = spawnProcess([cmd, ...args], {
           stdio: ['ignore', 'pipe', 'pipe'],
           cwd: this.resolveExecutionCwd(step, agentDef),

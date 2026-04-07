@@ -457,13 +457,13 @@ interface ImportResponseShape {
 
 function getGitTrackedFiles(rootDir: string): string[] | null {
   try {
-    const output = execSync('git ls-files -z', {
+    const output = execSync('git ls-files -z --cached --others --exclude-standard', {
       cwd: rootDir,
       encoding: 'utf-8',
       maxBuffer: 50 * 1024 * 1024,
     });
     const files = output.split('\0').filter(Boolean);
-    return files.length > 0 ? files : null;
+    return files;
   } catch {
     return null;
   }
@@ -520,7 +520,14 @@ export async function seedWorkspaceTar(
   const excludes = normalizeExcludeDirs([...DEFAULT_EXCLUDED_DIRS, ...excludeDirs]);
 
   const gitFiles = getGitTrackedFiles(rootDir);
-  const files = gitFiles ?? collectAllFiles(rootDir, excludes);
+  const rawFiles = gitFiles ?? collectAllFiles(rootDir, excludes);
+  const files = gitFiles
+    ? rawFiles.filter((f) => {
+        const segments = f.split('/');
+        if (DEFAULT_EXCLUDED_FILES.has(segments[segments.length - 1])) return false;
+        return !segments.some((seg) => excludes.has(seg));
+      })
+    : rawFiles;
 
   if (files.length === 0) {
     return 0;
