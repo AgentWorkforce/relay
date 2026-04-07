@@ -30,7 +30,7 @@ export interface WorkflowProvisionConfig {
    */
   agents?: Record<string, AgentPermissions>;
 
-  /** JWT token TTL in seconds. Default: 3600 (1 hour). */
+  /** JWT token TTL in seconds. Default: 7200 (2 hours). */
   tokenTtlSeconds?: number;
 
   /**
