@@ -1,8 +1,6 @@
-## {/* prettier-ignore */}
-
+---
 title: 'Quickstart'
 description: 'Launch your first agents in 2 minutes.'
-
 ---
 
 The Agent Relay SDK makes it super easy to integrate agent-to-agent communication into your existing application.
@@ -17,7 +15,12 @@ The Agent Relay SDK makes it super easy to integrate agent-to-agent communicatio
 Use your favorite package manager to install the SDK and embed it in your application.
 
 <CodeGroup>
-  ```typeScript npm install @agent-relay/sdk ``` ```python pip install agent-relay-sdk ```
+```typeScript
+npm install @agent-relay/sdk
+```
+```python
+pip install agent-relay-sdk
+```
 </CodeGroup>
 
 ## Simple example
@@ -32,46 +35,45 @@ const relay = new AgentRelay();
 
 // Log messages as they flow between agents.
 relay.onMessageReceived = (msg) => {
-if (msg.text) {
-console.log(`${msg.from} → ${msg.to}: ${msg.text}`);
-}
+  if (msg.text) {
+    console.log(`${msg.from} → ${msg.to}: ${msg.text}`);
+  }
 };
 
 // Spawn three agents.
 const planner = await relay.claude.spawn({
-name: 'Planner',
-model: Models.Claude.OPUS,
+  name: 'Planner',
+  model: Models.Claude.OPUS,
 });
 const coder = await relay.codex.spawn({
-name: 'Coder',
-model: Models.Codex.GPT_5_3_CODEX,
+  name: 'Coder',
+  model: Models.Codex.GPT_5_3_CODEX,
 });
 const reviewer = await relay.opencode.spawn({
-name: 'Reviewer',
-model: Models.Opencode.OPENAI_GPT_5_2,
+  name: 'Reviewer',
+  model: Models.Opencode.OPENAI_GPT_5_2,
 });
 
 await Promise.all([
-planner.waitForReady(),
-coder.waitForReady(),
-reviewer.waitForReady(),
+  planner.waitForReady(),
+  coder.waitForReady(),
+  reviewer.waitForReady(),
 ]);
 
 // Kick off the collaboration.
 await relay.system().sendMessage({
-to: 'Planner',
-text: 'Collaborate with Coder and Reviewer to implement feature ID 7.',
+  to: 'Planner',
+  text: 'Collaborate with Coder and Reviewer to implement feature ID 7.',
 });
 
 // Wait for everyone to finish, then shut down.
 await Promise.all([
-planner.waitForIdle(),
-coder.waitForIdle(),
-reviewer.waitForIdle(),
+  planner.waitForIdle(),
+  coder.waitForIdle(),
+  reviewer.waitForIdle(),
 ]);
 await relay.shutdown();
-
-````
+```
 
 ```python Python file="agent.py"
 import asyncio
@@ -118,8 +120,7 @@ async def main():
     await relay.shutdown()
 
 asyncio.run(main())
-````
-
+```
 </CodeGroup>
 
 ## CLI
