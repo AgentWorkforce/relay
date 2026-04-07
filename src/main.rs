@@ -934,6 +934,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             idle_threshold_secs,
                             skip_relay_prompt,
                             restart_policy,
+                            agent_token,
                             reply,
                         } => {
                             let effective_channels = if channels.is_empty() {
@@ -952,7 +953,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 team,
                                 shadow_of,
                                 shadow_mode,
-                                restart_policy,
+                                *restart_policy,
                             ) {
                                 Ok(spec) => spec,
                                 Err(error) => {
@@ -982,6 +983,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     continue;
                                 }
                             };
+
+                            // Caller-supplied agent_token overrides auto-registration
+                            let worker_relay_key = agent_token.or(worker_relay_key);
 
                             let mut effective_task = normalize_initial_task(task);
                             if let Some(ref continue_from) = continue_from {

@@ -1,6 +1,6 @@
-version: "1.0"
+version: '1.0'
 name: bug-fix
-description: "Blueprint-style bug investigation and remediation with validation gates."
+description: 'Blueprint-style bug investigation and remediation with validation gates.'
 swarm:
   pattern: hub-spoke
   maxConcurrency: 2
@@ -13,28 +13,32 @@ swarm:
 agents:
   - name: lead
     cli: claude
-    role: "Coordinates debugging and release decisions"
+    role: 'Coordinates debugging and release decisions'
+    permissions: { access: full }
   - name: investigator
     cli: codex
-    role: "Reproduces and scopes the defect"
+    role: 'Reproduces and scopes the defect'
+    permissions: { access: readonly }
     interactive: false
   - name: fixer
     cli: codex
-    role: "Implements and tests the fix"
+    role: 'Implements and tests the fix'
+    permissions: { access: readwrite }
     interactive: false
   - name: verifier
     cli: claude
-    role: "Validates risk, regressions, and completion"
+    role: 'Validates risk, regressions, and completion'
+    permissions: { access: readonly }
 workflows:
   - name: bug-remediation
-    description: "Investigate root cause, patch safely, and verify no regressions."
+    description: 'Investigate root cause, patch safely, and verify no regressions.'
     onError: retry
     preflight:
       - command: git status --porcelain
         failIf: non-empty
-        description: "Ensure working directory is clean"
+        description: 'Ensure working directory is clean'
       - command: npm test 2>/dev/null || echo "baseline"
-        description: "Capture baseline test state"
+        description: 'Capture baseline test state'
     steps:
       # Agent: Investigate root cause
       - name: investigate

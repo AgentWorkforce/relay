@@ -26,6 +26,7 @@ import type {
 } from './protocol.js';
 import type {
   AgentTransport,
+  SpawnHeadlessInput,
   SpawnPtyInput,
   SpawnProviderInput,
   SendMessageInput,
@@ -313,6 +314,7 @@ export class AgentRelayClient {
         channels: input.channels ?? [],
         cwd: input.cwd,
         team: input.team,
+        agentToken: input.agentToken,
         shadowOf: input.shadowOf,
         shadowMode: input.shadowMode,
         continueFrom: input.continueFrom,
@@ -342,6 +344,7 @@ export class AgentRelayClient {
         channels: input.channels ?? [],
         cwd: input.cwd,
         team: input.team,
+        agentToken: input.agentToken,
         shadowOf: input.shadowOf,
         shadowMode: input.shadowMode,
         continueFrom: input.continueFrom,
@@ -353,14 +356,7 @@ export class AgentRelayClient {
     });
   }
 
-  async spawnHeadless(input: {
-    name: string;
-    provider: HeadlessProvider;
-    args?: string[];
-    channels?: string[];
-    task?: string;
-    skipRelayPrompt?: boolean;
-  }): Promise<{ name: string; runtime: AgentRuntime }> {
+  async spawnHeadless(input: SpawnHeadlessInput): Promise<{ name: string; runtime: AgentRuntime }> {
     return this.spawnProvider({ ...input, transport: 'headless' });
   }
 

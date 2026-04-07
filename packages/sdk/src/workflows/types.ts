@@ -12,6 +12,8 @@ export interface RelayYamlConfig {
   version: string;
   name: string;
   description?: string;
+  /** Reusable permission profiles that agents can reference via permissions.profile. */
+  permission_profiles?: Record<string, PermissionProfileDefinition>;
   /** Named paths to external directories used by this workflow.
    *  The primary working directory defaults to cwd and does not need to be declared.
    *  Use this to declare additional directories so the runner can validate them
@@ -124,6 +126,11 @@ export interface AgentDefinition {
   task?: string;
   channels?: string[];
   constraints?: AgentConstraints;
+  /**
+   * Permission configuration controlling file access, network, and exec restrictions.
+   * Omitting this field preserves the default behavior: inherit dotfiles + readwrite access.
+   */
+  permissions?: AgentPermissions;
   /** When false, the agent runs as a non-interactive subprocess (no PTY, no relay messaging).
    *  It receives its task as a CLI prompt argument and returns stdout as output.
    *  Default: true (interactive PTY mode). */
@@ -149,7 +156,18 @@ export interface AgentDefinition {
   skills?: string;
 }
 
-export type AgentCli = 'claude' | 'codex' | 'gemini' | 'aider' | 'goose' | 'opencode' | 'droid' | 'cursor' | 'cursor-agent' | 'agent' | 'api';
+export type AgentCli =
+  | 'claude'
+  | 'codex'
+  | 'gemini'
+  | 'aider'
+  | 'goose'
+  | 'opencode'
+  | 'droid'
+  | 'cursor'
+  | 'cursor-agent'
+  | 'agent'
+  | 'api';
 
 /** Resource and behavioral constraints for an agent. */
 export interface AgentConstraints {
@@ -159,6 +177,244 @@ export interface AgentConstraints {
   model?: string;
   /** Silence duration in seconds before the agent is considered idle (0 = disabled, default: 30). */
   idleThresholdSecs?: number;
+}
+
+// ── Permission types ────────────────────────────────────────────────────────
+
+/**
+ * Access preset for role-based permission shortcuts.
+ *
+ *   readonly    → read all non-ignored files, write nothing
+ *   readwrite   → read and write all non-ignored files (default behavior)
+ *   restricted  → read/write only explicitly listed paths
+ *   full        → read and write everything, including normally-ignored files
+ */
+export type AccessPreset = 'readonly' | 'readwrite' | 'restricted' | 'full';
+
+/** Fine-grained network permission with allowlist/denylist. */
+export interface NetworkPermissions {
+  /** Host:port pairs the agent may connect to (e.g. ['registry.npmjs.org:443']). */
+  allow?: string[];
+  /** Host:port patterns to block (e.g. ['*'] to deny all except allowed). */
+  deny?: string[];
+}
+
+/** Network permission: boolean to allow/deny all, or object for fine-grained control. */
+export type NetworkPermission = boolean | NetworkPermissions;
+
+/** Glob-based file permission scopes for an agent. */
+export interface FilePermissions {
+  /** Glob patterns the agent may read (e.g. ['src/**', 'docs/**']). */
+  read?: string[];
+  /** Glob patterns the agent may write (e.g. ['src/tests/**']). */
+  write?: string[];
+  /** Glob patterns the agent must never access (e.g. ['.env', 'secrets/**']).
+   *  Deny rules take precedence over read/write grants. */
+  deny?: string[];
+}
+
+/** Reusable named permission profile shared by one or more agents. */
+export interface PermissionProfileDefinition {
+  /** Human-readable summary of the profile's intended use. */
+  description?: string;
+
+  /** Explain why this profile exists or what constraint it is protecting. */
+  why?: string;
+
+  /** Role-based access preset. Expands into file permission rules.
+   *  Default: 'readwrite'. */
+  access?: AccessPreset;
+
+  /** Inherit patterns from .agentignore and .agentreadonly dotfiles.
+   *  Default: true. Set to false to ignore dotfiles for this agent. */
+  inherit?: boolean;
+
+  /** Explicit glob-based file read/write/deny rules.
+   *  Merged on top of the access preset and inherited dotfile patterns. */
+  files?: FilePermissions;
+
+  /** Raw relayauth scopes appended verbatim to the minted token.
+   *  For power users who need fine-grained control beyond file globs.
+   *  Example: ['relayfile:fs:read:/src/**', 'relayfile:fs:write:/tests/**'] */
+  scopes?: string[];
+
+  /** Network access control.
+   *  - undefined: no restriction
+   *  - false: deny all network access
+   *  - { allow, deny }: fine-grained host:port allowlist/denylist */
+  network?: NetworkPermission;
+
+  /** Allowlist of shell commands the agent may execute.
+   *  When set, only commands matching these prefixes are permitted.
+   *  Example: ['npm test', 'npm run lint', 'git diff']
+   *  Default: undefined (no restriction). */
+  exec?: string[];
+}
+
+/**
+ * Permission configuration for a workflow agent.
+ *
+ * All fields are optional — omitting `permissions` entirely preserves the
+ * existing default behavior (inherit dotfiles, readwrite access).
+ *
+ * Resolution order (later overrides earlier):
+ *   1. Dotfile patterns (.agentignore / .agentreadonly) when `inherit` is true
+ *   2. `access` preset expands into base file rules
+ *   3. Explicit `files` globs merge on top
+ *   4. `deny` patterns always win (applied last)
+ *   5. `scopes` are appended verbatim to the token
+ */
+export interface AgentPermissions {
+  /** Human-readable summary of what this permission block is for. */
+  description?: string;
+
+  /** Reference a reusable entry from the top-level `permission_profiles` map. */
+  profile?: string;
+
+  /** Explain why these permissions are needed or intentionally constrained. */
+  why?: string;
+
+  /** Role-based access preset. Expands into file permission rules.
+   *  Default: 'readwrite'. */
+  access?: AccessPreset;
+
+  /** Inherit patterns from .agentignore and .agentreadonly dotfiles.
+   *  Default: true. Set to false to ignore dotfiles for this agent. */
+  inherit?: boolean;
+
+  /** Explicit glob-based file read/write/deny rules.
+   *  Merged on top of the access preset and inherited dotfile patterns. */
+  files?: FilePermissions;
+
+  /** Raw relayauth scopes appended verbatim to the minted token.
+   *  For power users who need fine-grained control beyond file globs.
+   *  Example: ['relayfile:fs:read:/src/**', 'relayfile:fs:write:/tests/**'] */
+  scopes?: string[];
+
+  /** Network access control.
+   *  - undefined: no restriction
+   *  - false: deny all network access
+   *  - { allow, deny }: fine-grained host:port allowlist/denylist */
+  network?: NetworkPermission;
+
+  /** Allowlist of shell commands the agent may execute.
+   *  When set, only commands matching these prefixes are permitted.
+   *  Example: ['npm test', 'npm run lint', 'git diff']
+   *  Default: undefined (no restriction). */
+  exec?: string[];
+}
+
+// ── Compiled / resolved permissions ─────────────────────────────────────────
+
+/**
+ * Fully resolved agent permissions after merging:
+ *   dotfile patterns + access preset + explicit YAML file rules + custom scopes
+ *
+ * Produced by the permission resolver at spawn time and used to:
+ *   1. Mint the agent's relayauth token (scopes)
+ *   2. Configure the relayfile mount (readonlyPaths, readwritePaths, deniedPaths)
+ *   3. Enforce runtime restrictions (network, exec allowlist)
+ */
+export interface CompiledAgentPermissions {
+  /** Agent this permission set applies to. */
+  agentName: string;
+
+  /** Workspace the agent belongs to. */
+  workspace: string;
+
+  /** The effective access level after resolution. */
+  effectiveAccess: AccessPreset;
+
+  /** Whether dotfile patterns were inherited. */
+  inherited: boolean;
+
+  /** Source of each permission layer for audit/debug. */
+  sources: PermissionSource[];
+
+  // ── Resolved file paths ──────────────────────────────────────────────────
+
+  /** Glob patterns that resolved to read-only access. */
+  readonlyPatterns: string[];
+
+  /** Glob patterns that resolved to read-write access. */
+  readwritePatterns: string[];
+
+  /** Glob patterns explicitly denied (no access). */
+  deniedPatterns: string[];
+
+  /** Concrete file paths with read-only access (after walking the project). */
+  readonlyPaths: string[];
+
+  /** Concrete file paths with read-write access (after walking the project). */
+  readwritePaths: string[];
+
+  /** Concrete file paths denied to the agent. */
+  deniedPaths: string[];
+
+  // ── Token scopes ─────────────────────────────────────────────────────────
+
+  /** Merged relayauth scopes for the agent's token.
+   *  Combines auto-generated file scopes + explicit custom scopes. */
+  scopes: string[];
+
+  // ── Runtime restrictions ─────────────────────────────────────────────────
+
+  /** Network access control. Undefined means unrestricted. */
+  network?: NetworkPermission;
+
+  /** Allowed exec command prefixes. Undefined means unrestricted. */
+  exec?: string[];
+
+  // ── ACL (for relayfile mount) ────────────────────────────────────────────
+
+  /** Directory-level ACL rules for the relayfile mount.
+   *  Keys are normalized directory paths, values are rule arrays. */
+  acl: Record<string, string[]>;
+
+  /** Summary counts for quick inspection. */
+  summary: {
+    readonly: number;
+    readwrite: number;
+    denied: number;
+    customScopes: number;
+  };
+}
+
+/** Identifies where a permission rule originated. */
+export interface PermissionSource {
+  /** Source type. */
+  type: 'dotfile' | 'preset' | 'yaml' | 'scope';
+  /** Human-readable description (e.g. '.agentignore', 'access: readonly'). */
+  label: string;
+  /** Number of rules contributed by this source. */
+  ruleCount: number;
+}
+
+// ── Type guards ─────────────────────────────────────────────────────────────
+
+/**
+ * Returns true if the agent has restricted permissions —
+ * i.e., it has explicit permissions set AND those permissions limit access
+ * beyond the default readwrite+inherit behavior.
+ *
+ * An agent is considered restricted if any of the following are true:
+ *   - access is 'readonly' or 'restricted'
+ *   - files.deny has entries
+ *   - network is false or an allowlist/denylist object
+ *   - exec allowlist is set (any commands at all = restricted execution)
+ *   - inherit is explicitly false (opts out of dotfile protections)
+ */
+export function isRestrictedAgent(agent: AgentDefinition): boolean {
+  const perms = agent.permissions;
+  if (!perms) return false;
+
+  if (perms.access === 'readonly' || perms.access === 'restricted') return true;
+  if (perms.files?.deny && perms.files.deny.length > 0) return true;
+  if (perms.network === false || (typeof perms.network === 'object' && perms.network !== null)) return true;
+  if (perms.exec && perms.exec.length > 0) return true;
+  if (perms.inherit === false) return true;
+
+  return false;
 }
 
 // ── Workflow definitions ────────────────────────────────────────────────────
@@ -509,6 +765,15 @@ export interface DryRunReport {
   description?: string;
   pattern: string;
   agents: Array<{ name: string; cli: string; role?: string; cwd?: string; stepCount: number }>;
+  permissions?: Array<{
+    agent: string;
+    access: string;
+    readPaths: number;
+    writePaths: number;
+    denyPaths: number;
+    scopes: number;
+    source: 'yaml' | 'preset' | 'dotfiles' | 'none';
+  }>;
   waves: DryRunWave[];
   totalSteps: number;
   maxConcurrency?: number;

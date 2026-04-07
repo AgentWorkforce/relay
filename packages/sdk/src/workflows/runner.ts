@@ -22,6 +22,7 @@ import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import chalk from 'chalk';
+import ignore from 'ignore';
 
 import { parse as parseYaml } from 'yaml';
 import { stripAnsi as stripAnsiFn } from '../pty.js';
@@ -37,6 +38,8 @@ import {
   CustomStepsParseError,
   CustomStepResolutionError,
 } from './custom-steps.js';
+import { provisionWorkflowAgents, resolveAgentPermissions } from '../provisioner/index.js';
+import type { MountHandle } from '../provisioner/mount.js';
 import { collectCliSession, type CliSessionReport } from './cli-session-collector.js';
 import { executeApiStep } from './api-executor.js';
 import { ChannelMessenger } from './channel-messenger.js';
@@ -55,8 +58,10 @@ import {
   type VariableContext,
 } from './template-resolver.js';
 import type {
+  AccessPreset,
   AgentCli,
   AgentDefinition,
+  AgentPermissions,
   AgentPreset,
   CompletionEvidenceChannelOrigin,
   CompletionEvidenceChannelPost,
@@ -69,6 +74,7 @@ import type {
   ErrorHandlingConfig,
   IdleNudgeConfig,
   PathDefinition,
+  PermissionProfileDefinition,
   PreflightCheck,
   RelayYamlConfig,
   StepCompletionDecision,
@@ -391,6 +397,10 @@ export class WorkflowRunner {
   private currentRunId?: string;
   /** Live Agent handles keyed by name, for hub-mediated nudging. */
   private readonly activeAgentHandles = new Map<string, Agent>();
+  /** Per-agent workflow tokens for relay/relayfile auth across spawn modes. */
+  private readonly agentTokens = new Map<string, string>();
+  /** Per-agent relayfile mounts keyed by logical agent definition name. */
+  private readonly agentMounts = new Map<string, MountHandle>();
 
   // PTY-based output capture: accumulate terminal output per-agent
   private readonly ptyOutputBuffers = new Map<string, string[]>();
@@ -492,6 +502,355 @@ export class WorkflowRunner {
     return { resolved, errors, warnings };
   }
 
+  private validatePermissions(
+    agents: AgentDefinition[] | undefined,
+    permissionProfiles: RelayYamlConfig['permission_profiles'],
+    source = '<config>'
+  ): { errors: string[]; warnings: string[] } {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    const accessPresets = new Set<AccessPreset>(['readonly', 'readwrite', 'restricted', 'full']);
+    const profiles = permissionProfiles ?? {};
+    const profileNames = new Set(Object.keys(profiles));
+
+    const validateStringArray = (value: unknown, label: string): string[] | undefined => {
+      if (value === undefined) {
+        return undefined;
+      }
+      if (!Array.isArray(value)) {
+        errors.push(`${label} must be an array of strings`);
+        return undefined;
+      }
+
+      const normalized: string[] = [];
+      for (const entry of value) {
+        if (typeof entry !== 'string') {
+          errors.push(`${label} must be an array of strings`);
+          continue;
+        }
+        normalized.push(entry);
+      }
+      return normalized;
+    };
+
+    const validateGlobPattern = (pattern: string, label: string): void => {
+      const trimmed = pattern.trim();
+      if (trimmed === '') {
+        errors.push(`${label} must not contain empty glob patterns`);
+        return;
+      }
+      if (trimmed.includes('\0')) {
+        errors.push(`${label} contains an invalid glob pattern "${pattern}" (NUL byte)`);
+        return;
+      }
+
+      let escaped = false;
+      let bracketDepth = 0;
+      let braceDepth = 0;
+
+      for (const ch of trimmed) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (ch === '[') {
+          bracketDepth += 1;
+          continue;
+        }
+        if (ch === ']' && bracketDepth > 0) {
+          bracketDepth -= 1;
+          continue;
+        }
+        if (ch === '{') {
+          braceDepth += 1;
+          continue;
+        }
+        if (ch === '}' && braceDepth > 0) {
+          braceDepth -= 1;
+        }
+      }
+
+      if (escaped) {
+        errors.push(`${label} contains an invalid glob pattern "${pattern}" (dangling escape)`);
+        return;
+      }
+      if (bracketDepth > 0) {
+        errors.push(`${label} contains an invalid glob pattern "${pattern}" (unclosed character class)`);
+        return;
+      }
+      if (braceDepth > 0) {
+        errors.push(`${label} contains an invalid glob pattern "${pattern}" (unclosed brace expansion)`);
+        return;
+      }
+
+      try {
+        ignore().add([trimmed]);
+      } catch (err) {
+        errors.push(
+          `${label} contains an invalid glob pattern "${pattern}" (${err instanceof Error ? err.message : String(err)})`
+        );
+      }
+    };
+
+    const validatePermissionObject = (
+      permissions: unknown,
+      label: string,
+      options: { allowProfileReference: boolean }
+    ): void => {
+      if (typeof permissions === 'string') {
+        const shorthand = permissions.trim();
+        if (shorthand === '') {
+          errors.push(`${label} must not be empty`);
+          return;
+        }
+
+        if (accessPresets.has(shorthand as AccessPreset)) {
+          return;
+        }
+
+        if (options.allowProfileReference) {
+          if (!profileNames.has(shorthand)) {
+            errors.push(`${label} references unknown permission profile "${shorthand}"`);
+          }
+          return;
+        }
+
+        errors.push(`${label} must be an object when provided`);
+        return;
+      }
+
+      if (typeof permissions !== 'object' || permissions === null) {
+        errors.push(`${label} must be an object when provided`);
+        return;
+      }
+
+      const permissionRecord = permissions as Record<string, unknown>;
+
+      if (permissionRecord.description !== undefined && typeof permissionRecord.description !== 'string') {
+        errors.push(`${label}.description must be a string when provided`);
+      }
+
+      if (permissionRecord.profile !== undefined) {
+        if (!options.allowProfileReference) {
+          errors.push(`${label}.profile is only supported on agent permissions`);
+        } else if (typeof permissionRecord.profile !== 'string') {
+          errors.push(`${label}.profile must be a string when provided`);
+        } else if (permissionRecord.profile.trim() === '') {
+          errors.push(`${label}.profile must not be empty`);
+        } else if (!profileNames.has(permissionRecord.profile)) {
+          errors.push(`${label}.profile references unknown permission profile "${permissionRecord.profile}"`);
+        }
+      }
+
+      if (permissionRecord.why !== undefined && typeof permissionRecord.why !== 'string') {
+        errors.push(`${label}.why must be a string when provided`);
+      }
+
+      if (
+        permissionRecord.access !== undefined &&
+        !accessPresets.has(permissionRecord.access as AccessPreset)
+      ) {
+        errors.push(`${label}.access must be one of readonly, readwrite, restricted, full`);
+      }
+
+      if (permissionRecord.inherit !== undefined && typeof permissionRecord.inherit !== 'boolean') {
+        errors.push(`${label}.inherit must be a boolean when provided`);
+      }
+
+      if (permissionRecord.network !== undefined) {
+        if (typeof permissionRecord.network === 'boolean') {
+          // valid: boolean form
+        } else if (
+          typeof permissionRecord.network === 'object' &&
+          permissionRecord.network !== null &&
+          !Array.isArray(permissionRecord.network)
+        ) {
+          const net = permissionRecord.network as Record<string, unknown>;
+          validateStringArray(net.allow, `${label}.network.allow`);
+          validateStringArray(net.deny, `${label}.network.deny`);
+        } else {
+          errors.push(`${label}.network must be a boolean or an object with allow/deny arrays`);
+        }
+      }
+
+      if (permissionRecord.files !== undefined) {
+        if (
+          typeof permissionRecord.files !== 'object' ||
+          permissionRecord.files === null ||
+          Array.isArray(permissionRecord.files)
+        ) {
+          errors.push(`${label}.files must be an object when provided`);
+        } else {
+          const files = permissionRecord.files as Record<string, unknown>;
+          const read = validateStringArray(files.read, `${label}.files.read`);
+          const write = validateStringArray(files.write, `${label}.files.write`);
+          const deny = validateStringArray(files.deny, `${label}.files.deny`);
+
+          for (const pattern of read ?? []) {
+            validateGlobPattern(pattern, `${label}.files.read`);
+          }
+          for (const pattern of write ?? []) {
+            validateGlobPattern(pattern, `${label}.files.write`);
+          }
+          for (const pattern of deny ?? []) {
+            validateGlobPattern(pattern, `${label}.files.deny`);
+          }
+
+          if (permissionRecord.access === 'readonly' && (write?.length ?? 0) > 0) {
+            warnings.push(`${label} sets access to "readonly" but also defines files.write entries`);
+          }
+        }
+      }
+
+      const scopes = validateStringArray(permissionRecord.scopes, `${label}.scopes`);
+      for (const scope of scopes ?? []) {
+        if (scope.trim() === '') {
+          errors.push(`${label}.scopes must not contain empty strings`);
+          continue;
+        }
+        if (!/^[^:\s]+:[^:\s]+:[^:\s]+:.+$/u.test(scope)) {
+          errors.push(`${label}.scopes entry "${scope}" must follow plane:resource:action:path format`);
+        }
+      }
+
+      const exec = validateStringArray(permissionRecord.exec, `${label}.exec`);
+      for (const entry of exec ?? []) {
+        if (entry.trim() === '') {
+          errors.push(`${label}.exec must not contain empty strings`);
+        }
+      }
+    };
+
+    if (permissionProfiles !== undefined) {
+      if (
+        typeof permissionProfiles !== 'object' ||
+        permissionProfiles === null ||
+        Array.isArray(permissionProfiles)
+      ) {
+        errors.push(`${source}: permission_profiles must be an object when provided`);
+      } else {
+        for (const [profileName, profile] of Object.entries(permissionProfiles)) {
+          if (profileName.trim() === '') {
+            errors.push(`${source}: permission_profiles keys must not be empty`);
+            continue;
+          }
+          validatePermissionObject(profile, `${source}: permission_profiles.${profileName}`, {
+            allowProfileReference: false,
+          });
+        }
+      }
+    }
+
+    if (!agents || agents.length === 0) {
+      return { errors, warnings };
+    }
+
+    for (const agent of agents) {
+      if (agent.permissions === undefined) {
+        continue;
+      }
+      validatePermissionObject(agent.permissions, `${source}: agent "${agent.name}" permissions`, {
+        allowProfileReference: true,
+      });
+    }
+
+    return { errors, warnings };
+  }
+
+  private mergePermissionLists(
+    base: readonly string[] | undefined,
+    override: readonly string[] | undefined
+  ): string[] | undefined {
+    const merged = [
+      ...new Set([...(base ?? []), ...(override ?? [])].map((value) => value.trim()).filter(Boolean)),
+    ];
+    return merged.length > 0 ? merged : undefined;
+  }
+
+  private mergePermissionFiles(
+    base: AgentPermissions['files'],
+    override: AgentPermissions['files']
+  ): AgentPermissions['files'] {
+    const merged = {
+      read: this.mergePermissionLists(base?.read, override?.read),
+      write: this.mergePermissionLists(base?.write, override?.write),
+      deny: this.mergePermissionLists(base?.deny, override?.deny),
+    };
+
+    return merged.read || merged.write || merged.deny ? merged : undefined;
+  }
+
+  private mergePermissionProfile(
+    profile: PermissionProfileDefinition,
+    permissions: AgentPermissions
+  ): AgentPermissions {
+    const merged: AgentPermissions = {
+      description: permissions.description ?? profile.description,
+      profile: permissions.profile,
+      why: permissions.why ?? profile.why,
+      access: permissions.access ?? profile.access,
+      inherit: permissions.inherit ?? profile.inherit,
+      files: this.mergePermissionFiles(profile.files, permissions.files),
+      scopes: this.mergePermissionLists(profile.scopes, permissions.scopes),
+      network: permissions.network ?? profile.network,
+      exec: this.mergePermissionLists(profile.exec, permissions.exec),
+    };
+
+    return Object.fromEntries(
+      Object.entries(merged).filter(([, value]) => value !== undefined)
+    ) as AgentPermissions;
+  }
+
+  private applyPermissionProfiles(config: RelayYamlConfig): RelayYamlConfig {
+    if (!config.permission_profiles || Object.keys(config.permission_profiles).length === 0) {
+      return config;
+    }
+
+    return {
+      ...config,
+      agents: config.agents.map((agent) => {
+        const rawPermissions = agent.permissions;
+        if (!rawPermissions) {
+          return agent;
+        }
+
+        const normalizedPermissions =
+          typeof rawPermissions === 'string'
+            ? ({
+                ...(config.permission_profiles?.[rawPermissions]
+                  ? { profile: rawPermissions }
+                  : { access: rawPermissions as AccessPreset }),
+              } as AgentPermissions)
+            : rawPermissions;
+
+        const profileName = normalizedPermissions.profile;
+        if (!profileName) {
+          return {
+            ...agent,
+            permissions: normalizedPermissions,
+          };
+        }
+
+        const profile = config.permission_profiles?.[profileName];
+        if (!profile) {
+          return {
+            ...agent,
+            permissions: normalizedPermissions,
+          };
+        }
+
+        return {
+          ...agent,
+          permissions: this.mergePermissionProfile(profile, normalizedPermissions),
+        };
+      }),
+    };
+  }
+
   /**
    * Resolve an agent's effective working directory, considering `workdir` (named path reference)
    * and `cwd` (explicit path). `workdir` takes precedence when both are set.
@@ -532,6 +891,36 @@ export class WorkflowRunner {
       return path.resolve(this.cwd, step.cwd);
     }
     return this.resolveStepWorkdir(step) ?? (agentDef ? this.resolveAgentCwd(agentDef) : this.cwd);
+  }
+
+  private resolveMountedCwd(agentName: string, cwd: string): string {
+    const mount = this.agentMounts.get(agentName);
+    if (!mount) {
+      return cwd;
+    }
+
+    const relative = path.relative(this.cwd, cwd);
+    if (relative === '') {
+      return mount.mountPoint;
+    }
+    if (relative === '..' || relative.startsWith(`..${path.sep}`)) {
+      return cwd;
+    }
+    return path.resolve(mount.mountPoint, relative);
+  }
+
+  private resolveExecutionCwd(step: WorkflowStep, agentDef?: AgentDefinition): string {
+    const cwd = this.resolveEffectiveCwd(step, agentDef);
+    if (!agentDef) {
+      return cwd;
+    }
+    return this.resolveMountedCwd(agentDef.name, cwd);
+  }
+
+  private async stopProvisionedMounts(): Promise<void> {
+    const handles = [...this.agentMounts.values()];
+    this.agentMounts.clear();
+    await Promise.all(handles.map((handle) => handle.stop().catch(() => undefined)));
   }
 
   private static readonly EVIDENCE_IGNORED_DIRS = new Set([
@@ -1138,6 +1527,48 @@ export class WorkflowRunner {
     };
   }
 
+  private async provisionAgents(config: RelayYamlConfig): Promise<void> {
+    this.agentTokens.clear();
+    await this.stopProvisionedMounts();
+
+    const agentsToProvision: Record<string, NonNullable<AgentDefinition['permissions']>> = {};
+    for (const agent of config.agents) {
+      if (agent.permissions) {
+        agentsToProvision[agent.name] = agent.permissions;
+      }
+    }
+
+    const agentNames = Object.keys(agentsToProvision);
+    if (agentNames.length === 0) {
+      return;
+    }
+
+    const relayEnv = {
+      ...process.env,
+      ...(this.getRelayEnv() ?? {}),
+    };
+    const result = await provisionWorkflowAgents({
+      secret:
+        this.envSecrets?.RELAY_AUTH_SECRET ?? relayEnv.RELAY_AUTH_SECRET ?? randomBytes(32).toString('hex'),
+      workspace: this.workspaceId,
+      projectDir: this.cwd,
+      relayfileBaseUrl: relayEnv.RELAYFILE_BASE_URL ?? 'http://127.0.0.1:8080',
+      agents: agentsToProvision,
+      tokenTtlSeconds: 3600,
+    });
+
+    for (const [agentName, token] of result.tokens) {
+      this.agentTokens.set(agentName, token);
+    }
+    for (const [agentName, mount] of result.mounts) {
+      this.agentMounts.set(agentName, mount);
+    }
+
+    this.log(
+      `Provisioned workflow tokens for ${result.tokens.size} agent${result.tokens.size === 1 ? '' : 's'}`
+    );
+  }
+
   private getRelaycastBaseUrl(): string {
     return (
       this.relayOptions.env?.RELAYCAST_BASE_URL ??
@@ -1248,8 +1679,31 @@ export class WorkflowRunner {
   parseYamlString(raw: string, source = '<string>'): RelayYamlConfig {
     const parsed = parseYaml(raw);
     this.validateConfig(parsed, source);
-    const config = parsed as RelayYamlConfig;
+    const config = this.normalizeLegacyPermissionConfig(parsed as RelayYamlConfig);
     config.agents ??= [];
+    return config;
+  }
+
+  private normalizeLegacyPermissionConfig(config: RelayYamlConfig): RelayYamlConfig {
+    const legacyPermissions = (
+      config as RelayYamlConfig & {
+        permissions?: { profiles?: RelayYamlConfig['permission_profiles'] };
+      }
+    ).permissions;
+
+    if (
+      config.permission_profiles === undefined &&
+      legacyPermissions &&
+      typeof legacyPermissions === 'object' &&
+      legacyPermissions.profiles &&
+      typeof legacyPermissions.profiles === 'object'
+    ) {
+      return {
+        ...config,
+        permission_profiles: legacyPermissions.profiles,
+      };
+    }
+
     return config;
   }
 
@@ -1276,6 +1730,37 @@ export class WorkflowRunner {
     }
     if (c.agents !== undefined && !Array.isArray(c.agents)) {
       throw new Error(`${source}: "agents" must be an array when provided`);
+    }
+    const legacyPermissions = c.permissions;
+    if (
+      legacyPermissions !== undefined &&
+      (typeof legacyPermissions !== 'object' ||
+        legacyPermissions === null ||
+        Array.isArray(legacyPermissions))
+    ) {
+      throw new Error(`${source}: "permissions" must be an object when provided`);
+    }
+    if (
+      c.permission_profiles !== undefined &&
+      (typeof c.permission_profiles !== 'object' ||
+        c.permission_profiles === null ||
+        Array.isArray(c.permission_profiles))
+    ) {
+      throw new Error(`${source}: "permission_profiles" must be an object when provided`);
+    }
+    if (
+      c.permission_profiles === undefined &&
+      legacyPermissions !== undefined &&
+      typeof legacyPermissions === 'object' &&
+      legacyPermissions !== null
+    ) {
+      const profiles = (legacyPermissions as Record<string, unknown>).profiles;
+      if (
+        profiles !== undefined &&
+        (typeof profiles !== 'object' || profiles === null || Array.isArray(profiles))
+      ) {
+        throw new Error(`${source}: "permissions.profiles" must be an object when provided`);
+      }
     }
 
     for (const agent of c.agents ?? []) {
@@ -1316,6 +1801,7 @@ export class WorkflowRunner {
     try {
       this.validateConfig(config);
       resolved = vars ? this.resolveVariables(config, vars) : config;
+      resolved = this.applyPermissionProfiles(resolved);
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err));
       return {
@@ -1331,7 +1817,11 @@ export class WorkflowRunner {
       };
     }
 
-    // 1b. Resolve and validate named paths
+    // 1b. Validate permissions and resolve named paths
+    const permissionResult = this.validatePermissions(resolved.agents, resolved.permission_profiles);
+    errors.push(...permissionResult.errors);
+    warnings.push(...permissionResult.warnings);
+
     const pathResult = this.resolvePathDefinitions(resolved.paths, this.cwd);
     errors.push(...pathResult.errors);
     warnings.push(...pathResult.warnings);
@@ -1520,6 +2010,29 @@ export class WorkflowRunner {
       }
     }
 
+    const permissions = resolved.agents.map((agent) => {
+      const compiled = resolveAgentPermissions(agent.name, agent.permissions, this.cwd, this.workspaceId);
+      const source: NonNullable<DryRunReport['permissions']>[number]['source'] = compiled.sources.some(
+        (entry) => entry.type === 'yaml'
+      )
+        ? 'yaml'
+        : compiled.sources.some((entry) => entry.type === 'preset')
+          ? 'preset'
+          : compiled.sources.some((entry) => entry.type === 'dotfile')
+            ? 'dotfiles'
+            : 'none';
+
+      return {
+        agent: agent.name,
+        access: compiled.effectiveAccess,
+        readPaths: compiled.summary.readonly,
+        writePaths: compiled.summary.readwrite,
+        denyPaths: compiled.summary.denied,
+        scopes: compiled.scopes.length,
+        source,
+      };
+    });
+
     // 4. Build agent summary
     const agents = resolved.agents.map((a) => ({
       name: a.name,
@@ -1590,6 +2103,7 @@ export class WorkflowRunner {
       description: workflow.description ?? resolved.description,
       pattern: resolved.swarm.pattern,
       agents,
+      permissions,
       waves,
       totalSteps: workflow.steps.length,
       maxConcurrency,
@@ -1900,10 +2414,18 @@ export class WorkflowRunner {
     this.abortController = new AbortController();
     this.paused = false;
 
-    const resolved = vars ? this.resolveVariables(config, vars) : config;
+    const resolved = this.applyPermissionProfiles(vars ? this.resolveVariables(config, vars) : config);
 
     // Validate config (catches cycles, missing deps, invalid steps, etc.)
     this.validateConfig(resolved);
+
+    const permissionResult = this.validatePermissions(resolved.agents, resolved.permission_profiles);
+    if (permissionResult.errors.length > 0) {
+      throw new Error(`Permission validation failed:\n  ${permissionResult.errors.join('\n  ')}`);
+    }
+    for (const warning of permissionResult.warnings) {
+      console.warn(`[WorkflowRunner] Warning: ${warning}`);
+    }
 
     // Resolve and validate named paths from the top-level `paths` config
     const pathResult = this.resolvePathDefinitions(resolved.paths, this.cwd);
@@ -2403,6 +2925,8 @@ export class WorkflowRunner {
         await this.runPreflightChecks(workflow.preflight, runId);
       }
 
+      await this.provisionAgents(config);
+
       this.log(`Executing ${workflow.steps.length} steps (pattern: ${config.swarm.pattern})`);
       await this.executeSteps(workflow, stepStates, agentMap, config.errorHandling, runId);
 
@@ -2523,6 +3047,8 @@ export class WorkflowRunner {
       this.currentConfig = undefined;
       this.currentRunId = undefined;
       this.activeAgentHandles.clear();
+      await this.stopProvisionedMounts();
+      this.agentTokens.clear(); // Prevent workflow-scoped tokens from leaking into a later run.
     }
 
     const finalRun = await this.db.getRun(runId);
@@ -4977,6 +5503,25 @@ export class WorkflowRunner {
 
     const stdoutChunks: string[] = [];
     const stderrChunks: string[] = [];
+    const env = { ...(this.getRelayEnv() ?? filteredEnv()) };
+    const agentToken = this.agentTokens.get(agentDef.name);
+    const mount = this.agentMounts.get(agentDef.name);
+    if (agentToken) {
+      env.RELAY_AGENT_TOKEN = agentToken;
+      env.RELAYFILE_TOKEN = agentToken;
+    }
+    if (mount) {
+      env.RELAY_WORKSPACE = mount.mountPoint;
+      env.RELAY_AGENT_NAME = agentName;
+      env.RELAYFILE_WORKSPACE = this.workspaceId;
+      env.RELAY_WORKSPACE_ID = this.workspaceId;
+      env.RELAY_DEFAULT_WORKSPACE = this.workspaceId;
+    }
+    env.RELAYFILE_BASE_URL =
+      env.RELAYFILE_BASE_URL ??
+      this.getRelayEnv()?.RELAYFILE_BASE_URL ??
+      process.env.RELAYFILE_BASE_URL ??
+      'http://127.0.0.1:8080';
 
     try {
       const {
@@ -4986,8 +5531,8 @@ export class WorkflowRunner {
       } = await new Promise<{ stdout: string; exitCode?: number; exitSignal?: string }>((resolve, reject) => {
         const child = spawnProcess([cmd, ...args], {
           stdio: ['ignore', 'pipe', 'pipe'],
-          cwd: this.resolveEffectiveCwd(step, agentDef),
-          env: this.getRelayEnv() ?? filteredEnv(),
+          cwd: this.resolveExecutionCwd(step, agentDef),
+          env,
         });
 
         // Update workers.json with PID now that we have it
@@ -5189,7 +5734,7 @@ export class WorkflowRunner {
     let ptyChunks: string[] = [];
 
     try {
-      const agentCwd = this.resolveAgentCwd(agentDef);
+      const agentCwd = this.resolveExecutionCwd(step, agentDef);
       const interactiveSpawnPolicy = resolveSpawnPolicy({
         AGENT_NAME: agentName,
         AGENT_CLI: agentDef.cli,
@@ -5205,6 +5750,7 @@ export class WorkflowRunner {
         task: preparedTask.spawnTaskText,
         idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
         cwd: agentCwd,
+        agentToken: this.agentTokens.get(agentDef.name),
       });
 
       // Re-key PTY maps if broker assigned a different name than requested

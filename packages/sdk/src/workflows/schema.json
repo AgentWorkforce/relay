@@ -1,17 +1,10 @@
-Added workdir to AgentWorkflowStep
-Added workdir to DeterministicWorkflowStep
-Added workdir to WorktreeWorkflowStep
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "RelayYamlConfig",
   "title": "Relay YAML Configuration",
   "description": "Schema for relay.yaml workflow configuration files",
   "type": "object",
-  "required": [
-    "version",
-    "name",
-    "swarm"
-  ],
+  "required": ["version", "name", "swarm"],
   "additionalProperties": false,
   "properties": {
     "version": {
@@ -25,6 +18,13 @@ Added workdir to WorktreeWorkflowStep
     "description": {
       "type": "string",
       "description": "Optional description of the configuration"
+    },
+    "permission_profiles": {
+      "type": "object",
+      "description": "Reusable permission profiles that agents can reference via permissions.profile.",
+      "additionalProperties": {
+        "$ref": "#/definitions/PermissionProfile"
+      }
     },
     "paths": {
       "type": "array",
@@ -65,9 +65,7 @@ Added workdir to WorktreeWorkflowStep
         },
         {
           "type": "boolean",
-          "enum": [
-            false
-          ]
+          "enum": [false]
         }
       ]
     }
@@ -75,10 +73,7 @@ Added workdir to WorktreeWorkflowStep
   "definitions": {
     "PathDefinition": {
       "type": "object",
-      "required": [
-        "name",
-        "path"
-      ],
+      "required": ["name", "path"],
       "additionalProperties": false,
       "properties": {
         "name": {
@@ -102,9 +97,7 @@ Added workdir to WorktreeWorkflowStep
     },
     "SwarmConfig": {
       "type": "object",
-      "required": [
-        "pattern"
-      ],
+      "required": ["pattern"],
       "additionalProperties": false,
       "properties": {
         "pattern": {
@@ -187,10 +180,7 @@ Added workdir to WorktreeWorkflowStep
     },
     "AgentDefinition": {
       "type": "object",
-      "required": [
-        "name",
-        "cli"
-      ],
+      "required": ["name", "cli"],
       "additionalProperties": false,
       "properties": {
         "name": {
@@ -238,14 +228,12 @@ Added workdir to WorktreeWorkflowStep
           },
           "description": "Additional paths the agent needs read/write access to."
         },
+        "permissions": {
+          "$ref": "#/definitions/AgentPermissions"
+        },
         "preset": {
           "type": "string",
-          "enum": [
-            "lead",
-            "worker",
-            "reviewer",
-            "analyst"
-          ],
+          "enum": ["lead", "worker", "reviewer", "analyst"],
           "description": "Role preset that automatically configures interactive mode and injects appropriate task guardrails. lead: interactive PTY, relay-aware. worker/reviewer/analyst: interactive: false, no sub-agents."
         }
       }
@@ -264,6 +252,172 @@ Added workdir to WorktreeWorkflowStep
         "cursor-agent",
         "agent"
       ]
+    },
+    "PermissionProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Reusable named permission profile shared by one or more agents.",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable summary of the profile's intended use."
+        },
+        "why": {
+          "type": "string",
+          "description": "Explain why this profile exists or what constraint it is protecting."
+        },
+        "access": {
+          "type": "string",
+          "enum": ["readonly", "readwrite", "restricted", "full"],
+          "description": "Access preset that expands to a predefined permission profile."
+        },
+        "inherit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to inherit restrictions from existing workspace dotfiles and defaults."
+        },
+        "files": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional file path rules for agent filesystem access.",
+          "properties": {
+            "read": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Glob patterns the agent may read."
+            },
+            "write": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Glob patterns the agent may write."
+            },
+            "deny": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Glob patterns explicitly denied to the agent."
+            }
+          }
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Raw relayauth scopes to grant to the agent."
+        },
+        "network": {
+          "oneOf": [
+            { "type": "boolean" },
+            {
+              "type": "object",
+              "properties": {
+                "allow": { "type": "array", "items": { "type": "string" } },
+                "deny": { "type": "array", "items": { "type": "string" } }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "Network access control: boolean to allow/deny all, or object with allow/deny host:port arrays."
+        },
+        "exec": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Command patterns the agent is allowed to execute."
+        }
+      }
+    },
+    "AgentPermissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional permission controls for this agent, including file access rules, access presets, inherited restrictions, raw relayauth scopes, network access, and allowed commands.",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable summary of what this permission block is for."
+        },
+        "profile": {
+          "type": "string",
+          "description": "Reference a reusable entry from the top-level permission_profiles map."
+        },
+        "why": {
+          "type": "string",
+          "description": "Explain why these permissions are needed or intentionally constrained."
+        },
+        "access": {
+          "type": "string",
+          "enum": ["readonly", "readwrite", "restricted", "full"],
+          "description": "Access preset that expands to a predefined permission profile."
+        },
+        "inherit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to inherit restrictions from existing workspace dotfiles and defaults."
+        },
+        "files": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional file path rules for agent filesystem access.",
+          "properties": {
+            "read": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Glob patterns the agent may read."
+            },
+            "write": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Glob patterns the agent may write."
+            },
+            "deny": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Glob patterns explicitly denied to the agent."
+            }
+          }
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Raw relayauth scopes to grant to the agent."
+        },
+        "network": {
+          "oneOf": [
+            { "type": "boolean" },
+            {
+              "type": "object",
+              "properties": {
+                "allow": { "type": "array", "items": { "type": "string" } },
+                "deny": { "type": "array", "items": { "type": "string" } }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "Network access control: boolean to allow/deny all, or object with allow/deny host:port arrays."
+        },
+        "exec": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Command patterns the agent is allowed to execute."
+        }
+      }
     },
     "AgentConstraints": {
       "type": "object",
@@ -319,10 +473,7 @@ Added workdir to WorktreeWorkflowStep
     },
     "WorkflowDefinition": {
       "type": "object",
-      "required": [
-        "name",
-        "steps"
-      ],
+      "required": ["name", "steps"],
       "additionalProperties": false,
       "properties": {
         "name": {
@@ -348,20 +499,14 @@ Added workdir to WorktreeWorkflowStep
         },
         "onError": {
           "type": "string",
-          "enum": [
-            "fail",
-            "skip",
-            "retry"
-          ],
+          "enum": ["fail", "skip", "retry"],
           "description": "Error handling strategy for this workflow"
         }
       }
     },
     "PreflightCheck": {
       "type": "object",
-      "required": [
-        "command"
-      ],
+      "required": ["command"],
       "additionalProperties": false,
       "properties": {
         "command": {
@@ -400,18 +545,12 @@ Added workdir to WorktreeWorkflowStep
     },
     "AgentWorkflowStep": {
       "type": "object",
-      "required": [
-        "name",
-        "agent",
-        "task"
-      ],
+      "required": ["name", "agent", "task"],
       "additionalProperties": false,
       "properties": {
         "type": {
           "type": "string",
-          "enum": [
-            "agent"
-          ],
+          "enum": ["agent"],
           "description": "Step type (optional for agent steps, defaults to 'agent')"
         },
         "name": {
@@ -457,18 +596,12 @@ Added workdir to WorktreeWorkflowStep
     },
     "DeterministicWorkflowStep": {
       "type": "object",
-      "required": [
-        "name",
-        "type",
-        "command"
-      ],
+      "required": ["name", "type", "command"],
       "additionalProperties": false,
       "properties": {
         "type": {
           "type": "string",
-          "enum": [
-            "deterministic"
-          ],
+          "enum": ["deterministic"],
           "description": "Step type - must be 'deterministic' for shell command steps"
         },
         "name": {
@@ -508,18 +641,12 @@ Added workdir to WorktreeWorkflowStep
     },
     "WorktreeWorkflowStep": {
       "type": "object",
-      "required": [
-        "name",
-        "type",
-        "branch"
-      ],
+      "required": ["name", "type", "branch"],
       "additionalProperties": false,
       "properties": {
         "type": {
           "type": "string",
-          "enum": [
-            "worktree"
-          ],
+          "enum": ["worktree"],
           "description": "Step type - must be 'worktree' for git worktree setup steps"
         },
         "name": {
@@ -562,10 +689,7 @@ Added workdir to WorktreeWorkflowStep
     },
     "CustomWorkflowStep": {
       "type": "object",
-      "required": [
-        "name",
-        "use"
-      ],
+      "required": ["name", "use"],
       "additionalProperties": true,
       "properties": {
         "name": {
@@ -591,9 +715,7 @@ Added workdir to WorktreeWorkflowStep
     },
     "CustomStepParam": {
       "type": "object",
-      "required": [
-        "name"
-      ],
+      "required": ["name"],
       "additionalProperties": false,
       "properties": {
         "name": {
@@ -628,10 +750,7 @@ Added workdir to WorktreeWorkflowStep
         },
         "type": {
           "type": "string",
-          "enum": [
-            "deterministic",
-            "worktree"
-          ],
+          "enum": ["deterministic", "worktree"],
           "description": "Step type"
         },
         "command": {
@@ -677,9 +796,7 @@ Added workdir to WorktreeWorkflowStep
     },
     "CustomStepsConfig": {
       "type": "object",
-      "required": [
-        "steps"
-      ],
+      "required": ["steps"],
       "additionalProperties": false,
       "properties": {
         "steps": {
@@ -693,20 +810,12 @@ Added workdir to WorktreeWorkflowStep
     },
     "VerificationCheck": {
       "type": "object",
-      "required": [
-        "type",
-        "value"
-      ],
+      "required": ["type", "value"],
       "additionalProperties": false,
       "properties": {
         "type": {
           "type": "string",
-          "enum": [
-            "output_contains",
-            "exit_code",
-            "file_exists",
-            "custom"
-          ],
+          "enum": ["output_contains", "exit_code", "file_exists", "custom"],
           "description": "Type of verification to perform"
         },
         "value": {
@@ -737,21 +846,14 @@ Added workdir to WorktreeWorkflowStep
         },
         "consensusStrategy": {
           "type": "string",
-          "enum": [
-            "majority",
-            "unanimous",
-            "quorum"
-          ],
+          "enum": ["majority", "unanimous", "quorum"],
           "description": "Strategy for reaching consensus among agents"
         }
       }
     },
     "Barrier": {
       "type": "object",
-      "required": [
-        "name",
-        "waitFor"
-      ],
+      "required": ["name", "waitFor"],
       "additionalProperties": false,
       "properties": {
         "name": {
@@ -775,18 +877,12 @@ Added workdir to WorktreeWorkflowStep
     },
     "StateConfig": {
       "type": "object",
-      "required": [
-        "backend"
-      ],
+      "required": ["backend"],
       "additionalProperties": false,
       "properties": {
         "backend": {
           "type": "string",
-          "enum": [
-            "memory",
-            "redis",
-            "database"
-          ],
+          "enum": ["memory", "redis", "database"],
           "description": "State storage backend"
         },
         "ttlMs": {
@@ -802,18 +898,12 @@ Added workdir to WorktreeWorkflowStep
     },
     "ErrorHandlingConfig": {
       "type": "object",
-      "required": [
-        "strategy"
-      ],
+      "required": ["strategy"],
       "additionalProperties": false,
       "properties": {
         "strategy": {
           "type": "string",
-          "enum": [
-            "fail-fast",
-            "continue",
-            "retry"
-          ],
+          "enum": ["fail-fast", "continue", "retry"],
           "description": "Global error handling strategy"
         },
         "maxRetries": {

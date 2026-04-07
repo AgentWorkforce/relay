@@ -1,0 +1,91 @@
+version: '1.0'
+name: review-readonly
+description: 'Parallel code review with readonly agents and explicit secret deny rules.'
+swarm:
+  pattern: fan-out
+  maxConcurrency: 3
+  timeoutMs: 2400000
+  channel: swarm-review-readonly
+agents:
+  - name: lead
+    cli: claude
+    role: 'Aggregates review findings and final recommendation'
+    permissions: readonly
+
+  - name: style-reviewer
+    cli: claude
+    role: 'Checks style, naming, and readability'
+    interactive: false
+    permissions:
+      access: readonly
+      files:
+        deny: ['.env*', 'secrets/**', '*.pem', '*.key']
+
+  - name: logic-reviewer
+    cli: codex
+    role: 'Checks logic, edge cases, and regressions'
+    interactive: false
+    permissions:
+      access: readonly
+      files:
+        deny: ['.env*', 'secrets/**', '*.pem', '*.key']
+
+workflows:
+  - name: review
+    description: 'Capture current changes, review in parallel, and synthesize a verdict.'
+    onError: fail
+    steps:
+      - name: capture-diff
+        type: deterministic
+        command: git diff HEAD~1 2>/dev/null || git diff 2>/dev/null || echo "No changes"
+        captureOutput: true
+
+      - name: capture-files
+        type: deterministic
+        dependsOn: [capture-diff]
+        command: git diff --name-only HEAD~1 2>/dev/null || git diff --name-only 2>/dev/null || echo "No files"
+        captureOutput: true
+
+      - name: style
+        type: agent
+        agent: style-reviewer
+        dependsOn: [capture-diff, capture-files]
+        task: |
+          Review style and readability for these changes:
+          Files: {{steps.capture-files.output}}
+
+          Diff:
+          {{steps.capture-diff.output}}
+        verification:
+          type: output_contains
+          value: REVIEW_COMPLETE
+
+      - name: logic
+        type: agent
+        agent: logic-reviewer
+        dependsOn: [capture-diff, capture-files]
+        task: |
+          Review correctness, regressions, and missing tests for these changes:
+          Files: {{steps.capture-files.output}}
+
+          Diff:
+          {{steps.capture-diff.output}}
+        verification:
+          type: output_contains
+          value: REVIEW_COMPLETE
+
+      - name: summarize
+        type: agent
+        agent: lead
+        dependsOn: [style, logic]
+        task: |
+          Combine the review findings into a single verdict.
+
+          Style review:
+          {{steps.style.output}}
+
+          Logic review:
+          {{steps.logic.output}}
+        verification:
+          type: output_contains
+          value: DONE
