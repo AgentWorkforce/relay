@@ -172,17 +172,21 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
   }
 
   // In local multi-repo workspaces, prefer a sibling relay-dashboard build when available.
-  const siblingWorkspaceBuild = path.resolve(
-    process.cwd(),
-    '..',
-    'relay-dashboard',
-    'packages',
-    'dashboard-server',
-    'dist',
-    'start.js'
-  );
-  if (fileSystem.existsSync(siblingWorkspaceBuild)) {
-    return siblingWorkspaceBuild;
+  // Only when RELAY_LOCAL_DEV is set — otherwise the installed binary should win so
+  // users don't accidentally run a stale dev build.
+  if (process.env.RELAY_LOCAL_DEV === '1') {
+    const siblingWorkspaceBuild = path.resolve(
+      process.cwd(),
+      '..',
+      'relay-dashboard',
+      'packages',
+      'dashboard-server',
+      'dist',
+      'start.js'
+    );
+    if (fileSystem.existsSync(siblingWorkspaceBuild)) {
+      return siblingWorkspaceBuild;
+    }
   }
 
   // In workspace / local dev mode, try resolving the dashboard-server package directly
