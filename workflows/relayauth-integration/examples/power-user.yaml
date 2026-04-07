@@ -1,0 +1,109 @@
+version: '1.0'
+name: power-user
+description: 'Advanced example showing reusable profiles, full access, and granular network and exec controls.'
+permissions:
+  profiles:
+    repo-readonly:
+      access: readonly
+      files:
+        deny: ['.env*', 'secrets/**', '*.pem', '*.key']
+    bounded-dev:
+      access: restricted
+      files:
+        read: ['src/**', 'scripts/**', 'tests/**', 'package.json', 'tsconfig.json']
+        write: ['src/**', 'scripts/**', 'tests/**']
+        deny: ['infra/**', '.env*', 'secrets/**']
+      exec: ['npm test', 'npm run lint', 'node scripts/']
+    release-manager:
+      access: full
+      exec: ['git status', 'git diff', 'git tag', 'git archive']
+  default: repo-readonly
+swarm:
+  pattern: dag
+  maxConcurrency: 3
+  timeoutMs: 4200000
+  channel: swarm-power-user
+agents:
+  - name: architect
+    cli: claude
+    role: 'Designs the plan and enforces guardrails'
+    permissions: repo-readonly
+
+  - name: implementer
+    cli: codex
+    role: 'Implements the approved changes inside a bounded scope'
+    interactive: false
+    permissions: bounded-dev
+
+  - name: verifier
+    cli: gemini
+    role: 'Verifies behavior, risks, and release readiness'
+    interactive: false
+    permissions: repo-readonly
+
+  - name: release
+    cli: claude
+    role: 'Produces a release artifact summary with elevated local access'
+    interactive: false
+    permissions: release-manager
+
+workflows:
+  - name: advanced-delivery
+    description: 'Plan, implement, verify, and package a change using the most expressive permission options.'
+    onError: retry
+    steps:
+      - name: plan
+        type: agent
+        agent: architect
+        task: |
+          Produce an implementation plan and explicit acceptance criteria:
+          {{task}}
+        verification:
+          type: output_contains
+          value: PLAN_COMPLETE
+
+      - name: implement
+        type: agent
+        agent: implementer
+        dependsOn: [plan]
+        permissions:
+          access: restricted
+          files:
+            read: ['src/**', 'scripts/**', 'tests/**', 'package.json']
+            write: ['src/features/**', 'src/lib/**', 'tests/**']
+            deny: ['infra/**', '.env*', 'secrets/**']
+          exec: ['npm test', 'npm run lint']
+        task: |
+          Implement the approved plan within the narrowed file and command scope.
+
+          Plan:
+          {{steps.plan.output}}
+        verification:
+          type: output_contains
+          value: IMPLEMENTATION_COMPLETE
+
+      - name: verify
+        type: agent
+        agent: verifier
+        dependsOn: [implement]
+        task: |
+          Verify correctness, regressions, and release risk.
+
+          Implementation summary:
+          {{steps.implement.output}}
+        verification:
+          type: output_contains
+          value: VERIFICATION_COMPLETE
+
+      - name: package-release
+        type: agent
+        agent: release
+        dependsOn: [verify]
+        task: |
+          Prepare a release artifact summary and local packaging notes.
+
+          Verification:
+          {{steps.verify.output}}
+        verification:
+          type: output_contains
+          value: DONE

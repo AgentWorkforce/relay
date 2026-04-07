@@ -1,0 +1,162 @@
+---
+title: 'Permissions'
+nav_title: 'Permissions'
+description: 'Control what workflow agents can read, write, reach over the network, and execute from relay.yaml.'
+---
+
+Permissions in `relay.yaml` control what each workflow agent can see and do.
+
+<Note>If you omit `permissions` entirely, Relay defaults to inherited dotfiles plus `readwrite` access.</Note>
+
+## Quick Start
+
+<CodeGroup>
+```yaml Preset
+agents:
+  - name: reviewer
+    cli: claude
+    permissions: readonly
+```
+
+```yaml Inline
+agents:
+  - name: writer
+    cli: codex
+    permissions:
+      access: restricted
+      files:
+        read: ['src/**']
+        write: ['docs/**']
+        deny: ['.env*', 'secrets/**']
+```
+
+</CodeGroup>
+
+## Access Presets
+
+| Preset       | Read                    | Write                   | Dotfiles  |
+| ------------ | ----------------------- | ----------------------- | --------- |
+| `readonly`   | all non-ignored         | none                    | inherited |
+| `readwrite`  | all non-ignored         | all non-ignored         | inherited |
+| `restricted` | nothing (explicit only) | nothing (explicit only) | inherited |
+| `full`       | everything              | everything              | ignored   |
+
+<Warning>
+  `full` bypasses dotfile-based protection. Use only when YAML should be the entire policy surface.
+</Warning>
+
+## File Permissions
+
+```yaml
+permissions:
+  access: restricted
+  files:
+    read: ['src/**', 'package.json']
+    write: ['tests/**']
+    deny: ['.env*', 'secrets/**']
+```
+
+- `write` implies read access
+- `deny` always wins over read/write grants
+- Merged on top of the access preset
+
+## Network
+
+```yaml
+# Boolean — allow or deny all
+permissions:
+  network: false
+
+# Object — scoped allowlist
+permissions:
+  network:
+    allow: ['registry.npmjs.org:443', 'github.com:443']
+    deny: ['*']
+```
+
+## Exec
+
+```yaml
+permissions:
+  exec: ['npm test', 'npx vitest', 'git diff']
+```
+
+Matches by command prefix. Omit to allow all commands.
+
+## Profiles
+
+Reusable named permission blocks:
+
+```yaml
+permissions:
+  profiles:
+    source-dev:
+      access: restricted
+      files:
+        read: ['src/**', 'packages/**', 'package.json']
+        write: ['src/**', 'tests/**']
+        deny: ['.env*', 'secrets/**']
+      network: false
+  default: source-dev
+
+agents:
+  - name: frontend
+    cli: codex
+    permissions: source-dev
+```
+
+## Dotfiles
+
+- `.agentignore` — hides files from agents entirely
+- `.agentreadonly` — visible but not writable
+- `.<agent>.agentignore` / `.<agent>.agentreadonly` — per-agent overrides
+
+Applied before YAML rules. Bypassed by `full` preset.
+
+## Resolution Order
+
+1. Dotfiles (when inherited)
+2. `access` preset
+3. Explicit `files` globs
+4. `deny` rules (always win)
+
+## Step-Level Overrides
+
+Steps can narrow the agent's permissions for a specific task:
+
+```yaml
+steps:
+  - name: ui
+    type: agent
+    agent: frontend
+    permissions:
+      access: restricted
+      files:
+        write: ['src/components/**']
+```
+
+## YAML Reference
+
+```yaml
+agents:
+  - name: example
+    cli: codex
+    permissions:
+      access: readonly | readwrite | restricted | full
+      inherit: true | false
+      files:
+        read: ['glob', '...']
+        write: ['glob', '...']
+        deny: ['glob', '...']
+      scopes: ['relayfile:fs:read:/src/**']
+      network: true | false | { allow: [...], deny: [...] }
+      exec: ['npm test', 'npx vitest']
+```
+
+## Dry Run
+
+Validate permissions before a real run:
+
+```bash
+agent-relay run relay.yaml --dry-run
+```

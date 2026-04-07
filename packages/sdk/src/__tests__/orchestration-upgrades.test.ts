@@ -21,6 +21,10 @@ function createMockFacadeClient() {
 
   const mock = {
     spawnPty: vi.fn(async (input: { name: string }) => ({ name: input.name, runtime: 'pty' as const })),
+    spawnProvider: vi.fn(async (input: { name: string }) => ({
+      name: input.name,
+      runtime: 'headless' as const,
+    })),
     listAgents: vi.fn(
       async () =>
         [] as Array<{
@@ -155,6 +159,37 @@ describe('AgentRelayClient orchestration payloads', () => {
     );
   });
 
+  it('spawnHeadless forwards agentToken to headless provider spawns', async () => {
+    const client = new AgentRelayClient({ baseUrl: 'http://127.0.0.1:3888' });
+    const request = vi
+      .spyOn((client as any).transport, 'request')
+      .mockResolvedValue({ name: 'agent-headless-token', runtime: 'headless' });
+
+    await client.spawnHeadless({
+      name: 'agent-headless-token',
+      provider: 'opencode',
+      channels: ['general'],
+      task: 'run headless',
+      agentToken: 'agent-token-headless',
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      '/api/spawn',
+      expect.objectContaining({
+        method: 'POST',
+      })
+    );
+    expect(JSON.parse(request.mock.calls[0]?.[1]?.body ?? '{}')).toMatchObject({
+      name: 'agent-headless-token',
+      cli: 'opencode',
+      args: [],
+      task: 'run headless',
+      channels: ['general'],
+      agentToken: 'agent-token-headless',
+      transport: 'headless',
+    });
+  });
+
   it('sendMessage preserves structured data payload', async () => {
     const client = new AgentRelayClient();
     vi.spyOn(client, 'start').mockResolvedValue(undefined);
@@ -271,6 +306,91 @@ describe('AgentRelayClient orchestration payloads', () => {
 });
 
 describe('AgentRelay orchestration handles', () => {
+  it('spawnPty forwards agentToken to the client', async () => {
+    const { client, mock } = createMockFacadeClient();
+    const relay = new AgentRelay();
+    (relay as any).client = client;
+
+    try {
+      await relay.spawnPty({
+        name: 'token-pty',
+        cli: 'claude',
+        channels: ['general'],
+        agentToken: 'agent-token-pty',
+      });
+
+      expect(mock.spawnPty).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'token-pty',
+          cli: 'claude',
+          agentToken: 'agent-token-pty',
+        })
+      );
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('spawn forwards agentToken through the facade wrapper', async () => {
+    const { client, mock } = createMockFacadeClient();
+    const relay = new AgentRelay();
+    (relay as any).client = client;
+
+    try {
+      await relay.spawn('token-wrapper', 'claude', 'Do work', {
+        agentToken: 'agent-token-wrapper',
+      });
+
+      expect(mock.spawnPty).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'token-wrapper',
+          cli: 'claude',
+          task: 'Do work',
+          agentToken: 'agent-token-wrapper',
+        })
+      );
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('property spawners forward agentToken for pty and headless runtimes', async () => {
+    const { client, mock } = createMockFacadeClient();
+    const relay = new AgentRelay();
+    (relay as any).client = client;
+
+    try {
+      await relay.codex.spawn({
+        name: 'codex-token',
+        channels: ['general'],
+        agentToken: 'agent-token-codex',
+      });
+      await relay.opencode.spawn({
+        name: 'opencode-token',
+        channels: ['general'],
+        agentToken: 'agent-token-opencode',
+      });
+
+      expect(mock.spawnPty).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'codex-token',
+          cli: 'codex',
+          agentToken: 'agent-token-codex',
+        })
+      );
+      expect(mock.spawnProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'opencode-token',
+          provider: 'opencode',
+          transport: 'headless',
+          agentToken: 'agent-token-opencode',
+        })
+      );
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
   it('agent.waitForReady resolves after worker_ready event', async () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
@@ -1218,7 +1338,9 @@ describe('Agent.onOutput', () => {
 
       const payloads: Array<{ stream: string; chunk: string }> = [];
       // Use a plain (chunk) => ... signature but force structured mode via options
-      agent.onOutput(((data: { stream: string; chunk: string }) => payloads.push(data)) as any, { mode: 'structured' });
+      agent.onOutput(((data: { stream: string; chunk: string }) => payloads.push(data)) as any, {
+        mode: 'structured',
+      });
 
       emit({ kind: 'worker_stream', name: 'explicit-mode-agent', stream: 'stdout', chunk: 'hello' });
 

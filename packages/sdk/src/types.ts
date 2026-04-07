@@ -19,6 +19,9 @@ export interface SpawnPtyInput {
   restartPolicy?: RestartPolicy;
   continueFrom?: string;
   skipRelayPrompt?: boolean;
+  /** JWT token for relayauth/relayfile permissions. When set, the broker
+   *  injects RELAY_AGENT_TOKEN into the agent's environment. */
+  agentToken?: string;
 }
 
 export interface SpawnHeadlessInput {
@@ -28,6 +31,9 @@ export interface SpawnHeadlessInput {
   channels?: string[];
   task?: string;
   skipRelayPrompt?: boolean;
+  /** JWT token for relayauth/relayfile permissions. When set, the broker
+   *  injects RELAY_AGENT_TOKEN into the agent's environment. */
+  agentToken?: string;
 }
 
 export type AgentTransport = 'pty' | 'headless';
@@ -48,6 +54,9 @@ export interface SpawnProviderInput {
   restartPolicy?: RestartPolicy;
   continueFrom?: string;
   skipRelayPrompt?: boolean;
+  /** JWT token for relayauth/relayfile permissions. When set, the broker
+   *  injects RELAY_AGENT_TOKEN into the agent's environment. */
+  agentToken?: string;
 }
 
 export interface SendMessageInput {

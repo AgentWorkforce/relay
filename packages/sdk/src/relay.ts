@@ -29,11 +29,7 @@ import path from 'node:path';
 
 import { RelayCast } from '@relaycast/sdk';
 
-import {
-  AgentRelayClient,
-  type AgentRelayBrokerInitArgs,
-  type AgentRelaySpawnOptions,
-} from './client.js';
+import { AgentRelayClient, type AgentRelayBrokerInitArgs, type AgentRelaySpawnOptions } from './client.js';
 import { AgentRelayProtocolError } from './transport.js';
 import type { SendMessageInput, SpawnPtyInput } from './types.js';
 import type {
@@ -220,6 +216,9 @@ export interface SpawnOptions extends SpawnLifecycleHooks {
   shadowMode?: string;
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
+  /** JWT token for relayauth/relayfile permissions. When set, the broker
+   *  injects RELAY_AGENT_TOKEN into the agent's environment. */
+  agentToken?: string;
   /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
    *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
   skipRelayPrompt?: boolean;
@@ -298,6 +297,9 @@ export interface SpawnerSpawnOptions extends SpawnLifecycleHooks {
   task?: string;
   model?: string;
   cwd?: string;
+  /** JWT token for relayauth/relayfile permissions. When set, the broker
+   *  injects RELAY_AGENT_TOKEN into the agent's environment. */
+  agentToken?: string;
   /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
    *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
   skipRelayPrompt?: boolean;
@@ -584,6 +586,7 @@ export class AgentRelay {
         model: input.model,
         cwd: input.cwd,
         team: input.team,
+        agentToken: input.agentToken,
         shadowOf: input.shadowOf,
         shadowMode: input.shadowMode,
         idleThresholdSecs: input.idleThresholdSecs,
@@ -626,6 +629,7 @@ export class AgentRelay {
       model: options?.model,
       cwd: options?.cwd,
       team: options?.team,
+      agentToken: options?.agentToken,
       shadowOf: options?.shadowOf,
       shadowMode: options?.shadowMode,
       idleThresholdSecs: options?.idleThresholdSecs,
@@ -1124,7 +1128,11 @@ export class AgentRelay {
       const workspaceId = this.getResolvedWorkspaceId();
       if (workspaceId) {
         this.applyWorkspaceEnv(workspaceId, this.relayApiKey);
-        try { this.persistWorkspaceMapping(workspaceId, this.relayApiKey); } catch { /* non-critical */ }
+        try {
+          this.persistWorkspaceMapping(workspaceId, this.relayApiKey);
+        } catch {
+          /* non-critical */
+        }
       } else {
         this.wireRelaycastBaseUrl();
       }
@@ -1141,7 +1149,11 @@ export class AgentRelay {
       this.relayApiKey = resolvedKey;
       this.resolvedWorkspaceId = requestedWorkspaceId;
       this.applyWorkspaceEnv(requestedWorkspaceId, resolvedKey);
-      try { this.persistWorkspaceMapping(requestedWorkspaceId, resolvedKey); } catch { /* non-critical */ }
+      try {
+        this.persistWorkspaceMapping(requestedWorkspaceId, resolvedKey);
+      } catch {
+        /* non-critical */
+      }
       return;
     }
 
@@ -1153,7 +1165,11 @@ export class AgentRelay {
     this.relayApiKey = resolvedKey;
     this.resolvedWorkspaceId = resolvedWorkspaceId;
     this.applyWorkspaceEnv(resolvedWorkspaceId, resolvedKey);
-    try { this.persistWorkspaceMapping(resolvedWorkspaceId, resolvedKey); } catch { /* non-critical */ }
+    try {
+      this.persistWorkspaceMapping(resolvedWorkspaceId, resolvedKey);
+    } catch {
+      /* non-critical */
+    }
   }
 
   /** Inject relaycastBaseUrl into broker env. Explicit option wins over inherited env. */
@@ -1190,7 +1206,11 @@ export class AgentRelay {
           const workspaceId = this.getResolvedWorkspaceId();
           if (workspaceId) {
             this.applyWorkspaceEnv(workspaceId, c.workspaceKey);
-            try { this.persistWorkspaceMapping(workspaceId, c.workspaceKey); } catch { /* non-critical */ }
+            try {
+              this.persistWorkspaceMapping(workspaceId, c.workspaceKey);
+            } catch {
+              /* non-critical */
+            }
           }
         }
         this.wireEvents(c);
@@ -1582,6 +1602,7 @@ export class AgentRelay {
             task,
             model: options?.model,
             cwd: options?.cwd,
+            agentToken: options?.agentToken,
             skipRelayPrompt: options?.skipRelayPrompt,
             onStart: options?.onStart,
             onSuccess: options?.onSuccess,
@@ -1606,6 +1627,7 @@ export class AgentRelay {
             args,
             channels,
             task,
+            agentToken: options?.agentToken,
             skipRelayPrompt: options?.skipRelayPrompt,
           });
         } catch (error) {

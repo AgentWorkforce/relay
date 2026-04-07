@@ -1,0 +1,84 @@
+version: '1.0'
+name: test-scoped
+description: 'Test-fix loop with scoped write access limited to test files.'
+swarm:
+  pattern: hub-spoke
+  maxConcurrency: 2
+  timeoutMs: 2700000
+  channel: swarm-test-scoped
+agents:
+  - name: runner
+    cli: codex
+    role: 'Analyzes test failures and execution output'
+    interactive: false
+    permissions:
+      access: readonly
+      exec: ['npm test', 'npx vitest', 'npx jest', 'pnpm test']
+      network: false
+
+  - name: fixer
+    cli: codex
+    role: 'Fixes test failures without touching production source files'
+    interactive: false
+    permissions:
+      access: restricted
+      files:
+        read: ['src/**', 'tests/**', 'package.json', 'pnpm-lock.yaml', 'package-lock.json', 'tsconfig.json']
+        write: ['tests/**', '**/*.test.ts', '**/*.test.tsx', '**/*.spec.ts', '**/*.spec.tsx']
+        deny: ['.env*', 'secrets/**', 'node_modules/**']
+
+workflows:
+  - name: test-fix
+    description: 'Run tests, analyze failures, and repair only test assets.'
+    onError: retry
+    steps:
+      - name: run-tests
+        type: deterministic
+        command: npm test 2>&1 || pnpm test 2>&1 || npx vitest run 2>&1 || true
+        captureOutput: true
+
+      - name: analyze
+        type: agent
+        agent: runner
+        dependsOn: [run-tests]
+        task: |
+          Analyze the failing test output and identify the minimal safe fix.
+
+          Test output:
+          {{steps.run-tests.output}}
+        verification:
+          type: output_contains
+          value: ANALYSIS_COMPLETE
+
+      - name: fix
+        type: agent
+        agent: fixer
+        dependsOn: [analyze]
+        task: |
+          Update only tests or test helpers to resolve the failures.
+
+          Failure analysis:
+          {{steps.analyze.output}}
+        retries: 2
+        verification:
+          type: output_contains
+          value: TESTS_PASSED
+
+      - name: rerun-tests
+        type: deterministic
+        dependsOn: [fix]
+        command: npm test 2>&1 || pnpm test 2>&1 || npx vitest run 2>&1 || true
+        captureOutput: true
+
+      - name: report
+        type: agent
+        agent: runner
+        dependsOn: [rerun-tests]
+        task: |
+          Summarize the final test status and any remaining failures.
+
+          Final test output:
+          {{steps.rerun-tests.output}}
+        verification:
+          type: output_contains
+          value: DONE

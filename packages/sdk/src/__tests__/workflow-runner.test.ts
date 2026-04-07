@@ -77,13 +77,7 @@ const mockHuman = {
   sendMessage: vi.fn().mockResolvedValue(undefined),
 };
 
-const defaultSpawnPtyImplementation = async ({
-  name,
-  task,
-}: {
-  name: string;
-  task?: string;
-}) => {
+const defaultSpawnPtyImplementation = async ({ name, task }: { name: string; task?: string }) => {
   const queued = mockSpawnOutputs.shift();
   const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
   const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
@@ -578,10 +572,7 @@ agents:
     });
 
     it('should apply verification fallback for self-owned interactive steps', async () => {
-      mockSpawnOutputs = [
-        'LEAD_DONE\n',
-        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: verified\n',
-      ];
+      mockSpawnOutputs = ['LEAD_DONE\n', 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: verified\n'];
 
       const run = await runner.execute(
         makeConfig({
@@ -724,10 +715,7 @@ agents:
     });
 
     it('should pass canonical bypass args to interactive codex PTY spawns', async () => {
-      mockSpawnOutputs = [
-        'LEAD_DONE\n',
-        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: verified\n',
-      ];
+      mockSpawnOutputs = ['LEAD_DONE\n', 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: verified\n'];
 
       const run = await runner.execute(
         makeConfig({
@@ -877,44 +865,40 @@ agents:
       const workerRelease = vi.fn().mockResolvedValue(undefined);
       const ownerRelease = vi.fn().mockResolvedValue(undefined);
 
-      mockRelayInstance.spawnPty.mockImplementation(async ({
-        name,
-        task,
-      }: {
-        name: string;
-        task?: string;
-      }) => {
-        const isOwner = name.includes('-owner-');
-        const output = isOwner ? 'owner checking\n' : 'worker finished\n';
+      mockRelayInstance.spawnPty.mockImplementation(
+        async ({ name, task }: { name: string; task?: string }) => {
+          const isOwner = name.includes('-owner-');
+          const output = isOwner ? 'owner checking\n' : 'worker finished\n';
 
-        queueMicrotask(() => {
-          if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-            mockRelayInstance.onWorkerOutput({ name, chunk: output });
+          queueMicrotask(() => {
+            if (typeof mockRelayInstance.onWorkerOutput === 'function') {
+              mockRelayInstance.onWorkerOutput({ name, chunk: output });
+            }
+          });
+
+          if (isOwner) {
+            return {
+              name,
+              waitForExit: vi.fn().mockImplementation(async () => {
+                await Promise.resolve();
+                return 'timeout';
+              }),
+              waitForIdle: vi.fn().mockResolvedValue('timeout'),
+              release: ownerRelease,
+            };
           }
-        });
 
-        if (isOwner) {
           return {
             name,
             waitForExit: vi.fn().mockImplementation(async () => {
-              await Promise.resolve();
-              return 'timeout';
+              await workerRelease();
+              return 'released';
             }),
-            waitForIdle: vi.fn().mockResolvedValue('timeout'),
-            release: ownerRelease,
+            waitForIdle: vi.fn().mockImplementation(() => never()),
+            release: workerRelease,
           };
         }
-
-        return {
-          name,
-          waitForExit: vi.fn().mockImplementation(async () => {
-            await workerRelease();
-            return 'released';
-          }),
-          waitForIdle: vi.fn().mockImplementation(() => never()),
-          release: workerRelease,
-        };
-      });
+      );
 
       const run = await runner.execute(makeSupervisedConfig(), 'default');
 
@@ -1148,6 +1132,54 @@ agents:
       const agentB = report.agents.find((a) => a.name === 'agent-b');
       expect(agentA?.stepCount).toBe(1);
       expect(agentB?.stepCount).toBe(1);
+    });
+
+    it('should include resolved permissions without provisioning tokens', () => {
+      const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'workflow-dry-run-perms-'));
+      try {
+        writeFileSync(path.join(tmpDir, 'readme.md'), '# readme\n');
+        writeFileSync(path.join(tmpDir, 'notes.txt'), 'notes\n');
+        writeFileSync(path.join(tmpDir, '.agentreadonly'), 'readme.md\n');
+
+        const dryRunRunner = new WorkflowRunner({ db, workspaceId: 'ws-test', cwd: tmpDir });
+        const report = dryRunRunner.dryRun(
+          makeConfig({
+            agents: [
+              {
+                name: 'agent-a',
+                cli: 'claude',
+                permissions: {
+                  access: 'readonly',
+                  files: {
+                    write: ['notes.txt'],
+                  },
+                  scopes: ['relay:custom'],
+                },
+              },
+              { name: 'agent-b', cli: 'claude' },
+            ],
+          })
+        );
+
+        const agentA = report.permissions?.find((entry) => entry.agent === 'agent-a');
+        const agentB = report.permissions?.find((entry) => entry.agent === 'agent-b');
+
+        expect(agentA?.agent).toBe('agent-a');
+        expect(agentA?.access).toBe('readonly');
+        expect(agentA?.writePaths).toBe(1);
+        expect(agentA?.denyPaths).toBe(0);
+        expect(agentA?.readPaths).toBeGreaterThanOrEqual(1);
+        expect(agentA?.source).toBe('yaml');
+        expect(agentA?.scopes).toBeGreaterThan(1);
+
+        expect(agentB).toMatchObject({
+          agent: 'agent-b',
+          access: 'readwrite',
+          source: 'preset',
+        });
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
 
     it('should warn when step references unknown agent', () => {

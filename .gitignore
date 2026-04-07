@@ -89,3 +89,4 @@ web/.open-next
 /workflows/*
 !/workflows/ci/
 !/workflows/refactor/
+!/workflows/relayauth-integration/
