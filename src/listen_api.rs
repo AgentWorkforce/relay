@@ -38,7 +38,8 @@ pub enum ListenApiRequest {
         continue_from: Option<String>,
         idle_threshold_secs: Option<u64>,
         skip_relay_prompt: bool,
-        restart_policy: Option<Value>,
+        restart_policy: Box<Option<Value>>,
+        agent_token: Option<String>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     SetModel {
@@ -459,10 +460,16 @@ async fn listen_api_spawn(
         .or_else(|| body.get("skipRelayPrompt"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let restart_policy = body
-        .get("restart_policy")
-        .or_else(|| body.get("restartPolicy"))
-        .cloned();
+    let restart_policy = Box::new(
+        body.get("restart_policy")
+            .or_else(|| body.get("restartPolicy"))
+            .cloned(),
+    );
+    let agent_token = body
+        .get("agent_token")
+        .or_else(|| body.get("agentToken"))
+        .and_then(Value::as_str)
+        .map(String::from);
 
     if name.is_empty() {
         return (
@@ -490,6 +497,7 @@ async fn listen_api_spawn(
             idle_threshold_secs,
             skip_relay_prompt,
             restart_policy,
+            agent_token,
             reply: reply_tx,
         })
         .await
@@ -1588,6 +1596,7 @@ mod auth_tests {
                     idle_threshold_secs: _,
                     skip_relay_prompt: _,
                     restart_policy: _,
+                    agent_token: _,
                     reply,
                 }) => {
                     assert_eq!(name, "worker-a");

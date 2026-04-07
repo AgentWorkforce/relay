@@ -10,10 +10,6 @@ interface BulkWriteResponseShape {
   errors?: unknown;
 }
 
-interface ImportResponseShape {
-  imported?: number;
-}
-
 interface SeedFile {
   path: string;
   content: string;
@@ -26,20 +22,30 @@ interface SeedFileResult {
   errors: unknown;
 }
 
-interface GitSeedFilesResult {
-  files: string[];
-  usedGit: boolean;
-}
-
 const DEFAULT_EXCLUDED_DIRS = ['.relay', '.git', 'node_modules'];
 const DEFAULT_EXCLUDED_FILES = new Set(['.relayfile-mount-state.json']);
 const BATCH_SIZE = 50;
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
 
+interface WorkflowAclAgent {
+  name: string;
+  acl: Record<string, string[]>;
+}
+
+interface SeedWorkflowAclsOptions {
+  relayfileUrl: string;
+  adminToken: string;
+  workspace: string;
+  agents: WorkflowAclAgent[];
+}
+
 function normalizeBaseUrl(baseUrl: string): string {
-  return String(baseUrl ?? '')
-    .trim()
-    .replace(/\/+$/, '');
+  const url = String(baseUrl ?? '').trim();
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 0x2f) {
+    end--;
+  }
+  return end === url.length ? url : url.slice(0, end);
 }
 
 function normalizeWorkspaceId(workspaceId: string): string {
@@ -59,9 +65,26 @@ function normalizeExcludeDirs(excludeDirs: string[]): Set<string> {
     if (!normalized) {
       continue;
     }
-    result.add(normalized.split(path.sep).join('/'));
+    result.add(normalized);
   }
   return result;
+}
+
+function normalizeAclDirectory(dirPath: string): string {
+  const normalized = String(dirPath ?? '')
+    .trim()
+    .replace(/\\/gu, '/')
+    .replace(/\/+$/u, '');
+
+  if (!normalized || normalized === '/') {
+    return '/';
+  }
+
+  return normalized.startsWith('/') ? normalized : `/${normalized}`;
+}
+
+function isReviewerAgent(agentName: string): boolean {
+  return /reviewer/iu.test(String(agentName ?? '').trim());
 }
 
 function createClient(baseUrl: string, token: string): RelayFileClient {
@@ -88,23 +111,6 @@ function buildSeedFilePayload(filePath: string, rootDir: string): SeedFile {
     return { path: `/${relative}`, content: raw.toString('utf8'), encoding: 'utf-8' };
   }
   return { path: `/${relative}`, content: raw.toString('base64'), encoding: 'base64' };
-}
-
-function isPathInExcludedDir(relativePath: string, excludeDirs: Set<string>): boolean {
-  const normalized = relativePath.replace(/\\/g, '/').replace(/^\.\//, '');
-  if (!normalized || normalized === '.') {
-    return false;
-  }
-
-  const segments = normalized.split('/');
-  for (let i = 0; i < segments.length; i += 1) {
-    const prefix = segments.slice(0, i + 1).join('/');
-    if (excludeDirs.has(prefix) || excludeDirs.has(segments[i])) {
-      return true;
-    }
-  }
-
-  return false;
 }
 
 function collectSeedPaths(
@@ -174,55 +180,6 @@ function parseBulkWriteResponse(payload: unknown): SeedFileResult {
   };
 }
 
-function parseImportResponse(payload: unknown): number {
-  if (!payload || typeof payload !== 'object') {
-    throw new Error('import endpoint returned an invalid JSON payload');
-  }
-
-  const parsed = payload as ImportResponseShape;
-  if (typeof parsed.imported !== 'number') {
-    throw new Error('import endpoint response did not include an imported count');
-  }
-
-  return parsed.imported;
-}
-
-function createTarballFromRelativePaths(rootDir: string, relativePaths: string[]): Promise<Buffer> {
-  const tarStream = tar.create(
-    { gzip: true, cwd: rootDir, portable: true, follow: true, noDirRecurse: relativePaths.length === 0 },
-    relativePaths.length > 0 ? relativePaths : ['.']
-  );
-  const chunks: Buffer[] = [];
-
-  return (async () => {
-    for await (const chunk of tarStream) {
-      chunks.push(Buffer.from(chunk as Uint8Array));
-    }
-    return Buffer.concat(chunks);
-  })();
-}
-
-function listGitSeedFiles(rootDir: string, excludes: Set<string>): GitSeedFilesResult {
-  try {
-    const gitFiles = execSync('git ls-files -z --cached --others --exclude-standard', {
-      cwd: rootDir,
-      encoding: 'utf-8',
-      maxBuffer: 50 * 1024 * 1024,
-    });
-    return {
-      usedGit: true,
-      files: gitFiles
-        .split('\0')
-        .filter(Boolean)
-        .filter((filePath) => !DEFAULT_EXCLUDED_FILES.has(path.posix.basename(filePath)))
-        .filter((filePath) => !isPathInExcludedDir(filePath, excludes))
-        .sort((a, b) => a.localeCompare(b)),
-    };
-  } catch {
-    return { files: [], usedGit: false };
-  }
-}
-
 async function postBulkWrite(
   baseUrl: string,
   token: string,
@@ -282,25 +239,111 @@ async function writeBulkWrite(
   return postBulkWrite(baseUrl, token, workspaceId, files, correlationId);
 }
 
-async function createSeedTarball(rootDir: string, excludeDirs: string[]): Promise<Buffer> {
-  const absoluteRoot = path.resolve(rootDir);
-  const excludes = normalizeExcludeDirs([...DEFAULT_EXCLUDED_DIRS, ...excludeDirs]);
+export async function createWorkspaceIfNeeded(
+  baseUrl: string,
+  token: string,
+  workspaceId: string
+): Promise<void> {
+  const workspace = normalizeWorkspaceId(workspaceId);
+  const client = createClient(baseUrl, token);
 
-  const gitSeedFiles = listGitSeedFiles(absoluteRoot, excludes);
-  if (gitSeedFiles.usedGit) {
-    return createTarballFromRelativePaths(absoluteRoot, gitSeedFiles.files);
+  const maybeCreateWorkspace = client as unknown as {
+    createWorkspace?: (...input: unknown[]) => Promise<unknown>;
+  };
+  if (typeof maybeCreateWorkspace.createWorkspace === 'function') {
+    for (const arg of [workspace, { id: workspace }, { workspaceId: workspace }, { name: workspace }]) {
+      try {
+        await maybeCreateWorkspace.createWorkspace(arg);
+        return;
+      } catch {
+        // Continue to the next overload candidate, then fallback to HTTP.
+      }
+    }
   }
 
-  const seedPaths: string[] = [];
-  collectSeedPaths(absoluteRoot, '', excludes, seedPaths);
-  const relativePaths = seedPaths
-    .sort((a, b) => a.localeCompare(b))
-    .map((filePath) => path.relative(absoluteRoot, filePath).split(path.sep).join('/'));
+  const endpoint = `${normalizeBaseUrl(baseUrl)}/v1/workspaces`;
+  const bodyCandidates: Array<Record<string, string>> = [
+    { name: workspace },
+    { workspace: workspace },
+    { workspaceId: workspace },
+    { id: workspace },
+  ];
+  let lastFailure: string | null = null;
 
-  return createTarballFromRelativePaths(absoluteRoot, relativePaths);
+  for (const body of bodyCandidates) {
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'X-Correlation-Id': `create-workspace-${Date.now()}`,
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (
+        response.status === 200 ||
+        response.status === 201 ||
+        response.status === 204 ||
+        response.status === 409
+      ) {
+        return;
+      }
+
+      const responseBody = await response.text().catch(() => '');
+      lastFailure = `HTTP ${response.status} ${responseBody}`.trim();
+      if (response.status < 500 && response.status !== 409) {
+        continue;
+      }
+    } catch (error) {
+      lastFailure = String(error);
+    }
+  }
+
+  if (lastFailure) {
+    throw new Error(`Failed to create workspace ${workspace}: ${lastFailure}`);
+  }
 }
 
-async function seedWorkspaceBatch(
+export async function seedAclRules(
+  baseUrl: string,
+  token: string,
+  workspaceId: string,
+  aclRules: Record<string, string[]>
+): Promise<void> {
+  const workspace = normalizeWorkspaceId(workspaceId);
+  const files = Object.entries(aclRules).map(([dirPath, rules]) => {
+    const normalizedDir = String(dirPath ?? '')
+      .trim()
+      .replace(/\/+$/, '');
+    const aclPath =
+      normalizedDir === '' || normalizedDir === '/' ? '/.relayfile.acl' : `${normalizedDir}/.relayfile.acl`;
+    return {
+      path: aclPath,
+      content: JSON.stringify({ semantics: { permissions: rules } }),
+      encoding: 'utf-8' as const,
+    };
+  });
+
+  if (files.length === 0) {
+    return;
+  }
+
+  const result = await writeBulkWrite(
+    baseUrl,
+    token,
+    workspace,
+    files,
+    `seed-acl-${workspace}-${Date.now()}`
+  );
+  if (result.errorCount > 0) {
+    const details = result.errors ? JSON.stringify(result.errors) : '[]';
+    throw new Error(`ACL seeding had ${result.errorCount} error(s) for workspace ${workspace}: ${details}`);
+  }
+}
+
+export async function seedWorkspace(
   baseUrl: string,
   token: string,
   workspaceId: string,
@@ -313,13 +356,13 @@ async function seedWorkspaceBatch(
   const seedPaths: string[] = [];
   collectSeedPaths(rootDir, '', excludes, seedPaths);
   const allFiles = seedPaths
-    .sort((a, b) => a.localeCompare(b))
+    .sort((left, right) => left.localeCompare(right))
     .map((filePath) => buildSeedFilePayload(filePath, rootDir));
 
   let seededCount = 0;
-  for (let i = 0; i < allFiles.length; i += BATCH_SIZE) {
-    const batch = allFiles.slice(i, i + BATCH_SIZE);
-    const batchIndex = Math.floor(i / BATCH_SIZE);
+  for (let index = 0; index < allFiles.length; index += BATCH_SIZE) {
+    const batch = allFiles.slice(index, index + BATCH_SIZE);
+    const batchIndex = Math.floor(index / BATCH_SIZE);
     const result = await writeBulkWrite(
       baseUrl,
       token,
@@ -333,6 +376,138 @@ async function seedWorkspaceBatch(
   return seededCount;
 }
 
+function buildWorkflowAclRules(agents: WorkflowAclAgent[]): Record<string, string[]> {
+  const directories = new Set<string>();
+  const normalizedAgents = agents.map((agent) => ({
+    name: String(agent.name ?? '').trim(),
+    acl: Object.fromEntries(
+      Object.entries(agent.acl ?? {}).map(([dirPath, rules]) => [
+        normalizeAclDirectory(dirPath),
+        Array.isArray(rules) ? rules : [],
+      ])
+    ),
+  }));
+  const reviewerNames = normalizedAgents
+    .map((agent) => agent.name)
+    .filter((name) => name !== '' && isReviewerAgent(name));
+
+  for (const agent of normalizedAgents) {
+    for (const dirPath of Object.keys(agent.acl)) {
+      directories.add(dirPath);
+    }
+  }
+
+  const merged = new Map<string, Set<string>>();
+
+  for (const dirPath of [...directories].sort((left, right) => left.localeCompare(right))) {
+    const rules = new Set<string>();
+
+    for (const reviewerName of reviewerNames) {
+      rules.add(`allow:agent:${reviewerName}:read`);
+    }
+
+    for (const agent of normalizedAgents) {
+      if (!agent.name) {
+        continue;
+      }
+
+      const agentRules = agent.acl[dirPath] ?? [];
+      const hasRead = agentRules.includes('read') || agentRules.includes('write');
+      const hasWrite = agentRules.includes('write');
+
+      if (hasRead) {
+        rules.add(`allow:agent:${agent.name}:read`);
+      } else if (!isReviewerAgent(agent.name)) {
+        rules.add(`deny:agent:${agent.name}`);
+      }
+
+      if (hasWrite) {
+        rules.add(`allow:agent:${agent.name}:write`);
+      }
+    }
+
+    if (rules.size > 0) {
+      merged.set(dirPath, rules);
+    }
+  }
+
+  return Object.fromEntries([...merged.entries()].map(([dirPath, rules]) => [dirPath, [...rules].sort()]));
+}
+
+export async function seedWorkflowAcls({
+  relayfileUrl,
+  adminToken,
+  workspace,
+  agents,
+}: SeedWorkflowAclsOptions): Promise<void> {
+  const aclRules = buildWorkflowAclRules(agents);
+
+  if (Object.keys(aclRules).length === 0) {
+    return;
+  }
+
+  await seedAclRules(relayfileUrl, adminToken, workspace, aclRules);
+}
+
+// ── Tar-based bulk upload ───────────────────────────────────────────────────
+
+interface ImportResponseShape {
+  imported?: number;
+}
+
+function getGitTrackedFiles(rootDir: string): string[] | null {
+  try {
+    const output = execSync('git ls-files -z', {
+      cwd: rootDir,
+      encoding: 'utf-8',
+      maxBuffer: 50 * 1024 * 1024,
+    });
+    const files = output.split('\0').filter(Boolean);
+    return files.length > 0 ? files : null;
+  } catch {
+    return null;
+  }
+}
+
+function collectAllFiles(rootDir: string, excludeDirs: Set<string>): string[] {
+  const files: string[] = [];
+  const stack = [''];
+
+  while (stack.length > 0) {
+    const currentRelative = stack.pop()!;
+    const absoluteDir = path.join(rootDir, currentRelative);
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(absoluteDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (excludeDirs.has(entry.name)) continue;
+      const nextRelative = currentRelative ? `${currentRelative}/${entry.name}` : entry.name;
+      if (excludeDirs.has(nextRelative)) continue;
+
+      if (entry.isDirectory()) {
+        stack.push(nextRelative);
+      } else if (entry.isFile()) {
+        files.push(nextRelative);
+      }
+    }
+  }
+
+  return files;
+}
+
+async function createTarBuffer(rootDir: string, files: string[]): Promise<Buffer> {
+  const tarStream = tar.create({ gzip: true, cwd: rootDir, portable: true }, files);
+  const chunks: Buffer[] = [];
+  for await (const chunk of tarStream) {
+    chunks.push(Buffer.from(chunk as Uint8Array));
+  }
+  return Buffer.concat(chunks);
+}
+
 export async function seedWorkspaceTar(
   baseUrl: string,
   token: string,
@@ -342,68 +517,47 @@ export async function seedWorkspaceTar(
 ): Promise<number> {
   const workspace = normalizeWorkspaceId(workspaceId);
   const rootDir = path.resolve(projectDir);
-  let tarball: Buffer;
-  try {
-    tarball = await createSeedTarball(rootDir, excludeDirs);
-  } catch (error) {
-    throw new Error(
-      `tar seed failed for workspace ${workspace}: unable to create tarball (${String(error)})`
-    );
-  }
-  const url = `${normalizeBaseUrl(baseUrl)}/v1/workspaces/${encodeURIComponent(workspace)}/fs/import`;
+  const excludes = normalizeExcludeDirs([...DEFAULT_EXCLUDED_DIRS, ...excludeDirs]);
 
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/gzip',
-        'X-Correlation-Id': `seed-tar-${workspace}-${Date.now()}`,
-      },
-      body: new Uint8Array(tarball),
-    });
-  } catch (error) {
-    throw new Error(`tar seed failed for workspace ${workspace}: request failed (${String(error)})`);
+  const gitFiles = getGitTrackedFiles(rootDir);
+  const files = gitFiles ?? collectAllFiles(rootDir, excludes);
+
+  if (files.length === 0) {
+    return 0;
   }
+
+  const tarball = await createTarBuffer(rootDir, files);
+
+  const url = `${normalizeBaseUrl(baseUrl)}/v1/workspaces/${encodeURIComponent(workspace)}/fs/import`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/gzip',
+      'X-Correlation-Id': `seed-tar-${workspace}-${Date.now()}`,
+    },
+    body: tarball,
+  });
 
   if (response.status === 404) {
-    return seedWorkspaceBatch(baseUrl, token, workspaceId, projectDir, excludeDirs);
+    // Tar import not supported — fall back to batch upload
+    return seedWorkspace(baseUrl, token, workspaceId, projectDir, excludeDirs);
   }
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new Error(`tar seed failed for workspace ${workspace}: HTTP ${response.status} ${body}`.trim());
+    throw new Error(`tar import failed for workspace ${workspace}: HTTP ${response.status} ${body}`.trim());
   }
 
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch (error) {
-    throw new Error(`tar seed failed for workspace ${workspace}: invalid JSON response (${String(error)})`);
-  }
-
-  try {
-    return parseImportResponse(payload);
-  } catch (error) {
-    throw new Error(`tar seed failed for workspace ${workspace}: ${String(error)}`);
-  }
-}
-
-export async function seedWorkspace(
-  baseUrl: string,
-  token: string,
-  workspaceId: string,
-  projectDir: string,
-  excludeDirs: string[]
-): Promise<number> {
-  if (process.env.RELAY_SEED_TAR === '0') {
-    return seedWorkspaceBatch(baseUrl, token, workspaceId, projectDir, excludeDirs);
+  const raw = await response.text();
+  if (!raw.trim()) {
+    return files.length;
   }
 
   try {
-    return await seedWorkspaceTar(baseUrl, token, workspaceId, projectDir, excludeDirs);
+    const parsed = JSON.parse(raw) as ImportResponseShape;
+    return typeof parsed.imported === 'number' ? parsed.imported : files.length;
   } catch {
-    return seedWorkspaceBatch(baseUrl, token, workspaceId, projectDir, excludeDirs);
+    return files.length;
   }
 }

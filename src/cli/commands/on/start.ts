@@ -1427,6 +1427,7 @@ export async function goOnTheRelay(
     await new Promise<void>((resolve, reject) => {
       const envVars = {
         ...process.env,
+        RELAY_AGENT_TOKEN: workspaceSession.token,
         RELAYFILE_TOKEN: workspaceSession.token,
         RELAYFILE_BASE_URL: workspaceSession.relayfileUrl,
         RELAYFILE_WORKSPACE: workspaceSession.workspaceId,

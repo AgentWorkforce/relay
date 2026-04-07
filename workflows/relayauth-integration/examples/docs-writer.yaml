@@ -1,0 +1,68 @@
+version: '1.0'
+name: docs-writer
+description: 'Documentation-only workflow with scoped writes and a deterministic sync step.'
+swarm:
+  pattern: handoff
+  maxConcurrency: 2
+  timeoutMs: 2400000
+  channel: swarm-docs-writer
+agents:
+  - name: writer
+    cli: claude
+    role: 'Writes and updates documentation without changing product code'
+    interactive: false
+    permissions:
+      access: restricted
+      files:
+        read: ['src/**', 'packages/**', 'README.md', 'docs/**']
+        write: ['docs/**', 'web/content/docs/**', '*.md', '*.mdx']
+        deny: ['.env*', '.git/**', 'secrets/**']
+
+  - name: proofreader
+    cli: claude
+    role: 'Reviews docs for accuracy, structure, and clarity'
+    interactive: false
+    permissions: readonly
+
+workflows:
+  - name: doc-sync
+    description: 'Draft documentation, review it, and mirror generated docs.'
+    onError: continue
+    steps:
+      - name: draft
+        type: agent
+        agent: writer
+        task: |
+          Update or create the documentation required for this request:
+          {{task}}
+        verification:
+          type: output_contains
+          value: DOCS_WRITTEN
+
+      - name: proofread
+        type: agent
+        agent: proofreader
+        dependsOn: [draft]
+        task: |
+          Review the drafted documentation for accuracy and readability.
+
+          Draft summary:
+          {{steps.draft.output}}
+        verification:
+          type: output_contains
+          value: REVIEW_COMPLETE
+
+      - name: sync-mirror
+        type: deterministic
+        dependsOn: [proofread]
+        command: node scripts/sync-docs.js
+
+      - name: final-summary
+        type: agent
+        agent: proofreader
+        dependsOn: [sync-mirror]
+        task: |
+          Confirm the docs change is ready to ship and summarize what changed.
+        verification:
+          type: output_contains
+          value: DONE
