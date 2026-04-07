@@ -4,299 +4,138 @@ nav_title: 'Permissions'
 description: 'Control what workflow agents can read, write, reach over the network, and execute from relay.yaml.'
 ---
 
-Permissions in `relay.yaml` control what each workflow agent can see and do. They compile into file scopes, mounted workspace ACLs, relayauth token scopes, and runtime restrictions for network access and shell execution.
+Permissions in `relay.yaml` control what each workflow agent can see and do.
 
-<Note>
-  If you omit `permissions` entirely, Relay keeps the legacy default behavior: inherit workspace dotfiles and
-  use `readwrite` access.
-</Note>
+<Note>If you omit `permissions` entirely, Relay defaults to inherited dotfiles plus `readwrite` access.</Note>
 
-## Overview
-
-Attach `permissions` to an agent definition when you want the workflow runner to constrain that agent beyond the default workspace view.
-
-- `access` chooses the base file-access preset.
-- `inherit` decides whether `.agentignore` and `.agentreadonly` should apply.
-- `files` refines the preset with explicit `read`, `write`, and `deny` globs.
-- `scopes` appends raw relayauth scopes for advanced cases.
-- `network` and `exec` add runtime restrictions outside the filesystem.
-
-The current typed schema uses an object-based `permissions` block on each agent. There is no top-level `permissions.profiles` field in `RelayYamlConfig`.
-
-## Quick start
-
-Start with a read-only reviewer:
+## Quick Start
 
 <CodeGroup>
-```yaml YAML
-version: "1.0"
-name: review-workflow
-
-swarm:
-pattern: fan-out
-
-agents:
-
-- name: reviewer
-  cli: codex
-  preset: reviewer
-  permissions:
-  access: readonly
-
-````
-
-```bash Bash
-agent-relay run relay.yaml --dry-run
-````
-
-</CodeGroup>
-
-This is the safest default for review, planning, and analysis agents.
-
-## Access presets
-
-`permissions.access` expands into a base file policy before explicit file rules are merged on top.
-
-| Preset       | Behavior                                     | Best for                             |
-| ------------ | -------------------------------------------- | ------------------------------------ |
-| `readonly`   | Read all visible files, write nothing        | Reviewers, auditors, analysts        |
-| `readwrite`  | Read and write all visible files             | General implementation agents        |
-| `restricted` | Start with no file access until you grant it | Narrowly scoped workers              |
-| `full`       | Read and write everything                    | Highly trusted leads and admin tasks |
-
-Details:
-
-- `readonly` inherits dotfile restrictions by default.
-- `readwrite` is the default when `permissions` is omitted.
-- `restricted` requires explicit `files.read` and/or `files.write` rules to do useful work.
-- `full` bypasses inherited dotfile restrictions.
-
-<Warning>
-  `full` and `inherit: false` both remove dotfile-based protection. Use them only when you want YAML to be the
-  entire policy surface.
-</Warning>
-
-Example:
-
-```yaml
-agents:
-  - name: implementer
-    cli: codex
-    permissions:
-      access: readwrite
-
-  - name: auditor
-    cli: claude
-    permissions:
-      access: readonly
-
-  - name: docs-writer
-    cli: codex
-    permissions:
-      access: restricted
-      files:
-        read: ['src/**', 'README.md']
-        write: ['web/content/docs/**']
-
-  - name: lead
-    cli: claude
-    permissions:
-      access: full
-```
-
-## File permissions
-
-Use `permissions.files` when a preset is too broad or too narrow.
-
-```yaml
-agents:
-  - name: docs-writer
-    cli: codex
-    permissions:
-      access: restricted
-      files:
-        read: ['src/**', 'README.md', 'package.json']
-        write: ['web/content/docs/**']
-        deny: ['**/.env*', 'secrets/**']
-```
-
-Rules:
-
-- `files.read` grants read-only access to matching paths.
-- `files.write` grants read and write access to matching paths.
-- `files.deny` removes access entirely and wins over both `read` and `write`.
-- Explicit file rules are merged after the access preset.
-
-Common patterns:
-
-- Docs-only worker: `read: ['src/**']`, `write: ['web/content/docs/**']`
-- Test fixer: `read: ['src/**', 'tests/**']`, `write: ['tests/**']`
-- Secret hardening: `deny: ['**/.env*', 'secrets/**', '**/*.pem']`
-
-## Dotfile integration
-
-When `inherit` is left alone, Relay loads workspace dotfiles before expanding the access preset:
-
-- `.agentignore`
-- `.agentreadonly`
-- `.<agent>.agentignore`
-- `.<agent>.agentreadonly`
-
-`inherit` defaults to `true`.
-
-<CodeGroup>
-```text Dotfiles
-# .agentignore
-dist/**
-secrets/**
-
-# .reviewer.agentreadonly
-
-docs/internal/\*\*
-
-````
-
-```yaml YAML
+```yaml Preset
 agents:
   - name: reviewer
     cli: claude
-    permissions:
-      access: readonly
-````
-
-</CodeGroup>
-
-Resolution order:
-
-1. Inherited dotfile rules load first when `inherit` is not `false`.
-2. `access` expands into the base read/write policy.
-3. `files.read` and `files.write` merge on top.
-4. `files.deny` is applied last.
-
-That means explicit YAML grants can override inherited dotfile deny or readonly rules, but explicit YAML deny rules still win at the end.
-
-To ignore dotfiles completely:
-
-```yaml
-agents:
-  - name: sandboxed-admin
-    cli: codex
-    permissions:
-      access: readwrite
-      inherit: false
+    permissions: readonly
 ```
 
-## Role presets
-
-Agent `preset` and `permissions` are separate knobs.
-
-- `preset` controls execution mode and task guardrails.
-- `permissions` controls filesystem, scope, network, and exec policy.
-
-The role presets line up with common permission choices:
-
-- `lead` usually pairs with `access: full`
-- `worker` usually pairs with `access: readwrite`
-- `reviewer` usually pairs with `access: readonly`
-- `analyst` usually pairs with `access: readonly`
-
-In practice, keep `permissions` explicit in workflow YAML even when the role makes the expected access obvious.
-
-```yaml
+```yaml Inline
 agents:
-  - name: lead
-    cli: claude
-    preset: lead
-    permissions:
-      access: full
-
-  - name: reviewer
-    cli: codex
-    preset: reviewer
-    permissions:
-      access: readonly
-```
-
-## Advanced
-
-### Raw scopes
-
-Use `scopes` when you need relayauth scopes that are more precise than glob-based file rules.
-
-```yaml
-agents:
-  - name: power-user
+  - name: writer
     cli: codex
     permissions:
       access: restricted
       files:
         read: ['src/**']
-      scopes:
-        - 'relayfile:fs:read:/generated/**'
-        - 'relayfile:fs:write:/scratch/**'
+        write: ['docs/**']
+        deny: ['.env*', 'secrets/**']
 ```
 
-These scopes are appended verbatim to the minted token.
+</CodeGroup>
 
-### Network
+## Access Presets
 
-`network` is a boolean.
+| Preset       | Read                    | Write                   | Dotfiles  |
+| ------------ | ----------------------- | ----------------------- | --------- |
+| `readonly`   | all non-ignored         | none                    | inherited |
+| `readwrite`  | all non-ignored         | all non-ignored         | inherited |
+| `restricted` | nothing (explicit only) | nothing (explicit only) | inherited |
+| `full`       | everything              | everything              | ignored   |
 
-```yaml
-agents:
-  - name: local-reviewer
-    cli: claude
-    permissions:
-      access: readonly
-      network: false
-```
+<Warning>
+  `full` bypasses dotfile-based protection. Use only when YAML should be the entire policy surface.
+</Warning>
 
-- `network: false` blocks network access.
-- `network: true` explicitly allows it.
-- Omitting `network` leaves it unrestricted by the permissions layer.
-
-### Exec
-
-`exec` is a command-prefix allowlist.
+## File Permissions
 
 ```yaml
-agents:
-  - name: test-runner
-    cli: codex
-    permissions:
-      access: readonly
-      network: false
-      exec:
-        - 'npm test'
-        - 'pnpm test'
-        - 'npx vitest'
-```
-
-When `exec` is set, only commands matching one of those prefixes are permitted.
-
-### Profiles and reuse
-
-There is no first-class named permission-profile field in the current typed `relay.yaml` schema. If you want reusable permission blocks today, use YAML anchors or generate the workflow from TypeScript or Python.
-
-```yaml
-x-reviewer-permissions: &reviewer_permissions
-  access: readonly
+permissions:
+  access: restricted
   files:
-    deny: ['**/.env*', 'secrets/**']
-
-agents:
-  - name: reviewer-a
-    cli: claude
-    permissions: *reviewer_permissions
-
-  - name: reviewer-b
-    cli: codex
-    permissions: *reviewer_permissions
+    read: ['src/**', 'package.json']
+    write: ['tests/**']
+    deny: ['.env*', 'secrets/**']
 ```
 
-## YAML reference
+- `write` implies read access
+- `deny` always wins over read/write grants
+- Merged on top of the access preset
 
-`permissions` lives on each `agents[]` entry:
+## Network
+
+```yaml
+# Boolean — allow or deny all
+permissions:
+  network: false
+
+# Object — scoped allowlist
+permissions:
+  network:
+    allow: ['registry.npmjs.org:443', 'github.com:443']
+    deny: ['*']
+```
+
+## Exec
+
+```yaml
+permissions:
+  exec: ['npm test', 'npx vitest', 'git diff']
+```
+
+Matches by command prefix. Omit to allow all commands.
+
+## Profiles
+
+Reusable named permission blocks:
+
+```yaml
+permissions:
+  profiles:
+    source-dev:
+      access: restricted
+      files:
+        read: ['src/**', 'packages/**', 'package.json']
+        write: ['src/**', 'tests/**']
+        deny: ['.env*', 'secrets/**']
+      network: false
+  default: source-dev
+
+agents:
+  - name: frontend
+    cli: codex
+    permissions: source-dev
+```
+
+## Dotfiles
+
+- `.agentignore` — hides files from agents entirely
+- `.agentreadonly` — visible but not writable
+- `.<agent>.agentignore` / `.<agent>.agentreadonly` — per-agent overrides
+
+Applied before YAML rules. Bypassed by `full` preset.
+
+## Resolution Order
+
+1. Dotfiles (when inherited)
+2. `access` preset
+3. Explicit `files` globs
+4. `deny` rules (always win)
+
+## Step-Level Overrides
+
+Steps can narrow the agent's permissions for a specific task:
+
+```yaml
+steps:
+  - name: ui
+    type: agent
+    agent: frontend
+    permissions:
+      access: restricted
+      files:
+        write: ['src/components/**']
+```
+
+## YAML Reference
 
 ```yaml
 agents:
@@ -310,64 +149,14 @@ agents:
         write: ['glob', '...']
         deny: ['glob', '...']
       scopes: ['relayfile:fs:read:/src/**']
-      network: true | false
+      network: true | false | { allow: [...], deny: [...] }
       exec: ['npm test', 'npx vitest']
 ```
 
-Reference:
+## Dry Run
 
-- `permissions.access`: `readonly | readwrite | restricted | full`. Base file-access preset. Defaults to `readwrite`.
-- `permissions.inherit`: `boolean`. Whether to load `.agentignore` and `.agentreadonly` dotfiles. Defaults to `true`.
-- `permissions.files.read`: `string[]`. Glob patterns that grant read-only access.
-- `permissions.files.write`: `string[]`. Glob patterns that grant read and write access.
-- `permissions.files.deny`: `string[]`. Glob patterns that deny access entirely. Applied last.
-- `permissions.scopes`: `string[]`. Raw relayauth scopes appended verbatim to the minted token.
-- `permissions.network`: `boolean`. Network allow/deny switch for the runtime layer.
-- `permissions.exec`: `string[]`. Command-prefix allowlist for shell execution.
+Validate permissions before a real run:
 
-## Dry-run
-
-Validate permissions before you start a real run.
-
-<CodeGroup>
-```bash Workflow
+```bash
 agent-relay run relay.yaml --dry-run
 ```
-
-```bash Sandbox
-agent-relay on --scan
-```
-
-</CodeGroup>
-
-Use `agent-relay run relay.yaml --dry-run` when you want the workflow planner to validate the config and show the per-agent permission summary. Use `agent-relay on --scan` when you want to preview what a single relay sandbox session can see before launching the agent.
-
-## FAQ
-
-### What happens if I omit `permissions` entirely?
-
-Relay defaults to inherited dotfiles plus `readwrite` access.
-
-### Does `files.write` imply read access?
-
-Yes. Writable paths are also readable.
-
-### What wins if a path matches both `write` and `deny`?
-
-`files.deny` wins.
-
-### Should I use `restricted` or `readonly`?
-
-Use `readonly` when broad visibility is fine but edits are not. Use `restricted` when the agent should only see a narrow slice of the repo.
-
-### Can YAML rules override `.agentignore` or `.agentreadonly`?
-
-Yes. Explicit `files.read` and `files.write` rules are merged after inherited dotfile rules. Explicit `files.deny` is still the final authority.
-
-### Are named permission profiles supported?
-
-Not as a first-class typed field in the current schema. Use YAML anchors for reuse, or generate the config from TypeScript or Python if you want reusable permission objects.
-
-### Do `network` and `exec` replace file permissions?
-
-No. They are separate controls. File access, network access, and shell execution are enforced independently.
