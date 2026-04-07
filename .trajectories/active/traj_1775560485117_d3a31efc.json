@@ -1,0 +1,48 @@
+{
+  "id": "traj_1775560485117_d3a31efc",
+  "version": 1,
+  "task": {
+    "title": "autofix-swarm-Agentworkforce-relay-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "6169579edc788c7fd646ff4f"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-04-07T11:14:45.117Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-04-07T11:14:45.117Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_7653d4af",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-04-07T11:14:45.117Z",
+      "events": [
+        {
+          "ts": 1775560485117,
+          "type": "note",
+          "content": "Purpose: Swarm autofix: 2 findings for Agentworkforce/relay (source: comment_poll)"
+        },
+        {
+          "ts": 1775560485117,
+          "type": "note",
+          "content": "Approach: 8-step dag workflow — Parsed 8 steps, 2 parallel tracks, 6 dependent steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-04-07T11:14:48.503Z"
+    },
+    {
+      "id": "ch_2252a0ea",
+      "title": "Execution: init-msd-dir, read-context",
+      "agentName": "orchestrator",
+      "startedAt": "2026-04-07T11:14:48.503Z",
+      "events": []
+    }
+  ]
+}
