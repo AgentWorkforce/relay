@@ -90,6 +90,8 @@ interface WorkspaceSessionRequest {
   relayDir?: string;
   relaycastBaseUrl?: string;
   fetchFn?: FetchFn;
+  /** When true, prefer local workspace session over remote even if authBase is a remote URL */
+  preferLocalSession?: boolean;
 }
 
 interface LocalWorkspaceEntry {
@@ -490,13 +492,18 @@ async function requestLocalWorkspaceSession(options: WorkspaceSessionRequest): P
   let relaycastApiKey = toString(existing?.relaycastApiKey) || undefined;
   let createdAt = toString(existing?.createdAt) || undefined;
   if (!relaycastApiKey) {
-    const created = await createRelaycastWorkspace(
-      fetchFn,
-      options.relaycastBaseUrl ?? process.env.RELAYCAST_BASE_URL ?? DEFAULT_RELAYCAST_BASE_URL,
-      toString(options.workspaceName, workspaceId)
-    );
-    relaycastApiKey = created.apiKey;
-    createdAt = created.createdAt ?? createdAt;
+    try {
+      const created = await createRelaycastWorkspace(
+        fetchFn,
+        options.relaycastBaseUrl ?? process.env.RELAYCAST_BASE_URL ?? DEFAULT_RELAYCAST_BASE_URL,
+        toString(options.workspaceName, workspaceId)
+      );
+      relaycastApiKey = created.apiKey;
+      createdAt = created.createdAt ?? createdAt;
+    } catch {
+      // Relaycast workspace creation is optional — symlink/local mode works without it.
+      // Multi-agent relay features (RELAY_API_KEY) will be unavailable.
+    }
   }
 
   const registryEntry = updateWorkspaceRegistry(relayDir, workspaceId, {
@@ -525,7 +532,11 @@ export async function requestWorkspaceSession(options: WorkspaceSessionRequest):
   const fetchFn = options.fetchFn ?? fetch;
   const requestedWorkspaceId = normalizeWorkspaceId(options.requestedWorkspaceId);
 
-  if (isLocalBaseUrl(options.authBase) && options.relayDir && options.signingSecret) {
+  if (
+    (isLocalBaseUrl(options.authBase) || options.preferLocalSession) &&
+    options.relayDir &&
+    options.signingSecret
+  ) {
     return requestLocalWorkspaceSession({ ...options, fetchFn, requestedWorkspaceId });
   }
 
@@ -1240,6 +1251,7 @@ export async function goOnTheRelay(
     relayDir,
     relaycastBaseUrl: process.env.RELAYCAST_BASE_URL,
     fetchFn: deps.fetch,
+    preferLocalSession: useSymlinkMount,
   });
 
   // Compile dotfile permissions for this agent
