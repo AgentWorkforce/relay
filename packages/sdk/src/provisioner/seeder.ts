@@ -544,7 +544,7 @@ export async function seedWorkspaceTar(
       'Content-Type': 'application/gzip',
       'X-Correlation-Id': `seed-tar-${workspace}-${Date.now()}`,
     },
-    body: new Blob([tarball], { type: 'application/gzip' }),
+    body: tarball.buffer.slice(tarball.byteOffset, tarball.byteOffset + tarball.byteLength) as ArrayBuffer,
   });
 
   if (response.status === 404) {
