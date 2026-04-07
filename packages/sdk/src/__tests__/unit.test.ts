@@ -405,7 +405,7 @@ test('observerUrl: returns correct URL format when workspaceKey is set', () => {
   const url = relay.observerUrl;
   assert.ok(url, 'observerUrl should be defined after key is set');
   assert.ok(
-    url!.startsWith('https://agentrelay.dev/observer?key='),
+    url!.startsWith('https://agentrelay.com/observer?key='),
     `observerUrl should start with observer base URL, got: ${url}`
   );
   assert.ok(url!.includes('rk_live_test123'), 'observerUrl should include the workspace key');

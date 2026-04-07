@@ -19,9 +19,14 @@ import styles from '../../../components/docs/docs.module.css';
 import { getDoc } from '../../../lib/docs';
 import { getDocMarkdownUrl } from '../../../lib/docs-markdown';
 import { getAllDocSlugs } from '../../../lib/docs-nav';
+import { absoluteUrl } from '../../../lib/site';
 
 function slugify(text: string): string {
-  return text.toLowerCase().replace(/`([^`]+)`/g, '$1').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return text
+    .toLowerCase()
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
 }
 
 function HeadingWithId(level: 2 | 3) {
@@ -29,7 +34,11 @@ function HeadingWithId(level: 2 | 3) {
     const text = typeof children === 'string' ? children : String(children);
     const id = slugify(text);
     const Tag = `h${level}` as const;
-    return <Tag id={id} {...props}>{children}</Tag>;
+    return (
+      <Tag id={id} {...props}>
+        {children}
+      </Tag>
+    );
   };
 }
 
@@ -65,12 +74,12 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     title: doc.frontmatter.title,
     description: doc.frontmatter.description,
     alternates: {
-      canonical: `https://agentrelay.dev/docs/${slug}`,
+      canonical: absoluteUrl(`/docs/${slug}`),
     },
     openGraph: {
       title: doc.frontmatter.title,
       description: doc.frontmatter.description,
-      url: `https://agentrelay.dev/docs/${slug}`,
+      url: absoluteUrl(`/docs/${slug}`),
       type: 'article',
     },
   };
@@ -91,7 +100,7 @@ export default async function DocsPage({ params }: PageProps) {
     remarkPlugins: [remarkGfm],
   } as Parameters<typeof evaluate>[1]);
 
-  const pageUrl = `https://agentrelay.dev/docs/${slug}`;
+  const pageUrl = absoluteUrl(`/docs/${slug}`);
   const markdownPath = `/docs/markdown/${slug}.md`;
   const markdownUrl = getDocMarkdownUrl(slug);
 

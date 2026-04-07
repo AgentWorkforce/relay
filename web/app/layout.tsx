@@ -3,6 +3,7 @@ import { PostHogProvider } from '@posthog/next';
 import { Geist_Mono, Inter, Sora } from 'next/font/google';
 import type { ReactNode } from 'react';
 
+import { POSTHOG_HOST, SITE_URL } from '../lib/site';
 import { WebsitePostHogPageView } from './PostHogPageView';
 import './globals.css';
 
@@ -22,7 +23,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://agentrelay.com'),
+  metadataBase: new URL(SITE_URL),
   applicationName: 'Agent Relay',
   title: {
     default: 'Agent Relay',
@@ -30,7 +31,15 @@ export const metadata: Metadata = {
   },
   description:
     'Build AI systems where agents communicate, share context, and coordinate work through channels, messages, files, and workflows.',
-  keywords: ['Agent Relay', 'multi-agent', 'agent communication', 'MCP', 'AI SDK', 'agent relay', 'slack for agents'],
+  keywords: [
+    'Agent Relay',
+    'multi-agent',
+    'agent communication',
+    'MCP',
+    'AI SDK',
+    'agent relay',
+    'slack for agents',
+  ],
   robots: {
     index: true,
     follow: true,
@@ -69,7 +78,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   const content = postHogKey ? (
     <PostHogProvider
       clientOptions={{
-        api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? 'https://i.agentrelay.com',
+        api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? POSTHOG_HOST,
         autocapture: true,
         capture_exceptions: true,
         capture_heatmaps: true,

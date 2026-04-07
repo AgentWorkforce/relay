@@ -117,8 +117,12 @@ export async function runConnectCommand(
     io.exit(1);
   }
 
-  const cloudUrl = (options.cloudUrl || process.env.AGENT_RELAY_CLOUD_URL || cloudConfig.cloudUrl || 'https://agent-relay.com')
-    .replace(/\/$/, '');
+  const cloudUrl = (
+    options.cloudUrl ||
+    process.env.AGENT_RELAY_CLOUD_URL ||
+    cloudConfig.cloudUrl ||
+    'https://agentrelay.com'
+  ).replace(/\/$/, '');
 
   const language = options.language || 'typescript';
 
@@ -164,7 +168,9 @@ export async function runConnectCommand(
 
     start = (await response.json()) as StartResponse;
   } catch (err) {
-    io.error(color.red(`Failed to connect to cloud API: ${err instanceof Error ? err.message : String(err)}`));
+    io.error(
+      color.red(`Failed to connect to cloud API: ${err instanceof Error ? err.message : String(err)}`)
+    );
     io.exit(1);
   }
 
@@ -239,7 +245,9 @@ export async function runConnectCommand(
       io.exit(1);
     }
   } catch (err) {
-    io.error(color.red(`Failed to complete auth session: ${err instanceof Error ? err.message : String(err)}`));
+    io.error(
+      color.red(`Failed to complete auth session: ${err instanceof Error ? err.message : String(err)}`)
+    );
     io.exit(1);
   }
 
@@ -249,7 +257,11 @@ export async function runConnectCommand(
       io.error(color.red(`Remote auth command exited with code ${exitCode}.`));
     }
     if (sessionResult.exitCode === 127) {
-      io.log(color.yellow(`The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on the sandbox.`));
+      io.log(
+        color.yellow(
+          `The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on the sandbox.`
+        )
+      );
       io.log(color.dim('Check the sandbox snapshot includes the required CLI tools.'));
     }
     io.exit(1);

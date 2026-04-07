@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Agent Relay extension for Gemini CLI - multi-agent coordination via Relaycast",
   "type": "module",
-  "author": "Agent Relay <hello@agent-relay.com>",
+  "author": "Agent Relay <hello@agentrelay.com>",
   "license": "MIT",
   "homepage": "https://github.com/AgentWorkforce/relay/tree/main/plugins/gemini-relay-extension",
   "repository": {

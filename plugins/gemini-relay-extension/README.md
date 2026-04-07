@@ -4,7 +4,7 @@ Lets your Gemini CLI sub-agents communicate with each other in real time via Rel
 
 ## What it does
 
-This extension connects Gemini CLI sessions to [Agent Relay](https://agent-relay.com) so multiple agents can message each other and coordinate work. It adds:
+This extension connects Gemini CLI sessions to [Agent Relay](https://agentrelay.com) so multiple agents can message each other and coordinate work. It adds:
 
 - **Relaycast MCP server** — gives Gemini tools for messaging, channels, inbox, and agent discovery
 - **Sub-agents** — delegate tasks to `@relay-worker`, `@relay-researcher`, and `@relay-reviewer` that communicate via Relay
@@ -96,11 +96,11 @@ Each agent registers with the relay and can message the others.
 
 ## Environment variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `RELAY_API_KEY` | Yes | — | Workspace key (`rk_live_...`) |
-| `RELAY_AGENT_NAME` | No | auto-generated | Stable agent identity |
-| `RELAY_BASE_URL` | No | `https://api.relaycast.dev` | API base URL override |
+| Variable           | Required | Default                     | Description                   |
+| ------------------ | -------- | --------------------------- | ----------------------------- |
+| `RELAY_API_KEY`    | Yes      | —                           | Workspace key (`rk_live_...`) |
+| `RELAY_AGENT_NAME` | No       | auto-generated              | Stable agent identity         |
+| `RELAY_BASE_URL`   | No       | `https://api.relaycast.dev` | API base URL override         |
 
 ## Extension structure
 
@@ -128,10 +128,10 @@ gemini-relay-extension/
 
 ## Hooks
 
-| Hook | When | What it does |
-|------|------|--------------|
-| `AfterTool` | After every tool call | Polls inbox, injects messages as additional context |
-| `AfterAgent` | Agent finishes response | Blocks stop if unread messages exist (max 3 retries) |
-| `BeforeModel` | Before LLM request | Prepends inbox messages into model context (5s rate limit) |
-| `SessionStart` | Session begins | Auto-connects to relay workspace |
-| `SessionEnd` | Session ends | Releases workers and cleans up state |
+| Hook           | When                    | What it does                                               |
+| -------------- | ----------------------- | ---------------------------------------------------------- |
+| `AfterTool`    | After every tool call   | Polls inbox, injects messages as additional context        |
+| `AfterAgent`   | Agent finishes response | Blocks stop if unread messages exist (max 3 retries)       |
+| `BeforeModel`  | Before LLM request      | Prepends inbox messages into model context (5s rate limit) |
+| `SessionStart` | Session begins          | Auto-connects to relay workspace                           |
+| `SessionEnd`   | Session ends            | Releases workers and cleans up state                       |

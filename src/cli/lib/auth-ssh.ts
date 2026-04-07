@@ -112,10 +112,14 @@ export function buildSystemSshArgs(options: {
   remotePort?: number;
 }): string[] {
   const args = [
-    '-o', 'StrictHostKeyChecking=no',
-    '-o', 'UserKnownHostsFile=/dev/null',
-    '-o', 'LogLevel=ERROR',
-    '-p', String(options.port),
+    '-o',
+    'StrictHostKeyChecking=no',
+    '-o',
+    'UserKnownHostsFile=/dev/null',
+    '-o',
+    'LogLevel=ERROR',
+    '-p',
+    String(options.port),
   ];
   if (options.localPort && options.remotePort) {
     args.push('-L', `${options.localPort}:localhost:${options.remotePort}`);
@@ -132,7 +136,6 @@ function normalizeProvider(providerArg: string): string {
   };
   return providerMap[providerInput] || providerInput;
 }
-
 
 export async function runAuthCommand(
   providerArg: string,
@@ -165,7 +168,9 @@ export async function runAuthCommand(
     io.log(`  ${color.cyan('npx agent-relay auth claude --workspace=<ID>')}`);
     io.log(`  ${color.cyan('npx agent-relay auth codex --workspace=<ID>')}`);
     io.log(`  ${color.cyan('npx agent-relay auth gemini --workspace=<ID>')}`);
-    io.log(`  ${color.cyan('npx agent-relay auth claude --use-auth-broker')}  ${color.dim('(for Daytona/sandboxed environments)')}`);
+    io.log(
+      `  ${color.cyan('npx agent-relay auth claude --use-auth-broker')}  ${color.dim('(for Daytona/sandboxed environments)')}`
+    );
     io.log('');
     io.log('Supported provider ids:');
     io.log(`  ${known.join(', ')}`);
@@ -183,7 +188,8 @@ export async function runAuthCommand(
   let cloudConfig: { apiKey?: string; cloudUrl?: string } = {};
 
   if (!cliToken) {
-    const dataDir = process.env.AGENT_RELAY_DATA_DIR || path.join(homedir(), '.local', 'share', 'agent-relay');
+    const dataDir =
+      process.env.AGENT_RELAY_DATA_DIR || path.join(homedir(), '.local', 'share', 'agent-relay');
     const configPath = path.join(dataDir, 'cloud-config.json');
 
     if (!fs.existsSync(configPath)) {
@@ -209,8 +215,12 @@ export async function runAuthCommand(
     }
   }
 
-  const cloudUrl = (options.cloudUrl || process.env.AGENT_RELAY_CLOUD_URL || cloudConfig.cloudUrl || 'https://agent-relay.com')
-    .replace(/\/$/, '');
+  const cloudUrl = (
+    options.cloudUrl ||
+    process.env.AGENT_RELAY_CLOUD_URL ||
+    cloudConfig.cloudUrl ||
+    'https://agentrelay.com'
+  ).replace(/\/$/, '');
 
   const requestedWorkspaceId = options.workspace || process.env.WORKSPACE_ID;
   const useAuthBroker = options.useAuthBroker ?? false;
@@ -267,12 +277,21 @@ export async function runAuthCommand(
 
     start = (await response.json()) as StartResponse;
   } catch (err) {
-    io.error(color.red(`Failed to connect to cloud API: ${err instanceof Error ? err.message : String(err)}`));
+    io.error(
+      color.red(`Failed to connect to cloud API: ${err instanceof Error ? err.message : String(err)}`)
+    );
     io.exit(1);
   }
 
   const sshPort = typeof start.ssh?.port === 'string' ? parseInt(start.ssh.port, 10) : start.ssh?.port;
-  if (!start.sessionId || !start.workspaceId || !start.ssh?.host || !sshPort || !start.ssh.user || !start.ssh.password) {
+  if (
+    !start.sessionId ||
+    !start.workspaceId ||
+    !start.ssh?.host ||
+    !sshPort ||
+    !start.ssh.user ||
+    !start.ssh.password
+  ) {
     io.error(color.red('Cloud returned invalid SSH session details.'));
     io.exit(1);
   }
@@ -301,7 +320,11 @@ export async function runAuthCommand(
   const tunnelPort = 1455;
 
   io.log(color.yellow('Connecting via SSH...'));
-  io.log(color.dim(`  Tunnel: localhost:${tunnelPort} → ${useAuthBroker ? 'auth-broker' : 'workspace'}:${tunnelPort}`));
+  io.log(
+    color.dim(
+      `  Tunnel: localhost:${tunnelPort} → ${useAuthBroker ? 'auth-broker' : 'workspace'}:${tunnelPort}`
+    )
+  );
   io.log(color.dim(`  Running: ${remoteCommand}`));
   io.log('');
 
@@ -335,9 +358,7 @@ export async function runAuthCommand(
   const success = sessionResult.authDetected;
 
   const providerForComplete =
-    typeof start.provider === 'string' && start.provider.trim().length > 0
-      ? start.provider.trim()
-      : provider;
+    typeof start.provider === 'string' && start.provider.trim().length > 0 ? start.provider.trim() : provider;
 
   try {
     const completeHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -373,7 +394,9 @@ export async function runAuthCommand(
       io.exit(1);
     }
   } catch (err) {
-    io.error(color.red(`Failed to complete auth session: ${err instanceof Error ? err.message : String(err)}`));
+    io.error(
+      color.red(`Failed to complete auth session: ${err instanceof Error ? err.message : String(err)}`)
+    );
     io.exit(1);
   }
 
@@ -387,11 +410,21 @@ export async function runAuthCommand(
     if (sessionResult.exitCode === 127) {
       io.log('');
       if (useAuthBroker) {
-        io.log(color.yellow(`The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on the auth broker.`));
+        io.log(
+          color.yellow(
+            `The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on the auth broker.`
+          )
+        );
         io.log(color.dim('This is unexpected. Please report this issue.'));
       } else {
-        io.log(color.yellow(`The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on this workspace.`));
-        io.log(color.dim('Ask your workspace administrator to install it, or check the workspace Dockerfile.'));
+        io.log(
+          color.yellow(
+            `The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on this workspace.`
+          )
+        );
+        io.log(
+          color.dim('Ask your workspace administrator to install it, or check the workspace Dockerfile.')
+        );
       }
     }
 

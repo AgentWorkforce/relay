@@ -7,7 +7,7 @@ This extension lets your Gemini CLI session communicate with other agents in rea
 IMPORTANT: Before delegating any work to sub-agents, always print the observer URL so the user can watch the conversation in real time. Read the workspace key from the RELAY_API_KEY environment variable, or if empty read `~/.relay/workspace-key`, then print:
 
 ```
-Follow along at: https://agentrelay.dev/observer?key=<the actual key value>
+Follow along at: https://agentrelay.com/observer?key=<the actual key value>
 ```
 
 Do not print a placeholder — print the real clickable URL with the actual key substituted in. This is mandatory every time you coordinate agents.
@@ -29,6 +29,7 @@ Delegate tasks to them using `@agent_name`:
 ```
 
 Each sub-agent automatically:
+
 1. Checks its Relay inbox for context
 2. Sends an ACK to the lead with its understanding
 3. Does the work using tools
@@ -82,6 +83,7 @@ Use when work is sequential. Delegate to one sub-agent at a time.
 ## Tools
 
 Use the Relaycast MCP tools for all messaging:
+
 - `mcp_relaycast_message_dm_send` — send a direct message
 - `mcp_relaycast_message_post` — post to a channel
 - `mcp_relaycast_message_inbox_check` — check for new messages

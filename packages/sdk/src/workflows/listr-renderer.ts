@@ -10,7 +10,7 @@ function installOutputFilter(): () => void {
   console.log = (...args: unknown[]) => {
     const str = String(args[0] ?? '');
     // Always show the observer URL and channel so users can follow the run
-    if (str.includes('Observer:') || str.includes('agentrelay.dev') || str.includes('Channel: wf-')) {
+    if (str.includes('Observer:') || str.includes('agentrelay.com') || str.includes('Channel: wf-')) {
       orig(...args);
       return;
     }
@@ -98,8 +98,8 @@ export function createWorkflowRenderer(): WorkflowRenderer {
         rendererOptions: {
           collapseErrors: false,
           showErrorMessage: true,
-      },
-    },
+        },
+      }
     );
     for (const task of pendingAdds) listr.add(task);
     pendingAdds.length = 0;
@@ -161,7 +161,7 @@ export function createWorkflowRenderer(): WorkflowRenderer {
         if (handle) {
           handle.setOutput(
             chalk.dim(`> Owner: ${event.ownerName}`) +
-              (event.specialistName ? chalk.dim(` · specialist: ${event.specialistName}`) : ''),
+              (event.specialistName ? chalk.dim(` · specialist: ${event.specialistName}`) : '')
           );
         }
         break;
@@ -190,9 +190,7 @@ export function createWorkflowRenderer(): WorkflowRenderer {
       }
 
       case 'step:owner-timeout': {
-        stepHandles
-          .get(event.stepName)
-          ?.setOutput(chalk.red(`> Owner ${event.ownerName} timed out`));
+        stepHandles.get(event.stepName)?.setOutput(chalk.red(`> Owner ${event.ownerName} timed out`));
         break;
       }
 

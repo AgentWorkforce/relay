@@ -26,7 +26,7 @@ function withDefaults(overrides: Partial<AuthDependencies> = {}): AuthDependenci
       overrides.runAuth ??
       ((providerArg: string, options: AuthCommandOptions) => runAuthCommand(providerArg, options, io)),
     defaultCloudUrl:
-      overrides.defaultCloudUrl ?? (process.env.AGENT_RELAY_CLOUD_URL || 'https://agent-relay.com'),
+      overrides.defaultCloudUrl ?? (process.env.AGENT_RELAY_CLOUD_URL || 'https://agentrelay.com'),
     log,
     error,
     exit,

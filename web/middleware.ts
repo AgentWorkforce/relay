@@ -1,7 +1,7 @@
 import { postHogMiddleware } from '@posthog/next';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const DEFAULT_POSTHOG_HOST = 'https://i.agentrelay.dev';
+import { POSTHOG_HOST as DEFAULT_POSTHOG_HOST } from './lib/site';
 
 const postHog = process.env.NEXT_PUBLIC_POSTHOG_KEY
   ? postHogMiddleware({

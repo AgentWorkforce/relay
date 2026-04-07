@@ -29,7 +29,7 @@ Every relay-connected Codex agent must complete these steps IN ORDER before subs
 
 2. **Register as an agent.** Call `agent.register` with your agent name and `type: "agent"`. Use `RELAY_AGENT_NAME` from the environment if set, otherwise derive a name from the task context (e.g., `lead`, `auth-worker`).
 
-3. **Tell the user** they can follow the conversation live at `https://agentrelay.dev/observer?key=<workspace_key>` (use the workspace key from step 1). This lets them watch all agent messages in real time.
+3. **Tell the user** they can follow the conversation live at `https://agentrelay.com/observer?key=<workspace_key>` (use the workspace key from step 1). This lets them watch all agent messages in real time.
 
 4. **Check the relay inbox.** Call `inbox.check` to see if there are any pending messages or task assignments.
 
@@ -69,6 +69,7 @@ There are two ways to create workers. Use the right one for the job:
 Use `agent.add` to create a Relaycast-native agent. Best for tasks that are primarily about messaging, inbox checks, coordination, or lightweight work that doesn't need a full Codex sub-agent runtime.
 
 **Lead steps:**
+
 1. Ensure workspace exists (call `workspace.list`, then `workspace.create` if needed).
 2. Register the lead (`agent.register`).
 3. Add the worker with `agent.add(name: "worker-name", type: "agent")`.
@@ -76,6 +77,7 @@ Use `agent.add` to create a Relaycast-native agent. Best for tasks that are prim
 5. Poll lead inbox for ACK (`inbox.check`).
 
 **Worker steps:**
+
 1. Check inbox (`inbox.check`).
 2. Send ACK to lead via `dm.send`.
 3. Perform the assigned scope.
@@ -86,11 +88,13 @@ Use `agent.add` to create a Relaycast-native agent. Best for tasks that are prim
 Use `spawn_agent` with the `relay-worker` agent definition for tasks that need full code editing, file access, and tool use. The worker gets its own Codex runtime with Relaycast MCP tools available.
 
 **Lead steps:**
+
 1. Ensure workspace exists and lead is registered (same as above).
 2. Spawn the worker: include relay name, lead name, workspace key, exact scope, and completion criteria in the task prompt.
 3. Poll lead inbox for ACK.
 
 **Worker steps:**
+
 1. Call `workspace.set_key` with the workspace key from the task prompt.
 2. Register with `agent.register`.
 3. Check inbox, send ACK, do work, send DONE.
@@ -120,6 +124,7 @@ Protocol:
 ```
 
 For code-heavy tasks, change the type line to:
+
 ```text
 Type: Codex sub-agent (use spawn_agent with relay-worker)
 ```

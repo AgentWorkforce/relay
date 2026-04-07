@@ -6,7 +6,7 @@ export interface CloudConfig {
   // Server
   port: number;
   publicUrl: string;
-  appUrl: string; // Dashboard app URL (e.g., app.agent-relay.com)
+  appUrl: string; // Dashboard app URL (e.g., app.agentrelay.com)
   sessionSecret: string;
 
   // Local dashboard URL for channel API proxying (optional)
@@ -47,7 +47,7 @@ export interface CloudConfig {
       apiToken: string;
       org: string;
       region?: string;
-      workspaceDomain?: string; // e.g., ws.agent-relay.com
+      workspaceDomain?: string; // e.g., ws.agentrelay.com
       registryAuth?: {
         username: string;
         password: string;
@@ -121,9 +121,7 @@ export function loadConfig(): CloudConfig {
       anthropic: optionalEnv('ANTHROPIC_CLIENT_ID')
         ? { clientId: optionalEnv('ANTHROPIC_CLIENT_ID')! }
         : undefined,
-      openai: optionalEnv('OPENAI_CLIENT_ID')
-        ? { clientId: optionalEnv('OPENAI_CLIENT_ID')! }
-        : undefined,
+      openai: optionalEnv('OPENAI_CLIENT_ID') ? { clientId: optionalEnv('OPENAI_CLIENT_ID')! } : undefined,
       google:
         optionalEnv('GOOGLE_CLIENT_ID') && optionalEnv('GOOGLE_CLIENT_SECRET')
           ? {
@@ -145,12 +143,13 @@ export function loadConfig(): CloudConfig {
             org: optionalEnv('FLY_ORG') || 'personal',
             region: optionalEnv('FLY_REGION') || 'sjc',
             workspaceDomain: optionalEnv('FLY_WORKSPACE_DOMAIN'),
-            registryAuth: optionalEnv('GHCR_USERNAME') && optionalEnv('GHCR_TOKEN')
-              ? {
-                  username: optionalEnv('GHCR_USERNAME')!,
-                  password: optionalEnv('GHCR_TOKEN')!,
-                }
-              : undefined,
+            registryAuth:
+              optionalEnv('GHCR_USERNAME') && optionalEnv('GHCR_TOKEN')
+                ? {
+                    username: optionalEnv('GHCR_USERNAME')!,
+                    password: optionalEnv('GHCR_TOKEN')!,
+                  }
+                : undefined,
             snapshotRetentionDays: parseInt(optionalEnv('FLY_SNAPSHOT_RETENTION_DAYS') || '14', 10),
             volumeSizeGb: parseInt(optionalEnv('FLY_VOLUME_SIZE_GB') || '10', 10),
           }

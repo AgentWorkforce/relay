@@ -71,7 +71,7 @@ function showFirstRunNotice(): void {
   console.log('');
   console.log('Agent Relay collects anonymous usage data to improve the product.');
   console.log('Run `agent-relay telemetry disable` to opt out.');
-  console.log('Learn more: https://agentrelay.dev/telemetry');
+  console.log('Learn more: https://agentrelay.com/telemetry');
   console.log('');
 
   markNotified();

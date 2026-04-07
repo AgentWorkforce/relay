@@ -11,11 +11,12 @@ import {
   type SpawnOptionsTableVariant,
 } from './spawn-options-table';
 import { getAllDocSlugs } from './docs-nav';
+import { absoluteUrl } from './site';
 
 const moduleFilename = fileURLToPath(import.meta.url);
 const moduleDirname = path.dirname(moduleFilename);
 const DOCS_DIR = path.resolve(moduleDirname, '../content/docs');
-const DOCS_BASE_URL = 'https://agentrelay.dev/docs';
+const DOCS_BASE_URL = absoluteUrl('/docs');
 
 export function getDocMarkdownUrl(slug: string): string {
   return `${DOCS_BASE_URL}/markdown/${slug}.md`;
@@ -53,7 +54,7 @@ function resolveHref(href: string | undefined): string | undefined {
     return href;
   }
   if (href.startsWith('/')) {
-    return `https://agentrelay.dev${href}`;
+    return absoluteUrl(href);
   }
   return href;
 }
@@ -96,11 +97,7 @@ function renderBannerLink(attrs: string, body: string): string {
 function renderSpawnOptionsTable(attrs: string): string {
   const variantMatch = attrs.match(/variant="([^"]+)"/)?.[1];
   const variant: SpawnOptionsTableVariant =
-    variantMatch === 'relay-startup'
-      ? 'relay-startup'
-      : variantMatch === 'advanced'
-        ? 'advanced'
-        : 'common';
+    variantMatch === 'relay-startup' ? 'relay-startup' : variantMatch === 'advanced' ? 'advanced' : 'common';
   const rows = getSpawnOptionRows(variant);
   const lines = [
     '| Option | What it does |',
@@ -126,10 +123,20 @@ function renderMarkdownBody(content: string): string {
   output = output.replace(/<CardGroup[^>]*>\s*/g, '');
   output = output.replace(/\s*<\/CardGroup>/g, '');
 
-  output = output.replace(/<Note>\s*([\s\S]*?)\s*<\/Note>/g, (_match, body: string) => `\n${toBlockquote(body)}\n`);
-  output = output.replace(/<Card\s+([^>]*)>([\s\S]*?)<\/Card>/g, (_match, attrs: string, body: string) => renderCard(attrs, body));
-  output = output.replace(/<BannerLink\s+([^>]*)>([\s\S]*?)<\/BannerLink>/g, (_match, attrs: string, body: string) => `\n${renderBannerLink(attrs, body)}\n`);
-  output = output.replace(/<SpawnOptionsTable([^>]*)\/>/g, (_match, attrs: string) => renderSpawnOptionsTable(attrs));
+  output = output.replace(
+    /<Note>\s*([\s\S]*?)\s*<\/Note>/g,
+    (_match, body: string) => `\n${toBlockquote(body)}\n`
+  );
+  output = output.replace(/<Card\s+([^>]*)>([\s\S]*?)<\/Card>/g, (_match, attrs: string, body: string) =>
+    renderCard(attrs, body)
+  );
+  output = output.replace(
+    /<BannerLink\s+([^>]*)>([\s\S]*?)<\/BannerLink>/g,
+    (_match, attrs: string, body: string) => `\n${renderBannerLink(attrs, body)}\n`
+  );
+  output = output.replace(/<SpawnOptionsTable([^>]*)\/>/g, (_match, attrs: string) =>
+    renderSpawnOptionsTable(attrs)
+  );
 
   output = output.replace(/\n{3,}/g, '\n\n');
   return output.trim();
@@ -172,7 +179,10 @@ export function getDocsMarkdownIndex(): string {
     'These markdown views are generated directly from `web/content/docs/*.mdx`.',
     'They are meant for agents, CLI tooling, and raw browser access.',
     '',
-    ...docs.map((doc) => `- [${doc.title}](${getDocMarkdownUrl(doc.slug)})${doc.description ? `: ${doc.description}` : ''}`),
+    ...docs.map(
+      (doc) =>
+        `- [${doc.title}](${getDocMarkdownUrl(doc.slug)})${doc.description ? `: ${doc.description}` : ''}`
+    ),
     '',
   ];
 
