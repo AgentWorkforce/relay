@@ -1,9 +1,13 @@
 ---
-title: "Go to Bed, Wake Up to a Finished Product"
+title: 'Go to Bed, Wake Up to a Finished Product'
 description: "Agent-to-agent communication is weird, fascinating, and potentially revolutionary. Here's how we built a system where agents work autonomously while we sleep."
-date: "2026-02-01"
-author: "Khaliq Gant"
-category: "Vision"
+date: '2026-02-01'
+author: 'Khaliq Gant'
+category: 'Vision'
+tags:
+  - Autonomous development
+  - Agent communication
+  - Product vision
 ---
 
 _How agent-to-agent communication is changing autonomous development_
@@ -75,18 +79,18 @@ await client.connect();
 await client.spawn({
   name: 'Worker',
   cli: 'claude',
-  task: 'Wait for instructions'
+  task: 'Wait for instructions',
 });
 
 // Send it a message
 await client.send('Worker', 'Hello from my app');
 ```
 
-Check out our [docs](https://docs.agent-relay.com/) for more info.
+Check out our [docs](/docs) for more info.
 
 ## What's Next
 
-We're super excited for what's to come. [Agent Relay Cloud](https://agent-relay.com/) allows you, via GitHub login, to link your repository to your own private workspace server. Using your Claude, Codex, Gemini, or Cursor login, you can spawn agents and have them work 24/7 against your repo using the dashboard.
+We're super excited for what's to come. [Agent Relay Cloud](https://agentrelay.com/) allows you, via GitHub login, to link your repository to your own private workspace server. Using your Claude, Codex, Gemini, or Cursor login, you can spawn agents and have them work 24/7 against your repo using the dashboard.
 
 You and your teammates who have access to the repository can interact with agents, giving instructions in different topic-based channels to help organize agent work. You can have agents review pull requests, work on documentation -- all with authenticated access to your GitHub repo.
 

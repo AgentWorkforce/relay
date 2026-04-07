@@ -10,6 +10,7 @@
 ## Install
 
 **TypeScript / Node.js**
+
 ```bash
 npm install @agent-relay/sdk
 # or
@@ -17,6 +18,7 @@ bun add @agent-relay/sdk
 ```
 
 **Python**
+
 ```bash
 pip install agent-relay-sdk
 ```
@@ -25,42 +27,38 @@ See the [Python SDK](./packages/sdk-py) for full documentation.
 
 ## Documentation
 
-- **Web:** [agentrelay.dev/docs](https://agentrelay.dev/docs)
-- **Markdown:** [agentrelay.dev/docs/markdown](https://agentrelay.dev/docs/markdown) — plain-text docs for LLMs and terminal use
+- **Web:** [agentrelay.com/docs](https://agentrelay.com/docs)
+- **Markdown:** [agentrelay.com/docs/markdown](https://agentrelay.com/docs/markdown) — plain-text docs for LLMs and terminal use
 
 ## Usage
 
 ```typescript
-import { AgentRelay, Models } from "@agent-relay/sdk";
+import { AgentRelay, Models } from '@agent-relay/sdk';
 
 const relay = new AgentRelay();
 
-relay.onMessageReceived = (msg) =>
-  console.log(`[${msg.from} → ${msg.to}]: ${msg.text}`);
+relay.onMessageReceived = (msg) => console.log(`[${msg.from} → ${msg.to}]: ${msg.text}`);
 
-const channel = ["tic-tac-toe"];
+const channel = ['tic-tac-toe'];
 
 const x = await relay.claude.spawn({
-  name: "PlayerX",
+  name: 'PlayerX',
   model: Models.Claude.SONNET,
   channels: channel,
-  task: "Play tic-tac-toe as X against PlayerO. You go first.",
+  task: 'Play tic-tac-toe as X against PlayerO. You go first.',
 });
 const o = await relay.codex.spawn({
-  name: "PlayerO",
+  name: 'PlayerO',
   model: Models.Codex.GPT_5_3_CODEX_SPARK,
   channels: channel,
-  task: "Play tic-tac-toe as O against PlayerX.",
+  task: 'Play tic-tac-toe as O against PlayerX.',
 });
 
-console.log("Waiting for agents to be ready...");
-await Promise.all([
-  relay.waitForAgentReady("PlayerX"),
-  relay.waitForAgentReady("PlayerO"),
-]);
-console.log("Both ready. Starting game.");
+console.log('Waiting for agents to be ready...');
+await Promise.all([relay.waitForAgentReady('PlayerX'), relay.waitForAgentReady('PlayerO')]);
+console.log('Both ready. Starting game.');
 
-relay.system().sendMessage({ to: "PlayerX", text: "Start." });
+relay.system().sendMessage({ to: 'PlayerX', text: 'Start.' });
 
 const FIVE_MINUTES = 5 * 60 * 1000;
 await AgentRelay.waitForAny([x, o], FIVE_MINUTES);
@@ -94,6 +92,7 @@ Or just describe what you want in plain language:
 See the [plugin README](https://github.com/AgentWorkforce/skills/tree/main/plugins/claude-relay-plugin) for full details.
 
 ## Supported CLI’s
+
 - Claude
 - Codex
 - Gemini
@@ -107,9 +106,10 @@ Apache-2.0 — Copyright 2026 Agent Workforce Incorporated
 
 ---
 
-**Links:** [Documentation](https://agentrelay.dev/docs) · [Docs (Markdown)](https://agentrelay.dev/docs/markdown.md) · [Issues](https://github.com/AgentWorkforce/relay/issues) · [Discord](https://discord.gg/6E6CTxM8um)
+**Links:** [Documentation](https://agentrelay.com/docs) · [Docs (Markdown)](https://agentrelay.com/docs/markdown.md) · [Issues](https://github.com/AgentWorkforce/relay/issues) · [Discord](https://discord.gg/6E6CTxM8um)
 
 > **Plain-text docs:** Every docs page is available as generated Markdown from the website, backed by the same MDX source as the rendered docs:
+>
 > ```bash
-> curl https://agentrelay.dev/docs/markdown/introduction.md
+> curl https://agentrelay.com/docs/markdown/introduction.md
 > ```

@@ -2699,7 +2699,7 @@ export class WorkflowRunner {
           this.log('API key resolved');
           if (this.relayApiKeyAutoCreated && this.relayApiKey) {
             this.log(`Workspace created — follow this run in Relaycast:`);
-            this.log(`  Observer: https://agentrelay.dev/observer?key=${this.relayApiKey}`);
+            this.log(`  Observer: https://agentrelay.com/observer?key=${this.relayApiKey}`);
             this.log(`  Channel: ${channel}`);
           }
         }

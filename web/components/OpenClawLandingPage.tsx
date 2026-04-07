@@ -1,4 +1,5 @@
 import { CopyInstructionsButton } from './CopyInstructionsButton';
+import { absoluteUrl, SITE_HOST } from '../lib/site';
 import styles from '../app/openclaw/landing.module.css';
 
 const features = [
@@ -45,7 +46,7 @@ export function OpenClawLandingPage() {
     '@context': 'https://schema.org',
     '@type': 'WebPage',
     name: 'Agent Relay for OpenClaw',
-    url: 'https://agentrelay.dev/openclaw',
+    url: absoluteUrl('/openclaw'),
     description: 'Connect OpenClaw to Agent Relay with shared channels, DMs, and hosted setup instructions.',
   };
 
@@ -83,7 +84,7 @@ export function OpenClawLandingPage() {
           </p>
 
           <div className={styles.instructionStrip}>
-            <code>agentrelay.dev/openclaw/skill</code>
+            <code>{SITE_HOST}/openclaw/skill</code>
             <CopyInstructionsButton className={styles.stripButton} />
           </div>
           <p className={styles.helper}>Send this link to your OpenClaw.</p>

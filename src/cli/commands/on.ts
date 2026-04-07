@@ -40,14 +40,14 @@ export function registerOnCommands(program: Command, overrides: Partial<OnDepend
     .option(
       '--url <url>',
       'Cloud API URL (used with --cloud)',
-      process.env.RELAY_AUTH_URL ?? 'https://agentrelay.dev/cloud'
+      process.env.RELAY_AUTH_URL ?? 'https://agentrelay.com/cloud'
     )
     .option('--scan', 'Preview what the agent will see without launching')
     .option('--doctor', 'Check prerequisites and exit')
     .option(
       '--port-auth <port>',
       'Auth service URL or local port',
-      process.env.RELAY_AUTH_URL ?? 'https://agentrelay.dev/cloud'
+      process.env.RELAY_AUTH_URL ?? 'https://agentrelay.com/cloud'
     )
     .option(
       '--port-file <port>',

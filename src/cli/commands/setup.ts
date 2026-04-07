@@ -387,7 +387,7 @@ function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
   io.log('  agent-relay telemetry enable   - Opt in to telemetry');
   io.log('  agent-relay telemetry disable  - Opt out of telemetry');
   io.log('');
-  io.log('Learn more: https://agentrelay.dev/telemetry');
+  io.log('Learn more: https://agentrelay.com/telemetry');
 }
 export function registerSetupCommands(program: Command, overrides: Partial<SetupDependencies> = {}): void {
   const deps = withDefaults(overrides);

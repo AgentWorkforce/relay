@@ -85,21 +85,23 @@ function installOutputFilter(): () => void {
   const orig = console.log.bind(console);
   console.log = (...args: unknown[]) => {
     const str = String(args[0] ?? '');
-    if (str.includes('Observer:') || str.includes('agentrelay.dev') || str.includes('Channel: wf-')) {
+    if (str.includes('Observer:') || str.includes('agentrelay.com') || str.includes('Channel: wf-')) {
       orig(...args);
       return;
     }
     if (/\[broker\]/.test(str) || /\[workflow\s+\d{2}:\d{2}\]/.test(str)) return;
     orig(...args);
   };
-  return () => { console.log = orig; };
+  return () => {
+    console.log = orig;
+  };
 }
 
 async function runWithListr(
   runner: WorkflowRunner,
   config: RunnerConfig,
   workflowName: string | undefined,
-  executeOptions: ExecuteOptions | undefined,
+  executeOptions: ExecuteOptions | undefined
 ): Promise<RunnerResult> {
   const stepHandles = new Map<string, StepHandle>();
   const restoreConsole = installOutputFilter();
@@ -135,7 +137,7 @@ async function runWithListr(
         collapseErrors: false,
         showErrorMessage: true,
       },
-    },
+    }
   );
 
   runner.on((event: WorkflowEvent) => {

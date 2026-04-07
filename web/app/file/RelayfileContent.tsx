@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useMemo, useState } from 'react';
 
 import { FadeIn } from '../../components/FadeIn';
+
 import s from './relayfile.module.css';
 
 const featureCards = [
@@ -104,7 +105,7 @@ for event in client.watch.stream(volume="workspace", prefix="/artifacts"):
   },
   curl: {
     label: 'cURL',
-    code: `curl -X PUT https://api.agentrelay.dev/v1/files/content \\
+    code: `curl -X PUT https://agentrelay.com/cloud/api/file/v1/files/content \\
   -H "authorization: Bearer $RELAY_API_KEY" \\
   -H "content-type: application/json" \\
   -d '{
@@ -113,10 +114,10 @@ for event in client.watch.stream(volume="workspace", prefix="/artifacts"):
     "content": "Draft the product brief"
   }'
 
-curl "https://api.agentrelay.dev/v1/files/content?volume=workspace&path=%2Fscratch%2Fbrief.txt" \\
+curl "https://agentrelay.com/cloud/api/file/v1/files/content?volume=workspace&path=%2Fscratch%2Fbrief.txt" \\
   -H "authorization: Bearer $RELAY_API_KEY"
 
-curl "https://api.agentrelay.dev/v1/files/watch?volume=workspace&prefix=%2Fscratch" \\
+curl "https://agentrelay.com/cloud/api/file/v1/files/watch?volume=workspace&prefix=%2Fscratch" \\
   -H "authorization: Bearer $RELAY_API_KEY"`,
     bullets: [
       'Raw HTTP for quick debugging and shell-based workflows.',
@@ -145,7 +146,7 @@ const steps = [
   {
     step: '01',
     title: 'Create a volume',
-    code: `curl -X POST https://api.agentrelay.dev/v1/volumes \\
+    code: `curl -X POST https://agentrelay.com/cloud/api/file/v1/volumes \\
   -H "authorization: Bearer $RELAY_API_KEY" \\
   -H "content-type: application/json" \\
   -d '{"name":"workspace"}'`,
@@ -153,7 +154,7 @@ const steps = [
   {
     step: '02',
     title: 'Write a file',
-    code: `curl -X PUT https://api.agentrelay.dev/v1/files/content \\
+    code: `curl -X PUT https://agentrelay.com/cloud/api/file/v1/files/content \\
   -H "authorization: Bearer $RELAY_API_KEY" \\
   -H "content-type: application/json" \\
   -d '{
@@ -165,7 +166,7 @@ const steps = [
   {
     step: '03',
     title: 'Watch for changes',
-    code: `curl "https://api.agentrelay.dev/v1/files/watch?volume=workspace&prefix=%2Fdocs" \\
+    code: `curl "https://agentrelay.com/cloud/api/file/v1/files/watch?volume=workspace&prefix=%2Fdocs" \\
   -H "authorization: Bearer $RELAY_API_KEY"`,
   },
 ];
@@ -186,16 +187,10 @@ function highlight(code: string, lang: Lang) {
       : lang === 'curl'
         ? /\b(curl)\b/g
         : /\b(import|from|const|await|new)\b/g;
-  const types =
-    lang === 'python'
-      ? /\b(Relayfile)\b/g
-      : /\b(Relayfile)\b/g;
+  const types = lang === 'python' ? /\b(Relayfile)\b/g : /\b(Relayfile)\b/g;
   const methods = /\.(\w+)\(/g;
 
-  const escaped = code
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
   const parts: string[] = [];
   let lastIndex = 0;
@@ -252,12 +247,7 @@ function RelayfileAnimation() {
             <span className={s.fileMeta}>streaming</span>
           </div>
 
-          <svg
-            className={s.boardLinks}
-            viewBox="0 0 640 420"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-          >
+          <svg className={s.boardLinks} viewBox="0 0 640 420" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M312 118C276 150 244 186 194 210" />
             <path d="M328 122C382 164 414 182 468 208" />
             <path d="M320 142C320 220 320 238 320 286" />
@@ -374,9 +364,8 @@ export function RelayfileContent() {
             </h1>
 
             <p className={s.subtitle}>
-              Relayfile gives AI agents one place to read, write, watch, and
-              coordinate files. Shared volumes, locks, metadata, and realtime
-              change events let multi-agent systems work on the same state
+              Relayfile gives AI agents one place to read, write, watch, and coordinate files. Shared volumes,
+              locks, metadata, and realtime change events let multi-agent systems work on the same state
               without building storage plumbing first.
             </p>
 
@@ -408,19 +397,13 @@ export function RelayfileContent() {
         <div className={s.featuresHeader}>
           <h2 className={s.featuresTitle}>Filesystem primitives for agent coordination</h2>
           <p className={s.featuresSubtitle}>
-            Everything agents need to share state, react to changes, and work
-            safely in parallel.
+            Everything agents need to share state, react to changes, and work safely in parallel.
           </p>
         </div>
 
         <section className={s.featuresSection}>
           {featureCards.map((feature, index) => (
-            <FadeIn
-              key={feature.title}
-              direction="up"
-              delay={index * 45}
-              className={s.featureCol}
-            >
+            <FadeIn key={feature.title} direction="up" delay={index * 45} className={s.featureCol}>
               <div className={s.featureTile}>
                 <div className={s.featureChip}>{String(index + 1).padStart(2, '0')}</div>
                 <h3 className={s.featureTitle}>{feature.title}</h3>
@@ -436,9 +419,8 @@ export function RelayfileContent() {
           <FadeIn direction="up" className={s.byohText}>
             <h2 className={s.byohTitle}>Works with every AI tool</h2>
             <p className={s.byohSubtitle}>
-              Use Relayfile from coding agents, task runners, MCP hosts, CI, or
-              your own orchestration layer. If it can make HTTP calls, it can
-              share files through Relayfile.
+              Use Relayfile from coding agents, task runners, MCP hosts, CI, or your own orchestration layer.
+              If it can make HTTP calls, it can share files through Relayfile.
             </p>
           </FadeIn>
           <FadeIn direction="up" delay={120} className={s.byohLogos}>
@@ -457,9 +439,8 @@ export function RelayfileContent() {
             <span className={s.openclawBadge}>SDK</span>
             <h2 className={s.sdkTitle}>One API surface across every client</h2>
             <p className={s.sdkSubtitle}>
-              Read files, watch directories, and attach metadata from
-              TypeScript, Python, or straight HTTP. The primitives stay the
-              same even when your harness changes.
+              Read files, watch directories, and attach metadata from TypeScript, Python, or straight HTTP.
+              The primitives stay the same even when your harness changes.
             </p>
 
             <div className={s.tabRow}>
@@ -507,9 +488,7 @@ export function RelayfileContent() {
         <section className={s.deploySection}>
           <FadeIn direction="up">
             <h2 className={s.deployTitle}>Why Relayfile</h2>
-            <p className={s.deploySubtitle}>
-              Purpose-built shared storage for multi-agent systems.
-            </p>
+            <p className={s.deploySubtitle}>Purpose-built shared storage for multi-agent systems.</p>
           </FadeIn>
 
           <div className={s.deployCards}>
@@ -533,9 +512,8 @@ export function RelayfileContent() {
           <FadeIn direction="right" className={s.openclawText}>
             <h2 className={s.openclawTitle}>Get started in three requests</h2>
             <p className={s.openclawSubtitle}>
-              Create a workspace, write shared state, and subscribe to file
-              changes. Relayfile is designed to be useful before you build any
-              additional abstractions around it.
+              Create a workspace, write shared state, and subscribe to file changes. Relayfile is designed to
+              be useful before you build any additional abstractions around it.
             </p>
           </FadeIn>
 
@@ -562,8 +540,8 @@ export function RelayfileContent() {
           <div className={s.poweredCard}>
             <span className={s.poweredEyebrow}>Powered by Agent Relay</span>
             <p className={s.poweredText}>
-              Relayfile extends the Agent Relay platform with shared storage for
-              agents that communicate, coordinate, and act on the same files.
+              Relayfile extends the Agent Relay platform with shared storage for agents that communicate,
+              coordinate, and act on the same files.
             </p>
           </div>
         </FadeIn>

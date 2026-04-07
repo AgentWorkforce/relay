@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "author": "Agent Relay <hello@agent-relay.com>",
+  "author": "Agent Relay <hello@agentrelay.com>",
   "license": "MIT",
   "homepage": "https://github.com/AgentWorkforce/relay/tree/main/plugins/opencode-relay-plugin",
   "repository": {

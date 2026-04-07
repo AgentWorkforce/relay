@@ -1,5 +1,5 @@
-import os from "node:os";
-import path from "node:path";
+import os from 'node:os';
+import path from 'node:path';
 
 export type StoredAuth = {
   accessToken: string;
@@ -10,7 +10,7 @@ export type StoredAuth = {
 
 export type WhoAmIResponse = {
   authenticated: boolean;
-  source: "session" | "token";
+  source: 'session' | 'token';
   subjectType: string | null;
   scopes: string[];
   user: {
@@ -47,7 +47,7 @@ export type AuthSessionResponse = {
   expiresAt: string;
 };
 
-export type WorkflowFileType = "yaml" | "ts" | "py";
+export type WorkflowFileType = 'yaml' | 'ts' | 'py';
 
 export type RunWorkflowOptions = {
   apiUrl?: string;
@@ -76,20 +76,13 @@ export type SyncPatchResponse = {
   [key: string]: unknown;
 };
 
-export const SUPPORTED_PROVIDERS = [
-  "anthropic",
-  "openai",
-  "google",
-  "cursor",
-  "opencode",
-  "droid",
-] as const;
+export const SUPPORTED_PROVIDERS = ['anthropic', 'openai', 'google', 'cursor', 'opencode', 'droid'] as const;
 
 export const REFRESH_WINDOW_MS = 60_000;
-export const AUTH_FILE_PATH = path.join(os.homedir(), ".agent-relay", "cloud-auth.json");
+export const AUTH_FILE_PATH = path.join(os.homedir(), '.agent-relay', 'cloud-auth.json');
 
 export function defaultApiUrl(): string {
-  return process.env.CLOUD_API_URL?.trim() || "https://agentrelay.dev";
+  return process.env.CLOUD_API_URL?.trim() || 'https://agentrelay.com';
 }
 
 export function isSupportedProvider(provider: string): boolean {
