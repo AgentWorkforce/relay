@@ -35,7 +35,13 @@ export function registerOnCommands(program: Command, overrides: Partial<OnDepend
     .argument('[cli]', 'Agent CLI to launch (codex, claude, gemini, aider)')
     .option('--agent <name>', 'Agent identity name (default: CLI basename)')
     .option('--workspace <id>', 'Join an existing relay workspace')
-    .option('--local', 'Use local symlink mount instead of relayfile (faster, no network)')
+    .option('--shared', 'Enable multi-agent shared workspace via relayfile (local)')
+    .option('--cloud', 'Run in cloud mode with remote relayfile')
+    .option(
+      '--url <url>',
+      'Cloud API URL (used with --cloud)',
+      process.env.RELAY_AUTH_URL ?? 'https://agentrelay.dev/cloud'
+    )
     .option('--scan', 'Preview what the agent will see without launching')
     .option('--doctor', 'Check prerequisites and exit')
     .option(

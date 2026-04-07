@@ -28,7 +28,9 @@ interface OnOptions {
   workspace?: string;
   portAuth: string;
   portFile: string;
-  local?: boolean;
+  shared?: boolean;
+  cloud?: boolean;
+  url?: string;
 }
 
 interface RelayConfigAgent {
@@ -1220,9 +1222,10 @@ export async function goOnTheRelay(
   const defaultAgentName = toString(options.agent, path.basename(cli));
   const config = resolveConfig(projectDir, relayDir, defaultAgentName);
   const agent = findAgentConfig(config, defaultAgentName);
-  const authBase = normalizeBaseUrl(options.portAuth);
+  const authBase = normalizeBaseUrl(options.cloud && options.url ? options.url : options.portAuth);
   const fileBase = normalizeBaseUrl(options.portFile);
-  const useSymlinkMount = Boolean(options.local || isLocalBaseUrl(fileBase));
+  // Default: solo local (symlink mount). --shared or --cloud: use relayfile.
+  const useSymlinkMount = !options.shared && !options.cloud;
 
   await ensureServices(authBase, fileBase, deps, log, error);
 
