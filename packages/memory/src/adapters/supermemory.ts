@@ -118,7 +118,7 @@ export class SupermemoryAdapter implements MemoryAdapter {
       };
 
       // Remove undefined values
-      Object.keys(metadata).forEach(key => {
+      Object.keys(metadata).forEach((key) => {
         if (metadata[key] === undefined) {
           delete metadata[key];
         }
@@ -143,7 +143,7 @@ export class SupermemoryAdapter implements MemoryAdapter {
         return { success: false, error: `Failed to add memory: ${error}` };
       }
 
-      const result = await response.json() as { id?: string; documentId?: string };
+      const result = (await response.json()) as { id?: string; documentId?: string };
       return { success: true, id: result.id ?? result.documentId };
     } catch (error) {
       return {
@@ -155,16 +155,16 @@ export class SupermemoryAdapter implements MemoryAdapter {
 
   async search(query: MemorySearchQuery): Promise<MemoryEntry[]> {
     try {
-      const filters: Record<string, unknown> = {};
+      const filterConditions: Array<{ key: string; value: unknown }> = [];
 
       if (query.agentId) {
-        filters.agentId = query.agentId;
+        filterConditions.push({ key: 'agentId', value: query.agentId });
       }
       if (query.projectId) {
-        filters.projectId = query.projectId;
+        filterConditions.push({ key: 'projectId', value: query.projectId });
       }
       if (query.tags && query.tags.length > 0) {
-        filters.tags = query.tags;
+        filterConditions.push({ key: 'tags', value: query.tags });
       }
 
       const body: Record<string, unknown> = {
@@ -173,8 +173,8 @@ export class SupermemoryAdapter implements MemoryAdapter {
         minScore: query.minScore ?? 0.5,
       };
 
-      if (Object.keys(filters).length > 0) {
-        body.filters = filters;
+      if (filterConditions.length > 0) {
+        body.filters = { AND: filterConditions };
       }
 
       if (this.container) {
@@ -192,10 +192,10 @@ export class SupermemoryAdapter implements MemoryAdapter {
         return [];
       }
 
-      const result = await response.json() as { results?: SupermemorySearchResult[] };
+      const result = (await response.json()) as { results?: SupermemorySearchResult[] };
       const results = result.results ?? [];
 
-      return results.map(doc => this.documentToMemoryEntry(doc));
+      return results.map((doc) => this.documentToMemoryEntry(doc));
     } catch (error) {
       console.error('[supermemory] Search error:', error);
       return [];
@@ -216,7 +216,7 @@ export class SupermemoryAdapter implements MemoryAdapter {
         return null;
       }
 
-      const doc = await response.json() as SupermemoryDocument;
+      const doc = (await response.json()) as SupermemoryDocument;
       return this.documentToMemoryEntry(doc);
     } catch (error) {
       console.error('[supermemory] Get error:', error);
@@ -244,11 +244,7 @@ export class SupermemoryAdapter implements MemoryAdapter {
     }
   }
 
-  async update(
-    id: string,
-    content: string,
-    options?: Partial<AddMemoryOptions>
-  ): Promise<MemoryResult> {
+  async update(id: string, content: string, options?: Partial<AddMemoryOptions>): Promise<MemoryResult> {
     try {
       const body: Record<string, unknown> = { content };
 
@@ -280,11 +276,7 @@ export class SupermemoryAdapter implements MemoryAdapter {
     }
   }
 
-  async list(options?: {
-    limit?: number;
-    agentId?: string;
-    projectId?: string;
-  }): Promise<MemoryEntry[]> {
+  async list(options?: { limit?: number; agentId?: string; projectId?: string }): Promise<MemoryEntry[]> {
     try {
       const body: Record<string, unknown> = {
         limit: options?.limit ?? 50,
@@ -292,12 +284,12 @@ export class SupermemoryAdapter implements MemoryAdapter {
         sortOrder: 'desc',
       };
 
-      const filters: Record<string, unknown> = {};
-      if (options?.agentId) filters.agentId = options.agentId;
-      if (options?.projectId) filters.projectId = options.projectId;
+      const filterConditions: Array<{ key: string; value: unknown }> = [];
+      if (options?.agentId) filterConditions.push({ key: 'agentId', value: options.agentId });
+      if (options?.projectId) filterConditions.push({ key: 'projectId', value: options.projectId });
 
-      if (Object.keys(filters).length > 0) {
-        body.filters = filters;
+      if (filterConditions.length > 0) {
+        body.filters = { AND: filterConditions };
       }
 
       if (this.container) {
@@ -314,19 +306,15 @@ export class SupermemoryAdapter implements MemoryAdapter {
         return [];
       }
 
-      const result = await response.json() as SupermemoryListResponse;
-      return (result.documents ?? []).map(doc => this.documentToMemoryEntry(doc));
+      const result = (await response.json()) as SupermemoryListResponse;
+      return (result.documents ?? []).map((doc) => this.documentToMemoryEntry(doc));
     } catch (error) {
       console.error('[supermemory] List error:', error);
       return [];
     }
   }
 
-  async clear(options?: {
-    agentId?: string;
-    projectId?: string;
-    before?: number;
-  }): Promise<MemoryResult> {
+  async clear(options?: { agentId?: string; projectId?: string; before?: number }): Promise<MemoryResult> {
     try {
       // Supermemory supports bulk delete by container tags
       // For more specific filtering, we need to list and delete individually
@@ -350,9 +338,7 @@ export class SupermemoryAdapter implements MemoryAdapter {
         projectId: options?.projectId,
       });
 
-      const toDelete = options?.before
-        ? memories.filter(m => m.createdAt < options.before!)
-        : memories;
+      const toDelete = options?.before ? memories.filter((m) => m.createdAt < options.before!) : memories;
 
       for (const memory of toDelete) {
         await this.delete(memory.id);
@@ -411,7 +397,7 @@ export class SupermemoryAdapter implements MemoryAdapter {
         ...options,
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`,
+          Authorization: `Bearer ${this.apiKey}`,
           ...options.headers,
         },
         signal: controller.signal,
@@ -426,9 +412,7 @@ export class SupermemoryAdapter implements MemoryAdapter {
   /**
    * Convert a Supermemory document to a MemoryEntry
    */
-  private documentToMemoryEntry(
-    doc: SupermemoryDocument | SupermemorySearchResult
-  ): MemoryEntry {
+  private documentToMemoryEntry(doc: SupermemoryDocument | SupermemorySearchResult): MemoryEntry {
     const metadata = doc.metadata ?? {};
 
     return {
