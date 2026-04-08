@@ -971,23 +971,82 @@ agents:
       expect(spawnCalls[0][0].task).toContain('STEP_COMPLETE:step-1');
     });
 
-    it('should use the full remaining timeout as the review safety backstop', async () => {
-      const config = makeConfig({
-        workflows: [
-          {
-            name: 'default',
-            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 90_000 }],
-          },
-        ],
-      });
-      const run = await runner.execute(config, 'default');
+    it('should force interactive Codex reviewers onto the non-interactive review path', async () => {
+      const spawnAndWait = vi
+        .spyOn(runner as any, 'spawnAndWait')
+        .mockImplementation(async (agentDef: any, _step: any, timeoutMs: number | undefined, options: any) => {
+          expect(agentDef.cli).toBe('codex');
+          expect(agentDef.interactive).toBe(false);
+          expect(timeoutMs).toBe(300_000);
+          options?.onChunk?.({
+            chunk: 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: subprocess review\n',
+          });
+          return {
+            output: 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: subprocess review\n',
+            exitCode: 0,
+          };
+        });
 
-      expect(run.status).toBe('completed');
-      const waitCalls = (waitForExitFn as any).mock?.calls ?? [];
-      expect(waitCalls.length).toBeGreaterThanOrEqual(2);
-      // first call: owner timeout; second call: review timeout
-      expect(waitCalls[1][0]).toBeGreaterThan(60_000);
-      expect(waitCalls[1][0]).toBeLessThanOrEqual(90_000);
+      vi.spyOn(runner as any, 'postToChannel').mockImplementation(() => undefined);
+      vi.spyOn(runner as any, 'recordStepToolSideEffect').mockImplementation(() => undefined);
+      (runner as any).trajectory = {
+        registerAgent: vi.fn().mockResolvedValue(undefined),
+        reviewCompleted: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const reviewOutput = await (runner as any).runStepReviewGate(
+        { name: 'step-1', type: 'agent', agent: 'specialist', task: 'Do step 1' },
+        'Do step 1',
+        'worker finished\n',
+        'STEP_COMPLETE:step-1\n',
+        { name: 'team-lead', cli: 'claude', role: 'lead coordinator' },
+        { name: 'reviewer-1', cli: 'codex', role: 'reviewer' },
+        undefined
+      );
+
+      expect(reviewOutput).toContain('REVIEW_DECISION: APPROVE');
+      expect(spawnAndWait).toHaveBeenCalledTimes(1);
+    });
+
+    it('should cap default review timeout at 5 minutes in executor mode', async () => {
+      const executeAgentStep = vi.fn(
+        async (
+          _step: { name: string },
+          agentDef: { cli: string; interactive?: boolean },
+          _resolvedTask: string,
+          timeoutMs?: number
+        ) => {
+          expect(agentDef.cli).toBe('codex');
+          expect(agentDef.interactive).toBe(false);
+          expect(timeoutMs).toBe(300_000);
+          return 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: executor review\n';
+        }
+      );
+
+      const localRunner = new WorkflowRunner({
+        db,
+        workspaceId: 'ws-test',
+        executor: { executeAgentStep },
+      });
+      vi.spyOn(localRunner as any, 'postToChannel').mockImplementation(() => undefined);
+      vi.spyOn(localRunner as any, 'recordStepToolSideEffect').mockImplementation(() => undefined);
+      (localRunner as any).trajectory = {
+        registerAgent: vi.fn().mockResolvedValue(undefined),
+        reviewCompleted: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const reviewOutput = await (localRunner as any).runStepReviewGate(
+        { name: 'step-1', type: 'agent', agent: 'specialist', task: 'Do step 1' },
+        'Do step 1',
+        'worker finished\n',
+        'STEP_COMPLETE:step-1\n',
+        { name: 'team-lead', cli: 'claude', role: 'lead coordinator' },
+        { name: 'reviewer-1', cli: 'codex', role: 'reviewer' },
+        undefined
+      );
+
+      expect(reviewOutput).toContain('REVIEW_DECISION: APPROVE');
+      expect(executeAgentStep).toHaveBeenCalledTimes(1);
     });
   });
 

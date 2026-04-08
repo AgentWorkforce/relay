@@ -5076,7 +5076,10 @@ export class WorkflowRunner {
       `REVIEW_REASON: <one sentence>\n` +
       `Then output /exit.`;
 
-    const safetyTimeoutMs = timeoutMs ?? 600_000;
+    // Cap review timeout at 5 minutes. Review tasks are self-contained
+    // read-and-judge operations and should not inherit long owner step timeouts.
+    const REVIEW_TIMEOUT_CAP_MS = 300_000;
+    const safetyTimeoutMs = Math.min(timeoutMs ?? 600_000, REVIEW_TIMEOUT_CAP_MS);
     const reviewStep: WorkflowStep = {
       name: `${step.name}-review`,
       type: 'agent',
@@ -5149,7 +5152,7 @@ export class WorkflowRunner {
     };
 
     try {
-      await this.spawnAndWait(reviewerDef, reviewStep, safetyTimeoutMs, {
+      const spawnResult = await this.spawnAndWait(reviewerDef, reviewStep, safetyTimeoutMs, {
         evidenceStepName: step.name,
         evidenceRole: 'reviewer',
         logicalName: reviewerDef.name,
@@ -5165,6 +5168,15 @@ export class WorkflowRunner {
           }
         },
       });
+      // If onChunk never fired (e.g. non-interactive reviewer path), fall back
+      // to the accumulated output returned by spawnAndWait.
+      if (!reviewOutput && spawnResult.output) {
+        reviewOutput = spawnResult.output;
+        const parsed = this.parseReviewDecision(reviewOutput);
+        if (parsed) {
+          startReviewCompletion(parsed);
+        }
+      }
       await reviewCompletionPromise;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
