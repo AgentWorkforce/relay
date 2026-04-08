@@ -506,6 +506,50 @@ describe('WorkflowRunner permission lifecycle integration', () => {
     expect(spawnOptions?.env?.RELAYFILE_TOKEN).toBe('token:headless-agent');
   });
 
+  it('merges relay.env with inherited process env for non-interactive agents', async () => {
+    const projectDir = createBaseProject();
+    const inheritedEnvKey = 'WORKFLOW_RUNNER_RELAY_ENV_MERGE_TEST';
+    const originalInheritedValue = process.env[inheritedEnvKey];
+    process.env[inheritedEnvKey] = 'inherited-value';
+
+    try {
+      const runner = new WorkflowRunner({
+        cwd: projectDir,
+        db: makeDb(),
+        workspaceId: 'ws-test',
+        relay: {
+          env: {
+            AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST: '1',
+            RELAYFILE_BASE_URL: 'https://relay.example.test',
+          },
+        },
+      });
+      const config = makeConfig([
+        {
+          name: 'env-merge-agent',
+          cli: 'claude',
+          interactive: false,
+          permissions: { access: 'readwrite' },
+        },
+      ]);
+
+      const run = await runner.execute(config, 'default');
+      const spawnOptions = mockSubprocessSpawn.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+
+      expect(run.status).toBe('completed');
+      expect(mockSubprocessSpawn).toHaveBeenCalledTimes(1);
+      expect(spawnOptions?.env?.[inheritedEnvKey]).toBe('inherited-value');
+      expect(spawnOptions?.env?.RELAYFILE_BASE_URL).toBe('https://relay.example.test');
+      expect(spawnOptions?.env?.AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST).toBe('1');
+    } finally {
+      if (originalInheritedValue === undefined) {
+        delete process.env[inheritedEnvKey];
+      } else {
+        process.env[inheritedEnvKey] = originalInheritedValue;
+      }
+    }
+  });
+
   it('clears workflow-scoped tokens after successful completion', async () => {
     const projectDir = createBaseProject();
     const runner = makeRunner(projectDir);
