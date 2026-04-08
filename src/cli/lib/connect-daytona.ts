@@ -121,7 +121,7 @@ export async function runConnectCommand(
     options.cloudUrl ||
     process.env.AGENT_RELAY_CLOUD_URL ||
     cloudConfig.cloudUrl ||
-    'https://agentrelay.com/cloud'
+    'https://agentrelay.com'
   ).replace(/\/$/, '');
 
   const language = options.language || 'typescript';

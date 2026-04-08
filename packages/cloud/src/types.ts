@@ -82,7 +82,7 @@ export const REFRESH_WINDOW_MS = 60_000;
 export const AUTH_FILE_PATH = path.join(os.homedir(), '.agent-relay', 'cloud-auth.json');
 
 export function defaultApiUrl(): string {
-  return process.env.CLOUD_API_URL?.trim() || 'https://agentrelay.com/cloud';
+  return process.env.CLOUD_API_URL?.trim() || 'https://agentrelay.com';
 }
 
 export function isSupportedProvider(provider: string): boolean {
