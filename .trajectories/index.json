@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-07T13:29:16.073Z",
+  "lastUpdated": "2026-04-08T15:55:56.757Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -1122,7 +1122,7 @@
       "title": "Fast workspace seeding — symlink mount + tar bulk upload",
       "status": "active",
       "startedAt": "2026-04-07T13:28:27.975Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/active/traj_4r047wx9ml89.json"
+      "path": "/Users/will/Projects/relay/.trajectories/active/traj_4r047wx9ml89.json"
     }
   }
 }

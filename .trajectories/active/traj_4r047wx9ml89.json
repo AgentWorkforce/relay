@@ -78,6 +78,30 @@
           "type": "reflection",
           "content": "Implemented fast workspace seeding across relay and cloud repos. The core problem was agent-relay on hanging on large projects (18K files / 400MB) because it uploaded every file individually to relayfile. Two solutions: (1) symlink mount for solo local use — copies files locally with permission enforcement, no network, instant. (2) tar bulk upload for shared/cloud — single gzipped POST instead of 366 batch requests. Cloud repo gets a tar import endpoint. Relay repo gets the symlink mount module, tar seeder, updated CLI flags (default/--shared/--cloud), and opencode permission fix for cross-repo workflows. PRs: relay#691, cloud#83.",
           "significance": "high"
+        },
+        {
+          "ts": 1775663003436,
+          "type": "decision",
+          "content": "Preview workflow failure was caused by empty CLOUDFLARE_DEFAULT_ACCOUNT_ID after switching preview-web.yml from secrets.CLOUDFLARE_ACCOUNT_ID to vars.CLOUDFLARE_ACCOUNT_ID: Preview workflow failure was caused by empty CLOUDFLARE_DEFAULT_ACCOUNT_ID after switching preview-web.yml from secrets.CLOUDFLARE_ACCOUNT_ID to vars.CLOUDFLARE_ACCOUNT_ID",
+          "raw": {
+            "question": "Preview workflow failure was caused by empty CLOUDFLARE_DEFAULT_ACCOUNT_ID after switching preview-web.yml from secrets.CLOUDFLARE_ACCOUNT_ID to vars.CLOUDFLARE_ACCOUNT_ID",
+            "chosen": "Preview workflow failure was caused by empty CLOUDFLARE_DEFAULT_ACCOUNT_ID after switching preview-web.yml from secrets.CLOUDFLARE_ACCOUNT_ID to vars.CLOUDFLARE_ACCOUNT_ID",
+            "alternatives": [],
+            "reasoning": "Job 70359516576 authenticated to AWS successfully, then failed in sst deploy with Cloudflare ZoneLookup for pr-695.agentrelay.net. The failing log showed CLOUDFLARE_DEFAULT_ACCOUNT_ID empty, while later successful preview runs showed that env populated."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775663756756,
+          "type": "decision",
+          "content": "Removed the manual SST Command GitHub Actions workflow: Removed the manual SST Command GitHub Actions workflow",
+          "raw": {
+            "question": "Removed the manual SST Command GitHub Actions workflow",
+            "chosen": "Removed the manual SST Command GitHub Actions workflow",
+            "alternatives": [],
+            "reasoning": "The repository only had a single dedicated workflow file for this action at .github/workflows/sst-command.yml, with no other code or docs references requiring follow-up edits."
+          },
+          "significance": "high"
         }
       ]
     }
