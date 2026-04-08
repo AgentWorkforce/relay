@@ -757,6 +757,19 @@
 .note p:first-child { margin-top: 0; }
 .note p:last-child { margin-bottom: 0; }
 
+.warning {
+  margin: 1rem 0;
+  padding: 0.85rem 1rem;
+  border-left: 3px solid var(--warning, #e5a00d);
+  border-radius: 0 0.5rem 0.5rem 0;
+  background: color-mix(in srgb, var(--warning, #e5a00d) 8%, var(--bg));
+  font-size: 0.92rem;
+  color: var(--fg-muted);
+}
+.warning p { margin: 0.3rem 0; }
+.warning p:first-child { margin-top: 0; }
+.warning p:last-child { margin-bottom: 0; }
+
 /* ── Responsive ── */
 
 @media (max-width: 1100px) {

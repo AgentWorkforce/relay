@@ -2,14 +2,16 @@
 title: 'Quickstart'
 description: 'Launch your first agents in 2 minutes.'
 ---
+
 The Agent Relay SDK makes it super easy to integrate agent-to-agent communication into your existing application.
 
 <Note>
-In order to use Agent Relay you'll need an agent like Claude Code, Codex, Gemini, or OpenCode already installed and 
-running.
+  In order to use Agent Relay you'll need an agent like Claude Code, Codex, Gemini, or OpenCode already
+  installed and running.
 </Note>
 
 ## Install
+
 Use your favorite package manager to install the SDK and embed it in your application.
 
 <CodeGroup>
@@ -22,36 +24,34 @@ pip install agent-relay-sdk
 </CodeGroup>
 
 ## Simple example
+
 Spawning a few agents and sending a kickoff message is super easy.
 
 <CodeGroup>
 ```typescript TypeScript file="agent.ts"
 import { AgentRelay, Models } from '@agent-relay/sdk';
 
-const relay = new AgentRelay({ channels: ['dev'] });
+const relay = new AgentRelay();
 
-// Log relay traffic as messages move between agents.
+// Log messages as they flow between agents.
 relay.onMessageReceived = (msg) => {
-  console.log(`${msg.from} → ${msg.to}: ${msg.text}`);
+  if (msg.text) {
+    console.log(`${msg.from} → ${msg.to}: ${msg.text}`);
+  }
 };
 
-// Spawn a planner (Claude), coder (Codex), and reviewer (OpenCode).
+// Spawn three agents.
 const planner = await relay.claude.spawn({
   name: 'Planner',
   model: Models.Claude.OPUS,
-  channels: ['dev'],
 });
-
 const coder = await relay.codex.spawn({
   name: 'Coder',
   model: Models.Codex.GPT_5_3_CODEX,
-  channels: ['dev'],
 });
-
 const reviewer = await relay.opencode.spawn({
   name: 'Reviewer',
   model: Models.Opencode.OPENAI_GPT_5_2,
-  channels: ['dev'],
 });
 
 await Promise.all([
@@ -60,13 +60,18 @@ await Promise.all([
   reviewer.waitForReady(),
 ]);
 
-// Kick off the collaboration with a system message to the planner.
-const system = relay.system();
-await system.sendMessage({
+// Kick off the collaboration.
+await relay.system().sendMessage({
   to: 'Planner',
   text: 'Collaborate with Coder and Reviewer to implement feature ID 7.',
 });
 
+// Wait for everyone to finish, then shut down.
+await Promise.all([
+  planner.waitForIdle(),
+  coder.waitForIdle(),
+  reviewer.waitForIdle(),
+]);
 await relay.shutdown();
 ```
 
@@ -75,51 +80,50 @@ import asyncio
 from agent_relay import AgentRelay, Models
 
 async def main():
-    relay = AgentRelay(channels=["dev"])
+    relay = AgentRelay()
 
-    # Log relay traffic as messages move between agents.
-    relay.on_message_received = lambda msg: print(f"[{msg.from_name}]: {msg.text}")
-
-    # Spawn a planner (Claude), coder (Codex), and reviewer (OpenCode).
-    await relay.claude.spawn(
-        name="Planner",
-        model=Models.Claude.OPUS,
-        channels=["dev"],
+    # Log messages as they flow between agents.
+    relay.on_message_received = lambda msg: (
+        print(f"{msg.from_name} → {msg.to}: {msg.text}")
+        if msg.text else None
     )
 
-    await relay.codex.spawn(
-        name="Coder",
-        model=Models.Codex.GPT_5_3_CODEX,
-        channels=["dev"],
+    # Spawn three agents.
+    planner = await relay.claude.spawn(
+        name="Planner", model=Models.Claude.OPUS,
+    )
+    coder = await relay.codex.spawn(
+        name="Coder", model=Models.Codex.GPT_5_3_CODEX,
+    )
+    reviewer = await relay.opencode.spawn(
+        name="Reviewer", model=Models.Opencode.OPENAI_GPT_5_2,
     )
 
-    await relay.opencode.spawn(
-        name="Reviewer",
-        model=Models.Opencode.OPENAI_GPT_5_2,
-        channels=["dev"],
-    )
-
-    # Wait for all three agents to be ready.
     await asyncio.gather(
         relay.wait_for_agent_ready("Planner"),
         relay.wait_for_agent_ready("Coder"),
         relay.wait_for_agent_ready("Reviewer"),
     )
 
-    # Kick off the collaboration with a system message to the planner.
-    system = relay.system()
-    await system.send_message(
+    # Kick off the collaboration.
+    await relay.system().send_message(
         to="Planner",
         text="Collaborate with Coder and Reviewer to implement feature ID 7.",
     )
 
+    # Wait for everyone to finish, then shut down.
+    await asyncio.gather(
+        relay.wait_for_agent_idle("Planner"),
+        relay.wait_for_agent_idle("Coder"),
+        relay.wait_for_agent_idle("Reviewer"),
+    )
     await relay.shutdown()
 
 asyncio.run(main())
 ```
 </CodeGroup>
 
-## CLI 
+## CLI
 
 If you want to run Agent Relay directly from the terminal instead of embedding the SDK in an app, install the CLI globally and start a local relay session:
 

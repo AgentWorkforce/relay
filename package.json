@@ -105,7 +105,6 @@
     "postbuild": "chmod +x dist/src/cli/bootstrap.js dist/src/cli/index.js && npm run build:cjs",
     "prepack": "if [ -d node_modules ]; then npm run build; else echo '⚠ node_modules not found, skipping prepack build'; fi",
     "dev:watch": "tsc -w",
-    "docs": "cd ./docs && npx mintlify dev",
     "watch:start": "npm run build && concurrently -k \"npm run dev:watch\" \"node --watch dist/src/cli/index.js start dashboard.js claude\"",
     "watch:start:cli-tools": "npm run build && bash ./scripts/watch-cli-tools.sh",
     "watch:start:claude": "npm run watch:start:cli-tools -- --tool=claude",
@@ -131,7 +130,6 @@
     "syncpack": "syncpack list-mismatches",
     "audit:deps": "node scripts/audit-bundled-deps.mjs",
     "clean": "rm -rf dist && find packages -maxdepth 2 -name dist -type d -exec rm -rf {} + 2>/dev/null || true",
-    "docs:dev": "cd docs && npm run dev",
     "hooks:install": "./scripts/hooks/install.sh",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -142,7 +140,8 @@
     "codegen:models:ts": "node packages/shared/codegen-ts.mjs",
     "codegen:models:py": "node packages/shared/codegen-py.mjs",
     "prepare": "node scripts/prepare-husky.cjs",
-    "dev:web": "cd web && ../node_modules/.bin/sst dev"
+    "dev:web": "cd web && ../node_modules/.bin/sst dev",
+    "web": "cd web && npm run dev"
   },
   "lint-staged": {
     "*.{ts,tsx}": [

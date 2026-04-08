@@ -28,6 +28,7 @@ export const docsNav: NavGroup[] = [
       { title: 'Emoji reactions', slug: 'emoji-reactions' },
       { title: 'File sharing', slug: 'file-sharing' },
       { title: 'Authentication', slug: 'authentication' },
+      { title: 'Permissions', slug: 'permissions' },
       { title: 'Scheduling', slug: 'scheduling' },
     ],
   },

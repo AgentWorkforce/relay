@@ -4,3 +4,4 @@ bin/
 target/
 *.lock
 packages/*/dist/
+web/content/docs/
