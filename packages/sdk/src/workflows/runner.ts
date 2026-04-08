@@ -1517,13 +1517,14 @@ export class WorkflowRunner {
   }
 
   private getRelayEnv(): NodeJS.ProcessEnv | undefined {
-    if (!this.relayApiKey) {
-      return this.relayOptions.env;
+    if (!this.relayApiKey && !this.relayOptions.env) {
+      return undefined;
     }
 
     return {
-      ...(this.relayOptions.env ?? filteredEnv()),
-      RELAY_API_KEY: this.relayApiKey,
+      ...process.env,
+      ...(this.relayOptions.env ?? {}),
+      ...(this.relayApiKey ? { RELAY_API_KEY: this.relayApiKey } : {}),
     };
   }
 
