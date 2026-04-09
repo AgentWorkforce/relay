@@ -83,6 +83,14 @@ export interface SessionInfo {
   uptime_secs: number;
 }
 
+interface BrokerStartupDebugContext {
+  binaryPath: string;
+  args: string[];
+  cwd: string;
+  stdoutLines: string[];
+  stderrLines: string[];
+}
+
 function isHeadlessProvider(value: string): value is HeadlessProvider {
   return value === 'claude' || value === 'opencode';
 }
@@ -214,26 +222,38 @@ export class AgentRelayClient {
     const env = {
       ...process.env,
       ...options?.env,
+      AGENT_RELAY_STARTUP_DEBUG:
+        options?.env?.AGENT_RELAY_STARTUP_DEBUG ?? process.env.AGENT_RELAY_STARTUP_DEBUG ?? '1',
       RELAY_BROKER_API_KEY: apiKey,
     };
 
     const args = ['init', '--name', brokerName, '--channels', channels.join(','), ...userArgs];
+    const stderrLines: string[] = [];
+    const stdoutLines: string[] = [];
 
     const child = spawn(binaryPath, args, {
       cwd,
       env,
-      stdio: ['ignore', 'pipe', options?.onStderr ? 'pipe' : 'ignore'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    // Forward stderr if requested
-    if (options?.onStderr && child.stderr) {
+    if (child.stderr) {
       const { createInterface } = await import('node:readline');
       const rl = createInterface({ input: child.stderr });
-      rl.on('line', (line) => options.onStderr!(line));
+      rl.on('line', (line) => {
+        pushBufferedLine(stderrLines, line);
+        options?.onStderr?.(line);
+      });
     }
 
     // Parse the API URL from stdout (the broker prints it after binding)
-    const baseUrl = await waitForApiUrl(child, timeoutMs);
+    const baseUrl = await waitForApiUrl(child, timeoutMs, {
+      binaryPath,
+      args,
+      cwd,
+      stdoutLines,
+      stderrLines,
+    });
 
     const client = new AgentRelayClient({
       baseUrl,
@@ -540,7 +560,11 @@ export class AgentRelayClient {
  *   [agent-relay] API listening on http://{bind}:{port}
  * Returns the full URL (e.g. "http://127.0.0.1:3889").
  */
-async function waitForApiUrl(child: ChildProcess, timeoutMs: number): Promise<string> {
+async function waitForApiUrl(
+  child: ChildProcess,
+  timeoutMs: number,
+  debug: BrokerStartupDebugContext
+): Promise<string> {
   const { createInterface } = await import('node:readline');
 
   return new Promise<string>((resolve, reject) => {
@@ -556,7 +580,12 @@ async function waitForApiUrl(child: ChildProcess, timeoutMs: number): Promise<st
       if (!resolved) {
         resolved = true;
         rl.close();
-        reject(new Error(`Broker did not report API port within ${timeoutMs}ms`));
+        child.kill('SIGTERM');
+        reject(
+          new Error(
+            formatBrokerStartupError(`Broker did not report API port within ${timeoutMs}ms`, child, debug)
+          )
+        );
       }
     }, timeoutMs);
 
@@ -565,7 +594,15 @@ async function waitForApiUrl(child: ChildProcess, timeoutMs: number): Promise<st
         resolved = true;
         clearTimeout(timer);
         rl.close();
-        reject(new Error(`Broker process exited with code ${code} before becoming ready`));
+        reject(
+          new Error(
+            formatBrokerStartupError(
+              `Broker process exited with code ${code} before becoming ready`,
+              child,
+              debug
+            )
+          )
+        );
       }
     });
 
@@ -574,12 +611,13 @@ async function waitForApiUrl(child: ChildProcess, timeoutMs: number): Promise<st
         resolved = true;
         clearTimeout(timer);
         rl.close();
-        reject(new Error(`Failed to start broker: ${err.message}`));
+        reject(new Error(formatBrokerStartupError(`Failed to start broker: ${err.message}`, child, debug)));
       }
     });
 
     rl.on('line', (line) => {
       if (resolved) return;
+      pushBufferedLine(debug.stdoutLines, line);
 
       const match = line.match(/API listening on (https?:\/\/[^\s]+)/);
       if (match) {
@@ -590,6 +628,49 @@ async function waitForApiUrl(child: ChildProcess, timeoutMs: number): Promise<st
       }
     });
   });
+}
+
+function pushBufferedLine(lines: string[], line: string): void {
+  lines.push(line);
+  if (lines.length > 40) {
+    lines.splice(0, lines.length - 40);
+  }
+}
+
+function formatBrokerStartupError(
+  message: string,
+  child: ChildProcess,
+  debug: BrokerStartupDebugContext
+): string {
+  const details = [
+    `pid=${child.pid ?? 'unknown'}`,
+    `cwd=${debug.cwd}`,
+    `command=${formatCommand(debug.binaryPath, debug.args)}`,
+    `stdout_tail=${formatBufferedLines(debug.stdoutLines)}`,
+    `stderr_tail=${formatBufferedLines(debug.stderrLines)}`,
+  ];
+  return `${message} (${details.join('; ')})`;
+}
+
+function formatBufferedLines(lines: string[]): string {
+  if (lines.length === 0) {
+    return '<empty>';
+  }
+  return lines
+    .slice(-8)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join(' | ');
+}
+
+function formatCommand(binaryPath: string, args: string[]): string {
+  const render = [binaryPath, ...args].map((value) => {
+    if (/^[A-Za-z0-9_./:@=-]+$/u.test(value)) {
+      return value;
+    }
+    return JSON.stringify(value);
+  });
+  return render.join(' ');
 }
 
 function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void> {

@@ -104,7 +104,7 @@ import {
 
 // Import from sub-paths to avoid pulling in the full @relaycast/sdk dependency.
 import { AgentRelay } from '../relay.js';
-import type { Agent, AgentRelayOptions } from '../relay.js';
+import type { Agent, AgentRelayOptions, AgentSpawner } from '../relay.js';
 import { RelayCast, RelayError, type AgentClient } from '@relaycast/sdk';
 
 // ── Environment filtering ──────────────────────────────────────────────────
@@ -308,6 +308,7 @@ interface SpawnedAgentInfo {
 
 interface SpawnAndWaitOptions {
   agentNameSuffix?: string;
+  retryAttempt?: number;
   evidenceStepName?: string;
   evidenceRole?: string;
   logicalName?: string;
@@ -363,6 +364,21 @@ interface ChannelEvidenceOptions {
 function resolveCursorCli(): 'cursor-agent' | 'agent' {
   const resolved = resolveCliSync('cursor');
   return (resolved?.binary as 'cursor-agent' | 'agent') ?? 'agent';
+}
+
+function getWorkflowSdkSpawner(relay: AgentRelay, cli: AgentCli): AgentSpawner | null {
+  switch (cli) {
+    case 'claude':
+      return relay.claude;
+    case 'codex':
+      return relay.codex;
+    case 'gemini':
+      return relay.gemini;
+    case 'opencode':
+      return relay.opencode;
+    default:
+      return null;
+  }
 }
 
 // ── WorkflowRunner ──────────────────────────────────────────────────────────
@@ -3974,7 +3990,8 @@ export class WorkflowRunner {
             step,
             { specialist: effectiveSpecialist, owner: effectiveOwner, reviewer: reviewDef },
             resolvedTask,
-            timeoutMs
+            timeoutMs,
+            attempt
           );
           specialistOutput = result.specialistOutput;
           ownerOutput = result.ownerOutput;
@@ -4000,6 +4017,7 @@ export class WorkflowRunner {
           const spawnResult = this.executor
             ? await this.executor.executeAgentStep(resolvedStep, effectiveOwner, ownerTask, timeoutMs)
             : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
+                retryAttempt: attempt,
                 evidenceStepName: step.name,
                 evidenceRole: usesOwnerFlow ? 'owner' : 'specialist',
                 preserveOnIdle: !isHubPattern || !this.isLeadLikeAgent(effectiveOwner) ? false : undefined,
@@ -4330,6 +4348,43 @@ export class WorkflowRunner {
     );
   }
 
+  private buildWorkflowRuntimeAgentBaseName(stepName: string, options: SpawnAndWaitOptions): string {
+    return `${stepName}${options.agentNameSuffix ? `-${options.agentNameSuffix}` : ''}-${(this.currentRunId ?? this.generateShortId()).slice(0, 8)}`;
+  }
+
+  private async releaseStaleRetryAgents(baseRequestedName: string, stepName: string): Promise<void> {
+    if (!this.relay) {
+      return;
+    }
+
+    const staleAgents = (await this.relay.listAgents()).filter(
+      (agent) => agent.name === baseRequestedName || agent.name.startsWith(`${baseRequestedName}-r`)
+    );
+    if (staleAgents.length === 0) {
+      return;
+    }
+
+    const staleNames = [...new Set(staleAgents.map((agent) => agent.name))].sort();
+    this.log(`[${stepName}] Releasing stale retry agent(s): ${staleNames.join(', ')}`);
+
+    for (const agent of staleAgents) {
+      await agent.release(`workflow retry cleanup for step "${stepName}"`);
+    }
+
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const remaining = (await this.relay.listAgentsRaw())
+        .map((agent) => agent.name)
+        .filter((name) => staleNames.includes(name));
+      if (remaining.length === 0) {
+        return;
+      }
+      await this.delay(100);
+    }
+
+    throw new Error(`Failed to clear stale retry agent(s) before respawn: ${staleNames.join(', ')}`);
+  }
+
   private buildSupervisorVerificationGuide(verification?: VerificationCheck): string {
     if (!verification) return '';
     switch (verification.type) {
@@ -4350,7 +4405,8 @@ export class WorkflowRunner {
     step: WorkflowStep,
     supervised: SupervisedStep,
     resolvedTask: string,
-    timeoutMs?: number
+    timeoutMs?: number,
+    retryAttempt = 0
   ): Promise<{
     specialistOutput: string;
     ownerOutput: string;
@@ -4432,6 +4488,7 @@ export class WorkflowRunner {
     );
     const workerPromise = this.spawnAndWait(supervised.specialist, specialistStep, timeoutMs, {
       agentNameSuffix: 'worker',
+      retryAttempt,
       evidenceStepName: step.name,
       evidenceRole: 'worker',
       logicalName: supervised.specialist.name,
@@ -4506,6 +4563,7 @@ export class WorkflowRunner {
     try {
       const ownerResultObj = await this.spawnAndWait(supervised.owner, ownerStep, timeoutMs, {
         agentNameSuffix: 'owner',
+        retryAttempt,
         evidenceStepName: step.name,
         evidenceRole: 'owner',
         logicalName: supervised.owner.name,
@@ -5684,9 +5742,16 @@ export class WorkflowRunner {
 
     const evidenceStepName = options.evidenceStepName ?? step.name;
 
-    // Deterministic name: step name + optional role suffix + first 8 chars of run ID.
-    const requestedName = `${step.name}${options.agentNameSuffix ? `-${options.agentNameSuffix}` : ''}-${(this.currentRunId ?? this.generateShortId()).slice(0, 8)}`;
+    const baseRequestedName = this.buildWorkflowRuntimeAgentBaseName(step.name, options);
+    const requestedName =
+      (options.retryAttempt ?? 0) > 0
+        ? `${baseRequestedName}-r${(options.retryAttempt ?? 0) + 1}`
+        : baseRequestedName;
     let agentName = requestedName;
+
+    if ((options.retryAttempt ?? 0) > 0) {
+      await this.releaseStaleRetryAgents(baseRequestedName, step.name);
+    }
 
     // Only inject delegation guidance for lead/coordinator agents, not spokes/workers.
     // In non-hub patterns (pipeline, dag, etc.) every agent is autonomous so they all get it.
@@ -5697,24 +5762,31 @@ export class WorkflowRunner {
       [...WorkflowRunner.HUB_ROLES].some((r) => new RegExp(`\\b${r}\\b`).test(role));
     const pattern = this.currentConfig?.swarm.pattern;
     const isHubPattern = pattern && WorkflowRunner.HUB_PATTERNS.has(pattern);
+    const usesHeadlessWorkflowSpawner = agentDef.cli === 'opencode';
     const delegationGuidance =
-      isHub || !isHubPattern ? this.buildDelegationGuidance(agentDef.cli, timeoutMs) : '';
+      usesHeadlessWorkflowSpawner || (!isHub && isHubPattern)
+        ? ''
+        : this.buildDelegationGuidance(agentDef.cli, timeoutMs);
 
     // Non-claude CLIs (codex, gemini, etc.) don't auto-register with Relaycast
     // via the MCP system prompt the way claude does. Inject an explicit preamble
     // so they call register() before any other relay tool.
-    const relayRegistrationNote = this.buildRelayRegistrationNote(agentDef.cli, agentName);
+    const relayRegistrationNote = usesHeadlessWorkflowSpawner
+      ? ''
+      : this.buildRelayRegistrationNote(agentDef.cli, agentName);
 
-    const taskWithExit =
-      step.task +
-      (relayRegistrationNote ? '\n\n' + relayRegistrationNote : '') +
-      (delegationGuidance ? '\n\n' + delegationGuidance + '\n' : '') +
-      '\n\n---\n' +
-      'IMPORTANT: When you have fully completed this task, you MUST self-terminate by either: ' +
-      '(a) calling remove_agent(name: "<your-agent-name>", reason: "task completed") — preferred, or ' +
-      '(b) outputting the exact text "/exit" on its own line as a fallback. ' +
-      'Do not wait for further input — terminate immediately after finishing. ' +
-      'Do NOT spawn sub-agents unless the task explicitly requires it.';
+    const interactiveTaskBase = step.task ?? '';
+    const taskWithExit = usesHeadlessWorkflowSpawner
+      ? interactiveTaskBase
+      : interactiveTaskBase +
+        (relayRegistrationNote ? '\n\n' + relayRegistrationNote : '') +
+        (delegationGuidance ? '\n\n' + delegationGuidance + '\n' : '') +
+        '\n\n---\n' +
+        'IMPORTANT: When you have fully completed this task, you MUST self-terminate by either: ' +
+        '(a) calling remove_agent(name: "<your-agent-name>", reason: "task completed") — preferred, or ' +
+        '(b) outputting the exact text "/exit" on its own line as a fallback. ' +
+        'Do not wait for further input — terminate immediately after finishing. ' +
+        'Do NOT spawn sub-agents unless the task explicitly requires it.';
     const preparedTask = this.prepareInteractiveSpawnTask(agentName, taskWithExit);
 
     // Register PTY output listener before spawning so we capture everything
@@ -5736,7 +5808,7 @@ export class WorkflowRunner {
 
     const agentChannels = this.channel ? [this.channel] : agentDef.channels;
 
-    let agent: Awaited<ReturnType<typeof this.relay.spawnPty>> | undefined;
+    let agent: Agent | undefined;
     let exitResult: string = 'unknown';
     let stopHeartbeat: (() => void) | undefined;
     let ptyChunks: string[] = [];
@@ -5749,9 +5821,8 @@ export class WorkflowRunner {
         RELAY_API_KEY: this.relayApiKey ?? 'workflow-runner',
         AGENT_CHANNELS: (agentChannels ?? []).join(','),
       });
-      agent = await this.relay.spawnPty({
+      const spawnOptions = {
         name: agentName,
-        cli: agentDef.cli,
         model: agentDef.constraints?.model,
         args: interactiveSpawnPolicy.args,
         channels: agentChannels,
@@ -5759,7 +5830,20 @@ export class WorkflowRunner {
         idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
         cwd: agentCwd,
         agentToken: this.agentTokens.get(agentDef.name),
-      });
+      };
+      const sdkSpawner = getWorkflowSdkSpawner(this.relay, agentDef.cli);
+      if (sdkSpawner) {
+        this.log(
+          `[${step.name}] Using SDK spawner for ${agentDef.cli} (requested runtime: ${agentDef.cli === 'opencode' ? 'headless' : 'pty'})`
+        );
+        agent = await sdkSpawner.spawn(spawnOptions);
+      } else {
+        this.log(`[${step.name}] Using PTY fallback for ${agentDef.cli}`);
+        agent = await this.relay.spawnPty({
+          ...spawnOptions,
+          cli: agentDef.cli,
+        });
+      }
 
       // Re-key PTY maps if broker assigned a different name than requested
       if (agent.name !== agentName) {
@@ -6833,6 +6917,10 @@ export class WorkflowRunner {
 
     const maxMsg = 2000;
     const preview = scrubbed.length > maxMsg ? scrubbed.slice(-maxMsg) : scrubbed;
+    // Surface the final output preview in the local workflow log immediately.
+    // Some deterministic wrappers grep stdout/stderr for completion sentinels,
+    // and fire-and-forget channel delivery can arrive too late for single-step runs.
+    this.log(`[${stepName}] Output:\n\`\`\`\n${preview}\n\`\`\``);
     this.postToChannel(`**[${stepName}] Output:**\n\`\`\`\n${preview}\n\`\`\``, { stepName });
   }
 
