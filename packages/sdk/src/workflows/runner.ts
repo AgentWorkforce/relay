@@ -49,6 +49,7 @@ import { formatRunSummaryTable } from './run-summary-table.js';
 import {
   StepExecutor as WorkflowStepLifecycleExecutor,
   type StepExecutorDeps as WorkflowStepLifecycleExecutorDeps,
+  resolveStepMaxRetries,
 } from './step-executor.js';
 import {
   interpolateStepTask as interpolateStepTaskTemplate,
@@ -308,6 +309,7 @@ interface SpawnedAgentInfo {
 
 interface SpawnAndWaitOptions {
   agentNameSuffix?: string;
+  attempt?: number;
   evidenceStepName?: string;
   evidenceRole?: string;
   logicalName?: string;
@@ -3828,12 +3830,7 @@ export class WorkflowRunner {
     };
     const usesDedicatedOwner = usesOwnerFlow && ownerDef.name !== specialistDef.name;
 
-    const maxRetries =
-      step.retries ??
-      ownerDef.constraints?.retries ??
-      specialistDef.constraints?.retries ??
-      errorHandling?.maxRetries ??
-      0;
+    const maxRetries = resolveStepMaxRetries(step, errorHandling, ownerDef, specialistDef);
     const retryDelay = errorHandling?.retryDelayMs ?? 1000;
     const timeoutMs =
       step.timeoutMs ??
@@ -3974,6 +3971,7 @@ export class WorkflowRunner {
             step,
             { specialist: effectiveSpecialist, owner: effectiveOwner, reviewer: reviewDef },
             resolvedTask,
+            attempt,
             timeoutMs
           );
           specialistOutput = result.specialistOutput;
@@ -4000,6 +3998,7 @@ export class WorkflowRunner {
           const spawnResult = this.executor
             ? await this.executor.executeAgentStep(resolvedStep, effectiveOwner, ownerTask, timeoutMs)
             : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
+                attempt,
                 evidenceStepName: step.name,
                 evidenceRole: usesOwnerFlow ? 'owner' : 'specialist',
                 preserveOnIdle: !isHubPattern || !this.isLeadLikeAgent(effectiveOwner) ? false : undefined,
@@ -4350,6 +4349,7 @@ export class WorkflowRunner {
     step: WorkflowStep,
     supervised: SupervisedStep,
     resolvedTask: string,
+    attempt = 0,
     timeoutMs?: number
   ): Promise<{
     specialistOutput: string;
@@ -4432,6 +4432,7 @@ export class WorkflowRunner {
     );
     const workerPromise = this.spawnAndWait(supervised.specialist, specialistStep, timeoutMs, {
       agentNameSuffix: 'worker',
+      attempt,
       evidenceStepName: step.name,
       evidenceRole: 'worker',
       logicalName: supervised.specialist.name,
@@ -4506,6 +4507,7 @@ export class WorkflowRunner {
     try {
       const ownerResultObj = await this.spawnAndWait(supervised.owner, ownerStep, timeoutMs, {
         agentNameSuffix: 'owner',
+        attempt,
         evidenceStepName: step.name,
         evidenceRole: 'owner',
         logicalName: supervised.owner.name,
@@ -5683,9 +5685,10 @@ export class WorkflowRunner {
     }
 
     const evidenceStepName = options.evidenceStepName ?? step.name;
+    const retrySuffix = (options.attempt ?? 0) > 0 ? `-r${options.attempt}` : '';
 
-    // Deterministic name: step name + optional role suffix + first 8 chars of run ID.
-    const requestedName = `${step.name}${options.agentNameSuffix ? `-${options.agentNameSuffix}` : ''}-${(this.currentRunId ?? this.generateShortId()).slice(0, 8)}`;
+    // Deterministic name: step name + optional role suffix + run ID, plus retry suffix for distinct respawns.
+    const requestedName = `${step.name}${options.agentNameSuffix ? `-${options.agentNameSuffix}` : ''}-${(this.currentRunId ?? this.generateShortId()).slice(0, 8)}${retrySuffix}`;
     let agentName = requestedName;
 
     // Only inject delegation guidance for lead/coordinator agents, not spokes/workers.

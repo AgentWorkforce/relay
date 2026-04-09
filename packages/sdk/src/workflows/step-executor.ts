@@ -99,6 +99,36 @@ export interface MonitorStepOptions<TState extends StateLike, TResult> {
   getFailureResult?: (error: unknown, attempt: number, state: TState) => Partial<StepResult>;
 }
 
+const NON_INTERACTIVE_PRESETS = new Set<AgentDefinition['preset']>(['worker', 'reviewer', 'analyst']);
+
+export function isInteractiveAgentStep(step: WorkflowStep, agent?: AgentDefinition): boolean {
+  if (step.type === 'deterministic' || step.type === 'worktree' || step.type === 'integration') {
+    return false;
+  }
+  if (!agent) return false;
+  return agent.interactive !== false && !NON_INTERACTIVE_PRESETS.has(agent.preset);
+}
+
+export function resolveStepMaxRetries(
+  step: WorkflowStep,
+  errorHandling?: ErrorHandlingConfig,
+  ...agents: Array<AgentDefinition | undefined>
+): number {
+  if (step.retries !== undefined) return step.retries;
+
+  for (const agent of agents) {
+    if (agent?.constraints?.retries !== undefined) {
+      return agent.constraints.retries;
+    }
+  }
+
+  if (errorHandling?.maxRetries !== undefined) {
+    return errorHandling.maxRetries;
+  }
+
+  return agents.some((agent) => isInteractiveAgentStep(step, agent)) ? 1 : 0;
+}
+
 export class StepExecutor<TState extends StateLike = StateLike> {
   private readonly templateResolver: TemplateResolver;
   private readonly channelMessenger: ChannelMessenger;
@@ -483,7 +513,8 @@ export class StepExecutor<TState extends StateLike = StateLike> {
       throw new Error(`No step execution callback or process spawner configured for step "${step.name}"`);
     }
 
-    const maxRetries = step.retries ?? errorHandling?.maxRetries ?? 0;
+    const agent = step.agent ? agentMap.get(step.agent) : undefined;
+    const maxRetries = resolveStepMaxRetries(step, errorHandling, agent);
     return this.monitorStep(step, state, {
       maxRetries,
       retryDelayMs: errorHandling?.retryDelayMs ?? 1000,
@@ -497,7 +528,6 @@ export class StepExecutor<TState extends StateLike = StateLike> {
           return spawner.spawnShell(command, { cwd: this.deps.cwd, timeoutMs: step.timeoutMs });
         }
 
-        const agent = step.agent ? agentMap.get(step.agent) : undefined;
         if (!agent) {
           throw new Error(`Agent "${step.agent ?? '(missing)'}" not found in config`);
         }

@@ -1,5 +1,6 @@
 import type { RelayYamlConfig, AgentDefinition, WorkflowStep } from './types.js';
 import { CodexModels } from '@agent-relay/config';
+import { isCliInteractive } from '../cli-registry.js';
 
 export interface ValidationIssue {
   severity: 'error' | 'warning' | 'info';
@@ -10,6 +11,7 @@ export interface ValidationIssue {
 }
 
 const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+const INTERACTIVE_CAPABLE_CLIS = ['claude', 'codex', 'gemini'] as const;
 
 export function validateWorkflow(config: RelayYamlConfig): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
@@ -39,6 +41,21 @@ export function validateWorkflow(config: RelayYamlConfig): ValidationIssue[] {
       name.includes('review')
     );
   });
+
+  for (const rawAgent of config.agents) {
+    const def = resolveForValidation(rawAgent);
+    if (!usesInteractiveMode(def) || def.cli === 'api' || isCliInteractive(def.cli)) {
+      continue;
+    }
+
+    issues.push({
+      severity: 'error',
+      code: 'UNSUPPORTED_INTERACTIVE_CLI',
+      message: `Agent "${rawAgent.name}" uses cli "${def.cli}" which does not support interactive mode.`,
+      fix: `Add \`preset: 'worker'\` to run in one-shot mode, or switch to a CLI that supports interactive mode (${INTERACTIVE_CAPABLE_CLIS.map((cli) => `\`${cli}\``).join(', ')}).`,
+      location: `agent:${rawAgent.name}`,
+    });
+  }
 
   for (const workflow of config.workflows ?? []) {
     const hasInteractiveAgentSteps = workflow.steps.some((step) => {
@@ -76,6 +93,17 @@ export function validateWorkflow(config: RelayYamlConfig): ValidationIssue[] {
       // Resolve preset
       const def = resolveForValidation(rawDef);
       const task = step.task ?? '';
+      const effectiveMaxRetries = resolveStepMaxRetriesForValidation(step, def, config);
+
+      if (def.interactive !== false && effectiveMaxRetries === 0) {
+        issues.push({
+          severity: 'warning',
+          code: 'INTERACTIVE_ZERO_RETRIES',
+          message: `Step "${step.name}" has retries: 0 on an interactive agent. If the agent emits OWNER_DECISION: INCOMPLETE_RETRY the step will fail. Consider retries: 1 to allow one self-correction.`,
+          fix: `Set \`retries: 1\` on step "${step.name}" to allow one self-correction, or keep \`retries: 0\` if fail-fast is intentional.`,
+          location: `step:${step.name}`,
+        });
+      }
 
       // Check 1: step chaining on interactive agent
       if (def.interactive !== false && /\{\{steps\.[^}]+\}\}/.test(task)) {
@@ -138,7 +166,9 @@ export function validateWorkflow(config: RelayYamlConfig): ValidationIssue[] {
       // Check 5: non-interactive agent that references relay messaging tools in task
       if (
         def.interactive === false &&
-        (task.includes('mcp__relaycast__message_dm_send') || task.includes('mcp__relaycast__message_post') || task.includes('mcp__relaycast__message_inbox_check'))
+        (task.includes('mcp__relaycast__message_dm_send') ||
+          task.includes('mcp__relaycast__message_post') ||
+          task.includes('mcp__relaycast__message_inbox_check'))
       ) {
         issues.push({
           severity: 'warning',
@@ -178,6 +208,21 @@ function resolveForValidation(def: AgentDefinition): AgentDefinition {
     return { ...def, interactive: false };
   }
   return def;
+}
+
+function usesInteractiveMode(def: AgentDefinition): boolean {
+  return def.interactive !== false;
+}
+
+function resolveStepMaxRetriesForValidation(
+  step: WorkflowStep,
+  agent: AgentDefinition,
+  config: RelayYamlConfig
+): number {
+  if (step.retries !== undefined) return step.retries;
+  if (agent.constraints?.retries !== undefined) return agent.constraints.retries;
+  if (config.errorHandling?.maxRetries !== undefined) return config.errorHandling.maxRetries;
+  return agent.interactive !== false ? 1 : 0;
 }
 
 export function formatValidationReport(issues: ValidationIssue[], yamlPath: string): string {

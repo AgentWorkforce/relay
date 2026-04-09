@@ -18,6 +18,8 @@ import type { AgentCli } from './workflows/types.js';
 export interface CliDefinition {
   /** Binary name(s) to try, in order of preference */
   binaries: string[];
+  /** Whether the CLI supports interactive PTY mode */
+  interactiveSupported: boolean;
   /** Build non-interactive mode args for a one-shot task */
   nonInteractiveArgs: (task: string, extraArgs?: string[]) => string[];
   /** Bypass flag for auto-approve / unattended mode */
@@ -53,17 +55,14 @@ export const COMMON_SEARCH_PATHS = [
 const CLI_REGISTRY: Record<AgentCli, CliDefinition> = {
   claude: {
     binaries: ['claude'],
-    nonInteractiveArgs: (task, extra = []) => [
-      '-p',
-      '--dangerously-skip-permissions',
-      task,
-      ...extra,
-    ],
+    interactiveSupported: true,
+    nonInteractiveArgs: (task, extra = []) => ['-p', '--dangerously-skip-permissions', task, ...extra],
     bypassFlag: '--dangerously-skip-permissions',
     searchPaths: ['~/.claude/local'],
   },
   codex: {
     binaries: ['codex'],
+    interactiveSupported: true,
     nonInteractiveArgs: (task, extra = []) => [
       'exec',
       '--dangerously-bypass-approvals-and-sandbox',
@@ -76,69 +75,51 @@ const CLI_REGISTRY: Record<AgentCli, CliDefinition> = {
   },
   gemini: {
     binaries: ['gemini'],
+    interactiveSupported: true,
     nonInteractiveArgs: (task, extra = []) => ['-p', task, ...extra],
     bypassFlag: '--yolo',
     bypassAliases: ['-y'],
   },
   opencode: {
     binaries: ['opencode'],
+    interactiveSupported: false,
     nonInteractiveArgs: (task, extra = []) => ['run', task, ...extra],
     searchPaths: ['~/.opencode/bin'],
     ignoreExitCode: true,
   },
   droid: {
     binaries: ['droid'],
+    interactiveSupported: false,
     nonInteractiveArgs: (task, extra = []) => ['exec', task, ...extra],
   },
   aider: {
     binaries: ['aider'],
-    nonInteractiveArgs: (task, extra = []) => [
-      '--message',
-      task,
-      '--yes-always',
-      '--no-git',
-      ...extra,
-    ],
+    interactiveSupported: false,
+    nonInteractiveArgs: (task, extra = []) => ['--message', task, '--yes-always', '--no-git', ...extra],
   },
   goose: {
     binaries: ['goose'],
-    nonInteractiveArgs: (task, extra = []) => [
-      'run',
-      '--text',
-      task,
-      '--no-session',
-      ...extra,
-    ],
+    interactiveSupported: false,
+    nonInteractiveArgs: (task, extra = []) => ['run', '--text', task, '--no-session', ...extra],
   },
   'cursor-agent': {
     binaries: ['cursor-agent'],
-    nonInteractiveArgs: (task, extra = []) => [
-      '--force',
-      '-p',
-      task,
-      ...extra,
-    ],
+    interactiveSupported: false,
+    nonInteractiveArgs: (task, extra = []) => ['--force', '-p', task, ...extra],
   },
   agent: {
     binaries: ['agent'],
-    nonInteractiveArgs: (task, extra = []) => [
-      '--force',
-      '-p',
-      task,
-      ...extra,
-    ],
+    interactiveSupported: false,
+    nonInteractiveArgs: (task, extra = []) => ['--force', '-p', task, ...extra],
   },
   cursor: {
     binaries: ['cursor-agent', 'agent'],
-    nonInteractiveArgs: (task, extra = []) => [
-      '--force',
-      '-p',
-      task,
-      ...extra,
-    ],
+    interactiveSupported: false,
+    nonInteractiveArgs: (task, extra = []) => ['--force', '-p', task, ...extra],
   },
   api: {
     binaries: [],
+    interactiveSupported: false,
     nonInteractiveArgs: (task) => [task],
   },
 };
@@ -150,6 +131,10 @@ const CLI_REGISTRY: Record<AgentCli, CliDefinition> = {
 export function getCliDefinition(cli: string): CliDefinition | undefined {
   const baseCli = cli.includes(':') ? cli.split(':')[0] : cli;
   return CLI_REGISTRY[baseCli as AgentCli];
+}
+
+export function isCliInteractive(cli: AgentCli): boolean {
+  return getCliDefinition(cli)?.interactiveSupported ?? false;
 }
 
 /**

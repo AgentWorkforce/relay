@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-import { StepExecutor, type StepExecutorDeps, type StepResult } from '../step-executor.js';
+import {
+  StepExecutor,
+  resolveStepMaxRetries,
+  type StepExecutorDeps,
+  type StepResult,
+} from '../step-executor.js';
 import type { ProcessSpawner } from '../process-spawner.js';
 import { createProcessSpawner } from '../process-spawner.js';
-import type {
-  WorkflowStep,
-  AgentDefinition,
-  WorkflowStepStatus,
-} from '../types.js';
+import type { WorkflowStep, AgentDefinition, WorkflowStepStatus } from '../types.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -103,19 +104,33 @@ describe('StepExecutor — non-interactive agent steps', () => {
     const spawner = mockSpawner();
     const executor = createExecutor({ processSpawner: spawner });
     const agent = makeAgent({ cli: 'codex', name: 'codex-worker', interactive: false });
-    const step = makeStep({ name: 'codex-step', type: 'agent', agent: 'codex-worker', task: 'Fix the bug', command: undefined });
+    const step = makeStep({
+      name: 'codex-step',
+      type: 'agent',
+      agent: 'codex-worker',
+      task: 'Fix the bug',
+      command: undefined,
+    });
     const agentMap = new Map([['codex-worker', agent]]);
 
     const result = await executor.executeOne(step, agentMap);
     expect(spawner.spawnAgent).toHaveBeenCalledWith(
-      agent, 'Fix the bug', expect.objectContaining({ cwd: '/tmp/test-project' })
+      agent,
+      'Fix the bug',
+      expect.objectContaining({ cwd: '/tmp/test-project' })
     );
     expect(result.status).toBe('completed');
   });
 
   it('fails when agent is not found in agentMap', async () => {
     const executor = createExecutor();
-    const step = makeStep({ name: 'orphan', type: 'agent', agent: 'missing-agent', task: 'Do stuff', command: undefined });
+    const step = makeStep({
+      name: 'orphan',
+      type: 'agent',
+      agent: 'missing-agent',
+      task: 'Do stuff',
+      command: undefined,
+    });
     const result = await executor.executeOne(step, new Map());
     expect(result.status).toBe('failed');
     expect(result.error).toContain('not found');
@@ -129,12 +144,45 @@ describe('StepExecutor — interactive agent steps', () => {
     const spawner = mockSpawner();
     const executor = createExecutor({ processSpawner: spawner });
     const agent = makeAgent({ cli: 'claude', name: 'lead-agent' });
-    const step = makeStep({ name: 'lead-step', type: 'agent', agent: 'lead-agent', task: 'Coordinate work', command: undefined });
+    const step = makeStep({
+      name: 'lead-step',
+      type: 'agent',
+      agent: 'lead-agent',
+      task: 'Coordinate work',
+      command: undefined,
+    });
     const agentMap = new Map([['lead-agent', agent]]);
 
     const result = await executor.executeOne(step, agentMap);
     expect(spawner.spawnInteractive).toHaveBeenCalled();
     expect(result.status).toBe('completed');
+  });
+
+  it('defaults interactive agent steps without retries to one retry', () => {
+    const step = makeStep({
+      name: 'lead-step',
+      type: 'agent',
+      agent: 'lead-agent',
+      task: 'Coordinate work',
+      command: undefined,
+    });
+    const agent = makeAgent({ cli: 'claude', name: 'lead-agent' });
+
+    expect(resolveStepMaxRetries(step, undefined, agent)).toBe(1);
+  });
+
+  it('respects explicit retries: 0 on interactive agent steps', () => {
+    const step = makeStep({
+      name: 'lead-step',
+      type: 'agent',
+      agent: 'lead-agent',
+      task: 'Coordinate work',
+      command: undefined,
+      retries: 0,
+    });
+    const agent = makeAgent({ cli: 'claude', name: 'lead-agent' });
+
+    expect(resolveStepMaxRetries(step, undefined, agent)).toBe(0);
   });
 });
 
@@ -147,16 +195,15 @@ describe('StepExecutor — timeout handling', () => {
     const step = makeStep({ command: 'sleep 60', timeoutMs: 5000 });
 
     await executor.executeOne(step, new Map());
-    expect(spawner.spawnShell).toHaveBeenCalledWith(
-      'sleep 60',
-      expect.objectContaining({ timeoutMs: 5000 })
-    );
+    expect(spawner.spawnShell).toHaveBeenCalledWith('sleep 60', expect.objectContaining({ timeoutMs: 5000 }));
   });
 
   it('fails step when spawn rejects due to timeout', async () => {
     const executor = createExecutor({
       processSpawner: mockSpawner({
-        spawnShell: vi.fn(async () => { throw new Error('Process timed out'); }),
+        spawnShell: vi.fn(async () => {
+          throw new Error('Process timed out');
+        }),
       }),
     });
     const step = makeStep({ command: 'sleep 60', timeoutMs: 100 });
@@ -187,10 +234,7 @@ describe('StepExecutor — dependency resolution', () => {
 
   it('treats skipped deps as satisfied', () => {
     const executor = createExecutor();
-    const steps = [
-      makeStep({ name: 'a' }),
-      makeStep({ name: 'b', dependsOn: ['a'] }),
-    ];
+    const steps = [makeStep({ name: 'a' }), makeStep({ name: 'b', dependsOn: ['a'] })];
     const statuses = new Map<string, WorkflowStepStatus>([
       ['a', 'skipped'],
       ['b', 'pending'],
@@ -201,10 +245,7 @@ describe('StepExecutor — dependency resolution', () => {
 
   it('returns steps with no deps when all are pending', () => {
     const executor = createExecutor();
-    const steps = [
-      makeStep({ name: 'a' }),
-      makeStep({ name: 'b', dependsOn: ['a'] }),
-    ];
+    const steps = [makeStep({ name: 'a' }), makeStep({ name: 'b', dependsOn: ['a'] })];
     const statuses = new Map<string, WorkflowStepStatus>([
       ['a', 'pending'],
       ['b', 'pending'],
@@ -215,10 +256,7 @@ describe('StepExecutor — dependency resolution', () => {
 
   it('returns nothing when all deps are failed', () => {
     const executor = createExecutor();
-    const steps = [
-      makeStep({ name: 'a' }),
-      makeStep({ name: 'b', dependsOn: ['a'] }),
-    ];
+    const steps = [makeStep({ name: 'a' }), makeStep({ name: 'b', dependsOn: ['a'] })];
     const statuses = new Map<string, WorkflowStepStatus>([
       ['a', 'failed'],
       ['b', 'pending'],
@@ -238,7 +276,9 @@ describe('StepExecutor — output capture', () => {
 
     await executor.executeOne(step, new Map());
     expect(deps.persistStepOutput).toHaveBeenCalledWith(
-      'run-001', 'step-1', expect.stringContaining('hello')
+      'run-001',
+      'step-1',
+      expect.stringContaining('hello')
     );
   });
 
@@ -301,7 +341,9 @@ describe('StepExecutor — retry logic', () => {
   it('fails after exhausting retries on thrown errors', async () => {
     const executor = createExecutor({
       processSpawner: mockSpawner({
-        spawnShell: vi.fn(async () => { throw new Error('always fails'); }),
+        spawnShell: vi.fn(async () => {
+          throw new Error('always fails');
+        }),
       }),
     });
     const step = makeStep({ command: 'always-fail', retries: 2 });
@@ -389,7 +431,9 @@ describe('StepExecutor — executeAll', () => {
           return { output: 'ok', exitCode: 0 };
         }),
       }),
-      onStepStarted: vi.fn((step) => { order.push(step.name); }),
+      onStepStarted: vi.fn((step) => {
+        order.push(step.name);
+      }),
     });
     const steps = [
       makeStep({ name: 'a', command: 'echo a' }),
@@ -415,9 +459,9 @@ describe('StepExecutor — executeAll', () => {
       makeStep({ name: 'b', command: 'echo b', dependsOn: ['a'] }),
     ];
 
-    await expect(
-      executor.executeAll(steps, new Map(), { strategy: 'fail-fast' })
-    ).rejects.toThrow('Step "a" failed');
+    await expect(executor.executeAll(steps, new Map(), { strategy: 'fail-fast' })).rejects.toThrow(
+      'Step "a" failed'
+    );
   });
 
   it('continues past failures with continue strategy', async () => {
