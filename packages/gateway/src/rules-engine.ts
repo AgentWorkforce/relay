@@ -32,7 +32,11 @@ export function evaluateCondition(condition: string, message: NormalizedMessage)
   if (!condition || condition.trim() === '') return true;
 
   try {
-    const conditionPattern = /^\$\.([a-zA-Z0-9_.]+)\s*(==|!=|>=|<=|>|<|in|contains)\s*(.+)$/;
+    // Bounded whitespace (\s{0,16}) prevents polynomial-regex backtracking
+    // when the operator alternation fails to match on whitespace-heavy input.
+    // 16 chars of whitespace around an operator is already pathological — no
+    // legitimate rule needs more. See CodeQL js/polynomial-redos.
+    const conditionPattern = /^\$\.([a-zA-Z0-9_.]+)\s{0,16}(==|!=|>=|<=|>|<|in|contains)\s{0,16}(.+)$/;
     const match = condition.match(conditionPattern);
 
     if (!match) {
