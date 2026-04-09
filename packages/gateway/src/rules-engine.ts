@@ -72,6 +72,9 @@ export function evaluateCondition(condition: string, message: NormalizedMessage)
         }
         return messageValue === compareValue;
       case '!=':
+        if (compareValue === null) {
+          return messageValue !== null && messageValue !== undefined;
+        }
         return messageValue !== compareValue;
       case 'in':
         return Array.isArray(compareValue) && compareValue.includes(messageValue);
