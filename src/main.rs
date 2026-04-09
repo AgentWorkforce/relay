@@ -454,7 +454,11 @@ timestamp='{}'
         }
     }
 
-    log_startup_phase(startup_debug, connect_started, "MultiWorkspaceSession::new begin");
+    log_startup_phase(
+        startup_debug,
+        connect_started,
+        "MultiWorkspaceSession::new begin",
+    );
     let mut multi = MultiWorkspaceSession::new(
         http_base.clone(),
         ws_base,
@@ -802,7 +806,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     log_startup_phase(
         startup_debug,
         broker_start,
-        format!("ensuring default channels for {} workspaces", workspaces.len()),
+        format!(
+            "ensuring default channels for {} workspaces",
+            workspaces.len()
+        ),
     );
     for workspace in &workspaces {
         if let Err(error) = workspace.http_client.ensure_default_channels().await {
@@ -829,14 +836,22 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     log_startup_phase(startup_debug, broker_start, "extra channels ensured");
 
     if !extra_channels.is_empty() {
-        log_startup_phase(startup_debug, broker_start, "subscribing websocket control channels");
+        log_startup_phase(
+            startup_debug,
+            broker_start,
+            "subscribing websocket control channels",
+        );
         for workspace in &workspaces {
             let _ = workspace
                 .ws_control_tx
                 .send(WsControl::Subscribe(extra_channels.clone()))
                 .await;
         }
-        log_startup_phase(startup_debug, broker_start, "websocket subscriptions updated");
+        log_startup_phase(
+            startup_debug,
+            broker_start,
+            "websocket subscriptions updated",
+        );
     }
 
     let mut worker_env = vec![
@@ -3754,7 +3769,8 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                 .await;
 
                 let task_text = delivery.body.clone();
-                let (binary, args) = headless_provider_command(&provider, &task_text, &provider_args);
+                let (binary, args) =
+                    headless_provider_command(&provider, &task_text, &provider_args);
 
                 let mut child = match tokio::process::Command::new(&binary)
                     .args(&args)

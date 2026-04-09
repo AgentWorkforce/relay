@@ -266,16 +266,16 @@ impl WorkerRegistry {
                 command.arg(headless_provider_cli_name(provider));
                 let mcp_args: Vec<String> = vec![];
 
-                let model_arg = spec.model.as_deref().and_then(|model| {
-                    if spec.args
-                        .iter()
-                        .any(|arg| arg == "--model" || arg.starts_with("--model=") || arg == "-m")
-                    {
-                        None
-                    } else {
-                        Some(model.to_string())
-                    }
-                });
+                let model_arg =
+                    spec.model.as_deref().and_then(|model| {
+                        if spec.args.iter().any(|arg| {
+                            arg == "--model" || arg.starts_with("--model=") || arg == "-m"
+                        }) {
+                            None
+                        } else {
+                            Some(model.to_string())
+                        }
+                    });
 
                 if model_arg.is_some() || !spec.args.is_empty() || !mcp_args.is_empty() {
                     command.arg("--");
