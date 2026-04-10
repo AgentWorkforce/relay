@@ -27,6 +27,14 @@
   border-bottom: 1px solid var(--line);
 }
 
+.blogHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 12px;
+}
+
 .eyebrow,
 .sectionKicker {
   margin: 0;
@@ -315,6 +323,60 @@
   font-size: 0.8rem;
   font-weight: 600;
   color: var(--primary);
+}
+
+.postList {
+  border-top: none;
+}
+
+.postListRow {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.postListMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.postListLink {
+  min-width: 0;
+  text-decoration: none;
+  color: var(--fg);
+  font-family: var(--font-heading), sans-serif;
+  font-size: 1.02rem;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.35;
+  transition: color 0.15s ease;
+}
+
+.postListLink:hover {
+  color: var(--primary);
+}
+
+.postListDot {
+  color: var(--fg-faint);
+  opacity: 0.5;
+}
+
+.postListAuthor {
+  font-size: 0.86rem;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.postListDate,
+.postListRead {
+  font-size: 0.86rem;
+  color: var(--fg-muted);
+  white-space: nowrap;
 }
 
 /* ── Single post ── */
@@ -643,14 +705,6 @@
   color: var(--fg);
 }
 
-.blogBottom {
-  display: flex;
-  justify-content: center;
-  margin-top: 3rem;
-  padding-top: 1.5rem;
-  border-top: 1px solid var(--line);
-}
-
 .rssIconLink {
   display: inline-flex;
   align-items: center;
@@ -696,6 +750,10 @@
     padding: 3rem 0 2.25rem;
   }
 
+  .blogHeader {
+    align-items: flex-start;
+  }
+
   .postLayout {
     grid-template-columns: 1fr;
     gap: 28px;
@@ -723,6 +781,14 @@
 
   .postGrid {
     grid-template-columns: 1fr;
+  }
+
+  .postListRow {
+    gap: 8px;
+  }
+
+  .postListMeta {
+    gap: 4px 14px;
   }
 
   .postHeaderTitle {

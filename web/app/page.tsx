@@ -3,6 +3,7 @@ import Link from 'next/link';
 
 import { FadeIn } from '../components/FadeIn';
 import { FaqSection } from '../components/FaqSection';
+import { GitHubStarsBadge } from '../components/GitHubStars';
 import { MessageRelayAnimation } from '../components/MessageRelayAnimation';
 import { SiteFooter } from '../components/SiteFooter';
 import { SiteNav } from '../components/SiteNav';
@@ -22,7 +23,7 @@ export const metadata: Metadata = {
 export default function HomePage() {
   return (
     <div className={s.page}>
-      <SiteNav />
+      <SiteNav actions={<GitHubStarsBadge />} />
 
       <div className={s.heroSection}>
         <svg

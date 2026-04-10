@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { DocsLanguageProvider } from '../../components/docs/DocsLanguageContext';
 import { DocsNav } from '../../components/docs/DocsNav';
 import { DocsSearch } from '../../components/docs/DocsSearch';
+import { GitHubStarsBadge } from '../../components/GitHubStars';
 import { SiteFooter } from '../../components/SiteFooter';
 import { SiteNav } from '../../components/SiteNav';
 import styles from '../../components/docs/docs.module.css';
@@ -14,7 +15,7 @@ export default function DocsLayout({ children }: { children: ReactNode }) {
   return (
     <DocsLanguageProvider>
       <div className={styles.docsPage}>
-        <SiteNav center={<DocsSearch index={searchIndex} />} />
+        <SiteNav center={<DocsSearch index={searchIndex} />} actions={<GitHubStarsBadge />} />
         <div className={styles.docsBody}>
           <div className={styles.sidebarCol}>
             <DocsNav />

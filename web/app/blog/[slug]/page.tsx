@@ -8,6 +8,7 @@ import remarkGfm from 'remark-gfm';
 
 import { BlogTableOfContents } from '../../../components/blog/BlogTableOfContents';
 import styles from '../../../components/blog/blog.module.css';
+import { GitHubStarsBadge } from '../../../components/GitHubStars';
 import { SiteFooter } from '../../../components/SiteFooter';
 import { SiteNav } from '../../../components/SiteNav';
 import { getAllPosts, getPost, getRelatedPosts, slugifyHeading } from '../../../lib/blog';
@@ -166,7 +167,7 @@ export default async function BlogPostPage({ params }: PageProps) {
 
   return (
     <div className={styles.blogPage}>
-      <SiteNav />
+      <SiteNav actions={<GitHubStarsBadge />} />
 
       <main className={styles.postShell}>
         <script
