@@ -646,7 +646,7 @@ source "$ARTIFACTS/isolation.env" 2>/dev/null || true
   for f in "\${REQUIRED[@]}"; do
     if [ -f "$ARTIFACTS/$f" ]; then
       SIZE=$(wc -c < "$ARTIFACTS/$f" | tr -d ' ')
-      echo "  [PRESENT ${SIZE} bytes] $f"
+      echo "  [PRESENT \${SIZE} bytes] $f"
     else
       echo "  [MISSING] $f"
       MISSING=$((MISSING + 1))
