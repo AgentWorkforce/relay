@@ -68,7 +68,7 @@ export interface AgentRelaySpawnOptions {
   env?: NodeJS.ProcessEnv;
   /** Forward broker stderr to this callback. */
   onStderr?: (line: string) => void;
-  /** Timeout in ms to wait for broker to become ready. Default: 15000. */
+  /** Timeout in ms to wait for broker to become ready. Default: 45000. */
   startupTimeoutMs?: number;
   /** Timeout in ms for HTTP requests to the broker. Default: 30000. */
   requestTimeoutMs?: number;
@@ -214,7 +214,7 @@ export class AgentRelayClient {
     const cwd = options?.cwd ?? process.cwd();
     const brokerName = options?.brokerName ?? (path.basename(cwd) || 'project');
     const channels = options?.channels ?? ['general'];
-    const timeoutMs = options?.startupTimeoutMs ?? 15_000;
+    const timeoutMs = options?.startupTimeoutMs ?? 45_000;
     const userArgs = buildBrokerInitArgs(options?.binaryArgs);
 
     const apiKey = `br_${randomBytes(16).toString('hex')}`;
@@ -262,7 +262,22 @@ export class AgentRelayClient {
     });
     client.child = child;
 
-    await client.getSession();
+    // Broker may still be connecting to Relaycast. Retry getSession
+    // with backoff if we get 503 (broker warming up).
+    let session: SessionInfo | undefined;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      try {
+        session = await client.getSession();
+        break;
+      } catch (err) {
+        const is503 =
+          err instanceof Error &&
+          (err.message.includes('503') || err.message.includes('Service Unavailable'));
+        if (!is503 || attempt >= 9) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+
     client.connectEvents();
 
     // Renew the owner lease so the broker doesn't auto-shutdown

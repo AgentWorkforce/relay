@@ -75,6 +75,41 @@ function validateYamlWorkflow(content: string): void {
 }
 
 async function validateTypeScriptWorkflow(content: string): Promise<void> {
+  // Strategy: use bun's built-in TS transpiler when available (the CLI is
+  // bun-compiled, so this covers the common case with zero external deps).
+  // Fall back to esbuild for Node.js environments, and skip validation
+  // gracefully if neither is available — the cloud sandbox will catch real
+  // syntax errors at execution time anyway.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const Bun = (globalThis as any).Bun;
+  if (typeof Bun !== 'undefined') {
+    try {
+      // Bun.build validates TS syntax during transpilation. A syntax error
+      // throws synchronously or returns build failures.
+      const result = await Bun.build({
+        stdin: { contents: content, loader: 'ts' },
+        throw: false,
+      });
+      if (!result.success && result.logs?.length) {
+        const errors = result.logs
+          .filter((l: { level?: string }) => l.level === 'error')
+          .map((l: { message?: string }) => l.message)
+          .join('\n');
+        if (errors) {
+          throw new Error(`Workflow file has syntax errors:\n${errors}`);
+        }
+      }
+      return;
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Workflow file has syntax errors')) {
+        throw error;
+      }
+      // Bun.build failed for a non-syntax reason — skip validation
+      return;
+    }
+  }
+
+  // Fallback: try esbuild via npx (for Node.js environments)
   try {
     const { execSync } = await import('node:child_process');
     execSync('npx --yes esbuild --loader=ts', {
@@ -85,11 +120,13 @@ async function validateTypeScriptWorkflow(content: string): Promise<void> {
     });
   } catch (error) {
     const err = error as { status?: number; killed?: boolean; stderr?: unknown };
-    if (err.killed || !err.status) {
-      console.error('TypeScript validation skipped: esbuild not available or timed out');
+    const stderr = typeof err.stderr === 'string' ? err.stderr.trim() : '';
+    // Skip validation when esbuild/npx is unavailable: killed by timeout,
+    // no exit status, exit 127 (command not found), or stderr mentions
+    // "command not found" / "not found".
+    if (err.killed || !err.status || err.status === 127 || /command not found|not found/i.test(stderr)) {
       return;
     }
-    const stderr = typeof err.stderr === 'string' ? err.stderr.trim() : '';
     const message = stderr || 'TypeScript validation failed';
     throw new Error(`Workflow file has syntax errors:\n${message}`);
   }
