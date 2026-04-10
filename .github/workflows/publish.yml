@@ -913,6 +913,11 @@ jobs:
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
 
+      # bundledDependencies requires workspace packages to exist in
+      # node_modules/ at pack time so npm can include them in the tarball.
+      - name: Install workspace dependencies for bundling
+        run: npm install
+
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         run: |
