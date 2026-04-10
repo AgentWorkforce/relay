@@ -264,26 +264,25 @@ impl WorkerRegistry {
                 command.arg("headless");
                 command.arg("--agent-name").arg(&spec.name);
                 command.arg(headless_provider_cli_name(provider));
+                let mcp_args: Vec<String> = vec![];
 
-                let mcp_args = if skip_relay_prompt {
-                    vec![]
-                } else {
-                    configure_relaycast_mcp_with_token(
-                        headless_provider_cli_name(provider),
-                        &spec.name,
-                        self.env_value("RELAY_API_KEY"),
-                        self.env_value("RELAY_BASE_URL"),
-                        &spec.args,
-                        Path::new(spec.cwd.as_deref().unwrap_or(".")),
-                        worker_relay_api_key.as_deref(),
-                        self.env_value("RELAY_WORKSPACES_JSON"),
-                        self.env_value("RELAY_DEFAULT_WORKSPACE"),
-                    )
-                    .await?
-                };
+                let model_arg =
+                    spec.model.as_deref().and_then(|model| {
+                        if spec.args.iter().any(|arg| {
+                            arg == "--model" || arg.starts_with("--model=") || arg == "-m"
+                        }) {
+                            None
+                        } else {
+                            Some(model.to_string())
+                        }
+                    });
 
-                if !spec.args.is_empty() || !mcp_args.is_empty() {
+                if model_arg.is_some() || !spec.args.is_empty() || !mcp_args.is_empty() {
                     command.arg("--");
+                    if let Some(model) = model_arg {
+                        command.arg("--model");
+                        command.arg(model);
+                    }
                     for arg in &mcp_args {
                         command.arg(arg);
                     }
@@ -301,7 +300,7 @@ impl WorkerRegistry {
         for (key, value) in &self.worker_env {
             command.env(key, value);
         }
-        if !skip_relay_prompt {
+        if !skip_relay_prompt && !matches!(spec.runtime, AgentRuntime::Headless) {
             if let Some(relay_key) = worker_relay_api_key {
                 command.env("RELAY_AGENT_TOKEN", relay_key);
             }

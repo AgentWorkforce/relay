@@ -297,6 +297,7 @@ export interface SpawnerSpawnOptions extends SpawnLifecycleHooks {
   task?: string;
   model?: string;
   cwd?: string;
+  idleThresholdSecs?: number;
   /** JWT token for relayauth/relayfile permissions. When set, the broker
    *  injects RELAY_AGENT_TOKEN into the agent's environment. */
   agentToken?: string;
@@ -1602,6 +1603,7 @@ export class AgentRelay {
             task,
             model: options?.model,
             cwd: options?.cwd,
+            idleThresholdSecs: options?.idleThresholdSecs,
             agentToken: options?.agentToken,
             skipRelayPrompt: options?.skipRelayPrompt,
             onStart: options?.onStart,
@@ -1627,6 +1629,9 @@ export class AgentRelay {
             args,
             channels,
             task,
+            model: options?.model,
+            cwd: options?.cwd,
+            idleThresholdSecs: options?.idleThresholdSecs,
             agentToken: options?.agentToken,
             skipRelayPrompt: options?.skipRelayPrompt,
           });
