@@ -145,7 +145,7 @@ if [ ! -f "$PROJECT_DIR/dist/src/cli/index.js" ]; then
   log_info "Building project..."
   npm run build
 else
-  log_info "Build exists, skipping (run 'npm run build' to rebuild)"
+  log_info "Build exists, skipping initial rebuild (Phase 4 will rebuild before SDK lifecycle)"
 fi
 
 # Phase 1: Broker startup smoke test
@@ -305,6 +305,8 @@ fi
 
 # Phase 4: SDK lifecycle test (spawn/list/release)
 log_phase "Phase 4: SDK Agent Lifecycle"
+log_info "Rebuilding before SDK lifecycle test to ensure dist matches current source..."
+npm run build > /dev/null
 if ! node "$PROJECT_DIR/scripts/e2e-sdk-lifecycle.mjs" \
   --name "$AGENT_NAME" \
   --cli "claude" \
