@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-10T16:35:33.802Z",
+  "lastUpdated": "2026-04-10T18:00:44.248Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -1187,6 +1187,20 @@
       "startedAt": "2026-04-10T16:33:10.601Z",
       "completedAt": "2026-04-10T16:35:33.660Z",
       "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_703m7sqyq89t.json"
+    },
+    "traj_4zqhfqw7g28l": {
+      "title": "Investigate GitHub Actions failure for run 24255758219 job 70826792063",
+      "status": "completed",
+      "startedAt": "2026-04-10T17:48:33.502Z",
+      "completedAt": "2026-04-10T17:49:14.485Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_4zqhfqw7g28l.json"
+    },
+    "traj_rs2bt3x0fqba": {
+      "title": "Compare failed web deploy to prior deploys and identify no-downtime fix",
+      "status": "completed",
+      "startedAt": "2026-04-10T17:50:43.088Z",
+      "completedAt": "2026-04-10T18:00:44.095Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_rs2bt3x0fqba.json"
     }
   }
 }
