@@ -44,12 +44,7 @@ jobs:
         run: npm ci
 
       - name: Build local CLI/runtime
-        run: |
-          npm run build:rust
-          npm run build:packages
-          npm run --workspace @agent-relay/cloud build
-          npx tsc
-          npm run build:cjs
+        run: npm run build
 
       - name: Link local CLI
         run: npm link
