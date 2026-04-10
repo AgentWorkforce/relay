@@ -1545,6 +1545,13 @@ export class WorkflowRunner {
   }
 
   private async provisionAgents(config: RelayYamlConfig): Promise<void> {
+    // Cloud launcher already compiled and seeded relayfile ACLs before the
+    // sandbox started.  Skip in-sandbox provisioning — the relayfile API has
+    // no POST /v1/workspaces route, so attempting it causes a fatal 404.
+    if (process.env.RELAY_CLOUD_PROVISIONING_DONE === '1') {
+      return;
+    }
+
     this.agentTokens.clear();
     await this.stopProvisionedMounts();
 

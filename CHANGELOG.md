@@ -32,6 +32,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
+## [4.0.10] - 2026-04-10
+
+### Product Perspective
+#### User-Impacting Fixes
+- Skip in-sandbox provisioning when cloud launcher already seeded ACLs (#711) (#711)
+- Harden macos binary smoke checks (#710) (#710)
+
+### Technical Perspective
+#### Performance & Reliability
+- Harden macos binary verification (#709) (#709)
+
+#### Releases
+- v4.0.10
+
+---
+
 ## [4.0.9] - 2026-04-10
 
 ### Product Perspective
