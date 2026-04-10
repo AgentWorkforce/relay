@@ -1603,6 +1603,7 @@ export class AgentRelay {
             task,
             model: options?.model,
             cwd: options?.cwd,
+            idleThresholdSecs: options?.idleThresholdSecs,
             agentToken: options?.agentToken,
             skipRelayPrompt: options?.skipRelayPrompt,
             onStart: options?.onStart,
