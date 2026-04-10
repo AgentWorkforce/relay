@@ -308,13 +308,19 @@ function resignBinaryForMacOS(binaryPath) {
 
   try {
     // codesign is always available on macOS as a system utility
+    execSync(`codesign --remove-signature "${binaryPath}"`, { stdio: 'pipe' });
+  } catch {
+    // Unsigned binaries are fine here; malformed signatures are removed when present.
+  }
+
+  try {
     execSync(`codesign --force --sign - "${binaryPath}"`, { stdio: 'pipe' });
     return true;
   } catch (err) {
     // This shouldn't happen on a normal macOS system, but handle gracefully
     warn(`Failed to re-sign binary: ${err.message}`);
     warn('The binary may fail to execute due to code signature issues.');
-    warn('You can manually fix this by running: codesign --force --sign - ' + binaryPath);
+    warn('You can manually fix this by running: codesign --remove-signature ' + binaryPath + ' && codesign --force --sign - ' + binaryPath);
     return false;
   }
 }

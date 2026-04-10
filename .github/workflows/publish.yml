@@ -195,11 +195,25 @@ jobs:
             ./dist/src/cli/index.js \
             --outfile release-binaries/${{ matrix.binary_name }}
 
-      - name: Verify binary
-        if: matrix.target == 'bun-linux-x64' || (matrix.target == 'bun-darwin-arm64' && runner.arch == 'ARM64')
+      - name: Sign macOS binary
+        if: startsWith(matrix.target, 'bun-darwin-')
+        run: scripts/sign-macos-binary.sh release-binaries/${{ matrix.binary_name }}
+
+      - name: Verify Linux binary
+        if: matrix.target == 'bun-linux-x64'
         run: |
           chmod +x release-binaries/${{ matrix.binary_name }}
-          ./release-binaries/${{ matrix.binary_name }} --version || echo "Binary created (cross-compiled)"
+          ./release-binaries/${{ matrix.binary_name }} --version
+
+      - name: Verify macOS binary
+        if: startsWith(matrix.target, 'bun-darwin-')
+        run: |
+          if [ "${{ matrix.target }}" = "bun-darwin-arm64" ]; then
+            EXPECTED_ARCH="arm64"
+          else
+            EXPECTED_ARCH="x86_64"
+          fi
+          scripts/verify-macos-binary.sh release-binaries/${{ matrix.binary_name }} "$EXPECTED_ARCH" -- --version
 
       - name: Compress binary with gzip
         run: |
@@ -277,11 +291,25 @@ jobs:
             ./packages/acp-bridge/dist/cli.js \
             --outfile release-binaries/${{ matrix.binary_name }}
 
-      - name: Verify binary
-        if: matrix.target == 'bun-linux-x64' || (matrix.target == 'bun-darwin-arm64' && runner.arch == 'ARM64')
+      - name: Sign macOS binary
+        if: startsWith(matrix.target, 'bun-darwin-')
+        run: scripts/sign-macos-binary.sh release-binaries/${{ matrix.binary_name }}
+
+      - name: Verify Linux binary
+        if: matrix.target == 'bun-linux-x64'
         run: |
           chmod +x release-binaries/${{ matrix.binary_name }}
-          ./release-binaries/${{ matrix.binary_name }} --version || echo "Binary created (cross-compiled)"
+          ./release-binaries/${{ matrix.binary_name }} --version
+
+      - name: Verify macOS binary
+        if: startsWith(matrix.target, 'bun-darwin-')
+        run: |
+          if [ "${{ matrix.target }}" = "bun-darwin-arm64" ]; then
+            EXPECTED_ARCH="arm64"
+          else
+            EXPECTED_ARCH="x86_64"
+          fi
+          scripts/verify-macos-binary.sh release-binaries/${{ matrix.binary_name }} "$EXPECTED_ARCH" -- --help
 
       - name: Compress binary with gzip
         run: |
@@ -738,6 +766,16 @@ jobs:
     needs: [build-standalone, build-broker]
     runs-on: macos-latest
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - binary_name: agent-relay-darwin-arm64
+            broker_name: agent-relay-broker-darwin-arm64
+            expected_arch: arm64
+          - binary_name: agent-relay-darwin-x64
+            broker_name: agent-relay-broker-darwin-x64
+            expected_arch: x86_64
 
     steps:
       - name: Checkout code
@@ -746,40 +784,42 @@ jobs:
       - name: Download macOS binary
         uses: actions/download-artifact@v4
         with:
-          name: agent-relay-darwin-arm64
+          name: ${{ matrix.binary_name }}
           path: bin/
 
       - name: Download broker binary
         uses: actions/download-artifact@v4
         with:
-          name: agent-relay-broker-darwin-arm64
+          name: ${{ matrix.broker_name }}
           path: broker/
 
       - name: Download compressed binary
         uses: actions/download-artifact@v4
         with:
-          name: agent-relay-darwin-arm64.gz
+          name: ${{ matrix.binary_name }}.gz
           path: bin/
 
       - name: Verify uncompressed binary
         run: |
-          chmod +x bin/agent-relay-darwin-arm64
           echo "Testing uncompressed binary..."
-          ./bin/agent-relay-darwin-arm64 --version
-          echo "✓ Uncompressed binary works"
+          scripts/verify-macos-binary.sh "bin/${{ matrix.binary_name }}" "${{ matrix.expected_arch }}" -- --version
+          echo "✓ Uncompressed binary verified"
 
       - name: Smoke standalone lifecycle
         run: |
-          chmod +x broker/agent-relay-broker-darwin-arm64
-          bash scripts/ci-standalone-smoke.sh "$PWD/bin/agent-relay-darwin-arm64" "$PWD/broker/agent-relay-broker-darwin-arm64"
+          if [ "$(uname -m)" != "${{ matrix.expected_arch }}" ]; then
+            echo "Skipping lifecycle smoke for ${{ matrix.expected_arch }} on $(uname -m) host"
+            exit 0
+          fi
+          chmod +x "broker/${{ matrix.broker_name }}"
+          bash scripts/ci-standalone-smoke.sh "$PWD/bin/${{ matrix.binary_name }}" "$PWD/broker/${{ matrix.broker_name }}"
 
       - name: Verify compressed binary
         run: |
           echo "Testing compressed binary decompression..."
-          gunzip -c bin/agent-relay-darwin-arm64.gz > /tmp/agent-relay-test
-          chmod +x /tmp/agent-relay-test
-          /tmp/agent-relay-test --version
-          echo "✓ Compressed binary decompresses and works"
+          gunzip -c "bin/${{ matrix.binary_name }}.gz" > "/tmp/${{ matrix.binary_name }}-test"
+          scripts/verify-macos-binary.sh "/tmp/${{ matrix.binary_name }}-test" "${{ matrix.expected_arch }}" -- --version
+          echo "✓ Compressed binary decompresses and verifies"
 
   # Verify relay-acp binaries on Linux
   verify-acp-linux:
@@ -822,34 +862,43 @@ jobs:
     needs: [build-acp-standalone]
     runs-on: macos-latest
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - binary_name: relay-acp-darwin-arm64
+            expected_arch: arm64
+          - binary_name: relay-acp-darwin-x64
+            expected_arch: x86_64
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Download macOS binary
         uses: actions/download-artifact@v4
         with:
-          name: relay-acp-darwin-arm64
+          name: ${{ matrix.binary_name }}
           path: bin/
 
       - name: Download compressed binary
         uses: actions/download-artifact@v4
         with:
-          name: relay-acp-darwin-arm64.gz
+          name: ${{ matrix.binary_name }}.gz
           path: bin/
 
       - name: Verify uncompressed binary
         run: |
-          chmod +x bin/relay-acp-darwin-arm64
           echo "Testing uncompressed binary..."
-          ./bin/relay-acp-darwin-arm64 --help
-          echo "✓ Uncompressed relay-acp binary works"
+          scripts/verify-macos-binary.sh "bin/${{ matrix.binary_name }}" "${{ matrix.expected_arch }}" -- --help
+          echo "✓ Uncompressed relay-acp binary verified"
 
       - name: Verify compressed binary
         run: |
           echo "Testing compressed binary decompression..."
-          gunzip -c bin/relay-acp-darwin-arm64.gz > /tmp/relay-acp-test
-          chmod +x /tmp/relay-acp-test
-          /tmp/relay-acp-test --help
-          echo "✓ Compressed relay-acp binary decompresses and works"
+          gunzip -c "bin/${{ matrix.binary_name }}.gz" > "/tmp/${{ matrix.binary_name }}-test"
+          scripts/verify-macos-binary.sh "/tmp/${{ matrix.binary_name }}-test" "${{ matrix.expected_arch }}" -- --help
+          echo "✓ Compressed relay-acp binary decompresses and verifies"
 
   # Gate job that requires both Linux and macOS verification to pass
   verify-binaries:
@@ -861,14 +910,16 @@ jobs:
       - name: All binary checks passed
         run: |
           echo "✅ All binary verification checks passed!"
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Binary Verification Gate" >> $GITHUB_STEP_SUMMARY
-          echo "✅ All platform binaries verified and ready for publish" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Verified Binaries" >> $GITHUB_STEP_SUMMARY
-          echo "- agent-relay-broker: Linux x64, Linux ARM64, macOS x64, macOS ARM64" >> $GITHUB_STEP_SUMMARY
-          echo "- agent-relay: Linux x64, macOS ARM64 (both compressed and uncompressed)" >> $GITHUB_STEP_SUMMARY
-          echo "- relay-acp: Linux x64, macOS ARM64 (both compressed and uncompressed)" >> $GITHUB_STEP_SUMMARY
+          {
+            echo ""
+            echo "## Binary Verification Gate"
+            echo "✅ All platform binaries verified and ready for publish"
+            echo ""
+            echo "### Verified Binaries"
+            echo "- agent-relay-broker: Linux x64, Linux ARM64, macOS x64, macOS ARM64"
+            echo "- agent-relay: Linux x64, macOS x64, macOS ARM64 (compressed and uncompressed)"
+            echo "- relay-acp: Linux x64, macOS x64, macOS ARM64 (compressed and uncompressed)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Publish main package
   publish-main:
@@ -1293,7 +1344,7 @@ jobs:
 
       - name: Create GitHub Release (stable)
         if: needs.build.outputs.is_prerelease != 'true'
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.build.outputs.new_version }}
           name: v${{ needs.build.outputs.new_version }}
@@ -1344,7 +1395,7 @@ jobs:
 
       - name: Create GitHub Release (prerelease)
         if: needs.build.outputs.is_prerelease == 'true'
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.build.outputs.new_version }}
           name: v${{ needs.build.outputs.new_version }} (prerelease)
