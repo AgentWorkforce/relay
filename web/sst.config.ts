@@ -8,7 +8,7 @@ export default $config({
   },
   run() {
     const isProd = $app.stage === 'production';
-    const domain = isProd ? 'agentrelay.net' : `${$app.stage}.agentrelay.net`;
+    const domain = isProd ? 'orgin.agentrelay.net' : `${$app.stage}.agentrelay.net`;
     const NEXT_PUBLIC_POSTHOG_HOST = process.env.NEXT_PUBLIC_POSTHOG_HOST ?? 'https://i.agentrelay.com';
     const NEXT_PUBLIC_POSTHOG_KEY = process.env.NEXT_PUBLIC_POSTHOG_KEY ?? '';
 
@@ -19,7 +19,7 @@ export default $config({
         NEXT_PUBLIC_POSTHOG_HOST,
         NEXT_PUBLIC_POSTHOG_KEY,
       },
-      // Production is proxied by agentrelay.com; SEO canonicals are set in Next metadata.
+      // Production deploys land on orgin.agentrelay.net; SEO canonicals are set in Next metadata.
       domain: { name: domain, dns: sst.cloudflare.dns({ proxy: true }) },
     });
   },
