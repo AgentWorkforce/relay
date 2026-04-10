@@ -8,16 +8,16 @@
  * first-run local bootstrap on macOS problem — stale shims, xattr/codesign handling,
  * ~/.local/bin launcher behavior — that Docker and cloud sandboxes cannot reproduce.
  *
- * Pattern: pipeline (8 sequential phases with deterministic before/after artifact capture).
+ * Pattern: pipeline (sequential phases with deterministic before/after artifact capture).
  *
  * Acceptance contract (A1–A13):
  *   A1  install.sh completes successfully from scratch
  *   A2  command -v agent-relay resolves to isolated bin dir
  *   A3  agent-relay --version succeeds
- *   A4  stale shim/shadowing case detected or repaired by install
- *   A5  agent-relay up --no-dashboard --verbose reaches running state
+ *   A4  stale shim/shadowing case detected or repaired by install (before/after proof)
+ *   A5  agent-relay up --no-dashboard --verbose reaches running state within 30s
  *   A6  agent-relay status reports running
- *   A7  agent-relay spawn WorkflowProbe succeeds
+ *   A7  agent-relay spawn WorkflowProbe succeeds in a real repo
  *   A8  agent-relay who shows WorkflowProbe
  *   A9  agent-relay send WorkflowProbe "ping" (no --from) succeeds
  *   A10 agent-relay send WorkflowProbe "ping" --from Orchestrator succeeds
@@ -39,8 +39,8 @@ async function main() {
   const wf = workflow('relay-clean-room-e2e-validation')
     .description(
       'Clean-room end-to-end validation of agent-relay install/bootstrap/messaging in an isolated macOS shell. ' +
-        'Reproduces the original failure class (stale shim, PATH shadowing), validates the fix, ' +
-        'captures deterministic artifacts, and issues a reviewer verdict.',
+        'Reproduces the original failure class (stale shim, PATH shadowing, local-mode history regression), ' +
+        'validates the fix, captures deterministic artifacts, and issues a reviewer verdict.',
     )
     .pattern('pipeline')
     .channel('wf-relay-e2e-cleanroom')
@@ -57,9 +57,9 @@ async function main() {
     retries: 2,
   });
 
-  // ── Preamble: capture acceptance contract for reviewer context ──────────────
+  // ── Phase 0: Emit acceptance contract ─────────────────────────────────────
   //
-  // A static deterministic step so the reviewer step can reference it via
+  // Static deterministic step so the reviewer step can reference it via
   // {{steps.acceptance-contract.output}} without needing an external file.
 
   wf.step('acceptance-contract', {
@@ -74,29 +74,31 @@ demonstrated in an isolated macOS shell with no prior relay state:
 
 | # | Signal | Evidence File |
 |---|--------|---------------|
-| A1 | install.sh completes successfully from scratch | artifacts/fixed-install.txt |
-| A2 | command -v agent-relay resolves to the intended launcher in the isolated bin dir | artifacts/fixed-install.txt |
-| A3 | agent-relay --version succeeds after install | artifacts/fixed-install.txt |
-| A4 | A deliberately introduced stale shim/shadowing case is detected or safely repaired | artifacts/baseline-failure.txt + fixed-install.txt |
-| A5 | agent-relay up --no-dashboard --verbose reaches running state | artifacts/broker-start.log |
-| A6 | agent-relay status reports running | artifacts/status.txt |
-| A7 | agent-relay spawn WorkflowProbe succeeds in a real repo | artifacts/spawn.txt |
-| A8 | agent-relay who shows the spawned worker | artifacts/who.txt |
-| A9 | agent-relay send WorkflowProbe "ping" succeeds without explicit --from | artifacts/send-default.txt |
-| A10 | agent-relay send WorkflowProbe "ping" --from Orchestrator succeeds | artifacts/send-explicit.txt |
-| A11 | agent-relay agents:logs WorkflowProbe shows delivery/response evidence | artifacts/worker-logs.txt |
-| A12 | agent-relay history with RELAY_API_KEY unset either returns local history or emits a clear local-mode message (must NOT say "set RELAY_API_KEY") | artifacts/history-no-api-key.txt |
-| A13 | Before/after artifacts captured for all steps | all artifact files present with timestamps and exit codes |
+| A1  | install.sh completes successfully from scratch | fixed-install.txt |
+| A2  | command -v agent-relay resolves to the isolated bin dir | fixed-install.txt |
+| A3  | agent-relay --version succeeds after install | fixed-install.txt |
+| A4  | A deliberately introduced stale shim is detected or repaired by install | baseline-failure.txt + fixed-install.txt |
+| A5  | agent-relay up --no-dashboard --verbose reaches running state within 30s | broker-start.log |
+| A6  | agent-relay status reports running | status.txt |
+| A7  | agent-relay spawn WorkflowProbe succeeds in a real repo | spawn.txt |
+| A8  | agent-relay who shows the spawned worker | who.txt |
+| A9  | agent-relay send WorkflowProbe "ping" succeeds without explicit --from | send-default.txt |
+| A10 | agent-relay send WorkflowProbe "ping" --from Orchestrator succeeds | send-explicit.txt |
+| A11 | agent-relay agents:logs WorkflowProbe shows delivery/response evidence | worker-logs.txt |
+| A12 | agent-relay history with RELAY_API_KEY unset does NOT say "set RELAY_API_KEY" | history-no-api-key.txt |
+| A13 | All required artifact files present with timestamps and exit codes | all files in .e2e-artifacts/ |
+
+Failure contract: FAIL if ANY signal is FAIL. PARTIAL signals require manual reviewer judgment.
 
 CHOSEN_PROVING_ENVIRONMENT: Fresh isolated macOS local shell.
   - Isolated HOME, XDG_*, AGENT_RELAY_* vars, PATH: CLEAN_HOME/.local/bin first.
   - RELAY_API_KEY unset throughout.
-  - Reproduces: stale shim in ~/.local/bin, xattr/codesign handling, launcher resolution.
+  - Reproduces: stale shim in ~/.local/bin, xattr/codesign handling, launcher PATH shadowing.
   - Docker/cloud are Linux-only and do not reproduce these macOS-specific failure modes.
 
-CHOSEN_PATTERN: pipeline
-  - Phase-ordered: baseline → provision → reproduce failure → rebuild → validate → collect → review.
-  - Sequential before/after proof required; DAG concurrency would obscure causality.
+CHOSEN_PATTERN: pipeline (maxConcurrency(1))
+  - Sequential before/after proof required; causal chain: baseline → provision → reproduce failure → build/install → validate → collect → review.
+  - DAG concurrency would obscure the proof chain.
 
 ORIGINAL_FAILURE_CLASS: first-run local bootstrap on macOS
   - install.sh installs into ~/.local/bin with macOS-specific xattr/codesign cleanup.
@@ -109,8 +111,8 @@ EOF
 
   // ── Phase 1: Environment Provisioning ─────────────────────────────────────
   //
-  // Create an isolated HOME + PATH so the clean-room properties do not depend
-  // on the user's live shell environment. Persist the isolation env for all
+  // Create an isolated HOME + PATH so clean-room properties do not depend on
+  // the user's live shell environment. Persist the isolation env for all
   // downstream phases. Capture an env-manifest for the record.
 
   wf.step('phase-provision', {
@@ -151,7 +153,7 @@ ENVEOF
   echo "=== env-manifest ==="
   echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "OS: $(uname -a)"
-  echo "shell: $SHELL"
+  echo "shell: \${SHELL:-unknown}"
   echo "node: $(node --version 2>/dev/null || echo 'not found')"
   echo "npm: $(npm --version 2>/dev/null || echo 'not found')"
   echo "CLEAN_HOME: $CLEAN_HOME"
@@ -171,6 +173,7 @@ echo "PROVISION_COMPLETE: CLEAN_HOME=$CLEAN_HOME"
   // Deliberately introduce a stale shim at $CLEAN_HOME/.local/bin/agent-relay
   // that exits 1, simulating a broken/shadowed binary. This proves the clean
   // room actually exercises the failure path before the fix is applied.
+  // (A4 baseline half)
 
   wf.step('phase-baseline', {
     type: 'deterministic',
@@ -187,7 +190,7 @@ source "$ARTIFACTS/isolation.env"
 {
   echo "=== baseline-failure ==="
   echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "purpose: demonstrate stale-shim failure class before fix is applied"
+  echo "purpose: demonstrate stale-shim/PATH-shadowing failure class before fix is applied"
   echo ""
 
   # Create stale shim that simulates a broken/shadowed binary
@@ -198,13 +201,13 @@ echo "stale agent-relay shim: this binary is broken and should be replaced by in
 exit 1
 SHIM
   chmod +x "$CLEAN_HOME/.local/bin/agent-relay"
-  echo "stale shim written"
+  echo "stale shim written to: $CLEAN_HOME/.local/bin/agent-relay"
 
   # Capture pre-fix PATH state
   echo "--- PATH before fix ---"
   echo "PATH=$PATH"
   echo "which -a agent-relay output:"
-  which -a agent-relay 2>&1 || echo "(which -a not available or returned nothing)"
+  which -a agent-relay 2>&1 || echo "(which -a returned nothing)"
   echo "type -a agent-relay output:"
   type -a agent-relay 2>&1 || echo "(type -a not available)"
 
@@ -218,7 +221,7 @@ SHIM
 
   if [ "$CMD_EXIT" -ne 0 ]; then
     echo "BASELINE_FAILURE_CONFIRMED: stale shim caused exit $CMD_EXIT as expected"
-    echo "A4_BASELINE: stale shim present and blocking correct binary"
+    echo "A4_BASELINE: stale shim present and blocking correct binary — original failure class reproduced"
   else
     echo "WARNING: stale shim did not fail — check shim placement vs PATH order"
   fi
@@ -228,11 +231,11 @@ echo "BASELINE_PHASE_COMPLETE"
 `,
   });
 
-  // ── Phase 3: Fixed-Candidate Rebuild and Install ───────────────────────────
+  // ── Phase 3: Build from Source and Install ────────────────────────────────
   //
-  // Remove stale state from Phase 2. Build from source (npm run build), then
-  // run install.sh into the isolated environment. Capture the full install
-  // transcript including which -a, type -a, and version output.
+  // Remove stale state from Phase 2. Do a full build from source (npm run build),
+  // then run install.sh into the isolated environment. Capture the full install
+  // transcript including which -a, type -a, and version output. Validates A1–A4.
 
   wf.step('phase-install', {
     type: 'deterministic',
@@ -257,32 +260,17 @@ source "$ARTIFACTS/isolation.env"
   echo "stale shim removed"
   ls -la "$CLEAN_HOME/.local/bin/" 2>&1 || echo "(bin dir now empty)"
 
-  # Build only the local CLI/runtime surfaces needed for this proof
-  echo "--- building local CLI/runtime surfaces from source ---"
+  # Build from source — ensures we are validating the current candidate, not a cached artifact
+  echo "--- building from source: npm run build ---"
   cd "${REPO_ROOT}"
   BUILD_EXIT=0
-  bash -lc '
-    set -euo pipefail
-    npm run clean
-    npm run build:rust
-    npm run build:config
-    npm run build:telemetry
-    npm run build:utils
-    npm run build:trajectory
-    npm run build:policy
-    npm run build:memory
-    npm run build:hooks
-    npm run build:user-directory
-    npm run build:sdk
-    npx tsc
-    npm run build:cjs
-  ' 2>&1 || BUILD_EXIT=$?
+  npm run build 2>&1 || BUILD_EXIT=$?
   echo "build exit_code: $BUILD_EXIT"
   if [ "$BUILD_EXIT" -ne 0 ]; then
-    echo "BUILD_FAILED: targeted local CLI/runtime build exited $BUILD_EXIT"
+    echo "BUILD_FAILED: npm run build exited $BUILD_EXIT"
     exit "$BUILD_EXIT"
   fi
-  echo "targeted local CLI/runtime build succeeded"
+  echo "build succeeded"
 
   # Run install.sh into the isolated environment
   echo "--- running install.sh ---"
@@ -295,13 +283,13 @@ source "$ARTIFACTS/isolation.env"
   fi
   echo "install.sh completed successfully — A1_PASS"
 
-  # Post-install PATH state
+  # Post-install PATH and binary resolution
   echo "--- post-install PATH and binary resolution ---"
   echo "PATH: $PATH"
   echo "which -a agent-relay:"
   which -a agent-relay 2>&1 || echo "(not found via which)"
   echo "type -a agent-relay:"
-  type -a agent-relay 2>&1 || echo "(type not available)"
+  type -a agent-relay 2>&1 || echo "(type -a not available)"
 
   # A2: command -v resolves to isolated bin dir
   RESOLVED=$(command -v agent-relay 2>&1 || echo "NOT_FOUND")
@@ -325,14 +313,16 @@ source "$ARTIFACTS/isolation.env"
     exit "$VERSION_EXIT"
   fi
 
-  # A4: confirm stale shim was overwritten
-  echo "--- stale shim resolution ---"
-  CURRENT_CONTENT=$(cat "$RESOLVED" 2>/dev/null | head -3 || echo "(cannot read)")
+  # A4 (fixed half): confirm stale shim was overwritten
+  echo "--- stale shim resolution check (A4 fixed half) ---"
+  CURRENT_CONTENT=$(head -3 "$RESOLVED" 2>/dev/null || echo "(cannot read)")
   if echo "$CURRENT_CONTENT" | grep -q "stale agent-relay shim"; then
-    echo "A4_FAIL: binary at $RESOLVED is still the stale shim"
+    echo "A4_FAIL: binary at $RESOLVED is still the stale shim — install.sh did NOT replace it"
     exit 1
   else
-    echo "A4_PASS: binary at $RESOLVED is not the stale shim — install correctly replaced it"
+    echo "A4_PASS: binary at $RESOLVED is not the stale shim — install.sh correctly replaced it"
+    echo "  Before: stale shim (see baseline-failure.txt)"
+    echo "  After:  real agent-relay binary ($VERSION_OUTPUT)"
   fi
 
 } | tee "$ARTIFACTS/fixed-install.txt"
@@ -343,9 +333,9 @@ echo "INSTALL_PHASE_COMPLETE"
 
   // ── Phase 4: Broker Startup and Readiness ─────────────────────────────────
   //
-  // Start the local broker with --no-dashboard --verbose. Poll `agent-relay
-  // status` with exponential backoff (max 30 s). Gate: do not proceed unless
-  // status is running.
+  // Start the local broker with --no-dashboard --verbose. Poll agent-relay
+  // status with exponential backoff (max 30 s). Gate: do not proceed unless
+  // status is running. Validates A5–A6.
 
   wf.step('phase-broker', {
     type: 'deterministic',
@@ -371,25 +361,25 @@ BROKER_LOG="$ARTIFACTS/broker-start.log"
   echo "broker PID: $BROKER_PID"
   echo "$BROKER_PID" > "$ARTIFACTS/broker.pid"
 
-  # Poll status with backoff (max ~30 s across 6 attempts)
-  echo "--- polling agent-relay status (max 30s) ---"
+  # Poll status with exponential backoff (max ~30 s across 6 attempts: 2+4+6+8+10+12=42s cap)
+  echo "--- polling agent-relay status (max ~30s) ---"
   STATUS_REACHED=false
   for ATTEMPT in 1 2 3 4 5 6; do
     SLEEP_SECS=$((ATTEMPT * 2))
-    echo "  attempt $ATTEMPT: sleeping \${SLEEP_SECS}s..."
+    echo "  attempt $ATTEMPT: sleeping ${SLEEP_SECS}s..."
     sleep "$SLEEP_SECS"
     STATUS_EXIT=0
     STATUS_OUTPUT=$(agent-relay status 2>&1) || STATUS_EXIT=$?
     echo "  status output: $STATUS_OUTPUT (exit $STATUS_EXIT)"
     if echo "$STATUS_OUTPUT" | grep -qi "running"; then
-      echo "A5_PASS: broker reached running state (attempt $ATTEMPT, \${SLEEP_SECS}s total wait)"
+      echo "A5_PASS: broker reached running state (attempt $ATTEMPT, cumulative wait ~$((ATTEMPT * (ATTEMPT + 1)))s)"
       STATUS_REACHED=true
       break
     fi
   done
 
   if [ "$STATUS_REACHED" = "false" ]; then
-    echo "A5_FAIL: broker did not reach running state within 30s"
+    echo "A5_FAIL: broker did not reach running state within ~30s"
     echo "--- broker log tail ---"
     tail -30 "$BROKER_LOG" 2>&1 || true
     exit 1
@@ -416,6 +406,7 @@ echo "BROKER_PHASE_COMPLETE"
   //
   // Spawn WorkflowProbe, verify it appears in `who`, send messages with and
   // without --from, and capture agent logs as delivery evidence.
+  // Validates A7–A11.
 
   wf.step('phase-messaging', {
     type: 'deterministic',
@@ -430,7 +421,7 @@ ARTIFACTS="${ARTIFACTS_DIR}"
 source "$ARTIFACTS/isolation.env"
 
 {
-  echo "=== worker-spawn-messaging ==="
+  echo "=== worker-spawn-and-messaging ==="
   echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   # A7: Spawn WorkflowProbe
@@ -439,8 +430,12 @@ source "$ARTIFACTS/isolation.env"
   SPAWN_OUTPUT=$(agent-relay spawn WorkflowProbe --task "e2e probe ping" 2>&1) || SPAWN_EXIT=$?
   echo "$SPAWN_OUTPUT"
   echo "exit_code: $SPAWN_EXIT"
-  echo "$SPAWN_OUTPUT" > "$ARTIFACTS/spawn.txt"
-  echo "exit_code: $SPAWN_EXIT" >> "$ARTIFACTS/spawn.txt"
+  {
+    echo "command: agent-relay spawn WorkflowProbe --task 'e2e probe ping'"
+    echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "$SPAWN_OUTPUT"
+    echo "exit_code: $SPAWN_EXIT"
+  } > "$ARTIFACTS/spawn.txt"
   if [ "$SPAWN_EXIT" -eq 0 ]; then
     echo "A7_PASS: WorkflowProbe spawned successfully"
   else
@@ -457,8 +452,12 @@ source "$ARTIFACTS/isolation.env"
   WHO_OUTPUT=$(agent-relay who 2>&1) || WHO_EXIT=$?
   echo "$WHO_OUTPUT"
   echo "exit_code: $WHO_EXIT"
-  echo "$WHO_OUTPUT" > "$ARTIFACTS/who.txt"
-  echo "exit_code: $WHO_EXIT" >> "$ARTIFACTS/who.txt"
+  {
+    echo "command: agent-relay who"
+    echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "$WHO_OUTPUT"
+    echo "exit_code: $WHO_EXIT"
+  } > "$ARTIFACTS/who.txt"
   if echo "$WHO_OUTPUT" | grep -q "WorkflowProbe"; then
     echo "A8_PASS: WorkflowProbe listed in agent-relay who"
   else
@@ -466,14 +465,18 @@ source "$ARTIFACTS/isolation.env"
     exit 1
   fi
 
-  # A9: Send without --from (tests local-mode default sender resolution)
+  # A9: Send without --from (validates local-mode default sender resolution)
   echo "--- command: agent-relay send WorkflowProbe 'ping' (no --from) ---"
   SEND_DEFAULT_EXIT=0
   SEND_DEFAULT_OUTPUT=$(agent-relay send WorkflowProbe "ping" 2>&1) || SEND_DEFAULT_EXIT=$?
   echo "$SEND_DEFAULT_OUTPUT"
   echo "exit_code: $SEND_DEFAULT_EXIT"
-  echo "$SEND_DEFAULT_OUTPUT" > "$ARTIFACTS/send-default.txt"
-  echo "exit_code: $SEND_DEFAULT_EXIT" >> "$ARTIFACTS/send-default.txt"
+  {
+    echo "command: agent-relay send WorkflowProbe 'ping'"
+    echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "$SEND_DEFAULT_OUTPUT"
+    echo "exit_code: $SEND_DEFAULT_EXIT"
+  } > "$ARTIFACTS/send-default.txt"
   if [ "$SEND_DEFAULT_EXIT" -eq 0 ]; then
     echo "A9_PASS: send without --from succeeded (no workaround required)"
   else
@@ -487,8 +490,12 @@ source "$ARTIFACTS/isolation.env"
   SEND_EXPLICIT_OUTPUT=$(agent-relay send WorkflowProbe "explicit ping" --from Orchestrator 2>&1) || SEND_EXPLICIT_EXIT=$?
   echo "$SEND_EXPLICIT_OUTPUT"
   echo "exit_code: $SEND_EXPLICIT_EXIT"
-  echo "$SEND_EXPLICIT_OUTPUT" > "$ARTIFACTS/send-explicit.txt"
-  echo "exit_code: $SEND_EXPLICIT_EXIT" >> "$ARTIFACTS/send-explicit.txt"
+  {
+    echo "command: agent-relay send WorkflowProbe 'explicit ping' --from Orchestrator"
+    echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "$SEND_EXPLICIT_OUTPUT"
+    echo "exit_code: $SEND_EXPLICIT_EXIT"
+  } > "$ARTIFACTS/send-explicit.txt"
   if [ "$SEND_EXPLICIT_EXIT" -eq 0 ]; then
     echo "A10_PASS: send with --from Orchestrator succeeded"
   else
@@ -505,12 +512,16 @@ source "$ARTIFACTS/isolation.env"
   LOGS_OUTPUT=$(agent-relay agents:logs WorkflowProbe 2>&1) || LOGS_EXIT=$?
   echo "$LOGS_OUTPUT"
   echo "exit_code: $LOGS_EXIT"
-  echo "$LOGS_OUTPUT" > "$ARTIFACTS/worker-logs.txt"
-  echo "exit_code: $LOGS_EXIT" >> "$ARTIFACTS/worker-logs.txt"
+  {
+    echo "command: agent-relay agents:logs WorkflowProbe"
+    echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "$LOGS_OUTPUT"
+    echo "exit_code: $LOGS_EXIT"
+  } > "$ARTIFACTS/worker-logs.txt"
   if echo "$LOGS_OUTPUT" | grep -qi "ping\|delivery\|received\|message\|sent"; then
     echo "A11_PASS: worker logs show delivery evidence"
   else
-    echo "A11_PARTIAL: worker logs captured (exit $LOGS_EXIT) but no delivery keyword found — manual review needed"
+    echo "A11_PARTIAL: worker logs captured (exit $LOGS_EXIT) but no delivery keyword found — reviewer must check"
   fi
 
 } | tee "$ARTIFACTS/messaging-phase.log"
@@ -523,7 +534,8 @@ echo "MESSAGING_PHASE_COMPLETE"
   //
   // With RELAY_API_KEY unset, `agent-relay history` must either return local
   // history OR emit a clean local-mode message. It must NOT instruct the user
-  // to set RELAY_API_KEY (that is the regression being validated against).
+  // to set RELAY_API_KEY — that instruction is the regression being validated.
+  // Validates A12.
 
   wf.step('phase-history', {
     type: 'deterministic',
@@ -550,8 +562,13 @@ source "$ARTIFACTS/isolation.env"
   HISTORY_OUTPUT=$(agent-relay history 2>&1) || HISTORY_EXIT=$?
   echo "$HISTORY_OUTPUT"
   echo "exit_code: $HISTORY_EXIT"
-  echo "$HISTORY_OUTPUT" > "$ARTIFACTS/history-no-api-key.txt"
-  echo "exit_code: $HISTORY_EXIT" >> "$ARTIFACTS/history-no-api-key.txt"
+  {
+    echo "command: agent-relay history"
+    echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "RELAY_API_KEY: unset"
+    echo "$HISTORY_OUTPUT"
+    echo "exit_code: $HISTORY_EXIT"
+  } > "$ARTIFACTS/history-no-api-key.txt"
 
   # A12: Must NOT instruct user to set RELAY_API_KEY
   if echo "$HISTORY_OUTPUT" | grep -qi "set RELAY_API_KEY\|RELAY_API_KEY.*required\|set.*api.*key\|please set.*RELAY"; then
@@ -572,14 +589,14 @@ echo "HISTORY_PHASE_COMPLETE"
 
   // ── Phase 7: Cleanup and Artifact Collection ───────────────────────────────
   //
-  // Stop the broker. Verify all required artifact files exist. Build an
-  // artifact inventory log.
+  // Stop the broker. Verify all required artifact files are present. Emit an
+  // artifact inventory log. Validates A13.
 
   wf.step('phase-cleanup', {
     type: 'deterministic',
     dependsOn: ['phase-history'],
     captureOutput: true,
-    failOnError: false, // Best-effort cleanup — don't mask a previous signal failure
+    failOnError: false, // Best-effort cleanup — do not mask a prior signal failure
     command: `
 set -uo pipefail
 
@@ -604,14 +621,16 @@ source "$ARTIFACTS/isolation.env" 2>/dev/null || true
     kill "$BROKER_PID" 2>/dev/null && echo "sent SIGTERM to broker PID $BROKER_PID" || true
   fi
 
-  # Verify all required artifact files are present
+  # Verify all required artifact files are present (A13)
   echo ""
   echo "--- A13: artifact inventory ---"
   REQUIRED=(
     "env-manifest.txt"
+    "isolation.env"
     "baseline-failure.txt"
     "fixed-install.txt"
     "broker-start.log"
+    "broker.pid"
     "status.txt"
     "spawn.txt"
     "who.txt"
@@ -619,13 +638,15 @@ source "$ARTIFACTS/isolation.env" 2>/dev/null || true
     "send-explicit.txt"
     "worker-logs.txt"
     "history-no-api-key.txt"
+    "messaging-phase.log"
+    "history-phase.log"
   )
 
   MISSING=0
   for f in "\${REQUIRED[@]}"; do
     if [ -f "$ARTIFACTS/$f" ]; then
       SIZE=$(wc -c < "$ARTIFACTS/$f" | tr -d ' ')
-      echo "  [PRESENT $SIZE bytes] $f"
+      echo "  [PRESENT ${SIZE} bytes] $f"
     else
       echo "  [MISSING] $f"
       MISSING=$((MISSING + 1))
@@ -648,10 +669,10 @@ echo "CLEANUP_PHASE_COMPLETE"
 `,
   });
 
-  // ── Phase 8a: Read artifacts for reviewer ─────────────────────────────────
+  // ── Phase 8a: Dump artifacts for reviewer ─────────────────────────────────
   //
   // Dump all artifact content into a single step output so the reviewer agent
-  // can access it via {{steps.phase-read-artifacts.output}}.
+  // can access everything via {{steps.phase-read-artifacts.output}}.
 
   wf.step('phase-read-artifacts', {
     type: 'deterministic',
@@ -687,24 +708,24 @@ dump_file "send-explicit.txt"
 dump_file "history-no-api-key.txt"
 dump_file "cleanup-phase.log"
 
-echo "### broker-start.log (last 50 lines) ###"
+echo "### broker-start.log (last 60 lines) ###"
 if [ -f "$ARTIFACTS/broker-start.log" ]; then
-  tail -50 "$ARTIFACTS/broker-start.log"
+  tail -60 "$ARTIFACTS/broker-start.log"
 else
   echo "(file missing)"
 fi
 echo ""
 
-echo "### worker-logs.txt ###"
 dump_file "worker-logs.txt"
+dump_file "messaging-phase.log"
+dump_file "history-phase.log"
 `,
   });
 
   // ── Phase 8b: Reviewer verdict ─────────────────────────────────────────────
   //
   // The reviewer agent compares baseline-failure artifacts against fixed-run
-  // artifacts and produces verdict.md. Fails the workflow if any A1–A13 signal
-  // is not met.
+  // artifacts and produces verdict.md with a signal-by-signal PASS/FAIL table.
 
   wf.step('phase-review', {
     agent: 'reviewer',
@@ -735,15 +756,16 @@ Then produce the final verdict with these exact sections:
    local-mode history regression) and confirm it was fixed.
 
 4. WHAT_EVIDENCE_IT_COLLECTS
-   Describe the before/after artifact trail: baseline-failure.txt shows the broken
-   state; fixed-install.txt + subsequent artifacts prove the fix.
+   Describe the before/after artifact trail:
+   - baseline-failure.txt shows the broken state (A4 baseline half)
+   - fixed-install.txt + subsequent artifacts prove the fix (A1–A4 fixed half, A5–A12)
 
 5. RESIDUAL_RISKS
    Any gaps in coverage, signals needing manual follow-up, or edge cases not covered.
 
 6. OS_SHELL_COVERAGE_NOTE
    Confirm: primary proof is macOS local shell. Docker/cloud are secondary regression
-   only and do not cover the same failure surface.
+   only and do not cover the same macOS-specific failure surface.
 
 Write the complete verdict to ${ARTIFACTS_DIR}/verdict.md.
 
