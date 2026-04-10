@@ -55,6 +55,9 @@ jobs:
           echo "=== Auditing bundled package dependencies ==="
           node scripts/audit-bundled-deps.mjs
 
+      - name: Validate npm tarball artifact
+        run: npm run pack:validate
+
       - name: Validate all
         run: |
           echo "=== Validating packages ==="
