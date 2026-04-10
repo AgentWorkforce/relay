@@ -916,17 +916,55 @@ jobs:
       # bundledDependencies requires workspace packages to exist in
       # node_modules/ at pack time so npm can include them in the tarball.
       - name: Install workspace dependencies for bundling
-        run: npm install
+        run: npm ci --omit=dev --ignore-scripts
+
+      - name: Clean publish artifacts before packing
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Keep root node_modules for bundledDependencies, but remove nested
+          # workspace installs and caches so they cannot leak into the tarball.
+          find packages -mindepth 2 -type d \( \
+            -name node_modules -o \
+            -name .npm -o \
+            -name .cache -o \
+            -name .parcel-cache -o \
+            -name .turbo \
+          \) -prune -exec rm -rf {} +
+          rm -rf .npm-tarball agent-relay-*.tgz
+
+      - name: Pack npm tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TARBALL_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/agent-relay-pack.XXXXXX")"
+          npm pack --ignore-scripts --pack-destination "$TARBALL_DIR"
+
+          mapfile -t TARBALLS < <(find "$TARBALL_DIR" -maxdepth 1 -type f -name '*.tgz' -print)
+          if [ "${#TARBALLS[@]}" -ne 1 ]; then
+            echo "Expected exactly one npm tarball in $TARBALL_DIR, found ${#TARBALLS[@]}"
+            printf '%s\n' "${TARBALLS[@]}"
+            exit 1
+          fi
+
+          echo "NPM_TARBALL=${TARBALLS[0]}" >> "$GITHUB_ENV"
+          echo "Packed tarball: ${TARBALLS[0]}"
+          ls -lh "${TARBALLS[0]}"
+
+      - name: Validate npm tarball
+        run: node scripts/validate-npm-tarball.mjs "$NPM_TARBALL"
 
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         run: |
           echo "Dry run - would publish agent-relay@${{ needs.build.outputs.new_version }}"
-          npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+          npm publish "$NPM_TARBALL" --dry-run --access public --tag "${{ github.event.inputs.tag }}"
 
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
-        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        run: npm publish "$NPM_TARBALL" --access public --provenance --tag "${{ github.event.inputs.tag }}"
 
   # Create git tag and release
   create-release:
