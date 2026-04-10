@@ -158,7 +158,7 @@ End by printing CHANGES_COMPLETE.`,
     command: `
       set -e
       cd "$PWD"
-      npm run build:sdk
+      npm exec --package typescript -- tsc -p packages/sdk/tsconfig.build.json
     `,
     failOnError: true,
   })
