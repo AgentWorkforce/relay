@@ -68,7 +68,7 @@ await workflow('fix-agent-relay-local-bootstrap-and-messaging')
   .step('fix-installer-and-launcher', {
     agent: 'impl-a',
     dependsOn: ['read-plan-doc'],
-    task: `Implement the installer/bootstrap fixes in ~/Projects/AgentWorkforce/relay.
+    task: `Implement the installer/bootstrap fixes in the current checkout/worktree.
 
 Plan document:
 {{steps.read-plan-doc.output}}
@@ -93,7 +93,7 @@ End by printing CHANGES_COMPLETE.`,
   .step('fix-cli-messaging-local-mode', {
     agent: 'impl-b',
     dependsOn: ['read-plan-doc'],
-    task: `Implement local broker messaging fixes in ~/Projects/AgentWorkforce/relay.
+    task: `Implement local broker messaging fixes in the current checkout/worktree.
 
 Plan document:
 {{steps.read-plan-doc.output}}
