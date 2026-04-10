@@ -131,7 +131,7 @@ export XDG_DATA_HOME="$CLEAN_HOME/.local/share"
 export XDG_CONFIG_HOME="$CLEAN_HOME/.config"
 export AGENT_RELAY_INSTALL_DIR="$CLEAN_HOME/.local/share/agent-relay"
 export AGENT_RELAY_BIN_DIR="$CLEAN_HOME/.local/bin"
-export PATH="$CLEAN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export PATH="$CLEAN_HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 unset RELAY_API_KEY 2>/dev/null || true
 mkdir -p "$CLEAN_HOME/.local/bin" "$CLEAN_HOME/.local/share"
 
@@ -143,7 +143,7 @@ XDG_DATA_HOME=$CLEAN_HOME/.local/share
 XDG_CONFIG_HOME=$CLEAN_HOME/.config
 AGENT_RELAY_INSTALL_DIR=$CLEAN_HOME/.local/share/agent-relay
 AGENT_RELAY_BIN_DIR=$CLEAN_HOME/.local/bin
-PATH=$CLEAN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+PATH=$CLEAN_HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
 ENVEOF
 
 # Capture env manifest
@@ -257,17 +257,32 @@ source "$ARTIFACTS/isolation.env"
   echo "stale shim removed"
   ls -la "$CLEAN_HOME/.local/bin/" 2>&1 || echo "(bin dir now empty)"
 
-  # Build from source
-  echo "--- building from source (npm run build) ---"
+  # Build only the local CLI/runtime surfaces needed for this proof
+  echo "--- building local CLI/runtime surfaces from source ---"
   cd "${REPO_ROOT}"
   BUILD_EXIT=0
-  npm run build 2>&1 || BUILD_EXIT=$?
+  bash -lc '
+    set -euo pipefail
+    npm run clean
+    npm run build:rust
+    npm run build:config
+    npm run build:telemetry
+    npm run build:utils
+    npm run build:trajectory
+    npm run build:policy
+    npm run build:memory
+    npm run build:hooks
+    npm run build:user-directory
+    npm run build:sdk
+    npx tsc
+    npm run build:cjs
+  ' 2>&1 || BUILD_EXIT=$?
   echo "build exit_code: $BUILD_EXIT"
   if [ "$BUILD_EXIT" -ne 0 ]; then
-    echo "BUILD_FAILED: npm run build exited $BUILD_EXIT"
+    echo "BUILD_FAILED: targeted local CLI/runtime build exited $BUILD_EXIT"
     exit "$BUILD_EXIT"
   fi
-  echo "build succeeded"
+  echo "targeted local CLI/runtime build succeeded"
 
   # Run install.sh into the isolated environment
   echo "--- running install.sh ---"
@@ -361,13 +376,13 @@ BROKER_LOG="$ARTIFACTS/broker-start.log"
   STATUS_REACHED=false
   for ATTEMPT in 1 2 3 4 5 6; do
     SLEEP_SECS=$((ATTEMPT * 2))
-    echo "  attempt $ATTEMPT: sleeping ${SLEEP_SECS}s..."
+    echo "  attempt $ATTEMPT: sleeping \${SLEEP_SECS}s..."
     sleep "$SLEEP_SECS"
     STATUS_EXIT=0
     STATUS_OUTPUT=$(agent-relay status 2>&1) || STATUS_EXIT=$?
     echo "  status output: $STATUS_OUTPUT (exit $STATUS_EXIT)"
     if echo "$STATUS_OUTPUT" | grep -qi "running"; then
-      echo "A5_PASS: broker reached running state (attempt $ATTEMPT, ${SLEEP_SECS}s total wait)"
+      echo "A5_PASS: broker reached running state (attempt $ATTEMPT, \${SLEEP_SECS}s total wait)"
       STATUS_REACHED=true
       break
     fi
@@ -436,7 +451,7 @@ source "$ARTIFACTS/isolation.env"
   # Brief wait for worker to register
   sleep 3
 
-  # A8: Verify WorkflowProbe appears in `who`
+  # A8: Verify WorkflowProbe appears in who output
   echo "--- command: agent-relay who ---"
   WHO_EXIT=0
   WHO_OUTPUT=$(agent-relay who 2>&1) || WHO_EXIT=$?
