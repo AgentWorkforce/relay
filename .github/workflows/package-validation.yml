@@ -55,6 +55,9 @@ jobs:
           echo "=== Auditing bundled package dependencies ==="
           node scripts/audit-bundled-deps.mjs
 
+      - name: Validate npm tarball artifact
+        run: npm run pack:validate
+
       - name: Validate all
         run: |
           echo "=== Validating packages ==="
@@ -176,11 +179,34 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install dependencies
         run: npm ci
 
       - name: Build packages
         run: npm run build
+
+      - name: Build broker binary
+        run: cargo build --release --bin agent-relay-broker
+
+      - name: Verify broker binary
+        run: |
+          STANDALONE_BROKER="$PWD/target/release/agent-relay-broker"
+          if [ ! -f "$STANDALONE_BROKER" ]; then
+            echo "ERROR: Broker binary not found after build: $STANDALONE_BROKER" >&2
+            echo "Contents of target/release:" >&2
+            ls -la "$PWD/target/release" >&2 || true
+            exit 1
+          fi
+          if [ ! -x "$STANDALONE_BROKER" ]; then
+            echo "ERROR: Broker binary is not executable: $STANDALONE_BROKER" >&2
+            ls -la "$STANDALONE_BROKER" >&2
+            exit 1
+          fi
+          echo "STANDALONE_BROKER=$STANDALONE_BROKER" >> "$GITHUB_ENV"
+          echo "Verified broker binary: $STANDALONE_BROKER"
 
       - name: Build standalone binary
         run: |
@@ -190,9 +216,11 @@ jobs:
           if [ "$ARCH" = "arm64" ]; then
             TARGET="bun-darwin-arm64"
             OUTPUT="agent-relay-darwin-arm64"
+            EXPECTED_ARCH="arm64"
           elif [ "$ARCH" = "x86_64" ]; then
             TARGET="bun-darwin-x64"
             OUTPUT="agent-relay-darwin-x64"
+            EXPECTED_ARCH="x86_64"
           else
             echo "Unsupported macOS runner architecture: $ARCH"
             exit 1
@@ -206,8 +234,11 @@ jobs:
             --define="process.env.AGENT_RELAY_VERSION=\"${VERSION}\"" \
             ./dist/src/cli/index.js \
             --outfile "release-binaries/${OUTPUT}"
-          chmod +x "release-binaries/${OUTPUT}"
+          scripts/sign-macos-binary.sh "release-binaries/${OUTPUT}"
+          scripts/verify-macos-binary.sh "release-binaries/${OUTPUT}" "$EXPECTED_ARCH" -- --version
           echo "STANDALONE_CLI=$PWD/release-binaries/${OUTPUT}" >> "$GITHUB_ENV"
 
       - name: Smoke standalone lifecycle
-        run: bash scripts/ci-standalone-smoke.sh "$STANDALONE_CLI" "$PWD/target/release/agent-relay-broker"
+        env:
+          AGENT_RELAY_STARTUP_DEBUG: 1
+        run: bash scripts/ci-standalone-smoke.sh "$STANDALONE_CLI" "$STANDALONE_BROKER"

@@ -1,0 +1,40 @@
+{
+  "id": "traj_1775804835488_134e39f0",
+  "version": 1,
+  "task": {
+    "title": "test-opencode-headless-scenarios-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "b0b387abbaea006751825ead"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-04-10T07:07:15.488Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-04-10T07:07:15.488Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_2db5b96d",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-04-10T07:07:15.488Z",
+      "events": [
+        {
+          "ts": 1775804835488,
+          "type": "note",
+          "content": "Purpose: Run ~10 opencode workflow scenarios against the patched relay SDK to verify the headless fix is robust before merging."
+        },
+        {
+          "ts": 1775804835488,
+          "type": "note",
+          "content": "Approach: 14-step dag workflow — Parsed 14 steps, 13 dependent steps, DAG validated, no cycles"
+        }
+      ]
+    }
+  ]
+}

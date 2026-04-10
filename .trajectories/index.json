@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-10T12:56:02.328Z",
+  "lastUpdated": "2026-04-10T15:10:29.548Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -1120,9 +1120,31 @@
     },
     "traj_4r047wx9ml89": {
       "title": "Fast workspace seeding — symlink mount + tar bulk upload",
-      "status": "active",
+      "status": "abandoned",
       "startedAt": "2026-04-07T13:28:27.975Z",
-      "path": "/Users/will/Projects/relay/.trajectories/active/traj_4r047wx9ml89.json"
+      "completedAt": "2026-04-10T12:56:02.328Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_4r047wx9ml89.json"
+    },
+    "traj_28hhnf4xoa6i": {
+      "title": "Harden macOS binary release verification",
+      "status": "completed",
+      "startedAt": "2026-04-10T11:22:15.709Z",
+      "completedAt": "2026-04-10T11:29:16.155Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-04/traj_28hhnf4xoa6i.json"
+    },
+    "traj_7gmhsfy34hbc": {
+      "title": "Improve standalone smoke script binary validation",
+      "status": "completed",
+      "startedAt": "2026-04-10T13:41:57.930Z",
+      "completedAt": "2026-04-10T13:47:06.957Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.worktrees/macos-binary-ci-regressions/.trajectories/completed/2026-04/traj_7gmhsfy34hbc.json"
+    },
+    "traj_mk0t0cgn4ytq": {
+      "title": "Merge origin/main into better-nav and resolve trajectory conflicts",
+      "status": "completed",
+      "startedAt": "2026-04-10T15:10:03.877Z",
+      "completedAt": "2026-04-10T15:10:29.410Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_mk0t0cgn4ytq.json"
     }
   }
 }

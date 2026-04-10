@@ -31,9 +31,18 @@ scripts/tictactoe-setup.sh
 # Test files
 **/*.test.ts
 **/*.test.js
+**/*.test.tsx
+**/*.test.jsx
 **/*.integration.test.ts
 **/*.integration.test.js
+**/*.integration.test.tsx
+**/*.integration.test.jsx
+**/__tests__/
 test/
+tests/
+packages/*/src/
+packages/*/test/
+packages/*/tests/
 
 # Build artifacts
 *.tgz
@@ -56,8 +65,11 @@ test/
 
 # Config files not needed at runtime
 tsconfig.json
+packages/*/tsconfig*.json
 vitest.config.ts
+packages/*/vitest.config.*
 eslint.config.*
+packages/*/eslint.config.*
 .eslintrc.*
 drizzle.config.ts
 docker-compose*.yml
@@ -67,6 +79,7 @@ Dockerfile*
 
 # Node modules handled by npm
 node_modules/
+packages/*/node_modules/
 
 # Examples (users can get from GitHub)
 examples/
@@ -87,6 +100,7 @@ public/
 # TypeScript build info
 tsconfig.tsbuildinfo
 *.tsbuildinfo
+packages/*/*.tsbuildinfo
 
 # Other dev files
 run-dashboard.js
@@ -98,6 +112,16 @@ AGENTS.md
 .tmp-*/
 .npm-cache/
 coverage/
+**/.turbo/
+**/.cache/
+**/.npm-cache/
+packages/*/coverage/
+packages/*/.vitest/
+packages/*/.vite/
+packages/*/.tsup/
+packages/*/.rollup.cache/
+packages/*/.tmp/
+packages/*/tmp/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

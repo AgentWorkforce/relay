@@ -1,0 +1,104 @@
+{
+  "id": "traj_1775804949826_d988d48c",
+  "version": 1,
+  "task": {
+    "title": "S04-multiline-stdout-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "b390552c1cb5bd2b34f332a0"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-04-10T07:09:09.826Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-04-10T07:09:09.826Z"
+    },
+    {
+      "name": "a",
+      "role": "specialist",
+      "joinedAt": "2026-04-10T07:09:13.133Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_e844378a",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-04-10T07:09:09.826Z",
+      "events": [
+        {
+          "ts": 1775804949826,
+          "type": "note",
+          "content": "Approach: 1-step dag workflow — Parsed 1 steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-04-10T07:09:13.134Z"
+    },
+    {
+      "id": "ch_95b8f264",
+      "title": "Execution: multiline",
+      "agentName": "a",
+      "startedAt": "2026-04-10T07:09:13.135Z",
+      "events": [
+        {
+          "ts": 1775804953135,
+          "type": "note",
+          "content": "\"multiline\": Print 5 lines: line1, line2, line3, line4, then SCENARIO_S04_OK on the final line",
+          "raw": {
+            "agent": "a"
+          }
+        },
+        {
+          "ts": 1775804976946,
+          "type": "completion-evidence",
+          "content": "\"multiline\" verification-based completion — Verification passed (2 signal(s), 2 file change(s), exit=0; signals=0, SCENARIO_S04_OK; files=modified:.relay/workspaces.json, modified:opencode.json; exit=0)",
+          "significance": "medium",
+          "raw": {
+            "stepName": "multiline",
+            "completionMode": "verification",
+            "reason": "Verification passed",
+            "evidence": {
+              "summary": "2 signal(s), 2 file change(s), exit=0",
+              "signals": ["0", "SCENARIO_S04_OK"],
+              "files": ["modified:.relay/workspaces.json", "modified:opencode.json"],
+              "exitCode": 0
+            }
+          }
+        },
+        {
+          "ts": 1775804976946,
+          "type": "finding",
+          "content": "\"multiline\" completed → > relaycast · gpt-5.4-proError: Your workspace has reached its monthly spending limit of $50. Manage your limits here: h",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-04-10T07:09:36.947Z"
+    },
+    {
+      "id": "ch_e2765a38",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-04-10T07:09:36.947Z",
+      "events": [
+        {
+          "ts": 1775804976947,
+          "type": "reflection",
+          "content": "All 1 steps completed in 27s. (completed in 27 seconds)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-04-10T07:09:36.947Z"
+    }
+  ],
+  "completedAt": "2026-04-10T07:09:36.947Z",
+  "retrospective": {
+    "summary": "All 1 steps completed in 27s.",
+    "approach": "dag workflow (1 agents)",
+    "confidence": 1,
+    "learnings": [],
+    "challenges": []
+  }
+}

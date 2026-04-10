@@ -123,14 +123,31 @@ function getDevelopmentBinaryPaths(ext: string, binDirs: string[]): string[] {
   return binaryPaths;
 }
 
+function isSourceCheckoutRoot(candidate: string): boolean {
+  const repoRoot = resolve(candidate);
+  return (
+    existsSync(join(repoRoot, 'Cargo.toml')) &&
+    existsSync(join(repoRoot, 'src', 'main.rs')) &&
+    existsSync(join(repoRoot, 'packages', 'sdk', 'package.json'))
+  );
+}
+
+function getSourceCheckoutBinaryPaths(ext: string, binDirs: string[]): string[] {
+  return getDevelopmentBinaryPaths(ext, binDirs).filter((binaryPath) =>
+    isSourceCheckoutRoot(resolve(dirname(binaryPath), '..', '..'))
+  );
+}
+
 /**
  * Resolve the agent-relay-broker binary path.
  *
  * Search order:
- *   1. SDK's bin/ directory (resolved via CJS globals, createRequire, or import.meta.url)
- *   2. Platform-specific name (agent-relay-broker-{platform}-{arch}) in bin/
- *   3. Common Cargo development paths (target/release and target/debug)
- *   4. PATH lookup via `which` / `where`
+ *   1. Explicit env override (BROKER_BINARY_PATH / AGENT_RELAY_BIN)
+ *   2. Local Cargo build when the SDK is loaded from an agent-relay source checkout
+ *   3. SDK's bin/ directory (resolved via CJS globals, createRequire, or import.meta.url)
+ *   4. Platform-specific name (agent-relay-broker-{platform}-{arch}) in bin/
+ *   5. Common Cargo development paths (target/release and target/debug)
+ *   6. PATH lookup via `which` / `where`
  *
  * @returns Absolute path to the broker binary, or null if not found
  */
@@ -138,8 +155,25 @@ export function getBrokerBinaryPath(): string | null {
   const ext = process.platform === 'win32' ? '.exe' : '';
   const binDirs = getSdkBinDirs();
   const platformSpecific = `${BROKER_NAME}-${process.platform}-${process.arch}${ext}`;
+  const override = process.env.BROKER_BINARY_PATH ?? process.env.AGENT_RELAY_BIN;
 
-  // 1. Exact name in bin/
+  if (override) {
+    const resolvedOverride = resolve(override);
+    if (existsSync(resolvedOverride)) {
+      return resolvedOverride;
+    }
+  }
+
+  // 1. Prefer a local Cargo build when this SDK is being used from a source checkout.
+  // In development, the bundled packages/sdk/bin binary can be stale relative to
+  // the current Rust build in target/release.
+  for (const developmentPath of getSourceCheckoutBinaryPaths(ext, binDirs)) {
+    if (existsSync(developmentPath)) {
+      return developmentPath;
+    }
+  }
+
+  // 2. Exact name in bin/
   for (const binDir of binDirs) {
     const exactPath = join(binDir, `${BROKER_NAME}${ext}`);
     if (existsSync(exactPath)) {
@@ -147,7 +181,7 @@ export function getBrokerBinaryPath(): string | null {
     }
   }
 
-  // 2. Platform-specific name in bin/
+  // 3. Platform-specific name in bin/
   for (const binDir of binDirs) {
     const platformPath = join(binDir, platformSpecific);
     if (existsSync(platformPath)) {
@@ -155,14 +189,14 @@ export function getBrokerBinaryPath(): string | null {
     }
   }
 
-  // 3. Common development paths for local Cargo builds.
+  // 4. Common development paths for local Cargo builds.
   for (const developmentPath of getDevelopmentBinaryPaths(ext, binDirs)) {
     if (existsSync(developmentPath)) {
       return developmentPath;
     }
   }
 
-  // 4. PATH lookup
+  // 5. PATH lookup
   try {
     const cmd = process.platform === 'win32' ? 'where' : 'which';
     const result = execFileSync(cmd, [BROKER_NAME], {

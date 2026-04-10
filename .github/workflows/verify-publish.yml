@@ -84,14 +84,17 @@ jobs:
           echo "Testing: $SPEC"
 
       # Wait for npm to propagate the package
+      # Note: npm view checks registry metadata which propagates before the
+      # tarball is available on the CDN. We use npm cache add to verify the
+      # actual tarball is downloadable before proceeding.
       - name: Wait for npm propagation
         if: inputs.version != 'latest'
         run: |
           echo "Waiting for npm to propagate version ${{ inputs.version }}..."
           FOUND=0
           for i in {1..30}; do
-            if npm view agent-relay@${{ inputs.version }} version 2>/dev/null; then
-              echo "Package found on npm registry"
+            if npm cache add agent-relay@${{ inputs.version }} 2>/dev/null; then
+              echo "Package tarball available on npm registry"
               FOUND=1
               break
             fi
@@ -486,8 +489,8 @@ jobs:
           echo "Waiting for npm to propagate version ${{ inputs.version }}..."
           FOUND=0
           for i in {1..30}; do
-            if npm view agent-relay@${{ inputs.version }} version 2>/dev/null; then
-              echo "Package found on npm registry"
+            if npm cache add agent-relay@${{ inputs.version }} 2>/dev/null; then
+              echo "Package tarball available on npm registry"
               FOUND=1
               break
             fi
@@ -697,8 +700,8 @@ jobs:
           echo "Waiting for npm to propagate version ${{ inputs.version }}..."
           FOUND=0
           for i in {1..30}; do
-            if npm view agent-relay@${{ inputs.version }} version 2>/dev/null; then
-              echo "Package found on npm registry"
+            if npm cache add agent-relay@${{ inputs.version }} 2>/dev/null; then
+              echo "Package tarball available on npm registry"
               FOUND=1
               break
             fi

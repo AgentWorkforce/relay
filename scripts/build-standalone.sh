@@ -85,6 +85,10 @@ if bun build "$BUILD_DIR/standalone.mjs" \
 
     success "Compiled standalone binary"
 
+    if [ "$(uname -s)" = "Darwin" ]; then
+        "$SCRIPT_DIR/sign-macos-binary.sh" "$BIN_DIR/agent-relay-standalone"
+    fi
+
     # Test the binary
     if "$BIN_DIR/agent-relay-standalone" --version 2>/dev/null; then
         success "Binary works: $("$BIN_DIR/agent-relay-standalone" --version)"

@@ -248,6 +248,30 @@ pub(crate) fn detect_cli_ready(cli: &str, output: &str, total_bytes: usize) -> b
         return false;
     }
 
+    // Gemini CLI frequently emits large startup/auth banners before it can
+    // actually accept pasted input. Do not use the generic byte-count fallback
+    // here; wait for the real compose prompt instead.
+    if lower_cli.contains("gemini") {
+        let check_region = if clean.len() > 2000 {
+            let start = floor_char_boundary(&clean, clean.len() - 2000);
+            &clean[start..]
+        } else {
+            &clean
+        };
+        let lower_region = check_region.to_lowercase();
+        if lower_region.contains("waiting for auth") {
+            return false;
+        }
+        if lower_region.contains("type your message or @path/to/file") {
+            return true;
+        }
+        return check_region
+            .lines()
+            .rev()
+            .take(20)
+            .any(|line| line.trim().contains("Type your message or @path/to/file"));
+    }
+
     // Prompt patterns (from relay-pty parser.rs)
     // ›  = U+203A (single right-pointing angle quotation mark)
     // ❯  = U+276F (heavy right-pointing angle quotation mark, Claude Code v2.1.52+)
@@ -1273,6 +1297,21 @@ mod tests {
         // But works for non-claude CLIs
         assert!(!detect_cli_ready("aider", "loading...", 200));
         assert!(detect_cli_ready("aider", "loading...", 600));
+    }
+
+    #[test]
+    fn detect_cli_ready_gemini_waiting_for_auth_not_ready() {
+        let waiting = "Gemini CLI update available!\n\
+            Waiting for auth... (Press ESC or CTRL+C to cancel)\n";
+        assert!(!detect_cli_ready("gemini", waiting, 5_000));
+    }
+
+    #[test]
+    fn detect_cli_ready_gemini_compose_prompt_ready() {
+        let ready = "? for shortcuts\n\
+            Type your message or @path/to/file\n\
+            /model Auto (Gemini 3)\n";
+        assert!(detect_cli_ready("gemini", ready, 5_000));
     }
 
     #[test]
