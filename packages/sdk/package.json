@@ -94,7 +94,7 @@
   },
   "scripts": {
     "prebuild": "npm --prefix ../config run build",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "npx tsc -p tsconfig.build.json",
     "build:full": "tsc -p tsconfig.json && npm run bundle:binary",
     "bundle:binary": "node ./scripts/bundle-agent-relay.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
