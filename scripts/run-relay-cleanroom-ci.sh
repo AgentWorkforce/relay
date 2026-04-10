@@ -38,15 +38,17 @@ else
   overall="missing"
 fi
 
-python3 - <<PY
-import json, pathlib
-root = pathlib.Path(${SUMMARY_JSON@Q})
+SUMMARY_JSON="$SUMMARY_JSON" STATUS="$status" RUN_ID="$run_id" OVERALL="$overall" ARTIFACTS_DIR="$ARTIFACTS_DIR" VERDICT_FILE="$verdict_file" python3 - <<'PY'
+import json
+import os
+import pathlib
+root = pathlib.Path(os.environ['SUMMARY_JSON'])
 data = {
-  "status": ${status@Q},
-  "runId": ${run_id@Q},
-  "verdict": ${overall@Q},
-  "artifactsDir": ${ARTIFACTS_DIR@Q},
-  "verdictFile": ${verdict_file@Q},
+  'status': os.environ['STATUS'],
+  'runId': os.environ['RUN_ID'],
+  'verdict': os.environ['OVERALL'],
+  'artifactsDir': os.environ['ARTIFACTS_DIR'],
+  'verdictFile': os.environ['VERDICT_FILE'],
 }
 root.write_text(json.dumps(data, indent=2) + "\n")
 PY

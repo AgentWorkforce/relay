@@ -53,6 +53,8 @@ jobs:
         run: agent-relay --version
 
       - name: Run clean-room hardening validator
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/run-relay-cleanroom-ci.sh
 
       - name: Upload clean-room artifacts
