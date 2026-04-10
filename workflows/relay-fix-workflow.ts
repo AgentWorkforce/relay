@@ -41,7 +41,7 @@ await workflow('fix-agent-relay-local-bootstrap-and-messaging')
     type: 'deterministic',
     command: `
       set -e
-      cd ~/Projects/AgentWorkforce/relay
+      cd "$PWD"
       echo '## PATH' > /tmp/relay-fix-baseline.txt
       printf '%s\n' "$PATH" >> /tmp/relay-fix-baseline.txt
       echo '\n## which/type agent-relay' >> /tmp/relay-fix-baseline.txt
@@ -119,7 +119,7 @@ End by printing CHANGES_COMPLETE.`,
     dependsOn: ['fix-installer-and-launcher', 'fix-cli-messaging-local-mode'],
     command: `
       set -e
-      cd ~/Projects/AgentWorkforce/relay
+      cd "$PWD"
       if git diff --quiet; then
         echo 'NO_CHANGES_DETECTED'
         exit 1
@@ -135,7 +135,7 @@ End by printing CHANGES_COMPLETE.`,
     dependsOn: ['verify-files-changed'],
     command: `
       set -e
-      cd ~/Projects/AgentWorkforce/relay
+      cd "$PWD"
       npm install
       npm run -w @agent-relay/config build
       npm run build:sdk
@@ -149,7 +149,7 @@ End by printing CHANGES_COMPLETE.`,
     dependsOn: ['rebuild-relay'],
     command: `
       set -e
-      cd ~/Projects/AgentWorkforce/relay
+      cd "$PWD"
       bash install.sh || true
       env PATH="$HOME/.local/bin:$PATH" agent-relay --version
     `,
