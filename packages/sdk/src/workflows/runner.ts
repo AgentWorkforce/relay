@@ -374,6 +374,20 @@ interface CustomVerificationFailure {
   output: string;
 }
 
+interface DiagnosticResult {
+  analysis: string;
+  metadata: {
+    agentName: string;
+    elapsedMs: number;
+    tokenCount: number;
+  };
+}
+
+type DiagnosticVerificationCheck = VerificationCheck & {
+  diagnosticAgent?: string;
+  diagnosticTimeout?: number;
+};
+
 interface ChannelEvidenceOptions {
   stepName?: string;
   sender?: string;
@@ -4127,6 +4141,7 @@ export class WorkflowRunner {
     let lastEffectiveAgentDef: AgentDefinition | undefined;
     let lastEffectiveCwd: string | undefined;
     let lastAttemptReportCaptured = false;
+    let lastDiagnosticResult: DiagnosticResult | null = null;
 
     // OWNER_DECISION: INCOMPLETE_RETRY is enforced here at the attempt-loop level so every
     // interactive execution path shares the same contract:
@@ -4143,6 +4158,7 @@ export class WorkflowRunner {
       lastEffectiveAgentDef = undefined;
       lastEffectiveCwd = undefined;
       lastAttemptReportCaptured = false;
+      let stepOutputForDiagnostic = '';
 
       if (attempt > 0) {
         this.emit({ type: 'step:retrying', runId, stepName: step.name, attempt });
@@ -4202,21 +4218,28 @@ export class WorkflowRunner {
 
         // On retry attempts, prepend failure context so the agent knows what went wrong
         if (attempt > 0 && lastError) {
-          const priorOutput = (this.lastFailedStepOutput.get(step.name) ?? '').slice(-2000);
-          const customVerificationFailure = this.lastCustomVerificationFailure.get(step.name);
-          const verificationFailurePrompt = customVerificationFailure
-            ? `[VERIFICATION FAILED] Your code did not pass the verification check.\n` +
-              `Command: ${customVerificationFailure.command}\n` +
-              `Output:\n` +
-              `${customVerificationFailure.output}\n\n` +
-              `Fix the issues above before proceeding.\n`
-            : '';
-          resolvedTask =
-            `[RETRY — Attempt ${attempt + 1}/${maxRetries + 1}]\n` +
-            `Previous attempt failed: ${lastError}\n` +
-            verificationFailurePrompt +
-            (priorOutput ? `Previous output (last 2000 chars):\n${priorOutput}\n` : '') +
-            `---\n${resolvedTask}`;
+          if (lastDiagnosticResult) {
+            resolvedTask =
+              `[RETRY — Attempt ${attempt + 1}/${maxRetries + 1}] Verification failed.\n` +
+              `Diagnostic analysis:\n${lastDiagnosticResult.analysis}\n\n` +
+              `Original error: ${lastError}\n---\n${resolvedTask}`;
+          } else {
+            const priorOutput = (this.lastFailedStepOutput.get(step.name) ?? '').slice(-2000);
+            const customVerificationFailure = this.lastCustomVerificationFailure.get(step.name);
+            const verificationFailurePrompt = customVerificationFailure
+              ? `[VERIFICATION FAILED] Your code did not pass the verification check.\n` +
+                `Command: ${customVerificationFailure.command}\n` +
+                `Output:\n` +
+                `${customVerificationFailure.output}\n\n` +
+                `Fix the issues above before proceeding.\n`
+              : '';
+            resolvedTask =
+              `[RETRY — Attempt ${attempt + 1}/${maxRetries + 1}]\n` +
+              `Previous attempt failed: ${lastError}\n` +
+              verificationFailurePrompt +
+              (priorOutput ? `Previous output (last 2000 chars):\n${priorOutput}\n` : '') +
+              `---\n${resolvedTask}`;
+          }
         }
 
         // If this is an interactive agent, append awareness of non-interactive workers
@@ -4271,6 +4294,7 @@ export class WorkflowRunner {
             attempt
           );
           specialistOutput = result.specialistOutput;
+          stepOutputForDiagnostic = result.specialistOutput;
           ownerOutput = result.ownerOutput;
           ownerElapsed = result.ownerElapsed;
           completionReason = result.completionReason;
@@ -4355,6 +4379,7 @@ export class WorkflowRunner {
             }
           }
           specialistOutput = output;
+          stepOutputForDiagnostic = output;
           ownerOutput = output;
         }
 
@@ -4474,6 +4499,23 @@ export class WorkflowRunner {
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
         lastCompletionReason = err instanceof WorkflowCompletionError ? err.completionReason : undefined;
+        const diagnosticVerification = step.verification as DiagnosticVerificationCheck | undefined;
+        if (
+          err instanceof WorkflowCompletionError &&
+          err.completionReason === 'failed_verification' &&
+          diagnosticVerification?.diagnosticAgent &&
+          attempt < maxRetries
+        ) {
+          lastDiagnosticResult = await this.runDiagnosticAgent(
+            step,
+            lastError,
+            stepOutputForDiagnostic || (this.lastFailedStepOutput.get(step.name) ?? ''),
+            agentMap,
+            runId
+          );
+        } else {
+          lastDiagnosticResult = null;
+        }
         if (lastCompletionReason !== 'failed_verification') {
           this.lastCustomVerificationFailure.delete(step.name);
         }
@@ -4543,6 +4585,94 @@ export class WorkflowRunner {
     throw new Error(
       `Step "${step.name}" failed after ${maxRetries} retries: ${lastError ?? 'Unknown error'}`
     );
+  }
+
+  private async runDiagnosticAgent(
+    step: WorkflowStep,
+    verificationError: string,
+    stepOutput: string,
+    agentMap: Map<string, AgentDefinition>,
+    runId: string
+  ): Promise<DiagnosticResult | null> {
+    const verification = step.verification as DiagnosticVerificationCheck | undefined;
+    const diagnosticAgentName = verification?.diagnosticAgent;
+    if (!verification || !diagnosticAgentName) {
+      return null;
+    }
+
+    const rawDiagnosticDef = agentMap.get(diagnosticAgentName);
+    if (!rawDiagnosticDef) {
+      this.log(
+        `[${step.name}] Diagnostic agent "${diagnosticAgentName}" not found — falling back to standard retry`
+      );
+      return null;
+    }
+
+    const diagnosticAgentDef: AgentDefinition = {
+      ...WorkflowRunner.resolveAgentDef(rawDiagnosticDef),
+      interactive: false,
+    };
+    const verificationCommand =
+      verification.type === 'custom' ? verification.value : `${verification.type}: ${verification.value}`;
+    const diagnosticTimeout = verification.diagnosticTimeout ?? 60_000;
+    const diagnosticPrompt =
+      `The following verification failed after step "${step.name}".\n\n` +
+      `Verification command: ${verificationCommand}\n` +
+      `Verification output:\n${verificationError}\n\n` +
+      `Step task was:\n${step.task ?? ''}\n\n` +
+      `Step output (last 2000 chars):\n${stepOutput.slice(-2000)}\n\n` +
+      `Analyze what went wrong. Be specific. Do NOT fix the code.`;
+    const diagnosticStep: WorkflowStep = {
+      ...step,
+      name: `${step.name}-diagnostic-${runId.slice(0, 8)}`,
+      agent: diagnosticAgentName,
+      task: diagnosticPrompt,
+      verification: undefined,
+      retries: 0,
+    };
+    const diagnosticCwd = this.resolveExecutionCwd(diagnosticStep, diagnosticAgentDef);
+    const startedAt = Date.now();
+
+    try {
+      this.ensureBudgetAllowsSpawn(step.name, diagnosticAgentName);
+      this.log(`[${step.name}] Verification failed — running diagnostic agent '${diagnosticAgentName}'...`);
+      const diagnosticResult = await this.execNonInteractive(
+        diagnosticAgentDef,
+        diagnosticStep,
+        diagnosticTimeout
+      );
+      const elapsedMs = Date.now() - startedAt;
+      await this.captureAgentReport(runId, step.name, diagnosticAgentDef, diagnosticCwd, startedAt, Date.now());
+      const analysis = diagnosticResult.output.trim();
+      const tokenCount = Math.max(1, Math.ceil(analysis.length / 4));
+      const firstLine =
+        analysis
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find(Boolean) ?? '(no analysis returned)';
+
+      this.log(
+        `[${step.name}] Diagnostic complete (${elapsedMs}ms, ${tokenCount} tokens): ${firstLine}`
+      );
+
+      return {
+        analysis,
+        metadata: {
+          agentName: diagnosticAgentName,
+          elapsedMs,
+          tokenCount,
+        },
+      };
+    } catch (error) {
+      await this.captureAgentReport(runId, step.name, diagnosticAgentDef, diagnosticCwd, startedAt, Date.now());
+      const message = error instanceof Error ? error.message : String(error);
+      if (/\btimed out\b/i.test(message)) {
+        this.log(`[${step.name}] Diagnostic timed out — falling back to standard retry`);
+      } else {
+        this.log(`[${step.name}] Diagnostic failed — falling back to standard retry: ${message}`);
+      }
+      return null;
+    }
   }
 
   private buildOwnerRetryBudgetExceededMessage(

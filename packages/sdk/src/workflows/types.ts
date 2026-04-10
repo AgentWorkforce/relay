@@ -623,6 +623,21 @@ export interface VerificationCheck {
   value: string;
   description?: string;
   timeoutMs?: number;
+  /** Name of the agent to analyze verification failures before retrying. */
+  diagnosticAgent?: string;
+  /** Timeout for the diagnostic agent in milliseconds. Default: 60_000. */
+  diagnosticTimeout?: number;
+}
+
+/** Diagnostic output captured after a verification failure analysis run. */
+export interface DiagnosticResult {
+  agentName: string;
+  analysis: string;
+  durationMs: number;
+  tokens?: {
+    input: number;
+    output: number;
+  };
 }
 
 // ── Completion evidence ─────────────────────────────────────────────────────
@@ -871,6 +886,7 @@ export type WorkflowStepCompletionReason =
   | 'completed_by_process_exit'
   | 'retry_requested_by_owner'
   | 'failed_verification'
+  | 'failed_verification_with_diagnostic'
   | 'failed_owner_decision'
   | 'failed_no_evidence';
 
