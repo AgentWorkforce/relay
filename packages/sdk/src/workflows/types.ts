@@ -70,12 +70,36 @@ export interface IdleNudgeConfig {
   maxNudges?: number;
 }
 
+/** Provider-specific credential settings for the credential proxy. */
+export interface CredentialProxyProviderConfig {
+  /** Reference to the credential in the credential store. */
+  credentialId: string;
+  /** Optional env var name to read the provider API key from as a fallback. */
+  apiKeyEnvVar?: string;
+}
+
+/** Swarm-level credential proxy configuration. */
+export interface CredentialProxyConfig {
+  /** Proxy endpoint URL. */
+  proxyUrl: string;
+  /** JWT signing secret. Defaults to env RELAY_PROXY_JWT_SECRET when omitted. */
+  jwtSecret?: string;
+  /** Default max-token budget per agent session. */
+  defaultBudget?: number;
+  /** Provider credential mappings keyed by provider name. */
+  providers: Record<string, CredentialProxyProviderConfig>;
+}
+
 /** Swarm-level settings controlling the overall pattern. */
 export interface SwarmConfig {
   pattern: SwarmPattern;
   maxConcurrency?: number;
   timeoutMs?: number;
+  /** Max total tokens across all steps in the workflow. */
+  tokenBudget?: number;
   channel?: string;
+  /** Optional credential proxy configuration for agent API access. */
+  credentialProxy?: CredentialProxyConfig;
   /** Idle agent detection and nudging configuration for interactive agents. */
   idleNudge?: IdleNudgeConfig;
   /**
@@ -118,6 +142,14 @@ export type SwarmPattern =
 
 export type AgentPreset = 'lead' | 'worker' | 'reviewer' | 'analyst';
 
+/** Optional credential settings for a workflow agent. */
+export interface AgentCredentialConfig {
+  /** Opt the agent into credential proxy mode. */
+  proxy?: boolean;
+  /** Override the provider used for proxy credential resolution. */
+  provider?: string;
+}
+
 /** Definition of an agent participating in a workflow. */
 export interface AgentDefinition {
   name: string;
@@ -152,6 +184,8 @@ export interface AgentDefinition {
    *   analyst  → interactive: false, reads code/files, writes findings, no sub-agents
    */
   preset?: AgentPreset;
+  /** Optional credential proxy settings for this agent. */
+  credentials?: AgentCredentialConfig;
   /** System prompt / skills for API-mode agents (cli: 'api'). */
   skills?: string;
 }
@@ -588,6 +622,7 @@ export interface VerificationCheck {
   type: 'output_contains' | 'exit_code' | 'file_exists' | 'custom';
   value: string;
   description?: string;
+  timeoutMs?: number;
 }
 
 // ── Completion evidence ─────────────────────────────────────────────────────

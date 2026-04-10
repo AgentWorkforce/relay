@@ -48,7 +48,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     threads: true,
-    setupFiles: ['./test/vitest.setup.ts'],
+    setupFiles: [path.resolve(__dirname, './test/vitest.setup.ts')],
     include: [
       'src/**/*.test.ts',
       'src/**/*.test.tsx',

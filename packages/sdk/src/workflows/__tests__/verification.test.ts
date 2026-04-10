@@ -9,6 +9,8 @@ import {
   stripInjectedTaskEcho,
   checkOutputContains,
   checkFileExists,
+  checkCustom,
+  execCustomVerification,
   type VerificationCheck,
   type VerificationResult,
   type VerificationOptions,
@@ -117,11 +119,93 @@ describe('verification logic', () => {
     });
   });
 
-  // 4. custom verification — returns { passed: false } (no-op in runner)
+  // 4. custom verification — shell command execution
   describe('custom', () => {
-    it('should return passed: false (delegated to caller)', () => {
-      const result = run({ type: 'custom', value: 'anything' }, 'output');
+    it('should pass when shell command exits 0', () => {
+      const result = run({ type: 'custom', value: 'true' }, 'output');
+      expect(result.passed).toBe(true);
+      expect(result.completionReason).toBe('completed_verified');
+    });
+
+    it('should fail when shell command exits non-zero', () => {
+      expect(() => run({ type: 'custom', value: 'false' }, 'output')).toThrow(
+        WorkflowCompletionError
+      );
+    });
+
+    it('should return failure with allowFailure', () => {
+      const result = run({ type: 'custom', value: 'false' }, 'output', 'test-step', {
+        allowFailure: true,
+      });
       expect(result.passed).toBe(false);
+      expect(result.completionReason).toBe('failed_verification');
+    });
+
+    it('should preserve legacy no-op behavior when no command is provided', () => {
+      const result = run({ type: 'custom', value: '' }, 'output');
+      expect(result).toEqual({ passed: false });
+    });
+
+    it('should include command output in the failure message', () => {
+      const result = run({ type: 'custom', value: 'printf "compile failed" >&2; exit 1' }, 'output', 'test-step', {
+        allowFailure: true,
+      });
+      expect(result.error).toContain('custom check "printf "compile failed" >&2; exit 1" failed');
+      expect(result.error).toContain('compile failed');
+    });
+  });
+
+  describe('execCustomVerification', () => {
+    it('should return passed true for exit-0 command', () => {
+      expect(execCustomVerification('true', process.cwd())).toEqual({ passed: true, output: '' });
+    });
+
+    it('should return passed false for exit-1 command', () => {
+      const result = execCustomVerification('false', process.cwd());
+      expect(result.passed).toBe(false);
+      expect(result.output.length).toBeGreaterThanOrEqual(0);
+    });
+
+    it('should capture stdout from command', () => {
+      const result = execCustomVerification('echo hello', process.cwd());
+      expect(result.passed).toBe(true);
+      expect(result.output).toBe('hello');
+    });
+
+    it('should capture stderr from a failing command', () => {
+      const result = execCustomVerification('printf "boom" >&2; exit 1', process.cwd());
+      expect(result.passed).toBe(false);
+      expect(result.output).toContain('boom');
+    });
+  });
+
+  // 4b. checkCustom unit tests
+  describe('checkCustom', () => {
+    it('should return passed true for exit-0 command', () => {
+      expect(checkCustom('true', 'any')).toEqual({ passed: true, stdout: '' });
+    });
+
+    it('should return passed false for exit-1 command', () => {
+      const result = checkCustom('false', 'any');
+      expect(result.passed).toBe(false);
+      expect(result.error).toBeDefined();
+    });
+
+    it('should capture stdout from command', () => {
+      const result = checkCustom('echo hello', 'any');
+      expect(result.passed).toBe(true);
+      expect(result.stdout).toBe('hello');
+    });
+
+    it('should handle regex matching', () => {
+      expect(checkCustom('regex:^foo', 'foobar')).toEqual({ passed: true });
+      expect(checkCustom('regex:^foo', 'barfoo').passed).toBe(false);
+    });
+
+    it('should handle invalid regex gracefully', () => {
+      const result = checkCustom('regex:[', 'any');
+      expect(result.passed).toBe(false);
+      expect(result.error).toContain('invalid regex');
     });
   });
 

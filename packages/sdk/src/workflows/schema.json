@@ -113,6 +113,11 @@
           "minimum": 0,
           "description": "Global swarm timeout in milliseconds"
         },
+        "tokenBudget": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum total tokens allowed across all workflow steps"
+        },
         "channel": {
           "type": "string",
           "description": "Default relay channel for agent communication"
@@ -820,7 +825,7 @@
         },
         "value": {
           "type": "string",
-          "description": "Expected value or expression for verification"
+          "description": "Expected value or expression for verification. For custom type: a shell command (exit 0 = pass, step output in $STEP_OUTPUT) or 'regex:<pattern>' for regex matching against output."
         },
         "description": {
           "type": "string",
