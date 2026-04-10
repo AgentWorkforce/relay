@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 
+import { GitHubStarsBadge } from '../../components/GitHubStars';
 import { SiteFooter } from '../../components/SiteFooter';
 import { SiteNav } from '../../components/SiteNav';
 import { PrimitivesContent } from './PrimitivesContent';
@@ -13,7 +14,7 @@ export const metadata: Metadata = {
 export default function PrimitivesPage() {
   return (
     <>
-      <SiteNav />
+      <SiteNav actions={<GitHubStarsBadge />} />
       <PrimitivesContent />
       <SiteFooter />
     </>

@@ -32,6 +32,49 @@
   /* DocsNav wrapper — no longer sticky itself since sidebarCol handles it */
 }
 
+.mobileSidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0 0 0.35rem;
+  padding: 0 0 0.85rem;
+  border-bottom: 1px solid var(--nav-border);
+}
+
+.mobileSidebar .navGroup {
+  margin-bottom: 0.8rem;
+}
+
+.mobileSidebar .navGroup:last-child {
+  margin-bottom: 0;
+}
+
+.mobileSidebar .navGroupTitle {
+  color: var(--nav-subtle);
+  margin-bottom: 0.35rem;
+  padding-left: 0.9rem;
+}
+
+.mobileSidebar .navLink {
+  padding: 0.65rem 0.9rem;
+  border-radius: 0.6rem;
+  color: var(--nav-muted);
+}
+
+.mobileSidebar .navLink:hover {
+  background: var(--nav-surface);
+  color: var(--nav-fg);
+}
+
+.mobileSidebar .navLinkActive {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary-hover);
+}
+
+.mobileSidebar .navIcon {
+  opacity: 0.9;
+}
+
 .sidebarLogo { display: none; }
 
 .content {
@@ -786,7 +829,7 @@
 
 @media (max-width: 900px) {
   .docsBody { grid-template-columns: 1fr; }
-  .sidebarCol { position: relative; height: auto; border-right: none; border-bottom: 1px solid var(--line); }
+  .sidebarCol { display: none; }
   .content { padding: 1.5rem 1rem 3rem; }
   .bannerLink {
     padding: 0.9rem 0.95rem;

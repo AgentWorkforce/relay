@@ -9,8 +9,44 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  changes:
+    name: Detect web-only change set
+    runs-on: ubuntu-latest
+    outputs:
+      web_only: ${{ steps.scope.outputs.web_only }}
+    steps:
+      - id: scope
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let files = [];
+
+            if (context.eventName === 'pull_request') {
+              const changed = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                per_page: 100,
+              });
+              files = changed.map((file) => file.filename);
+            } else {
+              const comparison = await github.rest.repos.compareCommits({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                base: context.payload.before,
+                head: context.sha,
+              });
+              files = (comparison.data.files || []).map((file) => file.filename);
+            }
+
+            const webOnly = files.length > 0 && files.every((file) => file.startsWith('web/'));
+            core.info(`Changed files (${files.length}): ${files.join(', ')}`);
+            core.setOutput('web_only', webOnly ? 'true' : 'false');
+
   rust-test:
     name: Rust Tests (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.web_only != 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -24,6 +60,8 @@ jobs:
 
   rust-cross-compile:
     name: Cross-compile check (${{ matrix.target }})
+    needs: changes
+    if: needs.changes.outputs.web_only != 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -55,6 +93,8 @@ jobs:
 
   rust-clippy:
     name: Clippy
+    needs: changes
+    if: needs.changes.outputs.web_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,6 +106,8 @@ jobs:
 
   rust-fmt:
     name: Format
+    needs: changes
+    if: needs.changes.outputs.web_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -76,6 +118,8 @@ jobs:
 
   sdk-check:
     name: SDK TypeScript Check
+    needs: changes
+    if: needs.changes.outputs.web_only != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
