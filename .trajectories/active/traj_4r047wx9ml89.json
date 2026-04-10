@@ -186,6 +186,18 @@
             "reasoning": "The RSS action belongs in the page header, and using only the hero divider avoids the duplicate rule lines above the archive list."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1775825762328,
+          "type": "decision",
+          "content": "Removed web/public/docs to stop preview routing collisions with /docs: Removed web/public/docs to stop preview routing collisions with /docs",
+          "raw": {
+            "question": "Removed web/public/docs to stop preview routing collisions with /docs",
+            "chosen": "Removed web/public/docs to stop preview routing collisions with /docs",
+            "alternatives": [],
+            "reasoning": "SST/OpenNext treats top-level public directories as static route prefixes, so keeping public/docs caused preview environments to route /docs* to S3 instead of the Next app."
+          },
+          "significance": "high"
         }
       ]
     }
