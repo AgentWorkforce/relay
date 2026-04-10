@@ -57,39 +57,24 @@ await workflow('fix-agent-relay-local-bootstrap-and-messaging')
     failOnError: false,
   })
 
-  .step('plan-fixes', {
-    agent: 'lead',
+  .step('read-plan-doc', {
+    type: 'deterministic',
     dependsOn: ['capture-current-failures'],
-    task: `Analyze the current local agent-relay failures and produce a concrete repair plan.
-
-Context:
-{{steps.capture-current-failures.output}}
-
-Focus on these known issues:
-- broken runtime-manager shim shadowing the real CLI
-- missing or stale local launcher after install.sh
-- standalone binary verification failing on macOS
-- fallback npm install path being unreliable
-- local broker messaging issues: \`send\` default sender and \`history\` requiring RELAY_API_KEY
-
-Output sections:
-1. ROOT_CAUSES
-2. FILES_TO_EDIT
-3. TEST_PLAN
-4. RISKS
-
-End with PLAN_COMPLETE.`,
-    verification: { type: 'output_contains', value: 'PLAN_COMPLETE' },
-    retries: 2,
+    command: 'cat workflows/PLAN-relay-fix-workflow.md',
+    captureOutput: true,
+    failOnError: true,
   })
 
   .step('fix-installer-and-launcher', {
     agent: 'impl-a',
-    dependsOn: ['plan-fixes'],
+    dependsOn: ['read-plan-doc'],
     task: `Implement the installer/bootstrap fixes in ~/Projects/AgentWorkforce/relay.
 
-Plan:
-{{steps.plan-fixes.output}}
+Plan document:
+{{steps.read-plan-doc.output}}
+
+Observed baseline:
+{{steps.capture-current-failures.output}}
 
 Requirements:
 - ensure install.sh leaves users with a working \`agent-relay\` command on macOS
@@ -107,11 +92,14 @@ End by printing CHANGES_COMPLETE.`,
 
   .step('fix-cli-messaging-local-mode', {
     agent: 'impl-b',
-    dependsOn: ['plan-fixes'],
+    dependsOn: ['read-plan-doc'],
     task: `Implement local broker messaging fixes in ~/Projects/AgentWorkforce/relay.
 
-Plan:
-{{steps.plan-fixes.output}}
+Plan document:
+{{steps.read-plan-doc.output}}
+
+Observed baseline:
+{{steps.capture-current-failures.output}}
 
 Requirements:
 - fix or harden \`agent-relay send\` in local broker mode so default sender behavior does not break message delivery
@@ -149,6 +137,8 @@ End by printing CHANGES_COMPLETE.`,
       set -e
       cd ~/Projects/AgentWorkforce/relay
       npm install
+      npm run -w @agent-relay/config build
+      npm run build:sdk
       npm run build
     `,
     failOnError: true,
@@ -194,11 +184,11 @@ End by printing CHANGES_COMPLETE.`,
 
   .step('review-results', {
     agent: 'reviewer',
-    dependsOn: ['plan-fixes', 'verify-files-changed', 'smoke-test-local-launcher', 'integration-test-sage'],
+    dependsOn: ['read-plan-doc', 'verify-files-changed', 'smoke-test-local-launcher', 'integration-test-sage'],
     task: `Review the relay fixes and test evidence.
 
 Plan:
-{{steps.plan-fixes.output}}
+{{steps.read-plan-doc.output}}
 
 Changed files evidence:
 {{steps.verify-files-changed.output}}
