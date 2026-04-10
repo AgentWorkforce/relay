@@ -130,15 +130,45 @@ End by printing CHANGES_COMPLETE.`,
     failOnError: true,
   })
 
-  .step('rebuild-relay', {
+  .step('install-deps', {
     type: 'deterministic',
     dependsOn: ['verify-files-changed'],
     command: `
       set -e
       cd "$PWD"
       npm install
+    `,
+    failOnError: true,
+  })
+
+  .step('build-config', {
+    type: 'deterministic',
+    dependsOn: ['install-deps'],
+    command: `
+      set -e
+      cd "$PWD"
       npm run -w @agent-relay/config build
+    `,
+    failOnError: true,
+  })
+
+  .step('build-sdk', {
+    type: 'deterministic',
+    dependsOn: ['build-config'],
+    command: `
+      set -e
+      cd "$PWD"
       npm run build:sdk
+    `,
+    failOnError: true,
+  })
+
+  .step('build-all', {
+    type: 'deterministic',
+    dependsOn: ['build-sdk'],
+    command: `
+      set -e
+      cd "$PWD"
       npm run build
     `,
     failOnError: true,
@@ -146,7 +176,7 @@ End by printing CHANGES_COMPLETE.`,
 
   .step('smoke-test-local-launcher', {
     type: 'deterministic',
-    dependsOn: ['rebuild-relay'],
+    dependsOn: ['build-all'],
     command: `
       set -e
       cd "$PWD"
