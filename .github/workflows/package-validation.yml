@@ -193,9 +193,11 @@ jobs:
           if [ "$ARCH" = "arm64" ]; then
             TARGET="bun-darwin-arm64"
             OUTPUT="agent-relay-darwin-arm64"
+            EXPECTED_ARCH="arm64"
           elif [ "$ARCH" = "x86_64" ]; then
             TARGET="bun-darwin-x64"
             OUTPUT="agent-relay-darwin-x64"
+            EXPECTED_ARCH="x86_64"
           else
             echo "Unsupported macOS runner architecture: $ARCH"
             exit 1
@@ -209,7 +211,8 @@ jobs:
             --define="process.env.AGENT_RELAY_VERSION=\"${VERSION}\"" \
             ./dist/src/cli/index.js \
             --outfile "release-binaries/${OUTPUT}"
-          chmod +x "release-binaries/${OUTPUT}"
+          scripts/sign-macos-binary.sh "release-binaries/${OUTPUT}"
+          scripts/verify-macos-binary.sh "release-binaries/${OUTPUT}" "$EXPECTED_ARCH" -- --version
           echo "STANDALONE_CLI=$PWD/release-binaries/${OUTPUT}" >> "$GITHUB_ENV"
 
       - name: Smoke standalone lifecycle

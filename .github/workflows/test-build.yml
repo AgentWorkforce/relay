@@ -5,6 +5,8 @@ on:
     paths:
       - 'scripts/build-bun.sh'
       - 'scripts/build-openclaw-bun.sh'
+      - 'scripts/sign-macos-binary.sh'
+      - 'scripts/verify-macos-binary.sh'
       - 'packages/openclaw/**'
       - '.github/workflows/test-build.yml'
       - '.github/workflows/build-openclaw-binary.yml'
@@ -12,6 +14,8 @@ on:
     paths:
       - 'scripts/build-bun.sh'
       - 'scripts/build-openclaw-bun.sh'
+      - 'scripts/sign-macos-binary.sh'
+      - 'scripts/verify-macos-binary.sh'
       - 'packages/openclaw/**'
       - '.github/workflows/test-build.yml'
       - '.github/workflows/build-openclaw-binary.yml'
@@ -38,8 +42,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
-          cache: "npm"
+          node-version: '22'
+          cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
@@ -77,8 +81,17 @@ jobs:
         run: |
           BINARY=".release/agent-relay"
           if [ -f "$BINARY" ]; then
-            chmod +x "$BINARY"
-            "$BINARY" --version
+            if [ "$(uname -s)" = "Darwin" ]; then
+              if [ "$(uname -m)" = "arm64" ]; then
+                EXPECTED_ARCH="arm64"
+              else
+                EXPECTED_ARCH="x86_64"
+              fi
+              scripts/verify-macos-binary.sh "$BINARY" "$EXPECTED_ARCH" -- --version
+            else
+              chmod +x "$BINARY"
+              "$BINARY" --version
+            fi
             echo "✓ Binary executes successfully"
           fi
 
@@ -116,8 +129,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
-          cache: "npm"
+          node-version: '22'
+          cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
@@ -142,8 +155,18 @@ jobs:
 
       - name: Verify binary works
         run: |
-          chmod +x .release/relay-openclaw
-          .release/relay-openclaw --version
+          if [ "$(uname -s)" = "Darwin" ]; then
+            scripts/sign-macos-binary.sh .release/relay-openclaw
+            if [ "$(uname -m)" = "arm64" ]; then
+              EXPECTED_ARCH="arm64"
+            else
+              EXPECTED_ARCH="x86_64"
+            fi
+            scripts/verify-macos-binary.sh .release/relay-openclaw "$EXPECTED_ARCH" -- --version
+          else
+            chmod +x .release/relay-openclaw
+            .release/relay-openclaw --version
+          fi
           echo "✓ relay-openclaw binary executes successfully"
           .release/relay-openclaw help
           echo "✓ relay-openclaw help works"
@@ -159,7 +182,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: '22'
 
       - name: Test script without bun (should install)
         run: |

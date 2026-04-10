@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'packages/openclaw/**'
+      - 'scripts/sign-macos-binary.sh'
+      - 'scripts/verify-macos-binary.sh'
       - '.github/workflows/build-openclaw-binary.yml'
   workflow_dispatch:
     inputs:
@@ -74,6 +76,14 @@ jobs:
             --outfile "${output}"
 
           test -f "${output}" || { echo "::error::Binary not produced: ${output}"; exit 1; }
+          if [[ "${output}" == *darwin-* ]]; then
+            scripts/sign-macos-binary.sh "${output}"
+            case "${output}" in
+              *darwin-arm64) expected_arch="arm64" ;;
+              *) expected_arch="x86_64" ;;
+            esac
+            scripts/verify-macos-binary.sh "${output}" "${expected_arch}" -- --version
+          fi
           echo "Uncompressed: $(du -h "${output}" | cut -f1)"
 
           gzip -9 -k "${output}"
@@ -168,7 +178,7 @@ jobs:
             artifacts/relay-openclaw-*.gz
             artifacts/SHA256SUMS
           prerelease: false
-          make_latest: "false"
+          make_latest: 'false'
 
       - name: Delete existing openclaw-latest release
         run: gh release delete openclaw-latest --yes --cleanup-tag || true
@@ -196,4 +206,4 @@ jobs:
             artifacts/relay-openclaw-*.gz
             artifacts/SHA256SUMS
           prerelease: true
-          make_latest: "false"
+          make_latest: 'false'

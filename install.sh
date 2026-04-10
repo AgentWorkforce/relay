@@ -340,6 +340,7 @@ strip_quarantine() {
             xattr -d com.apple.quarantine "$1" 2>/dev/null || true
         fi
         if has_command codesign; then
+            codesign --remove-signature "$1" >/dev/null 2>&1 || true
             codesign --force --sign - "$1" >/dev/null 2>&1 || true
         fi
     fi

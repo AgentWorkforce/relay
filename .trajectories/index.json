@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-10T08:24:40.374Z",
+  "lastUpdated": "2026-04-10T11:29:16.283Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -1120,9 +1120,17 @@
     },
     "traj_4r047wx9ml89": {
       "title": "Fast workspace seeding — symlink mount + tar bulk upload",
-      "status": "active",
+      "status": "abandoned",
       "startedAt": "2026-04-07T13:28:27.975Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/active/traj_4r047wx9ml89.json"
+      "completedAt": "2026-04-10T11:22:13.235Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-04/traj_4r047wx9ml89.json"
+    },
+    "traj_28hhnf4xoa6i": {
+      "title": "Harden macOS binary release verification",
+      "status": "completed",
+      "startedAt": "2026-04-10T11:22:15.709Z",
+      "completedAt": "2026-04-10T11:29:16.155Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-04/traj_28hhnf4xoa6i.json"
     }
   }
 }

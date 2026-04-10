@@ -9,7 +9,7 @@
       "url": "https://github.com/AgentWorkforce/relay/pull/691"
     }
   },
-  "status": "active",
+  "status": "abandoned",
   "startedAt": "2026-04-07T13:28:27.975Z",
   "agents": [
     {
@@ -150,8 +150,15 @@
             "reasoning": "The first workflow run created .worktrees/npm-publish-hardening and checked out fix/npm-publish-hardening before retrying; subsequent retries failed because the branch was already checked out. The setup step now detects the registered worktree and continues."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1775820133236,
+          "type": "note",
+          "content": "Abandoned: Clearing stale active PR 691 trajectory so new CI hardening work can record its own trail",
+          "significance": "high"
         }
-      ]
+      ],
+      "endedAt": "2026-04-10T11:22:13.235Z"
     }
   ],
   "commits": [],
@@ -161,5 +168,6 @@
   "_trace": {
     "startRef": "93a6601d549b4018b3533d1d8757cc1e2389b168",
     "endRef": "93a6601d549b4018b3533d1d8757cc1e2389b168"
-  }
+  },
+  "completedAt": "2026-04-10T11:22:13.235Z"
 }
