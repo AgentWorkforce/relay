@@ -366,7 +366,7 @@ BROKER_LOG="$ARTIFACTS/broker-start.log"
   STATUS_REACHED=false
   for ATTEMPT in 1 2 3 4 5 6; do
     SLEEP_SECS=$((ATTEMPT * 2))
-    echo "  attempt $ATTEMPT: sleeping ${SLEEP_SECS}s..."
+    echo "  attempt $ATTEMPT: sleeping \${SLEEP_SECS}s..."
     sleep "$SLEEP_SECS"
     STATUS_EXIT=0
     STATUS_OUTPUT=$(agent-relay status 2>&1) || STATUS_EXIT=$?
@@ -425,13 +425,13 @@ source "$ARTIFACTS/isolation.env"
   echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   # A7: Spawn WorkflowProbe
-  echo "--- command: agent-relay spawn WorkflowProbe --task 'e2e probe ping' ---"
+  echo "--- command: agent-relay spawn WorkflowProbe claude 'e2e probe ping' ---"
   SPAWN_EXIT=0
-  SPAWN_OUTPUT=$(agent-relay spawn WorkflowProbe --task "e2e probe ping" 2>&1) || SPAWN_EXIT=$?
+  SPAWN_OUTPUT=$(agent-relay spawn WorkflowProbe claude "e2e probe ping" 2>&1) || SPAWN_EXIT=$?
   echo "$SPAWN_OUTPUT"
   echo "exit_code: $SPAWN_EXIT"
   {
-    echo "command: agent-relay spawn WorkflowProbe --task 'e2e probe ping'"
+    echo "command: agent-relay spawn WorkflowProbe claude 'e2e probe ping'"
     echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "$SPAWN_OUTPUT"
     echo "exit_code: $SPAWN_EXIT"
