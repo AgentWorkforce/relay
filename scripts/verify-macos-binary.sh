@@ -17,6 +17,12 @@ EXPECTED_ARCH="$2"
 shift 3
 SMOKE_ARGS=("$@")
 
+EXEC_BINARY="$BINARY"
+case "$EXEC_BINARY" in
+  */*) ;;
+  *) EXEC_BINARY="./$EXEC_BINARY" ;;
+esac
+
 if [ ! -s "$BINARY" ]; then
   echo "Binary missing or empty: $BINARY" >&2
   exit 1
@@ -57,9 +63,9 @@ HOST_ARCH="$(uname -m)"
 RUNNER=()
 
 if [ "$EXPECTED_ARCH" = "$HOST_ARCH" ]; then
-  RUNNER=("$BINARY")
+  RUNNER=("$EXEC_BINARY")
 elif [ "$EXPECTED_ARCH" = "x86_64" ] && [ "$HOST_ARCH" = "arm64" ] && arch -x86_64 /usr/bin/true 2>/dev/null; then
-  RUNNER=(arch -x86_64 "$BINARY")
+  RUNNER=(arch -x86_64 "$EXEC_BINARY")
 fi
 
 if [ "${#RUNNER[@]}" -eq 0 ]; then
