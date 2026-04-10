@@ -1,0 +1,104 @@
+{
+  "id": "traj_1775804843946_47029aee",
+  "version": 1,
+  "task": {
+    "title": "S01-trivial-single-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "619d5349345cc40bf5bbc77f"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-04-10T07:07:23.946Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-04-10T07:07:23.946Z"
+    },
+    {
+      "name": "a",
+      "role": "specialist",
+      "joinedAt": "2026-04-10T07:07:27.241Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_582ccd26",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-04-10T07:07:23.946Z",
+      "events": [
+        {
+          "ts": 1775804843947,
+          "type": "note",
+          "content": "Approach: 1-step dag workflow — Parsed 1 steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-04-10T07:07:27.242Z"
+    },
+    {
+      "id": "ch_8a1ed652",
+      "title": "Execution: only",
+      "agentName": "a",
+      "startedAt": "2026-04-10T07:07:27.242Z",
+      "events": [
+        {
+          "ts": 1775804847242,
+          "type": "note",
+          "content": "\"only\": Reply with exactly the literal string SCENARIO_S01_OK on a single line",
+          "raw": {
+            "agent": "a"
+          }
+        },
+        {
+          "ts": 1775804862051,
+          "type": "completion-evidence",
+          "content": "\"only\" verification-based completion — Verification passed (2 signal(s), 2 file change(s), exit=0; signals=0, SCENARIO_S01_OK; files=modified:.relay/workspaces.json, created:opencode.json; exit=0)",
+          "significance": "medium",
+          "raw": {
+            "stepName": "only",
+            "completionMode": "verification",
+            "reason": "Verification passed",
+            "evidence": {
+              "summary": "2 signal(s), 2 file change(s), exit=0",
+              "signals": ["0", "SCENARIO_S01_OK"],
+              "files": ["modified:.relay/workspaces.json", "created:opencode.json"],
+              "exitCode": 0
+            }
+          }
+        },
+        {
+          "ts": 1775804862051,
+          "type": "finding",
+          "content": "\"only\" completed → > relaycast · gpt-5.4-proError: Your workspace has reached its monthly spending limit of $50. Manage your limits here: h",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-04-10T07:07:42.052Z"
+    },
+    {
+      "id": "ch_ee80707a",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-04-10T07:07:42.052Z",
+      "events": [
+        {
+          "ts": 1775804862052,
+          "type": "reflection",
+          "content": "All 1 steps completed in 18s. (completed in 18 seconds)",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-04-10T07:07:42.052Z"
+    }
+  ],
+  "completedAt": "2026-04-10T07:07:42.052Z",
+  "retrospective": {
+    "summary": "All 1 steps completed in 18s.",
+    "approach": "dag workflow (1 agents)",
+    "confidence": 1,
+    "learnings": [],
+    "challenges": []
+  }
+}

@@ -102,6 +102,54 @@
             "reasoning": "The repository only had a single dedicated workflow file for this action at .github/workflows/sst-command.yml, with no other code or docs references requiring follow-up edits."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1775808227427,
+          "type": "decision",
+          "content": "Publish failed because root package tarball contains nested openclaw node_modules hard link from esbuild: Publish failed because root package tarball contains nested openclaw node_modules hard link from esbuild",
+          "raw": {
+            "question": "Publish failed because root package tarball contains nested openclaw node_modules hard link from esbuild",
+            "chosen": "Publish failed because root package tarball contains nested openclaw node_modules hard link from esbuild",
+            "alternatives": [],
+            "reasoning": "npm registry rejects hard-link tar headers; local npm pack reproduced package/packages/openclaw/node_modules/esbuild/bin/esbuild as a hard link to @esbuild platform binary"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775808654896,
+          "type": "decision",
+          "content": "Added relay workflow to harden npm publish with validated tarball staging: Added relay workflow to harden npm publish with validated tarball staging",
+          "raw": {
+            "question": "Added relay workflow to harden npm publish with validated tarball staging",
+            "chosen": "Added relay workflow to harden npm publish with validated tarball staging",
+            "alternatives": [],
+            "reasoning": "Most robust long-term fix is to publish a single validated .tgz, exclude nested workspace node_modules from package contents, and run the same tarball gate in PR validation and release publish"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775808801732,
+          "type": "decision",
+          "content": "Validated harden-npm-publish workflow with agent-relay dry run: Validated harden-npm-publish workflow with agent-relay dry run",
+          "raw": {
+            "question": "Validated harden-npm-publish workflow with agent-relay dry run",
+            "chosen": "Validated harden-npm-publish workflow with agent-relay dry run",
+            "alternatives": [],
+            "reasoning": "Dry run parsed the TypeScript workflow, produced 17 steps across 13 waves, and returned validation pass with zero warnings"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775809480373,
+          "type": "decision",
+          "content": "Made harden-npm-publish setup idempotent: Made harden-npm-publish setup idempotent",
+          "raw": {
+            "question": "Made harden-npm-publish setup idempotent",
+            "chosen": "Made harden-npm-publish setup idempotent",
+            "alternatives": [],
+            "reasoning": "The first workflow run created .worktrees/npm-publish-hardening and checked out fix/npm-publish-hardening before retrying; subsequent retries failed because the branch was already checked out. The setup step now detects the registered worktree and continues."
+          },
+          "significance": "high"
         }
       ]
     }

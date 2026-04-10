@@ -1,0 +1,147 @@
+{
+  "id": "traj_1775805530139_6c80bcb0",
+  "version": 1,
+  "task": {
+    "title": "S05-error-case-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "b7d2f984be8ed959fd3a9adf"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-04-10T07:18:50.139Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-04-10T07:18:50.139Z"
+    },
+    {
+      "name": "a",
+      "role": "specialist",
+      "joinedAt": "2026-04-10T07:18:53.370Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_ef89d6bd",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-04-10T07:18:50.139Z",
+      "events": [
+        {
+          "ts": 1775805530139,
+          "type": "note",
+          "content": "Approach: 1-step dag workflow — Parsed 1 steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-04-10T07:18:53.371Z"
+    },
+    {
+      "id": "ch_d2ca6fa1",
+      "title": "Execution: impossible",
+      "agentName": "a",
+      "startedAt": "2026-04-10T07:18:53.371Z",
+      "events": [
+        {
+          "ts": 1775805533371,
+          "type": "note",
+          "content": "\"impossible\": Print exactly NEVER_GONNA_MATCH and nothing else.",
+          "raw": {
+            "agent": "a"
+          }
+        },
+        {
+          "ts": 1775805546212,
+          "type": "note",
+          "content": "\"impossible\" retrying (attempt 1/3)"
+        }
+      ],
+      "endedAt": "2026-04-10T07:19:16.214Z"
+    },
+    {
+      "id": "ch_6ee1ff8a",
+      "title": "Execution: impossible",
+      "agentName": "a",
+      "startedAt": "2026-04-10T07:19:16.214Z",
+      "events": [
+        {
+          "ts": 1775805556214,
+          "type": "note",
+          "content": "\"impossible\": Print exactly NEVER_GONNA_MATCH and nothing else.",
+          "raw": {
+            "agent": "a"
+          }
+        },
+        {
+          "ts": 1775805565185,
+          "type": "note",
+          "content": "\"impossible\" retrying (attempt 2/3)"
+        }
+      ],
+      "endedAt": "2026-04-10T07:19:35.187Z"
+    },
+    {
+      "id": "ch_0bfa39c7",
+      "title": "Execution: impossible",
+      "agentName": "a",
+      "startedAt": "2026-04-10T07:19:35.187Z",
+      "events": [
+        {
+          "ts": 1775805575187,
+          "type": "note",
+          "content": "\"impossible\": Print exactly NEVER_GONNA_MATCH and nothing else.",
+          "raw": {
+            "agent": "a"
+          }
+        },
+        {
+          "ts": 1775805583198,
+          "type": "error",
+          "content": "\"impossible\" failed [verification_mismatch]: Agent completed but did not output the expected sentinel \"SCENARIO_S05_DEFINITELY_NOT_PRESENT\". The task prompt may not clearly specify the required output format, or the agent produced correct work but did not emit the signal.",
+          "significance": "high",
+          "raw": {
+            "cause": "verification_mismatch",
+            "rawError": "Step \"impossible\" verification failed and no owner decision or evidence established completion: Verification failed for \"impossible\": output does not contain \"SCENARIO_S05_DEFINITELY_NOT_PRESENT\"",
+            "attempt": 3,
+            "maxRetries": 2
+          }
+        }
+      ],
+      "endedAt": "2026-04-10T07:19:44.412Z"
+    },
+    {
+      "id": "ch_b92acd1d",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-04-10T07:19:44.412Z",
+      "events": [
+        {
+          "ts": 1775805584412,
+          "type": "reflection",
+          "content": "Failed at \"impossible\" [verification_mismatch] after 54s. 0/1 steps completed before failure. (abandoned after 54 seconds)",
+          "significance": "high"
+        },
+        {
+          "ts": 1775805584412,
+          "type": "error",
+          "content": "Workflow abandoned: Step \"impossible\" failed: Step \"impossible\" failed after 2 retries: Step \"impossible\" verification failed and no owner decision or evidence established completion: Verification failed for \"impossible\": output does not contain \"SCENARIO_S05_DEFINITELY_NOT_PRESENT\"",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-04-10T07:19:44.412Z"
+    }
+  ],
+  "completedAt": "2026-04-10T07:19:44.412Z",
+  "retrospective": {
+    "summary": "Failed at \"impossible\" [verification_mismatch] after 54s. 0/1 steps completed before failure.",
+    "approach": "dag workflow (1 agents)",
+    "confidence": 0,
+    "learnings": [
+      "Verification mismatch on: \"impossible\" (expected \"?\"). Make the required output format more explicit in the task prompt."
+    ],
+    "challenges": [
+      "Agent completed but did not output the expected sentinel \"(unknown)\". The task prompt may not clearly specify the required output format, or the agent produced correct work but did not emit the signal."
+    ]
+  }
+}
