@@ -3348,6 +3348,9 @@ export class WorkflowRunner {
 
         const stepCwd = this.resolveEffectiveCwd(step);
         this.beginStepEvidence(step.name, [stepCwd], state.row.startedAt);
+        this.log(
+          `[${step.name}] Running: ${resolvedCommand.slice(0, 200)}${resolvedCommand.length > 200 ? '...' : ''}`
+        );
 
         if (this.executor?.executeDeterministicStep) {
           const executorResult = await this.executor.executeDeterministicStep(step, resolvedCommand, stepCwd);
@@ -3355,6 +3358,10 @@ export class WorkflowRunner {
           lastExitSignal = undefined;
           const failOnError = step.failOnError !== false;
           if (failOnError && executorResult.exitCode !== 0) {
+            this.log(`[${step.name}] Command failed (exit code ${executorResult.exitCode})`);
+            if (executorResult.output) {
+              this.log(`[${step.name}] Output:\n${executorResult.output}`);
+            }
             throw new Error(
               `Command failed with exit code ${executorResult.exitCode}: ${executorResult.output.slice(0, 500)}`
             );
@@ -3443,6 +3450,13 @@ export class WorkflowRunner {
 
             const failOnError = step.failOnError !== false;
             if (failOnError && code !== 0 && code !== null) {
+              this.log(`[${step.name}] Command failed (exit code ${code})`);
+              if (stdout) {
+                this.log(`[${step.name}] stdout:\n${stdout}`);
+              }
+              if (stderr) {
+                this.log(`[${step.name}] stderr:\n${stderr}`);
+              }
               reject(
                 new Error(`Command failed with exit code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`)
               );
