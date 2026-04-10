@@ -1,13 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import matter from 'gray-matter';
+import { resolveContentDir } from './content-paths';
 
-const moduleFilename = fileURLToPath(import.meta.url);
-const moduleDirname = path.dirname(moduleFilename);
-
-const BLOG_DIR = path.resolve(moduleDirname, '../content/blog');
+const BLOG_DIR = resolveContentDir('blog');
 const BLOG_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export interface BlogFrontmatter {

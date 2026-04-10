@@ -15,7 +15,12 @@ export default function DocsLayout({ children }: { children: ReactNode }) {
   return (
     <DocsLanguageProvider>
       <div className={styles.docsPage}>
-        <SiteNav center={<DocsSearch index={searchIndex} />} actions={<GitHubStarsBadge />} />
+        <SiteNav
+          center={<DocsSearch index={searchIndex} />}
+          actions={<GitHubStarsBadge />}
+          mobileMenuContent={<DocsNav variant="mobileMenu" />}
+          hideMobileDocsLink
+        />
         <div className={styles.docsBody}>
           <div className={styles.sidebarCol}>
             <DocsNav />

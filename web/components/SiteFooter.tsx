@@ -44,6 +44,9 @@ export function SiteFooter() {
           </div>
           <div className={s.col}>
             <h4 className={s.colTitle}>Company</h4>
+            <Link href="/cloud" className={s.link}>
+              Cloud
+            </Link>
             <Link href="/blog" className={s.link}>
               Blog
             </Link>

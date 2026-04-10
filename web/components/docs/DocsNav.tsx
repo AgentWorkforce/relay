@@ -26,7 +26,7 @@ import {
 import { BsChatRightText } from 'react-icons/bs';
 import { FaReact } from 'react-icons/fa';
 import { GrSwift } from 'react-icons/gr';
-import { PiBroadcastFill } from 'react-icons/pi';
+import { PiBroadcastFill, PiLockKeyDuotone } from 'react-icons/pi';
 import { RiLayout5Line } from 'react-icons/ri';
 import { SiClaude, SiPython, SiTypescript } from 'react-icons/si';
 
@@ -47,6 +47,7 @@ const navIcons: Record<string, NavIcon> = {
   'emoji-reactions': Smile,
   'file-sharing': FolderOpen,
   authentication: Shield,
+  permissions: PiLockKeyDuotone,
   scheduling: Clock3,
   'reference-workflows': Workflow,
   cloud: Cloud,
@@ -68,11 +69,14 @@ const navIcons: Record<string, NavIcon> = {
   'typescript-examples': PlayCircle,
 };
 
-export function DocsNav() {
+export function DocsNav({ variant = 'sidebar' }: { variant?: 'sidebar' | 'mobileMenu' } = {}) {
   const pathname = usePathname();
   const navRef = useRef<HTMLElement | null>(null);
+  const isSidebar = variant === 'sidebar';
 
   useEffect(() => {
+    if (!isSidebar) return;
+
     const nav = navRef.current;
     const container = nav?.parentElement;
     const docsBody = container?.parentElement;
@@ -111,10 +115,14 @@ export function DocsNav() {
     return () => {
       window.removeEventListener('wheel', syncWheel);
     };
-  }, []);
+  }, [isSidebar]);
 
   return (
-    <nav ref={navRef} className={styles.sidebar} aria-label="Documentation">
+    <nav
+      ref={navRef}
+      className={`${styles.sidebar} ${!isSidebar ? styles.mobileSidebar : ''}`}
+      aria-label="Documentation"
+    >
       {docsNav.map((group) => (
         <div key={group.title} className={styles.navGroup}>
           <h4 className={styles.navGroupTitle}>{group.title}</h4>
