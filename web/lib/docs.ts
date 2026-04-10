@@ -1,14 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import matter from 'gray-matter';
 import { encodeCodeFenceMeta } from './code-fence-meta';
+import { resolveContentDir } from './content-paths';
 
-const moduleFilename = fileURLToPath(import.meta.url);
-const moduleDirname = path.dirname(moduleFilename);
-
-const DOCS_DIR = path.resolve(moduleDirname, '../content/docs');
+const DOCS_DIR = resolveContentDir('docs');
 
 export interface DocFrontmatter {
   title: string;

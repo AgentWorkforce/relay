@@ -9,7 +9,7 @@ const nextConfig = {
   reactStrictMode: true,
   outputFileTracingRoot: path.resolve(__dirname, '..'),
   outputFileTracingIncludes: {
-    '/*': ['../packages/openclaw/skill/SKILL.md'],
+    '/*': ['content/docs/**/*', 'content/blog/**/*', '../packages/openclaw/skill/SKILL.md'],
   },
   async rewrites() {
     return [

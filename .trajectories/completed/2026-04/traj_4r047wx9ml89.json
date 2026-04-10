@@ -104,6 +104,90 @@
           "significance": "high"
         },
         {
+          "ts": 1775770800280,
+          "type": "decision",
+          "content": "Moved theme switching from SiteNav to SiteFooter: Moved theme switching from SiteNav to SiteFooter",
+          "raw": {
+            "question": "Moved theme switching from SiteNav to SiteFooter",
+            "chosen": "Moved theme switching from SiteNav to SiteFooter",
+            "alternatives": [],
+            "reasoning": "Keeps primary navigation focused on site navigation/actions while preserving a single global theme control in a lower-priority UI area."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775771013652,
+          "type": "decision",
+          "content": "Added Discord footer social link: Added Discord footer social link",
+          "raw": {
+            "question": "Added Discord footer social link",
+            "chosen": "Added Discord footer social link",
+            "alternatives": [],
+            "reasoning": "The footer already groups external community links there, so Discord belongs with the existing social icons rather than in primary navigation."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775791143404,
+          "type": "decision",
+          "content": "Server-rendered the GitHub stars badge with Next revalidation: Server-rendered the GitHub stars badge with Next revalidation",
+          "raw": {
+            "question": "Server-rendered the GitHub stars badge with Next revalidation",
+            "chosen": "Server-rendered the GitHub stars badge with Next revalidation",
+            "alternatives": [],
+            "reasoning": "Eliminates the empty-then-flash client fetch by shipping a cached count in the initial HTML while keeping it fresh on a 1 hour cadence."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775791901772,
+          "type": "decision",
+          "content": "Simplified /blog index to a title-and-author list: Simplified /blog index to a title-and-author list",
+          "raw": {
+            "question": "Simplified /blog index to a title-and-author list",
+            "chosen": "Simplified /blog index to a title-and-author list",
+            "alternatives": [],
+            "reasoning": "The index should scan quickly; a plain list removes card noise and makes the page function more like an archive than a marketing surface."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775792144853,
+          "type": "decision",
+          "content": "Expanded blog archive rows with author, date, and estimated read time while removing the Blog title block: Expanded blog archive rows with author, date, and estimated read time while removing the Blog title block",
+          "raw": {
+            "question": "Expanded blog archive rows with author, date, and estimated read time while removing the Blog title block",
+            "chosen": "Expanded blog archive rows with author, date, and estimated read time while removing the Blog title block",
+            "alternatives": [],
+            "reasoning": "Keeps /blog as a compact archive view while still surfacing the metadata people need to scan posts quickly."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775792307369,
+          "type": "decision",
+          "content": "Moved blog archive metadata below each title with dot separators: Moved blog archive metadata below each title with dot separators",
+          "raw": {
+            "question": "Moved blog archive metadata below each title with dot separators",
+            "chosen": "Moved blog archive metadata below each title with dot separators",
+            "alternatives": [],
+            "reasoning": "Reads more naturally as an archive list than as a pseudo-table and matches the simpler scan pattern you asked for."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1775792415891,
+          "type": "decision",
+          "content": "Moved the blog RSS link into the header beside the Blog title and removed the stacked divider: Moved the blog RSS link into the header beside the Blog title and removed the stacked divider",
+          "raw": {
+            "question": "Moved the blog RSS link into the header beside the Blog title and removed the stacked divider",
+            "chosen": "Moved the blog RSS link into the header beside the Blog title and removed the stacked divider",
+            "alternatives": [],
+            "reasoning": "The RSS action belongs in the page header, and using only the hero divider avoids the duplicate rule lines above the archive list."
+          },
+          "significance": "high"
+        },
+        {
           "ts": 1775808227427,
           "type": "decision",
           "content": "Publish failed because root package tarball contains nested openclaw node_modules hard link from esbuild: Publish failed because root package tarball contains nested openclaw node_modules hard link from esbuild",
@@ -156,9 +240,21 @@
           "type": "note",
           "content": "Abandoned: Clearing stale active PR 691 trajectory so new CI hardening work can record its own trail",
           "significance": "high"
+        },
+        {
+          "ts": 1775825762328,
+          "type": "decision",
+          "content": "Removed web/public/docs to stop preview routing collisions with /docs: Removed web/public/docs to stop preview routing collisions with /docs",
+          "raw": {
+            "question": "Removed web/public/docs to stop preview routing collisions with /docs",
+            "chosen": "Removed web/public/docs to stop preview routing collisions with /docs",
+            "alternatives": [],
+            "reasoning": "SST/OpenNext treats top-level public directories as static route prefixes, so keeping public/docs caused preview environments to route /docs* to S3 instead of the Next app."
+          },
+          "significance": "high"
         }
       ],
-      "endedAt": "2026-04-10T11:22:13.235Z"
+      "endedAt": "2026-04-10T12:56:02.328Z"
     }
   ],
   "commits": [],
@@ -169,5 +265,5 @@
     "startRef": "93a6601d549b4018b3533d1d8757cc1e2389b168",
     "endRef": "93a6601d549b4018b3533d1d8757cc1e2389b168"
   },
-  "completedAt": "2026-04-10T11:22:13.235Z"
+  "completedAt": "2026-04-10T12:56:02.328Z"
 }

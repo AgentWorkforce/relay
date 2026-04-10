@@ -3,9 +3,8 @@
 import type React from 'react';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 
-import { GitHubStarsBadge } from './GitHubStars';
-import { ThemeToggle } from './ThemeToggle';
 import s from './site-nav.module.css';
 
 export function LogoIcon() {
@@ -44,15 +43,33 @@ export function LogoWordmark() {
   );
 }
 
-export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
+export function SiteNav(
+  {
+    center,
+    actions,
+    mobileMenuContent,
+    hideMobileDocsLink,
+  }: {
+    center?: React.ReactNode;
+    actions?: React.ReactNode;
+    mobileMenuContent?: React.ReactNode;
+    hideMobileDocsLink?: boolean;
+  } = {}
+) {
+  const pathname = usePathname();
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 20);
     onScroll();
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
+
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [pathname]);
 
   return (
     <div className={s.navOuter}>
@@ -79,8 +96,7 @@ export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
           </li>
         </ul>
         <div className={s.actions}>
-          <ThemeToggle />
-          <GitHubStarsBadge />
+          {actions}
         </div>
       </div>
 
@@ -107,11 +123,23 @@ export function SiteNav({ center }: { center?: React.ReactNode } = {}) {
 
     {/* Mobile menu dropdown */}
     {menuOpen && (
-      <div className={s.mobileMenu}>
-        <Link href="/docs" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Docs</Link>
+      <div
+        className={s.mobileMenu}
+        onClick={(event) => {
+          const target = event.target;
+          if (target instanceof Element && target.closest('a')) {
+            setMenuOpen(false);
+          }
+        }}
+      >
+        {mobileMenuContent}
+        {!hideMobileDocsLink && (
+          <Link href="/docs" className={s.mobileLink} onClick={() => setMenuOpen(false)}>
+            Docs
+          </Link>
+        )}
         <Link href="/blog" className={s.mobileLink} onClick={() => setMenuOpen(false)}>Blog</Link>
         <a href="https://github.com/agentworkforce/relay" target="_blank" rel="noopener noreferrer" className={s.mobileLink} onClick={() => setMenuOpen(false)}>GitHub</a>
-        <ThemeToggle mobile />
       </div>
     )}
     </header>

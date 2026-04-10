@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-10T13:47:07.057Z",
+  "lastUpdated": "2026-04-10T16:35:33.802Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -1122,8 +1122,8 @@
       "title": "Fast workspace seeding — symlink mount + tar bulk upload",
       "status": "abandoned",
       "startedAt": "2026-04-07T13:28:27.975Z",
-      "completedAt": "2026-04-10T11:22:13.235Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-04/traj_4r047wx9ml89.json"
+      "completedAt": "2026-04-10T12:56:02.328Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_4r047wx9ml89.json"
     },
     "traj_28hhnf4xoa6i": {
       "title": "Harden macOS binary release verification",
@@ -1138,6 +1138,55 @@
       "startedAt": "2026-04-10T13:41:57.930Z",
       "completedAt": "2026-04-10T13:47:06.957Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.worktrees/macos-binary-ci-regressions/.trajectories/completed/2026-04/traj_7gmhsfy34hbc.json"
+    },
+    "traj_mk0t0cgn4ytq": {
+      "title": "Merge origin/main into better-nav and resolve trajectory conflicts",
+      "status": "completed",
+      "startedAt": "2026-04-10T15:10:03.877Z",
+      "completedAt": "2026-04-10T15:10:29.410Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_mk0t0cgn4ytq.json"
+    },
+    "traj_o8kgzhfu6jth": {
+      "title": "Add /cloud link to footer",
+      "status": "completed",
+      "startedAt": "2026-04-10T16:07:15.131Z",
+      "completedAt": "2026-04-10T16:07:42.930Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_o8kgzhfu6jth.json"
+    },
+    "traj_abjovknvcijv": {
+      "title": "Scope CI so web-only changes do not run unrelated relay and SDK tests",
+      "status": "completed",
+      "startedAt": "2026-04-10T16:08:30.070Z",
+      "completedAt": "2026-04-10T16:11:08.673Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_abjovknvcijv.json"
+    },
+    "traj_d48czxmgx4ac": {
+      "title": "Shift dark-mode footer from black to Relay blue",
+      "status": "completed",
+      "startedAt": "2026-04-10T16:12:27.477Z",
+      "completedAt": "2026-04-10T16:13:14.348Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_d48czxmgx4ac.json"
+    },
+    "traj_g3muawdq6bsb": {
+      "title": "Invert dark footer gradient so the lighter blue is at the top",
+      "status": "completed",
+      "startedAt": "2026-04-10T16:13:19.744Z",
+      "completedAt": "2026-04-10T16:13:43.289Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_g3muawdq6bsb.json"
+    },
+    "traj_0t92gxaz6igh": {
+      "title": "Move docs sidebar into the mobile hamburger menu",
+      "status": "completed",
+      "startedAt": "2026-04-10T16:29:40.674Z",
+      "completedAt": "2026-04-10T16:32:14.544Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_0t92gxaz6igh.json"
+    },
+    "traj_703m7sqyq89t": {
+      "title": "Fix production docs loader using build-machine absolute MDX paths",
+      "status": "completed",
+      "startedAt": "2026-04-10T16:33:10.601Z",
+      "completedAt": "2026-04-10T16:35:33.660Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_703m7sqyq89t.json"
     }
   }
 }

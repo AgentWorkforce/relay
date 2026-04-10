@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 
 import { CopyInstructionsButton } from '../../components/CopyInstructionsButton';
+import { GitHubStarsBadge } from '../../components/GitHubStars';
 import { SiteFooter } from '../../components/SiteFooter';
 import { SiteNav } from '../../components/SiteNav';
 import { absoluteUrl, SITE_HOST } from '../../lib/site';
@@ -56,7 +57,7 @@ const steps = [
 export default function OpenClawPage() {
   return (
     <div className={s.page}>
-      <SiteNav />
+      <SiteNav actions={<GitHubStarsBadge />} />
 
       <main className={s.main}>
         <section className={s.hero}>
