@@ -566,10 +566,28 @@ Or use nvm: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/instal
     local npm_log="/tmp/npm-install-$$.log"
     local npm_exit=0
 
-    npm install -g agent-relay@"$VERSION" > "$npm_log" 2>&1 || npm_exit=$?
+    # npm registry metadata propagates before the tarball CDN does, so a
+    # freshly-published version may 404 for a short window.  Retry a few
+    # times with backoff before falling through to the unversioned install.
+    local max_attempts=6
+    local attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        npm_exit=0
+        npm install -g agent-relay@"$VERSION" > "$npm_log" 2>&1 || npm_exit=$?
+        if [ $npm_exit -eq 0 ]; then
+            break
+        fi
+        if grep -q "E404" "$npm_log" 2>/dev/null && [ $attempt -lt $max_attempts ]; then
+            info "Package not yet available on npm CDN, retrying in 10s... (attempt $attempt/$max_attempts)"
+            sleep 10
+            attempt=$((attempt + 1))
+        else
+            break
+        fi
+    done
 
     if [ $npm_exit -ne 0 ]; then
-        # First attempt failed, try without version
+        # Versioned install failed, try without version (latest)
         npm install -g agent-relay >> "$npm_log" 2>&1 || npm_exit=$?
     fi
 
