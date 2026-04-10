@@ -239,7 +239,16 @@ This should be a complete agent-relay workflow file that:
     .onError('fail-fast')
     .run({ cwd: '/Users/khaliqgant/Projects/AgentWorkforce/relay-workflows' });
 
-  console.log('Result:', result.status);
+  if ('status' in result) {
+    console.log('Result:', result.status);
+  } else {
+    console.log('Dry run completed.');
+    return;
+  }
+
+  if (result.status !== 'completed') {
+    process.exitCode = 1;
+  }
 }
 
 main().catch((err) => {
