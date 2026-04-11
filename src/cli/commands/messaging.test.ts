@@ -129,6 +129,21 @@ describe('registerMessagingCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Message sent to WorkerA');
   });
 
+  it('omits the synthetic sender when --from is not provided', async () => {
+    const brokerClient = createBrokerClientMock();
+    const { program } = createHarness({ brokerClient });
+
+    const exitCode = await runCommand(program, ['send', 'WorkerA', 'Ship this today']);
+
+    expect(exitCode).toBeUndefined();
+    expect(brokerClient.sendMessage).toHaveBeenCalledWith({
+      to: 'WorkerA',
+      text: 'Ship this today',
+      from: undefined,
+      threadId: undefined,
+    });
+  });
+
   it('reads a message by ID', async () => {
     const relaycastClient = createRelaycastClientMock({
       message: vi.fn(async () => ({
@@ -143,7 +158,10 @@ describe('registerMessagingCommands', () => {
     const exitCode = await runCommand(program, ['read', 'msg_123']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelaycastClient).toHaveBeenCalledWith({ agentName: '__cli_read__' });
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: '__cli_read__',
+      cwd: '/tmp/project',
+    });
     expect(relaycastClient.message).toHaveBeenCalledWith('msg_123');
     expect(deps.log).toHaveBeenNthCalledWith(1, 'From: Lead');
     expect(deps.log).toHaveBeenNthCalledWith(2, 'To: #channel');
@@ -180,7 +198,10 @@ describe('registerMessagingCommands', () => {
     const exitCode = await runCommand(program, ['history', '--limit', '2']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelaycastClient).toHaveBeenCalledWith({ agentName: '__cli_history__' });
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: '__cli_history__',
+      cwd: '/tmp/project',
+    });
     expect(relaycastClient.messages).toHaveBeenCalledWith('general', { limit: 100 });
     expect(deps.log).toHaveBeenCalledWith('[2026-02-20T11:00:03.000Z] Three -> #general: third');
     expect(deps.log).toHaveBeenCalledWith('[2026-02-20T11:00:02.000Z] Two -> #general: second');
@@ -203,7 +224,10 @@ describe('registerMessagingCommands', () => {
     const exitCode = await runCommand(program, ['history', '--json', '--limit', '1']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelaycastClient).toHaveBeenCalledWith({ agentName: '__cli_history__' });
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: '__cli_history__',
+      cwd: '/tmp/project',
+    });
     expect(relaycastClient.messages).toHaveBeenCalledWith('general', { limit: 100 });
     expect(deps.log).toHaveBeenCalledTimes(1);
     expect(JSON.parse((deps.log as ReturnType<typeof vi.fn>).mock.calls[0][0] as string)).toEqual([
@@ -241,7 +265,10 @@ describe('registerMessagingCommands', () => {
     const exitCode = await runCommand(program, ['inbox']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelaycastClient).toHaveBeenCalledWith({ agentName: '__cli_inbox__' });
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: '__cli_inbox__',
+      cwd: '/tmp/project',
+    });
     expect(deps.log).toHaveBeenCalledWith('Unread Channels:');
     expect(deps.log).toHaveBeenCalledWith('  #general: 2');
     expect(deps.log).toHaveBeenCalledWith('Mentions:');
@@ -270,6 +297,5 @@ describe('registerMessagingCommands', () => {
 
     expect(exitCode).toBe(1);
     expect(deps.error).toHaveBeenCalledWith('Failed to initialize relaycast client: broker unavailable');
-    expect(deps.error).toHaveBeenCalledWith('Start the broker with `agent-relay up` and try again.');
   });
 });

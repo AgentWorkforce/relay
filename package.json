@@ -256,7 +256,7 @@
     "sst": "^4.5.1",
     "syncpack": "^14.0.0",
     "turbo": "^2.8.10",
-    "typescript": "^5.9.3",
+    "typescript": "5.9.3",
     "vitest": "^3.2.4"
   },
   "engines": {

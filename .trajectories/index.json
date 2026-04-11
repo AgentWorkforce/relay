@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-10T18:00:44.248Z",
+  "lastUpdated": "2026-04-11T13:36:48.451Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -1201,6 +1201,20 @@
       "startedAt": "2026-04-10T17:50:43.088Z",
       "completedAt": "2026-04-10T18:00:44.095Z",
       "path": "/Users/will/Projects/relay/.trajectories/completed/2026-04/traj_rs2bt3x0fqba.json"
+    },
+    "traj_9tt55is74dq5": {
+      "title": "Pin TypeScript build resolution for acp-bridge, memory, trajectory, and cloud",
+      "status": "completed",
+      "startedAt": "2026-04-11T13:34:46.304Z",
+      "completedAt": "2026-04-11T13:35:22.677Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-04/traj_9tt55is74dq5.json"
+    },
+    "traj_w0xpsaoxuiyw": {
+      "title": "Pin TypeScript compiler version and build invocation in selected packages",
+      "status": "completed",
+      "startedAt": "2026-04-11T13:35:52.600Z",
+      "completedAt": "2026-04-11T13:36:48.341Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-04/traj_w0xpsaoxuiyw.json"
     }
   }
 }

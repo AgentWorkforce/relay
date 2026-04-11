@@ -109,8 +109,7 @@
   "devDependencies": {
     "@types/node": "^22.13.10",
     "@types/tar": "^6.1.13",
-    "@types/ws": "^8.5.10",
-    "typescript": "^5.7.3"
+    "@types/ws": "^8.5.10"
   },
   "dependencies": {
     "@agent-relay/config": "4.0.11",

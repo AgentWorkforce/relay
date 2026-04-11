@@ -56,7 +56,7 @@ export interface MessagingBrokerClient {
 export interface MessagingDependencies {
   getProjectRoot: () => string;
   createClient: (cwd: string) => MessagingBrokerClient | Promise<MessagingBrokerClient>;
-  createRelaycastClient: (options: { agentName: string }) => Promise<MessagingRelaycastClient>;
+  createRelaycastClient: (options: { agentName: string; cwd: string }) => Promise<MessagingRelaycastClient>;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
@@ -77,14 +77,41 @@ async function createDefaultClient(cwd: string): Promise<MessagingBrokerClient> 
   }
 }
 
-async function createDefaultRelaycastClient(options: {
-  agentName: string;
-}): Promise<MessagingRelaycastClient> {
-  const apiKey = process.env.RELAY_API_KEY;
-  if (!apiKey) {
-    throw new Error('Relaycast API key not found in RELAY_API_KEY');
+async function resolveRelaycastApiKey(cwd: string): Promise<string> {
+  const envApiKey = process.env.RELAY_API_KEY?.trim();
+  if (envApiKey) {
+    return envApiKey;
   }
 
+  let client: AgentRelayClient | undefined;
+  try {
+    client = AgentRelayClient.connect({ cwd });
+  } catch {
+    throw new Error(
+      'Relaycast workspace key is not configured. Set RELAY_API_KEY, or start the local broker with `agent-relay up --workspace-key <key>`.'
+    );
+  }
+
+  try {
+    const session = await client.getSession();
+    const brokerApiKey = session.workspace_key?.trim();
+    if (brokerApiKey) {
+      return brokerApiKey;
+    }
+  } finally {
+    client.disconnect();
+  }
+
+  throw new Error(
+    'The running local broker has no Relaycast workspace key, so history and inbox are unavailable in local-only mode. Restart with RELAY_API_KEY or `agent-relay up --workspace-key <key>`.'
+  );
+}
+
+async function createDefaultRelaycastClient(options: {
+  agentName: string;
+  cwd: string;
+}): Promise<MessagingRelaycastClient> {
+  const apiKey = await resolveRelaycastApiKey(options.cwd);
   const baseUrl = process.env.RELAYCAST_BASE_URL ?? 'https://api.relaycast.dev';
   const relaycast = new RelayCast({ apiKey, baseUrl });
   const registration = await relaycast.agents.registerOrGet({
@@ -117,9 +144,9 @@ export function registerMessagingCommands(
     .description('Send a message to an agent')
     .argument('<agent>', 'Target agent name (or * for broadcast, #channel for channel)')
     .argument('<message>', 'Message to send')
-    .option('--from <name>', 'Sender name', '__cli_sender__')
+    .option('--from <name>', 'Sender name (defaults to broker-side human sender)')
     .option('--thread <id>', 'Thread identifier')
-    .action(async (agent: string, message: string, options: { from: string; thread?: string }) => {
+    .action(async (agent: string, message: string, options: { from?: string; thread?: string }) => {
       let client: MessagingBrokerClient;
       try {
         client = await deps.createClient(deps.getProjectRoot());
@@ -134,7 +161,7 @@ export function registerMessagingCommands(
         await client.sendMessage({
           to: agent,
           text: message,
-          from: options.from,
+          from: options.from?.trim() ? options.from.trim() : undefined,
           threadId: options.thread,
         });
         deps.log(`Message sent to ${agent}`);
@@ -154,10 +181,12 @@ export function registerMessagingCommands(
     .action(async (messageId: string) => {
       let relaycast: MessagingRelaycastClient;
       try {
-        relaycast = await deps.createRelaycastClient({ agentName: '__cli_read__' });
+        relaycast = await deps.createRelaycastClient({
+          agentName: '__cli_read__',
+          cwd: deps.getProjectRoot(),
+        });
       } catch (err: any) {
         deps.error(`Failed to initialize relaycast client: ${err?.message || String(err)}`);
-        deps.error('Start the broker with `agent-relay up` and try again.');
         deps.exit(1);
         return;
       }
@@ -200,10 +229,12 @@ export function registerMessagingCommands(
         let relaycast: MessagingRelaycastClient;
 
         try {
-          relaycast = await deps.createRelaycastClient({ agentName: '__cli_history__' });
+          relaycast = await deps.createRelaycastClient({
+            agentName: '__cli_history__',
+            cwd: deps.getProjectRoot(),
+          });
         } catch (err: any) {
           deps.error(`Failed to initialize relaycast client: ${err?.message || String(err)}`);
-          deps.error('Start the broker with `agent-relay up` and try again.');
           deps.exit(1);
           return;
         }
@@ -263,7 +294,10 @@ export function registerMessagingCommands(
     .action(async (options: { json?: boolean }) => {
       let relaycast: MessagingRelaycastClient;
       try {
-        relaycast = await deps.createRelaycastClient({ agentName: '__cli_inbox__' });
+        relaycast = await deps.createRelaycastClient({
+          agentName: '__cli_inbox__',
+          cwd: deps.getProjectRoot(),
+        });
       } catch (err: any) {
         deps.error(`Failed to initialize relaycast client: ${err?.message || String(err)}`);
         deps.exit(1);

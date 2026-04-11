@@ -1,0 +1,40 @@
+{
+  "id": "traj_1775914133873_35667beb",
+  "version": 1,
+  "task": {
+    "title": "fix-sdk-build-resolution-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "9915b02beabe8e11e3101c6c"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-04-11T13:28:53.873Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-04-11T13:28:53.873Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_46227868",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-04-11T13:28:53.873Z",
+      "events": [
+        {
+          "ts": 1775914133873,
+          "type": "note",
+          "content": "Purpose: Fix TypeScript build resolution across all packages for reproducible clean checkouts"
+        },
+        {
+          "ts": 1775914133873,
+          "type": "note",
+          "content": "Approach: 19-step dag workflow — Parsed 19 steps, 18 dependent steps, DAG validated, no cycles"
+        }
+      ]
+    }
+  ]
+}
