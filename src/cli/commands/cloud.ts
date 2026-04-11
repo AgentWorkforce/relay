@@ -16,6 +16,7 @@ import {
   getRunStatus,
   getRunLogs,
   syncWorkflowPatch,
+  cancelWorkflow,
   type WhoAmIResponse,
   type AuthSessionResponse,
   type WorkflowFileType,
@@ -120,10 +121,7 @@ async function getErrorDetails(response: Response): Promise<string> {
 
 // ── Command registration ─────────────────────────────────────────────────────
 
-export function registerCloudCommands(
-  program: Command,
-  overrides: Partial<CloudDependencies> = {}
-): void {
+export function registerCloudCommands(program: Command, overrides: Partial<CloudDependencies> = {}): void {
   const deps = withDefaults(overrides);
 
   const cloudCommand = program
@@ -208,7 +206,9 @@ export function registerCloudCommands(
       deps.log(`API URL: ${auth.apiUrl}`);
       deps.log(`Auth source: ${payload.source}`);
       deps.log(`Subject type: ${payload.subjectType ?? 'session'}`);
-      deps.log(`User: ${payload.user.name || '(no name)'}${payload.user.email ? ` <${payload.user.email}>` : ''}`);
+      deps.log(
+        `User: ${payload.user.name || '(no name)'}${payload.user.email ? ` <${payload.user.email}>` : ''}`
+      );
       deps.log(`Organization: ${payload.currentOrganization.name}`);
       deps.log(`Workspace: ${payload.currentWorkspace.name}`);
       deps.log(`Scopes: ${payload.scopes.length > 0 ? payload.scopes.join(', ') : '(none)'}`);
@@ -273,13 +273,15 @@ export function registerCloudCommands(
         | null;
 
       if (!createResponse.ok || !start?.sessionId) {
-        const detail = start?.error || start?.message || `${createResponse.status} ${createResponse.statusText}`;
+        const detail =
+          start?.error || start?.message || `${createResponse.status} ${createResponse.statusText}`;
         throw new Error(detail);
       }
 
-      const sshPort = typeof start.ssh?.port === 'string'
-        ? Number.parseInt(start.ssh.port as unknown as string, 10)
-        : start.ssh?.port;
+      const sshPort =
+        typeof start.ssh?.port === 'string'
+          ? Number.parseInt(start.ssh.port as unknown as string, 10)
+          : start.ssh?.port;
       if (!start.ssh?.host || !sshPort || !start.ssh.user || !start.ssh.password) {
         throw new Error('Cloud returned invalid SSH session details.');
       }
@@ -307,21 +309,19 @@ export function registerCloudCommands(
           io,
         });
       } catch (error) {
-        throw new Error(`Failed to connect via SSH: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(
+          `Failed to connect via SSH: ${error instanceof Error ? error.message : String(error)}`
+        );
       }
 
       io.log('');
       const success = sessionResult.authDetected;
 
       io.log('Finalizing authentication with cloud...');
-      const { response: completeResponse } = await authorizedApiFetch(
-        auth,
-        '/api/v1/cli/auth/complete',
-        {
-          method: 'POST',
-          body: JSON.stringify({ sessionId: start.sessionId, success }),
-        }
-      );
+      const { response: completeResponse } = await authorizedApiFetch(auth, '/api/v1/cli/auth/complete', {
+        method: 'POST',
+        body: JSON.stringify({ sessionId: start.sessionId, success }),
+      });
 
       if (!completeResponse.ok) {
         throw new Error(await getErrorDetails(completeResponse));
@@ -333,7 +333,11 @@ export function registerCloudCommands(
           io.error(color.red(`Remote auth command exited with code ${exitCode}.`));
         }
         if (sessionResult.exitCode === 127) {
-          io.log(color.yellow(`The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on the sandbox.`));
+          io.log(
+            color.yellow(
+              `The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on the sandbox.`
+            )
+          );
           io.log(color.dim('Check the sandbox snapshot includes the required CLI tools.'));
         }
         throw new Error(`Provider auth for ${provider} did not complete successfully`);
@@ -360,24 +364,26 @@ export function registerCloudCommands(
     .option('--sync-code', 'Upload the current working directory before running')
     .option('--no-sync-code', 'Skip uploading the current working directory')
     .option('--json', 'Print raw JSON response', false)
-    .action(async (
-      workflow: string,
-      options: { apiUrl?: string; fileType?: WorkflowFileType; syncCode?: boolean; json?: boolean },
-    ) => {
-      const result = await runWorkflow(workflow, options);
-      if (options.json) {
-        deps.log(JSON.stringify(result, null, 2));
-        return;
-      }
+    .action(
+      async (
+        workflow: string,
+        options: { apiUrl?: string; fileType?: WorkflowFileType; syncCode?: boolean; json?: boolean }
+      ) => {
+        const result = await runWorkflow(workflow, options);
+        if (options.json) {
+          deps.log(JSON.stringify(result, null, 2));
+          return;
+        }
 
-      deps.log(`Run created: ${result.runId}`);
-      if (typeof result.sandboxId === 'string') {
-        deps.log(`Sandbox: ${result.sandboxId}`);
+        deps.log(`Run created: ${result.runId}`);
+        if (typeof result.sandboxId === 'string') {
+          deps.log(`Sandbox: ${result.sandboxId}`);
+        }
+        deps.log(`Status: ${result.status}`);
+        deps.log(`\nView logs:  agent-relay cloud logs ${result.runId} --follow`);
+        deps.log(`Sync code:  agent-relay cloud sync ${result.runId}`);
       }
-      deps.log(`Status: ${result.status}`);
-      deps.log(`\nView logs:  agent-relay cloud logs ${result.runId} --follow`);
-      deps.log(`Sync code:  agent-relay cloud sync ${result.runId}`);
-    });
+    );
 
   // ── status ─────────────────────────────────────────────────────────────────
 
@@ -417,42 +423,44 @@ export function registerCloudCommands(
     .option('--agent <name>', 'Read logs for a specific agent')
     .option('--sandbox-id <sandboxId>', 'Read logs for a specific step sandbox')
     .option('--json', 'Print raw JSON responses', false)
-    .action(async (
-      runId: string,
-      options: {
-        apiUrl?: string;
-        follow?: boolean;
-        pollInterval?: number;
-        offset?: number;
-        agent?: string;
-        sandboxId?: string;
-        json?: boolean;
-      },
-    ) => {
-      let offset = options.offset ?? 0;
-      const sandboxId = options.agent ?? options.sandboxId;
-
-      while (true) {
-        const result = await getRunLogs(runId, {
-          apiUrl: options.apiUrl,
-          offset,
-          sandboxId,
-        });
-
-        if (options.json) {
-          deps.log(JSON.stringify(result, null, 2));
-        } else if (result.content) {
-          process.stdout.write(result.content);
+    .action(
+      async (
+        runId: string,
+        options: {
+          apiUrl?: string;
+          follow?: boolean;
+          pollInterval?: number;
+          offset?: number;
+          agent?: string;
+          sandboxId?: string;
+          json?: boolean;
         }
+      ) => {
+        let offset = options.offset ?? 0;
+        const sandboxId = options.agent ?? options.sandboxId;
 
-        offset = result.offset;
-        if (!options.follow || result.done) {
-          break;
+        while (true) {
+          const result = await getRunLogs(runId, {
+            apiUrl: options.apiUrl,
+            offset,
+            sandboxId,
+          });
+
+          if (options.json) {
+            deps.log(JSON.stringify(result, null, 2));
+          } else if (result.content) {
+            process.stdout.write(result.content);
+          }
+
+          offset = result.offset;
+          if (!options.follow || result.done) {
+            break;
+          }
+
+          await sleep((options.pollInterval ?? 2) * 1000);
         }
-
-        await sleep((options.pollInterval ?? 2) * 1000);
       }
-    });
+    );
 
   // ── sync ───────────────────────────────────────────────────────────────────
 
@@ -463,10 +471,7 @@ export function registerCloudCommands(
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--dir <path>', 'Local directory to apply the patch to', '.')
     .option('--dry-run', 'Download and display the patch without applying', false)
-    .action(async (
-      runId: string,
-      options: { apiUrl?: string; dir?: string; dryRun?: boolean },
-    ) => {
+    .action(async (runId: string, options: { apiUrl?: string; dir?: string; dryRun?: boolean }) => {
       const targetDir = path.resolve(options.dir ?? '.');
       deps.log(`Fetching patch for run ${runId}...`);
 
@@ -512,5 +517,24 @@ export function registerCloudCommands(
         deps.error(`Patch saved to: ${tmpPatch}`);
         deps.exit(1);
       }
+    });
+
+  // ── cancel ─────────────────────────────────────────────────────────────────
+
+  cloudCommand
+    .command('cancel')
+    .description('Cancel a running workflow')
+    .argument('<runId>', 'Workflow run id')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--json', 'Print raw JSON response', false)
+    .action(async (runId: string, options: { apiUrl?: string; json?: boolean }) => {
+      const result = await cancelWorkflow(runId, options);
+      if (options.json) {
+        deps.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      deps.log(`Run: ${result.runId ?? runId}`);
+      deps.log(`Status: ${result.status ?? 'unknown'}`);
     });
 }

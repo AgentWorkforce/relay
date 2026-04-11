@@ -3876,13 +3876,22 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                 let (binary, args) =
                     headless_provider_command(&provider, &task_text, &provider_args);
 
-                let mut child = match tokio::process::Command::new(&binary)
+                let mut child_cmd = tokio::process::Command::new(&binary);
+                child_cmd
                     .args(&args)
                     .stdin(Stdio::null())
                     .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                {
+                    .stderr(Stdio::piped());
+
+                // Auto-approve tool permissions for opencode in headless mode.
+                if matches!(provider, ProtocolHeadlessProvider::Opencode) {
+                    child_cmd.env(
+                        "OPENCODE_PERMISSION",
+                        r#"{"*":"allow","external_directory":{"*":"allow"}}"#,
+                    );
+                }
+
+                let mut child = match child_cmd.spawn() {
                     Ok(child) => child,
                     Err(error) => {
                         let _ = send_frame(
