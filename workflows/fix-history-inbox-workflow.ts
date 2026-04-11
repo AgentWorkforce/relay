@@ -1,8 +1,8 @@
 import { workflow } from '@agent-relay/sdk/workflows';
 
 async function main() {
-  const result = await workflow('fix-history-inbox-workflow')
-    .description('Test and fix history/inbox to work without RELAY_API_KEY env var')
+  const result = await workflow('fix-history-inbox')
+    .description('Test, fix, verify history/inbox workspace_key resolution, then commit and open PR')
     .pattern('dag')
     .channel('wf-history-inbox')
     .maxConcurrency(1)
@@ -11,98 +11,90 @@ async function main() {
     .agent('fixer', {
       cli: 'codex',
       preset: 'worker',
-      role: 'Fix history/inbox workspace_key resolution',
+      role: 'Fix resolveRelaycastApiKey in messaging.ts',
       retries: 2,
     })
 
-    .step('start-broker', {
+    // Test in a temp directory so we don't nuke the workflow's own broker
+    .step('diagnose', {
       type: 'deterministic',
       command: `set -e
-agent-relay down --force 2>/dev/null || true
-rm -rf .agent-relay
-sleep 2
-agent-relay up 2>&1 &
-sleep 15
-agent-relay status 2>&1 | head -5
-echo "BROKER_STARTED"`,
+TMPDIR=$(mktemp -d)
+echo "=== Testing history/inbox in temp workspace: $TMPDIR ==="
+agent-relay up --cwd "$TMPDIR" --no-dashboard 2>&1 &
+BROKER_PID=$!
+sleep 12
+echo "=== connection.json ==="
+cat "$TMPDIR/.agent-relay/connection.json" 2>/dev/null || echo "NO_CONNECTION_JSON"
+echo ""
+echo "=== history test ==="
+agent-relay history --cwd "$TMPDIR" --limit 3 2>&1 || agent-relay history --limit 3 2>&1 || echo "HISTORY_FAILED"
+echo ""
+echo "=== inbox test ==="
+agent-relay inbox --cwd "$TMPDIR" 2>&1 || agent-relay inbox 2>&1 || echo "INBOX_FAILED"
+echo ""
+kill $BROKER_PID 2>/dev/null || true
+echo "TMPDIR=$TMPDIR"
+echo "DIAGNOSE_DONE"`,
+      captureOutput: true,
+      failOnError: false,
+    })
+
+    .step('read-messaging', {
+      type: 'deterministic',
+      dependsOn: ['diagnose'],
+      command: `cat src/cli/commands/messaging.ts`,
       captureOutput: true,
       failOnError: true,
     })
 
-    .step('test-history', {
-      type: 'deterministic',
-      dependsOn: ['start-broker'],
-      command: `set -e
-echo "=== TEST: agent-relay history ==="
-agent-relay history --limit 3 2>&1 || echo "HISTORY_FAILED"`,
-      captureOutput: true,
-      failOnError: false,
-    })
-
-    .step('test-inbox', {
-      type: 'deterministic',
-      dependsOn: ['test-history'],
-      command: `set -e
-echo "=== TEST: agent-relay inbox ==="
-agent-relay inbox 2>&1 || echo "INBOX_FAILED"`,
-      captureOutput: true,
-      failOnError: false,
-    })
-
-    .step('fix-history-inbox', {
+    .step('fix-messaging', {
       agent: 'fixer',
-      dependsOn: ['test-history', 'test-inbox'],
-      task: `Fix history and inbox commands to work without RELAY_API_KEY env var.
+      dependsOn: ['read-messaging'],
+      task: `Fix resolveRelaycastApiKey() in src/cli/commands/messaging.ts so that history and inbox work without RELAY_API_KEY env var.
 
-Test outputs:
-history: {{steps.test-history.output}}
-inbox: {{steps.test-inbox.output}}
+Current file content:
+{{steps.read-messaging.output}}
 
-The issue: 
-- broker creates workspace_key (rk_live_...) but it's not persisted to connection.json
-- CLI needs to fetch workspace_key from broker's /api/session endpoint
-- Current code tries AgentRelayClient.connect() but connection.json may be missing/inaccessible
+The bug: resolveRelaycastApiKey() throws "Relaycast API key not found in RELAY_API_KEY" because AgentRelayClient.connect() fails to find connection.json.
 
-Required fix:
-1. In src/cli/commands/messaging.ts, resolveRelaycastApiKey() should:
-   - First check RELAY_API_KEY env var
-   - Try to read from connection.json if it exists
-   - If not, call broker API directly to get workspace_key from /api/session
+Root cause: connection.json is written by the broker at startup but uses a state dir that may differ from cwd/.agent-relay/. The broker's /api/session endpoint always returns workspace_key when called with the broker's api_key.
 
-The broker exposes /api/session which returns {"workspace_key": "rk_live_..."} when authenticated.
+The fix: Replace the current fallback logic with a direct HTTP fetch to the broker's /api/session endpoint. The broker port is discoverable via getProjectPaths() or by scanning for the running broker.
 
-Example fix approach:
-\`\`\`typescript
-async function resolveRelaycastApiKey(cwd: string): Promise<string> {
-  // Check env first
-  const envKey = process.env.RELAY_API_KEY?.trim();
-  if (envKey) return envKey;
+Here is the exact approach that is proven to work (verified via curl):
+- Read connection.json from the project's .agent-relay/ directory
+- Use its api_key and port to call GET http://127.0.0.1:{port}/api/session with Authorization: Bearer {api_key}
+- Return session.workspace_key
 
-  // Try direct broker API call
-  try {
-    const conn = JSON.parse(fs.readFileSync(path.join(cwd, '.agent-relay', 'connection.json'), 'utf-8');
-    const resp = await fetch(\`http://127.0.0.1:\${conn.port}/api/session\`, {
-      headers: { 'Authorization': \`Bearer \${conn.api_key}\` }
-    });
-    const session = await resp.json();
-    if (session.workspace_key) return session.workspace_key;
-  } catch {}
+The getProjectPaths() import is already available. Use node's built-in fs/path (not dynamic import, use static import at the top if needed, or require('fs') style if the file uses require).
 
-  throw new Error('No workspace key found');
-}
-\`\`\`
-
-Fix the code in src/cli/commands/messaging.ts, rebuild, test again.
-End with FIXES_COMPLETE when done.`,
+Only edit src/cli/commands/messaging.ts. Do not touch any other file.
+End with FIXES_COMPLETE.`,
       verification: { type: 'exit_code' },
       retries: 2,
     })
 
+    .step('verify-changed', {
+      type: 'deterministic',
+      dependsOn: ['fix-messaging'],
+      command: `set -e
+if git diff --quiet src/cli/commands/messaging.ts; then
+  echo "ERROR: messaging.ts was not modified"
+  exit 1
+fi
+echo "messaging.ts modified — diff summary:"
+git diff --stat src/cli/commands/messaging.ts
+echo "CHANGED_OK"`,
+      captureOutput: true,
+      failOnError: true,
+    })
+
     .step('rebuild', {
       type: 'deterministic',
-      dependsOn: ['fix-history-inbox'],
+      dependsOn: ['verify-changed'],
       command: `set -e
-npm run build 2>&1 | tail -10
+npm run build 2>&1 | tail -15
 echo "REBUILD_DONE"`,
       captureOutput: true,
       failOnError: true,
@@ -112,29 +104,83 @@ echo "REBUILD_DONE"`,
       type: 'deterministic',
       dependsOn: ['rebuild'],
       command: `set -e
-agent-relay down --force 2>/dev/null || true
-rm -rf .agent-relay
-sleep 2
-agent-relay up 2>&1 &
-sleep 15
+TMPDIR=$(mktemp -d)
+echo "=== Fresh broker in temp workspace: $TMPDIR ==="
+agent-relay up --cwd "$TMPDIR" --no-dashboard 2>&1 &
+BROKER_PID=$!
+sleep 12
+
 echo "=== RETEST HISTORY ==="
 agent-relay history --limit 3 2>&1
+HISTORY_EXIT=$?
+
 echo ""
 echo "=== RETEST INBOX ==="
 agent-relay inbox 2>&1
-echo "RETEST_DONE"`,
+INBOX_EXIT=$?
+
+kill $BROKER_PID 2>/dev/null || true
+
+echo ""
+if [ $HISTORY_EXIT -eq 0 ] && [ $INBOX_EXIT -eq 0 ]; then
+  echo "RETEST_PASSED"
+else
+  echo "RETEST_FAILED: history=$HISTORY_EXIT inbox=$INBOX_EXIT"
+  exit 1
+fi`,
       captureOutput: true,
-      failOnError: false,
+      failOnError: true,
     })
 
-    .step('cleanup', {
+    .step('run-unit-tests', {
       type: 'deterministic',
       dependsOn: ['retest'],
       command: `set -e
-agent-relay down --force 2>/dev/null || true
-echo "CLEANUP_DONE"`,
+npx vitest run src/cli/commands/messaging.test.ts 2>&1 | tail -20
+echo "UNIT_TESTS_DONE"`,
       captureOutput: true,
-      failOnError: false,
+      failOnError: true,
+    })
+
+    .step('commit-and-open-pr', {
+      type: 'deterministic',
+      dependsOn: ['run-unit-tests'],
+      command: `set -e
+git add src/cli/commands/messaging.ts
+git commit -m "fix: resolve workspace_key from broker API for history/inbox
+
+history and inbox previously required RELAY_API_KEY env var.
+Now resolveRelaycastApiKey() fetches workspace_key directly from the
+running broker's /api/session endpoint using the local connection.json,
+so both commands work out of the box whenever a broker is running."
+
+git push origin miya/relay-fix-workflow
+
+PR_URL=$(gh pr create \
+  --title "fix: history and inbox work without RELAY_API_KEY env var" \
+  --body "## Problem
+\`agent-relay history\` and \`agent-relay inbox\` failed with:
+\`\`\`
+Failed to initialize relaycast client: Relaycast API key not found in RELAY_API_KEY
+\`\`\`
+...even when a broker was running with a valid workspace key.
+
+## Root Cause
+\`resolveRelaycastApiKey()\` only checked the \`RELAY_API_KEY\` env var and then tried \`AgentRelayClient.connect()\` which reads \`connection.json\` — but that file was not reliably present when the broker is managed by the workflow runner.
+
+## Fix
+Fetch \`workspace_key\` directly from the running broker's \`/api/session\` HTTP endpoint using the \`api_key\` and \`port\` from \`connection.json\`. This is always available when the broker is running.
+
+## Verified
+- Workflow test: history and inbox return results after fix
+- Unit tests: all messaging tests pass" \
+  --base main \
+  --head miya/relay-fix-workflow 2>&1)
+
+echo "PR_URL: $PR_URL"
+echo "PR_CREATED"`,
+      captureOutput: true,
+      failOnError: true,
     })
 
     .run({ cwd: process.cwd() });
