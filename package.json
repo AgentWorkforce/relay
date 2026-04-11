@@ -97,7 +97,8 @@
     "@agent-relay/telemetry",
     "@agent-relay/trajectory",
     "@agent-relay/user-directory",
-    "@agent-relay/utils"
+    "@agent-relay/utils",
+    "@relaycast/sdk"
   ],
   "publishConfig": {
     "access": "public"
@@ -207,7 +208,7 @@
     "@relayauth/core": "^0.1.2",
     "@relayauth/sdk": "^0.1.2",
     "@relaycast/mcp": "1.0.0",
-    "@relaycast/sdk": "1.0.0",
+    "@relaycast/sdk": "^1.1.0",
     "@relayfile/sdk": "^0.1.2",
     "@sinclair/typebox": "^0.34.14",
     "chalk": "^4.1.2",
