@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/gateway",
-  "version": "4.0.12",
+  "version": "4.0.13",
   "description": "Shared gateway contracts for Agent Relay surface adapters and webhook routing",
   "type": "module",
   "main": "dist/index.js",
@@ -23,7 +23,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/sdk": "4.0.12"
+    "@agent-relay/sdk": "4.0.13"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",
