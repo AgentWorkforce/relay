@@ -98,7 +98,7 @@
   ],
   "scripts": {
     "build": "npm run clean && npm run build:esm && npm run build:cjs",
-    "build:esm": "npx tsc",
+    "build:esm": "tsc",
     "build:cjs": "node ./scripts/build-cjs.mjs",
     "postbuild": "npm run build:cjs",
     "prepack": "if [ -d node_modules ]; then npm run build; else true; fi",

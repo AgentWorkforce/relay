@@ -16,7 +16,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "npx tsc",
+    "build": "tsc",
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:watch": "vitest"

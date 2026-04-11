@@ -21,7 +21,7 @@
     "directory": "packages/openclaw"
   },
   "scripts": {
-    "build": "npx tsc",
+    "build": "tsc",
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",

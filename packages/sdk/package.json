@@ -94,10 +94,10 @@
   },
   "scripts": {
     "prebuild": "npm --prefix ../config run build",
-    "build": "npx tsc -p tsconfig.build.json",
-    "build:full": "npx tsc -p tsconfig.json && npm run bundle:binary",
+    "build": "tsc -p tsconfig.build.json",
+    "build:full": "tsc -p tsconfig.json && npm run bundle:binary",
     "bundle:binary": "node ./scripts/bundle-agent-relay.mjs",
-    "check": "npx tsc -p tsconfig.json --noEmit",
+    "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test dist/__tests__/integration.test.js",
     "test:quickstart": "node --test dist/__tests__/quickstart.test.js",
     "quickstart": "node dist/examples/quickstart.js",

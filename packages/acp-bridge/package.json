@@ -19,7 +19,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "npx tsc",
+    "build": "tsc",
     "clean": "rm -rf dist",
     "dev": "tsc --watch",
     "start": "node dist/cli.js",
