@@ -59,6 +59,9 @@ pub enum ListenApiRequest {
     Threads {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
+    History {
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
     Send {
         to: String,
         text: String,
@@ -211,6 +214,10 @@ fn listen_api_router_with_auth(
             routing::post(listen_api_set_model),
         )
         .route("/api/threads", routing::get(listen_api_threads))
+        .route(
+            "/api/history/messages",
+            routing::get(listen_api_history_messages),
+        )
         .route("/api/events/replay", routing::get(listen_api_replay))
         .route("/api/spawned/{name}", routing::delete(listen_api_release))
         .route(
@@ -606,6 +613,24 @@ async fn listen_api_threads(
     match reply_rx.await {
         Ok(Ok(val)) => axum::Json(val),
         _ => axum::Json(json!({ "threads": [] })),
+    }
+}
+
+async fn listen_api_history_messages(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> axum::Json<Value> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::History { reply: reply_tx })
+        .await
+        .is_err()
+    {
+        return axum::Json(json!({ "messages": [] }));
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => axum::Json(val),
+        _ => axum::Json(json!({ "messages": [] })),
     }
 }
 
@@ -1573,6 +1598,47 @@ mod auth_tests {
         assert_eq!(body["agents"][0]["name"], "worker-a");
 
         list_replier.await.expect("list replier should complete");
+    }
+
+    #[tokio::test]
+    async fn history_messages_route_returns_broker_history() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let history_replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::History { reply }) = rx.recv().await {
+                let _ = reply.send(Ok(json!({
+                    "messages": [
+                        {
+                            "event_id": "evt_1",
+                            "from": "Lead",
+                            "target": "WorkerA",
+                            "text": "status?",
+                            "timestamp": "2026-04-10T12:00:00.000Z"
+                        }
+                    ]
+                })));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/history/messages")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["messages"][0]["event_id"], "evt_1");
+        assert_eq!(body["messages"][0]["target"], "WorkerA");
+
+        history_replier
+            .await
+            .expect("history replier should complete");
     }
 
     #[tokio::test]

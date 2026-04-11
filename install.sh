@@ -16,6 +16,8 @@ REPO_DASHBOARD="AgentWorkforce/relay-dashboard"
 VERSION="${AGENT_RELAY_VERSION:-latest}"
 INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-$HOME/.agent-relay}"
 BIN_DIR="${AGENT_RELAY_BIN_DIR:-$HOME/.local/bin}"
+LAST_VERIFY_FAILURE_REASON=""
+STANDALONE_BINARY_FAILURE_REASON=""
 
 # Colors
 RED='\033[0;31m'
@@ -168,14 +170,13 @@ download_broker_binary() {
         chmod +x "$target_path"
         strip_quarantine "$target_path"
         # Verify binary works (Rust clap binary supports --help)
-        if "$target_path" --help &>/dev/null; then
+        if verify_downloaded_executable "$target_path" "--help" "Downloaded broker binary"; then
             # Also install to BIN_DIR so it's discoverable on PATH
             cp "$target_path" "$BIN_DIR/agent-relay-broker"
             chmod +x "$BIN_DIR/agent-relay-broker"
             success "Downloaded broker binary (workflow agent spawning)"
             return 0
         else
-            warn "broker binary failed verification"
             rm -f "$target_path"
             return 1
         fi
@@ -224,12 +225,12 @@ download_dashboard_binary() {
                     chmod +x "$target_path"
                     strip_quarantine "$target_path"
 
-                    if "$target_path" --version &>/dev/null; then
+                    if verify_downloaded_executable "$target_path" "--version" "Downloaded dashboard binary"; then
                         success "Downloaded standalone dashboard-server binary"
                         trap - EXIT
                         return 0
                     else
-                        warn "Dashboard binary failed verification, trying uncompressed..."
+                        warn "Dashboard binary failed verification after compressed download, trying uncompressed..."
                         rm -f "$target_path"
                     fi
                 else
@@ -252,14 +253,12 @@ download_dashboard_binary() {
             chmod +x "$target_path"
             strip_quarantine "$target_path"
 
-            if "$target_path" --version &>/dev/null; then
+            if verify_downloaded_executable "$target_path" "--version" "Downloaded dashboard binary"; then
                 success "Downloaded standalone dashboard-server binary"
                 trap - EXIT
                 return 0
-            else
-                warn "Dashboard binary failed verification"
-                rm -f "$target_path"
             fi
+            rm -f "$target_path"
         else
             rm -f "$target_path"
         fi
@@ -332,6 +331,227 @@ has_command() {
     command -v "$1" &> /dev/null
 }
 
+is_broken_symlink() {
+    [ -L "$1" ] && [ ! -e "$1" ]
+}
+
+is_runtime_manager_shim() {
+    case "$1" in
+        *"/shims/"*|*"/.asdf/"*|*"/.local/share/mise/"*|*"/.volta/bin/"*|*"/runtime-manager/"*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+launcher_has_marker() {
+    [ -f "$1" ] && grep -q "agent-relay-managed-launcher" "$1" 2>/dev/null
+}
+
+is_replaceable_agent_relay_launcher() {
+    local existing_path="$1"
+
+    if [ ! -e "$existing_path" ] && [ ! -L "$existing_path" ]; then
+        return 0
+    fi
+
+    if is_runtime_manager_shim "$existing_path"; then
+        return 1
+    fi
+
+    if is_broken_symlink "$existing_path" || [ -L "$existing_path" ]; then
+        return 0
+    fi
+
+    if launcher_has_marker "$existing_path"; then
+        return 0
+    fi
+
+    if [ -f "$existing_path" ] && grep -Iq . "$existing_path" 2>/dev/null; then
+        if grep -Eq 'agent-relay launcher target missing|node_modules/.*/agent-relay|dist/src/cli/index\.js' "$existing_path" 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+get_npm_global_bin_dir() {
+    if ! has_command node || ! has_command npm; then
+        return 1
+    fi
+
+    local node_major
+    node_major=$(node -v 2>/dev/null | cut -d'v' -f2 | cut -d'.' -f1)
+    if [ -z "$node_major" ] || [ "$node_major" -lt 18 ]; then
+        return 1
+    fi
+
+    local npm_prefix
+    npm_prefix=$(npm config get prefix 2>/dev/null | tr -d '\r')
+    if [ -z "$npm_prefix" ] || [ "$npm_prefix" = "undefined" ]; then
+        return 1
+    fi
+
+    echo "${npm_prefix}/bin"
+}
+
+write_launcher() {
+    local launcher_path="$1"
+    local target_path="$2"
+    local launcher_kind="$3"
+    local temp_path="${launcher_path}.tmp.$$"
+
+    mkdir -p "$(dirname "$launcher_path")"
+
+    case "$launcher_kind" in
+        node)
+            cat > "$temp_path" <<EOF
+#!/usr/bin/env bash
+# agent-relay-managed-launcher
+set -e
+if [ ! -f "$target_path" ]; then
+    echo "agent-relay launcher target missing: $target_path" >&2
+    exit 1
+fi
+exec node "$target_path" "\$@"
+EOF
+            ;;
+        binary)
+            cat > "$temp_path" <<EOF
+#!/usr/bin/env bash
+# agent-relay-managed-launcher
+set -e
+if [ ! -x "$target_path" ]; then
+    echo "agent-relay launcher target missing or not executable: $target_path" >&2
+    exit 1
+fi
+exec "$target_path" "\$@"
+EOF
+            ;;
+        *)
+            rm -f "$temp_path"
+            error "Unknown launcher kind: $launcher_kind"
+            ;;
+    esac
+
+    if [ -d "$launcher_path" ] && [ ! -L "$launcher_path" ]; then
+        rm -f "$temp_path"
+        error "Cannot install launcher because $launcher_path is a directory"
+    fi
+
+    if is_broken_symlink "$launcher_path"; then
+        info "Removing stale launcher symlink at $launcher_path"
+    fi
+    rm -f "$launcher_path"
+
+    chmod +x "$temp_path"
+    mv -f "$temp_path" "$launcher_path"
+}
+
+install_managed_binary_with_launcher() {
+    local staged_path="$1"
+    local binary_name="$2"
+    local launcher_name="$3"
+    local managed_dir="$INSTALL_DIR/bin"
+    local managed_path="$managed_dir/$binary_name"
+
+    mkdir -p "$managed_dir"
+
+    if [ -d "$managed_path" ] && [ ! -L "$managed_path" ]; then
+        error "Cannot install managed binary because $managed_path is a directory"
+    fi
+
+    if is_broken_symlink "$managed_path"; then
+        info "Removing stale managed binary symlink at $managed_path"
+    fi
+    rm -f "$managed_path"
+
+    mv -f "$staged_path" "$managed_path"
+    chmod +x "$managed_path"
+    write_launcher "$BIN_DIR/$launcher_name" "$managed_path" "binary"
+}
+
+install_npm_launchers() {
+    local package_root="$1"
+    local cli_path="$package_root/dist/src/cli/index.js"
+
+    if [ ! -f "$cli_path" ]; then
+        warn "npm install completed but CLI entrypoint is missing at $cli_path"
+        return 1
+    fi
+
+    write_launcher "$BIN_DIR/agent-relay" "$cli_path" "node"
+    success "Installed agent-relay launcher to $BIN_DIR"
+
+    local npm_bin_dir
+    npm_bin_dir=$(get_npm_global_bin_dir 2>/dev/null || true)
+    case "$npm_bin_dir" in
+        "")
+            return 0
+            ;;
+        /*)
+            ;;
+        *)
+            warn "Ignoring unexpected npm global bin dir output: $(printf '%s' "$npm_bin_dir" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')"
+            return 0
+            ;;
+    esac
+
+    if [ -n "$npm_bin_dir" ] && [ "$npm_bin_dir" != "$BIN_DIR" ]; then
+        local npm_launcher_path="$npm_bin_dir/agent-relay"
+
+        if [ ! -e "$npm_launcher_path" ] && [ ! -L "$npm_launcher_path" ]; then
+            return 0
+        fi
+
+        if is_replaceable_agent_relay_launcher "$npm_launcher_path"; then
+            if mkdir -p "$npm_bin_dir" 2>/dev/null && [ -w "$npm_bin_dir" ]; then
+                write_launcher "$npm_launcher_path" "$cli_path" "node"
+                info "Replaced npm shim with a stable launcher at $npm_launcher_path"
+            else
+                warn "Unable to update npm bin launcher at $npm_launcher_path"
+            fi
+        else
+            warn "Leaving existing agent-relay command at $npm_launcher_path untouched; using managed launcher at $BIN_DIR/agent-relay"
+        fi
+    fi
+}
+
+verify_downloaded_executable() {
+    local target_path="$1"
+    local verify_arg="$2"
+    local label="$3"
+    local verify_log="/tmp/agent-relay-verify-$$.log"
+    local status=0
+    LAST_VERIFY_FAILURE_REASON=""
+
+    "$target_path" "$verify_arg" >"$verify_log" 2>&1 || status=$?
+    if [ "$status" -eq 0 ]; then
+        rm -f "$verify_log"
+        return 0
+    fi
+
+    local tail_output=""
+    tail_output=$(tail -n 3 "$verify_log" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')
+    rm -f "$verify_log"
+
+    if [ "$OS" = "darwin" ] && [ "$status" -eq 137 ]; then
+        LAST_VERIFY_FAILURE_REASON="macos_killed"
+        warn "$label was killed by macOS during verification (exit 137). macOS likely rejected the downloaded binary on first launch."
+    elif [ -n "$tail_output" ]; then
+        LAST_VERIFY_FAILURE_REASON="command_failed"
+        warn "$label failed verification: $tail_output"
+    else
+        LAST_VERIFY_FAILURE_REASON="command_failed"
+        warn "$label failed verification"
+    fi
+
+    return 1
+}
+
 # Prepare a downloaded macOS binary so Gatekeeper does not kill it during
 # first execution.
 strip_quarantine() {
@@ -376,12 +596,12 @@ download_relay_acp() {
                     chmod +x "$target_path"
                     strip_quarantine "$target_path"
 
-                    if "$target_path" --help &>/dev/null; then
+                    if verify_downloaded_executable "$target_path" "--help" "Downloaded relay-acp binary"; then
                         success "Downloaded relay-acp binary (Zed ACP bridge)"
                         trap - EXIT
                         return 0
                     else
-                        warn "relay-acp binary failed verification, trying uncompressed..."
+                        warn "relay-acp binary failed verification after compressed download, trying uncompressed..."
                         rm -f "$target_path"
                     fi
                 else
@@ -402,13 +622,12 @@ download_relay_acp() {
             chmod +x "$target_path"
             strip_quarantine "$target_path"
 
-            if "$target_path" --help &>/dev/null; then
+            if verify_downloaded_executable "$target_path" "--help" "Downloaded relay-acp binary"; then
                 success "Downloaded relay-acp binary (Zed ACP bridge)"
                 trap - EXIT
                 return 0
-            else
-                rm -f "$target_path"
             fi
+            rm -f "$target_path"
         else
             rm -f "$target_path"
         fi
@@ -460,13 +679,13 @@ download_standalone_binary() {
     local binary_name="agent-relay-${PLATFORM}"
     local compressed_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}.gz"
     local uncompressed_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}"
-    local target_path="$BIN_DIR/agent-relay"
     local temp_file="/tmp/agent-relay-download-$$"
+    local target_path="${temp_file}.bin"
 
-    mkdir -p "$BIN_DIR"
+    mkdir -p "$BIN_DIR" "$INSTALL_DIR/bin"
 
     # Setup cleanup trap for temp files
-    trap 'rm -f "${temp_file}.gz" "${temp_file}"' EXIT
+    trap 'rm -f "${temp_file}.gz" "${temp_file}" "${target_path}"' EXIT
 
     # Try compressed binary first (faster download, ~60-70% smaller)
     # Only if gunzip is available
@@ -490,12 +709,16 @@ download_standalone_binary() {
                     strip_quarantine "$target_path"
 
                     # Verify the binary works
-                    if "$target_path" --version &>/dev/null; then
+                    if verify_downloaded_executable "$target_path" "--version" "Downloaded standalone agent-relay binary"; then
+                        install_managed_binary_with_launcher "$target_path" "agent-relay" "agent-relay"
                         success "Downloaded standalone agent-relay binary"
                         trap - EXIT  # Clear trap
                         return 0
                     else
-                        warn "Downloaded binary failed verification, trying uncompressed..."
+                        if [ "$LAST_VERIFY_FAILURE_REASON" = "macos_killed" ]; then
+                            STANDALONE_BINARY_FAILURE_REASON="macos_killed"
+                        fi
+                        warn "Standalone binary failed verification after compressed download, trying uncompressed..."
                         rm -f "$target_path"
                     fi
                 else
@@ -527,14 +750,16 @@ download_standalone_binary() {
             strip_quarantine "$target_path"
 
             # Verify the binary works
-            if "$target_path" --version &>/dev/null; then
+            if verify_downloaded_executable "$target_path" "--version" "Downloaded standalone agent-relay binary"; then
+                install_managed_binary_with_launcher "$target_path" "agent-relay" "agent-relay"
                 success "Downloaded standalone agent-relay binary (no Node.js required!)"
                 trap - EXIT  # Clear trap
                 return 0
-            else
-                warn "Downloaded binary failed verification"
-                rm -f "$target_path"
             fi
+            if [ "$LAST_VERIFY_FAILURE_REASON" = "macos_killed" ]; then
+                STANDALONE_BINARY_FAILURE_REASON="macos_killed"
+            fi
+            rm -f "$target_path"
         else
             info "Uncompressed binary not available (file too small: ${file_size} bytes)"
             rm -f "$target_path"
@@ -542,6 +767,9 @@ download_standalone_binary() {
     fi
 
     trap - EXIT  # Clear trap
+    if [ "$STANDALONE_BINARY_FAILURE_REASON" = "macos_killed" ]; then
+        warn "Standalone binary verification failed on macOS. Falling back to npm/source so ~/.local/bin/agent-relay still points at a managed install."
+    fi
     info "No standalone binary available for $PLATFORM, falling back to npm"
     return 1
 }
@@ -629,6 +857,10 @@ Or use nvm: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/instal
         rm -f "$npm_log"
     fi
 
+    local npm_package_root
+    npm_package_root="$(npm root -g 2>/dev/null | tr -d '\r')/agent-relay"
+    install_npm_launchers "$npm_package_root" || warn "Failed to install agent-relay launchers after npm install"
+
     # Install dashboard if not skipped
     if [ "${AGENT_RELAY_NO_DASHBOARD}" != "true" ]; then
         # Try binary first, fall back to npm
@@ -694,14 +926,7 @@ install_from_source() {
     npm run build
 
     # Create wrapper script
-    mkdir -p "$BIN_DIR"
-    rm -f "$BIN_DIR/agent-relay"
-
-    cat > "$BIN_DIR/agent-relay" << WRAPPER
-#!/usr/bin/env bash
-cd "$INSTALL_DIR" && exec node dist/src/cli/index.js "\$@"
-WRAPPER
-    chmod +x "$BIN_DIR/agent-relay"
+    write_launcher "$BIN_DIR/agent-relay" "$INSTALL_DIR/dist/src/cli/index.js" "node"
 
     success "Installed from source"
 }
@@ -711,11 +936,11 @@ setup_path() {
     if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
         warn "Add to your PATH by running:"
         echo ""
-        echo "  export PATH=\"\$PATH:$BIN_DIR\""
+        echo "  export PATH=\"$BIN_DIR:\$PATH\""
         echo ""
         echo "  # Or add to your shell profile:"
-        echo "  echo 'export PATH=\"\$PATH:$BIN_DIR\"' >> ~/.bashrc  # for bash"
-        echo "  echo 'export PATH=\"\$PATH:$BIN_DIR\"' >> ~/.zshrc   # for zsh"
+        echo "  echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc  # for bash"
+        echo "  echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.zshrc   # for zsh"
         echo ""
     fi
 }
@@ -724,29 +949,43 @@ setup_path() {
 verify_installation() {
     step "Verifying installation..."
 
-    # Check if agent-relay is available
-    if command -v agent-relay &> /dev/null; then
-        local installed_version=$(agent-relay --version 2>/dev/null || echo "unknown")
-        success "agent-relay $installed_version installed successfully!"
+    local launcher_path="$BIN_DIR/agent-relay"
+    local installed_version=""
 
-        # Warn if another version shadows the one we just installed
-        local which_path=$(command -v agent-relay)
-        if [ -x "$BIN_DIR/agent-relay" ] && [ "$which_path" != "$BIN_DIR/agent-relay" ]; then
-            local other_version=$("$BIN_DIR/agent-relay" --version 2>/dev/null || echo "unknown")
-            if [ "$installed_version" != "$other_version" ]; then
-                warn "Another agent-relay ($installed_version) at $which_path shadows the newly installed $other_version at $BIN_DIR/agent-relay"
-                echo "  To fix, either:"
-                echo "    1. Uninstall the old version: npm uninstall -g agent-relay"
-                echo "    2. Or ensure $BIN_DIR is earlier in your PATH"
-            fi
-        fi
-    elif [ -x "$BIN_DIR/agent-relay" ]; then
-        local installed_version=$("$BIN_DIR/agent-relay" --version 2>/dev/null || echo "unknown")
+    if [ -x "$launcher_path" ] && installed_version=$("$launcher_path" --version 2>/dev/null); then
         success "agent-relay $installed_version installed to $BIN_DIR"
-        setup_path
     else
         error "Installation verification failed"
     fi
+
+    if ! command -v agent-relay &> /dev/null; then
+        setup_path
+        return 0
+    fi
+
+    local which_path
+    which_path=$(command -v agent-relay)
+    if [ "$which_path" = "$launcher_path" ]; then
+        return 0
+    fi
+
+    local active_version=""
+    if active_version=$(agent-relay --version 2>/dev/null); then
+        if [ "$active_version" != "$installed_version" ]; then
+            warn "Another agent-relay ($active_version) at $which_path shadows the newly installed $installed_version at $launcher_path"
+            setup_path
+        fi
+        return 0
+    fi
+
+    if is_broken_symlink "$which_path"; then
+        warn "A stale agent-relay symlink at $which_path is shadowing the installed launcher at $launcher_path"
+    elif is_runtime_manager_shim "$which_path"; then
+        warn "A runtime-manager shim at $which_path is shadowing the installed launcher at $launcher_path"
+    else
+        warn "A broken agent-relay command at $which_path is shadowing the installed launcher at $launcher_path"
+    fi
+    setup_path
 }
 
 # Print usage instructions
@@ -813,6 +1052,10 @@ main() {
         install_from_source && verify_installation && print_usage && track_event "install_completed" && exit 0
     else
         echo ""
+        if [ "$STANDALONE_BINARY_FAILURE_REASON" = "macos_killed" ]; then
+            warn "macOS rejected the downloaded standalone binary, and Node.js is not available for the fallback install path."
+            echo ""
+        fi
         warn "No standalone binary available and Node.js not found."
         echo ""
         echo -e "${BOLD}Options:${NC}"

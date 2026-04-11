@@ -508,6 +508,13 @@ export class AgentRelayClient {
     return this.transport.request<BrokerStatus>('/api/status');
   }
 
+  async getMessageHistory(): Promise<Array<Record<string, unknown>>> {
+    const response = await this.transport.request<{ messages?: Array<Record<string, unknown>> }>(
+      '/api/history/messages'
+    );
+    return Array.isArray(response.messages) ? response.messages : [];
+  }
+
   async getCrashInsights(): Promise<CrashInsightsResponse> {
     return this.transport.request('/api/crash-insights');
   }

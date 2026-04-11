@@ -1851,6 +1851,11 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             let threads = build_thread_infos(&messages, &self_names);
                             let _ = reply.send(Ok(json!({ "threads": threads })));
                         }
+                        ListenApiRequest::History { reply } => {
+                            let messages: Vec<Value> =
+                                recent_thread_messages.iter().rev().cloned().collect();
+                            let _ = reply.send(Ok(json!({ "messages": messages })));
+                        }
                         ListenApiRequest::SendInput { name, data, reply } => {
                             if let Err(err) = workers.send_to_worker(
                                 &name, "write_pty", Some(format!("api_{}", Uuid::new_v4().simple())),

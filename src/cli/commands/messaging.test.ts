@@ -19,6 +19,7 @@ function createBrokerClientMock(
 ): MessagingBrokerClient {
   return {
     sendMessage: vi.fn(async () => ({ event_id: 'evt_1', targets: [] })),
+    getMessageHistory: vi.fn(async () => []),
     shutdown: vi.fn(async () => undefined),
     ...overrides,
   };
@@ -48,11 +49,13 @@ function createHarness(options?: {
   brokerClient?: MessagingBrokerClient;
   relaycastClient?: MessagingRelaycastClient;
   projectRoot?: string;
+  createConnectError?: Error;
   createRelaycastError?: Error;
 }) {
   const brokerClient = options?.brokerClient ?? createBrokerClientMock();
   const relaycastClient = options?.relaycastClient ?? createRelaycastClientMock();
   const projectRoot = options?.projectRoot ?? '/tmp/project';
+  const createConnectError = options?.createConnectError;
   const createRelaycastError = options?.createRelaycastError;
 
   const exit = vi.fn((code: number) => {
@@ -61,6 +64,12 @@ function createHarness(options?: {
 
   const deps: MessagingDependencies = {
     getProjectRoot: vi.fn(() => projectRoot),
+    connectClient: vi.fn(async () => {
+      if (createConnectError) {
+        throw createConnectError;
+      }
+      return brokerClient;
+    }),
     createClient: vi.fn(() => brokerClient),
     createRelaycastClient: vi.fn(async () => {
       if (createRelaycastError) {
@@ -129,6 +138,66 @@ describe('registerMessagingCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Message sent to WorkerA');
   });
 
+  it('lets the broker choose the default sender when --from is omitted', async () => {
+    const brokerClient = createBrokerClientMock();
+    const { program } = createHarness({ brokerClient });
+
+    const exitCode = await runCommand(program, ['send', 'WorkerA', 'Ship this today']);
+
+    expect(exitCode).toBeUndefined();
+    expect(brokerClient.sendMessage).toHaveBeenCalledWith({
+      to: 'WorkerA',
+      text: 'Ship this today',
+    });
+  });
+
+  it('uses AGENT_RELAY_SENDER when configured and --from is omitted', async () => {
+    const brokerClient = createBrokerClientMock();
+    const originalSender = process.env.AGENT_RELAY_SENDER;
+    process.env.AGENT_RELAY_SENDER = 'relay-operator';
+    const { program } = createHarness({ brokerClient });
+
+    try {
+      const exitCode = await runCommand(program, ['send', 'WorkerA', 'Ship this today']);
+
+      expect(exitCode).toBeUndefined();
+      expect(brokerClient.sendMessage).toHaveBeenCalledWith({
+        to: 'WorkerA',
+        text: 'Ship this today',
+        from: 'relay-operator',
+      });
+    } finally {
+      if (originalSender === undefined) {
+        delete process.env.AGENT_RELAY_SENDER;
+      } else {
+        process.env.AGENT_RELAY_SENDER = originalSender;
+      }
+    }
+  });
+
+  it('treats a blank --from value as omitted so local broker defaults still work', async () => {
+    const brokerClient = createBrokerClientMock();
+    const originalSender = process.env.AGENT_RELAY_SENDER;
+    delete process.env.AGENT_RELAY_SENDER;
+    const { program } = createHarness({ brokerClient });
+
+    try {
+      const exitCode = await runCommand(program, ['send', 'WorkerA', 'Ship this today', '--from', '   ']);
+
+      expect(exitCode).toBeUndefined();
+      expect(brokerClient.sendMessage).toHaveBeenCalledWith({
+        to: 'WorkerA',
+        text: 'Ship this today',
+      });
+    } finally {
+      if (originalSender === undefined) {
+        delete process.env.AGENT_RELAY_SENDER;
+      } else {
+        process.env.AGENT_RELAY_SENDER = originalSender;
+      }
+    }
+  });
+
   it('reads a message by ID', async () => {
     const relaycastClient = createRelaycastClientMock({
       message: vi.fn(async () => ({
@@ -143,7 +212,10 @@ describe('registerMessagingCommands', () => {
     const exitCode = await runCommand(program, ['read', 'msg_123']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelaycastClient).toHaveBeenCalledWith({ agentName: '__cli_read__' });
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: '__cli_read__',
+      cwd: '/tmp/project',
+    });
     expect(relaycastClient.message).toHaveBeenCalledWith('msg_123');
     expect(deps.log).toHaveBeenNthCalledWith(1, 'From: Lead');
     expect(deps.log).toHaveBeenNthCalledWith(2, 'To: #channel');
@@ -153,58 +225,62 @@ describe('registerMessagingCommands', () => {
   });
 
   it('shows message history with limit option', async () => {
-    const relaycastClient = createRelaycastClientMock({
-      messages: vi.fn(async () => [
+    const brokerClient = createBrokerClientMock({
+      getMessageHistory: vi.fn(async () => [
         {
-          id: 'm3',
-          agent_name: 'Three',
+          event_id: 'm3',
+          from: 'Three',
+          target: '#general',
           text: 'third',
-          created_at: '2026-02-20T11:00:03.000Z',
+          timestamp: '2026-02-20T11:00:03.000Z',
         },
         {
-          id: 'm2',
-          agent_name: 'Two',
+          event_id: 'm2',
+          from: 'Two',
+          target: '#general',
           text: 'second',
-          created_at: '2026-02-20T11:00:02.000Z',
+          timestamp: '2026-02-20T11:00:02.000Z',
         },
         {
-          id: 'm1',
-          agent_name: 'One',
+          event_id: 'm1',
+          from: 'One',
+          target: '#general',
           text: 'first',
-          created_at: '2026-02-20T11:00:01.000Z',
+          timestamp: '2026-02-20T11:00:01.000Z',
         },
       ]),
     });
-    const { program, deps } = createHarness({ relaycastClient });
+    const { program, deps } = createHarness({ brokerClient });
 
     const exitCode = await runCommand(program, ['history', '--limit', '2']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelaycastClient).toHaveBeenCalledWith({ agentName: '__cli_history__' });
-    expect(relaycastClient.messages).toHaveBeenCalledWith('general', { limit: 100 });
+    expect(deps.connectClient).toHaveBeenCalledWith('/tmp/project');
+    expect(brokerClient.getMessageHistory).toHaveBeenCalledTimes(1);
     expect(deps.log).toHaveBeenCalledWith('[2026-02-20T11:00:03.000Z] Three -> #general: third');
     expect(deps.log).toHaveBeenCalledWith('[2026-02-20T11:00:02.000Z] Two -> #general: second');
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('One -> #general'));
   });
 
   it('shows message history as JSON with stable payload fields', async () => {
-    const relaycastClient = createRelaycastClientMock({
-      messages: vi.fn(async () => [
+    const brokerClient = createBrokerClientMock({
+      getMessageHistory: vi.fn(async () => [
         {
-          id: 'm1',
-          agent_name: 'One',
+          event_id: 'm1',
+          from: 'One',
+          target: 'WorkerA',
           text: 'first',
-          created_at: '2026-02-20T11:00:01.000Z',
+          thread_id: 'thread-1',
+          timestamp: '2026-02-20T11:00:01.000Z',
         },
       ]),
     });
-    const { program, deps } = createHarness({ relaycastClient });
+    const { program, deps } = createHarness({ brokerClient });
 
     const exitCode = await runCommand(program, ['history', '--json', '--limit', '1']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelaycastClient).toHaveBeenCalledWith({ agentName: '__cli_history__' });
-    expect(relaycastClient.messages).toHaveBeenCalledWith('general', { limit: 100 });
+    expect(deps.connectClient).toHaveBeenCalledWith('/tmp/project');
     expect(deps.log).toHaveBeenCalledTimes(1);
     expect(JSON.parse((deps.log as ReturnType<typeof vi.fn>).mock.calls[0][0] as string)).toEqual([
       {
@@ -212,12 +288,150 @@ describe('registerMessagingCommands', () => {
         ts: Date.parse('2026-02-20T11:00:01.000Z'),
         timestamp: '2026-02-20T11:00:01.000Z',
         from: 'One',
-        to: '#general',
-        thread: null,
+        to: 'WorkerA',
+        thread: 'thread-1',
         kind: 'message',
         body: 'first',
       },
     ]);
+  });
+
+  it('falls back to relaycast history when no local broker is available', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => [
+        {
+          id: 'm1',
+          agent_name: 'One',
+          text: 'first',
+          created_at: '2026-02-20T11:00:01.000Z',
+        },
+      ]),
+    });
+    const { program, deps } = createHarness({
+      relaycastClient,
+      createConnectError: new Error('No running broker found'),
+    });
+    const originalApiKey = process.env.RELAY_API_KEY;
+    process.env.RELAY_API_KEY = 'rk_test_123';
+
+    try {
+      const exitCode = await runCommand(program, ['history', '--limit', '1']);
+
+      expect(exitCode).toBeUndefined();
+      expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+        agentName: '__cli_history__',
+        cwd: '/tmp/project',
+      });
+      expect(relaycastClient.messages).toHaveBeenCalledWith('general', { limit: 100 });
+      expect(deps.log).toHaveBeenCalledWith('[2026-02-20T11:00:01.000Z] One -> #general: first');
+    } finally {
+      if (originalApiKey === undefined) {
+        delete process.env.RELAY_API_KEY;
+      } else {
+        process.env.RELAY_API_KEY = originalApiKey;
+      }
+    }
+  });
+
+  it('falls back to relaycast history without RELAY_API_KEY when the broker session is still reachable', async () => {
+    const brokerClient = createBrokerClientMock({
+      getMessageHistory: vi.fn(async () => {
+        throw new Error('history backend unavailable');
+      }),
+    });
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => [
+        {
+          id: 'm1',
+          agent_name: 'One',
+          text: 'first',
+          created_at: '2026-02-20T11:00:01.000Z',
+        },
+      ]),
+    });
+    const { program, deps } = createHarness({
+      brokerClient,
+      relaycastClient,
+    });
+    const originalApiKey = process.env.RELAY_API_KEY;
+    delete process.env.RELAY_API_KEY;
+
+    try {
+      const exitCode = await runCommand(program, ['history', '--limit', '1']);
+
+      expect(exitCode).toBeUndefined();
+      expect(deps.connectClient).toHaveBeenCalledWith('/tmp/project');
+      expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+        agentName: '__cli_history__',
+        cwd: '/tmp/project',
+      });
+      expect(relaycastClient.messages).toHaveBeenCalledWith('general', { limit: 100 });
+      expect(deps.log).toHaveBeenCalledWith('[2026-02-20T11:00:01.000Z] One -> #general: first');
+    } finally {
+      if (originalApiKey === undefined) {
+        delete process.env.RELAY_API_KEY;
+      } else {
+        process.env.RELAY_API_KEY = originalApiKey;
+      }
+    }
+  });
+
+  it('explains how to fix history when local broker and relaycast key are both unavailable', async () => {
+    const { program, deps } = createHarness({
+      createConnectError: new Error('No running broker found'),
+    });
+    const originalApiKey = process.env.RELAY_API_KEY;
+    delete process.env.RELAY_API_KEY;
+
+    try {
+      const exitCode = await runCommand(program, ['history']);
+
+      expect(exitCode).toBe(1);
+      expect(deps.error).toHaveBeenCalledWith('Failed to read local broker history: No running broker found');
+      expect(deps.error).toHaveBeenCalledWith(
+        'No Relaycast API key found in RELAY_API_KEY. Start the local broker with `agent-relay up` and retry, or set RELAY_API_KEY to read Relaycast history.'
+      );
+    } finally {
+      if (originalApiKey === undefined) {
+        delete process.env.RELAY_API_KEY;
+      } else {
+        process.env.RELAY_API_KEY = originalApiKey;
+      }
+    }
+  });
+
+  it('clarifies local-only mode when relaycast fallback has no workspace key to use', async () => {
+    const brokerClient = createBrokerClientMock({
+      getMessageHistory: vi.fn(async () => {
+        throw new Error('history backend unavailable');
+      }),
+    });
+    const { program, deps } = createHarness({
+      brokerClient,
+      createRelaycastError: new Error(
+        'Relaycast API key not found in RELAY_API_KEY or the running broker session'
+      ),
+    });
+    const originalApiKey = process.env.RELAY_API_KEY;
+    delete process.env.RELAY_API_KEY;
+
+    try {
+      const exitCode = await runCommand(program, ['history']);
+
+      expect(exitCode).toBe(1);
+      expect(deps.error).toHaveBeenCalledWith(
+        'Relaycast history is unavailable because this broker is running in local-only mode and no RELAY_API_KEY is configured.'
+      );
+      expect(deps.error).toHaveBeenCalledWith(
+        'Local broker history was unavailable: history backend unavailable'
+      );
+    } finally {
+      if (originalApiKey === undefined) {
+        delete process.env.RELAY_API_KEY;
+      } else {
+        process.env.RELAY_API_KEY = originalApiKey;
+      }
+    }
   });
 
   it('shows unread inbox summary', async () => {
@@ -241,7 +455,10 @@ describe('registerMessagingCommands', () => {
     const exitCode = await runCommand(program, ['inbox']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelaycastClient).toHaveBeenCalledWith({ agentName: '__cli_inbox__' });
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: '__cli_inbox__',
+      cwd: '/tmp/project',
+    });
     expect(deps.log).toHaveBeenCalledWith('Unread Channels:');
     expect(deps.log).toHaveBeenCalledWith('  #general: 2');
     expect(deps.log).toHaveBeenCalledWith('Mentions:');
