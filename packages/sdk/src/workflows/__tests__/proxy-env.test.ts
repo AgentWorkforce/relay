@@ -2,12 +2,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentDefinition, SwarmConfig } from '../types.js';
 import {
+  buildNormalizedProxyEnv,
   createProxyEnvResolver,
   getStrippedApiKeyVars,
   isProxyEnabled,
+  RELAY_PROXY_TOKEN_ENV,
+  RELAY_PROXY_TOKEN_ENV_ALIAS,
+  RELAY_PROXY_URL_ENV,
+  RELAY_PROXY_URL_ENV_ALIAS,
+  resolveProxyTokenFromEnv,
+  resolveProxyUrlFromEnv,
   resolveProxyEnv,
   type ProxyEnvRegistry,
 } from '../proxy-env.js';
+import { WorkflowRunner } from '../runner.js';
 
 describe('proxy-env', () => {
   afterEach(() => {
@@ -66,6 +74,56 @@ describe('proxy-env', () => {
     ]);
   });
 
+  it('does not strip canonical or legacy relay proxy env vars', () => {
+    expect(getStrippedApiKeyVars()).not.toContain(RELAY_PROXY_URL_ENV);
+    expect(getStrippedApiKeyVars()).not.toContain(RELAY_PROXY_URL_ENV_ALIAS);
+    expect(getStrippedApiKeyVars()).not.toContain(RELAY_PROXY_TOKEN_ENV);
+    expect(getStrippedApiKeyVars()).not.toContain(RELAY_PROXY_TOKEN_ENV_ALIAS);
+  });
+
+  it('prefers the canonical relay proxy URL env name', () => {
+    expect(
+      resolveProxyUrlFromEnv({
+        [RELAY_PROXY_URL_ENV]: 'https://cloud.proxy',
+        [RELAY_PROXY_URL_ENV_ALIAS]: 'https://legacy.proxy',
+      })
+    ).toBe('https://cloud.proxy');
+  });
+
+  it('falls back to the legacy relay proxy URL env name', () => {
+    expect(
+      resolveProxyUrlFromEnv({
+        [RELAY_PROXY_URL_ENV_ALIAS]: 'https://legacy.proxy',
+      })
+    ).toBe('https://legacy.proxy');
+  });
+
+  it('prefers the canonical relay proxy token env name', () => {
+    expect(
+      resolveProxyTokenFromEnv({
+        [RELAY_PROXY_TOKEN_ENV]: 'cloud-token',
+        [RELAY_PROXY_TOKEN_ENV_ALIAS]: 'legacy-token',
+      })
+    ).toBe('cloud-token');
+  });
+
+  it('falls back to the legacy relay proxy token env name', () => {
+    expect(
+      resolveProxyTokenFromEnv({
+        [RELAY_PROXY_TOKEN_ENV_ALIAS]: 'legacy-token',
+      })
+    ).toBe('legacy-token');
+  });
+
+  it('emits canonical and legacy relay proxy env vars together', () => {
+    expect(buildNormalizedProxyEnv('https://proxy.local', 'proxy-token')).toEqual({
+      RELAY_LLM_PROXY: 'https://proxy.local',
+      RELAY_LLM_PROXY_URL: 'https://proxy.local',
+      CREDENTIAL_PROXY_TOKEN: 'proxy-token',
+      RELAY_LLM_PROXY_TOKEN: 'proxy-token',
+    });
+  });
+
   it('enables proxy mode only when both agent and swarm opt in', () => {
     const agentWithProxy = { credentials: { proxy: true } } as AgentDefinition;
     const agentWithoutProxy = { credentials: { proxy: false } } as AgentDefinition;
@@ -94,5 +152,27 @@ describe('proxy-env', () => {
       CUSTOM_API_BASE: 'https://proxy.local',
       CUSTOM_API_KEY: 'proxy-token',
     });
+  });
+
+  it('normalizes inherited proxy env before child-process propagation', () => {
+    const runner = new WorkflowRunner({
+      relay: {
+        env: {
+          RELAY_LLM_PROXY_URL: 'https://legacy.proxy',
+          RELAY_LLM_PROXY_TOKEN: 'legacy-token',
+          OPENAI_API_KEY: 'should-strip',
+        },
+      },
+    });
+
+    const env = (runner as any).getRelayEnv();
+
+    expect(env).toMatchObject({
+      RELAY_LLM_PROXY: 'https://legacy.proxy',
+      RELAY_LLM_PROXY_URL: 'https://legacy.proxy',
+      CREDENTIAL_PROXY_TOKEN: 'legacy-token',
+      RELAY_LLM_PROXY_TOKEN: 'legacy-token',
+    });
+    expect(env.OPENAI_API_KEY).toBeUndefined();
   });
 });

@@ -8,6 +8,11 @@ export interface ProxyEnvBinding {
 
 export type ProxyEnvRegistry = Record<string, readonly ProxyEnvBinding[]>;
 
+export const RELAY_PROXY_URL_ENV = 'RELAY_LLM_PROXY' as const;
+export const RELAY_PROXY_URL_ENV_ALIAS = 'RELAY_LLM_PROXY_URL' as const;
+export const RELAY_PROXY_TOKEN_ENV = 'CREDENTIAL_PROXY_TOKEN' as const;
+export const RELAY_PROXY_TOKEN_ENV_ALIAS = 'RELAY_LLM_PROXY_TOKEN' as const;
+
 const OPENAI_COMPATIBLE_BINDINGS = [
   { baseUrlVar: 'OPENAI_BASE_URL', apiKeyVar: 'OPENAI_API_KEY' },
 ] as const satisfies readonly ProxyEnvBinding[];
@@ -94,6 +99,27 @@ export function createProxyEnvResolver(registry: ProxyEnvRegistry = DEFAULT_PROX
 }
 
 export const resolveProxyEnv = createProxyEnvResolver();
+
+export function resolveProxyUrlFromEnv(
+  env: Record<string, string | undefined> = process.env
+): string | undefined {
+  return env[RELAY_PROXY_URL_ENV] ?? env[RELAY_PROXY_URL_ENV_ALIAS];
+}
+
+export function resolveProxyTokenFromEnv(
+  env: Record<string, string | undefined> = process.env
+): string | undefined {
+  return env[RELAY_PROXY_TOKEN_ENV] ?? env[RELAY_PROXY_TOKEN_ENV_ALIAS];
+}
+
+export function buildNormalizedProxyEnv(proxyUrl: string, proxyToken: string): Record<string, string> {
+  return {
+    [RELAY_PROXY_URL_ENV]: proxyUrl,
+    [RELAY_PROXY_URL_ENV_ALIAS]: proxyUrl,
+    [RELAY_PROXY_TOKEN_ENV]: proxyToken,
+    [RELAY_PROXY_TOKEN_ENV_ALIAS]: proxyToken,
+  };
+}
 
 export function getStrippedApiKeyVars(): string[] {
   return [...STRIPPED_API_KEY_VARS];

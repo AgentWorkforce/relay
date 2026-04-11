@@ -30,7 +30,13 @@ import type { BrokerEvent } from '../protocol.js';
 import { resolveSpawnPolicy } from '../spawn-from-env.js';
 import { getCliDefinition } from '../cli-registry.js';
 import { resolveCliSync } from '../cli-resolver.js';
-import { resolveProxyEnv, getStrippedApiKeyVars } from './proxy-env.js';
+import {
+  buildNormalizedProxyEnv,
+  getStrippedApiKeyVars,
+  resolveProxyEnv,
+  resolveProxyTokenFromEnv,
+  resolveProxyUrlFromEnv,
+} from './proxy-env.js';
 
 import {
   loadCustomSteps,
@@ -129,7 +135,9 @@ const ENV_ALLOWLIST = new Set([
   'RUST_BACKTRACE',
   'RELAY_API_KEY',
   'RELAYCAST_BASE_URL',
+  'RELAY_LLM_PROXY',
   'RELAY_LLM_PROXY_URL',
+  'CREDENTIAL_PROXY_TOKEN',
   'RELAY_LLM_PROXY_TOKEN',
   'AGENT_RELAY_DASHBOARD_PORT',
   'AGENT_RELAY_RUN_ID_FILE',
@@ -1771,9 +1779,27 @@ export class WorkflowRunner {
     agentDef: AgentDefinition,
     config?: RelayYamlConfig
   ): Promise<ProxyModeConfig | undefined> {
-    const proxyUrl = config?.swarm?.credentialProxy?.proxyUrl;
-    if (!proxyUrl || !agentDef.credentials?.proxy) {
+    if (!agentDef.credentials?.proxy) {
       return undefined;
+    }
+
+    const env = this.getMergedRelayEnvSource();
+    const configuredProxyUrl = config?.swarm?.credentialProxy?.proxyUrl;
+    const proxyUrl = configuredProxyUrl ?? resolveProxyUrlFromEnv(env);
+    if (!proxyUrl) {
+      return undefined;
+    }
+
+    if (!configuredProxyUrl) {
+      const injectedToken = resolveProxyTokenFromEnv(env);
+      if (!injectedToken) {
+        return undefined;
+      }
+
+      return {
+        url: proxyUrl,
+        token: injectedToken,
+      };
     }
 
     const token = await this.mintAgentProxyToken(agentDef, config);
@@ -1787,20 +1813,32 @@ export class WorkflowRunner {
     };
   }
 
-  private getRelayEnv(proxyMode?: ProxyModeConfig): NodeJS.ProcessEnv | undefined {
-    if (!this.relayApiKey && !this.relayOptions.env && !proxyMode) {
-      return undefined;
-    }
-
-    const env: NodeJS.ProcessEnv = {
+  private getMergedRelayEnvSource(): NodeJS.ProcessEnv {
+    return {
       ...process.env,
       ...(this.relayOptions.env ?? {}),
       ...(this.relayApiKey ? { RELAY_API_KEY: this.relayApiKey } : {}),
     };
+  }
 
-    if (proxyMode?.url && proxyMode.token) {
-      env.RELAY_LLM_PROXY_URL = proxyMode.url;
-      env.RELAY_LLM_PROXY_TOKEN = proxyMode.token;
+  private getRelayEnv(proxyMode?: ProxyModeConfig): NodeJS.ProcessEnv | undefined {
+    const env = this.getMergedRelayEnvSource();
+    const inheritedProxyUrl = resolveProxyUrlFromEnv(env);
+    const inheritedProxyToken = resolveProxyTokenFromEnv(env);
+
+    if (!this.relayApiKey && !this.relayOptions.env && !proxyMode && !(inheritedProxyUrl && inheritedProxyToken)) {
+      return undefined;
+    }
+
+    const normalizedProxy =
+      proxyMode?.url && proxyMode.token
+        ? proxyMode
+        : inheritedProxyUrl && inheritedProxyToken
+          ? { url: inheritedProxyUrl, token: inheritedProxyToken }
+          : undefined;
+
+    if (normalizedProxy) {
+      Object.assign(env, buildNormalizedProxyEnv(normalizedProxy.url, normalizedProxy.token));
       for (const key of getStrippedApiKeyVars()) {
         delete env[key];
       }
