@@ -547,7 +547,39 @@ export function registerMessagingCommands(
       try {
         const inbox = normalizeInbox(await relaycast.inbox());
         if (options.json) {
-          deps.log(JSON.stringify(inbox, null, 2));
+          const payload = {
+            unread_channels: inbox.unreadChannels.map((item) => ({
+              channel_name: item.channelName,
+              unread_count: item.unreadCount,
+            })),
+            mentions: inbox.mentions.map((mention) => ({
+              id: mention.id,
+              channel_name: mention.channelName,
+              agent_name: mention.agentName,
+              text: mention.text,
+              created_at: mention.createdAt,
+            })),
+            unread_dms: inbox.unreadDms.map((dm) => ({
+              conversation_id: dm.conversationId,
+              from: dm.from,
+              unread_count: dm.unreadCount,
+              last_message: dm.lastMessage
+                ? {
+                    id: dm.lastMessage.id,
+                    text: dm.lastMessage.text,
+                    created_at: dm.lastMessage.createdAt,
+                  }
+                : null,
+            })),
+            recent_reactions: inbox.recentReactions.map((reaction) => ({
+              message_id: reaction.messageId,
+              channel_name: reaction.channelName,
+              emoji: reaction.emoji,
+              agent_name: reaction.agentName,
+              created_at: reaction.createdAt,
+            })),
+          };
+          deps.log(JSON.stringify(payload, null, 2));
           return;
         }
 
