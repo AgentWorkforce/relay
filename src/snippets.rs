@@ -3119,6 +3119,37 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
     }
 
     #[tokio::test]
+    async fn configure_relaycast_mcp_with_token_claude_headless_call_site() {
+        // Mirrors the worker.rs AgentRuntime::Headless call site for claude:
+        // ensures --mcp-config JSON is returned with the workspace context
+        // forwarded through to the MCP environment.
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp_with_token(
+            "claude",
+            "headless-worker",
+            Some("rk_live_hl"),
+            Some("https://api.relaycast.dev"),
+            &[],
+            temp.path(),
+            Some("tok_hl_123"),
+            Some("[\"ws-a\"]"),
+            Some("ws-a"),
+        )
+        .await
+        .expect("configure claude headless mcp");
+
+        assert_eq!(args.len(), 2, "claude should receive flag + JSON payload");
+        assert_eq!(args[0], "--mcp-config");
+
+        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        let env = &json["mcpServers"]["relaycast"]["env"];
+        assert_eq!(env["RELAY_API_KEY"].as_str(), Some("rk_live_hl"));
+        assert_eq!(env["RELAY_AGENT_TOKEN"].as_str(), Some("tok_hl_123"));
+        assert_eq!(env["RELAY_WORKSPACES_JSON"].as_str(), Some("[\"ws-a\"]"));
+        assert_eq!(env["RELAY_DEFAULT_WORKSPACE"].as_str(), Some("ws-a"));
+    }
+
+    #[tokio::test]
     async fn configure_relaycast_mcp_public_reads_env_fallback() {
         // Set env vars before calling the public wrapper
         std::env::set_var("RELAY_WORKSPACES_JSON", "wj-from-env");
