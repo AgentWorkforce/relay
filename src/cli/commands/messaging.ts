@@ -8,35 +8,116 @@ type ExitFn = (code: number) => never;
 
 interface RelaycastMessage {
   id: string;
-  agent_name: string;
   text: string;
-  created_at: string;
+  agentName?: string;
+  createdAt?: string;
+  agent_name?: string;
+  created_at?: string;
 }
 
 interface RelaycastUnreadChannel {
-  channel_name: string;
-  unread_count: number;
+  channelName?: string;
+  unreadCount?: number;
+  channel_name?: string;
+  unread_count?: number;
 }
 
 interface RelaycastMention {
   id: string;
-  channel_name: string;
-  agent_name: string;
   text: string;
-  created_at: string;
+  channelName?: string;
+  agentName?: string;
+  createdAt?: string;
+  channel_name?: string;
+  agent_name?: string;
+  created_at?: string;
+}
+
+interface RelaycastLastMessage {
+  id: string;
+  text: string;
+  createdAt?: string;
+  created_at?: string;
 }
 
 interface RelaycastUnreadDm {
-  conversation_id: string;
   from: string;
-  unread_count: number;
-  last_message: string | null;
+  conversationId?: string;
+  unreadCount?: number;
+  lastMessage?: RelaycastLastMessage | null;
+  conversation_id?: string;
+  unread_count?: number;
+  last_message?: RelaycastLastMessage | null;
+}
+
+interface RelaycastRecentReaction {
+  emoji: string;
+  messageId?: string;
+  channelName?: string;
+  agentName?: string;
+  createdAt?: string;
+  message_id?: string;
+  channel_name?: string;
+  agent_name?: string;
+  created_at?: string;
 }
 
 interface RelaycastInbox {
-  unread_channels: RelaycastUnreadChannel[];
-  mentions: RelaycastMention[];
-  unread_dms: RelaycastUnreadDm[];
+  unreadChannels?: RelaycastUnreadChannel[];
+  mentions?: RelaycastMention[];
+  unreadDms?: RelaycastUnreadDm[];
+  recentReactions?: RelaycastRecentReaction[];
+  unread_channels?: RelaycastUnreadChannel[];
+  unread_dms?: RelaycastUnreadDm[];
+  recent_reactions?: RelaycastRecentReaction[];
+}
+
+interface NormalizedRelaycastMessage {
+  id: string;
+  agentName: string;
+  text: string;
+  createdAt: string;
+}
+
+interface NormalizedRelaycastUnreadChannel {
+  channelName: string;
+  unreadCount: number;
+}
+
+interface NormalizedRelaycastMention {
+  id: string;
+  channelName: string;
+  agentName: string;
+  text: string;
+  createdAt: string;
+}
+
+interface NormalizedRelaycastLastMessage {
+  id: string;
+  text: string;
+  createdAt: string;
+}
+
+interface NormalizedRelaycastUnreadDm {
+  conversationId: string;
+  from: string;
+  unreadCount: number;
+  lastMessage: NormalizedRelaycastLastMessage | null;
+}
+
+interface NormalizedRelaycastRecentReaction {
+  emoji: string;
+  messageId: string;
+  channelName: string;
+  agentName: string;
+  createdAt: string;
+}
+
+interface NormalizedRelaycastInbox {
+  unreadChannels: NormalizedRelaycastUnreadChannel[];
+  mentions: NormalizedRelaycastMention[];
+  unreadDms: NormalizedRelaycastUnreadDm[];
+  recentReactions: NormalizedRelaycastRecentReaction[];
 }
 
 export interface MessagingRelaycastClient {
@@ -64,6 +145,156 @@ export interface MessagingDependencies {
 
 function defaultExit(code: number): never {
   process.exit(code);
+}
+
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
+}
+
+function readString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function readNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function normalizeIsoTimestamp(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value.trim()) {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) {
+    return undefined;
+  }
+  return new Date(parsed).toISOString();
+}
+
+function normalizeMessage(message: RelaycastMessage): NormalizedRelaycastMessage | null {
+  const agentName = readString(message.agentName, message.agent_name);
+  const createdAt = normalizeIsoTimestamp(readString(message.createdAt, message.created_at));
+  if (!agentName || !createdAt) {
+    return null;
+  }
+
+  return {
+    id: message.id,
+    agentName,
+    text: message.text,
+    createdAt,
+  };
+}
+
+function normalizeUnreadChannel(channel: RelaycastUnreadChannel): NormalizedRelaycastUnreadChannel | null {
+  const channelName = readString(channel.channelName, channel.channel_name);
+  const unreadCount = readNumber(channel.unreadCount, channel.unread_count);
+  if (!channelName || unreadCount === undefined) {
+    return null;
+  }
+
+  return {
+    channelName,
+    unreadCount,
+  };
+}
+
+function normalizeMention(mention: RelaycastMention): NormalizedRelaycastMention | null {
+  const channelName = readString(mention.channelName, mention.channel_name);
+  const agentName = readString(mention.agentName, mention.agent_name);
+  const createdAt = normalizeIsoTimestamp(readString(mention.createdAt, mention.created_at));
+  if (!channelName || !agentName || !createdAt) {
+    return null;
+  }
+
+  return {
+    id: mention.id,
+    channelName,
+    agentName,
+    text: mention.text,
+    createdAt,
+  };
+}
+
+function normalizeLastMessage(
+  message: RelaycastLastMessage | null | undefined
+): NormalizedRelaycastLastMessage | null {
+  if (!message) {
+    return null;
+  }
+
+  const createdAt = normalizeIsoTimestamp(readString(message.createdAt, message.created_at));
+  if (!createdAt) {
+    return null;
+  }
+
+  return {
+    id: message.id,
+    text: message.text,
+    createdAt,
+  };
+}
+
+function normalizeUnreadDm(dm: RelaycastUnreadDm): NormalizedRelaycastUnreadDm | null {
+  const conversationId = readString(dm.conversationId, dm.conversation_id);
+  const unreadCount = readNumber(dm.unreadCount, dm.unread_count);
+  if (!conversationId || unreadCount === undefined) {
+    return null;
+  }
+
+  return {
+    conversationId,
+    from: dm.from,
+    unreadCount,
+    lastMessage: normalizeLastMessage(dm.lastMessage ?? dm.last_message),
+  };
+}
+
+function normalizeRecentReaction(
+  reaction: RelaycastRecentReaction
+): NormalizedRelaycastRecentReaction | null {
+  const messageId = readString(reaction.messageId, reaction.message_id);
+  const channelName = readString(reaction.channelName, reaction.channel_name);
+  const agentName = readString(reaction.agentName, reaction.agent_name);
+  const createdAt = normalizeIsoTimestamp(readString(reaction.createdAt, reaction.created_at));
+  if (!messageId || !channelName || !agentName || !createdAt) {
+    return null;
+  }
+
+  return {
+    emoji: reaction.emoji,
+    messageId,
+    channelName,
+    agentName,
+    createdAt,
+  };
+}
+
+function normalizeInbox(inbox: RelaycastInbox | null | undefined): NormalizedRelaycastInbox {
+  const unreadChannelsRaw = inbox?.unreadChannels ?? inbox?.unread_channels;
+  const mentionsRaw = inbox?.mentions;
+  const unreadDmsRaw = inbox?.unreadDms ?? inbox?.unread_dms;
+  const recentReactionsRaw = inbox?.recentReactions ?? inbox?.recent_reactions;
+
+  return {
+    unreadChannels: (Array.isArray(unreadChannelsRaw) ? unreadChannelsRaw : [])
+      .map(normalizeUnreadChannel)
+      .filter(isPresent),
+    mentions: (Array.isArray(mentionsRaw) ? mentionsRaw : []).map(normalizeMention).filter(isPresent),
+    unreadDms: (Array.isArray(unreadDmsRaw) ? unreadDmsRaw : []).map(normalizeUnreadDm).filter(isPresent),
+    recentReactions: (Array.isArray(recentReactionsRaw) ? recentReactionsRaw : [])
+      .map(normalizeRecentReaction)
+      .filter(isPresent),
+  };
 }
 
 async function createDefaultClient(cwd: string): Promise<MessagingBrokerClient> {
@@ -193,11 +424,16 @@ export function registerMessagingCommands(
 
       try {
         const msg = await relaycast.message(messageId);
-        deps.log(`From: ${msg.agent_name}`);
+        const normalizedMessage = normalizeMessage(msg);
+        if (!normalizedMessage) {
+          throw new Error(`message ${messageId} is missing sender or timestamp metadata`);
+        }
+
+        deps.log(`From: ${normalizedMessage.agentName}`);
         deps.log('To: #channel');
-        deps.log(`Time: ${new Date(msg.created_at).toISOString()}`);
+        deps.log(`Time: ${normalizedMessage.createdAt}`);
         deps.log('---');
-        deps.log(msg.text);
+        deps.log(normalizedMessage.text);
       } catch (err: any) {
         deps.error(`Failed to read message ${messageId}: ${err?.message || String(err)}`);
         deps.error('Ensure the broker is running (`agent-relay up`) and try again.');
@@ -241,24 +477,29 @@ export function registerMessagingCommands(
 
         try {
           const channel = options.to?.startsWith('#') ? options.to.slice(1) : 'general';
-          const rawMessages = await relaycast.messages(channel, {
-            limit: Math.max(limit * 2, 100),
-          });
+          const messages = (
+            await relaycast.messages(channel, {
+              limit: Math.max(limit * 2, 100),
+            })
+          )
+            .map(normalizeMessage)
+            .filter(isPresent);
 
-          let messages = rawMessages.filter((msg) => {
-            if (options.from && msg.agent_name !== options.from) return false;
-            if (sinceTs && Date.parse(msg.created_at) < sinceTs) return false;
+          let filteredMessages = messages.filter((msg) => {
+            const createdAtMs = Date.parse(msg.createdAt);
+            if (options.from && msg.agentName !== options.from) return false;
+            if (sinceTs && createdAtMs < sinceTs) return false;
             return true;
           });
 
-          messages = messages.slice(0, limit);
+          filteredMessages = filteredMessages.slice(0, limit);
 
           if (options.json) {
-            const payload = messages.map((msg) => ({
+            const payload = filteredMessages.map((msg) => ({
               id: msg.id,
-              ts: Date.parse(msg.created_at),
-              timestamp: new Date(msg.created_at).toISOString(),
-              from: msg.agent_name,
+              ts: Date.parse(msg.createdAt),
+              timestamp: msg.createdAt,
+              from: msg.agentName,
               to: `#${channel}`,
               thread: null,
               kind: 'message',
@@ -269,15 +510,14 @@ export function registerMessagingCommands(
             return;
           }
 
-          if (!messages.length) {
+          if (!filteredMessages.length) {
             deps.log('No messages found.');
             return;
           }
 
-          messages.forEach((msg) => {
-            const ts = new Date(msg.created_at).toISOString();
+          filteredMessages.forEach((msg) => {
             const body = msg.text.length > 200 ? `${msg.text.slice(0, 197)}...` : msg.text;
-            deps.log(`[${ts}] ${msg.agent_name} -> #${channel}: ${body}`);
+            deps.log(`[${msg.createdAt}] ${msg.agentName} -> #${channel}: ${body}`);
           });
         } catch (err: any) {
           deps.error(`Failed to fetch history: ${err?.message || String(err)}`);
@@ -305,24 +545,59 @@ export function registerMessagingCommands(
       }
 
       try {
-        const inbox = await relaycast.inbox();
+        const inbox = normalizeInbox(await relaycast.inbox());
         if (options.json) {
-          deps.log(JSON.stringify(inbox, null, 2));
+          const payload = {
+            unread_channels: inbox.unreadChannels.map((item) => ({
+              channel_name: item.channelName,
+              unread_count: item.unreadCount,
+            })),
+            mentions: inbox.mentions.map((mention) => ({
+              id: mention.id,
+              channel_name: mention.channelName,
+              agent_name: mention.agentName,
+              text: mention.text,
+              created_at: mention.createdAt,
+            })),
+            unread_dms: inbox.unreadDms.map((dm) => ({
+              conversation_id: dm.conversationId,
+              from: dm.from,
+              unread_count: dm.unreadCount,
+              last_message: dm.lastMessage
+                ? {
+                    id: dm.lastMessage.id,
+                    text: dm.lastMessage.text,
+                    created_at: dm.lastMessage.createdAt,
+                  }
+                : null,
+            })),
+            recent_reactions: inbox.recentReactions.map((reaction) => ({
+              message_id: reaction.messageId,
+              channel_name: reaction.channelName,
+              emoji: reaction.emoji,
+              agent_name: reaction.agentName,
+              created_at: reaction.createdAt,
+            })),
+          };
+          deps.log(JSON.stringify(payload, null, 2));
           return;
         }
 
         const hasContent =
-          inbox.unread_channels.length > 0 || inbox.mentions.length > 0 || inbox.unread_dms.length > 0;
+          inbox.unreadChannels.length > 0 ||
+          inbox.mentions.length > 0 ||
+          inbox.unreadDms.length > 0 ||
+          inbox.recentReactions.length > 0;
 
         if (!hasContent) {
           deps.log('Inbox is clear.');
           return;
         }
 
-        if (inbox.unread_channels.length > 0) {
+        if (inbox.unreadChannels.length > 0) {
           deps.log('Unread Channels:');
-          for (const item of inbox.unread_channels) {
-            deps.log(`  #${item.channel_name}: ${item.unread_count}`);
+          for (const item of inbox.unreadChannels) {
+            deps.log(`  #${item.channelName}: ${item.unreadCount}`);
           }
           deps.log('');
         }
@@ -331,15 +606,25 @@ export function registerMessagingCommands(
           deps.log('Mentions:');
           for (const mention of inbox.mentions) {
             const preview = mention.text.length > 120 ? `${mention.text.slice(0, 117)}...` : mention.text;
-            deps.log(`  [${mention.created_at}] #${mention.channel_name} @${mention.agent_name}: ${preview}`);
+            deps.log(`  [${mention.createdAt}] #${mention.channelName} @${mention.agentName}: ${preview}`);
           }
           deps.log('');
         }
 
-        if (inbox.unread_dms.length > 0) {
+        if (inbox.unreadDms.length > 0) {
           deps.log('Unread DMs:');
-          for (const dm of inbox.unread_dms) {
-            deps.log(`  ${dm.from}: ${dm.unread_count}`);
+          for (const dm of inbox.unreadDms) {
+            deps.log(`  ${dm.from}: ${dm.unreadCount}`);
+          }
+          deps.log('');
+        }
+
+        if (inbox.recentReactions.length > 0) {
+          deps.log('Recent Reactions:');
+          for (const reaction of inbox.recentReactions) {
+            deps.log(
+              `  [${reaction.createdAt}] #${reaction.channelName} ${reaction.emoji} by @${reaction.agentName}`
+            );
           }
         }
       } catch (err: any) {

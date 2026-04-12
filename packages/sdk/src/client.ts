@@ -177,7 +177,7 @@ export class AgentRelayClient {
     }
 
     const raw = readFileSync(connPath, 'utf-8');
-    let conn: { url?: string; api_key?: string; port?: number; pid?: number };
+    let conn: { url?: string; api_key?: string; workspace_key?: string; port?: number; pid?: number };
     try {
       conn = JSON.parse(raw);
     } catch {

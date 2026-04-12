@@ -39,6 +39,7 @@ function createRelaycastClientMock(
       unread_channels: [],
       mentions: [],
       unread_dms: [],
+      recent_reactions: [],
     })),
     ...overrides,
   };
@@ -258,6 +259,7 @@ describe('registerMessagingCommands', () => {
           },
         ],
         unread_dms: [{ conversation_id: 'dm_1', from: 'Teammate', unread_count: 1, last_message: null }],
+        recent_reactions: [],
       })),
     });
     const { program, deps } = createHarness({ relaycastClient });
@@ -277,6 +279,155 @@ describe('registerMessagingCommands', () => {
     );
     expect(deps.log).toHaveBeenCalledWith('Unread DMs:');
     expect(deps.log).toHaveBeenCalledWith('  Teammate: 1');
+  });
+
+  it('normalizes camelCase inbox payloads from the Relaycast SDK', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({
+        unreadChannels: [{ channelName: 'general', unreadCount: 2 }],
+        mentions: [
+          {
+            id: 'mention_1',
+            channelName: 'general',
+            agentName: 'Lead',
+            text: 'Please review this.',
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ],
+        unreadDms: [
+          {
+            conversationId: 'dm_1',
+            from: 'Teammate',
+            unreadCount: 1,
+            lastMessage: {
+              id: 'msg_1',
+              text: 'hello',
+              createdAt: '2026-02-20T12:01:00.000Z',
+            },
+          },
+        ],
+        recentReactions: [
+          {
+            messageId: 'msg_2',
+            channelName: 'general',
+            emoji: 'eyes',
+            agentName: 'Reviewer',
+            createdAt: '2026-02-20T12:02:00.000Z',
+          },
+        ],
+      })),
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('Unread Channels:');
+    expect(deps.log).toHaveBeenCalledWith('  #general: 2');
+    expect(deps.log).toHaveBeenCalledWith('Mentions:');
+    expect(deps.log).toHaveBeenCalledWith(
+      '  [2026-02-20T12:00:00.000Z] #general @Lead: Please review this.'
+    );
+    expect(deps.log).toHaveBeenCalledWith('Unread DMs:');
+    expect(deps.log).toHaveBeenCalledWith('  Teammate: 1');
+    expect(deps.log).toHaveBeenCalledWith('Recent Reactions:');
+    expect(deps.log).toHaveBeenCalledWith(
+      '  [2026-02-20T12:02:00.000Z] #general eyes by @Reviewer'
+    );
+  });
+
+  it('emits snake_case inbox --json payload even when SDK returns camelCase', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({
+        unreadChannels: [{ channelName: 'general', unreadCount: 2 }],
+        mentions: [
+          {
+            id: 'mention_1',
+            channelName: 'general',
+            agentName: 'Lead',
+            text: 'Please review this.',
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ],
+        unreadDms: [
+          {
+            conversationId: 'dm_1',
+            from: 'Teammate',
+            unreadCount: 1,
+            lastMessage: {
+              id: 'msg_1',
+              text: 'hello',
+              createdAt: '2026-02-20T12:01:00.000Z',
+            },
+          },
+        ],
+        recentReactions: [
+          {
+            messageId: 'msg_2',
+            channelName: 'general',
+            emoji: 'eyes',
+            agentName: 'Reviewer',
+            createdAt: '2026-02-20T12:02:00.000Z',
+          },
+        ],
+      })),
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox', '--json']);
+
+    expect(exitCode).toBeUndefined();
+    const jsonCall = (deps.log as any).mock.calls.find(
+      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).trimStart().startsWith('{')
+    );
+    expect(jsonCall).toBeDefined();
+    const parsed = JSON.parse(jsonCall![0] as string);
+    expect(parsed).toEqual({
+      unread_channels: [{ channel_name: 'general', unread_count: 2 }],
+      mentions: [
+        {
+          id: 'mention_1',
+          channel_name: 'general',
+          agent_name: 'Lead',
+          text: 'Please review this.',
+          created_at: '2026-02-20T12:00:00.000Z',
+        },
+      ],
+      unread_dms: [
+        {
+          conversation_id: 'dm_1',
+          from: 'Teammate',
+          unread_count: 1,
+          last_message: {
+            id: 'msg_1',
+            text: 'hello',
+            created_at: '2026-02-20T12:01:00.000Z',
+          },
+        },
+      ],
+      recent_reactions: [
+        {
+          message_id: 'msg_2',
+          channel_name: 'general',
+          emoji: 'eyes',
+          agent_name: 'Reviewer',
+          created_at: '2026-02-20T12:02:00.000Z',
+        },
+      ],
+    });
+  });
+
+  it('treats partial inbox payloads as empty instead of crashing', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({} as any)),
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('Inbox is clear.');
+    expect(deps.error).not.toHaveBeenCalled();
   });
 
   it('returns non-zero for missing required args', async () => {
