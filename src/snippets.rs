@@ -3086,6 +3086,39 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
     }
 
     #[tokio::test]
+    async fn configure_relaycast_mcp_with_token_opencode_headless_call_site() {
+        // Mirrors the worker.rs AgentRuntime::Headless call site for opencode:
+        // ensures --agent relaycast is returned and opencode.json is written
+        // with the workspace context forwarded through to the MCP environment.
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_relaycast_mcp_with_token(
+            "opencode",
+            "headless-worker",
+            Some("rk_live_hl"),
+            Some("https://api.relaycast.dev"),
+            &[],
+            temp.path(),
+            Some("tok_hl_123"),
+            Some("[\"ws-a\"]"),
+            Some("ws-a"),
+        )
+        .await
+        .expect("configure opencode headless mcp");
+
+        assert_eq!(args, vec!["--agent", "relaycast"]);
+
+        let path = temp.path().join("opencode.json");
+        assert!(path.exists(), "opencode.json must be created");
+        let contents = fs::read_to_string(&path).expect("read opencode.json");
+        let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
+        let env = &json["mcp"]["relaycast"]["environment"];
+        assert_eq!(env["RELAY_API_KEY"].as_str(), Some("rk_live_hl"));
+        assert_eq!(env["RELAY_AGENT_TOKEN"].as_str(), Some("tok_hl_123"));
+        assert_eq!(env["RELAY_WORKSPACES_JSON"].as_str(), Some("[\"ws-a\"]"));
+        assert_eq!(env["RELAY_DEFAULT_WORKSPACE"].as_str(), Some("ws-a"));
+    }
+
+    #[tokio::test]
     async fn configure_relaycast_mcp_public_reads_env_fallback() {
         // Set env vars before calling the public wrapper
         std::env::set_var("RELAY_WORKSPACES_JSON", "wj-from-env");

@@ -263,8 +263,30 @@ impl WorkerRegistry {
                     .context("headless runtime requires `provider`")?;
                 command.arg("headless");
                 command.arg("--agent-name").arg(&spec.name);
-                command.arg(headless_provider_cli_name(provider));
-                let mcp_args: Vec<String> = vec![];
+                let provider_cli = headless_provider_cli_name(provider);
+                command.arg(provider_cli);
+
+                // Wire relaycast MCP for headless providers that configure via
+                // on-disk files (opencode). Claude headless uses `-p <task>` and
+                // injecting `--mcp-config` through extra args is not safe here,
+                // so we scope the call to file-based providers.
+                let mcp_args = if skip_relay_prompt || provider_cli != "opencode" {
+                    vec![]
+                } else {
+                    let cwd = spec.cwd.as_deref().unwrap_or(".");
+                    configure_relaycast_mcp_with_token(
+                        provider_cli,
+                        &spec.name,
+                        self.env_value("RELAY_API_KEY"),
+                        self.env_value("RELAY_BASE_URL"),
+                        &spec.args,
+                        Path::new(cwd),
+                        worker_relay_api_key.as_deref(),
+                        self.env_value("RELAY_WORKSPACES_JSON"),
+                        self.env_value("RELAY_DEFAULT_WORKSPACE"),
+                    )
+                    .await?
+                };
 
                 let model_arg =
                     spec.model.as_deref().and_then(|model| {
