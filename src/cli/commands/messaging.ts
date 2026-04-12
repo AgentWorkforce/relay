@@ -1,5 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { Command } from 'commander';
 import { RelayCast, AgentRelayClient } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
@@ -72,16 +70,6 @@ interface RelaycastInbox {
   unread_channels?: RelaycastUnreadChannel[];
   unread_dms?: RelaycastUnreadDm[];
   recent_reactions?: RelaycastRecentReaction[];
-}
-
-interface BrokerConnectionMetadata {
-  port: number;
-  api_key: string;
-}
-
-interface BrokerSessionResponse {
-  workspaceKey?: string | null;
-  workspace_key?: string | null;
 }
 
 interface NormalizedRelaycastMessage {
@@ -326,57 +314,23 @@ async function resolveRelaycastApiKey(cwd: string): Promise<string> {
     return envApiKey;
   }
 
-  const connectionPath = path.join(getProjectPaths(cwd).dataDir, 'connection.json');
-  let raw: string;
+  let client: AgentRelayClient | undefined;
   try {
-    raw = fs.readFileSync(connectionPath, 'utf-8');
+    client = AgentRelayClient.connect({ cwd });
   } catch {
     throw new Error(
-      `Failed to read broker connection metadata from ${connectionPath}. Start the broker with \`agent-relay up\` or set RELAY_API_KEY.`
+      'Relaycast workspace key is not configured. Set RELAY_API_KEY, or start the local broker with `agent-relay up --workspace-key <key>`.'
     );
   }
-
-  let parsed: { port?: unknown; api_key?: unknown };
-  try {
-    parsed = JSON.parse(raw) as { port?: unknown; api_key?: unknown };
-  } catch {
-    throw new Error(
-      `Invalid broker connection metadata in ${connectionPath}. Start the broker with \`agent-relay up\` or set RELAY_API_KEY.`
-    );
-  }
-
-  const port = parsed.port;
-  const apiKey = parsed.api_key;
-  if (typeof port !== 'number' || !Number.isInteger(port) || typeof apiKey !== 'string' || !apiKey.trim()) {
-    throw new Error(
-      `Invalid broker connection metadata in ${connectionPath}. Start the broker with \`agent-relay up\` or set RELAY_API_KEY.`
-    );
-  }
-
-  const connection: BrokerConnectionMetadata = {
-    port,
-    api_key: apiKey.trim(),
-  };
 
   try {
-    const response = await fetch(`http://127.0.0.1:${connection.port}/api/session`, {
-      headers: {
-        Authorization: `Bearer ${connection.api_key}`,
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`broker session request failed (${response.status} ${response.statusText})`);
+    const session = await client.getSession();
+    const brokerApiKey = session.workspace_key?.trim();
+    if (brokerApiKey) {
+      return brokerApiKey;
     }
-
-    const session = (await response.json()) as BrokerSessionResponse;
-    const workspaceKey = readString(session.workspaceKey, session.workspace_key);
-    if (workspaceKey) {
-      return workspaceKey;
-    }
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to query the local broker session for a Relaycast workspace key: ${detail}`);
+  } finally {
+    client.disconnect();
   }
 
   throw new Error(

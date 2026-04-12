@@ -66,15 +66,12 @@ log_info "Updated PATH to include: $NPM_BIN"
 log_info "Cleaning previous global installation..."
 npm uninstall -g agent-relay 2>/dev/null || true
 
-# Install globally
+# Install globally (with retry for CDN propagation delays)
 log_info "Installing ${PACKAGE_SPEC} globally..."
-npm install -g "$PACKAGE_SPEC"
-INSTALL_EXIT=$?
-log_info "npm install exit code: $INSTALL_EXIT"
-if [ $INSTALL_EXIT -eq 0 ]; then
+if retry-command.sh "Global npm install of ${PACKAGE_SPEC}" npm install -g "$PACKAGE_SPEC"; then
     record_pass "Global npm install succeeded"
 else
-    record_fail "Global npm install failed with exit code $INSTALL_EXIT"
+    record_fail "Global npm install failed after retries"
 fi
 
 # Verify the binary exists
@@ -189,12 +186,12 @@ cd "$TEST_PROJECT_DIR"
 log_info "Initializing package.json..."
 npm init -y > /dev/null 2>&1
 
-# Install as local dependency
+# Install as local dependency (with retry for CDN propagation delays)
 log_info "Installing ${PACKAGE_SPEC} locally..."
-if npm install "$PACKAGE_SPEC" 2>&1; then
+if retry-command.sh "Local npm install of ${PACKAGE_SPEC}" npm install "$PACKAGE_SPEC"; then
     record_pass "Local npm install succeeded"
 else
-    record_fail "Local npm install failed"
+    record_fail "Local npm install failed after retries"
 fi
 
 # Test via npx (should use local version)
