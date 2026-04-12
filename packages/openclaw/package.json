@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/openclaw",
-  "version": "4.0.15",
+  "version": "4.0.16",
   "description": "Relaycast bridge for OpenClaw — messaging, identity, runtime setup, and local spawning",
   "type": "module",
   "main": "./dist/index.js",
@@ -29,7 +29,7 @@
     "postinstall": "node -e \"try{require('child_process').execSync('ldd --version 2>&1',{stdio:'pipe'})}catch{try{require('child_process').execSync('apk info gcompat 2>/dev/null',{stdio:'pipe'})}catch{console.warn('\\n\\u26a0\\ufe0f  @agent-relay/openclaw: Alpine detected without gcompat. Spawning requires glibc.\\n   Install with: apk add gcompat libstdc++\\n')}}\""
   },
   "dependencies": {
-    "@agent-relay/sdk": "4.0.15",
+    "@agent-relay/sdk": "4.0.16",
     "@relaycast/sdk": "^1.0.0",
     "ws": "^8.0.0"
   },
