@@ -90,3 +90,4 @@ web/.open-next
 !/workflows/ci/
 !/workflows/refactor/
 !/workflows/relayauth-integration/
+!/workflows/cloud-connect/
