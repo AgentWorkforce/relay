@@ -6,6 +6,8 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
+      "workerd": "./dist/workers.js",
+      "worker": "./dist/workers.js",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
