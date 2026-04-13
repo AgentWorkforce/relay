@@ -1,46 +1,44 @@
 import { defineConfig } from 'vitest/config';
 import path from 'node:path';
 
+const workspacePackages = [
+  'acp-bridge',
+  'cloud',
+  'config',
+  'gateway',
+  'hooks',
+  'memory',
+  'openclaw',
+  'policy',
+  'sdk',
+  'telemetry',
+  'trajectory',
+  'user-directory',
+  'utils',
+] as const;
+
+const workspaceAliases = workspacePackages.flatMap((packageName) => {
+  const sourceRoot = path.resolve(__dirname, `./packages/${packageName}/src`);
+
+  return [
+    {
+      find: new RegExp(`^@agent-relay/${packageName}/(.+)$`),
+      replacement: `${sourceRoot}/$1`,
+    },
+    {
+      find: `@agent-relay/${packageName}`,
+      replacement: path.resolve(sourceRoot, 'index.ts'),
+    },
+  ];
+});
+
 export default defineConfig({
   resolve: {
     alias: [
-      // Use array format with find/replace for better subpath matching
+      ...workspaceAliases,
       {
-        find: /^@agent-relay\/config\/(.+)$/,
-        replacement: path.resolve(__dirname, './packages/config/dist/$1.js'),
-      },
-      {
-        find: /^@agent-relay\/utils\/(.+)$/,
-        replacement: path.resolve(__dirname, './packages/utils/dist/$1.js'),
-      },
-      // Main package entries (must come after subpath patterns)
-      {
-        find: '@agent-relay/config',
-        replacement: path.resolve(__dirname, './packages/config/dist/index.js'),
-      },
-      {
-        find: '@agent-relay/trajectory',
-        replacement: path.resolve(__dirname, './packages/trajectory/dist/index.js'),
-      },
-      {
-        find: '@agent-relay/hooks',
-        replacement: path.resolve(__dirname, './packages/hooks/dist/index.js'),
-      },
-      {
-        find: '@agent-relay/policy',
-        replacement: path.resolve(__dirname, './packages/policy/dist/index.js'),
-      },
-      {
-        find: '@agent-relay/memory',
-        replacement: path.resolve(__dirname, './packages/memory/dist/index.js'),
-      },
-      {
-        find: '@agent-relay/utils',
-        replacement: path.resolve(__dirname, './packages/utils/dist/index.js'),
-      },
-      {
-        find: '@agent-relay/user-directory',
-        replacement: path.resolve(__dirname, './packages/user-directory/dist/index.js'),
+        find: '@agent-relay/brand/brand.css',
+        replacement: path.resolve(__dirname, './packages/brand/brand.css'),
       },
     ],
   },
