@@ -318,7 +318,8 @@ async function resolveRelaycastApiKey(cwd: string): Promise<string> {
     return envApiKey;
   }
 
-  const connectionPath = path.join(getProjectPaths(cwd).dataDir, 'connection.json');
+  const stateDir = process.env.AGENT_RELAY_STATE_DIR;
+  const connectionPath = path.join(stateDir ?? getProjectPaths(cwd).dataDir, 'connection.json');
   let raw: string;
   try {
     raw = fs.readFileSync(connectionPath, 'utf-8');
