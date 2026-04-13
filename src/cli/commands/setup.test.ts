@@ -202,7 +202,7 @@ describe('preParseWorkflowFile', () => {
     return full;
   }
 
-  it('returns silently for a valid TypeScript workflow file', () => {
+  it('returns silently for a valid TypeScript workflow file', async () => {
     const file = writeTempWorkflow(
       'valid.ts',
       `
@@ -215,10 +215,10 @@ workflow('w')
   });
 `.trim()
     );
-    expect(() => preParseWorkflowFile(file)).not.toThrow();
+    await expect(preParseWorkflowFile(file)).resolves.toBeUndefined();
   });
 
-  it('wraps a raw backtick inside a template literal with an actionable hint', () => {
+  it('wraps a raw backtick inside a template literal with an actionable hint', async () => {
     // A raw backtick inside a command: template literal terminates
     // the outer JS template literal early and produces an esbuild
     // parse error. We want the error message to tell the user how
@@ -227,9 +227,9 @@ workflow('w')
       'bad-backtick.ts',
       ['const step = {', '  command: `git commit -m "use `npm install` here"`,', '};'].join('\n')
     );
-    expect(() => preParseWorkflowFile(file)).toThrow(/Workflow file failed to parse/);
+    await expect(preParseWorkflowFile(file)).rejects.toThrow(/Workflow file failed to parse/);
     try {
-      preParseWorkflowFile(file);
+      await preParseWorkflowFile(file);
     } catch (err) {
       const msg = (err as Error).message;
       expect(msg).toMatch(/Hint:/);
@@ -237,7 +237,7 @@ workflow('w')
     }
   });
 
-  it('wraps an unescaped ${} interpolation with an actionable hint', () => {
+  it('wraps an unescaped ${} interpolation with an actionable hint', async () => {
     // Not strictly a parse error in isolation, but combined with a
     // bad identifier makes esbuild fail. We mostly want to verify the
     // hint path fires for the common error text.
@@ -245,12 +245,48 @@ workflow('w')
       'bad-dollar.ts',
       ['const step = {', '  command: `echo ${NOT a valid JS expression}`,', '};'].join('\n')
     );
-    expect(() => preParseWorkflowFile(file)).toThrow(/Workflow file failed to parse/);
+    await expect(preParseWorkflowFile(file)).rejects.toThrow(/Workflow file failed to parse/);
   });
 
-  it('propagates non-parse errors unchanged', () => {
+  it('times out after PREPARSE_TIMEOUT_MS and resolves without throwing when the transform hangs', async () => {
+    const file = writeTempWorkflow(
+      'hang.ts',
+      `
+import { workflow } from '@agent-relay/sdk/workflows';
+workflow('w');
+`.trim()
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    vi.resetModules();
+    vi.doMock('esbuild', async () => {
+      const actual = await vi.importActual<typeof import('esbuild')>('esbuild');
+      return {
+        ...actual,
+        transform: vi.fn(() => new Promise(() => {})),
+      };
+    });
+
+    vi.useFakeTimers();
+
+    try {
+      const { preParseWorkflowFile: preParseWorkflowFileWithHungTransform } = await import('./setup.js');
+      const parsePromise = preParseWorkflowFileWithHungTransform(file);
+
+      await vi.advanceTimersByTimeAsync(5001);
+      await expect(parsePromise).resolves.toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('pre-parse timed out after 5000ms'));
+    } finally {
+      vi.useRealTimers();
+      vi.doUnmock('esbuild');
+      vi.resetModules();
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('propagates non-parse errors unchanged', async () => {
     // Non-existent file should throw the fs-level error, not a fake parse wrapper.
-    expect(() => preParseWorkflowFile('/tmp/does-not-exist-' + Date.now() + '.ts')).toThrow(
+    await expect(preParseWorkflowFile('/tmp/does-not-exist-' + Date.now() + '.ts')).rejects.toThrow(
       /Cannot read workflow file/
     );
   });
