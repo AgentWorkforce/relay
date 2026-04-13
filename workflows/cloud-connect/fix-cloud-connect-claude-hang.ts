@@ -258,9 +258,10 @@ grep -q "export function formatShellInvocation" ${SSH_INTERACTIVE} || (echo "MIS
 
 grep -q "formatShellInvocation(command)" ${SSH_INTERACTIVE} || (echo "NOT CALLED from shell callback"; exit 1)
 
-# Must NOT contain the old '; exit $?' form anywhere
-if grep -q "; exit \\$?" ${SSH_INTERACTIVE}; then
-  echo "ERROR: still contains '; exit \\$?' — must be removed"
+# Must NOT contain the old stream.write(`${command}; exit $?\n`) form.
+# Comments may still describe the legacy behavior, so match the code pattern.
+if grep -Fq 'stream.write(`${command}; exit $?\n`)' ${SSH_INTERACTIVE}; then
+  echo "ERROR: still contains legacy shell wrapper write — must be removed"
   exit 1
 fi
 

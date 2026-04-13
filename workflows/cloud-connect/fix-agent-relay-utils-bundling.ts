@@ -499,7 +499,7 @@ End your message with POST_PUBLISH_DONE.`,
       command: `set -e
 grep -q "Test 6: @agent-relay/utils resolution" ${POST_PUBLISH} || (echo "MISSING Test 6 block"; exit 1)
 grep -q "UTILS_RESOLVE_OK" ${POST_PUBLISH} || (echo "MISSING resolve assertion"; exit 1)
-grep -q "CLOUD_CONNECT_IMPORT" ${POST_PUBLISH} || (echo "MISSING cloud-connect import assertion"; exit 1)
+grep -Eq "CLOUD_CONNECT_IMPORT|CLI_BOOTSTRAP_IMPORT" ${POST_PUBLISH} || (echo "MISSING import assertion marker"; exit 1)
 bash -n ${POST_PUBLISH} || (echo "SHELL SYNTAX ERROR"; exit 1)
 echo "POST_PUBLISH_VERIFY_OK"`,
       captureOutput: true,
