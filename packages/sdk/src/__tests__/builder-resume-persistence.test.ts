@@ -86,12 +86,18 @@ function readJsonl(filePath: string): JsonlEntry[] {
 describe('WorkflowBuilder.run() resume persistence', () => {
   let tmpDir: string;
   let originalResumeRunId: string | undefined;
+  let originalStartFrom: string | undefined;
+  let originalPreviousRunId: string | undefined;
 
   beforeEach(() => {
     vi.clearAllMocks();
     tmpDir = mkdtempSync(path.join(os.tmpdir(), 'builder-resume-persistence-'));
     originalResumeRunId = process.env.RESUME_RUN_ID;
+    originalStartFrom = process.env.START_FROM;
+    originalPreviousRunId = process.env.PREVIOUS_RUN_ID;
     delete process.env.RESUME_RUN_ID;
+    delete process.env.START_FROM;
+    delete process.env.PREVIOUS_RUN_ID;
   });
 
   afterEach(() => {
@@ -99,6 +105,18 @@ describe('WorkflowBuilder.run() resume persistence', () => {
       delete process.env.RESUME_RUN_ID;
     } else {
       process.env.RESUME_RUN_ID = originalResumeRunId;
+    }
+
+    if (originalStartFrom === undefined) {
+      delete process.env.START_FROM;
+    } else {
+      process.env.START_FROM = originalStartFrom;
+    }
+
+    if (originalPreviousRunId === undefined) {
+      delete process.env.PREVIOUS_RUN_ID;
+    } else {
+      process.env.PREVIOUS_RUN_ID = originalPreviousRunId;
     }
 
     try {
