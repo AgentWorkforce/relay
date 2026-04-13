@@ -440,20 +440,23 @@ export function registerMessagingCommands(
       const isChannel = agent.startsWith('#');
 
       // Primary path: send via relaycast SDK so messages are stored and queryable
-      try {
-        const relaycastClient = await deps.createRelaycastClient({
-          agentName: senderName,
-          cwd: deps.getProjectRoot(),
-        });
-        if (isChannel) {
-          await relaycastClient.post(agent.slice(1), message);
-        } else {
-          await relaycastClient.dm(agent, message);
+      // Skip relaycast path when --thread is used since the relaycast SDK does not support threading
+      if (!options.thread) {
+        try {
+          const relaycastClient = await deps.createRelaycastClient({
+            agentName: senderName,
+            cwd: deps.getProjectRoot(),
+          });
+          if (isChannel) {
+            await relaycastClient.post(agent.slice(1), message);
+          } else {
+            await relaycastClient.dm(agent, message);
+          }
+          deps.log(`Message sent to ${agent}`);
+          return;
+        } catch {
+          // Fall through to broker path
         }
-        deps.log(`Message sent to ${agent}`);
-        return;
-      } catch {
-        // Fall through to broker path
       }
 
       // Fallback: broker path (for environments without relaycast API key)
