@@ -3,7 +3,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { execFileSync, spawn as spawnProcess, spawnSync } from 'node:child_process';
 import { Command } from 'commander';
-import { transformSync } from 'esbuild';
+import { transform } from 'esbuild';
 import { getProjectPaths } from '@agent-relay/config';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
 import { enableTelemetry, disableTelemetry, getStatus, isDisabledByEnv } from '@agent-relay/telemetry';
@@ -64,7 +64,7 @@ export interface SetupDependencies {
   runScriptWorkflow: (
     filePath: string,
     options?: { dryRun?: boolean; resume?: string; startFrom?: string; previousRunId?: string }
-  ) => void;
+  ) => void | Promise<void>;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
@@ -181,7 +181,9 @@ export function ensureLocalSdkWorkflowRuntime(
  * `Unterminated template literal`) that don't hint at the actual cause when
  * you're writing workflow files.
  */
-export function preParseWorkflowFile(filePath: string): void {
+const PREPARSE_TIMEOUT_MS = 5000;
+
+export async function preParseWorkflowFile(filePath: string): Promise<void> {
   let source: string;
   try {
     source = fs.readFileSync(filePath, 'utf8');
@@ -189,19 +191,37 @@ export function preParseWorkflowFile(filePath: string): void {
     throw new Error(`Cannot read workflow file ${filePath}: ${(err as Error).message}`);
   }
 
+  let timedOut = false;
+  let timer: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      reject(new Error('PREPARSE_TIMEOUT'));
+    }, PREPARSE_TIMEOUT_MS);
+  });
+
   try {
-    transformSync(source, {
-      loader: 'ts',
-      sourcemap: false,
-      logLevel: 'silent',
-    });
+    await Promise.race([
+      transform(source, { loader: 'ts', sourcemap: false, logLevel: 'silent' }),
+      timeoutPromise,
+    ]);
     return;
   } catch (err) {
+    if (timedOut || (err as Error).message === 'PREPARSE_TIMEOUT') {
+      console.warn(
+        '[agent-relay] pre-parse timed out after ' +
+          PREPARSE_TIMEOUT_MS +
+          'ms — skipping (tsx will still catch real syntax errors)'
+      );
+      return;
+    }
     const errors = (err as { errors?: EsbuildError[] }).errors;
     if (!Array.isArray(errors) || errors.length === 0) {
       throw err;
     }
     throw formatWorkflowParseError(filePath, errors[0]!);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -270,10 +290,10 @@ function formatWorkflowParseError(filePath: string, e: EsbuildError): Error {
   return wrapped;
 }
 
-function runScriptFile(
+async function runScriptFile(
   filePath: string,
   options: { dryRun?: boolean; resume?: string; startFrom?: string; previousRunId?: string } = {}
-): void {
+): Promise<void> {
   diag(`runScriptFile: resolving ${filePath}`);
   const resolved = path.resolve(filePath);
   if (!fs.existsSync(resolved)) {
@@ -335,7 +355,7 @@ Run ID: ${runId}`;
     // TransformError dumped mid-run.
     try {
       diag('runScriptFile: preParseWorkflowFile start');
-      preParseWorkflowFile(resolved);
+      await preParseWorkflowFile(resolved);
       diag('runScriptFile: preParseWorkflowFile done');
     } catch (err) {
       cleanupRunIdFile();
@@ -637,7 +657,7 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
         }
         if (ext === '.ts' || ext === '.tsx' || ext === '.py') {
           deps.log(`Running workflow script ${filePath}...`);
-          deps.runScriptWorkflow(filePath, {
+          await deps.runScriptWorkflow(filePath, {
             dryRun: options.dryRun,
             resume: options.resume,
             startFrom: options.startFrom,
