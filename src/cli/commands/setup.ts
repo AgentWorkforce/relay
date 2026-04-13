@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { execFileSync, spawn as spawnProcess } from 'node:child_process';
+import { execFileSync, spawn as spawnProcess, spawnSync } from 'node:child_process';
 import { Command } from 'commander';
 import { transformSync } from 'esbuild';
 import { getProjectPaths } from '@agent-relay/config';
@@ -9,6 +9,20 @@ import { readBrokerConnection } from '../lib/broker-lifecycle.js';
 import { enableTelemetry, disableTelemetry, getStatus, isDisabledByEnv } from '@agent-relay/telemetry';
 import { runWorkflow } from '@agent-relay/sdk/workflows';
 import type { WorkflowEvent } from '@agent-relay/sdk/workflows';
+
+function diag(msg: string): void {
+  try {
+    process.stderr.write(`[agent-relay] ${msg}\n`);
+  } catch {
+    // Fallback: if stderr is closed, try stdout. Never throw.
+    try {
+      process.stdout.write(`[agent-relay] ${msg}\n`);
+    } catch {
+      // Both streams closed — silently give up. Never throw from diag().
+    }
+  }
+}
+
 type ExitFn = (code: number) => never;
 type RunInitOptions = {
   yes?: boolean;
@@ -260,6 +274,7 @@ function runScriptFile(
   filePath: string,
   options: { dryRun?: boolean; resume?: string; startFrom?: string; previousRunId?: string } = {}
 ): void {
+  diag(`runScriptFile: resolving ${filePath}`);
   const resolved = path.resolve(filePath);
   if (!fs.existsSync(resolved)) {
     throw new Error(`File not found: ${resolved}`);
@@ -310,14 +325,18 @@ Run ID: ${runId}`;
   };
 
   if (ext === '.ts' || ext === '.tsx') {
+    diag('runScriptFile: ensureLocalSdkWorkflowRuntime start');
     ensureLocalSdkWorkflowRuntime(path.dirname(resolved));
+    diag('runScriptFile: ensureLocalSdkWorkflowRuntime done');
 
     // Pre-parse the file with esbuild so template-literal mistakes (raw
     // backticks inside prose, unescaped ${} in shell commands, etc.) fail
     // fast with an actionable error message instead of a cryptic tsx
     // TransformError dumped mid-run.
     try {
+      diag('runScriptFile: preParseWorkflowFile start');
       preParseWorkflowFile(resolved);
+      diag('runScriptFile: preParseWorkflowFile done');
     } catch (err) {
       cleanupRunIdFile();
       throw err;
@@ -325,36 +344,63 @@ Run ID: ${runId}`;
 
     const runners = ['tsx', 'ts-node'];
     for (const runner of runners) {
-      try {
-        execFileSync(runner, [resolved], { stdio: 'inherit', env: childEnv });
-        cleanupRunIdFile();
-        return;
-      } catch (err: any) {
-        if (err?.code !== 'ENOENT') {
-          return augmentErrorWithRunId(err);
+      diag(`runScriptFile: trying runner ${runner}`);
+      const spawnResult = spawnSync(runner, [resolved], {
+        stdio: 'inherit',
+        env: childEnv,
+      });
+      if (spawnResult.error) {
+        if ((spawnResult.error as NodeJS.ErrnoException).code === 'ENOENT') {
+          diag(`runScriptFile: runner ${runner} returned ENOENT — trying next`);
+          continue;
         }
+        return augmentErrorWithRunId(spawnResult.error);
       }
-    }
-    try {
-      execFileSync('npx', ['tsx', resolved], { stdio: 'inherit', env: childEnv });
+      if (spawnResult.status !== 0) {
+        const err = new Error(`${runner} exited with code ${spawnResult.status}`);
+        return augmentErrorWithRunId(err);
+      }
+      diag(`runScriptFile: runner ${runner} completed exit=0`);
       cleanupRunIdFile();
-    } catch (err: any) {
-      return augmentErrorWithRunId(err);
+      return;
     }
+    diag('runScriptFile: falling back to npx tsx');
+    const npxResult = spawnSync('npx', ['tsx', resolved], {
+      stdio: 'inherit',
+      env: childEnv,
+    });
+    if (npxResult.error) {
+      return augmentErrorWithRunId(npxResult.error);
+    }
+    if (npxResult.status !== 0) {
+      return augmentErrorWithRunId(new Error(`npx tsx exited with code ${npxResult.status}`));
+    }
+    diag('runScriptFile: npx tsx completed');
+    cleanupRunIdFile();
     return;
   }
   if (ext === '.py') {
     const runners = ['python3', 'python'];
     for (const runner of runners) {
-      try {
-        execFileSync(runner, [resolved], { stdio: 'inherit', env: childEnv });
-        cleanupRunIdFile();
-        return;
-      } catch (err: any) {
-        if (err?.code !== 'ENOENT') {
-          return augmentErrorWithRunId(err);
+      diag(`runScriptFile: trying runner ${runner}`);
+      const spawnResult = spawnSync(runner, [resolved], {
+        stdio: 'inherit',
+        env: childEnv,
+      });
+      if (spawnResult.error) {
+        if ((spawnResult.error as NodeJS.ErrnoException).code === 'ENOENT') {
+          diag(`runScriptFile: runner ${runner} returned ENOENT — trying next`);
+          continue;
         }
+        return augmentErrorWithRunId(spawnResult.error);
       }
+      if (spawnResult.status !== 0) {
+        const err = new Error(`${runner} exited with code ${spawnResult.status}`);
+        return augmentErrorWithRunId(err);
+      }
+      diag(`runScriptFile: runner ${runner} completed exit=0`);
+      cleanupRunIdFile();
+      return;
     }
     cleanupRunIdFile();
     throw new Error('Python not found. Install Python 3.10+ to run .py workflow files.');
