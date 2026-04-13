@@ -507,6 +507,92 @@ export function registerMessagingCommands(
         const limit = Number.parseInt(options.limit ?? '50', 10) || 50;
         const sinceTs = parseSince(options.since);
 
+        if (options.from && !options.to) {
+          // Cross-context sender history: channel messages + DMs sent by this agent
+          const channelItems: Array<{ ts: string; to: string; text: string; kind: 'channel' }> = [];
+          const dmItems: Array<{ ts: string; to: string; text: string; kind: 'dm' }> = [];
+
+          // Part 1: channel messages from this agent
+          try {
+            const channelClient = await deps.createRelaycastClient({
+              agentName: '__cli_history__',
+              cwd: deps.getProjectRoot(),
+            });
+            const raw = (await channelClient.messages('general', { limit: Math.max(limit * 2, 100) }))
+              .map(normalizeMessage)
+              .filter(isPresent)
+              .filter((msg) => msg.agentName === options.from)
+              .filter((msg) => !sinceTs || Date.parse(msg.createdAt) >= sinceTs)
+              .slice(0, limit);
+            for (const msg of raw) {
+              channelItems.push({ ts: msg.createdAt, to: '#general', text: msg.text, kind: 'channel' });
+            }
+          } catch {
+            // non-fatal — continue to DM section
+          }
+
+          // Part 2: DM messages sent by this agent
+          try {
+            const dmClient = await deps.createRelaycastClient({
+              agentName: options.from,
+              cwd: deps.getProjectRoot(),
+            });
+            const conversations = await dmClient.dms.conversations();
+            const perConvLimit = Math.max(Math.ceil(limit / Math.max(conversations.length, 1)), 10);
+            for (const conv of conversations.slice(0, 10)) {
+              const msgs = await dmClient.dms.messages(conv.id, { limit: perConvLimit });
+              const recipient =
+                conv.participants
+                  .filter((p) => (p.agentName || p.agent_name) !== options.from)
+                  .map((p) => p.agentName || p.agent_name)
+                  .join(', ') || '(self)';
+              for (const m of msgs) {
+                const sender = m.agentName || m.agent_name;
+                if (sender !== options.from) continue;
+                const ts = m.createdAt || m.created_at || '';
+                if (sinceTs && Date.parse(ts) < sinceTs) continue;
+                dmItems.push({ ts, to: recipient, text: m.text, kind: 'dm' });
+              }
+            }
+          } catch {
+            // non-fatal — continue with channel results only
+          }
+
+          const allItems = [...channelItems, ...dmItems].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+
+          if (options.json) {
+            deps.log(
+              JSON.stringify(
+                allItems.map((item) => ({
+                  from: options.from,
+                  to: item.to,
+                  text: item.text,
+                  createdAt: item.ts,
+                  kind: item.kind,
+                })),
+                null,
+                2
+              )
+            );
+            return;
+          }
+
+          if (!allItems.length) {
+            deps.log('No messages found.');
+            return;
+          }
+
+          allItems.forEach((item) => {
+            const body = item.text.length > 200 ? item.text.slice(0, 197) + '...' : item.text;
+            if (item.kind === 'dm') {
+              deps.log('[' + item.ts + '] ' + options.from + ' -> ' + item.to + ' (DM): ' + body);
+            } else {
+              deps.log('[' + item.ts + '] ' + options.from + ' -> ' + item.to + ': ' + body);
+            }
+          });
+          return;
+        }
+
         if (options.to && !options.to.startsWith('#')) {
           // DM history mode: register as the target agent and show their conversations
           let dmClient: MessagingRelaycastClient;

@@ -77,6 +77,10 @@ function createHarness(options?: {
   };
 
   const program = new Command();
+  program.configureOutput({
+    writeOut: () => undefined,
+    writeErr: () => undefined,
+  });
   program.exitOverride();
   registerMessagingCommands(program, deps);
 
@@ -515,6 +519,74 @@ describe('registerMessagingCommands', () => {
     expect(deps.log).toHaveBeenCalledWith(
       expect.stringContaining('No DM conversation found between alice and nobody')
     );
+  });
+
+  it('history --from agent shows channel messages from that agent', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => [
+        {
+          id: 'msg_1',
+          agent_name: 'relay',
+          text: 'hello from relay',
+          created_at: '2026-01-01T00:00:00.000Z',
+        },
+      ]),
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('hello from relay'));
+  });
+
+  it('history --from agent shows DM messages sent by that agent', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => []),
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'relay' }, { agentName: 'architect' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-01-01T00:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'msg_dm_1',
+            agentName: 'relay',
+            text: 'hey architect',
+            createdAt: '2026-01-01T01:00:00.000Z',
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith(expect.objectContaining({ agentName: 'relay' }));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('hey architect'));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('(DM)'));
+  });
+
+  it('history --from agent with no messages shows no messages found', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => []),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => []),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('No messages found.');
   });
 
   it('returns non-zero for missing required args', async () => {
