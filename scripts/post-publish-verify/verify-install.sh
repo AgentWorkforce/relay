@@ -354,6 +354,64 @@ else
     record_fail "Binary resolution failed - agent-relay-broker not found"
 fi
 
+# ============================================
+# Test 6: @agent-relay/utils resolution (regression guard for bundledDependencies)
+# ============================================
+log_header "Test 6: @agent-relay/utils resolution"
+
+log_info "Verifying @agent-relay/utils resolves from installed agent-relay..."
+UTILS_RESOLUTION=$(node -e "
+try {
+    const path = require('path');
+    const pkgDir = path.dirname(require.resolve('agent-relay/package.json'));
+    const resolved = require.resolve('@agent-relay/utils', { paths: [pkgDir] });
+    console.log('RESOLVED:', resolved);
+    console.log('UTILS_RESOLVE_OK');
+} catch (e) {
+    console.log('UTILS_RESOLVE_FAIL:', e.code || e.message);
+}
+" 2>&1) || true
+
+log_info "Utils resolution output: $UTILS_RESOLUTION"
+if echo "$UTILS_RESOLUTION" | grep -q "UTILS_RESOLVE_OK"; then
+    record_pass "@agent-relay/utils resolves from installed agent-relay"
+else
+    record_fail "@agent-relay/utils is NOT resolvable - bundledDependencies regression"
+fi
+
+log_info "Dynamic-import smoke test for CLI module that imports @agent-relay/utils..."
+UTILS_IMPORT_SMOKE=$(node --input-type=module -e "
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+
+try {
+    const pkgDir = path.dirname(require.resolve('agent-relay/package.json'));
+    const target = path.join(pkgDir, 'dist/src/cli/commands/core.js');
+    await import(pathToFileURL(target).href);
+    console.log('UTILS_IMPORT_OK');
+} catch (e) {
+    if (e && e.code === 'ERR_MODULE_NOT_FOUND') {
+        console.log('UTILS_IMPORT_FAIL:', e.message);
+    } else {
+        // A different error (e.g. command wiring assumptions) is fine - the module loaded
+        console.log('UTILS_IMPORT_OK_WITH_RUNTIME_ERR');
+    }
+}
+" 2>&1) || true
+
+log_info "CLI module import output: $UTILS_IMPORT_SMOKE"
+if echo "$UTILS_IMPORT_SMOKE" | grep -q "UTILS_IMPORT_OK"; then
+    record_pass "CLI module importing @agent-relay/utils loads without ERR_MODULE_NOT_FOUND"
+elif echo "$UTILS_IMPORT_SMOKE" | grep -q "UTILS_IMPORT_FAIL"; then
+    record_fail "CLI module import FAILED with ERR_MODULE_NOT_FOUND: $UTILS_IMPORT_SMOKE"
+else
+    log_warn "CLI module import had unknown outcome: $UTILS_IMPORT_SMOKE"
+    record_fail "CLI module import indeterminate"
+fi
+
 # Cleanup test project
 log_info "Cleaning up test project..."
 cd /home/testuser
