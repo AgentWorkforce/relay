@@ -72,6 +72,45 @@ interface RelaycastInbox {
   recent_reactions?: RelaycastRecentReaction[];
 }
 
+interface DmConversationParticipant {
+  agentName: string;
+  agent_name?: string;
+}
+
+interface DmConversationSummary {
+  id: string;
+  participants: DmConversationParticipant[];
+  lastMessage?: {
+    id: string;
+    text: string;
+    agentName?: string;
+    agent_name?: string;
+    createdAt?: string;
+    created_at?: string;
+  } | null;
+  last_message?: {
+    id: string;
+    text: string;
+    agentName?: string;
+    agent_name?: string;
+    createdAt?: string;
+    created_at?: string;
+  } | null;
+  unreadCount?: number;
+  unread_count?: number;
+  createdAt?: string;
+  created_at?: string;
+}
+
+interface DmMessageItem {
+  id: string;
+  agentName?: string;
+  agent_name?: string;
+  text: string;
+  createdAt?: string;
+  created_at?: string;
+}
+
 interface NormalizedRelaycastMessage {
   id: string;
   agentName: string;
@@ -127,6 +166,12 @@ export interface MessagingRelaycastClient {
     options?: { limit?: number; before?: string; after?: string }
   ): Promise<RelaycastMessage[]>;
   inbox(): Promise<RelaycastInbox>;
+  dm(to: string, text: string): Promise<void>;
+  post(channel: string, text: string): Promise<void>;
+  dms: {
+    conversations(): Promise<DmConversationSummary[]>;
+    messages(conversationId: string, opts?: { limit?: number }): Promise<DmMessageItem[]>;
+  };
 }
 
 export interface MessagingBrokerClient {
@@ -350,7 +395,19 @@ async function createDefaultRelaycastClient(options: {
     name: options.agentName,
     type: 'agent',
   });
-  return relaycast.as(registration.token) as unknown as MessagingRelaycastClient;
+  const agentClient = relaycast.as(registration.token);
+  // AgentClient already has dm(agent, text) — preserve the original reference before casting.
+  // post() bridges to AgentClient.send() which has a different name.
+  const originalDm = agentClient.dm.bind(agentClient);
+  const originalSend = (agentClient as any).send.bind(agentClient);
+  const client = agentClient as unknown as MessagingRelaycastClient;
+  client.dm = async (to: string, text: string) => {
+    await originalDm(to, text);
+  };
+  client.post = async (channel: string, text: string) => {
+    await originalSend(channel, text);
+  };
+  return client;
 }
 
 function withDefaults(overrides: Partial<MessagingDependencies> = {}): MessagingDependencies {
@@ -376,12 +433,36 @@ export function registerMessagingCommands(
     .description('Send a message to an agent')
     .argument('<agent>', 'Target agent name (or * for broadcast, #channel for channel)')
     .argument('<message>', 'Message to send')
-    .option('--from <name>', 'Sender name (defaults to broker-side human sender)')
+    .option('--from <name>', 'Sender name (registered identity in relaycast, defaults to "relay")')
     .option('--thread <id>', 'Thread identifier')
     .action(async (agent: string, message: string, options: { from?: string; thread?: string }) => {
-      let client: MessagingBrokerClient;
+      const senderName = options.from?.trim() || 'relay';
+      const isChannel = agent.startsWith('#');
+
+      // Primary path: send via relaycast SDK so messages are stored and queryable
+      // Skip relaycast path when --thread is used since the relaycast SDK does not support threading
+      if (!options.thread) {
+        try {
+          const relaycastClient = await deps.createRelaycastClient({
+            agentName: senderName,
+            cwd: deps.getProjectRoot(),
+          });
+          if (isChannel) {
+            await relaycastClient.post(agent.slice(1), message);
+          } else {
+            await relaycastClient.dm(agent, message);
+          }
+          deps.log(`Message sent to ${agent}`);
+          return;
+        } catch {
+          // Fall through to broker path
+        }
+      }
+
+      // Fallback: broker path (for environments without relaycast API key)
+      let brokerClient: MessagingBrokerClient;
       try {
-        client = await deps.createClient(deps.getProjectRoot());
+        brokerClient = await deps.createClient(deps.getProjectRoot());
       } catch (err: any) {
         deps.error(`Failed to connect to broker: ${err?.message || String(err)}`);
         deps.error('Start the broker with `agent-relay up` and try again.');
@@ -390,7 +471,7 @@ export function registerMessagingCommands(
       }
 
       try {
-        await client.sendMessage({
+        await brokerClient.sendMessage({
           to: agent,
           text: message,
           from: options.from?.trim() ? options.from.trim() : undefined,
@@ -401,7 +482,7 @@ export function registerMessagingCommands(
         deps.error(`Failed to send message: ${err?.message || String(err)}`);
         deps.exit(1);
       } finally {
-        await client.shutdown().catch(() => undefined);
+        await brokerClient.shutdown().catch(() => undefined);
       }
     });
 
@@ -463,6 +544,174 @@ export function registerMessagingCommands(
       }) => {
         const limit = Number.parseInt(options.limit ?? '50', 10) || 50;
         const sinceTs = parseSince(options.since);
+
+        if (options.from && !options.to) {
+          // Cross-context sender history: channel messages + DMs sent by this agent
+          const channelItems: Array<{ ts: string; to: string; text: string; kind: 'channel' }> = [];
+          const dmItems: Array<{ ts: string; to: string; text: string; kind: 'dm' }> = [];
+
+          // Part 1: channel messages from this agent
+          try {
+            const channelClient = await deps.createRelaycastClient({
+              agentName: '__cli_history__',
+              cwd: deps.getProjectRoot(),
+            });
+            const raw = (await channelClient.messages('general', { limit: Math.max(limit * 2, 100) }))
+              .map(normalizeMessage)
+              .filter(isPresent)
+              .filter((msg) => msg.agentName === options.from)
+              .filter((msg) => !sinceTs || Date.parse(msg.createdAt) >= sinceTs)
+              .slice(0, limit);
+            for (const msg of raw) {
+              channelItems.push({ ts: msg.createdAt, to: '#general', text: msg.text, kind: 'channel' });
+            }
+          } catch {
+            // non-fatal — continue to DM section
+          }
+
+          // Part 2: DM messages sent by this agent
+          try {
+            const dmClient = await deps.createRelaycastClient({
+              agentName: options.from,
+              cwd: deps.getProjectRoot(),
+            });
+            const conversations = await dmClient.dms.conversations();
+            const perConvLimit = Math.max(Math.ceil(limit / Math.max(conversations.length, 1)), 10);
+            for (const conv of conversations.slice(0, 10)) {
+              const msgs = await dmClient.dms.messages(conv.id, { limit: perConvLimit });
+              const recipient =
+                conv.participants
+                  .filter((p) => (p.agentName || p.agent_name) !== options.from)
+                  .map((p) => p.agentName || p.agent_name)
+                  .join(', ') || '(self)';
+              for (const m of msgs) {
+                const sender = m.agentName || m.agent_name;
+                if (sender !== options.from) continue;
+                const ts = m.createdAt || m.created_at || '';
+                if (sinceTs && Date.parse(ts) < sinceTs) continue;
+                dmItems.push({ ts, to: recipient, text: m.text, kind: 'dm' });
+              }
+            }
+          } catch {
+            // non-fatal — continue with channel results only
+          }
+
+          const allItems = [...channelItems, ...dmItems].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+
+          if (options.json) {
+            deps.log(
+              JSON.stringify(
+                allItems.map((item) => ({
+                  from: options.from,
+                  to: item.to,
+                  text: item.text,
+                  createdAt: item.ts,
+                  kind: item.kind,
+                })),
+                null,
+                2
+              )
+            );
+            return;
+          }
+
+          if (!allItems.length) {
+            deps.log('No messages found.');
+            return;
+          }
+
+          allItems.forEach((item) => {
+            const body = item.text.length > 200 ? item.text.slice(0, 197) + '...' : item.text;
+            if (item.kind === 'dm') {
+              deps.log('[' + item.ts + '] ' + options.from + ' -> ' + item.to + ' (DM): ' + body);
+            } else {
+              deps.log('[' + item.ts + '] ' + options.from + ' -> ' + item.to + ': ' + body);
+            }
+          });
+          return;
+        }
+
+        if (options.to && !options.to.startsWith('#')) {
+          // DM history mode: register as the target agent and show their conversations
+          let dmClient: MessagingRelaycastClient;
+          try {
+            dmClient = await deps.createRelaycastClient({
+              agentName: options.to,
+              cwd: deps.getProjectRoot(),
+            });
+          } catch (err: any) {
+            deps.error(`Failed to initialize relaycast client: ${err?.message || String(err)}`);
+            deps.exit(1);
+            return;
+          }
+
+          try {
+            const conversations = await dmClient.dms.conversations();
+
+            if (options.from) {
+              // Show messages in the specific conversation with --from agent
+              const conv = conversations.find((c) =>
+                c.participants.some((p) => (p.agentName || p.agent_name) === options.from)
+              );
+              if (!conv) {
+                deps.log(`No DM conversation found between ${options.to} and ${options.from}.`);
+                return;
+              }
+              const messages = await dmClient.dms.messages(conv.id, { limit });
+              if (options.json) {
+                deps.log(
+                  JSON.stringify(
+                    messages.map((m) => ({
+                      id: m.id,
+                      from: m.agentName || m.agent_name || 'unknown',
+                      text: m.text,
+                      createdAt: m.createdAt || m.created_at,
+                    })),
+                    null,
+                    2
+                  )
+                );
+                return;
+              }
+              if (!messages.length) {
+                deps.log('No messages found.');
+                return;
+              }
+              messages.forEach((m) => {
+                const sender = m.agentName || m.agent_name || 'unknown';
+                const ts = m.createdAt || m.created_at || '';
+                const body = m.text.length > 200 ? `${m.text.slice(0, 197)}...` : m.text;
+                deps.log(`[${ts}] ${sender}: ${body}`);
+              });
+            } else {
+              // Show all conversations summary
+              if (options.json) {
+                deps.log(JSON.stringify(conversations, null, 2));
+                return;
+              }
+              if (!conversations.length) {
+                deps.log(`No DM conversations found for ${options.to}.`);
+                return;
+              }
+              deps.log(`DM conversations for ${options.to}:`);
+              conversations.forEach((conv) => {
+                const others = conv.participants
+                  .filter((p) => (p.agentName || p.agent_name) !== options.to)
+                  .map((p) => p.agentName || p.agent_name)
+                  .join(', ');
+                const lastText = (conv.lastMessage || conv.last_message)?.text ?? '(no messages)';
+                const preview = lastText.length > 60 ? `${lastText.slice(0, 57)}...` : lastText;
+                const unread = conv.unreadCount ?? conv.unread_count ?? 0;
+                deps.log(`  ${others || '(self)'}: "${preview}" [${unread} unread]`);
+              });
+            }
+          } catch (err: any) {
+            deps.error(`Failed to fetch DM history: ${err?.message || String(err)}`);
+            deps.exit(1);
+          }
+          return;
+        }
+
         let relaycast: MessagingRelaycastClient;
 
         try {
@@ -477,7 +726,7 @@ export function registerMessagingCommands(
         }
 
         try {
-          const channel = options.to?.startsWith('#') ? options.to.slice(1) : 'general';
+          const channel = options.to ? options.to.slice(1) : 'general';
           const messages = (
             await relaycast.messages(channel, {
               limit: Math.max(limit * 2, 100),
@@ -531,12 +780,13 @@ export function registerMessagingCommands(
   program
     .command('inbox')
     .description('Show unread inbox summary')
+    .option('--agent <name>', 'Agent whose inbox to check (defaults to cli user)')
     .option('--json', 'Output as JSON')
-    .action(async (options: { json?: boolean }) => {
+    .action(async (options: { agent?: string; json?: boolean }) => {
       let relaycast: MessagingRelaycastClient;
       try {
         relaycast = await deps.createRelaycastClient({
-          agentName: '__cli_inbox__',
+          agentName: options.agent?.trim() || '__cli_inbox__',
           cwd: deps.getProjectRoot(),
         });
       } catch (err: any) {
