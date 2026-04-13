@@ -2,6 +2,7 @@ export * from './types.js';
 export * from './runner.js';
 export * from './custom-steps.js';
 export * from './cli-session-collector.js';
+export * from './budget-tracker.js';
 export * from './channel-messenger.js';
 export * from './process-spawner.js';
 export * from './run-summary-table.js';

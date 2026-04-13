@@ -1,6 +1,18 @@
 import type { CliSessionReport } from './cli-session-collector.js';
 import type { StepOutcome } from './trajectory.js';
 
+export interface StepBudgetSummary {
+  used: number;
+  limit: number | null;
+  over: boolean;
+}
+
+export interface WorkflowBudgetSummary {
+  used: number;
+  limit: number | null;
+  over: boolean;
+}
+
 function formatCurrency(value: number | null | undefined): string {
   return typeof value === 'number' ? `$${value.toFixed(2)}` : '--';
 }
@@ -9,6 +21,19 @@ function formatTokens(report: CliSessionReport | undefined): string {
   if (!report?.tokens) return '--';
   const total = report.tokens.input + report.tokens.output + report.tokens.cacheRead;
   return total.toLocaleString('en-US');
+}
+
+function formatBudget(summary: StepBudgetSummary | undefined): string {
+  if (!summary?.limit) return '--';
+
+  const base = `${summary.used.toLocaleString('en-US')}/${summary.limit.toLocaleString('en-US')}`;
+  return summary.over ? `${base} [OVER]` : base;
+}
+
+function formatWorkflowBudget(summary: WorkflowBudgetSummary | undefined): string {
+  if (!summary?.limit) return '--';
+  const base = `${summary.used.toLocaleString('en-US')}/${summary.limit.toLocaleString('en-US')}`;
+  return summary.over ? `${base} [OVER]` : base;
 }
 
 function formatDuration(durationMs: number | null | undefined): string {
@@ -40,18 +65,29 @@ function formatErrors(outcome: StepOutcome, report: CliSessionReport | undefined
 
 export function formatRunSummaryTable(
   outcomes: StepOutcome[],
-  reports: Map<string, CliSessionReport>
+  reports: Map<string, CliSessionReport>,
+  stepBudgets: Map<string, StepBudgetSummary> = new Map(),
+  workflowBudget?: WorkflowBudgetSummary
 ): string {
   // Only show the Cost column when at least one report has reliable cost data
   // (currently only OpenCode populates cost; Claude and Codex return null)
   const hasCost = Array.from(reports.values()).some((r) => typeof r.cost === 'number' && r.cost > 0);
+  const hasBudget = workflowBudget?.limit !== undefined || stepBudgets.size > 0;
 
   const headers = hasCost
-    ? ['Step', 'Status', 'Model', 'Cost', 'Tokens', 'Duration', 'Errors']
-    : ['Step', 'Status', 'Model', 'Tokens', 'Duration', 'Errors'];
+    ? hasBudget
+      ? ['Step', 'Status', 'Model', 'Cost', 'Tokens', 'Budget', 'Duration', 'Errors']
+      : ['Step', 'Status', 'Model', 'Cost', 'Tokens', 'Duration', 'Errors']
+    : hasBudget
+      ? ['Step', 'Status', 'Model', 'Tokens', 'Budget', 'Duration', 'Errors']
+      : ['Step', 'Status', 'Model', 'Tokens', 'Duration', 'Errors'];
   const widths = hasCost
-    ? [20, 6, 16, 8, 10, 10, 10]
-    : [20, 6, 16, 10, 10, 10];
+    ? hasBudget
+      ? [20, 6, 16, 8, 10, 18, 10, 10]
+      : [20, 6, 16, 8, 10, 10, 10]
+    : hasBudget
+      ? [20, 6, 16, 10, 18, 10, 10]
+      : [20, 6, 16, 10, 10, 10];
   const lines: string[] = [];
 
   lines.push(headers.map((h, i) => {
@@ -82,8 +118,12 @@ export function formatRunSummaryTable(
     if (hasCost) cols.push(pad(formatCurrency(report?.cost), widths[3], 'right'));
     const tokenIdx = hasCost ? 4 : 3;
     cols.push(pad(formatTokens(report), widths[tokenIdx], 'right'));
-    cols.push(pad(formatDuration(reportDuration), widths[tokenIdx + 1], 'right'));
-    cols.push(pad(formatErrors(outcome, report), widths[tokenIdx + 2], 'right'));
+    if (hasBudget) {
+      cols.push(pad(formatBudget(stepBudgets.get(outcome.name)), widths[tokenIdx + 1], 'right'));
+    }
+    const durationIdx = hasBudget ? tokenIdx + 2 : tokenIdx + 1;
+    cols.push(pad(formatDuration(reportDuration), widths[durationIdx], 'right'));
+    cols.push(pad(formatErrors(outcome, report), widths[durationIdx + 1], 'right'));
 
     lines.push(cols.join('  '));
 
@@ -102,8 +142,12 @@ export function formatRunSummaryTable(
   if (hasCost) totalCols.push(pad(formatCurrency(totalCost), widths[3], 'right'));
   const tokenIdx = hasCost ? 4 : 3;
   totalCols.push(pad(totalTokens > 0 ? totalTokens.toLocaleString('en-US') : '--', widths[tokenIdx], 'right'));
-  totalCols.push(pad(formatDuration(totalDurationMs), widths[tokenIdx + 1], 'right'));
-  totalCols.push(pad('', widths[tokenIdx + 2], 'right'));
+  if (hasBudget) {
+    totalCols.push(pad(formatWorkflowBudget(workflowBudget), widths[tokenIdx + 1], 'right'));
+  }
+  const durationIdx = hasBudget ? tokenIdx + 2 : tokenIdx + 1;
+  totalCols.push(pad(formatDuration(totalDurationMs), widths[durationIdx], 'right'));
+  totalCols.push(pad('', widths[durationIdx + 1], 'right'));
   lines.push(totalCols.join('  '));
 
   return lines.map((line) => `  ${line}`).join('\n');

@@ -45,7 +45,12 @@ import { executeApiStep } from './api-executor.js';
 import { ChannelMessenger } from './channel-messenger.js';
 import { InMemoryWorkflowDb } from './memory-db.js';
 import { buildCommand as buildProcessCommand, spawnProcess } from './process-spawner.js';
-import { formatRunSummaryTable } from './run-summary-table.js';
+import { BudgetExceededError, BudgetTracker } from './budget-tracker.js';
+import {
+  formatRunSummaryTable,
+  type StepBudgetSummary,
+  type WorkflowBudgetSummary,
+} from './run-summary-table.js';
 import {
   StepExecutor as WorkflowStepLifecycleExecutor,
   type StepExecutorDeps as WorkflowStepLifecycleExecutorDeps,
@@ -455,6 +460,12 @@ export class WorkflowRunner {
   private readonly activeReviewers = new Map<string, number>();
   /** Structured CLI session reports captured during the current run, keyed by step name. */
   private readonly agentReports = new Map<string, CliSessionReport>();
+  /** Shared workflow token budget tracker for the current run, when enabled. */
+  private budgetTracker?: BudgetTracker;
+  /** Per-step enforced token budgets resolved from agent constraints. */
+  private readonly stepBudgetLimits = new Map<string, number>();
+  /** Steps whose post-execution token usage exceeded an enforced budget. */
+  private readonly overBudgetSteps = new Set<string>();
   private static readonly PTY_TASK_ARG_SIZE_LIMIT = 2 * 1024 * 1024; // 2 MB
 
   constructor(options: WorkflowRunnerOptions = {}) {
@@ -1420,6 +1431,118 @@ export class WorkflowRunner {
       mode,
       reason,
       evidence: this.buildTrajectoryCompletionEvidence(stepName),
+    };
+  }
+
+  private createBudgetTracker(config: RelayYamlConfig): BudgetTracker | undefined {
+    const stepLimits = config.agents
+      .map((agent) => agent.constraints?.maxTokens)
+      .filter((value): value is number => typeof value === 'number');
+    const largestStepBudget = stepLimits.length > 0 ? Math.max(...stepLimits) : undefined;
+
+    if (config.swarm.tokenBudget === undefined && largestStepBudget === undefined) {
+      return undefined;
+    }
+
+    return new BudgetTracker({
+      perAgent: largestStepBudget,
+      perWorkflow: config.swarm.tokenBudget,
+    });
+  }
+
+  private resolveStepTokenBudget(
+    ownerDef: AgentDefinition,
+    specialistDef: AgentDefinition
+  ): number | undefined {
+    const limits = [specialistDef.constraints?.maxTokens, ownerDef.constraints?.maxTokens].filter(
+      (value): value is number => typeof value === 'number'
+    );
+    if (limits.length === 0) return undefined;
+    return Math.min(...limits);
+  }
+
+  private applyBudgetReport(
+    stepName: string,
+    stepBudget: number | undefined,
+    report: CliSessionReport | null
+  ): {
+    stepUsed: number;
+    stepLimit: number | null;
+    stepOver: boolean;
+    workflowUsed: number;
+    workflowLimit: number | null;
+    workflowOver: boolean;
+  } | null {
+    if (!this.budgetTracker || !report?.tokens) {
+      return null;
+    }
+
+    this.budgetTracker.recordUsage(stepName, {
+      input: report.tokens.input,
+      output: report.tokens.output,
+      cacheRead: report.tokens.cacheRead,
+    });
+
+    if (stepBudget !== undefined) {
+      this.stepBudgetLimits.set(stepName, stepBudget);
+      this.budgetTracker.setStepBudget(stepName, stepBudget);
+    }
+
+    const stepUsed = this.budgetTracker.getStepUsage(stepName).total;
+    const workflowUsed = this.budgetTracker.getTotalUsage().total;
+    const stepLimit = this.stepBudgetLimits.get(stepName) ?? null;
+    const workflowLimit = this.currentConfig?.swarm.tokenBudget ?? null;
+    const stepOver = stepLimit !== null && stepUsed > stepLimit;
+    const workflowOver = workflowLimit !== null && workflowUsed > workflowLimit;
+
+    if (stepOver) {
+      this.overBudgetSteps.add(stepName);
+      this.log(`[budget] Step "${stepName}" exceeded token budget (${stepUsed}/${stepLimit})`);
+    }
+
+    if (workflowOver) {
+      this.log(
+        `[budget] Workflow token budget exceeded after step "${stepName}" (${workflowUsed}/${workflowLimit})`
+      );
+    }
+
+    return {
+      stepUsed,
+      stepLimit,
+      stepOver,
+      workflowUsed,
+      workflowLimit,
+      workflowOver,
+    };
+  }
+
+  private buildStepBudgetSummary(outcomes: StepOutcome[]): Map<string, StepBudgetSummary> {
+    const summaries = new Map<string, StepBudgetSummary>();
+    for (const outcome of outcomes) {
+      const limit = this.stepBudgetLimits.get(outcome.name) ?? null;
+      const used = this.budgetTracker?.getStepUsage(outcome.name).total ?? 0;
+      if (limit === null && used === 0) continue;
+
+      summaries.set(outcome.name, {
+        used,
+        limit,
+        over: limit !== null && used > limit,
+      });
+    }
+    return summaries;
+  }
+
+  private buildWorkflowBudgetSummary(): WorkflowBudgetSummary | undefined {
+    const limit = this.currentConfig?.swarm.tokenBudget;
+    if (limit === undefined && !this.budgetTracker) {
+      return undefined;
+    }
+
+    const used = this.budgetTracker?.getTotalUsage().total ?? 0;
+    return {
+      used,
+      limit: limit ?? null,
+      over: limit !== undefined && used > limit,
     };
   }
 
@@ -2668,6 +2791,9 @@ export class WorkflowRunner {
     this.runtimeStepAgents.clear();
     this.stepCompletionEvidence.clear();
     this.agentReports.clear();
+    this.stepBudgetLimits.clear();
+    this.overBudgetSteps.clear();
+    this.budgetTracker = this.createBudgetTracker(config);
 
     this.log(`Starting workflow "${workflow.name}" (${workflow.steps.length} steps)`);
 
@@ -3864,6 +3990,12 @@ export class WorkflowRunner {
       reviewer: reviewDef,
     };
     const usesDedicatedOwner = usesOwnerFlow && ownerDef.name !== specialistDef.name;
+    const stepBudget = this.resolveStepTokenBudget(ownerDef, specialistDef);
+
+    if (this.budgetTracker && stepBudget !== undefined) {
+      this.stepBudgetLimits.set(step.name, stepBudget);
+      this.budgetTracker.setStepBudget(step.name, stepBudget);
+    }
 
     const maxRetries =
       step.retries ??
@@ -3952,6 +4084,18 @@ export class WorkflowRunner {
         // Resolve step-output variables (e.g. {{steps.plan.output}}) at execution time
         const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
         let resolvedTask = this.interpolateStepTask(step.task ?? '', stepOutputContext);
+
+        if (this.budgetTracker) {
+          const spawnCheck = this.budgetTracker.checkCanSpawn(agentName);
+          if (!spawnCheck.allowed) {
+            const workflowLimit = this.currentConfig?.swarm.tokenBudget ?? 0;
+            const workflowUsed = this.budgetTracker.getTotalUsage().total;
+            this.log(
+              `[budget] Skipping step "${step.name}" — ${spawnCheck.reason ?? `workflow budget exhausted (${workflowUsed}/${workflowLimit})`}`
+            );
+            throw new BudgetExceededError(step.name, 'workflow', workflowLimit, workflowUsed);
+          }
+        }
 
         // On retry attempts, prepend failure context so the agent knows what went wrong
         if (attempt > 0 && lastError) {
@@ -4178,7 +4322,7 @@ export class WorkflowRunner {
           }
         }
 
-        await this.captureAgentReport(
+        const report = await this.captureAgentReport(
           runId,
           step.name,
           lastEffectiveAgentDef,
@@ -4186,6 +4330,7 @@ export class WorkflowRunner {
           lastAttemptStartedAt,
           Date.now()
         );
+        this.applyBudgetReport(step.name, stepBudget, report);
 
         // Mark completed
         state.row.status = 'completed';
@@ -4216,7 +4361,12 @@ export class WorkflowRunner {
         return;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
-        lastCompletionReason = err instanceof WorkflowCompletionError ? err.completionReason : undefined;
+        lastCompletionReason =
+          err instanceof BudgetExceededError
+            ? 'failed_budget_exceeded'
+            : err instanceof WorkflowCompletionError
+              ? err.completionReason
+              : undefined;
         if (lastCompletionReason === 'retry_requested_by_owner' && attempt >= maxRetries) {
           lastError = this.buildOwnerRetryBudgetExceededMessage(step.name, maxRetries, lastError);
         }
@@ -4224,11 +4374,30 @@ export class WorkflowRunner {
           lastExitCode = err.exitCode;
           lastExitSignal = err.exitSignal;
         }
+        const report = await this.captureAgentReport(
+          runId,
+          step.name,
+          lastEffectiveAgentDef,
+          lastEffectiveCwd,
+          lastAttemptStartedAt,
+          Date.now()
+        );
+        const budgetOutcome = this.applyBudgetReport(step.name, stepBudget, report);
+        if (budgetOutcome?.stepOver || budgetOutcome?.workflowOver) {
+          lastCompletionReason = 'failed_budget_exceeded';
+          lastError =
+            budgetOutcome.stepOver && budgetOutcome.stepLimit !== null
+              ? `Step "${step.name}" exceeded token budget (${budgetOutcome.stepUsed}/${budgetOutcome.stepLimit} tokens used)`
+              : `Workflow budget exceeded after step "${step.name}" (${budgetOutcome?.workflowUsed ?? 0}/${budgetOutcome?.workflowLimit ?? 0} tokens used)`;
+        }
         const ownerTimedOut = usesDedicatedOwner
           ? /\bowner timed out\b/i.test(lastError)
           : /\btimed out\b/i.test(lastError) && !lastError.includes(`${step.name}-review`);
         if (ownerTimedOut) {
           this.emit({ type: 'step:owner-timeout', runId, stepName: step.name, ownerName: ownerDef.name });
+        }
+        if (err instanceof BudgetExceededError || budgetOutcome?.stepOver || budgetOutcome?.workflowOver) {
+          break;
         }
       }
     }
@@ -4240,14 +4409,17 @@ export class WorkflowRunner {
       typeof step.verification === 'object' && 'value' in step.verification
         ? String(step.verification.value)
         : undefined;
-    await this.captureAgentReport(
-      runId,
-      step.name,
-      lastEffectiveAgentDef,
-      lastEffectiveCwd,
-      lastAttemptStartedAt,
-      Date.now()
-    );
+    if (!this.agentReports.has(step.name)) {
+      const report = await this.captureAgentReport(
+        runId,
+        step.name,
+        lastEffectiveAgentDef,
+        lastEffectiveCwd,
+        lastAttemptStartedAt,
+        Date.now()
+      );
+      this.applyBudgetReport(step.name, stepBudget, report);
+    }
     await this.trajectory?.stepFailed(step, lastError ?? 'Unknown error', maxRetries + 1, maxRetries, {
       agent: agentName,
       nonInteractive,
@@ -6440,8 +6612,8 @@ export class WorkflowRunner {
     cwd: string | undefined,
     startedAt: number | undefined,
     completedAt: number
-  ): Promise<void> {
-    if (!agentDef || !cwd || !startedAt) return;
+  ): Promise<CliSessionReport | null> {
+    if (!agentDef || !cwd || !startedAt) return null;
 
     try {
       const report = await collectCliSession({
@@ -6450,15 +6622,17 @@ export class WorkflowRunner {
         startedAt,
         completedAt,
       });
-      if (!report) return;
+      if (!report) return null;
 
       this.agentReports.set(stepName, report);
       this.emit({ type: 'step:agent-report', runId, stepName, report });
       await this.persistAgentReport(runId, stepName, report);
+      return report;
     } catch (error) {
       this.log(
         `[${stepName}] CLI session collection failed: ${error instanceof Error ? error.message : String(error)}`
       );
+      return null;
     }
   }
 
@@ -6643,7 +6817,14 @@ export class WorkflowRunner {
 
     // Always show the summary table — with agent reports when available,
     // with just step/status/duration when not (non-interactive agents).
-    console.log(formatRunSummaryTable(outcomes, this.agentReports));
+    console.log(
+      formatRunSummaryTable(
+        outcomes,
+        this.agentReports,
+        this.buildStepBudgetSummary(outcomes),
+        this.buildWorkflowBudgetSummary()
+      )
+    );
 
     // Show errors and output excerpts for failed steps below the table
     for (const outcome of outcomes) {

@@ -75,6 +75,8 @@ export interface SwarmConfig {
   pattern: SwarmPattern;
   maxConcurrency?: number;
   timeoutMs?: number;
+  /** Max total enforced tokens (input + output, excluding cache reads) across the whole workflow. */
+  tokenBudget?: number;
   channel?: string;
   /** Idle agent detection and nudging configuration for interactive agents. */
   idleNudge?: IdleNudgeConfig;
@@ -836,6 +838,7 @@ export type WorkflowStepCompletionReason =
   | 'completed_by_process_exit'
   | 'retry_requested_by_owner'
   | 'failed_verification'
+  | 'failed_budget_exceeded'
   | 'failed_owner_decision'
   | 'failed_no_evidence';
 
