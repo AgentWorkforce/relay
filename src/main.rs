@@ -214,14 +214,15 @@ fn headless_provider_command(
             let mut args = vec![
                 "-p".to_string(),
                 "--dangerously-skip-permissions".to_string(),
-                task.to_string(),
             ];
             args.extend(extra_args.iter().cloned());
+            args.push(task.to_string());
             ("claude".to_string(), args)
         }
         ProtocolHeadlessProvider::Opencode => {
-            let mut args = vec!["run".to_string(), task.to_string()];
+            let mut args = vec!["run".to_string()];
             args.extend(extra_args.iter().cloned());
+            args.push(task.to_string());
             ("opencode".to_string(), args)
         }
     }
@@ -6504,6 +6505,40 @@ mod tests {
         ));
         assert!(spec.cli.is_none());
         assert_eq!(spec.model.as_deref(), Some("ignored"));
+    }
+
+    #[test]
+    fn headless_provider_command_claude_places_flags_before_task() {
+        let (bin, args) = super::headless_provider_command(
+            &ProtocolHeadlessProvider::Claude,
+            "hello world",
+            &[
+                "--mcp-config".to_string(),
+                "{\"mcpServers\":{}}".to_string(),
+            ],
+        );
+
+        assert_eq!(bin, "claude");
+        assert_eq!(args.last().map(String::as_str), Some("hello world"));
+        let mcp_pos = args.iter().position(|a| a == "--mcp-config").unwrap();
+        let task_pos = args.iter().position(|a| a == "hello world").unwrap();
+        assert!(mcp_pos < task_pos, "--mcp-config must precede task");
+    }
+
+    #[test]
+    fn headless_provider_command_opencode_places_flags_before_task() {
+        let (bin, args) = super::headless_provider_command(
+            &ProtocolHeadlessProvider::Opencode,
+            "hello world",
+            &["--agent".to_string(), "relaycast".to_string()],
+        );
+
+        assert_eq!(bin, "opencode");
+        assert_eq!(args.first().map(String::as_str), Some("run"));
+        assert_eq!(args.last().map(String::as_str), Some("hello world"));
+        let agent_pos = args.iter().position(|a| a == "--agent").unwrap();
+        let task_pos = args.iter().position(|a| a == "hello world").unwrap();
+        assert!(agent_pos < task_pos, "--agent must precede task");
     }
 
     #[test]

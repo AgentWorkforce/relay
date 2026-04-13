@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { Command } from 'commander';
 import { RelayCast, AgentRelayClient } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
@@ -322,7 +324,7 @@ async function resolveRelaycastApiKey(cwd: string): Promise<string> {
     raw = fs.readFileSync(connectionPath, 'utf-8');
   } catch {
     throw new Error(
-      'Failed to read broker connection. Start broker with agent-relay up or set RELAY_API_KEY'
+      'Failed to read broker connection metadata. Start the broker with `agent-relay up` or set RELAY_API_KEY.'
     );
   }
 
@@ -330,22 +332,28 @@ async function resolveRelaycastApiKey(cwd: string): Promise<string> {
   try {
     parsed = JSON.parse(raw) as { port?: unknown; api_key?: unknown };
   } catch {
-    throw new Error('Invalid broker connection metadata');
+    throw new Error(
+      'Invalid broker connection metadata. Start the broker with `agent-relay up` or set RELAY_API_KEY.'
+    );
   }
 
   const port = parsed.port;
   const apiKey = parsed.api_key;
   if (typeof port !== 'number' || !Number.isInteger(port) || typeof apiKey !== 'string' || !apiKey.trim()) {
-    throw new Error('Invalid broker connection metadata');
+    throw new Error(
+      'Invalid broker connection metadata. Start the broker with `agent-relay up` or set RELAY_API_KEY.'
+    );
   }
 
   try {
     const response = await fetch(`http://127.0.0.1:${port}/api/session`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
+
     if (!response.ok) {
-      throw new Error(`broker session failed (${response.status})`);
+      throw new Error(`broker session request failed (${response.status})`);
     }
+
     const session = (await response.json()) as {
       workspaceKey?: string | null;
       workspace_key?: string | null;
@@ -359,7 +367,7 @@ async function resolveRelaycastApiKey(cwd: string): Promise<string> {
     throw new Error(`Failed to query broker session: ${detail}`);
   }
 
-  throw new Error('No Relaycast workspace key found. Set RELAY_API_KEY or start broker');
+  throw new Error('No Relaycast workspace key found. Set RELAY_API_KEY or start broker with agent-relay up.');
 }
 
 async function createDefaultRelaycastClient(options: {

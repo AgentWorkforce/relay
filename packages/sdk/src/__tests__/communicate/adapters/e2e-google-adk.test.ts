@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import test from 'node:test';
+import { test } from 'vitest';
 
 import { onRelay } from '../../../communicate/adapters/google-adk.js';
 import type { Message, MessageCallback } from '../../../communicate/types.js';
@@ -90,77 +90,84 @@ class LiveRelay {
   }
 }
 
-test('Google ADK adapter e2e: relay tools work against live Relaycast', async () => {
-  const relay = new LiveRelay(AGENT_NAME);
-  await relay.register();
+// TODO(sdk-test-fix): live Relaycast integration. Requires RELAY_API_KEY env var
+// to run against a real backend. Skipped in CI / clean-env probes.
+test.skipIf(!process.env.RELAY_API_KEY)(
+  'Google ADK adapter e2e: relay tools work against live Relaycast',
+  async () => {
+    const relay = new LiveRelay(AGENT_NAME);
+    await relay.register();
 
-  try {
-    const mockAgent = { name: 'test-adk-agent', tools: [] as any[] };
-    const { agent, tools, unsubscribe } = onRelay(AGENT_NAME, { agent: mockAgent }, relay);
+    try {
+      const mockAgent = { name: 'test-adk-agent', tools: [] as any[] };
+      const { agent, tools, unsubscribe } = onRelay(AGENT_NAME, { agent: mockAgent }, relay);
 
-    // Verify tools were injected into the agent
-    assert.ok(agent.tools.length >= 4, `Expected >= 4 relay tools on agent, got ${agent.tools.length}`);
+      // Verify tools were injected into the agent
+      assert.ok(agent.tools.length >= 4, `Expected >= 4 relay tools on agent, got ${agent.tools.length}`);
 
-    const findTool = (name: string) => {
-      const tool = tools.find((t: any) => t.name === name);
-      assert.ok(tool, `Tool ${name} not found`);
-      return tool;
-    };
+      const findTool = (name: string) => {
+        const tool = tools.find((t: any) => t.name === name);
+        assert.ok(tool, `Tool ${name} not found`);
+        return tool;
+      };
 
-    const relayAgents = findTool('relay_agents');
-    const relaySend = findTool('relay_send');
-    const relayPost = findTool('relay_post');
-    const relayInbox = findTool('relay_inbox');
+      const relayAgents = findTool('relay_agents');
+      const relaySend = findTool('relay_send');
+      const relayPost = findTool('relay_post');
+      const relayInbox = findTool('relay_inbox');
 
-    // 1. relay_agents — should include our freshly registered agent
-    const agentsResult = await (relayAgents as any).execute({});
-    const agentsText = agentsResult.result as string;
-    console.log('relay_agents:', agentsText.split('\n').length, 'agents');
-    assert.ok(agentsText.includes(AGENT_NAME), `Agent list must include ${AGENT_NAME}`);
+      // 1. relay_agents — should include our freshly registered agent
+      const agentsResult = await (relayAgents as any).execute({});
+      const agentsText = agentsResult.result as string;
+      console.log('relay_agents:', agentsText.split('\n').length, 'agents');
+      assert.ok(agentsText.includes(AGENT_NAME), `Agent list must include ${AGENT_NAME}`);
 
-    // 2. relay_send — DM to self
-    const sendResult = await (relaySend as any).execute({ to: AGENT_NAME, text: 'e2e self-ping' });
-    console.log('relay_send:', sendResult.result);
-    assert.ok((sendResult.result as string).includes('Sent relay message'));
+      // 2. relay_send — DM to self
+      const sendResult = await (relaySend as any).execute({ to: AGENT_NAME, text: 'e2e self-ping' });
+      console.log('relay_send:', sendResult.result);
+      assert.ok((sendResult.result as string).includes('Sent relay message'));
 
-    // 3. relay_post — post to general channel
-    const postResult = await (relayPost as any).execute({
-      channel: 'general',
-      text: `e2e ADK test from ${AGENT_NAME}`,
-    });
-    console.log('relay_post:', postResult.result);
-    assert.ok((postResult.result as string).includes('Posted relay message'));
+      // 3. relay_post — post to general channel
+      const postResult = await (relayPost as any).execute({
+        channel: 'general',
+        text: `e2e ADK test from ${AGENT_NAME}`,
+      });
+      console.log('relay_post:', postResult.result);
+      assert.ok((postResult.result as string).includes('Posted relay message'));
 
-    // 4. relay_inbox — drain inbox
-    await new Promise((r) => setTimeout(r, 1000));
-    const inboxResult = await (relayInbox as any).execute({});
-    console.log('relay_inbox:', inboxResult.result);
-    assert.ok(typeof inboxResult.result === 'string');
+      // 4. relay_inbox — drain inbox
+      await new Promise((r) => setTimeout(r, 1000));
+      const inboxResult = await (relayInbox as any).execute({});
+      console.log('relay_inbox:', inboxResult.result);
+      assert.ok(typeof inboxResult.result === 'string');
 
-    // 5. Verify unsubscribe stops routing
-    let routerFired = false;
-    const mockRunner = {
-      async *runAsync() {
-        routerFired = true;
-      },
-    };
-    const { unsubscribe: unsub2 } = onRelay(
-      `${AGENT_NAME}-sub`,
-      { agent: { name: 'sub-agent', tools: [] }, runner: mockRunner },
-      relay,
-    );
-    unsub2();
-    // After unsubscribe, incoming messages should NOT invoke the runner
-    await (relaySend as any).execute({ to: AGENT_NAME, text: 'should-not-route' });
-    await new Promise((r) => setTimeout(r, 500));
-    assert.ok(!routerFired, 'Expected runner NOT to fire after unsubscribe');
+      // 5. Verify unsubscribe stops routing
+      let routerFired = false;
+      const mockRunner = {
+        async *runAsync() {
+          routerFired = true;
+          yield* [];
+        },
+      };
+      const { unsubscribe: unsub2 } = onRelay(
+        `${AGENT_NAME}-sub`,
+        { agent: { name: 'sub-agent', tools: [] }, runner: mockRunner },
+        relay
+      );
+      unsub2();
+      // After unsubscribe, incoming messages should NOT invoke the runner
+      await (relaySend as any).execute({ to: AGENT_NAME, text: 'should-not-route' });
+      await new Promise((r) => setTimeout(r, 500));
+      assert.ok(!routerFired, 'Expected runner NOT to fire after unsubscribe');
 
-    // Also test that unsubscribe from the main config works
-    unsubscribe();
+      // Also test that unsubscribe from the main config works
+      unsubscribe();
 
-    console.log('All Google ADK adapter e2e checks passed.');
-  } finally {
-    await relay.close();
-    console.log('Relay closed.');
-  }
-});
+      console.log('All Google ADK adapter e2e checks passed.');
+    } finally {
+      await relay.close();
+      console.log('Relay closed.');
+    }
+  },
+  20_000
+);
