@@ -166,6 +166,8 @@ export interface MessagingRelaycastClient {
     options?: { limit?: number; before?: string; after?: string }
   ): Promise<RelaycastMessage[]>;
   inbox(): Promise<RelaycastInbox>;
+  dm(to: string, text: string): Promise<void>;
+  post(channel: string, text: string): Promise<void>;
   dms: {
     conversations(): Promise<DmConversationSummary[]>;
     messages(conversationId: string, opts?: { limit?: number }): Promise<DmMessageItem[]>;
@@ -393,7 +395,16 @@ async function createDefaultRelaycastClient(options: {
     name: options.agentName,
     type: 'agent',
   });
-  return relaycast.as(registration.token) as unknown as MessagingRelaycastClient;
+  const agentClient = relaycast.as(registration.token);
+  const client = agentClient as unknown as MessagingRelaycastClient;
+  // Wire up send methods — AgentClient.dm() and AgentClient.send() are not on the cast type
+  (client as any).dm = async (to: string, text: string) => {
+    await (agentClient as any).dm(to, text);
+  };
+  (client as any).post = async (channel: string, text: string) => {
+    await (agentClient as any).send(channel, text);
+  };
+  return client;
 }
 
 function withDefaults(overrides: Partial<MessagingDependencies> = {}): MessagingDependencies {
@@ -419,12 +430,33 @@ export function registerMessagingCommands(
     .description('Send a message to an agent')
     .argument('<agent>', 'Target agent name (or * for broadcast, #channel for channel)')
     .argument('<message>', 'Message to send')
-    .option('--from <name>', 'Sender name (defaults to broker-side human sender)')
+    .option('--from <name>', 'Sender name (registered identity in relaycast, defaults to "relay")')
     .option('--thread <id>', 'Thread identifier')
     .action(async (agent: string, message: string, options: { from?: string; thread?: string }) => {
-      let client: MessagingBrokerClient;
+      const senderName = options.from?.trim() || 'relay';
+      const isChannel = agent.startsWith('#');
+
+      // Primary path: send via relaycast SDK so messages are stored and queryable
       try {
-        client = await deps.createClient(deps.getProjectRoot());
+        const relaycastClient = await deps.createRelaycastClient({
+          agentName: senderName,
+          cwd: deps.getProjectRoot(),
+        });
+        if (isChannel) {
+          await relaycastClient.post(agent.slice(1), message);
+        } else {
+          await relaycastClient.dm(agent, message);
+        }
+        deps.log(`Message sent to ${agent}`);
+        return;
+      } catch {
+        // Fall through to broker path
+      }
+
+      // Fallback: broker path (for environments without relaycast API key)
+      let brokerClient: MessagingBrokerClient;
+      try {
+        brokerClient = await deps.createClient(deps.getProjectRoot());
       } catch (err: any) {
         deps.error(`Failed to connect to broker: ${err?.message || String(err)}`);
         deps.error('Start the broker with `agent-relay up` and try again.');
@@ -433,7 +465,7 @@ export function registerMessagingCommands(
       }
 
       try {
-        await client.sendMessage({
+        await brokerClient.sendMessage({
           to: agent,
           text: message,
           from: options.from?.trim() ? options.from.trim() : undefined,
@@ -444,7 +476,7 @@ export function registerMessagingCommands(
         deps.error(`Failed to send message: ${err?.message || String(err)}`);
         deps.exit(1);
       } finally {
-        await client.shutdown().catch(() => undefined);
+        await brokerClient.shutdown().catch(() => undefined);
       }
     });
 

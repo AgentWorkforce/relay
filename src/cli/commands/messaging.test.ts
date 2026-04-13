@@ -39,6 +39,8 @@ function createRelaycastClientMock(
       unread_dms: [],
       recent_reactions: [],
     })),
+    dm: vi.fn(async () => undefined),
+    post: vi.fn(async () => undefined),
     dms: {
       conversations: vi.fn(async () => []),
       messages: vi.fn(async () => []),
@@ -110,45 +112,69 @@ describe('registerMessagingCommands', () => {
     expect(commandNames).toEqual(expect.arrayContaining(['send', 'read', 'history', 'inbox']));
   });
 
-  it('sends a message to the correct target', async () => {
-    const brokerClient = createBrokerClientMock();
-    const { program, deps } = createHarness({ brokerClient });
+  it('sends a DM via relaycast SDK registered as the --from identity', async () => {
+    const relaycastClient = createRelaycastClientMock();
+    const { program, deps } = createHarness({ relaycastClient });
 
-    const exitCode = await runCommand(program, [
-      'send',
-      'WorkerA',
-      'Ship this today',
-      '--from',
-      'Alice',
-      '--thread',
-      'thread-1',
-    ]);
+    const exitCode = await runCommand(program, ['send', 'WorkerA', 'Ship this today', '--from', 'Alice']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createClient).toHaveBeenCalledWith('/tmp/project');
-    expect(brokerClient.sendMessage).toHaveBeenCalledWith({
-      to: 'WorkerA',
-      text: 'Ship this today',
-      from: 'Alice',
-      threadId: 'thread-1',
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: 'Alice',
+      cwd: '/tmp/project',
     });
-    expect(brokerClient.shutdown).toHaveBeenCalledTimes(1);
+    expect(relaycastClient.dm).toHaveBeenCalledWith('WorkerA', 'Ship this today');
     expect(deps.log).toHaveBeenCalledWith('Message sent to WorkerA');
+    // broker path not used
+    expect(deps.createClient).not.toHaveBeenCalled();
   });
 
-  it('omits the synthetic sender when --from is not provided', async () => {
-    const brokerClient = createBrokerClientMock();
-    const { program } = createHarness({ brokerClient });
+  it('defaults sender to "relay" when --from is not provided', async () => {
+    const relaycastClient = createRelaycastClientMock();
+    const { program, deps } = createHarness({ relaycastClient });
 
     const exitCode = await runCommand(program, ['send', 'WorkerA', 'Ship this today']);
 
     expect(exitCode).toBeUndefined();
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: 'relay',
+      cwd: '/tmp/project',
+    });
+    expect(relaycastClient.dm).toHaveBeenCalledWith('WorkerA', 'Ship this today');
+  });
+
+  it('sends to a channel via relaycast post when agent starts with #', async () => {
+    const relaycastClient = createRelaycastClientMock();
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['send', '#general', 'Hello team']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: 'relay',
+      cwd: '/tmp/project',
+    });
+    expect(relaycastClient.post).toHaveBeenCalledWith('general', 'Hello team');
+    expect(relaycastClient.dm).not.toHaveBeenCalled();
+  });
+
+  it('falls back to broker when relaycast is unavailable', async () => {
+    const brokerClient = createBrokerClientMock();
+    const { program, deps } = createHarness({
+      brokerClient,
+      createRelaycastError: new Error('no api key'),
+    });
+
+    const exitCode = await runCommand(program, ['send', 'WorkerA', 'fallback msg', '--from', 'Alice']);
+
+    expect(exitCode).toBeUndefined();
     expect(brokerClient.sendMessage).toHaveBeenCalledWith({
       to: 'WorkerA',
-      text: 'Ship this today',
-      from: undefined,
+      text: 'fallback msg',
+      from: 'Alice',
       threadId: undefined,
     });
+    expect(deps.log).toHaveBeenCalledWith('Message sent to WorkerA');
   });
 
   it('reads a message by ID', async () => {
@@ -590,12 +616,12 @@ describe('registerMessagingCommands', () => {
   });
 
   it('returns non-zero for missing required args', async () => {
-    const { program, brokerClient } = createHarness();
+    const { program, relaycastClient } = createHarness();
 
     const exitCode = await runCommand(program, ['send', 'WorkerOnly']);
 
     expect(exitCode).toBe(1);
-    expect(brokerClient.sendMessage).not.toHaveBeenCalled();
+    expect(relaycastClient.dm).not.toHaveBeenCalled();
   });
 
   it('handles broker unavailable errors', async () => {
