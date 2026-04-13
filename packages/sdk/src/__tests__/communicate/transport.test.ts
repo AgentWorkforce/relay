@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
-import test from 'node:test';
+import { test } from 'vitest';
 
 import { WebSocketServer, WebSocket } from 'ws';
 
@@ -42,7 +42,11 @@ class MockServer {
   private nextMessageId = 1;
 
   /** Override to customize HTTP responses */
-  responseOverride?: (method: string, path: string, json?: any) => { status: number; body: unknown } | undefined;
+  responseOverride?: (
+    method: string,
+    path: string,
+    json?: any
+  ) => { status: number; body: unknown } | undefined;
 
   baseUrl = '';
 
@@ -309,11 +313,14 @@ test('401 response throws RelayAuthError', async () => {
       apiKey: 'wrong-key',
     });
 
-    await assert.rejects(() => transport.registerAgent(), (err: any) => {
-      assert.ok(err instanceof RelayAuthError);
-      assert.equal(err.statusCode, 401);
-      return true;
-    });
+    await assert.rejects(
+      () => transport.registerAgent(),
+      (err: any) => {
+        assert.ok(err instanceof RelayAuthError);
+        assert.equal(err.statusCode, 401);
+        return true;
+      }
+    );
   });
 });
 
@@ -326,11 +333,14 @@ test('4xx response throws RelayConnectionError', async () => {
     };
     const transport = new RelayTransport('Forbidden', server.makeConfig());
 
-    await assert.rejects(() => transport.listAgents(), (err: any) => {
-      assert.ok(err instanceof RelayConnectionError);
-      assert.equal(err.statusCode, 403);
-      return true;
-    });
+    await assert.rejects(
+      () => transport.listAgents(),
+      (err: any) => {
+        assert.ok(err instanceof RelayConnectionError);
+        assert.equal(err.statusCode, 403);
+        return true;
+      }
+    );
   });
 });
 
@@ -347,11 +357,14 @@ test('5xx response retries up to 3 times then throws', async () => {
     };
     const transport = new RelayTransport('RetryAgent', server.makeConfig());
 
-    await assert.rejects(() => transport.listAgents(), (err: any) => {
-      assert.ok(err instanceof RelayConnectionError);
-      assert.equal(err.statusCode, 500);
-      return true;
-    });
+    await assert.rejects(
+      () => transport.listAgents(),
+      (err: any) => {
+        assert.ok(err instanceof RelayConnectionError);
+        assert.equal(err.statusCode, 500);
+        return true;
+      }
+    );
     assert.equal(attempts, 3);
   });
 });
@@ -367,11 +380,14 @@ test('missing apiKey throws RelayConfigError', async () => {
       autoCleanup: false,
     });
 
-    await assert.rejects(() => transport.listAgents(), (err: any) => {
-      assert.equal(err.name, 'RelayConfigError');
-      assert.ok(err.message.includes('RELAY_API_KEY'));
-      return true;
-    });
+    await assert.rejects(
+      () => transport.listAgents(),
+      (err: any) => {
+        assert.equal(err.name, 'RelayConfigError');
+        assert.ok(err.message.includes('RELAY_API_KEY'));
+        return true;
+      }
+    );
   } finally {
     if (savedKey !== undefined) process.env.RELAY_API_KEY = savedKey;
   }
@@ -388,11 +404,14 @@ test('missing workspace throws RelayConfigError on connect', async () => {
       autoCleanup: false,
     });
 
-    await assert.rejects(() => transport.connect(), (err: any) => {
-      assert.equal(err.name, 'RelayConfigError');
-      assert.ok(err.message.includes('RELAY_WORKSPACE'));
-      return true;
-    });
+    await assert.rejects(
+      () => transport.connect(),
+      (err: any) => {
+        assert.equal(err.name, 'RelayConfigError');
+        assert.ok(err.message.includes('RELAY_WORKSPACE'));
+        return true;
+      }
+    );
   } finally {
     if (savedWorkspace !== undefined) process.env.RELAY_WORKSPACE = savedWorkspace;
   }

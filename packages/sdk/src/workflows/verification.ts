@@ -175,9 +175,15 @@ export function checkOutputContains(output: string, token: string, injectedTaskT
 
 export function checkFileExists(filePath: string, cwd = process.cwd()): boolean {
   const normalizedCwd = path.resolve(cwd);
-  const resolved = path.resolve(normalizedCwd, filePath);
-  // Prevent path traversal outside the working directory
-  if (!resolved.startsWith(normalizedCwd + path.sep) && resolved !== normalizedCwd) {
+  const resolved = path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(normalizedCwd, filePath);
+
+  // Relative artifact paths stay scoped to the workflow cwd; absolute paths
+  // are already explicit and are allowed for temp/output artifacts.
+  if (
+    !path.isAbsolute(filePath) &&
+    !resolved.startsWith(normalizedCwd + path.sep) &&
+    resolved !== normalizedCwd
+  ) {
     return false;
   }
   return existsSync(resolved);

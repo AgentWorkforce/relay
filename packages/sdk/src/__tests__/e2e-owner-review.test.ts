@@ -82,13 +82,7 @@ const mockHuman = {
   sendMessage: vi.fn().mockResolvedValue(undefined),
 };
 
-const defaultSpawnPtyImplementation = async ({
-  name,
-  task,
-}: {
-  name: string;
-  task?: string;
-}) => {
+const defaultSpawnPtyImplementation = async ({ name, task }: { name: string; task?: string }) => {
   const queued = mockSpawnOutputs.shift();
   const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
   const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
@@ -190,6 +184,7 @@ type WorkflowStepOverride = Partial<NonNullable<RelayYamlConfig['workflows']>[nu
 
 function makeSupervisedConfig(stepOverrides: WorkflowStepOverride = {}): RelayYamlConfig {
   return makeConfig({
+    swarm: { pattern: 'hub-spoke' },
     agents: [
       { name: 'specialist', cli: 'claude', role: 'engineer' },
       { name: 'team-lead', cli: 'claude', role: 'Lead coordinator for the workflow' },
@@ -236,6 +231,7 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
       });
 
       const config = makeConfig({
+        swarm: { pattern: 'hub-spoke' },
         agents: [
           { name: 'impl-worker', cli: 'claude', role: 'implementer' },
           { name: 'team-lead', cli: 'claude', role: 'Lead coordinator for the workflow' },
@@ -263,6 +259,7 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
       });
 
       const config = makeConfig({
+        swarm: { pattern: 'hub-spoke' },
         agents: [
           { name: 'specialist', cli: 'claude', role: 'engineer' },
           { name: 'coord-bot', cli: 'claude', role: 'coordinator' },
@@ -312,6 +309,7 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
       });
 
       const config = makeConfig({
+        swarm: { pattern: 'hub-spoke' },
         agents: [
           { name: 'specialist', cli: 'claude', role: 'engineer' },
           { name: 'github-integration', cli: 'claude', role: 'GitHub integration agent' },
@@ -340,6 +338,7 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
       });
 
       const config = makeConfig({
+        swarm: { pattern: 'hub-spoke' },
         agents: [
           { name: 'specialist', cli: 'claude', role: 'engineer' },
           { name: 'github-bot', cli: 'claude', role: 'github integration' },
@@ -371,7 +370,7 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
         }
       });
 
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('completed');
       expect(reviewEvents.length).toBeGreaterThanOrEqual(1);
       expect(reviewEvents[0].decision).toBe('approved');
@@ -385,76 +384,64 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
         }
       });
 
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('completed');
       const reviewIdx = stepEvents.indexOf('step:review-completed');
       const completedIdx = stepEvents.indexOf('step:completed');
+      expect(reviewIdx).toBeGreaterThanOrEqual(0);
       expect(reviewIdx).toBeLessThan(completedIdx);
     }, 15000);
 
     it('should complete review from streamed REVIEW_DECISION before normal exit', async () => {
-      mockRelayInstance.spawnPty.mockImplementation(async ({
-        name,
-        task,
-      }: {
-        name: string;
-        task?: string;
-      }) => {
-        const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
-        const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
-        const output = isReview
-          ? 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: streamed completion\n'
-          : stepComplete
-            ? `STEP_COMPLETE:${stepComplete}\n`
-            : 'STEP_COMPLETE:unknown\n';
+      mockRelayInstance.spawnPty.mockImplementation(
+        async ({ name, task }: { name: string; task?: string }) => {
+          const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
+          const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
+          const output = isReview
+            ? 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: streamed completion\n'
+            : stepComplete
+              ? `STEP_COMPLETE:${stepComplete}\n`
+              : 'STEP_COMPLETE:unknown\n';
 
-        queueMicrotask(() => {
-          if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-            mockRelayInstance.onWorkerOutput({ name, chunk: output });
-          }
-        });
-
-        if (!isReview) {
-          return { ...mockAgent, name };
-        }
-
-        let released = false;
-        let resolveExit: ((result: 'released') => void) | undefined;
-        const waitForExit = vi.fn().mockImplementation(() => {
-          if (released) {
-            return Promise.resolve<'released'>('released');
-          }
-          return new Promise<'released'>((resolve) => {
-            resolveExit = resolve;
+          queueMicrotask(() => {
+            if (typeof mockRelayInstance.onWorkerOutput === 'function') {
+              mockRelayInstance.onWorkerOutput({ name, chunk: output });
+            }
           });
-        });
-        const release = vi.fn().mockImplementation(async () => {
-          released = true;
-          resolveExit?.('released');
-        });
 
-        return {
-          name,
-          waitForExit,
-          waitForIdle: vi.fn().mockImplementation(() => never()),
-          release,
-        };
-      });
+          if (!isReview) {
+            return { ...mockAgent, name };
+          }
 
-      const run = await runner.execute(
-        makeConfig({
-          workflows: [
-            {
-              name: 'default',
-              steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1' }],
-            },
-          ],
-        }),
-        'default'
+          let released = false;
+          let resolveExit: ((result: 'released') => void) | undefined;
+          const waitForExit = vi.fn().mockImplementation(() => {
+            if (released) {
+              return Promise.resolve<'released'>('released');
+            }
+            return new Promise<'released'>((resolve) => {
+              resolveExit = resolve;
+            });
+          });
+          const release = vi.fn().mockImplementation(async () => {
+            released = true;
+            resolveExit?.('released');
+          });
+
+          return {
+            name,
+            waitForExit,
+            waitForIdle: vi.fn().mockImplementation(() => never()),
+            release,
+          };
+        }
       );
 
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
+
       expect(run.status).toBe('completed');
-      const reviewAgent = await (mockRelayInstance.spawnPty as any).mock.results[1].value;
+      const spawnResults = (mockRelayInstance.spawnPty as any).mock.results;
+      const reviewAgent = await spawnResults[spawnResults.length - 1].value;
       expect(reviewAgent.name).toContain('step-1-review');
       expect(reviewAgent.release).toHaveBeenCalledTimes(1);
     }, 15000);
@@ -476,7 +463,7 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
         ([, text]: [string, string]) => text
       );
       expect(channelMessages.some((text: string) => text.includes('worker progress update'))).toBe(true);
-      expect(channelMessages.some((text: string) => text.includes('Verification gate observed'))).toBe(true);
+      expect(channelMessages.some((text: string) => text.includes('Worker `step-1-worker'))).toBe(true);
     }, 15000);
   });
 
@@ -492,20 +479,25 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
       });
 
       mockSpawnOutputs = [
+        'worker finished\n',
         'STEP_COMPLETE:step-1\n',
         'REVIEW_DECISION: REJECT\nREVIEW_REASON: output is incomplete\n',
       ];
 
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review rejected');
       expect(events).toContainEqual({ type: 'step:review-completed', decision: 'rejected' });
     }, 15000);
 
     it('should fail closed when review output is malformed (no REVIEW_DECISION)', async () => {
-      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'REVIEW_REASON: this is missing the decision line\n'];
+      mockSpawnOutputs = [
+        'worker finished\n',
+        'STEP_COMPLETE:step-1\n',
+        'REVIEW_REASON: this is missing the decision line\n',
+      ];
 
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review response malformed');
     }, 15000);
@@ -521,9 +513,9 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
       const echoedPrompt =
         'Return exactly:\nREVIEW_DECISION: APPROVE or REJECT\nREVIEW_REASON: <one sentence>\n';
       const actualResponse = 'REVIEW_DECISION: REJECT\nREVIEW_REASON: code has critical bugs\n';
-      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', echoedPrompt + actualResponse];
+      mockSpawnOutputs = ['worker finished\n', 'STEP_COMPLETE:step-1\n', echoedPrompt + actualResponse];
 
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(events).toContainEqual({ type: 'step:review-completed', decision: 'rejected' });
     }, 15000);
@@ -533,93 +525,82 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
 
   describe('Scenario 5: Review timeout budgeting', () => {
     it('should use the full remaining step timeout as the review safety backstop', async () => {
-      const config = makeConfig({
-        workflows: [
-          {
-            name: 'default',
-            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 90_000 }],
-          },
-        ],
-      });
+      const config = makeSupervisedConfig({ timeoutMs: 90_000 });
 
-      mockRelayInstance.spawnPty.mockImplementation(async ({
-        name,
-        task,
-      }: {
-        name: string;
-        task?: string;
-      }) => {
-        const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
-        const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
-        const output = isReview ? '' : stepComplete ? `STEP_COMPLETE:${stepComplete}\n` : 'STEP_COMPLETE:unknown\n';
+      mockRelayInstance.spawnPty.mockImplementation(
+        async ({ name, task }: { name: string; task?: string }) => {
+          const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
+          const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
+          const output = isReview
+            ? ''
+            : stepComplete
+              ? `STEP_COMPLETE:${stepComplete}\n`
+              : 'worker finished\n';
 
-        if (output) {
-          queueMicrotask(() => {
-            if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-              mockRelayInstance.onWorkerOutput({ name, chunk: output });
-            }
-          });
+          if (output) {
+            queueMicrotask(() => {
+              if (typeof mockRelayInstance.onWorkerOutput === 'function') {
+                mockRelayInstance.onWorkerOutput({ name, chunk: output });
+              }
+            });
+          }
+
+          return {
+            name,
+            waitForExit: vi.fn().mockResolvedValue(isReview ? 'timeout' : 'exited'),
+            waitForIdle: vi.fn().mockImplementation(() => never()),
+            release: vi.fn().mockResolvedValue(undefined),
+          };
         }
-
-        return {
-          name,
-          waitForExit: vi.fn().mockResolvedValue(isReview ? 'timeout' : 'exited'),
-          waitForIdle: vi.fn().mockImplementation(() => never()),
-          release: vi.fn().mockResolvedValue(undefined),
-        };
-      });
+      );
 
       const run = await runner.execute(config, 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review safety backstop timed out');
 
-      const reviewAgent = await (mockRelayInstance.spawnPty as any).mock.results[1].value;
+      const spawnResults = (mockRelayInstance.spawnPty as any).mock.results;
+      const reviewAgent = await spawnResults[spawnResults.length - 1].value;
       const reviewTimeout = reviewAgent.waitForExit.mock.calls[0][0];
       expect(reviewTimeout).toBeGreaterThan(60_000);
       expect(reviewTimeout).toBeLessThanOrEqual(90_000);
     }, 15000);
 
     it('should default the review safety backstop to 10 minutes when no step timeout is set', async () => {
-      const config = makeConfig({
-        workflows: [
-          {
-            name: 'default',
-            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1' }],
-          },
-        ],
-      });
+      const config = makeSupervisedConfig();
 
-      mockRelayInstance.spawnPty.mockImplementation(async ({
-        name,
-        task,
-      }: {
-        name: string;
-        task?: string;
-      }) => {
-        const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
-        const output = isReview ? '' : 'STEP_COMPLETE:step-1\n';
+      mockRelayInstance.spawnPty.mockImplementation(
+        async ({ name, task }: { name: string; task?: string }) => {
+          const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
+          const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
+          const output = isReview
+            ? ''
+            : stepComplete
+              ? `STEP_COMPLETE:${stepComplete}\n`
+              : 'worker finished\n';
 
-        if (output) {
-          queueMicrotask(() => {
-            if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-              mockRelayInstance.onWorkerOutput({ name, chunk: output });
-            }
-          });
+          if (output) {
+            queueMicrotask(() => {
+              if (typeof mockRelayInstance.onWorkerOutput === 'function') {
+                mockRelayInstance.onWorkerOutput({ name, chunk: output });
+              }
+            });
+          }
+
+          return {
+            name,
+            waitForExit: vi.fn().mockResolvedValue(isReview ? 'timeout' : 'exited'),
+            waitForIdle: vi.fn().mockImplementation(() => never()),
+            release: vi.fn().mockResolvedValue(undefined),
+          };
         }
-
-        return {
-          name,
-          waitForExit: vi.fn().mockResolvedValue(isReview ? 'timeout' : 'exited'),
-          waitForIdle: vi.fn().mockImplementation(() => never()),
-          release: vi.fn().mockResolvedValue(undefined),
-        };
-      });
+      );
 
       const run = await runner.execute(config, 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review safety backstop timed out after 600000ms');
 
-      const reviewAgent = await (mockRelayInstance.spawnPty as any).mock.results[1].value;
+      const spawnResults = (mockRelayInstance.spawnPty as any).mock.results;
+      const reviewAgent = await spawnResults[spawnResults.length - 1].value;
       expect(reviewAgent.waitForExit).toHaveBeenCalledWith(600_000);
     }, 15000);
   });
@@ -674,6 +655,7 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
       });
 
       const config = makeConfig({
+        swarm: { pattern: 'hub-spoke' },
         agents: [
           { name: 'team-lead', cli: 'claude', role: 'Lead coordinator' },
           { name: 'worker-1', cli: 'claude', role: 'implementer' },

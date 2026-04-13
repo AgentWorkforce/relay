@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import test from 'node:test';
+import { test } from 'vitest';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { onRelay, type RelayToolDef } from '../../../communicate/adapters/langgraph.js';
@@ -84,7 +84,9 @@ class LiveRelay {
 
   onMessage(callback: MessageCallback): () => void {
     this.callbacks.add(callback);
-    return () => { this.callbacks.delete(callback); };
+    return () => {
+      this.callbacks.delete(callback);
+    };
   }
 
   async simulateIncoming(message: Message): Promise<void> {
@@ -111,71 +113,79 @@ function createFakeGraph() {
   };
 }
 
-test('LangGraph e2e: full lifecycle against live Relaycast', async () => {
-  const relay = new LiveRelay(AGENT_NAME);
-  await relay.register();
-  console.log(`[e2e] Registered agent: ${AGENT_NAME}`);
+// TODO(sdk-test-fix): live Relaycast integration. Requires RELAY_API_KEY env var
+// to run against a real backend. Skipped in CI / clean-env probes.
+test.skipIf(!process.env.RELAY_API_KEY)(
+  'LangGraph e2e: full lifecycle against live Relaycast',
+  async () => {
+    const relay = new LiveRelay(AGENT_NAME);
+    await relay.register();
+    console.log(`[e2e] Registered agent: ${AGENT_NAME}`);
 
-  const graph = createFakeGraph();
+    const graph = createFakeGraph();
 
-  try {
-    // 1. onRelay returns tools and unsubscribe handle
-    const result = onRelay(graph, relay as any);
-    assert.ok(result.tools, 'tools should be defined');
-    assert.ok(typeof result.unsubscribe === 'function', 'unsubscribe should be a function');
+    try {
+      // 1. onRelay returns tools and unsubscribe handle
+      const result = onRelay(graph, relay as any);
+      assert.ok(result.tools, 'tools should be defined');
+      assert.ok(typeof result.unsubscribe === 'function', 'unsubscribe should be a function');
 
-    const toolMap = new Map<string, RelayToolDef>();
-    for (const t of result.tools) toolMap.set(t.name, t);
+      const toolMap = new Map<string, RelayToolDef>();
+      for (const t of result.tools) toolMap.set(t.name, t);
 
-    assert.ok(toolMap.has('relay_send'), 'should have relay_send');
-    assert.ok(toolMap.has('relay_inbox'), 'should have relay_inbox');
-    assert.ok(toolMap.has('relay_post'), 'should have relay_post');
-    assert.ok(toolMap.has('relay_agents'), 'should have relay_agents');
-    console.log('[e2e] onRelay returned 4 tools + unsubscribe');
+      assert.ok(toolMap.has('relay_send'), 'should have relay_send');
+      assert.ok(toolMap.has('relay_inbox'), 'should have relay_inbox');
+      assert.ok(toolMap.has('relay_post'), 'should have relay_post');
+      assert.ok(toolMap.has('relay_agents'), 'should have relay_agents');
+      console.log('[e2e] onRelay returned 4 tools + unsubscribe');
 
-    // 2. relay_agents returns a real agent list that includes ourselves
-    const agentsOutput = await toolMap.get('relay_agents')!.invoke({});
-    assert.ok(typeof agentsOutput === 'string', 'agents output should be a string');
-    const agentNames = agentsOutput.split('\n');
-    assert.ok(agentNames.includes(AGENT_NAME), `agents list should include "${AGENT_NAME}"`);
-    console.log(`[e2e] relay_agents OK: ${agentNames.length} agent(s), self found`);
+      // 2. relay_agents returns a real agent list that includes ourselves
+      const agentsOutput = await toolMap.get('relay_agents')!.invoke({});
+      assert.ok(typeof agentsOutput === 'string', 'agents output should be a string');
+      const agentNames = agentsOutput.split('\n');
+      assert.ok(agentNames.includes(AGENT_NAME), `agents list should include "${AGENT_NAME}"`);
+      console.log(`[e2e] relay_agents OK: ${agentNames.length} agent(s), self found`);
 
-    // 3. relay_post sends a message to a channel (real HTTP 201)
-    const postOutput = await toolMap.get('relay_post')!.invoke({ channel: CHANNEL, text: `e2e post from ${AGENT_NAME}` });
-    assert.equal(postOutput, `Posted relay message to #${CHANNEL}.`);
-    console.log('[e2e] relay_post OK');
+      // 3. relay_post sends a message to a channel (real HTTP 201)
+      const postOutput = await toolMap
+        .get('relay_post')!
+        .invoke({ channel: CHANNEL, text: `e2e post from ${AGENT_NAME}` });
+      assert.equal(postOutput, `Posted relay message to #${CHANNEL}.`);
+      console.log('[e2e] relay_post OK');
 
-    // 4. relay_send sends a DM to ourselves (real HTTP 201)
-    const sendOutput = await toolMap.get('relay_send')!.invoke({ to: AGENT_NAME, text: 'e2e self-DM' });
-    assert.equal(sendOutput, `Sent relay message to ${AGENT_NAME}.`);
-    console.log('[e2e] relay_send OK');
+      // 4. relay_send sends a DM to ourselves (real HTTP 201)
+      const sendOutput = await toolMap.get('relay_send')!.invoke({ to: AGENT_NAME, text: 'e2e self-DM' });
+      assert.equal(sendOutput, `Sent relay message to ${AGENT_NAME}.`);
+      console.log('[e2e] relay_send OK');
 
-    // 5. relay_inbox drains messages (real HTTP 200)
-    await sleep(500);
-    const inboxOutput = await toolMap.get('relay_inbox')!.invoke({});
-    assert.ok(typeof inboxOutput === 'string', 'inbox output should be a string');
-    console.log('[e2e] relay_inbox OK:', inboxOutput.slice(0, 120));
+      // 5. relay_inbox drains messages (real HTTP 200)
+      await sleep(500);
+      const inboxOutput = await toolMap.get('relay_inbox')!.invoke({});
+      assert.ok(typeof inboxOutput === 'string', 'inbox output should be a string');
+      console.log('[e2e] relay_inbox OK:', inboxOutput.slice(0, 120));
 
-    // 6. Test message routing into graph via simulateIncoming
-    await relay.simulateIncoming({ sender: 'test-peer', text: 'routed msg', messageId: 'msg-sim-1' });
-    assert.equal(graph.invokeCalls.length, 1, 'graph should receive 1 routed message');
-    const call = graph.invokeCalls[0];
-    assert.ok(Array.isArray(call.input.messages));
-    const routedMsg = (call.input.messages as any[])[0];
-    assert.equal(routedMsg.role, 'user');
-    assert.match(routedMsg.content, /test-peer/);
-    assert.match(routedMsg.content, /routed msg/);
-    console.log('[e2e] message routing into graph OK');
+      // 6. Test message routing into graph via simulateIncoming
+      await relay.simulateIncoming({ sender: 'test-peer', text: 'routed msg', messageId: 'msg-sim-1' });
+      assert.equal(graph.invokeCalls.length, 1, 'graph should receive 1 routed message');
+      const call = graph.invokeCalls[0];
+      assert.ok(Array.isArray(call.input.messages));
+      const routedMsg = (call.input.messages as any[])[0];
+      assert.equal(routedMsg.role, 'user');
+      assert.match(routedMsg.content, /test-peer/);
+      assert.match(routedMsg.content, /routed msg/);
+      console.log('[e2e] message routing into graph OK');
 
-    // 7. unsubscribe stops routing
-    result.unsubscribe();
-    await relay.simulateIncoming({ sender: 'test-peer', text: 'should not route', messageId: 'msg-sim-2' });
-    assert.equal(graph.invokeCalls.length, 1, 'graph should NOT receive messages after unsubscribe');
-    console.log('[e2e] unsubscribe OK');
+      // 7. unsubscribe stops routing
+      result.unsubscribe();
+      await relay.simulateIncoming({ sender: 'test-peer', text: 'should not route', messageId: 'msg-sim-2' });
+      assert.equal(graph.invokeCalls.length, 1, 'graph should NOT receive messages after unsubscribe');
+      console.log('[e2e] unsubscribe OK');
 
-    console.log('[e2e] All LangGraph e2e checks passed.');
-  } finally {
-    await relay.disconnect();
-    console.log('[e2e] Agent disconnected.');
-  }
-});
+      console.log('[e2e] All LangGraph e2e checks passed.');
+    } finally {
+      await relay.disconnect();
+      console.log('[e2e] Agent disconnected.');
+    }
+  },
+  20_000
+);
