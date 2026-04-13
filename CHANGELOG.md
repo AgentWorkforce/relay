@@ -32,6 +32,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
+## [4.0.17] - 2026-04-13
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Workerd export condition + narrow entry + workers-safety probe (#726)** (#726)
+
+#### User-Impacting Fixes
+- Restore packages/sdk vitest suite to green (#728) (#728)
+- Pre-parse workflow script files with actionable error hints (#727) (#727)
+- Make --resume work for script workflows (#725) (#725)
+
+### Technical Perspective
+#### Releases
+- v4.0.17
+
+---
+
 ## [4.0.16] - 2026-04-12
 
 ### Product Perspective
