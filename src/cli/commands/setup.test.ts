@@ -5,7 +5,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { ensureLocalSdkWorkflowRuntime, findLocalSdkWorkspace, registerSetupCommands, type SetupDependencies } from './setup.js';
+import {
+  ensureLocalSdkWorkflowRuntime,
+  findLocalSdkWorkspace,
+  preParseWorkflowFile,
+  registerSetupCommands,
+  type SetupDependencies,
+} from './setup.js';
 
 class ExitSignal extends Error {
   constructor(public readonly code: number) {
@@ -83,7 +89,7 @@ describe('local SDK workflow runtime bootstrapping', () => {
     expect(execRunner).toHaveBeenCalledWith(
       'npm',
       ['run', 'build:sdk'],
-      expect.objectContaining({ cwd: tempRoot, stdio: 'inherit' }),
+      expect.objectContaining({ cwd: tempRoot, stdio: 'inherit' })
     );
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
@@ -125,7 +131,16 @@ describe('registerSetupCommands', () => {
     const { program, deps } = createHarness();
 
     await runCommand(program, ['run', 'workflow.yaml', '--workflow', 'main']);
-    await runCommand(program, ['run', 'workflow.py', '--resume', 'run-123', '--start-from', 'step-a', '--previous-run-id', 'run-122']);
+    await runCommand(program, [
+      'run',
+      'workflow.py',
+      '--resume',
+      'run-123',
+      '--start-from',
+      'step-a',
+      '--previous-run-id',
+      'run-122',
+    ]);
 
     expect(deps.runYamlWorkflow).toHaveBeenCalledWith('workflow.yaml', {
       workflow: 'main',
@@ -176,5 +191,67 @@ describe('registerSetupCommands', () => {
     const exitCode = await runCommand(program, ['run', 'workflow.txt']);
 
     expect(exitCode).toBe(1);
+  });
+});
+
+describe('preParseWorkflowFile', () => {
+  function writeTempWorkflow(name: string, contents: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preparse-'));
+    const full = path.join(dir, name);
+    fs.writeFileSync(full, contents, 'utf8');
+    return full;
+  }
+
+  it('returns silently for a valid TypeScript workflow file', () => {
+    const file = writeTempWorkflow(
+      'valid.ts',
+      `
+import { workflow } from '@agent-relay/sdk/workflows';
+workflow('w')
+  .pattern('dag')
+  .step('one', {
+    type: 'deterministic',
+    command: 'echo hi',
+  });
+`.trim()
+    );
+    expect(() => preParseWorkflowFile(file)).not.toThrow();
+  });
+
+  it('wraps a raw backtick inside a template literal with an actionable hint', () => {
+    // A raw backtick inside a command: template literal terminates
+    // the outer JS template literal early and produces an esbuild
+    // parse error. We want the error message to tell the user how
+    // to fix it.
+    const file = writeTempWorkflow(
+      'bad-backtick.ts',
+      ['const step = {', '  command: `git commit -m "use `npm install` here"`,', '};'].join('\n')
+    );
+    expect(() => preParseWorkflowFile(file)).toThrow(/Workflow file failed to parse/);
+    try {
+      preParseWorkflowFile(file);
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toMatch(/Hint:/);
+      expect(msg).toMatch(/single quotes/);
+    }
+  });
+
+  it('wraps an unescaped ${} interpolation with an actionable hint', () => {
+    // Not strictly a parse error in isolation, but combined with a
+    // bad identifier makes esbuild fail. We mostly want to verify the
+    // hint path fires for the common error text.
+    const file = writeTempWorkflow(
+      'bad-dollar.ts',
+      ['const step = {', '  command: `echo ${NOT a valid JS expression}`,', '};'].join('\n')
+    );
+    expect(() => preParseWorkflowFile(file)).toThrow(/Workflow file failed to parse/);
+  });
+
+  it('propagates non-parse errors unchanged', () => {
+    // Non-existent file should throw the fs-level error, not a fake parse wrapper.
+    expect(() => preParseWorkflowFile('/tmp/does-not-exist-' + Date.now() + '.ts')).toThrow(
+      /Cannot read workflow file/
+    );
   });
 });

@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { Command } from 'commander';
 import { RelayCast, AgentRelayClient } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
@@ -314,28 +316,56 @@ async function resolveRelaycastApiKey(cwd: string): Promise<string> {
     return envApiKey;
   }
 
-  let client: AgentRelayClient | undefined;
+  const connectionPath = path.join(getProjectPaths(cwd).dataDir, 'connection.json');
+  let raw: string;
   try {
-    client = AgentRelayClient.connect({ cwd });
+    raw = fs.readFileSync(connectionPath, 'utf-8');
   } catch {
     throw new Error(
-      'Relaycast workspace key is not configured. Set RELAY_API_KEY, or start the local broker with `agent-relay up --workspace-key <key>`.'
+      'Failed to read broker connection metadata. Start the broker with `agent-relay up` or set RELAY_API_KEY.'
+    );
+  }
+
+  let parsed: { port?: unknown; api_key?: unknown };
+  try {
+    parsed = JSON.parse(raw) as { port?: unknown; api_key?: unknown };
+  } catch {
+    throw new Error(
+      'Invalid broker connection metadata. Start the broker with `agent-relay up` or set RELAY_API_KEY.'
+    );
+  }
+
+  const port = parsed.port;
+  const apiKey = parsed.api_key;
+  if (typeof port !== 'number' || !Number.isInteger(port) || typeof apiKey !== 'string' || !apiKey.trim()) {
+    throw new Error(
+      'Invalid broker connection metadata. Start the broker with `agent-relay up` or set RELAY_API_KEY.'
     );
   }
 
   try {
-    const session = await client.getSession();
-    const brokerApiKey = session.workspace_key?.trim();
-    if (brokerApiKey) {
-      return brokerApiKey;
+    const response = await fetch(`http://127.0.0.1:${port}/api/session`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+
+    if (!response.ok) {
+      throw new Error(`broker session request failed (${response.status})`);
     }
-  } finally {
-    client.disconnect();
+
+    const session = (await response.json()) as {
+      workspaceKey?: string | null;
+      workspace_key?: string | null;
+    };
+    const workspaceKey = session.workspaceKey ?? session.workspace_key;
+    if (workspaceKey && typeof workspaceKey === 'string' && workspaceKey.trim()) {
+      return workspaceKey.trim();
+    }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to query broker session: ${detail}`);
   }
 
-  throw new Error(
-    'The running local broker has no Relaycast workspace key, so history and inbox are unavailable in local-only mode. Restart with RELAY_API_KEY or `agent-relay up --workspace-key <key>`.'
-  );
+  throw new Error('No Relaycast workspace key found. Set RELAY_API_KEY or start broker with agent-relay up.');
 }
 
 async function createDefaultRelaycastClient(options: {
