@@ -8,7 +8,8 @@ import path from 'node:path';
 import {
   ensureLocalSdkWorkflowRuntime,
   findLocalSdkWorkspace,
-  preParseWorkflowFile,
+  formatWorkflowParseError,
+  parseTsxStderr,
   registerSetupCommands,
   type SetupDependencies,
 } from './setup.js';
@@ -194,100 +195,149 @@ describe('registerSetupCommands', () => {
   });
 });
 
-describe('preParseWorkflowFile', () => {
-  function writeTempWorkflow(name: string, contents: string): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preparse-'));
-    const full = path.join(dir, name);
-    fs.writeFileSync(full, contents, 'utf8');
-    return full;
-  }
-
-  it('returns silently for a valid TypeScript workflow file', async () => {
-    const file = writeTempWorkflow(
-      'valid.ts',
-      `
-import { workflow } from '@agent-relay/sdk/workflows';
-workflow('w')
-  .pattern('dag')
-  .step('one', {
-    type: 'deterministic',
-    command: 'echo hi',
-  });
-`.trim()
-    );
-    await expect(preParseWorkflowFile(file)).resolves.toBeUndefined();
+describe('parseTsxStderr', () => {
+  it('returns null for empty stderr', () => {
+    expect(parseTsxStderr('')).toBeNull();
   });
 
-  it('wraps a raw backtick inside a template literal with an actionable hint', async () => {
-    // A raw backtick inside a command: template literal terminates
-    // the outer JS template literal early and produces an esbuild
-    // parse error. We want the error message to tell the user how
-    // to fix it.
-    const file = writeTempWorkflow(
-      'bad-backtick.ts',
-      ['const step = {', '  command: `git commit -m "use `npm install` here"`,', '};'].join('\n')
-    );
-    await expect(preParseWorkflowFile(file)).rejects.toThrow(/Workflow file failed to parse/);
-    try {
-      await preParseWorkflowFile(file);
-    } catch (err) {
-      const msg = (err as Error).message;
-      expect(msg).toMatch(/Hint:/);
-      expect(msg).toMatch(/single quotes/);
-    }
+  it('returns null for runtime errors with no parse signature', () => {
+    const stderr = [
+      'node:internal/modules/run_main:123',
+      '    triggerUncaughtException(',
+      '    ^',
+      'Error: something blew up at runtime',
+      '    at Object.<anonymous> (/path/to/workflow.ts:5:10)',
+    ].join('\n');
+    expect(parseTsxStderr(stderr)).toBeNull();
   });
 
-  it('wraps an unescaped ${} interpolation with an actionable hint', async () => {
-    // Not strictly a parse error in isolation, but combined with a
-    // bad identifier makes esbuild fail. We mostly want to verify the
-    // hint path fires for the common error text.
-    const file = writeTempWorkflow(
-      'bad-dollar.ts',
-      ['const step = {', '  command: `echo ${NOT a valid JS expression}`,', '};'].join('\n')
-    );
-    await expect(preParseWorkflowFile(file)).rejects.toThrow(/Workflow file failed to parse/);
+  it('parses the inline "file:line:col: ERROR: message" format', () => {
+    const stderr = [
+      'node:internal/modules/run_main:123',
+      '    triggerUncaughtException(',
+      '    ^',
+      'Error [TransformError]: Transform failed with 1 error:',
+      '/path/to/workflow.ts:1073:4: ERROR: Expected "}" but found "npm"',
+      '    at failureErrorWithLog (... lib/main.js:1748:15)',
+    ].join('\n');
+
+    expect(parseTsxStderr(stderr)).toEqual({
+      file: '/path/to/workflow.ts',
+      line: 1073,
+      column: 4,
+      message: 'Expected "}" but found "npm"',
+    });
   });
 
-  it('times out after PREPARSE_TIMEOUT_MS and resolves without throwing when the transform hangs', async () => {
-    const file = writeTempWorkflow(
-      'hang.ts',
-      `
-import { workflow } from '@agent-relay/sdk/workflows';
-workflow('w');
-`.trim()
-    );
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  it('parses the pretty-printed ✘ [ERROR] multi-line format', () => {
+    const stderr = [
+      '✘ [ERROR] Unterminated template literal',
+      '',
+      '    /path/to/workflow.ts:42:10:',
+      '      42 │   command: `echo hello',
+      '         ╵           ^',
+    ].join('\n');
 
-    vi.resetModules();
-    vi.doMock('esbuild', async () => {
-      const actual = await vi.importActual<typeof import('esbuild')>('esbuild');
-      return {
-        ...actual,
-        transform: vi.fn(() => new Promise(() => {})),
-      };
+    expect(parseTsxStderr(stderr)).toEqual({
+      file: '/path/to/workflow.ts',
+      line: 42,
+      column: 10,
+      message: 'Unterminated template literal',
+    });
+  });
+
+  it('strips ANSI color codes before matching', () => {
+    const stderr = [
+      '\x1b[31mError [TransformError]: Transform failed with 1 error:\x1b[0m',
+      '\x1b[1m/path/to/workflow.ts:10:5:\x1b[0m \x1b[31mERROR:\x1b[0m Expected "}" but found "foo"',
+    ].join('\n');
+
+    const parsed = parseTsxStderr(stderr);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.line).toBe(10);
+    expect(parsed?.column).toBe(5);
+    expect(parsed?.message).toBe('Expected "}" but found "foo"');
+  });
+
+  it('falls back to a loose match on "Transform failed" without inline ERROR:', () => {
+    const stderr = [
+      'Error [TransformError]: Transform failed with 1 error:',
+      '    /path/to/workflow.ts:99:7',
+      '    at failureErrorWithLog',
+    ].join('\n');
+
+    const parsed = parseTsxStderr(stderr);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.file).toBe('/path/to/workflow.ts');
+    expect(parsed?.line).toBe(99);
+    expect(parsed?.column).toBe(7);
+  });
+});
+
+describe('formatWorkflowParseError', () => {
+  it('formats a basic parse error without hints when the message is generic', () => {
+    const err = formatWorkflowParseError({
+      file: '/tmp/wf.ts',
+      line: 10,
+      column: 5,
+      message: 'Some unrelated TypeScript error',
     });
 
-    vi.useFakeTimers();
-
-    try {
-      const { preParseWorkflowFile: preParseWorkflowFileWithHungTransform } = await import('./setup.js');
-      const parsePromise = preParseWorkflowFileWithHungTransform(file);
-
-      await vi.advanceTimersByTimeAsync(5001);
-      await expect(parsePromise).resolves.toBeUndefined();
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('pre-parse timed out after 5000ms'));
-    } finally {
-      vi.useRealTimers();
-      vi.doUnmock('esbuild');
-      vi.resetModules();
-      warnSpy.mockRestore();
-    }
+    expect(err.message).toContain('Workflow file failed to parse: /tmp/wf.ts:10:5');
+    expect(err.message).toContain('Some unrelated TypeScript error');
+    expect(err.message).not.toContain('Hint:');
+    expect((err as Error & { code?: string }).code).toBe('WORKFLOW_PARSE_ERROR');
   });
 
-  it('propagates non-parse errors unchanged', async () => {
-    // Non-existent file should throw the fs-level error, not a fake parse wrapper.
-    await expect(preParseWorkflowFile('/tmp/does-not-exist-' + Date.now() + '.ts')).rejects.toThrow(
-      /Cannot read workflow file/
-    );
+  it('adds a template-literal hint for Expected "}" but found errors', () => {
+    const err = formatWorkflowParseError({
+      file: '/tmp/wf.ts',
+      line: 1073,
+      column: 4,
+      message: 'Expected "}" but found "npm"',
+    });
+
+    expect(err.message).toMatch(/Hint:/);
+    expect(err.message).toMatch(/template literal/i);
+    expect(err.message).toMatch(/single quotes/);
+  });
+
+  it('adds a template-literal hint for Unterminated template literal errors', () => {
+    const err = formatWorkflowParseError({
+      file: '/tmp/wf.ts',
+      line: 42,
+      column: 10,
+      message: 'Unterminated template literal',
+    });
+
+    expect(err.message).toMatch(/Hint:/);
+    expect(err.message).toMatch(/backticks/i);
+  });
+
+  it('adds a dollar-sign hint for Unexpected "$" errors', () => {
+    const err = formatWorkflowParseError({
+      file: '/tmp/wf.ts',
+      line: 1,
+      column: 0,
+      message: 'Unexpected "$"',
+    });
+
+    expect(err.message).toMatch(/Hint:/);
+    expect(err.message).toMatch(/interpolation/);
+  });
+
+  it('includes a line-text pointer when lineText is provided', () => {
+    const err = formatWorkflowParseError({
+      file: '/tmp/wf.ts',
+      line: 10,
+      column: 12,
+      message: 'Expected "}" but found "x"',
+      lineText: '  command: `echo foo`',
+    });
+
+    expect(err.message).toContain('| ');
+    expect(err.message).toContain('echo foo');
+    // The ^ pointer should be 12 spaces offset into the indented line
+    expect(err.message).toMatch(/\|\s+\^/);
   });
 });

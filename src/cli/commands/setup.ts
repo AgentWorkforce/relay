@@ -3,7 +3,6 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { execFileSync, spawn as spawnProcess, spawnSync } from 'node:child_process';
 import { Command } from 'commander';
-import { transform } from 'esbuild';
 import { getProjectPaths } from '@agent-relay/config';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
 import { enableTelemetry, disableTelemetry, getStatus, isDisabledByEnv } from '@agent-relay/telemetry';
@@ -171,79 +170,88 @@ export function ensureLocalSdkWorkflowRuntime(
 }
 
 /**
- * Pre-parse a TypeScript workflow file with esbuild to catch template-literal
- * and syntax errors before handing off to tsx. Wraps the raw esbuild error
- * with hints targeting the most common mistakes in workflow `command:` /
- * `task:` blocks — raw backticks in prose, unescaped `${...}` that was meant
- * as a shell variable, etc.
- *
- * These all produce cryptic esbuild errors (`Expected "}" but found "<word>"`,
- * `Unterminated template literal`) that don't hint at the actual cause when
- * you're writing workflow files.
+ * Parsed workflow parse error, normalized from whatever shape the tsx/esbuild
+ * subprocess produced on stderr. Decoupling this from any specific error class
+ * means the formatter is testable in isolation and works regardless of how
+ * the error surfaced (TransformError from tsx, Bun-bundled esbuild error, etc.).
  */
-const PREPARSE_TIMEOUT_MS = 5000;
-
-export async function preParseWorkflowFile(filePath: string): Promise<void> {
-  let source: string;
-  try {
-    source = fs.readFileSync(filePath, 'utf8');
-  } catch (err) {
-    throw new Error(`Cannot read workflow file ${filePath}: ${(err as Error).message}`);
-  }
-
-  let timedOut = false;
-  let timer: NodeJS.Timeout | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      timedOut = true;
-      reject(new Error('PREPARSE_TIMEOUT'));
-    }, PREPARSE_TIMEOUT_MS);
-  });
-
-  try {
-    await Promise.race([
-      transform(source, { loader: 'ts', sourcemap: false, logLevel: 'silent' }),
-      timeoutPromise,
-    ]);
-    return;
-  } catch (err) {
-    if (timedOut || (err as Error).message === 'PREPARSE_TIMEOUT') {
-      console.warn(
-        '[agent-relay] pre-parse timed out after ' +
-          PREPARSE_TIMEOUT_MS +
-          'ms — skipping (tsx will still catch real syntax errors)'
-      );
-      return;
-    }
-    const errors = (err as { errors?: EsbuildError[] }).errors;
-    if (!Array.isArray(errors) || errors.length === 0) {
-      throw err;
-    }
-    throw formatWorkflowParseError(filePath, errors[0]!);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
+export interface ParsedWorkflowError {
+  file: string;
+  line?: number;
+  column?: number;
+  message: string;
+  lineText?: string;
 }
 
-interface EsbuildError {
-  text: string;
-  location?: {
-    file?: string;
-    line?: number;
-    column?: number;
-    lineText?: string;
-  };
+/**
+ * Parse tsx's stderr for the esbuild parse-error fingerprint and extract a
+ * normalized {@link ParsedWorkflowError}. Returns null if nothing looks like
+ * a parse error — runtime errors, module-not-found, etc. pass through.
+ *
+ * We match two common esbuild output formats:
+ *   1. `/path/file.ts:LINE:COL: ERROR: message` (most common, one-liner)
+ *   2. `✘ [ERROR] message\n\n    /path/file.ts:LINE:COL:\n      LINE │ text\n           ╵ pointer`
+ *      (pretty-printed, multi-line)
+ */
+export function parseTsxStderr(stderr: string): ParsedWorkflowError | null {
+  // Strip ANSI color codes so our regex isn't thrown off by escape sequences.
+  // eslint-disable-next-line no-control-regex
+  const clean = stderr.replace(/\x1b\[[0-9;]*m/g, '');
+
+  // Format 1: file:line:col: ERROR: message
+  const inlineMatch = clean.match(/(\/[^\s:]+\.(?:ts|tsx|mts|cts)):(\d+):(\d+):\s*ERROR:\s*([^\n]+)/);
+  if (inlineMatch) {
+    return {
+      file: inlineMatch[1]!,
+      line: Number(inlineMatch[2]),
+      column: Number(inlineMatch[3]),
+      message: inlineMatch[4]!.trim(),
+    };
+  }
+
+  // Format 2: ✘ [ERROR] message ... file:line:col:
+  const prettyError = clean.match(/✘\s*\[ERROR\]\s*([^\n]+)/);
+  if (prettyError) {
+    const locationMatch = clean.match(/(\/[^\s:]+\.(?:ts|tsx|mts|cts)):(\d+):(\d+):/);
+    if (locationMatch) {
+      return {
+        file: locationMatch[1]!,
+        line: Number(locationMatch[2]),
+        column: Number(locationMatch[3]),
+        message: prettyError[1]!.trim(),
+      };
+    }
+  }
+
+  // Format 3: "Transform failed with N errors" — loose fallback, any file+loc pair
+  if (/Transform failed with \d+ error/i.test(clean) || /TransformError/.test(clean)) {
+    const looseMatch = clean.match(/(\/[^\s:]+\.(?:ts|tsx|mts|cts)):(\d+):(\d+)/);
+    if (looseMatch) {
+      return {
+        file: looseMatch[1]!,
+        line: Number(looseMatch[2]),
+        column: Number(looseMatch[3]),
+        message: 'TypeScript parse error (see tsx output above)',
+      };
+    }
+  }
+
+  return null;
 }
 
-function formatWorkflowParseError(filePath: string, e: EsbuildError): Error {
-  const loc = e.location ?? {};
+/**
+ * Format a {@link ParsedWorkflowError} as an actionable workflow-author error
+ * message with hints keyed off the most common mistakes in `command:` /
+ * `task:` template literals.
+ */
+export function formatWorkflowParseError(parsed: ParsedWorkflowError): Error {
   const where =
-    loc.line !== undefined
-      ? `${filePath}:${loc.line}${loc.column !== undefined ? `:${loc.column}` : ''}`
-      : filePath;
+    parsed.line !== undefined
+      ? `${parsed.file}:${parsed.line}${parsed.column !== undefined ? `:${parsed.column}` : ''}`
+      : parsed.file;
 
   const hints: string[] = [];
-  const text = e.text ?? '';
+  const text = parsed.message;
 
   if (/Expected "\}" but found/i.test(text) || /Unterminated template literal/i.test(text)) {
     hints.push(
@@ -271,10 +279,10 @@ function formatWorkflowParseError(filePath: string, e: EsbuildError): Error {
   }
 
   const lines = ['', `Workflow file failed to parse: ${where}`, `  ${text}`];
-  if (loc.lineText) {
-    lines.push(`  | ${loc.lineText}`);
-    if (loc.column !== undefined && loc.column >= 0) {
-      lines.push(`  | ${' '.repeat(loc.column)}^`);
+  if (parsed.lineText) {
+    lines.push(`  | ${parsed.lineText}`);
+    if (parsed.column !== undefined && parsed.column >= 0) {
+      lines.push(`  | ${' '.repeat(parsed.column)}^`);
     }
   }
   if (hints.length > 0) {
@@ -288,6 +296,56 @@ function formatWorkflowParseError(filePath: string, e: EsbuildError): Error {
   const wrapped = new Error(lines.join('\n'));
   (wrapped as Error & { code?: string }).code = 'WORKFLOW_PARSE_ERROR';
   return wrapped;
+}
+
+/**
+ * Spawn a TypeScript runner (tsx, ts-node, npx tsx) with stdin/stdout
+ * inherited and stderr tee'd to both the user's terminal and an internal
+ * buffer. The buffer is inspected on non-zero exit to produce actionable
+ * error messages for workflow parse errors.
+ *
+ * Why this instead of `spawnSync({ stdio: 'inherit' })`: sync + inherit makes
+ * it impossible to post-process stderr. Async + tee gives us the best of
+ * both worlds — live progress for the user AND captured stderr for the
+ * parse-error wrapper.
+ */
+interface SpawnRunnerResult {
+  status: number | null;
+  stderr: string;
+  error?: NodeJS.ErrnoException;
+}
+
+async function spawnRunnerWithStderrCapture(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv
+): Promise<SpawnRunnerResult> {
+  return new Promise((resolve) => {
+    const child = spawnProcess(command, args, {
+      stdio: ['inherit', 'inherit', 'pipe'],
+      env,
+    });
+
+    let stderrBuf = '';
+
+    child.stderr?.on('data', (chunk: Buffer | string) => {
+      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      stderrBuf += text;
+      try {
+        process.stderr.write(text);
+      } catch {
+        // stderr closed — keep buffering for post-processing.
+      }
+    });
+
+    child.on('error', (err: NodeJS.ErrnoException) => {
+      resolve({ status: null, stderr: stderrBuf, error: err });
+    });
+
+    child.on('close', (status) => {
+      resolve({ status, stderr: stderrBuf });
+    });
+  });
 }
 
 async function runScriptFile(
@@ -349,51 +407,43 @@ Run ID: ${runId}`;
     ensureLocalSdkWorkflowRuntime(path.dirname(resolved));
     diag('runScriptFile: ensureLocalSdkWorkflowRuntime done');
 
-    // Pre-parse the file with esbuild so template-literal mistakes (raw
-    // backticks inside prose, unescaped ${} in shell commands, etc.) fail
-    // fast with an actionable error message instead of a cryptic tsx
-    // TransformError dumped mid-run.
-    try {
-      diag('runScriptFile: preParseWorkflowFile start');
-      await preParseWorkflowFile(resolved);
-      diag('runScriptFile: preParseWorkflowFile done');
-    } catch (err) {
-      cleanupRunIdFile();
-      throw err;
-    }
+    // Wrap a runner exit in an actionable workflow parse error if the
+    // captured stderr looks like esbuild tripped on a template literal.
+    // Otherwise fall through to a plain exit-code error (stderr was
+    // already live-streamed to the terminal).
+    const wrapRunnerError = (runner: string, result: SpawnRunnerResult): Error => {
+      const parsed = parseTsxStderr(result.stderr);
+      if (parsed) {
+        return formatWorkflowParseError(parsed);
+      }
+      return new Error(`${runner} exited with code ${result.status}`);
+    };
 
     const runners = ['tsx', 'ts-node'];
     for (const runner of runners) {
       diag(`runScriptFile: trying runner ${runner}`);
-      const spawnResult = spawnSync(runner, [resolved], {
-        stdio: 'inherit',
-        env: childEnv,
-      });
-      if (spawnResult.error) {
-        if ((spawnResult.error as NodeJS.ErrnoException).code === 'ENOENT') {
+      const result = await spawnRunnerWithStderrCapture(runner, [resolved], childEnv);
+      if (result.error) {
+        if ((result.error as NodeJS.ErrnoException).code === 'ENOENT') {
           diag(`runScriptFile: runner ${runner} returned ENOENT — trying next`);
           continue;
         }
-        return augmentErrorWithRunId(spawnResult.error);
+        return augmentErrorWithRunId(result.error);
       }
-      if (spawnResult.status !== 0) {
-        const err = new Error(`${runner} exited with code ${spawnResult.status}`);
-        return augmentErrorWithRunId(err);
+      if (result.status !== 0) {
+        return augmentErrorWithRunId(wrapRunnerError(runner, result));
       }
       diag(`runScriptFile: runner ${runner} completed exit=0`);
       cleanupRunIdFile();
       return;
     }
     diag('runScriptFile: falling back to npx tsx');
-    const npxResult = spawnSync('npx', ['tsx', resolved], {
-      stdio: 'inherit',
-      env: childEnv,
-    });
+    const npxResult = await spawnRunnerWithStderrCapture('npx', ['tsx', resolved], childEnv);
     if (npxResult.error) {
       return augmentErrorWithRunId(npxResult.error);
     }
     if (npxResult.status !== 0) {
-      return augmentErrorWithRunId(new Error(`npx tsx exited with code ${npxResult.status}`));
+      return augmentErrorWithRunId(wrapRunnerError('npx tsx', npxResult));
     }
     diag('runScriptFile: npx tsx completed');
     cleanupRunIdFile();
