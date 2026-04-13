@@ -6,6 +6,7 @@ description: Use when an agent needs to self-bootstrap agent-relay and autonomou
 ### Overview
 
 A headless orchestrator is an agent that:
+
 1. Starts the relay infrastructure itself (`agent-relay up`)
 2. Spawns and manages worker agents
 3. Monitors agent lifecycle events
@@ -20,30 +21,35 @@ A headless orchestrator is an agent that:
 
 ### Quick Reference
 
-| Step | Command/Tool |
-|------|--------------|
-| Verify installation | `which agent-relay` or `npx agent-relay --version` |
-| Start infrastructure | `agent-relay up --no-dashboard --verbose` |
-| Check status | `agent-relay status` |
-| Spawn worker | `agent-relay spawn Worker1 claude "task"` |
-| List workers | `agent-relay who` |
-| View worker logs | `agent-relay agents:logs Worker1` |
-| Send message | `agent-relay send Worker1 "message"` |
-| Release worker | `agent-relay release Worker1` |
-| Stop infrastructure | `agent-relay down` |
+| Step                              | Command/Tool                                            |
+| --------------------------------- | ------------------------------------------------------- |
+| Verify installation               | `command -v agent-relay` or `npx agent-relay --version` |
+| Verify Node runtime if shim fails | `node --version` or fix mise/asdf first                 |
+| Start infrastructure              | `agent-relay up --no-dashboard --verbose`               |
+| Check status                      | `agent-relay status`                                    |
+| Spawn worker                      | `agent-relay spawn Worker1 claude "task"`               |
+| List workers                      | `agent-relay who`                                       |
+| View worker logs                  | `agent-relay agents:logs Worker1`                       |
+| Send message                      | `agent-relay send Worker1 "message"`                    |
+| Release worker                    | `agent-relay release Worker1`                           |
+| Stop infrastructure               | `agent-relay down`                                      |
 
 ### Bootstrap Flow
 
 #### Step 0: Verify Installation
 
 ```bash
-# Check if agent-relay is installed
-which agent-relay || npx agent-relay --version
+# Check if agent-relay is available
+command -v agent-relay || npx agent-relay --version
+
+# If your shell reports a mise/asdf shim error, fix Node first
+node --version
+# e.g. for mise: mise use -g node@22.22.1
 
 # If not installed, install globally
 npm install -g agent-relay
 
-# Or use npx (no install needed)
+# Or use npx (no global install)
 npx agent-relay --version
 ```
 
@@ -89,7 +95,6 @@ mcp__relaycast__agent_remove(name: "Worker1")
 agent-relay down
 ```
 
-
 ### CLI Commands for Orchestration
 
 #### Spawning and Messaging
@@ -127,13 +132,12 @@ agent-relay status
 # Kill unresponsive worker
 agent-relay agents:kill Worker1
 
-# Check system health
-agent-relay health
+# Re-check broker status
+agent-relay status
 
-# View metrics
-agent-relay metrics
+# If a worker looks stuck, inspect its logs first
+agent-relay agents:logs Worker1
 ```
-
 
 ### Orchestrator Instructions Template
 
@@ -143,7 +147,8 @@ agent-relay metrics
 You are an autonomous orchestrator. Bootstrap the relay infrastructure and manage a team of workers.
 
 ## Step 1: Verify Installation
-Run: which agent-relay || npx agent-relay --version
+Run: command -v agent-relay || npx agent-relay --version
+If you hit a mise/asdf shim error: verify Node first with `node --version`, then fix the runtime manager
 If not found: npm install -g agent-relay
 
 ## Step 2: Start Infrastructure
@@ -172,32 +177,31 @@ Release when done:
 - Use `agent-relay history` to see message flow
 ```
 
-
 ### Lifecycle Events
 
 The broker emits these events (available via SDK subscriptions):
 
-| Event | When |
-|-------|------|
-| `agent_spawned` | Worker process started |
-| `worker_ready` | Worker connected to relay |
-| `agent_idle` | Worker waiting for messages |
-| `agent_exited` | Worker process ended |
+| Event                    | When                        |
+| ------------------------ | --------------------------- |
+| `agent_spawned`          | Worker process started      |
+| `worker_ready`           | Worker connected to relay   |
+| `agent_idle`             | Worker waiting for messages |
+| `agent_exited`           | Worker process ended        |
 | `agent_permanently_dead` | Worker failed after retries |
 
 ### Common Mistakes
 
-| Mistake | Fix |
-|---------|-----|
-| `agent-relay: command not found` | Install with `npm i -g agent-relay` or use `npx agent-relay` |
-| "Nested session" error | Broker handles this automatically; if running manually, unset `CLAUDECODE` env var |
-| Broker not starting | Try `agent-relay down` first, then use foreground `agent-relay up --no-dashboard --verbose` to see readiness logs |
-| Background broker says started but status is STOPPED | Prefer foreground mode for that project/session; background mode may have detached incorrectly |
-| Spawn fails with `internal reply dropped` | Broker likely is not fully ready yet; wait for readiness, then spawn one worker first |
-| Workers not connecting | Ensure broker started; check `agent-relay who` and worker logs |
-| Not monitoring workers | Use `agent-relay agents:logs <name>` frequently to track progress |
-| Workers seem stuck | Check logs with `agent-relay agents:logs <name>` for errors |
-| Messages not delivered | Check `agent-relay history` to verify message flow |
+| Mistake                                                  | Fix                                                                                                                             |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `agent-relay: command not found` or mise/asdf shim error | Ensure Node is available first (`node --version`); if a shim is broken, fix the runtime manager, then install/use `agent-relay` |
+| "Nested session" error                                   | Broker handles this automatically; if running manually, unset `CLAUDECODE` env var                                              |
+| Broker not starting                                      | Try `agent-relay down` first, then use foreground `agent-relay up --no-dashboard --verbose` to see readiness logs               |
+| Background broker says started but status is STOPPED     | Prefer foreground mode for that project/session; background mode may have detached incorrectly                                  |
+| Spawn fails with `internal reply dropped`                | Broker likely is not fully ready yet; wait for readiness, then spawn one worker first                                           |
+| Workers not connecting                                   | Ensure broker started; check `agent-relay who` and worker logs                                                                  |
+| Not monitoring workers                                   | Use `agent-relay agents:logs <name>` frequently to track progress                                                               |
+| Workers seem stuck                                       | Check logs with `agent-relay agents:logs <name>` for errors                                                                     |
+| Messages not delivered                                   | Check `agent-relay history` to verify message flow                                                                              |
 
 ### Overview
 

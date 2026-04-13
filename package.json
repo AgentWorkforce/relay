@@ -211,7 +211,6 @@
     "@relaycast/sdk": "^1.1.0",
     "@relayfile/sdk": "^0.1.2",
     "@sinclair/typebox": "^0.34.14",
-    "agent-trajectories": "^0.5.4",
     "chalk": "^4.1.2",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",
@@ -248,6 +247,7 @@
     "@typescript-eslint/eslint-plugin": "^8.18.2",
     "@typescript-eslint/parser": "^8.18.2",
     "@vitest/coverage-v8": "^3.2.4",
+    "agent-trajectories": "^0.5.4",
     "concurrently": "^9.2.1",
     "eslint": "^8.57.1",
     "husky": "^9.1.7",
@@ -268,5 +268,16 @@
     "flatted": "^3.4.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
-  }
+  },
+  "bundleDependencies": [
+    "@agent-relay/cloud",
+    "@agent-relay/config",
+    "@agent-relay/hooks",
+    "@agent-relay/sdk",
+    "@agent-relay/telemetry",
+    "@agent-relay/trajectory",
+    "@agent-relay/user-directory",
+    "@agent-relay/utils",
+    "@relaycast/sdk"
+  ]
 }
