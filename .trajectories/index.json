@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-11T13:36:48.451Z",
+  "lastUpdated": "2026-04-13T09:41:07.923Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -1215,6 +1215,13 @@
       "startedAt": "2026-04-11T13:35:52.600Z",
       "completedAt": "2026-04-11T13:36:48.341Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-04/traj_w0xpsaoxuiyw.json"
+    },
+    "traj_e5i62wdjx0jd": {
+      "title": "Plan autofix finding groups",
+      "status": "completed",
+      "startedAt": "2026-04-13T09:40:42.044Z",
+      "completedAt": "2026-04-13T09:41:07.789Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.msd-autofix-16b32ead/.trajectories/completed/2026-04/traj_e5i62wdjx0jd.json"
     }
   }
 }

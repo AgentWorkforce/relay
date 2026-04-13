@@ -1,10 +1,6 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { Command } from 'commander';
 import { RelayCast, AgentRelayClient } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
-import fs from 'node:fs';
-import path from 'node:path';
 
 import { parseSince } from '../lib/formatting.js';
 
@@ -318,54 +314,26 @@ async function resolveRelaycastApiKey(cwd: string): Promise<string> {
     return envApiKey;
   }
 
-  const stateDir = process.env.AGENT_RELAY_STATE_DIR;
-  const connectionPath = path.join(stateDir ?? getProjectPaths(cwd).dataDir, 'connection.json');
-  let raw: string;
+  let client: AgentRelayClient;
   try {
-    raw = fs.readFileSync(connectionPath, 'utf-8');
+    client = AgentRelayClient.connect({ cwd });
   } catch {
     throw new Error(
       'Failed to read broker connection metadata. Start the broker with `agent-relay up` or set RELAY_API_KEY.'
     );
   }
 
-  let parsed: { port?: unknown; api_key?: unknown };
   try {
-    parsed = JSON.parse(raw) as { port?: unknown; api_key?: unknown };
-  } catch {
-    throw new Error(
-      'Invalid broker connection metadata. Start the broker with `agent-relay up` or set RELAY_API_KEY.'
-    );
-  }
-
-  const port = parsed.port;
-  const apiKey = parsed.api_key;
-  if (typeof port !== 'number' || !Number.isInteger(port) || typeof apiKey !== 'string' || !apiKey.trim()) {
-    throw new Error(
-      'Invalid broker connection metadata. Start the broker with `agent-relay up` or set RELAY_API_KEY.'
-    );
-  }
-
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/session`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-
-    if (!response.ok) {
-      throw new Error(`broker session request failed (${response.status})`);
-    }
-
-    const session = (await response.json()) as {
-      workspaceKey?: string | null;
-      workspace_key?: string | null;
-    };
-    const workspaceKey = session.workspaceKey ?? session.workspace_key;
+    const session = await client.getSession();
+    const workspaceKey = session.workspace_key ?? client.workspaceKey;
     if (workspaceKey && typeof workspaceKey === 'string' && workspaceKey.trim()) {
       return workspaceKey.trim();
     }
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to query broker session: ${detail}`);
+  } finally {
+    client.disconnect();
   }
 
   throw new Error('No Relaycast workspace key found. Set RELAY_API_KEY or start broker with agent-relay up.');
