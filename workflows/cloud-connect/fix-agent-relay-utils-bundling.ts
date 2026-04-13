@@ -150,8 +150,12 @@ BRANCH="fix/cloud-connect-workflows"
 CURRENT=$(git branch --show-current)
 if [ "$CURRENT" = "$BRANCH" ]; then
   echo "Already on $BRANCH"
+elif git checkout -b "$BRANCH" 2>/dev/null; then
+  echo "Checked out new $BRANCH"
+elif git checkout "$BRANCH" 2>/dev/null; then
+  echo "Checked out existing $BRANCH"
 else
-  git checkout -b "$BRANCH" 2>/dev/null || git checkout "$BRANCH"
+  echo "Branch $BRANCH unavailable in this worktree; staying on $CURRENT"
 fi
 echo "BRANCH: $(git branch --show-current)"`,
       captureOutput: true,
@@ -499,7 +503,7 @@ End your message with POST_PUBLISH_DONE.`,
       command: `set -e
 grep -q "Test 6: @agent-relay/utils resolution" ${POST_PUBLISH} || (echo "MISSING Test 6 block"; exit 1)
 grep -q "UTILS_RESOLVE_OK" ${POST_PUBLISH} || (echo "MISSING resolve assertion"; exit 1)
-grep -Eq "CLOUD_CONNECT_IMPORT|CLI_BOOTSTRAP_IMPORT" ${POST_PUBLISH} || (echo "MISSING import assertion marker"; exit 1)
+grep -Eq "UTILS_IMPORT_OK|CLOUD_CONNECT_IMPORT|CLI_BOOTSTRAP_IMPORT" ${POST_PUBLISH} || (echo "MISSING import assertion marker"; exit 1)
 bash -n ${POST_PUBLISH} || (echo "SHELL SYNTAX ERROR"; exit 1)
 echo "POST_PUBLISH_VERIFY_OK"`,
       captureOutput: true,

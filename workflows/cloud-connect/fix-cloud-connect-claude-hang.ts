@@ -128,8 +128,12 @@ BRANCH="fix/cloud-connect-claude-hang"
 CURRENT=$(git branch --show-current)
 if [ "$CURRENT" = "$BRANCH" ]; then
   echo "Already on $BRANCH"
+elif git checkout -b "$BRANCH" 2>/dev/null; then
+  echo "Checked out new $BRANCH"
+elif git checkout "$BRANCH" 2>/dev/null; then
+  echo "Checked out existing $BRANCH"
 else
-  git checkout -b "$BRANCH" 2>/dev/null || git checkout "$BRANCH"
+  echo "Branch $BRANCH unavailable in this worktree; staying on $CURRENT"
 fi
 echo "BRANCH: $(git branch --show-current)"`,
       captureOutput: true,
@@ -258,9 +262,9 @@ grep -q "export function formatShellInvocation" ${SSH_INTERACTIVE} || (echo "MIS
 
 grep -q "formatShellInvocation(command)" ${SSH_INTERACTIVE} || (echo "NOT CALLED from shell callback"; exit 1)
 
-# Must NOT contain the old stream.write(`${command}; exit $?\n`) form.
+# Must NOT contain the old shell-wrapper stream.write call.
 # Comments may still describe the legacy behavior, so match the code pattern.
-if grep -Fq 'stream.write(`${command}; exit $?\n`)' ${SSH_INTERACTIVE}; then
+if rg -q 'stream\\.write\\(.*exit \\$\\?\\\\n' ${SSH_INTERACTIVE}; then
   echo "ERROR: still contains legacy shell wrapper write — must be removed"
   exit 1
 fi
