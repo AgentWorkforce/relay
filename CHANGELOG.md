@@ -36,6 +36,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
+## [4.0.20] - 2026-04-13
+
+### Product Perspective
+#### User-Impacting Fixes
+- Replace esbuild pre-parse with tsx stderr post-processing (#735) (#735)
+
+### Technical Perspective
+#### Architecture & API Changes
+- Unify WorkflowTrajectory on agent-trajectories SDK (#732) (#732)
+
+#### Releases
+- v4.0.20
+
+---
+
 ## [4.0.19] - 2026-04-13
 
 ### Product Perspective
