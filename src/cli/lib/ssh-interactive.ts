@@ -79,6 +79,19 @@ const DEFAULT_RUNTIME: Pick<AuthSshRuntime, 'loadSSH2' | 'createAskpassScript' |
 };
 
 /**
+ * Format a remote command for execution inside an ssh2 shell() PTY.
+ *
+ * Uses `exec` to replace the shell process with the target CLI so there is
+ * no shell-teardown race after a TUI (claude, codex, opencode, etc.) returns.
+ * The PTY closes when the CLI exits and emits its exit code naturally, with
+ * no trailing `; exit $?` that can win a race against the TUI's final
+ * alternate-screen-buffer flush.
+ */
+export function formatShellInvocation(command: string): string {
+  return `exec ${command}\n`;
+}
+
+/**
  * Run an interactive SSH session with PTY.
  *
  * Connects via ssh2 (if available) or falls back to system ssh,
@@ -180,9 +193,6 @@ export async function runInteractiveSession(
         sshClient.shell({ term, cols, rows }, (err, stream) => {
           if (err) return reject(err);
 
-          // Send the command through the shell, then exit with its status
-          stream.write(`${command}; exit $?\n`);
-
           let exitCode: number | null = null;
           let exitSignal: string | null = null;
           let authDetected = false;
@@ -193,12 +203,6 @@ export async function runInteractiveSession(
           const stderr = process.stderr;
 
           const wasRaw = (stdin as unknown as { isRaw?: boolean }).isRaw ?? false;
-          try {
-            stdin.setRawMode?.(true);
-          } catch {
-            // ignore
-          }
-          stdin.resume();
 
           const onStdinData = (data: Buffer) => {
             if (authDetected && (data[0] === 0x1b || data[0] === 0x03)) {
@@ -278,17 +282,6 @@ export async function runInteractiveSession(
               // ignore
             }
           };
-          stdout.on('resize', onResize);
-
-          const timer = runtime.setTimeout(() => {
-            cleanup();
-            try {
-              stream.close();
-            } catch {
-              // ignore
-            }
-            reject(new Error(`Authentication timed out after ${Math.floor(commandTimeoutMs / 1000)}s`));
-          }, commandTimeoutMs);
 
           stream.on('exit', (code: unknown, signal?: unknown) => {
             if (typeof code === 'number') exitCode = code;
@@ -306,6 +299,28 @@ export async function runInteractiveSession(
             cleanup();
             reject(streamErr instanceof Error ? streamErr : new Error(String(streamErr)));
           });
+
+          stdout.on('resize', onResize);
+          stdin.on('data', onStdinData);
+
+          try {
+            stdin.setRawMode?.(true);
+          } catch {
+            // ignore
+          }
+          stdin.resume();
+
+          const timer = runtime.setTimeout(() => {
+            cleanup();
+            try {
+              stream.close();
+            } catch {
+              // ignore
+            }
+            reject(new Error(`Authentication timed out after ${Math.floor(commandTimeoutMs / 1000)}s`));
+          }, commandTimeoutMs);
+
+          stream.write(formatShellInvocation(command));
         });
       });
 
