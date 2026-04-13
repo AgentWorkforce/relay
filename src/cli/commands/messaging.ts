@@ -72,6 +72,45 @@ interface RelaycastInbox {
   recent_reactions?: RelaycastRecentReaction[];
 }
 
+interface DmConversationParticipant {
+  agentName: string;
+  agent_name?: string;
+}
+
+interface DmConversationSummary {
+  id: string;
+  participants: DmConversationParticipant[];
+  lastMessage?: {
+    id: string;
+    text: string;
+    agentName?: string;
+    agent_name?: string;
+    createdAt?: string;
+    created_at?: string;
+  } | null;
+  last_message?: {
+    id: string;
+    text: string;
+    agentName?: string;
+    agent_name?: string;
+    createdAt?: string;
+    created_at?: string;
+  } | null;
+  unreadCount?: number;
+  unread_count?: number;
+  createdAt?: string;
+  created_at?: string;
+}
+
+interface DmMessageItem {
+  id: string;
+  agentName?: string;
+  agent_name?: string;
+  text: string;
+  createdAt?: string;
+  created_at?: string;
+}
+
 interface NormalizedRelaycastMessage {
   id: string;
   agentName: string;
@@ -127,6 +166,10 @@ export interface MessagingRelaycastClient {
     options?: { limit?: number; before?: string; after?: string }
   ): Promise<RelaycastMessage[]>;
   inbox(): Promise<RelaycastInbox>;
+  dms: {
+    conversations(): Promise<DmConversationSummary[]>;
+    messages(conversationId: string, opts?: { limit?: number }): Promise<DmMessageItem[]>;
+  };
 }
 
 export interface MessagingBrokerClient {
@@ -465,10 +508,83 @@ export function registerMessagingCommands(
         const sinceTs = parseSince(options.since);
 
         if (options.to && !options.to.startsWith('#')) {
-          deps.error(
-            `history does not support DM targets. Use \`agent-relay inbox --agent ${options.to}\` to see unread DMs for that agent.`
-          );
-          deps.exit(1);
+          // DM history mode: register as the target agent and show their conversations
+          let dmClient: MessagingRelaycastClient;
+          try {
+            dmClient = await deps.createRelaycastClient({
+              agentName: options.to,
+              cwd: deps.getProjectRoot(),
+            });
+          } catch (err: any) {
+            deps.error(`Failed to initialize relaycast client: ${err?.message || String(err)}`);
+            deps.exit(1);
+            return;
+          }
+
+          try {
+            const conversations = await dmClient.dms.conversations();
+
+            if (options.from) {
+              // Show messages in the specific conversation with --from agent
+              const conv = conversations.find((c) =>
+                c.participants.some((p) => (p.agentName || p.agent_name) === options.from)
+              );
+              if (!conv) {
+                deps.log(`No DM conversation found between ${options.to} and ${options.from}.`);
+                return;
+              }
+              const messages = await dmClient.dms.messages(conv.id, { limit });
+              if (options.json) {
+                deps.log(
+                  JSON.stringify(
+                    messages.map((m) => ({
+                      id: m.id,
+                      from: m.agentName || m.agent_name || 'unknown',
+                      text: m.text,
+                      createdAt: m.createdAt || m.created_at,
+                    })),
+                    null,
+                    2
+                  )
+                );
+                return;
+              }
+              if (!messages.length) {
+                deps.log('No messages found.');
+                return;
+              }
+              messages.forEach((m) => {
+                const sender = m.agentName || m.agent_name || 'unknown';
+                const ts = m.createdAt || m.created_at || '';
+                const body = m.text.length > 200 ? `${m.text.slice(0, 197)}...` : m.text;
+                deps.log(`[${ts}] ${sender}: ${body}`);
+              });
+            } else {
+              // Show all conversations summary
+              if (options.json) {
+                deps.log(JSON.stringify(conversations, null, 2));
+                return;
+              }
+              if (!conversations.length) {
+                deps.log(`No DM conversations found for ${options.to}.`);
+                return;
+              }
+              deps.log(`DM conversations for ${options.to}:`);
+              conversations.forEach((conv) => {
+                const others = conv.participants
+                  .filter((p) => (p.agentName || p.agent_name) !== options.to)
+                  .map((p) => p.agentName || p.agent_name)
+                  .join(', ');
+                const lastText = (conv.lastMessage || conv.last_message)?.text ?? '(no messages)';
+                const preview = lastText.length > 60 ? `${lastText.slice(0, 57)}...` : lastText;
+                const unread = conv.unreadCount ?? conv.unread_count ?? 0;
+                deps.log(`  ${others || '(self)'}: "${preview}" [${unread} unread]`);
+              });
+            }
+          } catch (err: any) {
+            deps.error(`Failed to fetch DM history: ${err?.message || String(err)}`);
+            deps.exit(1);
+          }
           return;
         }
 

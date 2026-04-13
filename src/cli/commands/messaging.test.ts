@@ -39,6 +39,10 @@ function createRelaycastClientMock(
       unread_dms: [],
       recent_reactions: [],
     })),
+    dms: {
+      conversations: vi.fn(async () => []),
+      messages: vi.fn(async () => []),
+    },
     ...overrides,
   };
 }
@@ -434,16 +438,83 @@ describe('registerMessagingCommands', () => {
     });
   });
 
-  it('history --to agent-name exits with error and shows DM warning', async () => {
+  it('history --to agent lists DM conversations for that agent', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'alice' }, { agentName: 'bob' }],
+            lastMessage: {
+              id: 'msg_1',
+              text: 'hey there',
+              agentName: 'bob',
+              createdAt: '2026-01-01T00:00:00.000Z',
+            },
+            unreadCount: 1,
+            createdAt: '2026-01-01T00:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => []),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--to', 'alice']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: 'alice',
+      cwd: '/tmp/project',
+    });
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('DM conversations for alice'));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('hey there'));
+  });
+
+  it('history --to agent --from other shows message thread', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'alice' }, { agentName: 'bob' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-01-01T00:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'msg_1',
+            agentName: 'bob',
+            text: 'hello from bob',
+            createdAt: '2026-01-01T00:00:00.000Z',
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--to', 'alice', '--from', 'bob']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: 'alice',
+      cwd: '/tmp/project',
+    });
+    expect(relaycastClient.dms.messages).toHaveBeenCalledWith('conv_1', { limit: 50 });
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('hello from bob'));
+  });
+
+  it('history --to agent --from other logs clear message when no conversation exists', async () => {
     const { program, deps } = createHarness();
 
-    const exitCode = await runCommand(program, ['history', '--to', 'some-agent']);
+    const exitCode = await runCommand(program, ['history', '--to', 'alice', '--from', 'nobody']);
 
-    expect(exitCode).toBe(1);
-    expect(deps.error).toHaveBeenCalledWith(
-      expect.stringMatching(/does not support DM|DMs are not queryable|inbox --agent/)
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith(
+      expect.stringContaining('No DM conversation found between alice and nobody')
     );
-    expect(deps.createRelaycastClient).not.toHaveBeenCalled();
   });
 
   it('returns non-zero for missing required args', async () => {
