@@ -396,13 +396,16 @@ async function createDefaultRelaycastClient(options: {
     type: 'agent',
   });
   const agentClient = relaycast.as(registration.token);
+  // AgentClient already has dm(agent, text) — preserve the original reference before casting.
+  // post() bridges to AgentClient.send() which has a different name.
+  const originalDm = agentClient.dm.bind(agentClient);
+  const originalSend = (agentClient as any).send.bind(agentClient);
   const client = agentClient as unknown as MessagingRelaycastClient;
-  // Wire up send methods — AgentClient.dm() and AgentClient.send() are not on the cast type
-  (client as any).dm = async (to: string, text: string) => {
-    await (agentClient as any).dm(to, text);
+  client.dm = async (to: string, text: string) => {
+    await originalDm(to, text);
   };
-  (client as any).post = async (channel: string, text: string) => {
-    await (agentClient as any).send(channel, text);
+  client.post = async (channel: string, text: string) => {
+    await originalSend(channel, text);
   };
   return client;
 }
