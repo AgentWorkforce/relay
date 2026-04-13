@@ -3,6 +3,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { execFileSync, spawn as spawnProcess } from 'node:child_process';
 import { Command } from 'commander';
+import { transformSync } from 'esbuild';
 import { getProjectPaths } from '@agent-relay/config';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
 import { enableTelemetry, disableTelemetry, getStatus, isDisabledByEnv } from '@agent-relay/telemetry';
@@ -155,6 +156,106 @@ export function ensureLocalSdkWorkflowRuntime(
   }
 }
 
+/**
+ * Pre-parse a TypeScript workflow file with esbuild to catch template-literal
+ * and syntax errors before handing off to tsx. Wraps the raw esbuild error
+ * with hints targeting the most common mistakes in workflow `command:` /
+ * `task:` blocks — raw backticks in prose, unescaped `${...}` that was meant
+ * as a shell variable, etc.
+ *
+ * These all produce cryptic esbuild errors (`Expected "}" but found "<word>"`,
+ * `Unterminated template literal`) that don't hint at the actual cause when
+ * you're writing workflow files.
+ */
+export function preParseWorkflowFile(filePath: string): void {
+  let source: string;
+  try {
+    source = fs.readFileSync(filePath, 'utf8');
+  } catch (err) {
+    throw new Error(`Cannot read workflow file ${filePath}: ${(err as Error).message}`);
+  }
+
+  try {
+    transformSync(source, {
+      loader: 'ts',
+      sourcemap: false,
+      logLevel: 'silent',
+    });
+    return;
+  } catch (err) {
+    const errors = (err as { errors?: EsbuildError[] }).errors;
+    if (!Array.isArray(errors) || errors.length === 0) {
+      throw err;
+    }
+    throw formatWorkflowParseError(filePath, errors[0]!);
+  }
+}
+
+interface EsbuildError {
+  text: string;
+  location?: {
+    file?: string;
+    line?: number;
+    column?: number;
+    lineText?: string;
+  };
+}
+
+function formatWorkflowParseError(filePath: string, e: EsbuildError): Error {
+  const loc = e.location ?? {};
+  const where =
+    loc.line !== undefined
+      ? `${filePath}:${loc.line}${loc.column !== undefined ? `:${loc.column}` : ''}`
+      : filePath;
+
+  const hints: string[] = [];
+  const text = e.text ?? '';
+
+  if (/Expected "\}" but found/i.test(text) || /Unterminated template literal/i.test(text)) {
+    hints.push(
+      'Likely a JavaScript template literal metacharacter inside a `command:` or `task:` block. ' +
+        'Inside workflow .ts files every `command: \\`...\\`` is a JavaScript template literal — ' +
+        'backticks terminate it and `${...}` triggers JS interpolation before the shell ever sees the string.',
+      'Fixes: use single quotes instead of backticks in prose/commit messages; ' +
+        'for shell variables use `$VAR` (no braces) or escape as `\\${VAR}`; ' +
+        'never write literal `\\n` inside a shell comment (it becomes a real newline).'
+    );
+  }
+
+  if (/Unexpected "\$"/.test(text)) {
+    hints.push(
+      'Unexpected `$` inside a template literal usually means `${...}` was interpreted as JS interpolation. ' +
+        'Escape it as `\\${...}` or drop the braces and use plain `$VAR`.'
+    );
+  }
+
+  if (/Expected identifier/.test(text) && /template/i.test(text)) {
+    hints.push(
+      'A template literal interpolation `${...}` needs a valid JS expression inside. ' +
+        'If you meant a shell variable, escape the `$` or drop the braces.'
+    );
+  }
+
+  const lines = ['', `Workflow file failed to parse: ${where}`, `  ${text}`];
+  if (loc.lineText) {
+    lines.push(`  | ${loc.lineText}`);
+    if (loc.column !== undefined && loc.column >= 0) {
+      lines.push(`  | ${' '.repeat(loc.column)}^`);
+    }
+  }
+  if (hints.length > 0) {
+    lines.push('');
+    for (const hint of hints) {
+      lines.push(`Hint: ${hint}`);
+    }
+  }
+  lines.push('');
+
+  const wrapped = new Error(lines.join('\n'));
+  (wrapped as Error & { code?: string }).code = 'WORKFLOW_PARSE_ERROR';
+  return wrapped;
+}
+
 function runScriptFile(
   filePath: string,
   options: { dryRun?: boolean; resume?: string; startFrom?: string; previousRunId?: string } = {}
@@ -210,6 +311,17 @@ Run ID: ${runId}`;
 
   if (ext === '.ts' || ext === '.tsx') {
     ensureLocalSdkWorkflowRuntime(path.dirname(resolved));
+
+    // Pre-parse the file with esbuild so template-literal mistakes (raw
+    // backticks inside prose, unescaped ${} in shell commands, etc.) fail
+    // fast with an actionable error message instead of a cryptic tsx
+    // TransformError dumped mid-run.
+    try {
+      preParseWorkflowFile(resolved);
+    } catch (err) {
+      cleanupRunIdFile();
+      throw err;
+    }
 
     const runners = ['tsx', 'ts-node'];
     for (const runner of runners) {
