@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { stringify as stringifyYaml } from 'yaml';
 
 import type { AgentRelayOptions } from '../relay.js';
@@ -20,6 +21,7 @@ import type {
   WorkflowRunRow,
   WorkflowStep,
 } from './types.js';
+import { JsonFileWorkflowDb } from './file-db.js';
 import { WorkflowRunner, type WorkflowEventListener, type RunnerStepExecutor } from './runner.js';
 import { formatDryRunReport } from './dry-run-format.js';
 import { createDefaultEventLogger, type LogLevel } from './default-logger.js';
@@ -384,12 +386,16 @@ export class WorkflowBuilder {
   async run(options?: WorkflowRunOptions): Promise<WorkflowRunRow>;
   async run(options: WorkflowRunOptions = {}): Promise<WorkflowRunRow | DryRunReport> {
     const config = this.toConfig();
+    const runnerCwd = options.cwd ?? process.cwd();
+    const dbPath = path.join(runnerCwd, '.agent-relay', 'workflow-runs.jsonl');
+    const db = new JsonFileWorkflowDb(dbPath);
 
     const runner = new WorkflowRunner({
       cwd: options.cwd,
       relay: options.relay,
       executor: options.executor,
       envSecrets: options.envSecrets,
+      db,
     });
 
     // Auto-detect DRY_RUN env var so existing scripts get dry-run for free
@@ -448,7 +454,7 @@ export class WorkflowBuilder {
       runner.on(renderer.onEvent);
 
       const runPromise = resumeRunId
-        ? runner.resume(resumeRunId, options.vars)
+        ? runner.resume(resumeRunId, options.vars, config)
         : runner.execute(config, options.workflow, options.vars, executeOptions);
 
       try {
@@ -460,7 +466,7 @@ export class WorkflowBuilder {
     }
 
     if (resumeRunId) {
-      return runner.resume(resumeRunId, options.vars);
+      return runner.resume(resumeRunId, options.vars, config);
     }
 
     return runner.execute(config, options.workflow, options.vars, executeOptions);
