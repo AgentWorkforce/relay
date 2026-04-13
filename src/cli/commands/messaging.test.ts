@@ -14,9 +14,7 @@ class ExitSignal extends Error {
   }
 }
 
-function createBrokerClientMock(
-  overrides: Partial<MessagingBrokerClient> = {}
-): MessagingBrokerClient {
+function createBrokerClientMock(overrides: Partial<MessagingBrokerClient> = {}): MessagingBrokerClient {
   return {
     sendMessage: vi.fn(async () => ({ event_id: 'evt_1', targets: [] })),
     shutdown: vi.fn(async () => undefined),
@@ -274,9 +272,7 @@ describe('registerMessagingCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Unread Channels:');
     expect(deps.log).toHaveBeenCalledWith('  #general: 2');
     expect(deps.log).toHaveBeenCalledWith('Mentions:');
-    expect(deps.log).toHaveBeenCalledWith(
-      '  [2026-02-20T12:00:00.000Z] #general @Lead: Please review this.'
-    );
+    expect(deps.log).toHaveBeenCalledWith('  [2026-02-20T12:00:00.000Z] #general @Lead: Please review this.');
     expect(deps.log).toHaveBeenCalledWith('Unread DMs:');
     expect(deps.log).toHaveBeenCalledWith('  Teammate: 1');
   });
@@ -325,15 +321,11 @@ describe('registerMessagingCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Unread Channels:');
     expect(deps.log).toHaveBeenCalledWith('  #general: 2');
     expect(deps.log).toHaveBeenCalledWith('Mentions:');
-    expect(deps.log).toHaveBeenCalledWith(
-      '  [2026-02-20T12:00:00.000Z] #general @Lead: Please review this.'
-    );
+    expect(deps.log).toHaveBeenCalledWith('  [2026-02-20T12:00:00.000Z] #general @Lead: Please review this.');
     expect(deps.log).toHaveBeenCalledWith('Unread DMs:');
     expect(deps.log).toHaveBeenCalledWith('  Teammate: 1');
     expect(deps.log).toHaveBeenCalledWith('Recent Reactions:');
-    expect(deps.log).toHaveBeenCalledWith(
-      '  [2026-02-20T12:02:00.000Z] #general eyes by @Reviewer'
-    );
+    expect(deps.log).toHaveBeenCalledWith('  [2026-02-20T12:02:00.000Z] #general eyes by @Reviewer');
   });
 
   it('emits snake_case inbox --json payload even when SDK returns camelCase', async () => {
@@ -419,7 +411,7 @@ describe('registerMessagingCommands', () => {
 
   it('treats partial inbox payloads as empty instead of crashing', async () => {
     const relaycastClient = createRelaycastClientMock({
-      inbox: vi.fn(async () => ({} as any)),
+      inbox: vi.fn(async () => ({}) as any),
     });
     const { program, deps } = createHarness({ relaycastClient });
 
@@ -428,6 +420,30 @@ describe('registerMessagingCommands', () => {
     expect(exitCode).toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith('Inbox is clear.');
     expect(deps.error).not.toHaveBeenCalled();
+  });
+
+  it('inbox --agent registers as the specified agent name', async () => {
+    const { program, deps } = createHarness();
+
+    const exitCode = await runCommand(program, ['inbox', '--agent', 'my-worker']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: 'my-worker',
+      cwd: '/tmp/project',
+    });
+  });
+
+  it('history --to agent-name exits with error and shows DM warning', async () => {
+    const { program, deps } = createHarness();
+
+    const exitCode = await runCommand(program, ['history', '--to', 'some-agent']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      expect.stringMatching(/does not support DM|DMs are not queryable|inbox --agent/)
+    );
+    expect(deps.createRelaycastClient).not.toHaveBeenCalled();
   });
 
   it('returns non-zero for missing required args', async () => {

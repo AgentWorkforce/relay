@@ -463,6 +463,15 @@ export function registerMessagingCommands(
       }) => {
         const limit = Number.parseInt(options.limit ?? '50', 10) || 50;
         const sinceTs = parseSince(options.since);
+
+        if (options.to && !options.to.startsWith('#')) {
+          deps.error(
+            `history does not support DM targets. Use \`agent-relay inbox --agent ${options.to}\` to see unread DMs for that agent.`
+          );
+          deps.exit(1);
+          return;
+        }
+
         let relaycast: MessagingRelaycastClient;
 
         try {
@@ -477,7 +486,7 @@ export function registerMessagingCommands(
         }
 
         try {
-          const channel = options.to?.startsWith('#') ? options.to.slice(1) : 'general';
+          const channel = options.to ? options.to.slice(1) : 'general';
           const messages = (
             await relaycast.messages(channel, {
               limit: Math.max(limit * 2, 100),
@@ -531,12 +540,13 @@ export function registerMessagingCommands(
   program
     .command('inbox')
     .description('Show unread inbox summary')
+    .option('--agent <name>', 'Agent whose inbox to check (defaults to cli user)')
     .option('--json', 'Output as JSON')
-    .action(async (options: { json?: boolean }) => {
+    .action(async (options: { agent?: string; json?: boolean }) => {
       let relaycast: MessagingRelaycastClient;
       try {
         relaycast = await deps.createRelaycastClient({
-          agentName: '__cli_inbox__',
+          agentName: options.agent?.trim() || '__cli_inbox__',
           cwd: deps.getProjectRoot(),
         });
       } catch (err: any) {
