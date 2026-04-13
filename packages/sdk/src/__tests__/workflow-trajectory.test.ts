@@ -32,15 +32,32 @@ function readTrajectoryFile(dir: string): any {
   return JSON.parse(readFileSync(path.join(activeDir, jsonFiles[0]), 'utf-8'));
 }
 
-function readCompletedTrajectoryFile(dir: string): any {
+function findCompletedTrajectoryJson(dir: string): string | null {
   const completedDir = path.join(dir, '.trajectories', 'completed');
   if (!existsSync(completedDir)) return null;
 
-  const files = readdirSync(completedDir);
-  const jsonFiles = files.filter((f: string) => f.endsWith('.json'));
-  if (jsonFiles.length === 0) return null;
+  // Completed trajectories now live under completed/YYYY-MM/. Walk the
+  // tree so tests don't have to know the exact bucket name.
+  const stack: string[] = [completedDir];
+  while (stack.length > 0) {
+    const current = stack.pop() as string;
+    const entries = readdirSync(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(entryPath);
+      } else if (entry.isFile() && entry.name.endsWith('.json')) {
+        return entryPath;
+      }
+    }
+  }
+  return null;
+}
 
-  return JSON.parse(readFileSync(path.join(completedDir, jsonFiles[0]), 'utf-8'));
+function readCompletedTrajectoryFile(dir: string): any {
+  const jsonPath = findCompletedTrajectoryJson(dir);
+  if (!jsonPath) return null;
+  return JSON.parse(readFileSync(jsonPath, 'utf-8'));
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -135,6 +152,34 @@ describe('WorkflowTrajectory', () => {
       expect(completed).toBeTruthy();
       expect(completed.status).toBe('abandoned');
     });
+
+    it('should write completed files under completed/YYYY-MM/', async () => {
+      const traj = new WorkflowTrajectory({}, 'run-abc', tmpDir);
+      await traj.start('my-workflow', 2);
+      await traj.complete('All done', 0.95);
+
+      const jsonPath = findCompletedTrajectoryJson(tmpDir);
+      expect(jsonPath).not.toBeNull();
+
+      // Relative path from .trajectories/completed must have exactly one
+      // intermediate directory matching YYYY-MM.
+      const completedRoot = path.join(tmpDir, '.trajectories', 'completed');
+      const rel = path.relative(completedRoot, jsonPath as string);
+      const segments = rel.split(path.sep);
+      expect(segments).toHaveLength(2);
+      expect(segments[0]).toMatch(/^\d{4}-\d{2}$/);
+      expect(segments[1]).toMatch(/^traj_.*\.json$/);
+    });
+
+    it('should populate canonical empty arrays on start', async () => {
+      const traj = new WorkflowTrajectory({}, 'run-abc', tmpDir);
+      await traj.start('my-workflow', 2);
+
+      const data = readTrajectoryFile(tmpDir);
+      expect(data.commits).toEqual([]);
+      expect(data.filesChanged).toEqual([]);
+      expect(data.tags).toEqual([]);
+    });
   });
 
   // ── Step events ────────────────────────────────────────────────────────
@@ -143,10 +188,7 @@ describe('WorkflowTrajectory', () => {
     it('should record step started', async () => {
       const traj = new WorkflowTrajectory({}, 'run-1', tmpDir);
       await traj.start('wf', 2);
-      await traj.stepStarted(
-        { name: 'build', agent: 'builder', task: 'Build it' },
-        'builder-agent',
-      );
+      await traj.stepStarted({ name: 'build', agent: 'builder', task: 'Build it' }, 'builder-agent');
 
       const data = readTrajectoryFile(tmpDir);
       expect(data.agents).toHaveLength(2); // orchestrator + builder-agent
@@ -157,11 +199,7 @@ describe('WorkflowTrajectory', () => {
     it('should record step completed', async () => {
       const traj = new WorkflowTrajectory({}, 'run-1', tmpDir);
       await traj.start('wf', 1);
-      await traj.stepCompleted(
-        { name: 'test', agent: 'tester', task: 'Run tests' },
-        'All tests passing',
-        1,
-      );
+      await traj.stepCompleted({ name: 'test', agent: 'tester', task: 'Run tests' }, 'All tests passing', 1);
 
       const data = readTrajectoryFile(tmpDir);
       const events = data.chapters.flatMap((c: any) => c.events);
@@ -175,7 +213,7 @@ describe('WorkflowTrajectory', () => {
         { name: 'deploy', agent: 'deployer', task: 'Deploy' },
         'Connection refused',
         1,
-        3,
+        3
       );
 
       const data = readTrajectoryFile(tmpDir);
@@ -186,10 +224,7 @@ describe('WorkflowTrajectory', () => {
     it('should record step skipped', async () => {
       const traj = new WorkflowTrajectory({}, 'run-1', tmpDir);
       await traj.start('wf', 2);
-      await traj.stepSkipped(
-        { name: 'integration', agent: 'tester', task: 'Test' },
-        'Upstream failed',
-      );
+      await traj.stepSkipped({ name: 'integration', agent: 'tester', task: 'Test' }, 'Upstream failed');
 
       const data = readTrajectoryFile(tmpDir);
       const events = data.chapters.flatMap((c: any) => c.events);

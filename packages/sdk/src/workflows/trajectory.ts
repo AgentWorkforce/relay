@@ -66,6 +66,15 @@ interface TrajectoryFile {
     learnings?: string[];
     challenges?: string[];
   };
+  /**
+   * Canonical top-level fields the `agent-trajectories` schema declares
+   * (as `.default([])` / `.optional()`). We populate them here so the
+   * written files are canonical-complete and round-trip cleanly through
+   * any stricter future reader.
+   */
+  commits: string[];
+  filesChanged: string[];
+  tags: string[];
 }
 
 // ── Step state for synthesis ─────────────────────────────────────────────────
@@ -191,6 +200,9 @@ export class WorkflowTrajectory {
       startedAt: new Date().toISOString(),
       agents: [{ name: 'orchestrator', role: 'workflow-runner', joinedAt: new Date().toISOString() }],
       chapters: [],
+      commits: [],
+      filesChanged: [],
+      tags: [],
     };
 
     // Open Planning chapter — record intent, not just mechanics
@@ -765,7 +777,20 @@ export class WorkflowTrajectory {
 
     try {
       const activeDir = path.join(this.dataDir, 'active');
-      const completedDir = path.join(this.dataDir, 'completed');
+      // Match the canonical `agent-trajectories` layout: completed files
+      // live under `completed/YYYY-MM/` based on completedAt (falling back
+      // to startedAt). Before this change we wrote to the flat
+      // `completed/` root, which worked but diverged from what
+      // `FileStorage.save()` produces and forced the reader to grow a
+      // legacy-layout fallback. Aligning the writer lets the reader shed
+      // that branch over time.
+      const bucketSource = this.trajectory.completedAt ?? this.trajectory.startedAt;
+      const bucketDate = new Date(bucketSource);
+      const monthBucket = `${bucketDate.getUTCFullYear()}-${String(bucketDate.getUTCMonth() + 1).padStart(
+        2,
+        '0'
+      )}`;
+      const completedDir = path.join(this.dataDir, 'completed', monthBucket);
       await mkdir(completedDir, { recursive: true });
 
       const activePath = path.join(activeDir, `${this.trajectory.id}.json`);
