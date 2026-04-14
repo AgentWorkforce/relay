@@ -1299,6 +1299,11 @@ export async function runStatusCommand(
       if (typeof status.pending_delivery_count === 'number' && status.pending_delivery_count > 0) {
         deps.log(`Pending deliveries: ${status.pending_delivery_count}`);
       }
+      const session = await client.getSession();
+      if (session.workspace_key) {
+        deps.log(`Workspace Key: ${session.workspace_key}`);
+        deps.log(`Observer: https://agentrelay.com/observer?key=${session.workspace_key}`);
+      }
       client.disconnect();
     } catch {
       // PID-based status is enough when broker query fails.
