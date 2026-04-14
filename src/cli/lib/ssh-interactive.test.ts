@@ -179,21 +179,26 @@ describe('runInteractiveSession - handler-order regression (H1)', () => {
     expect(payload.includes('; exit $?')).toBe(false);
   });
 
-  it('ignores pre-command shell MOTD when checking success patterns', async () => {
-    // Simulate a sandbox MOTD that happens to contain "logged in" — the
-    // target CLI never runs because we close the stream right away.
+  it('does not mark auth as successful when the command is never matched', async () => {
+    // Reproduces the cloud-connect regression where the outer `authDetected`
+    // result used to fall back to `exitCode === 0`, incorrectly treating a
+    // clean shell exit (e.g. user Ctrl+D after a failed `exec` in zsh) as a
+    // successful authentication.
     const { fakeSSH2 } = createFakeSSH2({
-      emitEarlyData: true,
       onWrite: (stream) => {
-        queueMicrotask(() => stream.emit('close'));
+        queueMicrotask(() => {
+          stream.emit('exit', 0, undefined);
+          stream.emit('close');
+        });
       },
     });
 
     const result = await withMockedStdio(async () =>
-      runInteractiveSession(createOptions(fakeSSH2, [/READY/]))
+      runInteractiveSession(createOptions(fakeSSH2, [/authenticated/i]))
     );
 
     expect(result.authDetected).toBe(false);
+    expect(result.exitCode).toBe(0);
   });
 
   it('matches success patterns only against output produced after the command is written', async () => {
