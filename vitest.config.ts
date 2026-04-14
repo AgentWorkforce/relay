@@ -69,6 +69,14 @@ export default defineConfig({
         '**/*.test.tsx',
         '**/dist/**',
         'packages/sdk/**', // SDK uses Node.js test runner in tests/integration/broker
+        // Transitively loaded via barrel re-exports but not exercised by the
+        // root test suite. Previously these resolved to dist/*.js and were
+        // excluded via **/dist/**; the src alias migration started reporting
+        // them. Keep them out so the global threshold reflects files we
+        // actually unit-test here.
+        'packages/cloud/src/workflows.ts',
+        'packages/cloud/src/api-client.ts',
+        'packages/telemetry/**',
       ],
       thresholds: {
         lines: 60,

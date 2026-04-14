@@ -12,10 +12,12 @@ function createFakeStream() {
   return stream;
 }
 
-function createFakeClient(options: {
-  emitEarlyData?: boolean;
-  onWrite?: (stream: any, payload: string) => void;
-} = {}) {
+function createFakeClient(
+  options: {
+    emitEarlyData?: boolean;
+    onWrite?: (stream: any, payload: string) => void;
+  } = {}
+) {
   const client: any = new EventEmitter();
   const stream = createFakeStream();
 
@@ -43,10 +45,12 @@ function createFakeClient(options: {
   return client;
 }
 
-function createFakeSSH2(options: {
-  emitEarlyData?: boolean;
-  onWrite?: (stream: any, payload: string) => void;
-} = {}) {
+function createFakeSSH2(
+  options: {
+    emitEarlyData?: boolean;
+    onWrite?: (stream: any, payload: string) => void;
+  } = {}
+) {
   let client: any;
 
   const fakeSSH2 = {
@@ -118,12 +122,16 @@ async function withMockedStdio<T>(work: () => Promise<T>) {
 }
 
 describe('formatShellInvocation', () => {
-  it('adds the exec prefix', () => {
-    expect(formatShellInvocation('claude')).toBe('exec claude\n');
+  it("wraps the command in `exec sh -c '…'`", () => {
+    expect(formatShellInvocation('claude')).toBe("exec sh -c 'claude'\n");
   });
 
-  it('passes args through unchanged', () => {
-    expect(formatShellInvocation('codex login --no-browser')).toBe('exec codex login --no-browser\n');
+  it('keeps leading env-var prefixes intact so sh can parse them', () => {
+    expect(formatShellInvocation('PATH=/foo/bin claude')).toBe("exec sh -c 'PATH=/foo/bin claude'\n");
+  });
+
+  it('escapes single quotes in the command body', () => {
+    expect(formatShellInvocation("echo 'hi'")).toBe("exec sh -c 'echo '\\''hi'\\'''\n");
   });
 
   it('never includes shell teardown suffixes', () => {
@@ -155,7 +163,7 @@ describe('runInteractiveSession - handler-order regression (H1)', () => {
     expect(listenerCountsAtWrite[0]).toBeGreaterThanOrEqual(1);
   });
 
-  it("writes an exec-prefixed payload without '; exit $?'", async () => {
+  it("writes an `exec sh -c` payload without '; exit $?'", async () => {
     const { fakeSSH2, getClient } = createFakeSSH2({
       onWrite: (stream) => {
         queueMicrotask(() => stream.emit('close'));
@@ -167,15 +175,34 @@ describe('runInteractiveSession - handler-order regression (H1)', () => {
     });
 
     const payload = String(getClient().stream.write.mock.calls[0][0]);
-    expect(payload.startsWith('exec ')).toBe(true);
+    expect(payload.startsWith("exec sh -c '")).toBe(true);
     expect(payload.includes('; exit $?')).toBe(false);
   });
 
-  it('captures synchronous early data from the shell callback', async () => {
+  it('ignores pre-command shell MOTD when checking success patterns', async () => {
+    // Simulate a sandbox MOTD that happens to contain "logged in" — the
+    // target CLI never runs because we close the stream right away.
     const { fakeSSH2 } = createFakeSSH2({
       emitEarlyData: true,
       onWrite: (stream) => {
         queueMicrotask(() => stream.emit('close'));
+      },
+    });
+
+    const result = await withMockedStdio(async () =>
+      runInteractiveSession(createOptions(fakeSSH2, [/READY/]))
+    );
+
+    expect(result.authDetected).toBe(false);
+  });
+
+  it('matches success patterns only against output produced after the command is written', async () => {
+    const { fakeSSH2 } = createFakeSSH2({
+      onWrite: (stream) => {
+        queueMicrotask(() => {
+          stream.emit('data', Buffer.from('READY\n'));
+          queueMicrotask(() => stream.emit('close'));
+        });
       },
     });
 
