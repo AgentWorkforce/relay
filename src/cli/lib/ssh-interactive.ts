@@ -8,12 +8,7 @@
 import { createServer } from 'node:net';
 import { spawn as spawnProcess } from 'node:child_process';
 import { stripAnsiCodes, findMatchingError, type ErrorPattern } from '@agent-relay/config/cli-auth-config';
-import {
-  loadSSH2,
-  createAskpassScript,
-  buildSystemSshArgs,
-  type AuthSshRuntime,
-} from './auth-ssh.js';
+import { loadSSH2, createAskpassScript, buildSystemSshArgs, type AuthSshRuntime } from './auth-ssh.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -69,7 +64,10 @@ function getSshErrorMessage(host: string, port: number, err: Error): string {
 
 // ── Main function ────────────────────────────────────────────────────────────
 
-const DEFAULT_RUNTIME: Pick<AuthSshRuntime, 'loadSSH2' | 'createAskpassScript' | 'buildSystemSshArgs' | 'spawnProcess' | 'createServer' | 'setTimeout'> = {
+const DEFAULT_RUNTIME: Pick<
+  AuthSshRuntime,
+  'loadSSH2' | 'createAskpassScript' | 'buildSystemSshArgs' | 'spawnProcess' | 'createServer' | 'setTimeout'
+> = {
   loadSSH2,
   createAskpassScript,
   buildSystemSshArgs,
@@ -77,6 +75,21 @@ const DEFAULT_RUNTIME: Pick<AuthSshRuntime, 'loadSSH2' | 'createAskpassScript' |
   createServer,
   setTimeout,
 };
+
+/**
+ * Format a remote command for execution inside an ssh2 shell() PTY.
+ *
+ * Wraps the command in `exec sh -c '…'` so the PTY closes cleanly when the
+ * target CLI exits (no shell-teardown race with a TUI's alt-screen flush)
+ * while still letting `sh` parse leading prefix assignments like
+ * `PATH=/foo/bin claude`. A bare `exec PATH=… claude` does not work in zsh
+ * because zsh's exec builtin treats `PATH=…` as the command name instead of
+ * a prefix assignment.
+ */
+export function formatShellInvocation(command: string): string {
+  const escaped = command.replace(/'/g, `'\\''`);
+  return `exec sh -c '${escaped}'\n`;
+}
 
 /**
  * Run an interactive SSH session with PTY.
@@ -88,15 +101,7 @@ const DEFAULT_RUNTIME: Pick<AuthSshRuntime, 'loadSSH2' | 'createAskpassScript' |
 export async function runInteractiveSession(
   options: InteractiveSessionOptions
 ): Promise<InteractiveSessionResult> {
-  const {
-    ssh,
-    remoteCommand,
-    successPatterns,
-    errorPatterns,
-    timeoutMs,
-    io,
-    tunnelPort = 1455,
-  } = options;
+  const { ssh, remoteCommand, successPatterns, errorPatterns, timeoutMs, io, tunnelPort = 1455 } = options;
 
   const runtime = { ...DEFAULT_RUNTIME, ...options.runtime };
 
@@ -160,7 +165,9 @@ export async function runInteractiveSession(
 
       await Promise.race([
         sshReadyPromise,
-        new Promise<void>((_, reject) => runtime.setTimeout(() => reject(new Error('SSH connection timeout')), 15000)),
+        new Promise<void>((_, reject) =>
+          runtime.setTimeout(() => reject(new Error('SSH connection timeout')), 15000)
+        ),
       ]);
     } catch (err) {
       io.error(color.red(`Failed to connect via SSH: ${err instanceof Error ? err.message : String(err)}`));
@@ -180,25 +187,21 @@ export async function runInteractiveSession(
         sshClient.shell({ term, cols, rows }, (err, stream) => {
           if (err) return reject(err);
 
-          // Send the command through the shell, then exit with its status
-          stream.write(`${command}; exit $?\n`);
-
           let exitCode: number | null = null;
           let exitSignal: string | null = null;
           let authDetected = false;
           let outputBuffer = '';
+          // Don't match success/error patterns against shell MOTD — some
+          // sandbox images print "Last logged in: …" which would match the
+          // broad `/logged\s*in/i` success pattern before the target CLI
+          // even runs.
+          let patternMatchingEnabled = false;
 
           const stdin = process.stdin;
           const stdout = process.stdout;
           const stderr = process.stderr;
 
           const wasRaw = (stdin as unknown as { isRaw?: boolean }).isRaw ?? false;
-          try {
-            stdin.setRawMode?.(true);
-          } catch {
-            // ignore
-          }
-          stdin.resume();
 
           const onStdinData = (data: Buffer) => {
             if (authDetected && (data[0] === 0x1b || data[0] === 0x03)) {
@@ -213,7 +216,6 @@ export async function runInteractiveSession(
             }
             stream.write(data);
           };
-          stdin.on('data', onStdinData);
 
           const cleanup = () => {
             stdin.off('data', onStdinData);
@@ -242,7 +244,7 @@ export async function runInteractiveSession(
               outputBuffer = outputBuffer.slice(-8192);
             }
 
-            if (!authDetected && successPatterns.length > 0) {
+            if (patternMatchingEnabled && !authDetected && successPatterns.length > 0) {
               const clean = stripAnsiCodes(outputBuffer);
               for (const pattern of successPatterns) {
                 if (pattern.test(clean)) {
@@ -252,7 +254,7 @@ export async function runInteractiveSession(
               }
             }
 
-            if (!authDetected && errorPatterns.length > 0) {
+            if (patternMatchingEnabled && !authDetected && errorPatterns.length > 0) {
               const matched = findMatchingError(outputBuffer, errorPatterns);
               if (matched) {
                 clearTimeout(timer);
@@ -278,17 +280,6 @@ export async function runInteractiveSession(
               // ignore
             }
           };
-          stdout.on('resize', onResize);
-
-          const timer = runtime.setTimeout(() => {
-            cleanup();
-            try {
-              stream.close();
-            } catch {
-              // ignore
-            }
-            reject(new Error(`Authentication timed out after ${Math.floor(commandTimeoutMs / 1000)}s`));
-          }, commandTimeoutMs);
 
           stream.on('exit', (code: unknown, signal?: unknown) => {
             if (typeof code === 'number') exitCode = code;
@@ -306,12 +297,40 @@ export async function runInteractiveSession(
             cleanup();
             reject(streamErr instanceof Error ? streamErr : new Error(String(streamErr)));
           });
+
+          stdout.on('resize', onResize);
+          stdin.on('data', onStdinData);
+
+          try {
+            stdin.setRawMode?.(true);
+          } catch {
+            // ignore
+          }
+          stdin.resume();
+
+          const timer = runtime.setTimeout(() => {
+            cleanup();
+            try {
+              stream.close();
+            } catch {
+              // ignore
+            }
+            reject(new Error(`Authentication timed out after ${Math.floor(commandTimeoutMs / 1000)}s`));
+          }, commandTimeoutMs);
+
+          stream.write(formatShellInvocation(command));
+          // Reset the output buffer so pattern matching only considers output
+          // produced by the command we just wrote, not the shell's MOTD.
+          outputBuffer = '';
+          patternMatchingEnabled = true;
         });
       });
 
     try {
       io.log(color.yellow('Starting interactive authentication...'));
-      io.log(color.dim('Follow the prompts below. The session will close automatically when auth completes.'));
+      io.log(
+        color.dim('Follow the prompts below. The session will close automatically when auth completes.')
+      );
       io.log('');
       execResult = await execInteractive(remoteCommand, timeoutMs);
     } catch (err) {
@@ -378,9 +397,14 @@ export async function runInteractiveSession(
     }
   }
 
+  // Authentication is only considered successful when the interactive session
+  // reported a positive pattern match. A shell exit code of 0 is NOT trusted:
+  // zsh stays alive after a failed `exec` in interactive mode, and a user
+  // closing the session with Ctrl+D produces exit 0 even though nothing was
+  // authenticated. Callers currently always supply `successPatterns`.
   return {
     exitCode: execError ? 1 : (execResult?.exitCode ?? null),
     exitSignal: execResult?.exitSignal ?? null,
-    authDetected: execError === null && (execResult?.authDetected === true || execResult?.exitCode === 0),
+    authDetected: execError === null && execResult?.authDetected === true,
   };
 }

@@ -100,6 +100,14 @@ See the [plugin README](https://github.com/AgentWorkforce/skills/tree/main/plugi
 
 ---
 
+## Agent Relay CLI
+
+Install via
+
+```
+curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+```
+
 ## License
 
 Apache-2.0 — Copyright 2026 Agent Workforce Incorporated
