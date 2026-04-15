@@ -192,7 +192,7 @@ echo "OK: $COUNT occurrences to remove"`,
     .step('snapshot-existing-tests', {
       type: 'deterministic',
       dependsOn: ['snapshot-build-bun'],
-      command: `set -e
+      command: `set -euo pipefail
 echo "=== ssh-interactive.test.ts ==="
 npx vitest run ${SSH_INTERACTIVE_TEST} 2>&1 | tail -30
 echo ""
@@ -390,7 +390,9 @@ echo VERIFY_LIVE_TEST_OK`,
     .step('run-live-test', {
       type: 'deterministic',
       dependsOn: ['verify-live-test-written'],
-      command: `npx vitest run ${LIVE_TEST} 2>&1 | tail -120`,
+      // Capture vitest's real exit via PIPESTATUS so fix-live-test can
+      // distinguish pass from fail — tail always exits 0 on its own.
+      command: `npx vitest run ${LIVE_TEST} 2>&1 | tail -120; echo "EXIT: \${PIPESTATUS[0]}"`,
       captureOutput: true,
       failOnError: false,
     })
@@ -403,9 +405,11 @@ echo VERIFY_LIVE_TEST_OK`,
 
 {{steps.run-live-test.output}}
 
-If ALL tests passed, do nothing and end with LIVE_GREEN.
+The output ends with an \`EXIT: <code>\` line from the vitest invocation's
+real exit code (captured via PIPESTATUS — do NOT trust tail's own exit).
+If \`EXIT: 0\`, all tests passed — do nothing and end with LIVE_GREEN.
 
-If tests failed, diagnose and fix. The failure could be in:
+If \`EXIT: <non-zero>\`, diagnose and fix. The failure could be in:
   (a) the integration test itself (${LIVE_TEST}) — wrong ssh2 server API shape, missing accept() call, flaky timing, bad host key format
   (b) the test expecting different bytes than what the ssh2 path actually produces
   (c) a real bug in ${SSH_INTERACTIVE} that the mocked unit tests missed
@@ -425,7 +429,7 @@ Re-run: \`npx vitest run ${LIVE_TEST}\`. Iterate until green. End with LIVE_GREE
     .step('run-live-test-final', {
       type: 'deterministic',
       dependsOn: ['fix-live-test'],
-      command: `npx vitest run ${LIVE_TEST} 2>&1 | tail -60`,
+      command: `set -o pipefail; npx vitest run ${LIVE_TEST} 2>&1 | tail -60`,
       captureOutput: true,
       failOnError: true,
     })
@@ -434,7 +438,9 @@ Re-run: \`npx vitest run ${LIVE_TEST}\`. Iterate until green. End with LIVE_GREE
     .step('typecheck', {
       type: 'deterministic',
       dependsOn: ['run-live-test-final'],
-      command: `npx tsc --noEmit 2>&1 | tail -40; echo "EXIT: $?"`,
+      // Capture tsc's exit code via PIPESTATUS, not $? (which is tail's).
+      // failOnError: false so the fix-typecheck agent can read the output.
+      command: `npx tsc --noEmit 2>&1 | tail -40; echo "EXIT: \${PIPESTATUS[0]}"`,
       captureOutput: true,
       failOnError: false,
     })
@@ -446,7 +452,9 @@ Re-run: \`npx vitest run ${LIVE_TEST}\`. Iterate until green. End with LIVE_GREE
       task: `Typecheck output:
 {{steps.typecheck.output}}
 
-If EXIT: 0, do nothing and end with TYPECHECK_OK.
+The output ends with an \`EXIT: <code>\` line that holds tsc's REAL exit
+code (captured via PIPESTATUS — not tail's exit). If \`EXIT: 0\`, do
+nothing and end with TYPECHECK_OK.
 
 If there are type errors, fix them. They are almost certainly in ${LIVE_TEST} (new file) since we did not touch any TypeScript source. Do not touch files outside ${LIVE_TEST} unless the error is in a file we already edited in this workflow. Narrow \`any\` casts are acceptable for ssh2 Server types. Re-run \`npx tsc --noEmit\`. End with TYPECHECK_OK.`,
       verification: { type: 'exit_code' },
@@ -455,7 +463,7 @@ If there are type errors, fix them. They are almost certainly in ${LIVE_TEST} (n
     .step('typecheck-final', {
       type: 'deterministic',
       dependsOn: ['fix-typecheck'],
-      command: `npx tsc --noEmit 2>&1 | tail -40`,
+      command: `set -o pipefail; npx tsc --noEmit 2>&1 | tail -40`,
       captureOutput: true,
       failOnError: true,
     })
@@ -463,15 +471,17 @@ If there are type errors, fix them. They are almost certainly in ${LIVE_TEST} (n
     .step('run-unit-tests', {
       type: 'deterministic',
       dependsOn: ['typecheck-final'],
-      command: `set -e
-echo "=== ssh-interactive.test.ts ==="
-npx vitest run ${SSH_INTERACTIVE_TEST} 2>&1 | tail -30
+      // failOnError: false so the fixer agent can read the output. Capture
+      // each suite's exit via PIPESTATUS so we don't mask vitest failures
+      // with tail's always-zero exit — the fixer agent gates on these.
+      command: `echo "=== ssh-interactive.test.ts ==="
+npx vitest run ${SSH_INTERACTIVE_TEST} 2>&1 | tail -30; echo "EXIT_SSH: \${PIPESTATUS[0]}"
 echo ""
 echo "=== auth.test.ts ==="
-npx vitest run ${AUTH_TEST} 2>&1 | tail -30
+npx vitest run ${AUTH_TEST} 2>&1 | tail -30; echo "EXIT_AUTH: \${PIPESTATUS[0]}"
 echo ""
 echo "=== broader src/cli ==="
-npx vitest run src/cli 2>&1 | tail -40`,
+npx vitest run src/cli 2>&1 | tail -40; echo "EXIT_CLI: \${PIPESTATUS[0]}"`,
       captureOutput: true,
       failOnError: false,
     })
@@ -483,7 +493,9 @@ npx vitest run src/cli 2>&1 | tail -40`,
       task: `Unit test output:
 {{steps.run-unit-tests.output}}
 
-If all green, end with UNIT_GREEN.
+The output contains three \`EXIT_<SUITE>: <code>\` markers (SSH, AUTH,
+CLI) captured via PIPESTATUS — tail's own exit is always 0 and must not
+be trusted. If every marker reads \`EXIT_*: 0\`, end with UNIT_GREEN.
 
 If any existing test regressed, fix the ROOT CAUSE (most likely in the integration test file you just wrote, since the workflow did not touch any production TS source). Do not weaken assertions in existing tests. End with UNIT_GREEN.`,
       verification: { type: 'exit_code' },
@@ -492,7 +504,7 @@ If any existing test regressed, fix the ROOT CAUSE (most likely in the integrati
     .step('run-unit-tests-final', {
       type: 'deterministic',
       dependsOn: ['fix-unit-regressions'],
-      command: `set -e
+      command: `set -euo pipefail
 npx vitest run ${SSH_INTERACTIVE_TEST} ${AUTH_TEST} ${LIVE_TEST} 2>&1 | tail -60`,
       captureOutput: true,
       failOnError: true,
@@ -502,7 +514,7 @@ npx vitest run ${SSH_INTERACTIVE_TEST} ${AUTH_TEST} ${LIVE_TEST} 2>&1 | tail -60
     .step('build-ts', {
       type: 'deterministic',
       dependsOn: ['run-unit-tests-final'],
-      command: `npm run build 2>&1 | tail -40`,
+      command: `set -o pipefail; npm run build 2>&1 | tail -40`,
       captureOutput: true,
       failOnError: true,
     })
@@ -510,7 +522,7 @@ npx vitest run ${SSH_INTERACTIVE_TEST} ${AUTH_TEST} ${LIVE_TEST} 2>&1 | tail -60
     .step('build-bun-binary', {
       type: 'deterministic',
       dependsOn: ['build-ts'],
-      command: `set -e
+      command: `set -euo pipefail
 rm -rf .release
 bash ${BUILD_BUN_SH} 2>&1 | tail -80
 echo ""
