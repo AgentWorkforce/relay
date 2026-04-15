@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { describe, it, expect, vi } from 'vitest';
 
-import { formatShellInvocation, runInteractiveSession } from './ssh-interactive.js';
+import { formatShellInvocation, runInteractiveSession, wrapWithLaunchCheckpoint } from './ssh-interactive.js';
 
 interface FakeStream extends EventEmitter {
   stderr: EventEmitter;
@@ -159,6 +159,26 @@ describe('formatShellInvocation', () => {
   });
 });
 
+describe('wrapWithLaunchCheckpoint', () => {
+  it('prefixes the command with a visible stderr printf before it runs', () => {
+    const wrapped = wrapWithLaunchCheckpoint('exec claude');
+    expect(wrapped.startsWith("printf '")).toBe(true);
+    expect(wrapped).toContain('launching provider CLI');
+    expect(wrapped).toContain('>&2;');
+    expect(wrapped.endsWith('exec claude')).toBe(true);
+  });
+
+  it('keeps the checkpoint on stderr so it does not pollute command output piping', () => {
+    const wrapped = wrapWithLaunchCheckpoint('true');
+    expect(wrapped).toMatch(/>&2\s*;/);
+  });
+
+  it('preserves env-var prefixes in the wrapped command', () => {
+    const wrapped = wrapWithLaunchCheckpoint('PATH=/foo/bin exec claude');
+    expect(wrapped.endsWith('PATH=/foo/bin exec claude')).toBe(true);
+  });
+});
+
 describe('runInteractiveSession — handler-order and pattern gating', () => {
   it("attaches stream.on('data') before the first stream.write", async () => {
     const listenerCountsAtWrite: number[] = [];
@@ -192,6 +212,9 @@ describe('runInteractiveSession — handler-order and pattern gating', () => {
     const payload = String(getClient().stream.write.mock.calls[0][0]);
     expect(payload.startsWith("exec sh -c '")).toBe(true);
     expect(payload.includes('; exit $?')).toBe(false);
+    // The launch-checkpoint wrap is applied before formatShellInvocation,
+    // so the inner sh -c body starts with the visible printf breadcrumb.
+    expect(payload).toContain('launching provider CLI');
   });
 
   it('matches success patterns against output produced after the command is written', async () => {
