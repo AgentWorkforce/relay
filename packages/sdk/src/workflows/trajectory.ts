@@ -13,6 +13,26 @@ import {
 } from 'agent-trajectories';
 import type { StepCompletionDecision, TrajectoryConfig, WorkflowStep } from './types.js';
 
+type WorkflowTrajectoryEventType =
+  | TrajectoryEventType
+  | 'review-completed'
+  | 'completion-marker'
+  | 'completion-evidence';
+
+type WorkflowTrajectoryAgent = {
+  name: string;
+  role: string;
+  joinedAt: string;
+  leftAt?: string;
+};
+
+// agent-trajectories runtime accepts workflow metadata and open-ended roles,
+// while some published declaration aliases are narrower.
+type WorkflowTrajectoryData = Omit<Trajectory, 'agents'> & {
+  agents: WorkflowTrajectoryAgent[];
+  workflowId?: string;
+};
+
 interface StepParticipants {
   role?: string;
   owner?: string;
@@ -151,7 +171,7 @@ const extractChallenges = (outcomes: StepOutcome[]): string[] =>
     .map((step) => diagnosisFor(classifyFailure(step.error ?? ''), step));
 
 export class WorkflowTrajectory {
-  private trajectory: Trajectory | null = null;
+  private trajectory: WorkflowTrajectoryData | null = null;
   private storage?: FileStorage;
   private storageInit?: Promise<void>;
   private readonly enabled: boolean;
@@ -184,13 +204,14 @@ export class WorkflowTrajectory {
     if (!this.enabled) return;
     this.startTime = Date.now();
     this.swarmPattern = pattern ?? 'dag';
-    this.trajectory = createTrajectory({
+    const trajectory = createTrajectory({
       title: workflowName,
       description,
       source: { system: 'workflow-runner', id: this.runId },
-    });
+    }) as WorkflowTrajectoryData;
     const workflowId = process.env.TRAJECTORIES_WORKFLOW_ID?.trim();
-    if (workflowId) this.trajectory = { ...this.trajectory, workflowId };
+    if (workflowId) trajectory.workflowId = workflowId;
+    this.trajectory = trajectory;
     this.trajectory.agents.push({
       name: 'orchestrator',
       role: 'workflow-runner',
@@ -420,13 +441,13 @@ export class WorkflowTrajectory {
       `${summary} (completed in ${formatElapsed(Date.now() - this.startTime, true)})`,
       'high'
     );
-    this.trajectory = completeTrajectory(this.trajectory, {
+    this.trajectory = completeTrajectory(this.trajectory as Trajectory, {
       summary,
       approach: this.buildApproach(),
       confidence,
       learnings: meta?.learnings,
       challenges: meta?.challenges,
-    });
+    }) as WorkflowTrajectoryData;
     await this.flush();
   }
 
@@ -444,7 +465,7 @@ export class WorkflowTrajectory {
     );
     this.addEvent('error', `Workflow abandoned: ${reason}`, 'high');
     this.trajectory = {
-      ...abandonTrajectory(this.trajectory),
+      ...abandonTrajectory(this.trajectory as Trajectory),
       retrospective: {
         summary,
         approach: this.buildApproach(),
@@ -452,7 +473,7 @@ export class WorkflowTrajectory {
         learnings: meta?.learnings,
         challenges: meta?.challenges,
       },
-    };
+    } as WorkflowTrajectoryData;
     await this.flush();
   }
 
@@ -486,17 +507,25 @@ export class WorkflowTrajectory {
 
   private openChapter(title: string, agentName: string): void {
     if (!this.trajectory) return;
-    this.trajectory = appendChapter(this.trajectory, { title, agentName });
+    this.trajectory = appendChapter(this.trajectory as Trajectory, {
+      title,
+      agentName,
+    }) as WorkflowTrajectoryData;
   }
 
   private addEvent(
-    type: TrajectoryEventType,
+    type: WorkflowTrajectoryEventType,
     content: string,
     significance?: EventSignificance,
     raw?: Record<string, unknown>
   ): void {
     if (!this.trajectory) return;
-    this.trajectory = appendEvent(this.trajectory, { type, content, significance, raw });
+    this.trajectory = appendEvent(this.trajectory as Trajectory, {
+      type: type as TrajectoryEventType,
+      content,
+      significance,
+      raw,
+    }) as WorkflowTrajectoryData;
   }
 
   private buildApproach(): string {
@@ -526,7 +555,7 @@ export class WorkflowTrajectory {
     if (!this.trajectory) return;
     try {
       await this.ensureStorage();
-      await this.storage?.save(this.trajectory);
+      await this.storage?.save(this.trajectory as Trajectory);
     } catch {
       // non-blocking: flush failures must never break the workflow
     }

@@ -33,6 +33,7 @@
       "title": "Planning",
       "agentName": "orchestrator",
       "startedAt": "2026-04-13T20:56:12.922Z",
+      "endedAt": "2026-04-13T20:56:16.452Z",
       "events": [
         {
           "ts": 1776113772922,
@@ -44,44 +45,41 @@
           "type": "note",
           "content": "Approach: 8-step dag workflow — Parsed 8 steps, 2 parallel tracks, 6 dependent steps, DAG validated, no cycles"
         }
-      ],
-      "endedAt": "2026-04-13T20:56:16.452Z"
+      ]
     },
     {
       "id": "ch_e9e14d47",
       "title": "Execution: init-msd-dir, read-context",
       "agentName": "orchestrator",
       "startedAt": "2026-04-13T20:56:16.452Z",
-      "events": [],
-      "endedAt": "2026-04-13T20:56:16.561Z"
+      "endedAt": "2026-04-13T20:56:16.561Z",
+      "events": []
     },
     {
       "id": "ch_0a7adc44",
       "title": "Convergence: init-msd-dir + read-context",
       "agentName": "orchestrator",
       "startedAt": "2026-04-13T20:56:16.561Z",
+      "endedAt": "2026-04-13T20:56:16.583Z",
       "events": [
         {
           "ts": 1776113776563,
           "type": "reflection",
           "content": "init-msd-dir + read-context resolved. 2/2 steps completed. All steps completed on first attempt. Unblocking: fast-plan.",
-          "significance": "high",
           "raw": {
             "confidence": 0.75,
-            "focalPoints": [
-              "init-msd-dir: completed",
-              "read-context: completed"
-            ]
-          }
+            "focalPoints": ["init-msd-dir: completed", "read-context: completed"]
+          },
+          "significance": "high"
         }
-      ],
-      "endedAt": "2026-04-13T20:56:16.583Z"
+      ]
     },
     {
       "id": "ch_b774dc47",
       "title": "Execution: fix-worker-1-step",
       "agentName": "fix-worker-1",
       "startedAt": "2026-04-13T20:56:16.583Z",
+      "endedAt": "2026-04-13T20:58:30.128Z",
       "events": [
         {
           "ts": 1776113776583,
@@ -95,7 +93,6 @@
           "ts": 1776113909226,
           "type": "completion-evidence",
           "content": "\"fix-worker-1-step\" verification-based completion — Verification passed (4 signal(s), 1 relevant channel post(s), 4 file change(s), exit=0; signals=0, Both fixes look correct. Here's the summary:, Verification passed, **[fix-worker-1-step] Output:**; channel=**[fix-worker-1-step] Output:**\n```\nBoth fixes look correct. Here's the summary:\n## Fix Summary\n### Finding 1: Duplicate `bundledDependencies`/`bundleDependenci; files=modified:.claude/settings.json, created:.claude/settings.local.json, modified:package.json, modified:src/cli/commands/messaging.ts; exit=0)",
-          "significance": "medium",
           "raw": {
             "stepName": "fix-worker-1-step",
             "completionMode": "verification",
@@ -119,7 +116,8 @@
               ],
               "exitCode": 0
             }
-          }
+          },
+          "significance": "medium"
         },
         {
           "ts": 1776113909226,
@@ -127,8 +125,7 @@
           "content": "\"fix-worker-1-step\" completed → Both fixes look correct. Here's the summary:\n\n---\n\n## Fix Summary\n\n### Finding 1: Duplicate `bundledDependencies`/`bundl",
           "significance": "medium"
         }
-      ],
-      "endedAt": "2026-04-13T20:58:30.128Z"
+      ]
     },
     {
       "id": "ch_826d971e",
@@ -143,8 +140,34 @@
           "raw": {
             "agent": "verifier"
           }
+        },
+        {
+          "ts": 1776268360472,
+          "type": "decision",
+          "content": "Localized workflow trajectory compatibility casts: Localized workflow trajectory compatibility casts",
+          "raw": {
+            "question": "Localized workflow trajectory compatibility casts",
+            "chosen": "Localized workflow trajectory compatibility casts",
+            "alternatives": [],
+            "reasoning": "Publish removes package-lock and resolves agent-trajectories@0.5.5, whose exported type aliases are narrower than its runtime schema. Keeping workflow metadata and casting only at the agent-trajectories adapter boundary preserves persisted trajectory shape while compiling against both 0.5.4 and 0.5.5."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1776268399439,
+          "type": "reflection",
+          "content": "SDK trajectory build failure fixed and package-validation now includes a publish-style fresh npm install build. Verified sdk build with lifecycle scripts, sdk build against agent-trajectories@0.5.5 declarations, and full package build.",
+          "raw": {
+            "focalPoints": ["publish", "ci", "typescript"],
+            "confidence": 0.88
+          },
+          "significance": "high",
+          "tags": ["focal:publish", "focal:ci", "focal:typescript", "confidence:0.88"]
         }
       ]
     }
-  ]
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "tags": []
 }
