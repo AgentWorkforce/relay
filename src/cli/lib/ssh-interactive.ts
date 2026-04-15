@@ -146,6 +146,7 @@ export async function runInteractiveSession(
   const ssh2 = await runtime.loadSSH2();
 
   io.log(color.yellow('Starting interactive authentication...'));
+  io.log(color.dim(`Transport: ${ssh2 ? 'ssh2 (bundled)' : 'system ssh (fallback)'}`));
   io.log(color.dim('The provider CLI may take 5-15s to render its first screen after connecting.'));
   io.log(
     color.dim('A welcome / theme picker may appear before the sign-in step. Follow the on-screen prompts.')

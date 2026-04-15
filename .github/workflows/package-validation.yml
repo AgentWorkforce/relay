@@ -302,10 +302,14 @@ jobs:
             --minify \
             --target="$TARGET" \
             --external=better-sqlite3 \
-            --external=ssh2 \
             --define="process.env.AGENT_RELAY_VERSION=\"${VERSION}\"" \
             ./dist/src/cli/index.js \
             --outfile "release-binaries/${OUTPUT}"
+          if ! strings "release-binaries/${OUTPUT}" | grep -q 'ssh-userauth'; then
+            echo "FATAL: ssh2 protocol symbols missing from release-binaries/${OUTPUT}"
+            echo "cloud connect would hang; aborting validation."
+            exit 1
+          fi
           scripts/sign-macos-binary.sh "release-binaries/${OUTPUT}"
           scripts/verify-macos-binary.sh "release-binaries/${OUTPUT}" "$EXPECTED_ARCH" -- --version
           echo "STANDALONE_CLI=$PWD/release-binaries/${OUTPUT}" >> "$GITHUB_ENV"

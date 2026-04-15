@@ -190,10 +190,20 @@ jobs:
             --minify \
             --target=${{ matrix.target }} \
             --external=better-sqlite3 \
-            --external=ssh2 \
             --define="process.env.AGENT_RELAY_VERSION=\"${{ needs.build.outputs.new_version }}\"" \
             ./dist/src/cli/index.js \
             --outfile release-binaries/${{ matrix.binary_name }}
+
+      - name: Verify ssh2 is bundled into binary
+        run: |
+          BIN="release-binaries/${{ matrix.binary_name }}"
+          if ! strings "$BIN" | grep -q 'ssh-userauth'; then
+            echo "FATAL: ssh2 protocol symbols missing from $BIN"
+            echo "The cloud connect command will hang in the fallback path."
+            echo "Check that --external=ssh2 is NOT passed to bun build."
+            exit 1
+          fi
+          echo "OK: ssh2 is bundled (ssh-userauth symbol present)"
 
       - name: Sign macOS binary
         if: startsWith(matrix.target, 'bun-darwin-')
