@@ -163,6 +163,18 @@
           },
           "significance": "high",
           "tags": ["focal:publish", "focal:ci", "focal:typescript", "confidence:0.88"]
+        },
+        {
+          "ts": 1776269504512,
+          "type": "decision",
+          "content": "Aligned publish-resolution CI check with publish build command: Aligned publish-resolution CI check with publish build command",
+          "raw": {
+            "question": "Aligned publish-resolution CI check with publish build command",
+            "chosen": "Aligned publish-resolution CI check with publish build command",
+            "alternatives": [],
+            "reasoning": "Codex review noted the new job used build:packages while publish runs npm run build. The CI guard now runs the full root build so root CLI/TypeScript failures are caught before merge."
+          },
+          "significance": "high"
         }
       ]
     }

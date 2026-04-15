@@ -225,8 +225,8 @@ jobs:
       - name: Ensure rollup optional dependencies are installed
         run: npm install --no-save rollup || true
 
-      - name: Build packages
-        run: npm run build:packages
+      - name: Build full workspace
+        run: npm run build
 
   standalone-macos-smoke:
     name: Standalone macOS Smoke
