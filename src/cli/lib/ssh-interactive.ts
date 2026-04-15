@@ -110,6 +110,22 @@ export function formatShellInvocation(command: string): string {
 }
 
 /**
+ * Wrap the remote command with a visible checkpoint so the user sees proof
+ * the ssh pipeline reached the sandbox before the provider CLI takes over
+ * the terminal. Without this, claude/codex enter alt-screen immediately and
+ * the user sees zero output — indistinguishable from a hang.
+ *
+ * The printf runs before the exec that launches the provider CLI, so the
+ * user gets one visible line ("launching provider CLI…") right before
+ * alt-screen engages. When the provider CLI later exits and the alt-screen
+ * tears down, this line remains in scrollback as a breadcrumb.
+ */
+export function wrapWithLaunchCheckpoint(command: string): string {
+  // Escape single quotes for inclusion in the printf argument.
+  return `printf '\\033[2m[agent-relay] launching provider CLI…\\033[0m\\n' >&2; ${command}`;
+}
+
+/**
  * Run an interactive SSH session with PTY.
  *
  * Connects via ssh2 (if available) or falls back to system ssh,
@@ -119,11 +135,23 @@ export function formatShellInvocation(command: string): string {
 export async function runInteractiveSession(
   options: InteractiveSessionOptions
 ): Promise<InteractiveSessionResult> {
-  const { ssh, remoteCommand, successPatterns, errorPatterns, timeoutMs, io, tunnelPort = 1455 } = options;
+  const { ssh, successPatterns, errorPatterns, timeoutMs, io, tunnelPort = 1455 } = options;
 
   const runtime = { ...DEFAULT_RUNTIME, ...options.runtime };
 
+  // Wrap the remote command with a visible checkpoint so the user sees proof
+  // the ssh pipeline is alive before the provider CLI enters alt-screen.
+  const remoteCommand = wrapWithLaunchCheckpoint(options.remoteCommand);
+
   const ssh2 = await runtime.loadSSH2();
+
+  io.log(color.yellow('Starting interactive authentication...'));
+  io.log(color.dim('The provider CLI may take 5-15s to render its first screen after connecting.'));
+  io.log(
+    color.dim('A welcome / theme picker may appear before the sign-in step. Follow the on-screen prompts.')
+  );
+  io.log(color.dim('Wait for the CLI to render before pressing Ctrl+C.'));
+  io.log('');
 
   let execResult: InteractiveSessionResult | null = null;
   let execError: Error | null = null;
@@ -411,14 +439,6 @@ export async function runInteractiveSession(
       });
 
     try {
-      io.log(color.yellow('Starting interactive authentication...'));
-      io.log(
-        color.dim('The provider CLI may show a first-run screen (welcome, theme picker, or similar) before')
-      );
-      io.log(
-        color.dim('the sign-in step. Follow the on-screen prompts. Press Ctrl+C to cancel at any time.')
-      );
-      io.log('');
       execResult = await execInteractive(remoteCommand, timeoutMs);
     } catch (err) {
       execError = err instanceof Error ? err : new Error(String(err));
@@ -442,10 +462,6 @@ export async function runInteractiveSession(
       sshArgs.push('-tt');
       sshArgs.push(`${ssh.user}@${ssh.host}`);
       sshArgs.push(remoteCommand);
-
-      io.log(color.yellow('Starting interactive authentication...'));
-      io.log(color.dim('Follow the prompts below.'));
-      io.log('');
 
       const child = runtime.spawnProcess('ssh', sshArgs, {
         stdio: 'inherit',
