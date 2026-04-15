@@ -444,12 +444,12 @@ Run ID: ${runId}`;
         return augmentErrorWithRunId(result.error);
       }
       if (result.status !== 0) {
-        // Node rejects `--experimental-strip-types` on <22.6 with exit 9
-        // and no TransformError fingerprint. If the stderr doesn't look
-        // like a real parse error, assume this runner is unsupported and
-        // fall through to the next one.
-        if (bin === 'node' && !parseTsxStderr(result.stderr)) {
-          diag(`runScriptFile: runner ${label} unsupported on this Node — trying next`);
+        // Node exits with code 9 ("Invalid Argument") when it doesn't
+        // recognise --experimental-strip-types (Node <22.6). Only skip
+        // to the next runner for that specific exit code; any other
+        // non-zero status is a real script failure.
+        if (bin === 'node' && result.status === 9) {
+          diag(`runScriptFile: runner ${label} unsupported on this Node (exit 9) — trying next`);
           continue;
         }
         return augmentErrorWithRunId(wrapRunnerError(label, result));
