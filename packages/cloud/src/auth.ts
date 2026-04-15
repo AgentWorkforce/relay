@@ -314,7 +314,12 @@ export async function ensureAuthenticated(
   const force = options?.force === true;
   const stored = !force ? await readStoredAuth() : null;
 
-  if (!stored || stored.apiUrl !== apiUrl) {
+  // Stored auth is authoritative on its own host. A host mismatch between
+  // `apiUrl` (typically defaultApiUrl()) and `stored.apiUrl` is NOT a reason
+  // to force a fresh browser login — the user already linked, and the default
+  // may have drifted (e.g. CLOUD_API_URL env set/unset between sessions).
+  // Only `--force` re-links to a different host.
+  if (!stored) {
     return loginWithBrowser(apiUrl);
   }
 
@@ -329,7 +334,7 @@ export async function ensureAuthenticated(
       throw toEnvAuthRefreshError(error);
     }
 
-    return loginWithBrowser(apiUrl);
+    return loginWithBrowser(stored.apiUrl);
   }
 }
 
