@@ -419,21 +419,42 @@ Run ID: ${runId}`;
       return new Error(`${runner} exited with code ${result.status}`);
     };
 
-    const runners = ['tsx', 'ts-node'];
-    for (const runner of runners) {
-      diag(`runScriptFile: trying runner ${runner}`);
-      const result = await spawnRunnerWithStderrCapture(runner, [resolved], childEnv);
+    // Prefer Node's built-in type stripping (Node 22.6+) — no extra deps,
+    // no tsx CJS resolver quirks walking node_modules. Falls through to
+    // tsx/ts-node on older Nodes (they exit non-zero with an unknown-flag
+    // error, not ENOENT, so we treat any non-zero from this runner as a
+    // "try the next runner" signal rather than a real user error).
+    const runners: Array<{ label: string; bin: string; preArgs: string[] }> = [
+      {
+        label: 'node --experimental-strip-types',
+        bin: 'node',
+        preArgs: ['--experimental-strip-types', '--no-warnings=ExperimentalWarning'],
+      },
+      { label: 'tsx', bin: 'tsx', preArgs: [] },
+      { label: 'ts-node', bin: 'ts-node', preArgs: [] },
+    ];
+    for (const { label, bin, preArgs } of runners) {
+      diag(`runScriptFile: trying runner ${label}`);
+      const result = await spawnRunnerWithStderrCapture(bin, [...preArgs, resolved], childEnv);
       if (result.error) {
         if ((result.error as NodeJS.ErrnoException).code === 'ENOENT') {
-          diag(`runScriptFile: runner ${runner} returned ENOENT — trying next`);
+          diag(`runScriptFile: runner ${label} returned ENOENT — trying next`);
           continue;
         }
         return augmentErrorWithRunId(result.error);
       }
       if (result.status !== 0) {
-        return augmentErrorWithRunId(wrapRunnerError(runner, result));
+        // Node rejects `--experimental-strip-types` on <22.6 with exit 9
+        // and no TransformError fingerprint. If the stderr doesn't look
+        // like a real parse error, assume this runner is unsupported and
+        // fall through to the next one.
+        if (bin === 'node' && !parseTsxStderr(result.stderr)) {
+          diag(`runScriptFile: runner ${label} unsupported on this Node — trying next`);
+          continue;
+        }
+        return augmentErrorWithRunId(wrapRunnerError(label, result));
       }
-      diag(`runScriptFile: runner ${runner} completed exit=0`);
+      diag(`runScriptFile: runner ${label} completed exit=0`);
       cleanupRunIdFile();
       return;
     }
