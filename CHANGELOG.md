@@ -36,6 +36,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
+## [4.0.26] - 2026-04-15
+
+### Product Perspective
+#### User-Impacting Fixes
+- Add visible launch checkpoint for cloud connect (#744) (#744)
+
+### Technical Perspective
+#### Releases
+- v4.0.26
+
+---
+
 ## [4.0.25] - 2026-04-15
 
 ### Product Perspective
