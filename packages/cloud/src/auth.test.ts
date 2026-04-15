@@ -12,7 +12,7 @@ vi.mock('node:fs/promises', () => ({
   ...fsMocks,
 }));
 
-import { readStoredAuth, refreshStoredAuth } from './auth.js';
+import { ensureAuthenticated, readStoredAuth, refreshStoredAuth } from './auth.js';
 import type { StoredAuth } from './types.js';
 
 const FILE_AUTH: StoredAuth = {
@@ -98,6 +98,87 @@ describe('readStoredAuth', () => {
 
     await expect(readStoredAuth(env)).resolves.toEqual(ENV_AUTH);
     expect(fsMocks.readFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('ensureAuthenticated', () => {
+  function farFutureIso(): string {
+    return new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  }
+
+  it('returns stored file auth even when apiUrl differs from defaultApiUrl', async () => {
+    // Regression: previously, any host mismatch between the CLI's default
+    // apiUrl and the stored apiUrl forced a browser login on every cloud
+    // command. Stored auth is now authoritative on its own host.
+    fsMocks.readFile.mockResolvedValue(
+      JSON.stringify({
+        apiUrl: 'https://origin.example/cloud',
+        accessToken: 'stored-access',
+        refreshToken: 'stored-refresh',
+        accessTokenExpiresAt: farFutureIso(),
+      })
+    );
+
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const result = await ensureAuthenticated('https://different.example/cloud');
+
+    expect(result.apiUrl).toBe('https://origin.example/cloud');
+    expect(result.accessToken).toBe('stored-access');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns stored auth unchanged when not near expiry', async () => {
+    fsMocks.readFile.mockResolvedValue(
+      JSON.stringify({
+        apiUrl: 'https://example.com/cloud',
+        accessToken: 'stored-access',
+        refreshToken: 'stored-refresh',
+        accessTokenExpiresAt: farFutureIso(),
+      })
+    );
+
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const result = await ensureAuthenticated('https://example.com/cloud');
+
+    expect(result.accessToken).toBe('stored-access');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('refreshes stored auth against the stored host when near expiry', async () => {
+    const nearExpiry = new Date(Date.now() + 30_000).toISOString();
+    fsMocks.readFile.mockResolvedValue(
+      JSON.stringify({
+        apiUrl: 'https://origin.example/cloud',
+        accessToken: 'stale-access',
+        refreshToken: 'stored-refresh',
+        accessTokenExpiresAt: nearExpiry,
+      })
+    );
+
+    const fetchSpy = vi.fn(
+      async (input: string | URL) =>
+        new Response(
+          JSON.stringify({
+            accessToken: 'fresh-access',
+            refreshToken: 'fresh-refresh',
+            accessTokenExpiresAt: farFutureIso(),
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const result = await ensureAuthenticated('https://different.example/cloud');
+
+    expect(result.apiUrl).toBe('https://origin.example/cloud');
+    expect(result.accessToken).toBe('fresh-access');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const calledUrl = String(fetchSpy.mock.calls[0][0]);
+    expect(calledUrl).toContain('origin.example');
   });
 });
 
