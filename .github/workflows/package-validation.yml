@@ -194,6 +194,40 @@ jobs:
           node dist/src/cli/index.js down --force --timeout 5000 || true
           kill $DAEMON_PID 2>/dev/null || true
 
+  publish-fresh-install-build:
+    name: Publish Fresh Install Build
+    needs: changes
+    if: needs.changes.outputs.web_only != 'true'
+    runs-on: ubuntu-latest
+    env:
+      NPM_CONFIG_FUND: false
+      TURBO_TELEMETRY_DISABLED: 1
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+
+      # The publish workflow bumps versions, removes package-lock.json, then
+      # runs npm install. This catches range-resolved dependency breaks before merge.
+      - name: Install dependencies with publish resolution
+        run: |
+          rm -rf node_modules packages/*/node_modules package-lock.json
+          npm install
+
+      - name: Show resolved trajectory dependency
+        run: npm ls agent-trajectories --all
+
+      - name: Ensure rollup optional dependencies are installed
+        run: npm install --no-save rollup || true
+
+      - name: Build full workspace
+        run: npm run build
+
   standalone-macos-smoke:
     name: Standalone macOS Smoke
     needs: changes

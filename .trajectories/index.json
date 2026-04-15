@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-13T21:52:53.833Z",
+  "lastUpdated": "2026-04-15T16:11:44.516Z",
   "trajectories": {
     "traj_qb54w47qwod6": {
       "title": "fix-history-from-workflow",
@@ -3637,7 +3637,7 @@
       "title": "autofix-swarm-Agentworkforce-relay-workflow",
       "status": "active",
       "startedAt": "2026-04-13T20:56:12.922Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/active/traj_1776113772922_bc92f121.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/active/traj_1776113772922_bc92f121.json"
     }
   }
 }
