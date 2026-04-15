@@ -52,6 +52,7 @@ export default defineConfig({
       'src/**/*.test.tsx',
       'test/**/*.test.ts',
       'test/**/*.test.tsx',
+      'tests/integration/ssh-interactive-live.test.ts',
       'packages/**/src/**/*.test.ts',
       'packages/**/tests/**/*.test.ts',
     ],
