@@ -505,7 +505,7 @@ fn extract_target(accessor: EventAccessor<'_>, kind: &InboundKind) -> Option<Str
         // Prefer explicit recipient-like fields when available so init-mode
         // worker routing can match the local worker name for direct delivery.
         if let Some(target) =
-            accessor.first_string(&EXPLICIT_TARGET_FIELDS, sender_value_to_string, true)
+            accessor.first_string(&EXPLICIT_TARGET_FIELDS, target_value_to_string, true)
         {
             return Some(target);
         }
@@ -522,7 +522,7 @@ fn extract_target(accessor: EventAccessor<'_>, kind: &InboundKind) -> Option<Str
     }
 
     if let Some(target) =
-        accessor.first_string(&EXPLICIT_TARGET_FIELDS, sender_value_to_string, true)
+        accessor.first_string(&EXPLICIT_TARGET_FIELDS, target_value_to_string, true)
     {
         return Some(target);
     }
@@ -648,6 +648,32 @@ fn sender_value_to_string(value: &Value) -> Option<String> {
 
     let obj = value.as_object()?;
     for key in ["name", "display_name", "username", "handle", "id"] {
+        if let Some(v) = obj.get(key) {
+            if let Some(s) = scalar_to_string(v) {
+                if !s.is_empty() {
+                    return Some(s);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn target_value_to_string(value: &Value) -> Option<String> {
+    if let Some(s) = scalar_to_string(value) {
+        return Some(s);
+    }
+
+    let obj = value.as_object()?;
+    for key in [
+        "id",
+        "agent_id",
+        "agentId",
+        "handle",
+        "name",
+        "display_name",
+        "username",
+    ] {
         if let Some(v) = obj.get(key) {
             if let Some(s) = scalar_to_string(v) {
                 if !s.is_empty() {
@@ -960,6 +986,27 @@ mod tests {
         assert_eq!(event.from, "Lead");
         assert_eq!(event.target, "Dashboard");
         assert_eq!(event.text, "reply from relaycast");
+    }
+
+    #[test]
+    fn dm_target_prefers_routable_identity_over_display_name() {
+        let event = map_event(&json!({
+            "type": "message.created",
+            "conversation_id": "conv_10",
+            "message": {
+                "id": "dm_10",
+                "agent_name": "Lead",
+                "text": "reply using canonical target",
+                "to": {
+                    "name": "Dashboard",
+                    "id": "human:orchestrator"
+                }
+            }
+        }))
+        .expect("conversation message should map as dm");
+
+        assert_eq!(event.kind, InboundKind::DmReceived);
+        assert_eq!(event.target, "human:orchestrator");
     }
 
     #[test]
