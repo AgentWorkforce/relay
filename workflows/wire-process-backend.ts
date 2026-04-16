@@ -2,6 +2,18 @@
  * wire-process-backend — Wire ProcessBackend into the SDK runner
  * ================================================================
  *
+ * Run:
+ *   agent-relay run workflows/wire-process-backend.ts
+ *
+ * Resume from a specific step (reuses cached outputs from the last run):
+ *   START_FROM=build agent-relay run workflows/wire-process-backend.ts
+ *   START_FROM=commit agent-relay run workflows/wire-process-backend.ts
+ *
+ * Resume a specific failed run by ID:
+ *   RESUME_RUN_ID=<run-id> agent-relay run workflows/wire-process-backend.ts
+ *
+ * ────────────────────────────────────────────────────────────────────
+ *
  * The cloud repo now exports a ProcessBackend interface:
  *
  *   interface ProcessBackend {
@@ -22,26 +34,10 @@
  * 2. Accept processBackend in WorkflowRunnerOptions
  *    (packages/sdk/src/workflows/runner.ts)
  *
- * 3. When processBackend is set AND the runner has no executor, the
- *    runner still goes through spawnAndWait (broker handles agent config)
- *    but the broker's spawn creates the environment via processBackend
- *    instead of local Command::spawn().
- *
- *    For this TS-only first step: the runner wraps the processBackend
- *    into a RunnerStepExecutor that:
- *    a) Calls processBackend.createEnvironment() to get a sandbox
- *    b) Uses the broker's existing buildNonInteractiveCommand() to get
- *       the fully-configured command (with MCP args, model flags)
- *    c) Calls env.exec(command, { env, cwd }) in the sandbox
- *    d) Returns the output
- *
- *    This keeps the broker in the loop for agent registration and MCP
- *    wiring while delegating process execution to the backend.
+ * 3. Store it on the runner with a TODO for the broker-side integration.
  *
  * The Rust broker change (replacing Command::spawn with backend.exec)
  * is a separate follow-up. This TS adapter is the bridge.
- *
- * Run: agent-relay run workflows/wire-process-backend.ts
  */
 import { workflow } from '@agent-relay/sdk/workflows';
 
@@ -206,112 +202,9 @@ And add the private field to the class:
 
   private readonly processBackend?: ProcessBackend;
 
-### 4. Wire processBackend into the executor fork
+### 4. DO NOT change the executor fork or requiresBroker
 
-Find the fork at line ~4038:
-
-  const spawnResult = this.executor
-    ? await this.executor.executeAgentStep(...)
-    : await this.spawnAndWait(...)
-
-Change it to:
-
-  const effectiveExecutor = this.executor ?? this.processBackendExecutor;
-  const spawnResult = effectiveExecutor
-    ? await effectiveExecutor.executeAgentStep(resolvedStep, effectiveOwner, ownerTask, timeoutMs)
-    : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
-
-### 5. Add a processBackendExecutor getter
-
-Add a private getter that lazily creates a RunnerStepExecutor from the processBackend. Add this as a private property + getter in the class:
-
-  private _processBackendExecutor?: RunnerStepExecutor;
-
-  private get processBackendExecutor(): RunnerStepExecutor | undefined {
-    if (!this.processBackend) return undefined;
-    if (this._processBackendExecutor) return this._processBackendExecutor;
-
-    const backend = this.processBackend;
-    this._processBackendExecutor = {
-      async executeAgentStep(step, agentDef, resolvedTask, timeoutMs) {
-        const env = await backend.createEnvironment(step.name);
-        try {
-          const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand(
-            agentDef.cli, resolvedTask, []
-          );
-          const model = agentDef.constraints?.model;
-          const fullArgs = model ? [...args, '--model', model] : args;
-          const command = [cmd, ...fullArgs].map(a => /^[a-zA-Z0-9._\\-\\/=]+$/.test(a) ? a : "'" + a.replace(/'/g, "'\\\\''") + "'").join(' ');
-
-          const timeout = timeoutMs ? Math.max(1, Math.ceil(timeoutMs / 1000)) : undefined;
-          const result = await env.exec(command, {
-            cwd: env.homeDir,
-            timeoutSeconds: timeout,
-          });
-
-          if (result.exitCode !== 0) {
-            throw new Error('Agent step "' + step.name + '" exited with code ' + result.exitCode);
-          }
-          return result.output;
-        } finally {
-          await env.destroy().catch(() => {});
-        }
-      },
-    };
-    return this._processBackendExecutor;
-  }
-
-Note: WorkflowRunner.buildNonInteractiveCommand is a static method already on the class. Use it to build the command — this ensures the CLI-specific non-interactive flags are applied.
-
-### 6. Update requiresBroker check
-
-Find the requiresBroker check (~line 2713):
-
-  const requiresBroker =
-    !this.executor &&
-    workflow.steps.some(...)
-
-Change to:
-
-  const requiresBroker =
-    !this.executor && !this.processBackend &&
-    workflow.steps.some(...)
-
-Wait — actually NO. We WANT the broker to start when processBackend is set. The broker handles agent registration and MCP wiring. DON'T change requiresBroker. The broker should still start.
-
-Actually, looking at this more carefully: the processBackendExecutor wraps the backend into a RunnerStepExecutor. When it's set, the fork at line 4038 will use it (via effectiveExecutor), which means spawnAndWait is bypassed. But spawnAndWait is where the broker spawns agents.
-
-So for this FIRST step, the processBackendExecutor is a simple adapter that:
-- Creates an environment
-- Builds a command via buildNonInteractiveCommand (gets CLI-specific flags)
-- Runs it
-
-This does NOT go through the broker for MCP wiring. That's the same problem as before.
-
-REVISED APPROACH: Instead of the getter wrapping into executeAgentStep, DON'T change the fork. Instead, make the broker AWARE of the backend. But that requires Rust changes we can't do here.
-
-So the pragmatic TS-only approach is:
-- Export the ProcessBackend interfaces from the SDK (so the cloud can import them)
-- Accept processBackend in WorkflowRunnerOptions (forward-looking)
-- Store it on the runner
-- DON'T change the fork yet
-- Document that the full wiring requires a broker-side change
-
-This way:
-1. The interfaces are in the SDK (single source of truth)
-2. The cloud imports them from @agent-relay/sdk instead of defining its own
-3. The runner accepts the option (ready for when the broker supports it)
-4. Nothing breaks
-
-### REVISED changes:
-
-1. Add ProcessBackend + ProcessEnvironment to types.ts (as above)
-2. Add processBackend to WorkflowRunnerOptions (as above)
-3. Store it in constructor (as above)
-4. Export the new types from the barrel (if one exists)
-5. DO NOT change the fork at line 4038
-6. DO NOT change requiresBroker
-7. Add a TODO comment near the fork:
+Add a TODO comment near the fork at ~line 4038:
 
   // TODO(process-backend): When processBackend is set, the broker should
   // use it to create environments for agent processes instead of local
@@ -344,13 +237,13 @@ IMPORTANT: Write all changes to disk. Do NOT just output code.`,
       failOnError: true,
     })
 
-    // ── Phase 3: Test-fix-rerun ──────────────────────────────────────
+    // ── Phase 3: Build + test gate ──────────────────────────────────
     .step('build', {
       type: 'deterministic',
       dependsOn: ['verify-edits'],
       command: 'npm run build 2>&1 | tail -30',
       captureOutput: true,
-      failOnError: false,
+      failOnError: true,
     })
 
     .step('run-tests', {
@@ -358,47 +251,13 @@ IMPORTANT: Write all changes to disk. Do NOT just output code.`,
       dependsOn: ['verify-edits'],
       command: 'npm test 2>&1 | tail -60',
       captureOutput: true,
-      failOnError: false,
-    })
-
-    .step('fix-failures', {
-      agent: 'impl',
-      dependsOn: ['build', 'run-tests'],
-      task: `Fix any build or test failures.
-
-Build output:
-{{steps.build.output}}
-
-Test output:
-{{steps.run-tests.output}}
-
-If all passed, do nothing.
-If failures, read the failing files, fix, re-run until both pass:
-  npm run build
-  npm test`,
-      verification: { type: 'exit_code' },
-    })
-
-    .step('build-final', {
-      type: 'deterministic',
-      dependsOn: ['fix-failures'],
-      command: 'npm run build 2>&1 | tail -20',
-      captureOutput: true,
       failOnError: true,
     })
 
-    .step('tests-final', {
-      type: 'deterministic',
-      dependsOn: ['fix-failures'],
-      command: 'npm test 2>&1 | tail -40',
-      captureOutput: true,
-      failOnError: true,
-    })
-
-    // ── Phase 4: Commit + push + PR ──────────────────────────────────
+    // ── Phase 4: Commit + push + PR ─────────────────────────────────
     .step('commit', {
       type: 'deterministic',
-      dependsOn: ['build-final', 'tests-final'],
+      dependsOn: ['build', 'run-tests'],
       command: 'git add packages/sdk/src/workflows/types.ts packages/sdk/src/workflows/runner.ts && git diff --cached --quiet && echo "NO CHANGES" && exit 1; git commit -m "feat(sdk): add ProcessBackend interface and accept in WorkflowRunnerOptions" && git push origin feat/process-backend-runner',
       captureOutput: true,
       failOnError: true,
@@ -407,7 +266,10 @@ If failures, read the failing files, fix, re-run until both pass:
     .step('open-pr', {
       type: 'deterministic',
       dependsOn: ['commit'],
-      command: "gh pr create --repo AgentWorkforce/relay --base main --head feat/process-backend-runner --title 'feat(sdk): add ProcessBackend interface for cloud sandbox execution' --body-file - <<'PRBODY'\n## Summary\n\nAdds ProcessBackend and ProcessEnvironment interfaces to the SDK and accepts\nprocessBackend in WorkflowRunnerOptions. This is the relay-side counterpart\nto AgentWorkforce/cloud#115.\n\n## What this does\n\n- Exports ProcessBackend + ProcessEnvironment from @agent-relay/sdk/workflows\n- WorkflowRunnerOptions accepts optional processBackend field\n- Runner stores the backend (ready for broker integration)\n\n## What this does NOT do (yet)\n\n- Does not change the this.executor fork at runner.ts:4038\n- Does not wire the broker to use the backend for spawning\n- Those require broker-side changes (Rust WorkerRegistry)\n\n## Boundary\n\n| Relay owns | Cloud provides |\n|---|---|\n| MCP wiring | createEnvironment() |\n| CLI flags | exec(command) |\n| Auth env | uploadFile() |\n| Agent lifecycle | destroy() |\n\n## Test plan\n\n- [x] npm run build passes\n- [x] npm test passes\nPRBODY",
+      command: [
+        "gh pr view feat/process-backend-runner --repo AgentWorkforce/relay --json url -q .url 2>/dev/null && echo 'PR already exists' && exit 0",
+        "gh pr create --repo AgentWorkforce/relay --base main --head feat/process-backend-runner --title 'feat(sdk): add ProcessBackend interface for cloud sandbox execution' --body \"## Summary\n\nAdds ProcessBackend and ProcessEnvironment interfaces to the SDK and accepts\nprocessBackend in WorkflowRunnerOptions. This is the relay-side counterpart\nto AgentWorkforce/cloud#115.\n\n## What this does\n\n- Exports ProcessBackend + ProcessEnvironment from @agent-relay/sdk/workflows\n- WorkflowRunnerOptions accepts optional processBackend field\n- Runner stores the backend (ready for broker integration)\n\n## What this does NOT do (yet)\n\n- Does not change the this.executor fork at runner.ts:4038\n- Does not wire the broker to use the backend for spawning\n- Those require broker-side changes (Rust WorkerRegistry)\n\n## Test plan\n\n- [x] npm run build passes\n- [x] npm test passes\"",
+      ].join(' || '),
       captureOutput: true,
       failOnError: true,
     })
