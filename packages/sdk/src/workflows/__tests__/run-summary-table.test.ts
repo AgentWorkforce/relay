@@ -95,6 +95,61 @@ describe('formatRunSummaryTable', () => {
     expect(output).toContain('  └─ Error [turn 1] Error: database locked');
   });
 
+  it('renders budget usage and over-budget markers when summaries are provided', () => {
+    const output = formatRunSummaryTable(
+      [
+        { name: 'plan', agent: 'lead', status: 'completed', attempts: 1, durationMs: 1_000 },
+        { name: 'implement', agent: 'worker', status: 'completed', attempts: 2, durationMs: 2_000 },
+      ],
+      new Map([
+        [
+          'plan',
+          {
+            cli: 'claude',
+            sessionId: 's1',
+            model: 'claude-sonnet-4',
+            provider: 'anthropic',
+            durationMs: 1_200,
+            cost: 0.75,
+            tokens: { input: 100, output: 50, cacheRead: 10 },
+            turns: 2,
+            toolCalls: [],
+            errors: [],
+            finalStatus: 'completed',
+            summary: 'planned',
+          },
+        ],
+        [
+          'implement',
+          {
+            cli: 'codex',
+            sessionId: 's2',
+            model: 'gpt-5',
+            provider: 'openai',
+            durationMs: 3_400,
+            cost: 1.25,
+            tokens: { input: 300, output: 90, cacheRead: 20 },
+            turns: 4,
+            toolCalls: [],
+            errors: [{ turn: 2, text: 'Error: recovered after retry' }],
+            finalStatus: 'completed',
+            summary: 'implemented',
+          },
+        ],
+      ]),
+      new Map([
+        ['plan', { used: 150, limit: 200, over: false }],
+        ['implement', { used: 390, limit: 350, over: true }],
+      ]),
+      { used: 540, limit: 500, over: true }
+    );
+
+    expect(output).toContain('Budget');
+    expect(output).toContain('150/200');
+    expect(output).toContain('390/350 [OVER]');
+    expect(output).toContain('540/500 [OVER]');
+  });
+
   it('renders deterministic steps without reports using placeholder columns', () => {
     const output = formatRunSummaryTable(
       [{ name: 'lint', agent: 'shell', status: 'completed', attempts: 1, durationMs: 900 }],
