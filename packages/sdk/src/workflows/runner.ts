@@ -90,6 +90,7 @@ import type {
   WorkflowStepCompletionReason,
   WorkflowStepRow,
   WorkflowStepStatus,
+  ProcessBackend,
 } from './types.js';
 import { WorkflowTrajectory, type StepOutcome } from './trajectory.js';
 import {
@@ -257,6 +258,17 @@ export interface WorkflowRunnerOptions {
   summaryDir?: string;
   executor?: RunnerStepExecutor;
   envSecrets?: Record<string, string>;
+  /**
+   * Process backend for remote execution environments.
+   * When set, the runner creates isolated environments via this backend
+   * for each agent step. The broker still handles agent configuration
+   * (MCP wiring, CLI flags, auth env). The backend only provides
+   * "where to run" — create environment, execute command, destroy.
+   *
+   * When both executor and processBackend are set, executor takes precedence.
+   * When neither is set, the broker spawns local child processes (default).
+   */
+  processBackend?: ProcessBackend;
 }
 
 // ── Step executor interface ──────────────────────────────────────────────────
@@ -456,6 +468,7 @@ export class WorkflowRunner {
   /** Structured CLI session reports captured during the current run, keyed by step name. */
   private readonly agentReports = new Map<string, CliSessionReport>();
   private static readonly PTY_TASK_ARG_SIZE_LIMIT = 2 * 1024 * 1024; // 2 MB
+  private readonly processBackend?: ProcessBackend;
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -465,6 +478,7 @@ export class WorkflowRunner {
     this.summaryDir = options.summaryDir ?? path.join(this.cwd, '.relay', 'summaries');
     this.workersPath = path.join(this.cwd, '.agent-relay', 'team', 'workers.json');
     this.executor = options.executor;
+    this.processBackend = options.processBackend;
     this.envSecrets = options.envSecrets;
     this.templateResolver = new TemplateResolver();
     this.channelMessenger = new ChannelMessenger({ postFn: (text) => this.postToChannel(text) });
@@ -4035,6 +4049,11 @@ export class WorkflowRunner {
           );
           const resolvedStep = { ...step, task: ownerTask };
           const ownerStartTime = Date.now();
+          // TODO(process-backend): When processBackend is set, the broker should
+          // use it to create environments for agent processes instead of local
+          // Command::spawn(). This requires the broker's WorkerRegistry to accept
+          // a process backend. Until then, processBackend is stored but unused
+          // at runtime — the cloud still uses the executor path via RunnerStepExecutor.
           const spawnResult = this.executor
             ? await this.executor.executeAgentStep(resolvedStep, effectiveOwner, ownerTask, timeoutMs)
             : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
