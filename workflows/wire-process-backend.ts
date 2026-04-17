@@ -34,19 +34,22 @@
  * 2. Accept processBackend in WorkflowRunnerOptions
  *    (packages/sdk/src/workflows/runner.ts)
  *
- * 3. Store it on the runner with a TODO for the broker-side integration.
+ * 3. Create a ProcessBackend-backed RunnerStepExecutor when processBackend is
+ *    set and no explicit executor is provided.
  *
- * The Rust broker change (replacing Command::spawn with backend.exec)
- * is a separate follow-up. This TS adapter is the bridge.
+ * The Rust broker change (replacing Command::spawn with backend.exec) remains
+ * a separate follow-up. This TS adapter lets workflow steps run in cloud
+ * environments without changing the default local broker path.
  */
 import { workflow } from '@agent-relay/sdk/workflows';
 
 const CHANNEL = 'wf-wire-process-backend';
+const FEATURE_BRANCH = 'feat/process-backend-runner';
 
 async function main() {
   const result = await workflow('wire-process-backend')
     .description(
-      'Wire ProcessBackend into the SDK runner so cloud sandboxes go through the broker',
+      'Wire ProcessBackend into the SDK runner so cloud sandboxes can execute workflow steps',
     )
     .pattern('dag')
     .channel(CHANNEL)
@@ -152,9 +155,10 @@ At the end of packages/sdk/src/workflows/types.ts, add:
 
 // ── ProcessBackend: cloud-injected execution environment ─────────────────────
 //
-// Relay owns agent configuration (MCP wiring, CLI flags, auth env, lifecycle).
-// Cloud owns execution environment (create VM, run command, destroy VM).
-// The broker builds a fully-configured command and calls env.exec().
+// Relay owns command construction, auth env, cwd, timeout, and step lifecycle.
+// The backend owns execution environments (create VM, run command, destroy VM).
+// uploadFile is reserved for future file asset staging; current executors run
+// commands directly with env/cwd/timeout passed through exec options.
 
 export interface ProcessBackend {
   /** Create an isolated execution environment (e.g. a Daytona sandbox). */
@@ -180,10 +184,10 @@ In packages/sdk/src/workflows/runner.ts, find the WorkflowRunnerOptions interfac
 
   /**
    * Process backend for remote execution environments.
-   * When set, the runner creates isolated environments via this backend
-   * for each agent step. The broker still handles agent configuration
-   * (MCP wiring, CLI flags, auth env). The backend only provides
-   * "where to run" — create environment, execute command, destroy.
+   * When set without an explicit executor, the runner wraps it in a
+   * RunnerStepExecutor that creates isolated environments for agent and
+   * deterministic steps. The runner builds CLI commands and passes auth env,
+   * cwd, and timeout; the backend provides create/exec/destroy primitives.
    *
    * When both executor and processBackend are set, executor takes precedence.
    * When neither is set, the broker spawns local child processes (default).
@@ -192,7 +196,7 @@ In packages/sdk/src/workflows/runner.ts, find the WorkflowRunnerOptions interfac
 
 Make sure to import ProcessBackend from the types file at the top of runner.ts.
 
-### 3. Store processBackend in constructor
+### 3. Store processBackend and synthesize an executor in the constructor
 
 In the constructor, after the line that sets this.executor, add:
 
@@ -202,15 +206,31 @@ And add the private field to the class:
 
   private readonly processBackend?: ProcessBackend;
 
-### 4. DO NOT change the executor fork or requiresBroker
+Then synthesize the ProcessBackend executor only when no explicit executor was
+provided:
 
-Add a TODO comment near the fork at ~line 4038:
+    if (!this.executor && this.processBackend) {
+      this.executor = createProcessBackendExecutor(this.processBackend, {
+        env: this.envSecrets,
+      });
+    }
 
-  // TODO(process-backend): When processBackend is set, the broker should
-  // use it to create environments for agent processes instead of local
-  // Command::spawn(). This requires the broker's WorkerRegistry to accept
-  // a process backend. Until then, processBackend is stored but unused
-  // at runtime — the cloud still uses the executor path via RunnerStepExecutor.
+### 4. Add the ProcessBackend executor
+
+Add packages/sdk/src/workflows/process-backend-executor.ts. It should:
+
+- Build non-interactive CLI commands using the existing process-spawner helper.
+- Pass env, cwd, and ceil-rounded timeoutSeconds via ProcessEnvironment.exec options.
+- Shell-escape argv safely before joining into the command string.
+- Reject cli:"api" because API agents do not run as subprocesses.
+- Destroy the environment in a finally block.
+
+### 5. Keep the existing executor fork behavior
+
+Do not add a second processBackend-specific fork. The constructor makes
+this.executor point at the ProcessBackend executor when processBackend is set
+and executor is omitted, so the existing this.executor branch remains the single
+extension point. The default no-executor path still uses spawnAndWait.
 
 After making changes, run:
   npm run build 2>&1 | tail -20
@@ -229,8 +249,10 @@ IMPORTANT: Write all changes to disk. Do NOT just output code.`,
         'grep -q "ProcessBackend" packages/sdk/src/workflows/types.ts || (echo "MISSING: ProcessBackend in types.ts"; exit 1)',
         'grep -q "ProcessEnvironment" packages/sdk/src/workflows/types.ts || (echo "MISSING: ProcessEnvironment in types.ts"; exit 1)',
         'grep -q "processBackend" packages/sdk/src/workflows/runner.ts || (echo "MISSING: processBackend in runner.ts"; exit 1)',
+        'grep -q "createProcessBackendExecutor" packages/sdk/src/workflows/process-backend-executor.ts || (echo "MISSING: ProcessBackend executor"; exit 1)',
         'if git diff --quiet packages/sdk/src/workflows/types.ts; then echo "types.ts NOT MODIFIED"; exit 1; fi',
         'if git diff --quiet packages/sdk/src/workflows/runner.ts; then echo "runner.ts NOT MODIFIED"; exit 1; fi',
+        'if git diff --quiet packages/sdk/src/workflows/process-backend-executor.ts; then echo "process-backend-executor.ts NOT MODIFIED"; exit 1; fi',
         'echo "All expected changes verified"',
       ].join(' && '),
       captureOutput: true,
@@ -258,7 +280,13 @@ IMPORTANT: Write all changes to disk. Do NOT just output code.`,
     .step('commit', {
       type: 'deterministic',
       dependsOn: ['build', 'run-tests'],
-      command: 'git add packages/sdk/src/workflows/types.ts packages/sdk/src/workflows/runner.ts && git diff --cached --quiet && echo "NO CHANGES" && exit 1; git commit -m "feat(sdk): add ProcessBackend interface and accept in WorkflowRunnerOptions" && git push origin feat/process-backend-runner',
+      command: [
+        `git checkout -B ${FEATURE_BRANCH}`,
+        'git add packages/sdk/src/workflows/types.ts packages/sdk/src/workflows/runner.ts packages/sdk/src/workflows/process-backend-executor.ts packages/sdk/src/workflows/index.ts packages/sdk/src/workflows/__tests__/process-backend-executor.test.ts workflows/wire-process-backend.ts',
+        'if git diff --cached --quiet; then echo "NO CHANGES"; exit 1; fi',
+        'git commit -m "feat(sdk): add ProcessBackend executor for workflows"',
+        `git push -u origin ${FEATURE_BRANCH}`,
+      ].join(' && '),
       captureOutput: true,
       failOnError: true,
     })
@@ -267,8 +295,8 @@ IMPORTANT: Write all changes to disk. Do NOT just output code.`,
       type: 'deterministic',
       dependsOn: ['commit'],
       command: [
-        "gh pr view feat/process-backend-runner --repo AgentWorkforce/relay --json url -q .url 2>/dev/null && echo 'PR already exists' && exit 0",
-        "gh pr create --repo AgentWorkforce/relay --base main --head feat/process-backend-runner --title 'feat(sdk): add ProcessBackend interface for cloud sandbox execution' --body \"## Summary\n\nAdds ProcessBackend and ProcessEnvironment interfaces to the SDK and accepts\nprocessBackend in WorkflowRunnerOptions. This is the relay-side counterpart\nto AgentWorkforce/cloud#115.\n\n## What this does\n\n- Exports ProcessBackend + ProcessEnvironment from @agent-relay/sdk/workflows\n- WorkflowRunnerOptions accepts optional processBackend field\n- Runner stores the backend (ready for broker integration)\n\n## What this does NOT do (yet)\n\n- Does not change the this.executor fork at runner.ts:4038\n- Does not wire the broker to use the backend for spawning\n- Those require broker-side changes (Rust WorkerRegistry)\n\n## Test plan\n\n- [x] npm run build passes\n- [x] npm test passes\"",
+        `gh pr view ${FEATURE_BRANCH} --repo AgentWorkforce/relay --json url -q .url 2>/dev/null && echo 'PR already exists' && exit 0`,
+        `gh pr create --repo AgentWorkforce/relay --base main --head ${FEATURE_BRANCH} --title 'feat(sdk): add ProcessBackend executor for cloud sandbox execution' --body "## Summary\n\nAdds ProcessBackend and ProcessEnvironment interfaces to the SDK, accepts processBackend in WorkflowRunnerOptions, and creates a ProcessBackend-backed RunnerStepExecutor when no explicit executor is provided.\n\n## What this does\n\n- Exports ProcessBackend + ProcessEnvironment from @agent-relay/sdk/workflows\n- WorkflowRunnerOptions accepts optional processBackend field\n- Agent and deterministic steps can execute through ProcessEnvironment.exec\n- env, cwd, and timeoutSeconds are passed through structured exec options\n\n## Boundary\n\n- Relay builds CLI commands and passes auth env, cwd, and timeout metadata\n- ProcessBackend creates environments, executes commands, and destroys environments\n- uploadFile is part of the interface for future file asset staging and is not used by this executor yet\n\n## Test plan\n\n- [x] npm run build passes\n- [x] npm test passes"`,
       ].join(' || '),
       captureOutput: true,
       failOnError: true,

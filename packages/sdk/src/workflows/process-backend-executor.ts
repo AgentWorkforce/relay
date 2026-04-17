@@ -1,8 +1,8 @@
 /**
  * Adapter that implements {@link RunnerStepExecutor} on top of a
- * {@link ProcessBackend}. Relay owns agent configuration (CLI flags, env,
- * preset); the backend only provides "where to run" — create an isolated
- * environment, exec the command, destroy.
+ * {@link ProcessBackend}. Relay owns command construction (CLI flags, env,
+ * cwd, timeout); the backend only provides "where to run" — create an
+ * isolated environment, exec the command, destroy.
  *
  * The WorkflowRunner synthesizes one of these when a caller passes
  * `processBackend` without an explicit `executor`, so every existing

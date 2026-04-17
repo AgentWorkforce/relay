@@ -175,6 +175,29 @@
             "reasoning": "Codex review noted the new job used build:packages while publish runs npm run build. The CI guard now runs the full root build so root CLI/TypeScript failures are caught before merge."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1776455373340,
+          "type": "decision",
+          "content": "Handled PR 747 feedback in tracked parent worktree: Handled PR 747 feedback in tracked parent worktree",
+          "raw": {
+            "question": "Handled PR 747 feedback in tracked parent worktree",
+            "chosen": "Handled PR 747 feedback in tracked parent worktree",
+            "alternatives": [],
+            "reasoning": "The cwd copy under .relay/workspace is not the git worktree; fixes must be applied to /Users/khaliqgant/Projects/AgentWorkforce/relay so the feature branch and PR contain them."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1776455534306,
+          "type": "reflection",
+          "content": "PR 747 feedback fixes verified with SDK build, package build, full root build, and focused ProcessBackend executor tests",
+          "raw": {
+            "focalPoints": ["pr-747", "typescript", "process-backend"],
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": ["focal:pr-747", "focal:typescript", "focal:process-backend", "confidence:0.9"]
         }
       ]
     }

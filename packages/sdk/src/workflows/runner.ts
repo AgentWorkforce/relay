@@ -261,10 +261,10 @@ export interface WorkflowRunnerOptions {
   envSecrets?: Record<string, string>;
   /**
    * Process backend for remote execution environments.
-   * When set, the runner creates isolated environments via this backend
-   * for each agent step. The broker still handles agent configuration
-   * (MCP wiring, CLI flags, auth env). The backend only provides
-   * "where to run" — create environment, execute command, destroy.
+   * When set without an explicit executor, the runner wraps it in a
+   * RunnerStepExecutor that creates isolated environments for agent and
+   * deterministic steps. The runner builds CLI commands and passes auth env,
+   * cwd, and timeout; the backend provides create/exec/destroy primitives.
    *
    * When both executor and processBackend are set, executor takes precedence.
    * When neither is set, the broker spawns local child processes (default).
