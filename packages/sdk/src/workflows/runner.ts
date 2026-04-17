@@ -45,6 +45,7 @@ import { executeApiStep } from './api-executor.js';
 import { ChannelMessenger } from './channel-messenger.js';
 import { InMemoryWorkflowDb } from './memory-db.js';
 import { buildCommand as buildProcessCommand, spawnProcess } from './process-spawner.js';
+import { createProcessBackendExecutor } from './process-backend-executor.js';
 import { formatRunSummaryTable } from './run-summary-table.js';
 import {
   StepExecutor as WorkflowStepLifecycleExecutor,
@@ -401,7 +402,7 @@ export class WorkflowRunner {
   private readonly relayOptions: AgentRelayOptions;
   private readonly cwd: string;
   private readonly summaryDir: string;
-  private readonly executor?: RunnerStepExecutor;
+  private executor?: RunnerStepExecutor;
   private readonly envSecrets?: Record<string, string>;
   private readonly templateResolver: TemplateResolver;
   private readonly channelMessenger: ChannelMessenger;
@@ -480,6 +481,11 @@ export class WorkflowRunner {
     this.executor = options.executor;
     this.processBackend = options.processBackend;
     this.envSecrets = options.envSecrets;
+    if (!this.executor && this.processBackend) {
+      this.executor = createProcessBackendExecutor(this.processBackend, {
+        env: this.envSecrets,
+      });
+    }
     this.templateResolver = new TemplateResolver();
     this.channelMessenger = new ChannelMessenger({ postFn: (text) => this.postToChannel(text) });
   }
@@ -4049,11 +4055,10 @@ export class WorkflowRunner {
           );
           const resolvedStep = { ...step, task: ownerTask };
           const ownerStartTime = Date.now();
-          // TODO(process-backend): When processBackend is set, the broker should
-          // use it to create environments for agent processes instead of local
-          // Command::spawn(). This requires the broker's WorkerRegistry to accept
-          // a process backend. Until then, processBackend is stored but unused
-          // at runtime — the cloud still uses the executor path via RunnerStepExecutor.
+          // When processBackend is set without an explicit executor, the runner
+          // constructor synthesizes a RunnerStepExecutor that calls
+          // processBackend.createEnvironment(step.name).exec(command). Explicit
+          // executors still take precedence. See process-backend-executor.ts.
           const spawnResult = this.executor
             ? await this.executor.executeAgentStep(resolvedStep, effectiveOwner, ownerTask, timeoutMs)
             : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
