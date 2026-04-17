@@ -30,8 +30,8 @@ function makeAgent(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
 
 describe('createProcessBackendExecutor', () => {
   it('creates an environment, runs the built command, and destroys the env', async () => {
-    const destroy = vi.fn(async () => undefined);
-    const exec = vi.fn(async () => ({ output: 'hello\n', exitCode: 0 }));
+    const destroy = vi.fn<ProcessEnvironment['destroy']>(async () => undefined);
+    const exec = vi.fn<ProcessEnvironment['exec']>(async () => ({ output: 'hello\n', exitCode: 0 }));
     const env = makeEnv(exec, destroy);
     const backend = makeBackend(env);
 
@@ -53,9 +53,33 @@ describe('createProcessBackendExecutor', () => {
     expect(output).toBe('hello\n');
   });
 
+  it('passes injected env and agent cwd through execOpts (not baked into the command)', async () => {
+    const exec = vi.fn<ProcessEnvironment['exec']>(async () => ({ output: 'ok', exitCode: 0 }));
+    const env = makeEnv(exec);
+    const backend = makeBackend(env);
+
+    const executor = createProcessBackendExecutor(backend, {
+      env: { ANTHROPIC_API_KEY: 'sk-test', RELAY_WORKSPACE: 'ws_123' },
+    });
+
+    await executor.executeAgentStep(
+      makeStep({ name: 'planner' }),
+      makeAgent({ cli: 'claude', cwd: '/work/repo' }),
+      'do the thing',
+      5_000
+    );
+
+    const [command, opts] = exec.mock.calls[0]!;
+    expect(command.startsWith('claude ') || command.startsWith("'claude'")).toBe(true);
+    expect(command).not.toMatch(/ANTHROPIC_API_KEY=/);
+    expect(opts?.env).toEqual({ ANTHROPIC_API_KEY: 'sk-test', RELAY_WORKSPACE: 'ws_123' });
+    expect(opts?.cwd).toBe('/work/repo');
+    expect(opts?.timeoutSeconds).toBe(5);
+  });
+
   it('throws when the remote command exits non-zero and still destroys', async () => {
-    const destroy = vi.fn(async () => undefined);
-    const exec = vi.fn(async () => ({ output: 'boom', exitCode: 2 }));
+    const destroy = vi.fn<ProcessEnvironment['destroy']>(async () => undefined);
+    const exec = vi.fn<ProcessEnvironment['exec']>(async () => ({ output: 'boom', exitCode: 2 }));
     const env = makeEnv(exec, destroy);
     const backend = makeBackend(env);
 
@@ -68,7 +92,7 @@ describe('createProcessBackendExecutor', () => {
   });
 
   it('rejects cli:"api" because it does not run as a subprocess', async () => {
-    const env = makeEnv(vi.fn());
+    const env = makeEnv(vi.fn<ProcessEnvironment['exec']>());
     const backend = makeBackend(env);
     const executor = createProcessBackendExecutor(backend);
 
@@ -78,7 +102,7 @@ describe('createProcessBackendExecutor', () => {
   });
 
   it('passes injected env through to exec for deterministic steps', async () => {
-    const exec = vi.fn(async () => ({ output: 'ok', exitCode: 0 }));
+    const exec = vi.fn<ProcessEnvironment['exec']>(async () => ({ output: 'ok', exitCode: 0 }));
     const env = makeEnv(exec);
     const backend = makeBackend(env);
 

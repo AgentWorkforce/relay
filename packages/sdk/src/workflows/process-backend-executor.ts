@@ -24,12 +24,6 @@ function commandToShell(argv: string[]): string {
   return argv.map(shellEscape).join(' ');
 }
 
-function envToExportPrefix(env: Record<string, string> | undefined): string {
-  if (!env || Object.keys(env).length === 0) return '';
-  const parts = Object.entries(env).map(([k, v]) => `${k}=${shellEscape(v)}`);
-  return parts.join(' ') + ' ';
-}
-
 export interface ProcessBackendExecutorOptions {
   /** Env vars injected into every step (e.g. auth tokens, relayfile config). */
   env?: Record<string, string>;
@@ -57,7 +51,7 @@ export function createProcessBackendExecutor(
 
       const extraArgs = agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [];
       const argv = buildCommand(agentDef.cli, extraArgs, resolvedTask);
-      const commandString = envToExportPrefix(baseEnv) + commandToShell(argv);
+      const commandString = commandToShell(argv);
 
       const env = await backend.createEnvironment(step.name);
       try {
@@ -66,6 +60,10 @@ export function createProcessBackendExecutor(
           env?: Record<string, string>;
           timeoutSeconds?: number;
         } = {};
+        if (agentDef.cwd) execOpts.cwd = agentDef.cwd;
+        if (Object.keys(baseEnv).length > 0) execOpts.env = baseEnv;
+        // timeoutSeconds is ceil-rounded from the caller's timeoutMs; a 500ms
+        // timeout becomes 1s because the backend protocol uses seconds.
         if (timeoutMs && timeoutMs > 0) {
           execOpts.timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
         }
