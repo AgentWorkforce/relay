@@ -17,7 +17,7 @@ import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { compileDotfiles, hasDotfiles } from './dotfiles.js';
 import { ensureRelayfileMountBinary } from './relayfile-binary.js';
-import { createSymlinkMount, type SymlinkMountHandle } from './symlink-mount.js';
+import { launchOnMount } from '@relayfile/local-mount';
 import { mintToken } from './token.js';
 import { seedAclRules } from './workspace.js';
 import { seedWorkspace } from '../../../../packages/sdk/src/provisioner/seeder.js';
@@ -62,7 +62,6 @@ interface CleanupState {
   workspace: string;
   readonlyPatterns: string[];
   ignoredPatterns: string[];
-  symlinkHandle?: SymlinkMountHandle;
 }
 
 interface WorkspaceJoinResponse {
@@ -1179,14 +1178,7 @@ async function ensureServices(
 }
 
 async function cleanupRun(state: CleanupState, agentName: string, log: LogFn): Promise<void> {
-  if (!state.mountProc && !state.mountDir && !state.mountLogPath && !state.symlinkHandle) return;
-  if (state.symlinkHandle) {
-    const synced = await state.symlinkHandle.syncBack();
-    log(`  ✓ ${synced} file(s) synced back`);
-    state.symlinkHandle.cleanup();
-    log(`Cleaned relay mount for ${agentName}`);
-    return;
-  }
+  if (!state.mountProc && !state.mountDir && !state.mountLogPath) return;
 
   const mountDir = state.mountDir;
   if (state.mountProc) {
@@ -1279,95 +1271,146 @@ export async function goOnTheRelay(
     relayDir,
     `workspace-${sanitizePathComponent(workspaceSession.workspaceId)}-${sanitizePathComponent(agent.name)}`
   );
-  let mountLogPath: string | undefined;
-  let mountBin: string | undefined;
-  let mountBaseArgs: string[] = [];
-  let mountEnv: NodeJS.ProcessEnv | undefined;
-  let deniedCount = 0;
-  let symlinkHandle: SymlinkMountHandle | undefined;
+  const sandboxFlags = getSandboxFlags(cli);
+
+  const buildAgentEnv = (): NodeJS.ProcessEnv => ({
+    RELAY_AGENT_TOKEN: workspaceSession.token,
+    RELAYFILE_TOKEN: workspaceSession.token,
+    RELAYFILE_BASE_URL: workspaceSession.relayfileUrl,
+    RELAYFILE_WORKSPACE: workspaceSession.workspaceId,
+    RELAY_WORKSPACE_ID: workspaceSession.workspaceId,
+    RELAY_DEFAULT_WORKSPACE: workspaceSession.workspaceId,
+    RELAY_WORKSPACE: mountDir,
+    RELAY_AGENT_NAME: agent.name,
+    ...(workspaceSession.relaycastApiKey
+      ? {
+          RELAY_API_KEY: workspaceSession.relaycastApiKey,
+          RELAY_WORKSPACES_JSON: JSON.stringify([
+            {
+              workspace_id: workspaceSession.workspaceId,
+              api_key: workspaceSession.relaycastApiKey,
+            },
+          ]),
+        }
+      : {}),
+  });
 
   if (useSymlinkMount) {
     log(`Preparing local workspace at ${mountDir}...`);
-    symlinkHandle = createSymlinkMount(projectDir, mountDir, {
-      readonlyPatterns,
+    const agentArgs = [...sandboxFlags, ...extraArgs];
+    // Ensure `.relay` is excluded from the mount — @relayfile/local-mount no
+    // longer has it in the default excludeDirs list, and seedExcludes already
+    // includes it for symlink + cloud paths.
+    const launchResult = await launchOnMount({
+      cli,
+      projectDir,
+      mountDir,
+      args: agentArgs,
       ignoredPatterns,
+      readonlyPatterns,
       excludeDirs: seedExcludes,
+      env: buildAgentEnv(),
+      agentName: agent.name,
+      onBeforeLaunch: (realMountDir) => {
+        // Write the richer agent-relay permissions doc. This coexists with the
+        // generic _MOUNT_README.md that @relayfile/local-mount writes itself.
+        writeFileSync(path.join(realMountDir, '_PERMISSIONS.md'), permsDoc, 'utf8');
+
+        const mountedFiles = countFilesForSync(realMountDir);
+        log(`On the relay as ${agent.name}`);
+        log(`  Workspace: ${workspaceSession.workspaceId}`);
+        log(`  Join: ${workspaceSession.joinCommand}`);
+        log(`  Mounted files: ${mountedFiles}`);
+        log(`  Permissions denied (initial sync): 0`);
+        if (sandboxFlags.length > 0) {
+          log(`  Sandbox: relay-enforced (${sandboxFlags.join(' ')})`);
+          log(`  ⚠ Agent CLI sandbox bypassed — relay file permissions are the only safety layer`);
+        }
+      },
+      onAfterSync: (synced) => {
+        log(`  ✓ ${synced} file(s) synced back`);
+        log(`Cleaned relay mount for ${agent.name}`);
+      },
     });
-    writeFileSync(path.join(mountDir, '_PERMISSIONS.md'), permsDoc, 'utf8');
-  } else {
-    mountBin = process.env.RELAYFILE_ROOT
-      ? path.join(process.env.RELAYFILE_ROOT, 'bin', 'relayfile-mount')
-      : await ensureRelayfileMountBinary();
 
-    if (!existsSync(mountBin)) {
-      throw new Error(`missing relayfile mount binary: ${mountBin}`);
-    }
+    log('Off the relay.');
+    exit(launchResult.exitCode);
+    return;
+  }
 
-    if (workspaceSession.created) {
-      await seedWorkspace(
+  // Cloud / --shared path: use the relayfile-mount FUSE binary.
+  const mountBin = process.env.RELAYFILE_ROOT
+    ? path.join(process.env.RELAYFILE_ROOT, 'bin', 'relayfile-mount')
+    : await ensureRelayfileMountBinary();
+
+  if (!existsSync(mountBin)) {
+    throw new Error(`missing relayfile mount binary: ${mountBin}`);
+  }
+
+  if (workspaceSession.created) {
+    await seedWorkspace(
+      workspaceSession.relayfileUrl,
+      workspaceSession.token,
+      workspaceSession.workspaceId,
+      projectDir,
+      seedExcludes
+    );
+
+    if (dotfileAcl && Object.keys(dotfileAcl.acl).length > 0) {
+      await seedAclRules(
         workspaceSession.relayfileUrl,
         workspaceSession.token,
         workspaceSession.workspaceId,
-        projectDir,
-        seedExcludes
+        dotfileAcl.acl
       );
 
-      if (dotfileAcl && Object.keys(dotfileAcl.acl).length > 0) {
-        await seedAclRules(
-          workspaceSession.relayfileUrl,
-          workspaceSession.token,
-          workspaceSession.workspaceId,
-          dotfileAcl.acl
-        );
-
-        writeFileSync(
-          compiledPath,
-          JSON.stringify(
-            {
-              workspace: workspaceSession.workspaceId,
-              acl: dotfileAcl.acl,
-              summary: dotfileAcl.summary,
-              agents: [{ name: agent.name, summary: dotfileAcl.summary }],
-            },
-            null,
-            2
-          ) + '\n',
-          { encoding: 'utf8' }
-        );
-      }
+      writeFileSync(
+        compiledPath,
+        JSON.stringify(
+          {
+            workspace: workspaceSession.workspaceId,
+            acl: dotfileAcl.acl,
+            summary: dotfileAcl.summary,
+            agents: [{ name: agent.name, summary: dotfileAcl.summary }],
+          },
+          null,
+          2
+        ) + '\n',
+        { encoding: 'utf8' }
+      );
     }
+  }
 
-    mkdirSync(mountDir, { recursive: true });
-    mountLogPath = path.join(relayDir, 'logs', `${agent.name}-mount.log`);
-    writeFileSync(mountLogPath, '', 'utf8');
+  mkdirSync(mountDir, { recursive: true });
+  const mountLogPath = path.join(relayDir, 'logs', `${agent.name}-mount.log`);
+  writeFileSync(mountLogPath, '', 'utf8');
 
-    mountBaseArgs = [
-      '--base-url',
-      workspaceSession.relayfileUrl,
-      '--workspace',
-      workspaceSession.workspaceId,
-      '--local-dir',
-      mountDir,
-    ];
-    const onceArgs = [...mountBaseArgs, '--once'];
-    mountEnv = { ...process.env, RELAYFILE_TOKEN: workspaceSession.token };
+  const mountBaseArgs = [
+    '--base-url',
+    workspaceSession.relayfileUrl,
+    '--workspace',
+    workspaceSession.workspaceId,
+    '--local-dir',
+    mountDir,
+  ];
+  const onceArgs = [...mountBaseArgs, '--once'];
+  const mountEnv: NodeJS.ProcessEnv = { ...process.env, RELAYFILE_TOKEN: workspaceSession.token };
 
-    log(`Mounting workspace at ${mountDir}...`);
-    let initialSyncOutput = '';
-    try {
-      initialSyncOutput = await runCommandCapture(mountBin, onceArgs, mountEnv);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`initial workspace sync failed for ${agent.name}: ${message}`);
-    }
+  log(`Mounting workspace at ${mountDir}...`);
+  let initialSyncOutput = '';
+  try {
+    initialSyncOutput = await runCommandCapture(mountBin, onceArgs, mountEnv);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`initial workspace sync failed for ${agent.name}: ${message}`);
+  }
 
-    deniedCount = pickDeniedCount(initialSyncOutput);
-    writeFileSync(path.join(mountDir, '_PERMISSIONS.md'), permsDoc, 'utf8');
+  const deniedCount = pickDeniedCount(initialSyncOutput);
+  writeFileSync(path.join(mountDir, '_PERMISSIONS.md'), permsDoc, 'utf8');
 
-    const projectDeny = path.join(projectDir, '.agentdeny');
-    if (existsSync(projectDeny)) {
-      cpSync(projectDeny, path.join(mountDir, '.agentdeny'), { force: true });
-    }
+  const projectDeny = path.join(projectDir, '.agentdeny');
+  if (existsSync(projectDeny)) {
+    cpSync(projectDeny, path.join(mountDir, '.agentdeny'), { force: true });
   }
 
   const mountedFiles = countFilesForSync(mountDir);
@@ -1376,7 +1419,6 @@ export async function goOnTheRelay(
   log(`  Join: ${workspaceSession.joinCommand}`);
   log(`  Mounted files: ${mountedFiles}`);
   log(`  Permissions denied (initial sync): ${deniedCount}`);
-  const sandboxFlags = getSandboxFlags(cli);
   if (sandboxFlags.length > 0) {
     log(`  Sandbox: relay-enforced (${sandboxFlags.join(' ')})`);
     log(`  ⚠ Agent CLI sandbox bypassed — relay file permissions are the only safety layer`);
@@ -1390,7 +1432,6 @@ export async function goOnTheRelay(
     workspace: workspaceSession.workspaceId,
     readonlyPatterns,
     ignoredPatterns,
-    symlinkHandle,
   };
 
   let mountProc: ChildProcessWithoutNullStreams | undefined;
@@ -1405,62 +1446,42 @@ export async function goOnTheRelay(
   };
 
   try {
-    if (!useSymlinkMount) {
-      const mountedProc: ChildProcessWithoutNullStreams = spawn(mountBin!, mountBaseArgs, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: mountEnv,
-      });
-      mountProc = mountedProc;
+    const mountedProc: ChildProcessWithoutNullStreams = spawn(mountBin, mountBaseArgs, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: mountEnv,
+    });
+    mountProc = mountedProc;
 
-      mountedProc.stdout.on('data', (chunk: Buffer) => {
-        appendFileSync(mountLogPath!, chunk);
-      });
-      mountedProc.stderr.on('data', (chunk: Buffer) => {
-        appendFileSync(mountLogPath!, chunk);
-      });
+    mountedProc.stdout.on('data', (chunk: Buffer) => {
+      appendFileSync(mountLogPath, chunk);
+    });
+    mountedProc.stderr.on('data', (chunk: Buffer) => {
+      appendFileSync(mountLogPath, chunk);
+    });
 
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => resolve(), 600);
-        mountedProc.on('error', (spawnError) => {
-          clearTimeout(timer);
-          reject(spawnError);
-        });
-        mountedProc.on('spawn', () => {
-          clearTimeout(timer);
-          resolve();
-        });
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => resolve(), 600);
+      mountedProc.on('error', (spawnError) => {
+        clearTimeout(timer);
+        reject(spawnError);
       });
+      mountedProc.on('spawn', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
 
-      if (!ensureProcessRunning(mountedProc)) {
-        throw new Error(`mount process for ${agent.name} exited before continuing`);
-      }
-
-      cleanupState.mountProc = mountProc;
+    if (!ensureProcessRunning(mountedProc)) {
+      throw new Error(`mount process for ${agent.name} exited before continuing`);
     }
+
+    cleanupState.mountProc = mountProc;
 
     let agentExitCode = 0;
     await new Promise<void>((resolve, reject) => {
       const envVars = {
         ...process.env,
-        RELAY_AGENT_TOKEN: workspaceSession.token,
-        RELAYFILE_TOKEN: workspaceSession.token,
-        RELAYFILE_BASE_URL: workspaceSession.relayfileUrl,
-        RELAYFILE_WORKSPACE: workspaceSession.workspaceId,
-        RELAY_WORKSPACE_ID: workspaceSession.workspaceId,
-        RELAY_DEFAULT_WORKSPACE: workspaceSession.workspaceId,
-        RELAY_WORKSPACE: mountDir,
-        RELAY_AGENT_NAME: agent.name,
-        ...(workspaceSession.relaycastApiKey
-          ? {
-              RELAY_API_KEY: workspaceSession.relaycastApiKey,
-              RELAY_WORKSPACES_JSON: JSON.stringify([
-                {
-                  workspace_id: workspaceSession.workspaceId,
-                  api_key: workspaceSession.relaycastApiKey,
-                },
-              ]),
-            }
-          : {}),
+        ...buildAgentEnv(),
       };
 
       agentProc = spawn(cli, [...sandboxFlags, ...extraArgs], {
