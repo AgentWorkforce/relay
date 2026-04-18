@@ -98,7 +98,8 @@
     "@agent-relay/trajectory",
     "@agent-relay/user-directory",
     "@agent-relay/utils",
-    "@relaycast/sdk"
+    "@relaycast/sdk",
+    "@relayfile/local-mount"
   ],
   "publishConfig": {
     "access": "public"
@@ -270,16 +271,5 @@
     "flatted": "^3.4.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
-  },
-  "bundleDependencies": [
-    "@agent-relay/cloud",
-    "@agent-relay/config",
-    "@agent-relay/hooks",
-    "@agent-relay/sdk",
-    "@agent-relay/telemetry",
-    "@agent-relay/trajectory",
-    "@agent-relay/user-directory",
-    "@agent-relay/utils",
-    "@relaycast/sdk"
-  ]
+  }
 }
