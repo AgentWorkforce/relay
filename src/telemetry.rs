@@ -214,6 +214,35 @@ fn anonymous_id(machine_id: &str) -> String {
     hex::encode(&hash[..8]) // first 8 bytes = 16 hex chars
 }
 
+/// Read an env var and return `Some(trimmed)` iff it's set and non-empty.
+/// Never throws; caller uses the result to tag events, not to gate logic.
+fn env_nonempty(key: &str) -> Option<String> {
+    std::env::var(key).ok().and_then(|v| {
+        let trimmed = v.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
+/// Best-effort OS release string for telemetry tagging. Shells out to
+/// `uname -r` on unix (broker is unix-only anyway); returns `None` on
+/// failure so we just omit the property rather than risking a crash.
+fn detect_os_version() -> Option<String> {
+    let output = std::process::Command::new("uname").arg("-r").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    }
+}
+
 /// Tiny hex encoder (avoids adding the `hex` crate).
 mod hex {
     pub fn encode(bytes: &[u8]) -> String {
@@ -233,6 +262,15 @@ pub struct TelemetryClient {
     enabled: bool,
     distinct_id: String,
     tx: Option<mpsc::UnboundedSender<PostHogCapture>>,
+    /// CLI version read from `AGENT_RELAY_CLI_VERSION` when the broker is
+    /// spawned by the CLI. Absent for standalone broker invocations.
+    cli_version: Option<String>,
+    /// SDK version read from `AGENT_RELAY_SDK_VERSION` when the broker is
+    /// spawned by the CLI.
+    sdk_version: Option<String>,
+    /// OS release string (best-effort via `uname -r`, empty on failure /
+    /// platforms where that isn't meaningful).
+    os_version: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -261,6 +299,9 @@ impl TelemetryClient {
                 enabled: false,
                 distinct_id: String::new(),
                 tx: None,
+                cli_version: None,
+                sdk_version: None,
+                os_version: None,
             };
         }
 
@@ -284,6 +325,9 @@ impl TelemetryClient {
             enabled: true,
             distinct_id,
             tx: Some(tx),
+            cli_version: env_nonempty("AGENT_RELAY_CLI_VERSION"),
+            sdk_version: env_nonempty("AGENT_RELAY_SDK_VERSION"),
+            os_version: detect_os_version(),
         }
     }
 
@@ -302,13 +346,25 @@ impl TelemetryClient {
         };
 
         let mut props = event.properties();
-        // Merge common properties.
+        // Merge common properties. Version identification mirrors the
+        // TypeScript `CommonProperties` shape so dashboards can filter on
+        // `cli_version` / `sdk_version` / `broker_version` independent of
+        // which component emitted the event. `agent_relay_version` is kept
+        // as a back-compat alias that mirrors `broker_version` here.
         if let Some(obj) = props.as_object_mut() {
-            obj.insert(
-                "agent_relay_version".to_string(),
-                json!(env!("CARGO_PKG_VERSION")),
-            );
+            let broker_version = env!("CARGO_PKG_VERSION");
+            obj.insert("agent_relay_version".to_string(), json!(broker_version));
+            obj.insert("broker_version".to_string(), json!(broker_version));
+            if let Some(ref v) = self.cli_version {
+                obj.insert("cli_version".to_string(), json!(v));
+            }
+            if let Some(ref v) = self.sdk_version {
+                obj.insert("sdk_version".to_string(), json!(v));
+            }
             obj.insert("os".to_string(), json!(std::env::consts::OS));
+            if let Some(ref v) = self.os_version {
+                obj.insert("os_version".to_string(), json!(v));
+            }
             obj.insert("arch".to_string(), json!(std::env::consts::ARCH));
         }
 
@@ -441,11 +497,36 @@ mod tests {
             enabled: false,
             distinct_id: String::new(),
             tx: None,
+            cli_version: None,
+            sdk_version: None,
+            os_version: None,
         };
         assert!(!client.is_enabled());
         client.track(TelemetryEvent::BrokerStart);
         client.shutdown();
         std::env::remove_var("AGENT_RELAY_TELEMETRY_DISABLED");
+    }
+
+    #[test]
+    fn env_nonempty_handles_missing_empty_and_whitespace() {
+        std::env::remove_var("AGENT_RELAY_TEST_TELEMETRY_MISSING");
+        assert_eq!(env_nonempty("AGENT_RELAY_TEST_TELEMETRY_MISSING"), None);
+
+        std::env::set_var("AGENT_RELAY_TEST_TELEMETRY_EMPTY", "");
+        assert_eq!(env_nonempty("AGENT_RELAY_TEST_TELEMETRY_EMPTY"), None);
+
+        std::env::set_var("AGENT_RELAY_TEST_TELEMETRY_WS", "   ");
+        assert_eq!(env_nonempty("AGENT_RELAY_TEST_TELEMETRY_WS"), None);
+
+        std::env::set_var("AGENT_RELAY_TEST_TELEMETRY_SET", "4.0.30");
+        assert_eq!(
+            env_nonempty("AGENT_RELAY_TEST_TELEMETRY_SET"),
+            Some("4.0.30".to_string())
+        );
+
+        std::env::remove_var("AGENT_RELAY_TEST_TELEMETRY_EMPTY");
+        std::env::remove_var("AGENT_RELAY_TEST_TELEMETRY_WS");
+        std::env::remove_var("AGENT_RELAY_TEST_TELEMETRY_SET");
     }
 
     #[test]

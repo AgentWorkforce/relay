@@ -2,6 +2,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 import { Command } from 'commander';
@@ -57,6 +58,42 @@ function resolveCliVersion(): string {
 }
 
 export const VERSION = resolveCliVersion();
+
+/**
+ * Best-effort resolution of the bundled `@agent-relay/sdk` version for
+ * telemetry `sdk_version` tagging. Returns undefined if the SDK isn't
+ * resolvable — telemetry must never throw.
+ */
+function resolveSdkVersion(): string | undefined {
+  try {
+    const nodeRequire = createRequire(import.meta.url);
+    const pkgPath = nodeRequire.resolve('@agent-relay/sdk/package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as { version?: string };
+    return pkg.version;
+  } catch {
+    return undefined;
+  }
+}
+
+export const SDK_VERSION = resolveSdkVersion();
+
+/**
+ * Export the resolved CLI + SDK versions on the current process env so that
+ * any child process we spawn (the Rust broker, the dashboard server, etc.)
+ * inherits them and can attach them as common telemetry properties without
+ * having to re-resolve `package.json`s on its own.
+ *
+ * We only set these if they're not already present — so a parent caller that
+ * has set its own values (e.g. in tests or in nested CLI invocations) wins.
+ */
+function propagateVersionsToChildren(): void {
+  if (!process.env.AGENT_RELAY_CLI_VERSION) {
+    process.env.AGENT_RELAY_CLI_VERSION = VERSION;
+  }
+  if (SDK_VERSION && !process.env.AGENT_RELAY_SDK_VERSION) {
+    process.env.AGENT_RELAY_SDK_VERSION = SDK_VERSION;
+  }
+}
 
 // Commands that should skip the update check / first-run-notice entirely.
 // `telemetry` is here so enable/disable/status never triggers PostHog init on
@@ -242,9 +279,14 @@ function shouldSkipTelemetryInit(argv: string[]): boolean {
 
 export async function runCli(argv: string[] = process.argv): Promise<Command> {
   maybeRunUpdateCheck(VERSION, argv);
+  propagateVersionsToChildren();
 
   if (!shouldSkipTelemetryInit(argv)) {
-    initTelemetry({ showNotice: true });
+    initTelemetry({
+      showNotice: true,
+      cliVersion: VERSION,
+      sdkVersion: SDK_VERSION,
+    });
   }
 
   const program = createProgram();

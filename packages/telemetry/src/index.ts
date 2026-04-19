@@ -9,6 +9,7 @@ export {
   isEnabled,
   getAnonymousId,
   getStatus,
+  type InitTelemetryOptions,
 } from './client.js';
 
 export {

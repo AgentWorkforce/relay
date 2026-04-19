@@ -21,16 +21,34 @@ export type ReleaseReason = 'explicit' | 'crash' | 'timeout' | 'shutdown';
 
 /**
  * Common properties attached to every event.
+ *
+ * Version identification:
+ *   - `cli_version` — version of the `agent-relay` CLI, when the event was
+ *     emitted from the CLI process
+ *   - `sdk_version` — version of `@agent-relay/sdk` resolved/bundled with the
+ *     emitter. Populated when the CLI or broker can discover it.
+ *   - `broker_version` — version of the Rust broker binary. Populated when
+ *     emitted from the broker, or when the CLI is propagating broker info.
+ *   - `agent_relay_version` — kept for backward compatibility with existing
+ *     PostHog dashboards. Mirrors whichever component actually emitted the
+ *     event: `cli_version` on CLI-originated events, `broker_version` on
+ *     broker-originated events.
  */
 export interface CommonProperties {
-  /** Agent Relay version */
+  /** Back-compat alias — same value as the emitter's primary version. */
   agent_relay_version: string;
+  /** `agent-relay` CLI version, if known to the emitter. */
+  cli_version?: string;
+  /** `@agent-relay/sdk` version, if resolvable. */
+  sdk_version?: string;
+  /** `agent-relay-broker` Rust binary version, if known. */
+  broker_version?: string;
   /** Operating system (e.g., darwin, linux, win32) */
   os: string;
   /** OS release version */
   os_version: string;
-  /** Node.js version (without 'v' prefix) */
-  node_version: string;
+  /** Node.js version (without 'v' prefix). Absent on broker-originated events. */
+  node_version?: string;
   /** CPU architecture (e.g., arm64, x64) */
   arch: string;
 }
