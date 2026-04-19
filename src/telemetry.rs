@@ -231,7 +231,10 @@ fn env_nonempty(key: &str) -> Option<String> {
 /// `uname -r` on unix (broker is unix-only anyway); returns `None` on
 /// failure so we just omit the property rather than risking a crash.
 fn detect_os_version() -> Option<String> {
-    let output = std::process::Command::new("uname").arg("-r").output().ok()?;
+    let output = std::process::Command::new("uname")
+        .arg("-r")
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
