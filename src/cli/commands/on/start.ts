@@ -13,6 +13,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { compileDotfiles, hasDotfiles } from './dotfiles.js';
@@ -1178,7 +1179,11 @@ async function ensureServices(
 }
 
 async function cleanupRun(state: CleanupState, agentName: string, log: LogFn): Promise<void> {
-  if (!state.mountProc && !state.mountDir && !state.mountLogPath) return;
+  // mountLogPath is intentionally omitted from this guard: cleanupRun only
+  // touches mountProc and mountDir. Including mountLogPath would trigger a
+  // "Cleaned relay mount" log with no actual work on FUSE-only log-setup
+  // failure paths.
+  if (!state.mountProc && !state.mountDir) return;
 
   const mountDir = state.mountDir;
   if (state.mountProc) {
@@ -1267,10 +1272,18 @@ export async function goOnTheRelay(
     }
   }
 
-  const mountDir = path.join(
-    relayDir,
-    `workspace-${sanitizePathComponent(workspaceSession.workspaceId)}-${sanitizePathComponent(agent.name)}`
-  );
+  const mountDirName = `workspace-${sanitizePathComponent(workspaceSession.workspaceId)}-${sanitizePathComponent(agent.name)}`;
+  // Symlink mounts live under ~/.agent-relay/mounts/ (outside the project tree).
+  // @relayfile/local-mount refuses any mountDir that overlaps projectDir as a
+  // safety check against destroying the project on cleanup, and putting mounts
+  // in $HOME keeps them durable across reboots (unlike $TMPDIR) and scoped to
+  // the user, consistent with ~/.agent-workforce/. The FUSE path keeps the
+  // historical in-project location under .relay/ — it's managed by the
+  // relayfile-mount Go binary, not @relayfile/local-mount, so the overlap
+  // guard doesn't apply.
+  const mountDir = useSymlinkMount
+    ? path.join(os.homedir(), '.agent-relay', 'mounts', mountDirName)
+    : path.join(relayDir, mountDirName);
   const sandboxFlags = getSandboxFlags(cli);
 
   const buildAgentEnv = (): NodeJS.ProcessEnv => ({
@@ -1298,6 +1311,11 @@ export async function goOnTheRelay(
   if (useSymlinkMount) {
     log(`Preparing local workspace at ${mountDir}...`);
     const agentArgs = [...sandboxFlags, ...extraArgs];
+    // Extend ignoredPatterns with `_PERMISSIONS.md` so @relayfile/local-mount's
+    // syncBack() does not copy the permissions doc we write in onBeforeLaunch
+    // into the user's project directory (the library only hides its own
+    // _MOUNT_README.md / .relayfile-local-mount marker from sync-back).
+    const launchIgnoredPatterns = [...ignoredPatterns, '_PERMISSIONS.md'];
     // Ensure `.relay` is excluded from the mount — @relayfile/local-mount no
     // longer has it in the default excludeDirs list, and seedExcludes already
     // includes it for symlink + cloud paths.
@@ -1306,7 +1324,7 @@ export async function goOnTheRelay(
       projectDir,
       mountDir,
       args: agentArgs,
-      ignoredPatterns,
+      ignoredPatterns: launchIgnoredPatterns,
       readonlyPatterns,
       excludeDirs: seedExcludes,
       env: buildAgentEnv(),
