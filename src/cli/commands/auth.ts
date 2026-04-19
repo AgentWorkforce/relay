@@ -1,6 +1,19 @@
 import { Command } from 'commander';
+import { track } from '@agent-relay/telemetry';
 
 import { runAuthCommand, type AuthCommandOptions, type AuthCommandIo } from '../lib/auth-ssh.js';
+import { errorClassName } from '../lib/telemetry-helpers.js';
+
+const PROVIDER_ALIASES: Record<string, string> = {
+  claude: 'anthropic',
+  codex: 'openai',
+  gemini: 'google',
+};
+
+function normalizeProviderForTelemetry(providerArg: string): string {
+  const normalized = providerArg.toLowerCase().trim();
+  return PROVIDER_ALIASES[normalized] || normalized;
+}
 
 type ExitFn = (code: number) => never;
 
@@ -48,6 +61,24 @@ export function registerAuthCommands(program: Command, overrides: Partial<AuthDe
       'Use dedicated auth broker instead of workspace SSH (for Daytona/sandboxed environments)'
     )
     .action(async (providerArg: string, options: AuthCommandOptions) => {
-      await deps.runAuth(providerArg, options);
+      const started = Date.now();
+      let success = false;
+      let errorClass: string | undefined;
+      try {
+        await deps.runAuth(providerArg, options);
+        success = true;
+      } catch (err) {
+        errorClass = errorClassName(err);
+        throw err;
+      } finally {
+        track('provider_auth', {
+          provider: normalizeProviderForTelemetry(providerArg),
+          success,
+          duration_ms: Date.now() - started,
+          use_auth_broker: Boolean(options.useAuthBroker),
+          used_token: Boolean(options.token),
+          ...(errorClass ? { error_class: errorClass } : {}),
+        });
+      }
     });
 }

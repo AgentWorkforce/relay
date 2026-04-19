@@ -18,6 +18,7 @@ function mockBootstrapDependencies(parseSpy: ReturnType<typeof vi.fn>): void {
   vi.doMock('@agent-relay/telemetry', () => ({
     initTelemetry: vi.fn(),
     track: vi.fn(),
+    shutdown: vi.fn().mockResolvedValue(undefined),
   }));
   vi.doMock('./commands/agent-management.js', () => ({
     registerAgentManagementCommands: vi.fn(),
@@ -85,7 +86,7 @@ describe('CLI entrypoints', () => {
   });
 
   it('index invokes runCli exactly once when used as the entrypoint', async () => {
-    const runCli = vi.fn();
+    const runCli = vi.fn().mockResolvedValue(undefined);
     vi.doMock('./bootstrap.js', () => ({
       runCli,
     }));

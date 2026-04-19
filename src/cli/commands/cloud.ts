@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Command, InvalidArgumentError } from 'commander';
 import { CLI_AUTH_CONFIG } from '@agent-relay/config/cli-auth-config';
+import { track } from '@agent-relay/telemetry';
 
 import {
   ensureAuthenticated,
@@ -23,6 +24,7 @@ import {
 } from '@agent-relay/cloud';
 
 import { runInteractiveSession } from '../lib/ssh-interactive.js';
+import { errorClassName } from '../lib/telemetry-helpers.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -136,20 +138,37 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--force', 'Force re-authentication even if already logged in')
     .action(async (options: { apiUrl?: string; force?: boolean }) => {
-      const apiUrl = options.apiUrl || defaultApiUrl();
+      const started = Date.now();
+      let success = false;
+      let errorClass: string | undefined;
+      try {
+        const apiUrl = options.apiUrl || defaultApiUrl();
 
-      if (!options.force) {
-        const existing = await readStoredAuth();
-        if (existing && existing.apiUrl === apiUrl) {
-          const expiresAt = Date.parse(existing.accessTokenExpiresAt);
-          if (!Number.isNaN(expiresAt) && expiresAt - Date.now() > REFRESH_WINDOW_MS) {
-            deps.log(`Already logged in to ${existing.apiUrl}`);
-            return;
+        if (!options.force) {
+          const existing = await readStoredAuth();
+          if (existing && existing.apiUrl === apiUrl) {
+            const expiresAt = Date.parse(existing.accessTokenExpiresAt);
+            if (!Number.isNaN(expiresAt) && expiresAt - Date.now() > REFRESH_WINDOW_MS) {
+              deps.log(`Already logged in to ${existing.apiUrl}`);
+              success = true;
+              return;
+            }
           }
         }
-      }
 
-      await ensureAuthenticated(apiUrl, { force: options.force });
+        await ensureAuthenticated(apiUrl, { force: options.force });
+        success = true;
+      } catch (err) {
+        errorClass = errorClassName(err);
+        throw err;
+      } finally {
+        track('cloud_auth', {
+          action: 'login',
+          success,
+          duration_ms: Date.now() - started,
+          ...(errorClass ? { error_class: errorClass } : {}),
+        });
+      }
     });
 
   // ── logout ─────────────────────────────────────────────────────────────────
@@ -158,28 +177,45 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .command('logout')
     .description('Clear stored cloud credentials')
     .action(async () => {
-      const auth = await readStoredAuth();
-      if (!auth) {
-        deps.log('Not logged in.');
-        return;
-      }
-
+      const started = Date.now();
+      let success = false;
+      let errorClass: string | undefined;
       try {
-        const revokeUrl = new URL(
-          'api/v1/auth/token/revoke',
-          auth.apiUrl.endsWith('/') ? auth.apiUrl : `${auth.apiUrl}/`
-        );
-        await fetch(revokeUrl, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ token: auth.refreshToken }),
-        });
-      } catch {
-        // best-effort revoke
-      }
+        const auth = await readStoredAuth();
+        if (!auth) {
+          deps.log('Not logged in.');
+          success = true;
+          return;
+        }
 
-      await clearStoredAuth();
-      deps.log('Logged out.');
+        try {
+          const revokeUrl = new URL(
+            'api/v1/auth/token/revoke',
+            auth.apiUrl.endsWith('/') ? auth.apiUrl : `${auth.apiUrl}/`
+          );
+          await fetch(revokeUrl, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ token: auth.refreshToken }),
+          });
+        } catch {
+          // best-effort revoke
+        }
+
+        await clearStoredAuth();
+        deps.log('Logged out.');
+        success = true;
+      } catch (err) {
+        errorClass = errorClassName(err);
+        throw err;
+      } finally {
+        track('cloud_auth', {
+          action: 'logout',
+          success,
+          duration_ms: Date.now() - started,
+          ...(errorClass ? { error_class: errorClass } : {}),
+        });
+      }
     });
 
   // ── whoami ─────────────────────────────────────────────────────────────────
@@ -189,30 +225,46 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .description('Show current authentication status')
     .option('--api-url <url>', 'Cloud API base URL')
     .action(async (options: { apiUrl?: string }) => {
-      const apiUrl = options.apiUrl || defaultApiUrl();
-      const auth = await ensureAuthenticated(apiUrl);
-      const { response } = await authorizedApiFetch(auth, '/api/v1/auth/whoami', {
-        method: 'GET',
-      });
+      const started = Date.now();
+      let success = false;
+      let errorClass: string | undefined;
+      try {
+        const apiUrl = options.apiUrl || defaultApiUrl();
+        const auth = await ensureAuthenticated(apiUrl);
+        const { response } = await authorizedApiFetch(auth, '/api/v1/auth/whoami', {
+          method: 'GET',
+        });
 
-      const payload = (await response.json().catch(() => null)) as
-        | (WhoAmIResponse & { error?: string })
-        | null;
+        const payload = (await response.json().catch(() => null)) as
+          | (WhoAmIResponse & { error?: string })
+          | null;
 
-      if (!response.ok || !payload?.authenticated) {
-        throw new Error(payload?.error || 'Failed to resolve auth status');
+        if (!response.ok || !payload?.authenticated) {
+          throw new Error(payload?.error || 'Failed to resolve auth status');
+        }
+
+        deps.log(`API URL: ${auth.apiUrl}`);
+        deps.log(`Auth source: ${payload.source}`);
+        deps.log(`Subject type: ${payload.subjectType ?? 'session'}`);
+        deps.log(
+          `User: ${payload.user.name || '(no name)'}${payload.user.email ? ` <${payload.user.email}>` : ''}`
+        );
+        deps.log(`Organization: ${payload.currentOrganization.name}`);
+        deps.log(`Workspace: ${payload.currentWorkspace.name}`);
+        deps.log(`Scopes: ${payload.scopes.length > 0 ? payload.scopes.join(', ') : '(none)'}`);
+        deps.log(`Token file: ${AUTH_FILE_PATH}`);
+        success = true;
+      } catch (err) {
+        errorClass = errorClassName(err);
+        throw err;
+      } finally {
+        track('cloud_auth', {
+          action: 'whoami',
+          success,
+          duration_ms: Date.now() - started,
+          ...(errorClass ? { error_class: errorClass } : {}),
+        });
       }
-
-      deps.log(`API URL: ${auth.apiUrl}`);
-      deps.log(`Auth source: ${payload.source}`);
-      deps.log(`Subject type: ${payload.subjectType ?? 'session'}`);
-      deps.log(
-        `User: ${payload.user.name || '(no name)'}${payload.user.email ? ` <${payload.user.email}>` : ''}`
-      );
-      deps.log(`Organization: ${payload.currentOrganization.name}`);
-      deps.log(`Workspace: ${payload.currentWorkspace.name}`);
-      deps.log(`Scopes: ${payload.scopes.length > 0 ? payload.scopes.join(', ') : '(none)'}`);
-      deps.log(`Token file: ${AUTH_FILE_PATH}`);
     });
 
   // ── connect ────────────────────────────────────────────────────────────────
@@ -225,6 +277,11 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .option('--language <language>', 'Sandbox language/image', 'typescript')
     .option('--timeout <seconds>', 'Connection timeout in seconds', parsePositiveInteger, 300)
     .action(async (providerArg: string, options: { apiUrl?: string; language: string; timeout: number }) => {
+      const started = Date.now();
+      let success = false;
+      let errorClass: string | undefined;
+      let trackedProvider: string | undefined;
+      try {
       const timeoutMs = options.timeout * 1000;
 
       if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -232,6 +289,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       }
 
       const provider = normalizeProvider(providerArg);
+      trackedProvider = provider;
       const providerConfig = CLI_AUTH_CONFIG[provider];
       if (!providerConfig) {
         const known = Object.keys(CLI_AUTH_CONFIG).sort();
@@ -315,19 +373,19 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       }
 
       io.log('');
-      const success = sessionResult.authDetected;
+      const authSuccess = sessionResult.authDetected;
 
       io.log('Finalizing authentication with cloud...');
       const { response: completeResponse } = await authorizedApiFetch(auth, '/api/v1/cli/auth/complete', {
         method: 'POST',
-        body: JSON.stringify({ sessionId: start.sessionId, success }),
+        body: JSON.stringify({ sessionId: start.sessionId, success: authSuccess }),
       });
 
       if (!completeResponse.ok) {
         throw new Error(await getErrorDetails(completeResponse));
       }
 
-      if (!success) {
+      if (!authSuccess) {
         const exitCode = sessionResult.exitCode;
         if (typeof exitCode === 'number' && exitCode !== 0) {
           io.error(color.red(`Remote auth command exited with code ${exitCode}.`));
@@ -351,6 +409,19 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       io.log(`${providerConfig.displayName} credentials are now stored and encrypted.`);
       io.log(color.dim('Your workflows will automatically use these credentials.'));
       io.log('');
+      success = true;
+      } catch (err) {
+        errorClass = errorClassName(err);
+        throw err;
+      } finally {
+        track('cloud_auth', {
+          action: 'connect',
+          success,
+          duration_ms: Date.now() - started,
+          ...(trackedProvider ? { provider: trackedProvider } : {}),
+          ...(errorClass ? { error_class: errorClass } : {}),
+        });
+      }
     });
 
   // ── run ────────────────────────────────────────────────────────────────────
@@ -369,19 +440,36 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         workflow: string,
         options: { apiUrl?: string; fileType?: WorkflowFileType; syncCode?: boolean; json?: boolean }
       ) => {
-        const result = await runWorkflow(workflow, options);
-        if (options.json) {
-          deps.log(JSON.stringify(result, null, 2));
-          return;
+        const started = Date.now();
+        let success = false;
+        let errorClass: string | undefined;
+        try {
+          const result = await runWorkflow(workflow, options);
+          if (options.json) {
+            deps.log(JSON.stringify(result, null, 2));
+          } else {
+            deps.log(`Run created: ${result.runId}`);
+            if (typeof result.sandboxId === 'string') {
+              deps.log(`Sandbox: ${result.sandboxId}`);
+            }
+            deps.log(`Status: ${result.status}`);
+            deps.log(`\nView logs:  agent-relay cloud logs ${result.runId} --follow`);
+            deps.log(`Sync code:  agent-relay cloud sync ${result.runId}`);
+          }
+          success = true;
+        } catch (err) {
+          errorClass = errorClassName(err);
+          throw err;
+        } finally {
+          track('cloud_workflow_run', {
+            has_explicit_file_type: Boolean(options.fileType),
+            sync_code: options.syncCode !== false,
+            json_output: Boolean(options.json),
+            success,
+            duration_ms: Date.now() - started,
+            ...(errorClass ? { error_class: errorClass } : {}),
+          });
         }
-
-        deps.log(`Run created: ${result.runId}`);
-        if (typeof result.sandboxId === 'string') {
-          deps.log(`Sandbox: ${result.sandboxId}`);
-        }
-        deps.log(`Status: ${result.status}`);
-        deps.log(`\nView logs:  agent-relay cloud logs ${result.runId} --follow`);
-        deps.log(`Sync code:  agent-relay cloud sync ${result.runId}`);
       }
     );
 
