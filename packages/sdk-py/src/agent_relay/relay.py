@@ -32,9 +32,9 @@ class Message:
 
     event_id: str
     from_name: str
-    from_kind: Optional[SenderKind]
     to: str
     text: str
+    from_kind: Optional[SenderKind] = None
     thread_id: Optional[str] = None
     data: Optional[dict[str, Any]] = None
     mode: Optional[MessageInjectionMode] = None

@@ -4,8 +4,8 @@ pub fn is_human_sender(sender: &str, sender_kind: SenderKind) -> bool {
     if matches!(sender_kind, SenderKind::Human) {
         return true;
     }
-    // If the protocol explicitly marks the sender as an agent, trust that.
-    if matches!(sender_kind, SenderKind::Agent) {
+    // If the protocol explicitly marks the sender as an agent or system actor, trust that.
+    if matches!(sender_kind, SenderKind::Agent | SenderKind::System) {
         return false;
     }
     // Fallback heuristic for Unknown sender_kind (e.g. command.invoked events).
