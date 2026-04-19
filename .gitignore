@@ -91,3 +91,4 @@ web/.open-next
 !/workflows/refactor/
 !/workflows/relayauth-integration/
 !/workflows/cloud-connect/
+!/workflows/github-traffic-to-posthog.ts
