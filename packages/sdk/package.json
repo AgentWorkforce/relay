@@ -57,6 +57,26 @@
       "import": "./dist/communicate/index.js",
       "default": "./dist/communicate/index.js"
     },
+    "./communicate/a2a-types": {
+      "types": "./dist/communicate/a2a-types.d.ts",
+      "import": "./dist/communicate/a2a-types.js",
+      "default": "./dist/communicate/a2a-types.js"
+    },
+    "./communicate/a2a-server": {
+      "types": "./dist/communicate/a2a-server.d.ts",
+      "import": "./dist/communicate/a2a-server.js",
+      "default": "./dist/communicate/a2a-server.js"
+    },
+    "./communicate/a2a-transport": {
+      "types": "./dist/communicate/a2a-transport.d.ts",
+      "import": "./dist/communicate/a2a-transport.js",
+      "default": "./dist/communicate/a2a-transport.js"
+    },
+    "./communicate/a2a-bridge": {
+      "types": "./dist/communicate/a2a-bridge.d.ts",
+      "import": "./dist/communicate/a2a-bridge.js",
+      "default": "./dist/communicate/a2a-bridge.js"
+    },
     "./communicate/adapters/pi": {
       "types": "./dist/communicate/adapters/pi.d.ts",
       "import": "./dist/communicate/adapters/pi.js",
