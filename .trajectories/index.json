@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-20T13:33:30.100Z",
+  "lastUpdated": "2026-04-20T15:23:23.093Z",
   "trajectories": {
     "traj_qb54w47qwod6": {
       "title": "fix-history-from-workflow",
@@ -3651,6 +3651,12 @@
       "status": "active",
       "startedAt": "2026-04-20T13:16:22.009Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/active/traj_3b3p1z4y7qlo.json"
+    },
+    "traj_o9cx33xn5u39": {
+      "title": "add-mcp-args-register-flag-workflow",
+      "status": "active",
+      "startedAt": "2026-04-20T15:06:23.387Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay-add-mcp-args-register/.trajectories/active/traj_o9cx33xn5u39.json"
     }
   }
 }

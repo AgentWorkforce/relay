@@ -23,22 +23,26 @@ Sample output:
     "--mcp-config",
     "{\"mcpServers\":{\"relaycast\":{\"command\":\"npx\",\"args\":[\"-y\",\"@relaycast/mcp\"]}}}"
   ],
-  "sideEffectFiles": []
+  "sideEffectFiles": [],
+  "agentToken": null
 }
 ```
 
 Flags:
 
-| Flag                              | Required | Description                                                                                                               |
-| --------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `--cli <name>`                    | yes      | CLI name or command to compute MCP args for, such as `claude`, `codex`, `opencode`, `cursor-agent`, `gemini`, or `droid`. |
-| `--agent-name <name>`             | yes      | Relaycast agent name to inject into the MCP configuration.                                                                |
-| `--api-key <key>`                 | no       | Relaycast API key. Falls back to `RELAY_API_KEY`.                                                                         |
-| `--base-url <url>`                | no       | Relaycast base URL. Falls back to `RELAY_BASE_URL`.                                                                       |
-| `--agent-token <token>`           | no       | Pre-registered agent token to pass to the child MCP server.                                                               |
-| `--workspaces-json <json>`        | no       | Multi-workspace context JSON to pass to the child MCP server.                                                             |
-| `--default-workspace <workspace>` | no       | Default workspace ID or name to pass to the child MCP server.                                                             |
-| `--cwd <path>`                    | no       | Working directory used by CLIs that need local MCP config files. Defaults to the current directory.                       |
-| `--existing-args <json>`          | no       | Existing CLI args as a JSON string array, for example `'["--foo","--bar"]'`. Defaults to `[]`.                            |
+| Flag                              | Required | Description                                                                                                                                     |
+| --------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--cli <name>`                    | yes      | CLI name or command to compute MCP args for, such as `claude`, `codex`, `opencode`, `cursor-agent`, `gemini`, or `droid`.                       |
+| `--agent-name <name>`             | yes      | Relaycast agent name to inject into the MCP configuration.                                                                                      |
+| `--api-key <key>`                 | no       | Relaycast API key. Falls back to `RELAY_API_KEY`.                                                                                               |
+| `--base-url <url>`                | no       | Relaycast base URL. Falls back to `RELAY_BASE_URL`.                                                                                             |
+| `--agent-token <token>`           | no       | Pre-registered agent token to pass to the child MCP server.                                                                                     |
+| `--register`                      | no       | Mint a fresh Relaycast agent token with `--api-key`/`RELAY_API_KEY` and `--base-url`/`RELAY_BASE_URL`; mutually exclusive with `--agent-token`. |
+| `--workspaces-json <json>`        | no       | Multi-workspace context JSON to pass to the child MCP server.                                                                                   |
+| `--default-workspace <workspace>` | no       | Default workspace ID or name to pass to the child MCP server.                                                                                   |
+| `--cwd <path>`                    | no       | Working directory used by CLIs that need local MCP config files. Defaults to the current directory.                                             |
+| `--existing-args <json>`          | no       | Existing CLI args as a JSON string array, for example `'["--foo","--bar"]'`. Defaults to `[]`.                                                  |
+
+`agentToken` is `null` unless `--register` successfully minted and injected a fresh Relaycast agent token.
 
 `mcp-args` writes side-effect files synchronously when the target CLI requires a config file. For `opencode`, it may write `<cwd>/opencode.json`; for `cursor`, `cursor-agent`, and `agent`, it may write `<cwd>/.cursor/mcp.json`; for `gemini`, it may write `<HOME>/.gemini/trustedFolders.json`. Treat the command as compute plus configure for those CLIs, not as a side-effect-free dry run.
