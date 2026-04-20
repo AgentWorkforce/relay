@@ -166,6 +166,25 @@ export interface DeliveryState {
   updatedAt: number;
 }
 
+export type AgentActivityReason =
+  | 'delivery_queued'
+  | 'delivery_injected'
+  | 'delivery_active'
+  | 'delivery_ack'
+  | 'delivery_failed'
+  | 'relay_inbound'
+  | 'agent_idle'
+  | 'agent_exited'
+  | 'agent_released';
+
+export interface AgentActivityChange {
+  name: string;
+  active: boolean;
+  pendingDeliveries: number;
+  reason: AgentActivityReason;
+  eventId?: string;
+}
+
 export interface SpawnLifecycleContext {
   name: string;
   cli: string;
@@ -347,6 +366,11 @@ type InternalAgent = Agent & {
   _setChannels: (channels: string[]) => void;
 };
 
+interface AgentActivityState {
+  active: boolean;
+  pendingDeliveries: Map<string, string>;
+}
+
 // ── AgentRelay facade ───────────────────────────────────────────────────────
 
 export class AgentRelay {
@@ -361,6 +385,7 @@ export class AgentRelay {
   onDeliveryUpdate: EventHook<BrokerEvent> = null;
   onAgentExitRequested: EventHook<{ name: string; reason: string }> = null;
   onAgentIdle: EventHook<{ name: string; idleSecs: number }> = null;
+  onAgentActivityChanged: EventHook<AgentActivityChange> = null;
   onChannelSubscribed: ((agent: string, channels: string[]) => void) | null = null;
   onChannelUnsubscribed: ((agent: string, channels: string[]) => void) | null = null;
 
@@ -400,6 +425,7 @@ export class AgentRelay {
   private readonly exitedAgents = new Set<string>();
   private readonly idleAgents = new Set<string>();
   private readonly deliveryStates = new Map<string, DeliveryState>();
+  private readonly agentActivityStates = new Map<string, AgentActivityState>();
   private readonly outputListeners = new Map<string, Set<OutputListener>>();
   private readonly exitResolvers = new Map<
     string,
@@ -1040,6 +1066,7 @@ export class AgentRelay {
     this.exitedAgents.clear();
     this.idleAgents.clear();
     this.deliveryStates.clear();
+    this.agentActivityStates.clear();
     this.outputListeners.clear();
     for (const entry of this.exitResolvers.values()) {
       entry.resolve('released');
@@ -1072,9 +1099,95 @@ export class AgentRelay {
     this.deliveryStates.set(eventId, { eventId, to, status, updatedAt });
   }
 
+  private ensureAgentActivityState(name: string): AgentActivityState {
+    const existing = this.agentActivityStates.get(name);
+    if (existing) {
+      return existing;
+    }
+    const state: AgentActivityState = {
+      active: false,
+      pendingDeliveries: new Map<string, string>(),
+    };
+    this.agentActivityStates.set(name, state);
+    return state;
+  }
+
+  private getDeliveryActivityKey(deliveryId: string, eventId: string): string {
+    return deliveryId || eventId;
+  }
+
+  private markAgentDeliveryPending(
+    name: string,
+    deliveryId: string,
+    eventId: string,
+    reason: AgentActivityReason
+  ): void {
+    const state = this.ensureAgentActivityState(name);
+    state.pendingDeliveries.set(this.getDeliveryActivityKey(deliveryId, eventId), eventId);
+    this.setAgentActivity(name, state, state.pendingDeliveries.size > 0, reason, eventId);
+  }
+
+  private closeAgentDelivery(
+    name: string,
+    reason: AgentActivityReason,
+    eventId?: string,
+    deliveryId?: string
+  ): void {
+    const state = this.agentActivityStates.get(name);
+    if (!state) return;
+
+    const key = deliveryId && eventId ? this.getDeliveryActivityKey(deliveryId, eventId) : undefined;
+    if (key) {
+      state.pendingDeliveries.delete(key);
+    } else if (eventId) {
+      const matchingEntry = Array.from(state.pendingDeliveries.entries()).find(([, pendingEventId]) => {
+        return pendingEventId === eventId;
+      });
+      if (matchingEntry) {
+        state.pendingDeliveries.delete(matchingEntry[0]);
+      } else {
+        const oldestKey = state.pendingDeliveries.keys().next().value as string | undefined;
+        if (oldestKey) {
+          state.pendingDeliveries.delete(oldestKey);
+        }
+      }
+    }
+
+    this.setAgentActivity(name, state, state.pendingDeliveries.size > 0, reason, eventId);
+  }
+
+  private clearAgentDeliveries(name: string, reason: AgentActivityReason, eventId?: string): void {
+    const state = this.agentActivityStates.get(name);
+    if (!state) return;
+    state.pendingDeliveries.clear();
+    this.setAgentActivity(name, state, false, reason, eventId);
+  }
+
+  private setAgentActivity(
+    name: string,
+    state: AgentActivityState,
+    active: boolean,
+    reason: AgentActivityReason,
+    eventId?: string
+  ): void {
+    if (state.active === active) {
+      return;
+    }
+    state.active = active;
+    this.onAgentActivityChanged?.({
+      name,
+      active,
+      pendingDeliveries: state.pendingDeliveries.size,
+      reason,
+      eventId,
+    });
+  }
+
   private resolveEventTimestamp(candidate?: unknown): number {
     return typeof candidate === 'number' ? candidate : Date.now();
   }
+
+
 
   private addAgentChannels(name: string, channels: string[]): void {
     const agent = this.knownAgents.get(name) as InternalAgent | undefined;
@@ -1238,10 +1351,12 @@ export class AgentRelay {
     this.unsubEvent = client.onEvent((event: BrokerEvent) => {
       switch (event.kind) {
         case 'relay_inbound': {
+          this.closeAgentDelivery(event.from, 'relay_inbound', event.event_id);
           if (this.knownAgents.has(event.from)) {
             this.messageReadyAgents.add(event.from);
             this.exitedAgents.delete(event.from);
           }
+          this.clearAgentDeliveries(event.from, 'relay_inbound', event.event_id);
           const msg: Message = {
             eventId: event.event_id,
             from: event.from,
@@ -1264,6 +1379,7 @@ export class AgentRelay {
         }
         case 'agent_released': {
           const agent = this.knownAgents.get(event.name) ?? this.ensureAgentHandle(event.name, 'pty', []);
+          this.clearAgentDeliveries(event.name, 'agent_released');
           this.exitedAgents.add(event.name);
           this.readyAgents.delete(event.name);
           this.messageReadyAgents.delete(event.name);
@@ -1279,6 +1395,7 @@ export class AgentRelay {
         }
         case 'agent_exited': {
           const agent = this.knownAgents.get(event.name) ?? this.ensureAgentHandle(event.name, 'pty', []);
+          this.clearAgentDeliveries(event.name, 'agent_exited');
           this.exitedAgents.add(event.name);
           this.readyAgents.delete(event.name);
           this.messageReadyAgents.delete(event.name);
@@ -1320,6 +1437,7 @@ export class AgentRelay {
           break;
         }
         case 'delivery_queued': {
+          this.markAgentDeliveryPending(event.name, event.delivery_id, event.event_id, 'delivery_queued');
           this.updateDeliveryState(
             event.event_id,
             event.name,
@@ -1329,6 +1447,7 @@ export class AgentRelay {
           break;
         }
         case 'delivery_injected': {
+          this.markAgentDeliveryPending(event.name, event.delivery_id, event.event_id, 'delivery_injected');
           this.updateDeliveryState(
             event.event_id,
             event.name,
@@ -1338,6 +1457,7 @@ export class AgentRelay {
           break;
         }
         case 'delivery_active': {
+          this.markAgentDeliveryPending(event.name, event.delivery_id, event.event_id, 'delivery_active');
           this.updateDeliveryState(event.event_id, event.name, 'active', this.resolveEventTimestamp());
           break;
         }
@@ -1345,7 +1465,12 @@ export class AgentRelay {
           this.updateDeliveryState(event.event_id, event.name, 'verified', this.resolveEventTimestamp());
           break;
         }
+        case 'delivery_ack': {
+          this.markAgentDeliveryPending(event.name, event.delivery_id, event.event_id, 'delivery_ack');
+          break;
+        }
         case 'delivery_failed': {
+          this.closeAgentDelivery(event.name, 'delivery_failed', event.event_id, event.delivery_id);
           this.updateDeliveryState(event.event_id, event.name, 'failed', this.resolveEventTimestamp());
           break;
         }
@@ -1362,6 +1487,7 @@ export class AgentRelay {
           break;
         }
         case 'agent_idle': {
+          this.clearAgentDeliveries(event.name, 'agent_idle');
           this.idleAgents.add(event.name);
           this.onAgentIdle?.({
             name: event.name,
@@ -1689,6 +1815,7 @@ export class AgentRelay {
     this.messageReadyAgents.delete(name);
     this.exitedAgents.delete(name);
     this.idleAgents.delete(name);
+    this.agentActivityStates.delete(name);
   }
 
   private normalizeReleaseOptions(reasonOrOptions?: string | ReleaseOptions): ReleaseOptions {
