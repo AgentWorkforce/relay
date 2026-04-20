@@ -1,4 +1,13 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import {
+  accessSync,
+  appendFileSync,
+  constants as fsConstants,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+} from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import type { WorkflowRunRow, WorkflowStepRow } from './types.js';
@@ -7,41 +16,104 @@ import type { WorkflowDb } from './runner.js';
 type DbEntry = { kind: 'run'; row: WorkflowRunRow } | { kind: 'step'; row: WorkflowStepRow };
 
 /**
+ * Optional hook: fired whenever a persistence write fails (e.g. EACCES,
+ * ENOSPC). Surfaced so the CLI, dashboard, or bootstrap can decide how
+ * to react beyond the single console.warn. Not called for the initial
+ * "directory unwritable" detection — that's stored in {@link isWritable}.
+ */
+export type DbWriteFailureListener = (err: unknown, filePath: string) => void;
+
+export interface JsonFileWorkflowDbOptions {
+  /** Override the resolved filePath. Kept for tests / advanced callers. */
+  filePath?: string;
+  /** Notified on every underlying write error. */
+  onWriteFailure?: DbWriteFailureListener;
+  /**
+   * When true, if the preferred file path is unwritable, fall back to
+   * `$HOME/.agent-relay/workflow-runs-<basename>.jsonl` so `--resume`
+   * still works in environments where the workflow cwd is read-only
+   * (cloud sandboxes with restrictive workspace ACLs).
+   *
+   * Defaults to `false` — strict "write to this path or run in-memory"
+   * semantics, matching the pre-cache behavior. Opt-in via `true`.
+   */
+  homeFallback?: boolean;
+}
+
+/**
  * JSONL-backed WorkflowDb for the CLI.
  *
- * Each insert/update appends a line to the file. On read, we scan from the
- * bottom and take the last record for each ID — so updates naturally shadow
- * earlier inserts without rewriting the file.
+ * Design: the **in-memory cache is the single source of truth** for the
+ * process lifetime. Every mutation updates the cache synchronously and
+ * then best-effort appends to the jsonl file for durability / `--resume`.
  *
- * This makes writes O(1) and reads O(n) where n = number of lines (small for
- * typical workflows). Resume only reads once at startup, so the read cost is
- * paid once per CLI invocation.
+ * This matters because the runtime correctness of a running workflow
+ * must not depend on disk writes succeeding. If the storage path is
+ * unwritable (ACL-restricted workspace, full disk, ENOSPC), the workflow
+ * still progresses through its state machine correctly — we just lose
+ * the ability to resume a future process from that run.
  *
- * File: .agent-relay/workflow-runs.jsonl in the workflow cwd.
+ * Read paths used to re-snapshot the jsonl on every call, which meant
+ * a failed `updateRun(..., { status: 'completed' })` would leave a
+ * subsequent `getRun` returning the stale 'running' row from disk.
+ * That bug surfaced as workflows passing per-step but reporting
+ * `status: 'running'` to callers.
+ *
+ * Storage path resolution:
+ *   1. Try the caller-supplied file path. If the parent directory is
+ *      writable, use it.
+ *   2. If (1) fails and `homeFallback` is true (default), try
+ *      `$HOME/.agent-relay/workflow-runs-<basename>.jsonl`. This is
+ *      outside any workspace mount in cloud sandboxes and almost
+ *      always writable by the agent.
+ *   3. If both fail, run in memory-only mode. The workflow still
+ *      executes correctly; `--resume` won't be available for this run.
+ *
+ * File: `.agent-relay/workflow-runs.jsonl` in the workflow cwd by default.
  */
 export class JsonFileWorkflowDb implements WorkflowDb {
   private readonly filePath: string;
 
-  /** Whether the storage directory is writable. False = silent no-op mode. */
+  /** Whether persistence is active. False = in-memory-only mode. */
   private readonly writable: boolean;
   private appendFailedOnce = false;
+  private readonly onWriteFailure?: DbWriteFailureListener;
 
-  constructor(filePath: string) {
-    this.filePath = filePath;
-    let writable = false;
-    try {
-      mkdirSync(path.dirname(filePath), { recursive: true });
-      writable = true;
-    } catch {
-      // Permission denied or read-only fs — run in memory-only mode.
-      // The workflow executes normally; resume won't be available for this run.
-    }
+  /**
+   * Authoritative in-memory mirror. Every mutation updates this; reads
+   * return from here. The jsonl file is only consulted at construction
+   * (to replay prior state for `--resume`) and is otherwise write-only.
+   */
+  private readonly cache: {
+    runs: Map<string, WorkflowRunRow>;
+    steps: Map<string, WorkflowStepRow>;
+  };
+
+  constructor(filePathOrOptions: string | JsonFileWorkflowDbOptions) {
+    const options: JsonFileWorkflowDbOptions =
+      typeof filePathOrOptions === 'string' ? { filePath: filePathOrOptions } : filePathOrOptions;
+    this.onWriteFailure = options.onWriteFailure;
+
+    const requestedPath = options.filePath ?? path.join('.agent-relay', 'workflow-runs.jsonl');
+    const homeFallback = options.homeFallback ?? false;
+
+    const { resolvedPath, writable } = JsonFileWorkflowDb.resolveStoragePath(requestedPath, homeFallback);
+    this.filePath = resolvedPath;
     this.writable = writable;
+
+    // Load existing state from disk (for --resume) once at construction.
+    // From this point on, the cache is authoritative.
+    this.cache = JsonFileWorkflowDb.loadSnapshot(this.filePath);
   }
 
-  /** Returns false if the storage directory could not be created (permission error). */
+  /** Returns false if persistence is not active (in-memory-only mode). */
   isWritable(): boolean {
     return this.writable;
+  }
+
+  /** Resolved path on disk. For tests + diagnostics. */
+  getStoragePath(): string {
+    return this.filePath;
   }
 
   hasStepOutputs(runId: string): boolean {
@@ -55,31 +127,51 @@ export class JsonFileWorkflowDb implements WorkflowDb {
 
   // ── Private helpers ─────────────────────────────────────────────────────
 
-  private append(entry: DbEntry): void {
-    if (!this.writable) return;
-    try {
-      appendFileSync(this.filePath, JSON.stringify(entry) + '\n', 'utf8');
-    } catch (err) {
-      if (!this.appendFailedOnce) {
-        this.appendFailedOnce = true;
-        console.warn(
-          '[workflow] warning: failed to write run state to ' +
-            this.filePath +
-            ' — --resume will not be available for this run. Use --start-from instead. ' +
-            'Error: ' +
-            (err instanceof Error ? err.message : String(err))
-        );
+  private static resolveStoragePath(
+    requestedPath: string,
+    homeFallback: boolean
+  ): { resolvedPath: string; writable: boolean } {
+    const candidates: string[] = [requestedPath];
+    if (homeFallback) {
+      const base = path.basename(requestedPath) || 'workflow-runs.jsonl';
+      candidates.push(path.join(os.homedir(), '.agent-relay', `workflow-runs-${base}`));
+    }
+
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i];
+      const isLastCandidate = i === candidates.length - 1;
+      try {
+        mkdirSync(path.dirname(candidate), { recursive: true });
+        // If there's a later fallback to try, actively probe write
+        // permission so we know whether to move on. If this is already
+        // the last candidate, skip the probe and be optimistic — an
+        // unwritable directory will surface as a lazy append() failure
+        // handled by the cache + onWriteFailure path. Matches the
+        // pre-cache "warn on first failure" semantic callers expect.
+        if (!isLastCandidate) {
+          accessSync(path.dirname(candidate), fsConstants.W_OK);
+        }
+        return { resolvedPath: candidate, writable: true };
+      } catch {
+        // Try the next candidate; if this was the last, fall through
+        // to memory-only.
       }
     }
+
+    // Memory-only mode. Path is reported for diagnostics but nothing
+    // is written to it.
+    return { resolvedPath: requestedPath, writable: false };
   }
 
-  /** Read all lines and build the latest snapshot for each ID. */
-  private snapshot(): { runs: Map<string, WorkflowRunRow>; steps: Map<string, WorkflowStepRow> } {
+  private static loadSnapshot(filePath: string): {
+    runs: Map<string, WorkflowRunRow>;
+    steps: Map<string, WorkflowStepRow>;
+  } {
     const runs = new Map<string, WorkflowRunRow>();
     const steps = new Map<string, WorkflowStepRow>();
     let raw = '';
     try {
-      raw = readFileSync(this.filePath, 'utf8');
+      raw = readFileSync(filePath, 'utf8');
     } catch {
       return { runs, steps };
     }
@@ -100,37 +192,68 @@ export class JsonFileWorkflowDb implements WorkflowDb {
     return { runs, steps };
   }
 
+  private append(entry: DbEntry): void {
+    if (!this.writable) return;
+    try {
+      appendFileSync(this.filePath, JSON.stringify(entry) + '\n', 'utf8');
+    } catch (err) {
+      // Notify every failure so callers can aggregate / surface.
+      this.onWriteFailure?.(err, this.filePath);
+      // Warn to console once per process — subsequent failures are noise.
+      if (!this.appendFailedOnce) {
+        this.appendFailedOnce = true;
+        console.warn(
+          '[workflow] warning: failed to write run state to ' +
+            this.filePath +
+            ' — --resume will not be available for this run. Use --start-from instead. ' +
+            'Error: ' +
+            (err instanceof Error ? err.message : String(err))
+        );
+      }
+    }
+  }
+
   // ── WorkflowDb interface ─────────────────────────────────────────────────
 
   async insertRun(run: WorkflowRunRow): Promise<void> {
+    this.cache.runs.set(run.id, run);
     this.append({ kind: 'run', row: run });
   }
 
   async updateRun(id: string, patch: Partial<WorkflowRunRow>): Promise<void> {
-    const { runs } = this.snapshot();
-    const existing = runs.get(id);
+    const existing = this.cache.runs.get(id);
     if (!existing) return;
-    this.append({ kind: 'run', row: { ...existing, ...patch, updatedAt: new Date().toISOString() } });
+    const updated: WorkflowRunRow = {
+      ...existing,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+    this.cache.runs.set(id, updated);
+    this.append({ kind: 'run', row: updated });
   }
 
   async getRun(id: string): Promise<WorkflowRunRow | null> {
-    const { runs } = this.snapshot();
-    return runs.get(id) ?? null;
+    return this.cache.runs.get(id) ?? null;
   }
 
   async insertStep(step: WorkflowStepRow): Promise<void> {
+    this.cache.steps.set(step.id, step);
     this.append({ kind: 'step', row: step });
   }
 
   async updateStep(id: string, patch: Partial<WorkflowStepRow>): Promise<void> {
-    const { steps } = this.snapshot();
-    const existing = steps.get(id);
+    const existing = this.cache.steps.get(id);
     if (!existing) return;
-    this.append({ kind: 'step', row: { ...existing, ...patch, updatedAt: new Date().toISOString() } });
+    const updated: WorkflowStepRow = {
+      ...existing,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+    this.cache.steps.set(id, updated);
+    this.append({ kind: 'step', row: updated });
   }
 
   async getStepsByRunId(runId: string): Promise<WorkflowStepRow[]> {
-    const { steps } = this.snapshot();
-    return Array.from(steps.values()).filter((s) => s.runId === runId);
+    return Array.from(this.cache.steps.values()).filter((s) => s.runId === runId);
   }
 }
