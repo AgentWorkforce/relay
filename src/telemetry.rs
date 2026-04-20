@@ -25,6 +25,11 @@ Run `agent-relay telemetry disable` to opt out.";
 // ---------------------------------------------------------------------------
 
 /// Telemetry events emitted by the broker at key lifecycle points.
+///
+/// Schema aligns with the TypeScript definitions in
+/// `packages/telemetry/src/events.ts` — when you add or change a field here,
+/// update that file too so dashboards stay coherent across the CLI/broker
+/// boundary.
 pub enum TelemetryEvent {
     BrokerStart,
     BrokerStop {
@@ -32,13 +37,31 @@ pub enum TelemetryEvent {
         agent_spawn_count: u32,
     },
     AgentSpawn {
+        /// Which agent CLI was spawned (claude, codex, gemini, ...).
         cli: String,
+        /// Internal runtime label (e.g. `"pty"`). Not in the TS schema but
+        /// still useful for operational debugging.
         runtime: String,
+        /// Where the spawn originated — matches TS `ActionSource`.
+        spawn_source: ActionSource,
+        /// Whether the spawner supplied an initial task string.
+        has_task: bool,
+        /// Whether this is a shadow agent (spawned with `shadow_of`/`shadow_mode`).
+        is_shadow: bool,
     },
     AgentRelease {
+        /// Which agent CLI was released (may be empty when unknown at the
+        /// release site — relaycast-driven releases don't resolve the CLI
+        /// from the worker name alone).
         cli: String,
+        /// Broker-local category of the release reason (e.g. `"ws_command"`,
+        /// `"relaycast_release"`). Retained for continuity with historical
+        /// events; the product-level reason lives in `release_source`.
         release_reason: String,
+        /// Wall-clock lifetime of the agent in seconds.
         lifetime_seconds: u64,
+        /// Who initiated the release — matches TS `ActionSource`.
+        release_source: ActionSource,
     },
     AgentCrash {
         cli: String,
@@ -52,6 +75,27 @@ pub enum TelemetryEvent {
     CliCommandRun {
         command_name: String,
     },
+}
+
+/// Mirror of the TypeScript `ActionSource` union. Serialized as snake_case
+/// strings so PostHog dashboards can filter on string literals cleanly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionSource {
+    HumanCli,
+    HumanDashboard,
+    Agent,
+    Protocol,
+}
+
+impl ActionSource {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::HumanCli => "human_cli",
+            Self::HumanDashboard => "human_dashboard",
+            Self::Agent => "agent",
+            Self::Protocol => "protocol",
+        }
+    }
 }
 
 impl TelemetryEvent {
@@ -79,18 +123,29 @@ impl TelemetryEvent {
                 "uptime_seconds": uptime_seconds,
                 "agent_spawn_count": agent_spawn_count,
             }),
-            Self::AgentSpawn { cli, runtime } => json!({
+            Self::AgentSpawn {
+                cli,
+                runtime,
+                spawn_source,
+                has_task,
+                is_shadow,
+            } => json!({
                 "cli": cli,
                 "runtime": runtime,
+                "spawn_source": spawn_source.as_str(),
+                "has_task": has_task,
+                "is_shadow": is_shadow,
             }),
             Self::AgentRelease {
                 cli,
                 release_reason,
                 lifetime_seconds,
+                release_source,
             } => json!({
                 "cli": cli,
                 "release_reason": release_reason,
                 "lifetime_seconds": lifetime_seconds,
+                "release_source": release_source.as_str(),
             }),
             Self::AgentCrash {
                 cli,
@@ -462,11 +517,15 @@ mod tests {
             TelemetryEvent::AgentSpawn {
                 cli: "claude".into(),
                 runtime: "pty".into(),
+                spawn_source: ActionSource::HumanCli,
+                has_task: true,
+                is_shadow: false,
             },
             TelemetryEvent::AgentRelease {
                 cli: "claude".into(),
                 release_reason: "user".into(),
                 lifetime_seconds: 30,
+                release_source: ActionSource::HumanCli,
             },
             TelemetryEvent::AgentCrash {
                 cli: "claude".into(),
@@ -508,6 +567,45 @@ mod tests {
         client.track(TelemetryEvent::BrokerStart);
         client.shutdown();
         std::env::remove_var("AGENT_RELAY_TELEMETRY_DISABLED");
+    }
+
+    #[test]
+    fn action_source_serializes_to_snake_case_strings() {
+        assert_eq!(ActionSource::HumanCli.as_str(), "human_cli");
+        assert_eq!(ActionSource::HumanDashboard.as_str(), "human_dashboard");
+        assert_eq!(ActionSource::Agent.as_str(), "agent");
+        assert_eq!(ActionSource::Protocol.as_str(), "protocol");
+    }
+
+    #[test]
+    fn agent_spawn_properties_include_new_fields() {
+        let event = TelemetryEvent::AgentSpawn {
+            cli: "claude".into(),
+            runtime: "pty".into(),
+            spawn_source: ActionSource::HumanDashboard,
+            has_task: true,
+            is_shadow: false,
+        };
+        let props = event.properties();
+        assert_eq!(props["cli"], "claude");
+        assert_eq!(props["runtime"], "pty");
+        assert_eq!(props["spawn_source"], "human_dashboard");
+        assert_eq!(props["has_task"], true);
+        assert_eq!(props["is_shadow"], false);
+    }
+
+    #[test]
+    fn agent_release_properties_include_release_source() {
+        let event = TelemetryEvent::AgentRelease {
+            cli: String::new(),
+            release_reason: "relaycast_release".into(),
+            lifetime_seconds: 42,
+            release_source: ActionSource::Protocol,
+        };
+        let props = event.properties();
+        assert_eq!(props["release_reason"], "relaycast_release");
+        assert_eq!(props["release_source"], "protocol");
+        assert_eq!(props["lifetime_seconds"], 42);
     }
 
     #[test]

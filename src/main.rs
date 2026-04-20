@@ -56,7 +56,7 @@ use relay_broker::{
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
     snippets::ensure_relaycast_mcp_config,
-    telemetry::{TelemetryClient, TelemetryEvent},
+    telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
     types::{BrokerCommandEvent, BrokerCommandPayload, InboundKind, SenderKind},
 };
 
@@ -1328,6 +1328,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     telemetry.track(TelemetryEvent::AgentSpawn {
                                         cli: cli.clone(),
                                         runtime: runtime_label(&spec_for_state.runtime).to_string(),
+                                        spawn_source: ActionSource::HumanDashboard,
+                                        has_task: effective_task.is_some(),
+                                        is_shadow: spec_for_state.shadow_of.is_some()
+                                            || spec_for_state.shadow_mode.is_some(),
                                     });
                                     let pid = workers.worker_pid(&name).unwrap_or(0);
                                     state.agents.insert(
@@ -2078,6 +2082,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             cli: String::new(),
                                             release_reason: "relaycast_release".to_string(),
                                             lifetime_seconds: 0,
+                                            release_source: ActionSource::Protocol,
                                         });
                                         state.agents.remove(&name);
                                         if paths.persist {
@@ -2249,6 +2254,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         telemetry.track(TelemetryEvent::AgentSpawn {
                                             cli: cli.clone(),
                                             runtime: "pty".to_string(),
+                                            spawn_source: ActionSource::Protocol,
+                                            has_task: effective_task.is_some(),
+                                            is_shadow: false,
                                         });
                                         let pid = workers.worker_pid(&name).unwrap_or(0);
                                         state.agents.insert(
@@ -2430,6 +2438,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             telemetry.track(TelemetryEvent::AgentSpawn {
                                                 cli: cli.clone(),
                                                 runtime: "pty".to_string(),
+                                                spawn_source: ActionSource::Protocol,
+                                                has_task: effective_task.is_some(),
+                                                is_shadow: false,
                                             });
                                             let pid = workers.worker_pid(&name).unwrap_or(0);
                                             state.agents.insert(
