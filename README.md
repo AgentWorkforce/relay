@@ -19,7 +19,6 @@ It is not a framework or a harness. Your agents keep running however they alread
 - **Works with terminal-native agents**: use Claude Code, Codex, Gemini CLI, OpenCode, and other supported runtimes without changing how they run.
 - **SDK-first**: spawn agents programmatically, route work, wait for readiness, and manage lifecycles from TypeScript or Python.
 - **Useful from both code and tools**: wire Relay into apps, scripts, plugins, and local workflows.
-- **Plain docs for humans and agents**: every docs page is also available as generated Markdown for terminal use and LLM context.
 
 ## Install
 
@@ -161,4 +160,4 @@ Apache-2.0 — Copyright 2026 Agent Workforce Incorporated
 
 ---
 
-**Links:** [Website](https://agentrelay.com) · [Documentation](https://agentrelay.com/docs) · [Docs (Markdown)](https://agentrelay.com/docs/markdown) · [Issues](https://github.com/AgentWorkforce/relay/issues) · [Discord](https://discord.gg/6E6CTxM8um)
+**Links:** [Website](https://agentrelay.com) · [Documentation](https://agentrelay.com/docs) · [Docs (Markdown)](https://agentrelay.com/docs/markdown)  · [Discord](https://discord.gg/6E6CTxM8um)
