@@ -6117,6 +6117,46 @@ mod tests {
         assert!(has_trust_ref && has_confirmation);
     }
 
+    /// Regression: Claude Code 2.1.x ships the modern wording "Yes, proceed"
+    /// instead of "Yes, I trust this folder". Captured from a live cloud
+    /// sandbox running claude-code 2.1.19.
+    #[test]
+    fn claude_trust_prompt_modern_wording() {
+        let output = " Do you trust the files in this folder?\n\
+                       \n\
+                       /project\n\
+                       \n\
+                       Claude Code may read, write, or execute files contained in this directory.\n\
+                       This can pose security risks, so only use files from trusted sources.\n\
+                       \n\
+                       Learn more\n\
+                       \n\
+                       ❯ 1. Yes, proceed\n\
+                         2. No, exit\n\
+                       \n\
+                       Enter to confirm · Esc to cancel";
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
+        assert!(has_trust_ref, "modern wording should match has_trust_ref");
+        assert!(
+            has_confirmation,
+            "modern numbered menu should match has_confirmation"
+        );
+    }
+
+    /// The "Yes, proceed" / "No, exit" layout on its own (no trust-reference
+    /// context) should not false-positive — it's a generic numbered menu
+    /// pattern that appears elsewhere.
+    #[test]
+    fn claude_trust_prompt_modern_menu_without_trust_context() {
+        let output = "Select action:\n1. Yes, proceed\n2. No, exit";
+        let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
+        assert!(!has_trust_ref, "no trust keyword → no has_trust_ref");
+        assert!(
+            has_confirmation,
+            "menu structure matches regardless; the gate is has_trust_ref && has_confirmation"
+        );
+    }
+
     // ==================== is_in_editor_mode tests ====================
 
     #[test]

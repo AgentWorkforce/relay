@@ -205,11 +205,24 @@ impl WorkerRegistry {
                 // NOTE: Permission-bypass flags are auto-injected for all spawned agents.
                 // This means any actor who can trigger agent.add gets agents with no permission
                 // guardrails. Future work should make this an explicit opt-in per step/agent.
+                //
+                // For claude we also inject `--permission-mode bypassPermissions` on top of
+                // `--dangerously-skip-permissions`. In Claude Code 2.1.x the former has proven
+                // more effective at suppressing the "Do you trust the files in this folder?"
+                // dialog, which otherwise renders mid-session on first filesystem tool use
+                // and blocks a broker-wrapped PTY silently.
+                let mut extra_bypass_flags: Vec<&str> = Vec::new();
                 let bypass_flag: Option<&str> = if is_claude
                     && !effective_args
                         .iter()
                         .any(|a| a.contains("dangerously-skip-permissions"))
                 {
+                    if !effective_args
+                        .iter()
+                        .any(|a| a == "--permission-mode" || a.starts_with("--permission-mode="))
+                    {
+                        extra_bypass_flags.extend(["--permission-mode", "bypassPermissions"]);
+                    }
                     Some("--dangerously-skip-permissions")
                 } else if is_codex
                     && !effective_args
@@ -227,6 +240,7 @@ impl WorkerRegistry {
                     tracing::warn!(
                         worker = %spec.name,
                         flag = %flag,
+                        extra = ?extra_bypass_flags,
                         "auto-injecting permission-bypass flag for spawned agent"
                     );
                 }
@@ -262,6 +276,9 @@ impl WorkerRegistry {
                     command.arg("--");
                     if let Some(flag) = bypass_flag {
                         command.arg(flag);
+                    }
+                    for extra in &extra_bypass_flags {
+                        command.arg(extra);
                     }
                     if let Some(ref model) = model_flag {
                         command.arg("--model");

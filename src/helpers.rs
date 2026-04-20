@@ -872,12 +872,35 @@ pub(crate) fn detect_gemini_trust_prompt(clean_output: &str) -> (bool, bool) {
 
 /// Detect Claude Code folder trust prompt in output.
 /// Returns (has_trust_ref, has_confirmation).
+///
+/// Matches a variety of wordings the Claude Code TUI has shipped:
+///   "Do you trust the files in this folder?" + numbered menu
+///     "1. Yes, proceed / 2. No, exit"
+///   older variants with "Yes, I trust this folder" / "No, don't trust"
+///
+/// has_trust_ref: any copy introducing a trust decision for a folder.
+/// has_confirmation: the numbered menu structure is on screen. We accept
+/// either the modern "1. yes, proceed" + "2. no, exit" layout or the
+/// older keyword-style layout, so wording tweaks upstream don't silently
+/// regress the detector.
 pub(crate) fn detect_claude_trust_prompt(clean_output: &str) -> (bool, bool) {
     let lower = clean_output.to_lowercase();
-    let has_trust_ref = lower.contains("trust") && lower.contains("folder");
-    let has_confirmation = (lower.contains("yes") && lower.contains("trust"))
+
+    let has_trust_ref = (lower.contains("trust") && lower.contains("folder"))
+        || lower.contains("do you trust")
+        || lower.contains("trust the files");
+
+    // Modern layout: numbered menu with "1. yes, proceed" and "2. no, exit".
+    let modern_menu = (lower.contains("1. yes") || lower.contains("1) yes"))
+        && (lower.contains("2. no") || lower.contains("2) no"))
+        && (lower.contains("proceed") || lower.contains("exit"));
+
+    // Older layout: "yes, i trust" / "yes, trust" + "no," + "exit".
+    let legacy_menu = (lower.contains("yes") && lower.contains("trust"))
         && lower.contains("no,")
         && lower.contains("exit");
+
+    let has_confirmation = modern_menu || legacy_menu;
     (has_trust_ref, has_confirmation)
 }
 

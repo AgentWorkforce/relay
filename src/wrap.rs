@@ -292,17 +292,28 @@ impl PtyAutoState {
     }
 
     /// Detect and auto-accept Claude Code folder trust prompts.
-    /// The prompt is a selection menu with "Yes, I trust this folder" pre-selected,
-    /// so we just press Enter to confirm.
+    /// The prompt is a selection menu with "Yes, proceed" (or older "Yes, I
+    /// trust this folder") pre-selected, so we just press Enter to confirm.
+    ///
+    /// The trust buffer is generous (6 KB / 5 KB slide) because the dialog
+    /// is framed by box-drawing + ANSI escape sequences that eat raw bytes
+    /// before `strip_ansi` runs — a tight window can slide the trust text
+    /// out of view before the detector matches.
+    ///
+    /// We send Enter, then a second Enter after a short delay. Claude's
+    /// selection TUI occasionally drops the first keystroke during render.
     pub(crate) async fn handle_claude_trust(&mut self, text: &str, pty: &PtySession) {
         if !self.claude_trust_handled {
-            Self::append_buf(&mut self.claude_trust_buffer, text, 2500, 2000);
+            Self::append_buf(&mut self.claude_trust_buffer, text, 6000, 5000);
             let clean = strip_ansi(&self.claude_trust_buffer);
             let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(&clean);
             if has_trust_ref && has_confirmation {
                 tracing::info!("Detected Claude Code folder trust prompt, auto-accepting");
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                // "Yes, I trust this folder" is pre-selected (option 1), press Enter
+                // "Yes, proceed" is pre-selected (option 1), press Enter.
+                let _ = pty.write_all(b"\r");
+                // Second Enter to defeat render-race drops.
+                tokio::time::sleep(Duration::from_millis(120)).await;
                 let _ = pty.write_all(b"\r");
                 self.claude_trust_buffer.clear();
                 self.claude_trust_handled = true;
