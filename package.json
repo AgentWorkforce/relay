@@ -98,7 +98,8 @@
     "@agent-relay/trajectory",
     "@agent-relay/user-directory",
     "@agent-relay/utils",
-    "@relaycast/sdk"
+    "@relaycast/sdk",
+    "@relayfile/local-mount"
   ],
   "publishConfig": {
     "access": "public"
@@ -210,6 +211,7 @@
     "@relayauth/sdk": "^0.1.2",
     "@relaycast/mcp": "1.0.0",
     "@relaycast/sdk": "^1.1.0",
+    "@relayfile/local-mount": "^0.2.2",
     "@relayfile/sdk": "^0.1.2",
     "@sinclair/typebox": "^0.34.14",
     "agent-trajectories": "^0.5.4",
@@ -269,5 +271,17 @@
     "flatted": "^3.4.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
-  }
+  },
+  "bundleDependencies": [
+    "@agent-relay/cloud",
+    "@agent-relay/config",
+    "@agent-relay/hooks",
+    "@agent-relay/sdk",
+    "@agent-relay/telemetry",
+    "@agent-relay/trajectory",
+    "@agent-relay/user-directory",
+    "@agent-relay/utils",
+    "@relaycast/sdk",
+    "@relayfile/local-mount"
+  ]
 }
