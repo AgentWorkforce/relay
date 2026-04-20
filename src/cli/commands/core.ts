@@ -15,13 +15,13 @@ import {
 } from '@agent-relay/config';
 import type { AgentRelayBrokerInitArgs } from '@agent-relay/sdk';
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
-import { shutdown as shutdownTelemetry, track } from '@agent-relay/telemetry';
+import { track } from '@agent-relay/telemetry';
 
 import { runBridgeCommand } from '../lib/bridge.js';
 import { runDownCommand, runStatusCommand, runUpCommand } from '../lib/broker-lifecycle.js';
 import { runUninstallCommand, runUpdateCommand } from '../lib/core-maintenance.js';
 import { createAgentRelayClient, spawnAgentWithClient } from '../lib/client-factory.js';
-import { CliExit, defaultExit } from '../lib/exit.js';
+import { defaultExit, runSignalHandler } from '../lib/exit.js';
 
 const execAsync = promisify(exec);
 const DEFAULT_DASHBOARD_PORT = process.env.AGENT_RELAY_DASHBOARD_PORT || '3888';
@@ -348,30 +348,10 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     now: () => Date.now(),
     sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
     onSignal: (signal: NodeJS.Signals, handler: () => void | Promise<void>) => {
-      process.on(signal, () => {
-        // Signal handlers typically call `deps.exit(code)` after cleanup.
-        // In production that throws `CliExit` (via the shared defaultExit)
-        // so `runCli()` can flush telemetry — but here there's no awaiter
-        // on the returned promise, so the throw would become an unhandled
-        // rejection and Node would override the intended code with 1.
-        // Catch `CliExit` specifically, flush telemetry, then hard-exit.
-        // Any other error is unexpected — surface it and exit non-zero.
-        void Promise.resolve()
-          .then(() => handler())
-          .catch(async (err) => {
-            if (err instanceof CliExit) {
-              try {
-                await shutdownTelemetry();
-              } catch {
-                // Best-effort — never let flush errors mask the intended exit.
-              }
-              process.exit(err.code);
-            }
-            // eslint-disable-next-line no-console
-            console.error(err);
-            process.exit(1);
-          });
-      });
+      // See `runSignalHandler` — wraps the handler so `CliExit` thrown by
+      // `deps.exit(code)` becomes a flush-then-real-exit, not an unhandled
+      // async rejection (which would override the intended exit code).
+      process.on(signal, () => runSignalHandler(handler));
     },
     holdOpen: () => new Promise(() => undefined),
     resolveTemplatesDir: () => {

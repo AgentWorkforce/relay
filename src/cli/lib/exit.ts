@@ -15,6 +15,8 @@
  * `ExitSignal`), so this default only kicks in at production call sites.
  */
 
+import { shutdown as shutdownTelemetry } from '@agent-relay/telemetry';
+
 export class CliExit extends Error {
   /** Intended process exit code. */
   readonly code: number;
@@ -35,4 +37,40 @@ export class CliExit extends Error {
  */
 export function defaultExit(code: number): never {
   throw new CliExit(code);
+}
+
+/**
+ * Wrap a signal-handler body so `CliExit` thrown by `deps.exit(code)` (i.e.
+ * our shared {@link defaultExit}) is converted into a real `process.exit`
+ * after flushing telemetry.
+ *
+ * Node doesn't await the promise returned from an async signal handler, so
+ * without this wrapper the `CliExit` throw would become an unhandled
+ * rejection and Node 15+ would override the intended code with 1. That's
+ * what broke `Ctrl+C` exit semantics on `agent-relay up`.
+ *
+ * Use from any DI `onSignal` default that pairs with `defaultExit`:
+ *
+ * ```ts
+ * onSignal: (signal, handler) => {
+ *   process.on(signal, () => runSignalHandler(handler));
+ * }
+ * ```
+ */
+export function runSignalHandler(handler: () => void | Promise<void>): void {
+  void Promise.resolve()
+    .then(() => handler())
+    .catch(async (err) => {
+      if (err instanceof CliExit) {
+        try {
+          await shutdownTelemetry();
+        } catch {
+          // Best-effort — never let flush errors mask the intended exit.
+        }
+        process.exit(err.code);
+      }
+      // eslint-disable-next-line no-console
+      console.error(err);
+      process.exit(1);
+    });
 }

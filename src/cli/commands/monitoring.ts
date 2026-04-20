@@ -5,7 +5,7 @@ import { AgentRelayClient } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 import { generateAgentName } from '@agent-relay/utils';
 
-import { defaultExit } from '../lib/exit.js';
+import { defaultExit, runSignalHandler } from '../lib/exit.js';
 import { createAgentRelayClient, formatTableRow, spawnAgentWithClient } from '../lib/index.js';
 import type { HealthPayload } from '../lib/monitoring-health.js';
 
@@ -109,7 +109,10 @@ function withDefaults(overrides: Partial<MonitoringDependencies> = {}): Monitori
     memoryUsage: () => process.memoryUsage(),
     nowIso: () => new Date().toISOString(),
     onSignal: (signal, listener) => {
-      process.on(signal, listener);
+      // Wrap so `CliExit` thrown by `deps.exit` (shared defaultExit) flushes
+      // telemetry and exits with the intended code, rather than surfacing as
+      // an unhandled async rejection (which Node 15+ would force to code 1).
+      process.on(signal, () => runSignalHandler(listener));
     },
     setRepeatingTimer: (listener: () => void, intervalMs: number) => setInterval(listener, intervalMs),
     clearRepeatingTimer: (timer: NodeJS.Timeout) => clearInterval(timer),
