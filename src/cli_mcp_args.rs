@@ -47,6 +47,14 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         bail!("--register and --agent-token are mutually exclusive; pass one or the other");
     }
 
+    // Validate all local inputs BEFORE touching the network. `--register`
+    // rotates the agent's relaycast token (POST /v1/agents/spawn), which is
+    // an observable side effect on an external system — we should not mint
+    // or rotate a token if the request is going to fail locally anyway
+    // (e.g. malformed --existing-args JSON or an unresolvable --cwd).
+    let cwd = normalize_cwd(cmd.cwd)?;
+    let existing_args = parse_existing_args(cmd.existing_args)?;
+
     // Match the broker's internal WorkerRegistry::build_mcp_args behavior:
     // each flag falls back to its RELAY_* env var so env-driven callers
     // (e.g. cloud's SandboxedStepExecutor, which sets these from
@@ -94,8 +102,6 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
     let default_workspace = cmd
         .default_workspace
         .or_else(|| std::env::var("RELAY_DEFAULT_WORKSPACE").ok());
-    let cwd = normalize_cwd(cmd.cwd)?;
-    let existing_args = parse_existing_args(cmd.existing_args)?;
 
     let args = configure_relaycast_mcp_with_token(
         &cli,
@@ -251,9 +257,63 @@ mod tests {
     use httpmock::{Method::POST, MockServer};
     use relay_broker::snippets::configure_relaycast_mcp_with_token;
     use serde_json::{json, Value};
+    use std::sync::{Mutex, MutexGuard, PoisonError};
     use tempfile::tempdir;
 
     use super::*;
+
+    // Several tests mutate process-global RELAY_* env vars. `#[tokio::test]`
+    // cases run in parallel by default, so without serialization those
+    // tests race and intermittently break CI depending on execution order.
+    // Any test that touches these env vars MUST acquire this lock for its
+    // entire duration and use `EnvGuard` to restore prior values on drop.
+    static RELAY_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    const RELAY_ENV_KEYS: &[&str] = &[
+        "RELAY_API_KEY",
+        "RELAY_BASE_URL",
+        "RELAY_AGENT_TOKEN",
+        "RELAY_WORKSPACES_JSON",
+        "RELAY_DEFAULT_WORKSPACE",
+    ];
+
+    /// RAII guard that (1) holds the env mutex so parallel tests don't race,
+    /// and (2) snapshots the listed RELAY_* vars on construction and restores
+    /// them on drop. Panics during a test still restore state because Drop runs.
+    struct EnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn new(keys: &[&'static str]) -> Self {
+            let lock = RELAY_ENV_MUTEX
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let saved = keys
+                .iter()
+                .map(|key| (*key, std::env::var(key).ok()))
+                .collect();
+            Self { _lock: lock, saved }
+        }
+
+        /// Snapshots (and locks) the full set of RELAY_* vars this module cares
+        /// about. Prefer this over listing keys at every call site.
+        fn all() -> Self {
+            Self::new(RELAY_ENV_KEYS)
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
 
     fn command(cli: &str, cwd: &Path) -> McpArgsCommand {
         McpArgsCommand {
@@ -422,6 +482,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_without_api_key_returns_clear_error() {
+        let _env = EnvGuard::all();
         std::env::remove_var("RELAY_API_KEY");
 
         let temp = tempdir().expect("tempdir");
@@ -439,6 +500,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_without_base_url_returns_clear_error() {
+        let _env = EnvGuard::all();
         std::env::remove_var("RELAY_BASE_URL");
 
         let temp = tempdir().expect("tempdir");
@@ -456,6 +518,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_happy_path_embeds_minted_token() {
+        let _env = EnvGuard::all();
         std::env::remove_var("RELAY_API_KEY");
         std::env::remove_var("RELAY_BASE_URL");
         std::env::remove_var("RELAY_AGENT_TOKEN");
@@ -510,10 +573,57 @@ mod tests {
 
         assert!(config_json.contains("at_live_register_test_token"));
         register_mock.assert();
+    }
 
+    #[tokio::test]
+    async fn register_does_not_hit_network_when_local_validation_fails() {
+        // Locally-invalid input (malformed --existing-args JSON) must fail
+        // BEFORE the spawn endpoint is called. A POST /v1/agents/spawn
+        // rotates the agent's token, so firing it for a request that was
+        // going to fail locally anyway is an unintended external side
+        // effect.
+        let _env = EnvGuard::all();
         std::env::remove_var("RELAY_API_KEY");
         std::env::remove_var("RELAY_BASE_URL");
         std::env::remove_var("RELAY_AGENT_TOKEN");
+
+        let server = MockServer::start();
+        let spawn_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/spawn");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_should_not_be_called",
+                    "name": "test-agent",
+                    "token": "at_live_should_not_mint",
+                    "cli": "claude",
+                    "task": "relay worker session for test-agent",
+                    "channel": null,
+                    "status": "online",
+                    "created_at": "2026-01-01T00:00:00.000Z",
+                    "already_existed": false
+                }
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let mut cmd = command("claude", temp.path());
+        cmd.register = true;
+        cmd.agent_token = None;
+        cmd.api_key = Some("rk_live_test".to_string());
+        cmd.base_url = Some(server.base_url());
+        cmd.existing_args = Some("{not-json".to_string());
+
+        let error = compute_mcp_args_output(cmd)
+            .await
+            .expect_err("invalid existing args should abort before register");
+
+        assert!(error
+            .to_string()
+            .contains("--existing-args must be a JSON array of strings"));
+        // The spawn endpoint must NOT have been hit — token rotation is a
+        // real side effect on the relaycast backend.
+        assert_eq!(spawn_mock.hits(), 0);
     }
 
     #[tokio::test]
@@ -588,9 +698,10 @@ mod tests {
         // WorkerRegistry::build_mcp_args in the broker.
         //
         // Uses distinctive sentinel values so we can grep them out of the
-        // generated config even if other tests leak env vars. Each var is
-        // unset at the end to avoid contaminating sibling tests that assume
-        // the env is clean.
+        // generated config. EnvGuard serializes this test against other
+        // RELAY_*-touching tests and restores prior values on drop, so
+        // there's no risk of state leaking even on panic.
+        let _env = EnvGuard::all();
         std::env::set_var("RELAY_API_KEY", "rk_live_from_env");
         std::env::set_var("RELAY_BASE_URL", "https://api.env.relaycast.dev");
         std::env::set_var("RELAY_AGENT_TOKEN", "at_live_from_env");
@@ -644,12 +755,6 @@ mod tests {
             config_json.contains("env-ws"),
             "workspaces json from env missing in claude config: {config_json}"
         );
-
-        std::env::remove_var("RELAY_API_KEY");
-        std::env::remove_var("RELAY_BASE_URL");
-        std::env::remove_var("RELAY_AGENT_TOKEN");
-        std::env::remove_var("RELAY_WORKSPACES_JSON");
-        std::env::remove_var("RELAY_DEFAULT_WORKSPACE");
     }
 
     #[tokio::test]
