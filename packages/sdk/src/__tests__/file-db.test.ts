@@ -134,6 +134,30 @@ describe('JsonFileWorkflowDb', () => {
     expect(resolved).toContain(path.join('.agent-relay', 'workflow-runs-workflow-runs.jsonl'));
   });
 
+  // Regression for PR #757 Codex review feedback: the primary path's
+  // directory can be writable while the jsonl file itself is read-only
+  // (relayfile-mount chmods synced files to 0o444 while leaving the
+  // parent dir at 0o755). The old dir-only probe would accept the
+  // primary path, every append would lazy-fail, and homeFallback
+  // would never kick in despite the caller explicitly opting in.
+  it('opt-in homeFallback: true → read-only file with writable dir still falls back', () => {
+    const writableDir = path.join(tmpDir, 'project');
+    mkdirSync(writableDir, { recursive: true });
+    const primaryPath = path.join(writableDir, 'workflow-runs.jsonl');
+    writeFileSync(primaryPath, ''); // create the file so chmod targets it
+    chmodSync(primaryPath, 0o444); // file read-only; dir still 0o755
+
+    const db = new JsonFileWorkflowDb({
+      filePath: primaryPath,
+      homeFallback: true,
+    });
+
+    const resolved = db.getStoragePath();
+    expect(db.isWritable()).toBe(true);
+    expect(resolved.startsWith(os.homedir())).toBe(true);
+    expect(resolved).not.toBe(primaryPath);
+  });
+
   it('notifies onWriteFailure on every failed append', async () => {
     const dbPath = path.join(tmpDir, 'workflow-runs.jsonl');
     const failures: Array<{ err: unknown; filePath: string }> = [];

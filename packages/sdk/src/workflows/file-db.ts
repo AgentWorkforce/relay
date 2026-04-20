@@ -142,14 +142,24 @@ export class JsonFileWorkflowDb implements WorkflowDb {
       const isLastCandidate = i === candidates.length - 1;
       try {
         mkdirSync(path.dirname(candidate), { recursive: true });
-        // If there's a later fallback to try, actively probe write
-        // permission so we know whether to move on. If this is already
-        // the last candidate, skip the probe and be optimistic — an
-        // unwritable directory will surface as a lazy append() failure
-        // handled by the cache + onWriteFailure path. Matches the
+        // If there's a later fallback to try, actively probe writability
+        // so we know whether to move on. Two levels matter:
+        //   1. Directory must be writable to create the jsonl file.
+        //   2. If the jsonl file already exists, IT must also be writable
+        //      — a writable directory does not guarantee a writable file.
+        //      Relayfile-mount, for example, can sync a file and chmod it
+        //      to 0o444 while leaving the parent dir at 0o755; the old
+        //      dir-only check would accept the path and every append would
+        //      then lazy-fail, bypassing the fallback.
+        // If this is already the last candidate, skip the probe and be
+        // optimistic — an unwritable path will surface as a lazy append()
+        // failure handled by the cache + onWriteFailure path. Matches the
         // pre-cache "warn on first failure" semantic callers expect.
         if (!isLastCandidate) {
           accessSync(path.dirname(candidate), fsConstants.W_OK);
+          if (existsSync(candidate)) {
+            accessSync(candidate, fsConstants.W_OK);
+          }
         }
         return { resolvedPath: candidate, writable: true };
       } catch {
