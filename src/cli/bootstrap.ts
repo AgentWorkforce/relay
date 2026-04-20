@@ -311,11 +311,12 @@ export async function runCli(argv: string[] = process.argv): Promise<Command> {
           exit_code: err.code,
         });
       } else {
+        const cls = errorClassName(err);
         track('cli_command_complete', {
           command_name: ctx.name,
           success: false,
           duration_ms: Date.now() - ctx.startedAt,
-          error_class: errorClassName(err),
+          ...(cls ? { error_class: cls } : {}),
         });
       }
     }

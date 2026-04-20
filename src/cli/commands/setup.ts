@@ -15,7 +15,7 @@ import {
 } from '@agent-relay/telemetry';
 import { runWorkflow } from '@agent-relay/sdk/workflows';
 import type { WorkflowEvent } from '@agent-relay/sdk/workflows';
-import { defaultExit } from '../lib/exit.js';
+import { CliExit, defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 
 function diag(msg: string): void {
@@ -795,6 +795,11 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
         emit({ success: false, errorClass: 'UnsupportedFileType' });
         deps.exit(1);
       } catch (err: any) {
+        // `deps.exit(1)` above throws `CliExit` in production so runCli can
+        // flush telemetry — let that bubble straight through instead of
+        // treating it as an unexpected error (which would print the internal
+        // "cli-exit:1" message and clobber `error_class` with 'CliExit').
+        if (err instanceof CliExit) throw err;
         emit({ success: false, errorClass: errorClassName(err) });
         deps.error(`Error: ${err.message}`);
         if (isScriptWorkflow) {
