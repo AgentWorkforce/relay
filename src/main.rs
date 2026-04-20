@@ -7,6 +7,7 @@ use std::{
 };
 
 mod broker;
+mod cli_mcp_args;
 mod helpers;
 mod listen_api;
 mod pty_worker;
@@ -104,6 +105,9 @@ enum Commands {
     Init(InitCommand),
     Pty(PtyCommand),
     Headless(HeadlessCommand),
+    /// Compute MCP injection args and side-effect config file paths for a CLI
+    /// without spawning it. Outputs JSON to stdout.
+    McpArgs(McpArgsCommand),
     /// Run ad-hoc swarm execution via the relay broker
     Swarm(swarm::SwarmArgs),
     /// Internal: wraps a CLI in a PTY with interactive passthrough.
@@ -117,6 +121,45 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+}
+
+#[derive(Debug, clap::Args, Clone)]
+pub(crate) struct McpArgsCommand {
+    /// CLI name or command to compute MCP args for.
+    #[arg(long)]
+    cli: String,
+
+    /// Relaycast agent name to inject into the MCP configuration.
+    #[arg(long)]
+    agent_name: String,
+
+    /// Relaycast API key. Falls back to RELAY_API_KEY when omitted.
+    #[arg(long)]
+    api_key: Option<String>,
+
+    /// Relaycast base URL. Falls back to RELAY_BASE_URL when omitted.
+    #[arg(long)]
+    base_url: Option<String>,
+
+    /// Pre-registered agent token to pass to the child MCP server.
+    #[arg(long)]
+    agent_token: Option<String>,
+
+    /// Multi-workspace context JSON to pass to the child MCP server.
+    #[arg(long)]
+    workspaces_json: Option<String>,
+
+    /// Default workspace ID/name to pass to the child MCP server.
+    #[arg(long)]
+    default_workspace: Option<String>,
+
+    /// Working directory used by CLIs that need local MCP config files.
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+
+    /// Existing CLI args as a JSON string array, e.g. '["--foo","--bar"]'.
+    #[arg(long)]
+    existing_args: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -710,6 +753,7 @@ async fn main() -> Result<()> {
         Commands::Init(_) => "init",
         Commands::Pty(_) => "pty",
         Commands::Headless(_) => "headless",
+        Commands::McpArgs(_) => "mcp_args",
         Commands::Swarm(_) => "swarm",
         Commands::Wrap { .. } => "wrap",
     };
@@ -721,6 +765,7 @@ async fn main() -> Result<()> {
         Commands::Init(cmd) => run_init(cmd, telemetry).await,
         Commands::Pty(cmd) => pty_worker::run_pty_worker(cmd).await,
         Commands::Headless(cmd) => run_headless_worker(cmd).await,
+        Commands::McpArgs(cmd) => cli_mcp_args::run_mcp_args(cmd).await,
         Commands::Swarm(args) => swarm::run_swarm(args).await,
         Commands::Wrap { cli, args } => wrap::run_wrap(cli, args, false, telemetry).await,
     }
