@@ -30,10 +30,24 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         bail!("--agent-name must not be empty");
     }
 
+    // Match the broker's internal WorkerRegistry::build_mcp_args behavior:
+    // each flag falls back to its RELAY_* env var so env-driven callers
+    // (e.g. cloud's SandboxedStepExecutor, which sets these from
+    // orchestrator-managed secrets) don't lose the value just because
+    // they didn't repeat it on the CLI.
     let api_key = cmd.api_key.or_else(|| std::env::var("RELAY_API_KEY").ok());
     let base_url = cmd
         .base_url
         .or_else(|| std::env::var("RELAY_BASE_URL").ok());
+    let agent_token = cmd
+        .agent_token
+        .or_else(|| std::env::var("RELAY_AGENT_TOKEN").ok());
+    let workspaces_json = cmd
+        .workspaces_json
+        .or_else(|| std::env::var("RELAY_WORKSPACES_JSON").ok());
+    let default_workspace = cmd
+        .default_workspace
+        .or_else(|| std::env::var("RELAY_DEFAULT_WORKSPACE").ok());
     let cwd = normalize_cwd(cmd.cwd)?;
     let existing_args = parse_existing_args(cmd.existing_args)?;
 
@@ -44,9 +58,9 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         base_url.as_deref(),
         &existing_args,
         &cwd,
-        cmd.agent_token.as_deref(),
-        cmd.workspaces_json.as_deref(),
-        cmd.default_workspace.as_deref(),
+        agent_token.as_deref(),
+        workspaces_json.as_deref(),
+        default_workspace.as_deref(),
     )
     .await?;
 
@@ -332,6 +346,78 @@ mod tests {
         .expect("authority mcp args");
 
         assert_eq!(output.args, expected);
+    }
+
+    #[tokio::test]
+    async fn env_vars_fill_in_when_cli_flags_omitted() {
+        // When callers set RELAY_* env vars but don't repeat them on the CLI
+        // (e.g. cloud's SandboxedStepExecutor, which exports these from
+        // orchestrator-managed secrets), compute_mcp_args_output must fall
+        // back to the env rather than dropping the value. Mirrors
+        // WorkerRegistry::build_mcp_args in the broker.
+        //
+        // Uses distinctive sentinel values so we can grep them out of the
+        // generated config even if other tests leak env vars. Each var is
+        // unset at the end to avoid contaminating sibling tests that assume
+        // the env is clean.
+        std::env::set_var("RELAY_API_KEY", "rk_live_from_env");
+        std::env::set_var("RELAY_BASE_URL", "https://api.env.relaycast.dev");
+        std::env::set_var("RELAY_AGENT_TOKEN", "at_live_from_env");
+        std::env::set_var("RELAY_WORKSPACES_JSON", r#"{"workspaces":["env-ws"]}"#);
+        std::env::set_var("RELAY_DEFAULT_WORKSPACE", "env-default-workspace");
+
+        let temp = tempdir().expect("tempdir");
+        let cmd = McpArgsCommand {
+            cli: "claude".to_string(),
+            agent_name: "test-agent".to_string(),
+            api_key: None,
+            base_url: None,
+            agent_token: None,
+            workspaces_json: None,
+            default_workspace: None,
+            cwd: Some(temp.path().to_path_buf()),
+            existing_args: None,
+        };
+
+        let output = compute_mcp_args_output(cmd)
+            .await
+            .expect("compute mcp args with env fallback");
+
+        let mcp_config_index = output
+            .args
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .expect("claude --mcp-config arg");
+        let config_json = output
+            .args
+            .get(mcp_config_index + 1)
+            .expect("claude mcp config value");
+
+        // The config is built from the values the compute function resolved,
+        // so if env fallback works the sentinel values show up in the env
+        // block or the RELAY_API_KEY that claude's injection path writes.
+        assert!(
+            config_json.contains("https://api.env.relaycast.dev"),
+            "base url from env missing in claude config: {config_json}"
+        );
+        assert!(
+            config_json.contains("at_live_from_env"),
+            "agent token from env missing in claude config: {config_json}"
+        );
+        assert!(
+            config_json.contains("env-default-workspace"),
+            "default workspace from env missing in claude config: {config_json}"
+        );
+        assert!(
+            config_json.contains("env-ws"),
+            "workspaces json from env missing in claude config: {config_json}"
+        );
+
+        std::env::remove_var("RELAY_API_KEY");
+        std::env::remove_var("RELAY_BASE_URL");
+        std::env::remove_var("RELAY_AGENT_TOKEN");
+        std::env::remove_var("RELAY_WORKSPACES_JSON");
+        std::env::remove_var("RELAY_DEFAULT_WORKSPACE");
     }
 
     #[tokio::test]
