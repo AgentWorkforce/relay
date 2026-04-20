@@ -36,6 +36,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
+## [4.0.31] - 2026-04-20
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Align Rust AgentSpawn/AgentRelease with TS schema**
+- **Per-component version properties on every event**
+- **Instrument all CLI commands with rich events**
+
+#### User-Impacting Fixes
+- FileDb in-memory cache authoritative — fixes stale status after disk write failures (#757) (#757)
+- Extract runSignalHandler helper; apply in monitoring
+- Is_tty should check stdin, not stdout
+- Plug two CliExit regressions flagged by Devin
+- Flush queue before process exit; schema cleanup
+- Upgrade posthog-node from v4 to v5
+
+### Technical Perspective
+#### Releases
+- v4.0.31
+
+---
+
 ## [4.0.30] - 2026-04-19
 
 ### Product Perspective
