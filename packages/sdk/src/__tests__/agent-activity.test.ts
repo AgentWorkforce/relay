@@ -96,7 +96,7 @@ describe('AgentRelay onAgentActivityChanged', () => {
     const changes: AgentActivityChange[] = [];
     relay.onAgentActivityChanged = (change) => changes.push(change);
 
-    emit({ kind: 'delivery_ack', name: 'worker-1', delivery_id: 'd1', event_id: 'e1' });
+    emit({ kind: 'delivery_queued', name: 'worker-1', delivery_id: 'd1', event_id: 'e1', timestamp: 1 });
     emit({ kind: 'agent_idle', name: 'worker-1', idle_secs: 30 });
 
     expect(changes.at(-1)).toEqual({
@@ -106,6 +106,35 @@ describe('AgentRelay onAgentActivityChanged', () => {
       reason: 'agent_idle',
       eventId: undefined,
     });
+  });
+
+  it('does not reactivate an agent when delivery_ack arrives after idle', () => {
+    const relay = new AgentRelay();
+    const { client, emit } = createMockFacadeClient();
+    wireRelay(relay, client);
+    const changes: AgentActivityChange[] = [];
+    relay.onAgentActivityChanged = (change) => changes.push(change);
+
+    emit({ kind: 'delivery_queued', name: 'worker-1', delivery_id: 'd1', event_id: 'e1', timestamp: 1 });
+    emit({ kind: 'agent_idle', name: 'worker-1', idle_secs: 30 });
+    emit({ kind: 'delivery_ack', name: 'worker-1', delivery_id: 'd1', event_id: 'e1' });
+
+    expect(changes).toEqual([
+      {
+        name: 'worker-1',
+        active: true,
+        pendingDeliveries: 1,
+        reason: 'delivery_queued',
+        eventId: 'e1',
+      },
+      {
+        name: 'worker-1',
+        active: false,
+        pendingDeliveries: 0,
+        reason: 'agent_idle',
+        eventId: undefined,
+      },
+    ]);
   });
 
   it('concurrent deliveries do not flip inactive too early', () => {

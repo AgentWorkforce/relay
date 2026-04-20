@@ -1466,7 +1466,9 @@ export class AgentRelay {
           break;
         }
         case 'delivery_ack': {
-          this.markAgentDeliveryPending(event.name, event.delivery_id, event.event_id, 'delivery_ack');
+          // No-op for activity tracking. delivery_ack can arrive late, after
+          // relay_inbound / idle / exit already cleared activity, so re-adding
+          // pending state here would incorrectly flip the agent back to active.
           break;
         }
         case 'delivery_failed': {
