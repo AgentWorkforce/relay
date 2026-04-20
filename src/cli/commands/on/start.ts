@@ -1327,7 +1327,7 @@ export async function goOnTheRelay(
       ignoredPatterns: launchIgnoredPatterns,
       readonlyPatterns,
       excludeDirs: seedExcludes,
-      env: buildAgentEnv(),
+      env: { ...process.env, ...buildAgentEnv() },
       agentName: agent.name,
       onBeforeLaunch: (realMountDir) => {
         // Write the richer agent-relay permissions doc. This coexists with the
