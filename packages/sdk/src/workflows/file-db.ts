@@ -62,10 +62,10 @@ export interface JsonFileWorkflowDbOptions {
  * Storage path resolution:
  *   1. Try the caller-supplied file path. If the parent directory is
  *      writable, use it.
- *   2. If (1) fails and `homeFallback` is true (default), try
- *      `$HOME/.agent-relay/workflow-runs-<basename>.jsonl`. This is
- *      outside any workspace mount in cloud sandboxes and almost
- *      always writable by the agent.
+ *   2. If (1) fails and `homeFallback` is true (opt-in, default false),
+ *      try `$HOME/.agent-relay/workflow-runs-<basename>.jsonl`. This is
+ *      outside any workspace mount in cloud sandboxes and almost always
+ *      writable by the agent.
  *   3. If both fail, run in memory-only mode. The workflow still
  *      executes correctly; `--resume` won't be available for this run.
  *
@@ -226,7 +226,14 @@ export class JsonFileWorkflowDb implements WorkflowDb {
   // ── WorkflowDb interface ─────────────────────────────────────────────────
 
   async insertRun(run: WorkflowRunRow): Promise<void> {
-    this.cache.runs.set(run.id, run);
+    // Shallow-copy so later mutations on the caller's object don't silently
+    // alias into the cache. Matches InMemoryWorkflowDb semantics. The runner
+    // keeps inserted rows in its own stepStates map and occasionally mutates
+    // state.row.status directly before calling updateRun — without this copy
+    // the mutation would land in the cache and bypass updateRun's
+    // updatedAt + append path, causing exactly the observability hazard this
+    // cache is meant to prevent.
+    this.cache.runs.set(run.id, { ...run });
     this.append({ kind: 'run', row: run });
   }
 
@@ -247,7 +254,8 @@ export class JsonFileWorkflowDb implements WorkflowDb {
   }
 
   async insertStep(step: WorkflowStepRow): Promise<void> {
-    this.cache.steps.set(step.id, step);
+    // Shallow-copy to prevent caller-mutation aliasing — see insertRun.
+    this.cache.steps.set(step.id, { ...step });
     this.append({ kind: 'step', row: step });
   }
 

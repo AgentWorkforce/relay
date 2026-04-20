@@ -206,6 +206,38 @@ describe('JsonFileWorkflowDb', () => {
     expect(steps[0].status).toBe('completed');
   });
 
+  // Regression for PR #757 Devin review: InMemoryWorkflowDb shallow-copies
+  // on insert, JsonFileWorkflowDb previously stored the caller's object by
+  // reference. The runner inserts a row and also keeps it in its own map,
+  // then mutates state.row.status directly before calling updateStep/Run —
+  // if the cache held the same reference, those mutations would silently
+  // bypass updateStep's append + timestamp handling.
+  it('insertRun/insertStep do not alias the caller object into the cache', async () => {
+    const dbPath = path.join(tmpDir, 'workflow-runs.jsonl');
+    const db = new JsonFileWorkflowDb(dbPath);
+
+    const run = makeRun({ id: 'run_alias', status: 'running' });
+    await db.insertRun(run);
+
+    // Mutate the caller's object post-insert — shouldn't reach the cache.
+    run.status = 'failed';
+    run.error = 'direct mutation should not leak into the db';
+
+    const cached = await db.getRun('run_alias');
+    expect(cached?.status).toBe('running');
+    expect(cached?.error).toBeUndefined();
+
+    const step = makeStep({ id: 'step_alias', runId: 'run_alias', status: 'pending' });
+    await db.insertStep(step);
+    step.status = 'failed';
+    step.error = 'same hazard';
+
+    const cachedSteps = await db.getStepsByRunId('run_alias');
+    expect(cachedSteps).toHaveLength(1);
+    expect(cachedSteps[0].status).toBe('pending');
+    expect(cachedSteps[0].error).toBeUndefined();
+  });
+
   it('cache insert/update is visible to getStepsByRunId without a disk round-trip', async () => {
     const dbPath = path.join(tmpDir, 'workflow-runs.jsonl');
     const db = new JsonFileWorkflowDb(dbPath);
