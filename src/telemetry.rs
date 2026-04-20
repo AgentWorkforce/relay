@@ -5,6 +5,7 @@
 //!
 //! Opt-out:
 //!   - Set `AGENT_RELAY_TELEMETRY_DISABLED=1` (or `true`)
+//!   - Set `DO_NOT_TRACK=1` (cross-tool convention, https://consoledonottrack.com)
 //!   - Or write `{"enabled": false}` to `~/.agent-relay/telemetry.json`
 
 use std::path::PathBuf;
@@ -451,9 +452,13 @@ impl TelemetryClient {
 
     fn check_enabled() -> bool {
         // Environment variable opt-out.
-        if let Ok(val) = std::env::var("AGENT_RELAY_TELEMETRY_DISABLED") {
-            if val == "1" || val.eq_ignore_ascii_case("true") {
-                return false;
+        // AGENT_RELAY_TELEMETRY_DISABLED is the product-specific switch;
+        // DO_NOT_TRACK (https://consoledonottrack.com) is the cross-tool convention.
+        for key in ["AGENT_RELAY_TELEMETRY_DISABLED", "DO_NOT_TRACK"] {
+            if let Ok(val) = std::env::var(key) {
+                if val == "1" || val.eq_ignore_ascii_case("true") {
+                    return false;
+                }
             }
         }
         // Prefs file opt-out.
@@ -567,6 +572,21 @@ mod tests {
         client.track(TelemetryEvent::BrokerStart);
         client.shutdown();
         std::env::remove_var("AGENT_RELAY_TELEMETRY_DISABLED");
+    }
+
+    #[test]
+    fn do_not_track_disables_telemetry() {
+        // Clear both vars, set DO_NOT_TRACK, and verify check_enabled is false.
+        std::env::remove_var("AGENT_RELAY_TELEMETRY_DISABLED");
+        std::env::set_var("DO_NOT_TRACK", "1");
+        assert!(!TelemetryClient::check_enabled());
+        std::env::set_var("DO_NOT_TRACK", "true");
+        assert!(!TelemetryClient::check_enabled());
+        std::env::set_var("DO_NOT_TRACK", "0");
+        // Value "0" is not truthy — prefs file / default wins. We only assert
+        // that "0" does not itself force-disable; actual enabled state depends
+        // on prefs, so just re-enable cleanup.
+        std::env::remove_var("DO_NOT_TRACK");
     }
 
     #[test]

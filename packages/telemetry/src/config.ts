@@ -64,15 +64,21 @@ export function savePrefs(prefs: TelemetryPrefs): void {
   }
 }
 
+function isTruthyEnv(value: string | undefined): boolean {
+  return value === '1' || value?.toLowerCase() === 'true';
+}
+
 export function isDisabledByEnv(): boolean {
-  const envValue = process.env.AGENT_RELAY_TELEMETRY_DISABLED;
-  return envValue === '1' || envValue === 'true';
+  return (
+    isTruthyEnv(process.env.AGENT_RELAY_TELEMETRY_DISABLED) ||
+    isTruthyEnv(process.env.DO_NOT_TRACK)
+  );
 }
 
 /**
  * Check if telemetry is enabled.
  * Order of precedence:
- * 1. AGENT_RELAY_TELEMETRY_DISABLED=1 -> disabled
+ * 1. AGENT_RELAY_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1 -> disabled
  * 2. ~/.agent-relay/telemetry.json -> use stored pref
  * 3. Default -> enabled
  */

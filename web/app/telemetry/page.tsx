@@ -38,6 +38,21 @@ export default function TelemetryPage() {
           <pre className={s.code}>
             <code>export AGENT_RELAY_TELEMETRY_DISABLED=1</code>
           </pre>
+          <p>
+            Agent Relay also honors the{' '}
+            <a
+              href="https://consoledonottrack.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
+              <code>DO_NOT_TRACK</code>
+            </a>{' '}
+            convention for opting out across compatible tools:
+          </p>
+          <pre className={s.code}>
+            <code>export DO_NOT_TRACK=1</code>
+          </pre>
           <p>To re-enable:</p>
           <pre className={s.code}>
             <code>agent-relay telemetry enable</code>
