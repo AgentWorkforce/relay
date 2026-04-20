@@ -1,0 +1,52 @@
+name: GitHub Traffic to PostHog
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+env:
+  POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+  POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+
+jobs:
+  send-traffic-stats:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Fetch traffic views
+        id: views
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Fetching GitHub traffic views..."
+          VIEWS=$(gh api /repos/AgentWorkforce/relay/traffic/views)
+          echo "views=$VIEWS" >> $GITHUB_OUTPUT
+
+      - name: Fetch traffic clones
+        id: clones
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Fetching GitHub traffic clones..."
+          CLONES=$(gh api /repos/AgentWorkforce/relay/traffic/clones)
+          echo "clones=$CLONES" >> $GITHUB_OUTPUT
+
+      - name: Send to PostHog
+        env:
+          VIEWS_DATA: ${{ steps.views.outputs.views }}
+          CLONES_DATA: ${{ steps.clones.outputs.clones }}
+        run: |
+          npx tsx scripts/send-github-traffic-to-posthog.ts
