@@ -23,7 +23,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "posthog-node": "^4.0.1"
+    "posthog-node": "^5.29.2"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",
