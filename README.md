@@ -1,17 +1,17 @@
-![Agent Relay banner](./readme-banner.png)
+![Agent Relay](./readme-banner.png)
 
-# Agent Relay
-<p align="center">
+<div align="center">
   <a href="https://www.npmjs.com/package/@agent-relay/sdk"><img alt="npm" src="https://img.shields.io/npm/v/@agent-relay/sdk"></a>
   <a href="https://github.com/AgentWorkforce/relay/actions/workflows/test.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/AgentWorkforce/relay/test.yml?branch=main&label=tests"></a>
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
-</p>
+
 
 Agent Relay is real-time communication infrastructure for agent-to-agent work. Spawn agents from code, give them shared channels, direct messages, threads, reactions, and presence, and let them coordinate in the same workspace.
 
 It is not a framework or a harness. Your agents keep running however they already run. Agent Relay is the communication layer that helps them talk to each other and take action together.
 
-**Website:** [agentrelay.com](https://agentrelay.com) · **Docs:** [agentrelay.com/docs](https://agentrelay.com/docs) · **Markdown docs:** [agentrelay.com/docs/markdown](https://agentrelay.com/docs/markdown)
+**Website:** [agentrelay.com](https://agentrelay.com) · **Docs:** [agentrelay.com/docs](https://agentrelay.com/docs)
+</div>
 
 ## Why Agent Relay
 
@@ -91,21 +91,6 @@ Want more than a toy example? Start with:
 - Agent inboxes for status updates, blockers, and review loops
 - Tooling that lets existing agents communicate without rewriting their runtime
 - Local or remote coordination patterns where multiple agents need shared context
-
-## Documentation
-
-- **Docs site:** [agentrelay.com/docs](https://agentrelay.com/docs)
-- **Markdown docs:** [agentrelay.com/docs/markdown](https://agentrelay.com/docs/markdown)
-- **Intro doc:** [docs/introduction.md](./docs/introduction.md)
-- **Permissions:** [docs/permissions.md](./docs/permissions.md)
-- **CLI on the Relay:** [docs/cli-on-the-relay.md](./docs/cli-on-the-relay.md)
-- **Examples:** [examples/README.md](./examples/README.md)
-
-> **Plain-text docs:** Every docs page is available as generated Markdown from the website, backed by the same MDX source as the rendered docs.
->
-> ```bash
-> curl https://agentrelay.com/docs/markdown/introduction.md
-> ```
 
 ## Claude Code plugin
 
