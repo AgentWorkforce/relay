@@ -21,6 +21,7 @@ import { runBridgeCommand } from '../lib/bridge.js';
 import { runDownCommand, runStatusCommand, runUpCommand } from '../lib/broker-lifecycle.js';
 import { runUninstallCommand, runUpdateCommand } from '../lib/core-maintenance.js';
 import { createAgentRelayClient, spawnAgentWithClient } from '../lib/client-factory.js';
+import { defaultExit } from '../lib/exit.js';
 
 const execAsync = promisify(exec);
 const DEFAULT_DASHBOARD_PORT = process.env.AGENT_RELAY_DASHBOARD_PORT || '3888';
@@ -131,9 +132,6 @@ export interface CoreDependencies {
   exit: ExitFn;
 }
 
-function defaultExit(code: number): never {
-  process.exit(code);
-}
 
 function findPackageJson(startDir: string, fileSystem: CoreFileSystem): string {
   let current = startDir;

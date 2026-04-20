@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { track } from '@agent-relay/telemetry';
 
 import { runAuthCommand, type AuthCommandOptions, type AuthCommandIo } from '../lib/auth-ssh.js';
+import { defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 
 const PROVIDER_ALIASES: Record<string, string> = {
@@ -22,10 +23,6 @@ export type { AuthCommandOptions };
 export interface AuthDependencies extends AuthCommandIo {
   runAuth: (providerArg: string, options: AuthCommandOptions) => Promise<void>;
   defaultCloudUrl: string;
-}
-
-function defaultExit(code: number): never {
-  process.exit(code);
 }
 
 function withDefaults(overrides: Partial<AuthDependencies> = {}): AuthDependencies {

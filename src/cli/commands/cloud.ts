@@ -24,6 +24,7 @@ import {
 } from '@agent-relay/cloud';
 
 import { runInteractiveSession } from '../lib/ssh-interactive.js';
+import { defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -45,10 +46,6 @@ const color = {
   red: (s: string) => `\x1b[31m${s}\x1b[0m`,
   dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
 };
-
-function defaultExit(code: number): never {
-  process.exit(code);
-}
 
 function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependencies {
   return {

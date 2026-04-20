@@ -5,6 +5,7 @@ import { AgentRelayClient } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 import { generateAgentName } from '@agent-relay/utils';
 
+import { defaultExit } from '../lib/exit.js';
 import { createAgentRelayClient, formatTableRow, spawnAgentWithClient } from '../lib/index.js';
 import type { HealthPayload } from '../lib/monitoring-health.js';
 
@@ -66,9 +67,6 @@ export interface MonitoringDependencies {
 
 const DEFAULT_DASHBOARD_PORT = process.env.AGENT_RELAY_DASHBOARD_PORT || '3888';
 
-function defaultExit(code: number): never {
-  process.exit(code);
-}
 
 async function createDefaultMetricsClient(cwd: string): Promise<MonitoringMetricsClient> {
   // Connect to existing broker for read-only metrics queries

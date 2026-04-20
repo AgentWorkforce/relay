@@ -9,15 +9,33 @@
  * Privacy rules for authors:
  * - Never capture argument values (file paths, run IDs, task text, tokens, URLs).
  * - Flag NAMES are fine; flag VALUES are not.
- * - When an event can fail, prefer `error_class` (the Error constructor name)
- *   over `error_message` so we don't leak user content or paths.
+ * - When an event can fail, prefer `error_class` over `error_message` so we
+ *   don't leak user content or paths. `error_class` is typically the Error
+ *   constructor name (`errorClassName(err)`), but it may also be a stable
+ *   synthetic category tag at non-throw failure sites — for example,
+ *   `'WorkflowNotCompleted'` when a workflow returns `status !== 'completed'`
+ *   without throwing. Stick to PascalCase tags so real Error names and
+ *   synthetic categories share one namespace.
  */
 
 /** Source of spawn/release action */
 export type ActionSource = 'human_cli' | 'human_dashboard' | 'agent' | 'protocol';
 
-/** Reason for agent release */
-export type ReleaseReason = 'explicit' | 'crash' | 'timeout' | 'shutdown';
+/**
+ * Reason for agent release.
+ *
+ * This is a loose `string` on purpose — the broker emits both product-level
+ * reasons (`'explicit' | 'crash' | 'timeout' | 'shutdown'`) and broker-local
+ * categories that describe *how* the release arrived (`'ws_command'`,
+ * `'relaycast_release'`, etc.). Keeping the type open lets the schema stay
+ * honest about what actually shows up in PostHog without forcing every new
+ * broker category to be a breaking TS change.
+ *
+ * Known values (non-exhaustive):
+ *   - Canonical: `'explicit'`, `'crash'`, `'timeout'`, `'shutdown'`
+ *   - Broker-local: `'ws_command'`, `'relaycast_release'`
+ */
+export type ReleaseReason = string;
 
 /**
  * Common properties attached to every event.
@@ -45,8 +63,12 @@ export interface CommonProperties {
   broker_version?: string;
   /** Operating system (e.g., darwin, linux, win32) */
   os: string;
-  /** OS release version */
-  os_version: string;
+  /**
+   * OS release version (e.g. `uname -r` output on unix).
+   * Optional — the broker omits this when detection fails on unusual
+   * platforms, and callers should treat its absence as "unknown".
+   */
+  os_version?: string;
   /** Node.js version (without 'v' prefix). Absent on broker-originated events. */
   node_version?: string;
   /** CPU architecture (e.g., arm64, x64) */

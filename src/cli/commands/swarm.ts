@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import type { Command } from 'commander';
 import { track } from '@agent-relay/telemetry';
 
+import { CliExit } from '../lib/exit.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function resolveProjectRoot(): string {
@@ -101,7 +103,9 @@ export function registerSwarmCommands(program: Command): void {
             exit_code: 0,
             duration_ms: Date.now() - started,
           });
-          process.exit(0);
+          // Natural return — runCli's postAction + awaited shutdown flushes
+          // telemetry before Node exits with code 0.
+          return;
         }
 
         const brokerBin = resolveBrokerBinary();
@@ -151,7 +155,10 @@ export function registerSwarmCommands(program: Command): void {
           duration_ms: Date.now() - started,
         });
 
-        process.exit(exitCode);
+        if (exitCode === 0) return;
+        // Route non-zero exits through CliExit so runCli can drain the
+        // PostHog queue before calling the real process.exit.
+        throw new CliExit(exitCode);
       }
     );
 }

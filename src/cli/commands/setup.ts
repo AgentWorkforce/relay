@@ -15,6 +15,7 @@ import {
 } from '@agent-relay/telemetry';
 import { runWorkflow } from '@agent-relay/sdk/workflows';
 import type { WorkflowEvent } from '@agent-relay/sdk/workflows';
+import { defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 
 function diag(msg: string): void {
@@ -80,9 +81,6 @@ interface SetupIo {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
-}
-function defaultExit(code: number): never {
-  process.exit(code);
 }
 function withDefaults(overrides: Partial<SetupDependencies> = {}): SetupDependencies {
   const log = overrides.log ?? ((...args: unknown[]) => console.log(...args));

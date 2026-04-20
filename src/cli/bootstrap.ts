@@ -11,6 +11,8 @@ import { config as dotenvConfig } from 'dotenv';
 import { checkForUpdatesInBackground } from '@agent-relay/utils';
 import { initTelemetry, shutdown as shutdownTelemetry, track } from '@agent-relay/telemetry';
 
+import { CliExit } from './lib/exit.js';
+import { errorClassName } from './lib/telemetry-helpers.js';
 import { registerAgentManagementCommands } from './commands/agent-management.js';
 import { registerMessagingCommands } from './commands/messaging.js';
 import { registerCloudCommands } from './commands/cloud.js';
@@ -159,15 +161,6 @@ function getExplicitlySetFlags(cmd: Command): string[] {
   return out.sort();
 }
 
-function errorClassName(err: unknown): string {
-  if (err instanceof Error) return err.constructor.name;
-  if (err && typeof err === 'object') {
-    const ctor = (err as { constructor?: { name?: string } }).constructor;
-    return ctor?.name || 'Object';
-  }
-  return typeof err;
-}
-
 /**
  * Per-run telemetry context captured at preAction and consumed at completion.
  * We only ever track the currently-running command — commander fires preAction
@@ -204,10 +197,16 @@ function installTelemetryHooks(program: Command): void {
     if (!currentCommand || currentCommand.completed) return;
     const ctx = currentCommand;
     ctx.completed = true;
+    // Respect `process.exitCode` if a command set it without throwing. This is
+    // the recommended pattern for signalling failure from an async action —
+    // the action resolves (so postAction fires) but the process still exits
+    // non-zero. Without this, we'd mislabel those runs as successful.
+    const exitCode = typeof process.exitCode === 'number' ? process.exitCode : 0;
     track('cli_command_complete', {
       command_name: ctx.name,
-      success: true,
+      success: exitCode === 0,
       duration_ms: Date.now() - ctx.startedAt,
+      ...(exitCode !== 0 ? { exit_code: exitCode } : {}),
     });
   });
 }
@@ -296,20 +295,40 @@ export async function runCli(argv: string[] = process.argv): Promise<Command> {
   try {
     await program.parseAsync(argv);
   } catch (err) {
+    // A `CliExit` thrown by a command's DI `exit()` is the sanctioned path
+    // for "this command is done, exit with code N". It isn't a bug — it's
+    // how we get telemetry to flush before `process.exit`.
+    const isCliExit = err instanceof CliExit;
+
     if (currentCommand && !currentCommand.completed) {
       const ctx = currentCommand;
       ctx.completed = true;
-      track('cli_command_complete', {
-        command_name: ctx.name,
-        success: false,
-        duration_ms: Date.now() - ctx.startedAt,
-        error_class: errorClassName(err),
-      });
+      if (isCliExit) {
+        track('cli_command_complete', {
+          command_name: ctx.name,
+          success: err.code === 0,
+          duration_ms: Date.now() - ctx.startedAt,
+          exit_code: err.code,
+        });
+      } else {
+        track('cli_command_complete', {
+          command_name: ctx.name,
+          success: false,
+          duration_ms: Date.now() - ctx.startedAt,
+          error_class: errorClassName(err),
+        });
+      }
     }
+
     try {
       await shutdownTelemetry();
     } catch {
       // Never let telemetry shutdown mask the real error.
+    }
+
+    if (isCliExit) {
+      // Flush is done — now actually exit with the code the command asked for.
+      process.exit(err.code);
     }
     throw err;
   }
