@@ -449,6 +449,7 @@ export class AgentRelayClient {
           to: input.to,
           text: input.text,
           from: input.from,
+          senderKind: input.fromKind,
           threadId: input.threadId,
           workspaceId: input.workspaceId,
           workspaceAlias: input.workspaceAlias,

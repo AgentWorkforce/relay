@@ -882,9 +882,31 @@ describe('AgentRelay orchestration handles', () => {
           to: 'worker-1',
           text: 'New task assigned',
           from: 'system',
+          fromKind: 'system',
         })
       );
+      expect(system.kind).toBe('system');
       expect(message.from).toBe('system');
+      expect(message.fromKind).toBe('system');
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('human() and system() stay type-distinct while sharing the send API', async () => {
+    const { client } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+
+    try {
+      const human = relay.human({ name: 'Owner' });
+      const system = relay.system();
+
+      expect(human.kind).toBe('human');
+      expect(system.kind).toBe('system');
+      expect(human.name).toBe('Owner');
+      expect(system.name).toBe('system');
     } finally {
       await relay.shutdown();
     }

@@ -2,6 +2,8 @@ export const PROTOCOL_VERSION = 1 as const;
 
 export type AgentRuntime = 'pty' | 'headless';
 export type HeadlessProvider = 'claude' | 'opencode';
+export type ParticipantKind = 'agent' | 'human' | 'system';
+export type SenderKind = ParticipantKind | 'unknown';
 
 export interface RestartPolicy {
   enabled?: boolean;
@@ -62,6 +64,7 @@ export type SdkToBroker =
         to: string;
         text: string;
         from?: string;
+        from_kind?: ParticipantKind;
         thread_id?: string;
         workspace_id?: string;
         workspace_alias?: string;
@@ -230,6 +233,7 @@ export type BrokerEvent =
       kind: 'relay_inbound';
       event_id: string;
       from: string;
+      sender_kind?: SenderKind;
       target: string;
       body: string;
       thread_id?: string;

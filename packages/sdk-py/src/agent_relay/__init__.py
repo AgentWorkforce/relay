@@ -2,7 +2,7 @@
 
 # ── Primary API: Direct spawn/message (matches TypeScript SDK) ────────────────
 
-from .relay import AgentRelay, Agent, AgentSpawner, HumanHandle, Message, SpawnOptions
+from .relay import AgentRelay, Agent, AgentSpawner, HumanHandle, Message, SpawnOptions, SystemHandle
 _has_communicate = False
 try:
     from .communicate import Relay, RelayConfig, on_relay
@@ -78,6 +78,7 @@ __all__ = [
     "Agent",
     "AgentSpawner",
     "HumanHandle",
+    "SystemHandle",
     "Message",
     "SpawnOptions",
     *(["Relay", "RelayConfig", "on_relay"] if _has_communicate else []),

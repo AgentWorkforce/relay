@@ -26,6 +26,7 @@ import aiohttp
 from .protocol import (
     BrokerEvent,
     MessageInjectionMode,
+    ParticipantKind,
 )
 
 # ── Errors ────────────────────────────────────────────────────────────────────
@@ -469,6 +470,7 @@ class AgentRelayClient:
         to: str,
         text: str,
         from_: Optional[str] = None,
+        from_kind: Optional[ParticipantKind] = None,
         thread_id: Optional[str] = None,
         priority: Optional[int] = None,
         data: Optional[dict[str, Any]] = None,
@@ -476,6 +478,7 @@ class AgentRelayClient:
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"to": to, "text": text}
         if from_ is not None: payload["from"] = from_
+        if from_kind is not None: payload["senderKind"] = from_kind
         if thread_id is not None: payload["threadId"] = thread_id
         if priority is not None: payload["priority"] = priority
         if data is not None: payload["data"] = data

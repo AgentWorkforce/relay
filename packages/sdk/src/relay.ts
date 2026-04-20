@@ -38,7 +38,9 @@ import type {
   BrokerStatus,
   HeadlessProvider,
   MessageInjectionMode,
+  ParticipantKind,
   RestartPolicy,
+  SenderKind,
 } from './protocol.js';
 import {
   followLogs as followLogsFromFile,
@@ -55,6 +57,7 @@ function isUnsupportedOperation(error: unknown): error is AgentRelayProtocolErro
 
 function buildUnsupportedOperationMessage(
   from: string,
+  fromKind: ParticipantKind,
   input: {
     to: string;
     text: string;
@@ -66,6 +69,7 @@ function buildUnsupportedOperationMessage(
   return {
     eventId: 'unsupported_operation',
     from,
+    fromKind,
     to: input.to,
     text: input.text,
     threadId: input.threadId,
@@ -144,6 +148,7 @@ function toWorkspaceRegistryEntry(value: unknown): WorkspaceRegistryEntry {
 export interface Message {
   eventId: string;
   from: string;
+  fromKind?: SenderKind;
   to: string;
   text: string;
   threadId?: string;
@@ -233,6 +238,7 @@ type AgentOutputPayload = { stream: string; chunk: string };
 type AgentOutputCallback = ((chunk: string) => void) | ((data: AgentOutputPayload) => void);
 
 export interface Agent {
+  readonly kind: 'agent';
   readonly name: string;
   readonly runtime: AgentRuntime;
   readonly channels: string[];
@@ -275,7 +281,21 @@ export interface Agent {
 }
 
 export interface HumanHandle {
+  readonly kind: 'human';
   readonly name: string;
+  sendMessage(input: {
+    to: string;
+    text: string;
+    threadId?: string;
+    priority?: number;
+    data?: Record<string, unknown>;
+    mode?: MessageInjectionMode;
+  }): Promise<Message>;
+}
+
+export interface SystemHandle {
+  readonly kind: 'system';
+  readonly name: 'system';
   sendMessage(input: {
     to: string;
     text: string;
@@ -659,16 +679,36 @@ export class AgentRelay {
   // ── Human source ────────────────────────────────────────────────────────
 
   human(opts: { name: string }): HumanHandle {
-    return {
-      name: opts.name,
-      sendMessage: async (input) => {
+    return this.createParticipantHandle('human', opts.name);
+  }
+
+  system(): SystemHandle {
+    return this.createParticipantHandle('system', 'system');
+  }
+
+  private createParticipantHandle<TKind extends 'human' | 'system'>(
+    kind: TKind,
+    name: TKind extends 'system' ? 'system' : string
+  ): TKind extends 'system' ? SystemHandle : HumanHandle {
+    const handle = {
+      kind,
+      name,
+      sendMessage: async (input: {
+        to: string;
+        text: string;
+        threadId?: string;
+        priority?: number;
+        data?: Record<string, unknown>;
+        mode?: MessageInjectionMode;
+      }): Promise<Message> => {
         const client = await this.ensureStarted();
         let result: Awaited<ReturnType<typeof client.sendMessage>>;
         try {
           result = await client.sendMessage({
             to: input.to,
             text: input.text,
-            from: opts.name,
+            from: name,
+            fromKind: kind,
             threadId: input.threadId,
             priority: input.priority,
             data: input.data,
@@ -676,18 +716,19 @@ export class AgentRelay {
           });
         } catch (error) {
           if (isUnsupportedOperation(error)) {
-            return buildUnsupportedOperationMessage(opts.name, input);
+            return buildUnsupportedOperationMessage(name, kind, input);
           }
           throw error;
         }
         if (result?.event_id === 'unsupported_operation') {
-          return buildUnsupportedOperationMessage(opts.name, input);
+          return buildUnsupportedOperationMessage(name, kind, input);
         }
 
         const eventId = result?.event_id ?? randomBytes(8).toString('hex');
         const msg: Message = {
           eventId,
-          from: opts.name,
+          from: name,
+          fromKind: kind,
           to: input.to,
           text: input.text,
           threadId: input.threadId,
@@ -698,10 +739,8 @@ export class AgentRelay {
         return msg;
       },
     };
-  }
 
-  system(): HumanHandle {
-    return this.human({ name: 'system' });
+    return handle as TKind extends 'system' ? SystemHandle : HumanHandle;
   }
 
   // ── Messaging ─────────────────────────────────────────────────────────
@@ -1242,10 +1281,11 @@ export class AgentRelay {
             this.messageReadyAgents.add(event.from);
             this.exitedAgents.delete(event.from);
           }
-          const msg: Message = {
-            eventId: event.event_id,
-            from: event.from,
-            to: event.target,
+        const msg: Message = {
+          eventId: event.event_id,
+          from: event.from,
+          fromKind: event.sender_kind,
+          to: event.target,
             text: event.body,
             threadId: event.thread_id,
             mode: event.injection_mode ?? event.mode,
@@ -1384,6 +1424,7 @@ export class AgentRelay {
     const relay = this;
     let agentChannels = [...channels];
     const agent: InternalAgent = {
+      kind: 'agent',
       name,
       runtime,
       get channels() {
@@ -1529,6 +1570,7 @@ export class AgentRelay {
             to: input.to,
             text: input.text,
             from: name,
+            fromKind: 'agent',
             threadId: input.threadId,
             priority: input.priority,
             data: input.data,
@@ -1536,17 +1578,18 @@ export class AgentRelay {
           });
         } catch (error) {
           if (isUnsupportedOperation(error)) {
-            return buildUnsupportedOperationMessage(name, input);
+            return buildUnsupportedOperationMessage(name, 'agent', input);
           }
           throw error;
         }
         if (result?.event_id === 'unsupported_operation') {
-          return buildUnsupportedOperationMessage(name, input);
+          return buildUnsupportedOperationMessage(name, 'agent', input);
         }
         const eventId = result?.event_id ?? randomBytes(8).toString('hex');
         const msg: Message = {
           eventId,
           from: name,
+          fromKind: 'agent',
           to: input.to,
           text: input.text,
           threadId: input.threadId,
