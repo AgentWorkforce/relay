@@ -145,6 +145,10 @@ pub(crate) struct McpArgsCommand {
     #[arg(long)]
     agent_token: Option<String>,
 
+    /// Register a fresh Relaycast agent token and inject it into the child MCP server.
+    #[arg(long)]
+    register: bool,
+
     /// Multi-workspace context JSON to pass to the child MCP server.
     #[arg(long)]
     workspaces_json: Option<String>,
