@@ -861,3 +861,33 @@ export interface WorkflowStepRow {
   createdAt: string;
   updatedAt: string;
 }
+
+// ── ProcessBackend: cloud-injected execution environment ─────────────────────
+//
+// Relay owns command construction, auth env, cwd, timeout, and step lifecycle.
+// The backend owns execution environments (create VM, run command, destroy VM).
+// uploadFile is reserved for future file asset staging; current executors run
+// commands directly with env/cwd/timeout passed through exec options.
+
+/** Backend for creating isolated execution environments (e.g. Daytona sandboxes). */
+export interface ProcessBackend {
+  /** Create an isolated execution environment. */
+  createEnvironment(label: string): Promise<ProcessEnvironment>;
+}
+
+/** An isolated execution environment provisioned by a ProcessBackend. */
+export interface ProcessEnvironment {
+  /** Unique identifier for this environment. */
+  id: string;
+  /** Home directory inside the environment. */
+  homeDir: string;
+  /** Execute a shell command in the environment. */
+  exec(
+    command: string,
+    opts?: { cwd?: string; env?: Record<string, string>; timeoutSeconds?: number }
+  ): Promise<{ output: string; exitCode: number }>;
+  /** Upload a file into the environment. */
+  uploadFile(content: string | Buffer, remotePath: string): Promise<void>;
+  /** Tear down the environment and release resources. */
+  destroy(): Promise<void>;
+}

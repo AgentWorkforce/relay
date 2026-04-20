@@ -15,11 +15,13 @@ import {
 } from '@agent-relay/config';
 import type { AgentRelayBrokerInitArgs } from '@agent-relay/sdk';
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
+import { track } from '@agent-relay/telemetry';
 
 import { runBridgeCommand } from '../lib/bridge.js';
 import { runDownCommand, runStatusCommand, runUpCommand } from '../lib/broker-lifecycle.js';
 import { runUninstallCommand, runUpdateCommand } from '../lib/core-maintenance.js';
 import { createAgentRelayClient, spawnAgentWithClient } from '../lib/client-factory.js';
+import { defaultExit, runSignalHandler } from '../lib/exit.js';
 
 const execAsync = promisify(exec);
 const DEFAULT_DASHBOARD_PORT = process.env.AGENT_RELAY_DASHBOARD_PORT || '3888';
@@ -130,9 +132,6 @@ export interface CoreDependencies {
   exit: ExitFn;
 }
 
-function defaultExit(code: number): never {
-  process.exit(code);
-}
 
 function findPackageJson(startDir: string, fileSystem: CoreFileSystem): string {
   let current = startDir;
@@ -349,9 +348,10 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     now: () => Date.now(),
     sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
     onSignal: (signal: NodeJS.Signals, handler: () => void | Promise<void>) => {
-      process.on(signal, () => {
-        void handler();
-      });
+      // See `runSignalHandler` — wraps the handler so `CliExit` thrown by
+      // `deps.exit(code)` becomes a flush-then-real-exit, not an unhandled
+      // async rejection (which would override the intended exit code).
+      process.on(signal, () => runSignalHandler(handler));
     },
     holdOpen: () => new Promise(() => undefined),
     resolveTemplatesDir: () => {
@@ -520,6 +520,11 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--cli <tool>', 'CLI tool override for all projects')
     .option('--architect [cli]', 'Spawn an architect agent to coordinate all projects (default: claude)')
     .action(async (projectPaths: string[], options: { cli?: string; architect?: string | boolean }) => {
+      track('bridge_spawn', {
+        project_count: projectPaths.length,
+        cli: options.cli ?? 'default',
+        has_architect: options.architect !== undefined && options.architect !== false,
+      });
       await runBridgeCommand(projectPaths, options, deps);
     });
 

@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { RelayCast, AgentRelayClient } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 
+import { defaultExit } from '../lib/exit.js';
 import { parseSince } from '../lib/formatting.js';
 
 type ExitFn = (code: number) => never;
@@ -188,9 +189,6 @@ export interface MessagingDependencies {
   exit: ExitFn;
 }
 
-function defaultExit(code: number): never {
-  process.exit(code);
-}
 
 function isPresent<T>(value: T | null | undefined): value is T {
   return value !== null && value !== undefined;

@@ -4,6 +4,9 @@ import { spawn as spawnProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import type { Command } from 'commander';
+import { track } from '@agent-relay/telemetry';
+
+import { CliExit } from '../lib/exit.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -77,16 +80,32 @@ export function registerSwarmCommands(program: Command): void {
         list?: boolean;
         dryRun?: boolean;
       }) => {
+        const started = Date.now();
+        const pattern = options.pattern ?? 'fan-out';
+        const teamsCount = Number.parseInt(options.teams ?? '2', 10) || 0;
+        const cli = options.cli ?? 'codex';
+
         if (options.dryRun) {
           console.log('Swarm dry-run plan:');
-          console.log(`  Pattern : ${options.pattern ?? 'fan-out'}`);
+          console.log(`  Pattern : ${pattern}`);
           console.log(`  Task    : ${options.task ?? '(none)'}`);
           console.log(`  Teams   : ${options.teams ?? '2'}`);
           console.log(`  Timeout : ${options.timeout ?? '300s'}`);
-          console.log(`  CLI     : ${options.cli ?? 'codex'}`);
+          console.log(`  CLI     : ${cli}`);
           console.log('');
           console.log('(dry-run: no broker started, no agents spawned)');
-          process.exit(0);
+          track('swarm_run', {
+            pattern,
+            teams: teamsCount,
+            cli,
+            is_list: Boolean(options.list),
+            is_dry_run: true,
+            exit_code: 0,
+            duration_ms: Date.now() - started,
+          });
+          // Natural return — runCli's postAction + awaited shutdown flushes
+          // telemetry before Node exits with code 0.
+          return;
         }
 
         const brokerBin = resolveBrokerBinary();
@@ -126,7 +145,20 @@ export function registerSwarmCommands(program: Command): void {
           });
         });
 
-        process.exit(exitCode);
+        track('swarm_run', {
+          pattern,
+          teams: teamsCount,
+          cli,
+          is_list: Boolean(options.list),
+          is_dry_run: false,
+          exit_code: exitCode,
+          duration_ms: Date.now() - started,
+        });
+
+        if (exitCode === 0) return;
+        // Route non-zero exits through CliExit so runCli can drain the
+        // PostHog queue before calling the real process.exit.
+        throw new CliExit(exitCode);
       }
     );
 }

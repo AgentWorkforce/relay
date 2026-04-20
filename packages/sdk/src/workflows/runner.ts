@@ -45,6 +45,7 @@ import { executeApiStep } from './api-executor.js';
 import { ChannelMessenger } from './channel-messenger.js';
 import { InMemoryWorkflowDb } from './memory-db.js';
 import { buildCommand as buildProcessCommand, spawnProcess } from './process-spawner.js';
+import { createProcessBackendExecutor } from './process-backend-executor.js';
 import { formatRunSummaryTable } from './run-summary-table.js';
 import {
   StepExecutor as WorkflowStepLifecycleExecutor,
@@ -90,6 +91,7 @@ import type {
   WorkflowStepCompletionReason,
   WorkflowStepRow,
   WorkflowStepStatus,
+  ProcessBackend,
 } from './types.js';
 import { WorkflowTrajectory, type StepOutcome } from './trajectory.js';
 import {
@@ -257,6 +259,17 @@ export interface WorkflowRunnerOptions {
   summaryDir?: string;
   executor?: RunnerStepExecutor;
   envSecrets?: Record<string, string>;
+  /**
+   * Process backend for remote execution environments.
+   * When set without an explicit executor, the runner wraps it in a
+   * RunnerStepExecutor that creates isolated environments for agent and
+   * deterministic steps. The runner builds CLI commands and passes auth env,
+   * cwd, and timeout; the backend provides create/exec/destroy primitives.
+   *
+   * When both executor and processBackend are set, executor takes precedence.
+   * When neither is set, the broker spawns local child processes (default).
+   */
+  processBackend?: ProcessBackend;
 }
 
 // ── Step executor interface ──────────────────────────────────────────────────
@@ -389,7 +402,7 @@ export class WorkflowRunner {
   private readonly relayOptions: AgentRelayOptions;
   private readonly cwd: string;
   private readonly summaryDir: string;
-  private readonly executor?: RunnerStepExecutor;
+  private executor?: RunnerStepExecutor;
   private readonly envSecrets?: Record<string, string>;
   private readonly templateResolver: TemplateResolver;
   private readonly channelMessenger: ChannelMessenger;
@@ -456,6 +469,7 @@ export class WorkflowRunner {
   /** Structured CLI session reports captured during the current run, keyed by step name. */
   private readonly agentReports = new Map<string, CliSessionReport>();
   private static readonly PTY_TASK_ARG_SIZE_LIMIT = 2 * 1024 * 1024; // 2 MB
+  private readonly processBackend?: ProcessBackend;
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -465,7 +479,13 @@ export class WorkflowRunner {
     this.summaryDir = options.summaryDir ?? path.join(this.cwd, '.relay', 'summaries');
     this.workersPath = path.join(this.cwd, '.agent-relay', 'team', 'workers.json');
     this.executor = options.executor;
+    this.processBackend = options.processBackend;
     this.envSecrets = options.envSecrets;
+    if (!this.executor && this.processBackend) {
+      this.executor = createProcessBackendExecutor(this.processBackend, {
+        env: this.envSecrets,
+      });
+    }
     this.templateResolver = new TemplateResolver();
     this.channelMessenger = new ChannelMessenger({ postFn: (text) => this.postToChannel(text) });
   }
@@ -4035,6 +4055,10 @@ export class WorkflowRunner {
           );
           const resolvedStep = { ...step, task: ownerTask };
           const ownerStartTime = Date.now();
+          // When processBackend is set without an explicit executor, the runner
+          // constructor synthesizes a RunnerStepExecutor that calls
+          // processBackend.createEnvironment(step.name).exec(command). Explicit
+          // executors still take precedence. See process-backend-executor.ts.
           const spawnResult = this.executor
             ? await this.executor.executeAgentStep(resolvedStep, effectiveOwner, ownerTask, timeoutMs)
             : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {

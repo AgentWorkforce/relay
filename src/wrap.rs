@@ -942,6 +942,12 @@ pub(crate) async fn run_wrap(
                                         telemetry.track(TelemetryEvent::AgentSpawn {
                                             cli: params.cli.clone(),
                                             runtime: "pty".to_string(),
+                                            // The wrap path handles child spawns requested by a
+                                            // running agent through the broker command channel —
+                                            // always agent-originated here.
+                                            spawn_source: ActionSource::Agent,
+                                            has_task: false,
+                                            is_shadow: false,
                                         });
                                         tracing::info!(
                                             child = %params.name,
@@ -980,6 +986,11 @@ pub(crate) async fn run_wrap(
                                                 cli: String::new(),
                                                 release_reason: "ws_command".to_string(),
                                                 lifetime_seconds: 0,
+                                                release_source: if sender_is_human {
+                                                    ActionSource::HumanCli
+                                                } else {
+                                                    ActionSource::Agent
+                                                },
                                             });
                                             tracing::info!(
                                                 child = %params.name,

@@ -6,6 +6,7 @@ import { AgentRelayClient, spawnFromEnv } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 
 import { runAgentsCommand, runAgentsLogsCommand, runWhoCommand } from '../lib/agent-management-listing.js';
+import { defaultExit } from '../lib/exit.js';
 
 type ShadowMode = 'subagent' | 'process';
 type ShadowTrigger = 'SESSION_END' | 'CODE_WRITTEN' | 'REVIEW_REQUEST' | 'EXPLICIT_ASK' | 'ALL_MESSAGES';
@@ -68,10 +69,6 @@ const VALID_SHADOW_TRIGGERS: readonly ShadowTrigger[] = [
   'EXPLICIT_ASK',
   'ALL_MESSAGES',
 ] as const;
-
-function defaultExit(code: number): never {
-  process.exit(code);
-}
 
 async function readTaskFromStdin(): Promise<string | undefined> {
   if (process.stdin.isTTY) {

@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/sdk",
-  "version": "4.0.23",
+  "version": "4.0.30",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -56,6 +56,26 @@
       "types": "./dist/communicate/index.d.ts",
       "import": "./dist/communicate/index.js",
       "default": "./dist/communicate/index.js"
+    },
+    "./communicate/a2a-types": {
+      "types": "./dist/communicate/a2a-types.d.ts",
+      "import": "./dist/communicate/a2a-types.js",
+      "default": "./dist/communicate/a2a-types.js"
+    },
+    "./communicate/a2a-server": {
+      "types": "./dist/communicate/a2a-server.d.ts",
+      "import": "./dist/communicate/a2a-server.js",
+      "default": "./dist/communicate/a2a-server.js"
+    },
+    "./communicate/a2a-transport": {
+      "types": "./dist/communicate/a2a-transport.d.ts",
+      "import": "./dist/communicate/a2a-transport.js",
+      "default": "./dist/communicate/a2a-transport.js"
+    },
+    "./communicate/a2a-bridge": {
+      "types": "./dist/communicate/a2a-bridge.d.ts",
+      "import": "./dist/communicate/a2a-bridge.js",
+      "default": "./dist/communicate/a2a-bridge.js"
     },
     "./communicate/adapters/pi": {
       "types": "./dist/communicate/adapters/pi.d.ts",
@@ -114,7 +134,7 @@
     "@types/ws": "^8.5.10"
   },
   "dependencies": {
-    "@agent-relay/config": "4.0.23",
+    "@agent-relay/config": "4.0.30",
     "@relaycast/sdk": "^1.1.0",
     "@relayfile/sdk": "^0.1.2",
     "@sinclair/typebox": "^0.34.48",

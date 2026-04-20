@@ -36,6 +36,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
+## [4.0.30] - 2026-04-19
+
+### Product Perspective
+#### User-Impacting Fixes
+- Export A2A communicate subpaths (#753) (#753)
+
+### Technical Perspective
+#### Releases
+- v4.0.30
+
+---
+
+## [4.0.29] - 2026-04-17
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add ProcessBackend workflow for cloud sandbox execution (#747)** (#747)
+
+### Technical Perspective
+#### Releases
+- v4.0.29
+
+---
+
+## [4.0.28] - 2026-04-15
+
+### Product Perspective
+#### User-Impacting Fixes
+- Bundle ssh2 in release pipeline, not just scripts/build-bun.sh (#746) (#746)
+
+### Technical Perspective
+#### Releases
+- v4.0.28
+
+---
+
+## [4.0.27] - 2026-04-15
+
+### Product Perspective
+#### User-Impacting Fixes
+- Bundle ssh2 into Bun binary so cloud connect exercises the ssh2 path (#745) (#745)
+
+### Technical Perspective
+#### Releases
+- v4.0.27
+
+---
+
+## [4.0.26] - 2026-04-15
+
+### Product Perspective
+#### User-Impacting Fixes
+- Add visible launch checkpoint for cloud connect (#744) (#744)
+
+### Technical Perspective
+#### Releases
+- v4.0.26
+
+---
+
+## [4.0.25] - 2026-04-15
+
+### Product Perspective
+#### User-Impacting Fixes
+- Stop cloud connect hangs and re-auth loops (#743) (#743)
+
+### Technical Perspective
+#### Releases
+- v4.0.25
+
+---
+
+## [4.0.24] - 2026-04-15
+
+### Product Perspective
+#### User-Impacting Fixes
+- Prefer native Node TS stripping over tsx fallback (#741) (#741)
+
+### Technical Perspective
+#### Releases
+- v4.0.24
+
+---
+
 ## [4.0.23] - 2026-04-14
 
 ### Product Perspective

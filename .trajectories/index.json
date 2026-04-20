@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-13T21:52:53.833Z",
+  "lastUpdated": "2026-04-17T19:52:14.307Z",
   "trajectories": {
     "traj_qb54w47qwod6": {
       "title": "fix-history-from-workflow",
@@ -3637,7 +3637,14 @@
       "title": "autofix-swarm-Agentworkforce-relay-workflow",
       "status": "active",
       "startedAt": "2026-04-13T20:56:12.922Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/active/traj_1776113772922_bc92f121.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/active/traj_1776113772922_bc92f121.json"
+    },
+    "traj_222ha5671idc": {
+      "title": "validate-cloud-connect-e2e-workflow",
+      "status": "completed",
+      "startedAt": "2026-04-15T21:32:51.980Z",
+      "completedAt": "2026-04-15T21:45:41.024Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-04/traj_222ha5671idc.json"
     }
   }
 }

@@ -543,7 +543,12 @@ export class AgentRelay {
       this.workspaceName ?? workspaceId,
       this.getRelaycastBaseUrl()
     );
-    return created.apiKey;
+    const workspace = created as { apiKey?: string; api_key?: string };
+    const apiKey = workspace.apiKey ?? workspace.api_key;
+    if (!apiKey) {
+      throw new Error('RelayCast.createWorkspace() did not return an API key');
+    }
+    return apiKey;
   }
 
   /**

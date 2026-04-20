@@ -1290,8 +1290,8 @@ export async function runStatusCommand(
   // Query the running broker for additional status info
   const connInfo = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
   if (connInfo) {
+    const client = new AgentRelayClient({ baseUrl: connInfo.url, apiKey: connInfo.api_key });
     try {
-      const client = new AgentRelayClient({ baseUrl: connInfo.url, apiKey: connInfo.api_key });
       const status = await client.getStatus();
       if (typeof status.agent_count === 'number') {
         deps.log(`Agents: ${status.agent_count}`);
@@ -1304,9 +1304,10 @@ export async function runStatusCommand(
         deps.log(`Workspace Key: ${session.workspace_key}`);
         deps.log(`Observer: https://agentrelay.com/observer?key=${session.workspace_key}`);
       }
-      client.disconnect();
     } catch {
       // PID-based status is enough when broker query fails.
+    } finally {
+      client.disconnect();
     }
   }
 }
