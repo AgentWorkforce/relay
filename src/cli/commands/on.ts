@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 
+import { defaultExit } from '../lib/exit.js';
 import { checkPrereqs } from './on/prereqs.js';
 import { scanPermissions } from './on/scan.js';
 import { goOnTheRelay } from './on/start.js';
@@ -11,10 +12,6 @@ export interface OnDependencies {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
-}
-
-function defaultExit(code: number): never {
-  process.exit(code);
 }
 
 function withDefaults(overrides: Partial<OnDependencies> = {}): OnDependencies {

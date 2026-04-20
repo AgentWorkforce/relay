@@ -5,9 +5,18 @@ import { execFileSync, spawn as spawnProcess, spawnSync } from 'node:child_proce
 import { Command } from 'commander';
 import { getProjectPaths } from '@agent-relay/config';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
-import { enableTelemetry, disableTelemetry, getStatus, isDisabledByEnv } from '@agent-relay/telemetry';
+import {
+  enableTelemetry,
+  disableTelemetry,
+  getStatus,
+  isDisabledByEnv,
+  track,
+  type WorkflowFileType as TelemetryWorkflowFileType,
+} from '@agent-relay/telemetry';
 import { runWorkflow } from '@agent-relay/sdk/workflows';
 import type { WorkflowEvent } from '@agent-relay/sdk/workflows';
+import { CliExit, defaultExit } from '../lib/exit.js';
+import { errorClassName } from '../lib/telemetry-helpers.js';
 
 function diag(msg: string): void {
   try {
@@ -72,9 +81,6 @@ interface SetupIo {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
-}
-function defaultExit(code: number): never {
-  process.exit(code);
 }
 function withDefaults(overrides: Partial<SetupDependencies> = {}): SetupDependencies {
   const log = overrides.log ?? ((...args: unknown[]) => console.log(...args));
@@ -516,6 +522,8 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
     if (!normalized) return defaultYes;
     return normalized === 'y' || normalized === 'yes';
   };
+  const yesFlag = Boolean(options.yes);
+  const skipBrokerFlag = Boolean(options.skipBroker);
   io.log('');
   io.log('  ╭─────────────────────────────────────╮');
   io.log('  │                                     │');
@@ -530,6 +538,13 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
     io.log('  ℹ  Detected: Cloud workspace');
     io.log('     MCP tools are pre-configured in cloud environments.');
     io.log('');
+    track('setup_init', {
+      is_cloud: true,
+      broker_was_running: false,
+      user_started_broker: false,
+      yes_flag: yesFlag,
+      skip_broker: skipBrokerFlag,
+    });
     return;
   }
   io.log('  ℹ  Detected: Local environment');
@@ -545,6 +560,8 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
       // Process dead — stale connection file
     }
   }
+  const brokerWasRunning = brokerRunning;
+  let userStartedBroker = false;
   if (brokerRunning) {
     io.log('  ✓  Broker is already running');
   } else {
@@ -573,6 +590,7 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
       io.log('  ✓  Broker started in background');
       io.log('');
       brokerRunning = true;
+      userStartedBroker = true;
     }
   }
   io.log('  ╭─────────────────────────────────────────────────────────╮');
@@ -601,6 +619,13 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
   io.log('');
   io.log('  Dashboard: http://localhost:3888 (when broker is running)');
   io.log('');
+  track('setup_init', {
+    is_cloud: false,
+    broker_was_running: brokerWasRunning,
+    user_started_broker: userStartedBroker,
+    yes_flag: yesFlag,
+    skip_broker: skipBrokerFlag,
+  });
 }
 function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
   if (action === 'enable') {
@@ -675,10 +700,34 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
     .option('--start-from <step>', 'Start from a specific step and skip predecessor steps')
     .option('--previous-run-id <runId>', 'Use cached outputs from a previous run when starting from a step')
     .action(async (filePath: string, options: RunWorkflowOptions) => {
-      let isScriptWorkflow = false;
+      const ext = path.extname(filePath).toLowerCase();
+      const isScriptWorkflow = ext === '.ts' || ext === '.tsx' || ext === '.py';
+      const fileType: TelemetryWorkflowFileType =
+        ext === '.yaml' || ext === '.yml'
+          ? 'yaml'
+          : ext === '.ts' || ext === '.tsx'
+            ? 'ts'
+            : ext === '.py'
+              ? 'py'
+              : 'unknown';
+      const started = Date.now();
+      let tracked = false;
+      const emit = (result: { success: boolean; errorClass?: string }): void => {
+        if (tracked) return;
+        tracked = true;
+        track('workflow_run', {
+          file_type: fileType,
+          is_dry_run: Boolean(options.dryRun),
+          is_resume: Boolean(options.resume),
+          is_start_from: Boolean(options.startFrom),
+          is_script: isScriptWorkflow,
+          success: result.success,
+          duration_ms: Date.now() - started,
+          ...(result.errorClass ? { error_class: result.errorClass } : {}),
+        });
+      };
+
       try {
-        const ext = path.extname(filePath).toLowerCase();
-        isScriptWorkflow = ext === '.ts' || ext === '.tsx' || ext === '.py';
         if (ext === '.yaml' || ext === '.yml') {
           if (options.resume) {
             deps.log(`Resuming workflow run ${options.resume} from ${filePath}...`);
@@ -689,11 +738,13 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
             });
             if (result.status === 'completed') {
               deps.log('\nWorkflow resumed and completed successfully.');
+              emit({ success: true });
             } else {
               deps.error(`\nWorkflow ${result.status}${result.error ? `: ${result.error}` : ''}`);
               deps.error(
                 `Run ID: ${result.id} — resume with: agent-relay run ${filePath} --resume ${result.id}`
               );
+              emit({ success: false, errorClass: 'WorkflowNotCompleted' });
               deps.exit(1);
             }
             return;
@@ -713,15 +764,18 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
           });
           if (options.dryRun) {
             // Report was already printed by runWorkflow
+            emit({ success: true });
             return;
           }
           if (result.status === 'completed') {
             deps.log('\nWorkflow completed successfully.');
+            emit({ success: true });
           } else {
             deps.error(`\nWorkflow ${result.status}${result.error ? `: ${result.error}` : ''}`);
             deps.error(
               `Run ID: ${result.id} — resume with: agent-relay run ${filePath} --resume ${result.id}`
             );
+            emit({ success: false, errorClass: 'WorkflowNotCompleted' });
             deps.exit(1);
           }
           return;
@@ -734,11 +788,19 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
             startFrom: options.startFrom,
             previousRunId: options.previousRunId,
           });
+          emit({ success: true });
           return;
         }
         deps.error(`Unsupported file type: ${ext}. Use .yaml, .yml, .ts, or .py`);
+        emit({ success: false, errorClass: 'UnsupportedFileType' });
         deps.exit(1);
       } catch (err: any) {
+        // `deps.exit(1)` above throws `CliExit` in production so runCli can
+        // flush telemetry — let that bubble straight through instead of
+        // treating it as an unexpected error (which would print the internal
+        // "cli-exit:1" message and clobber `error_class` with 'CliExit').
+        if (err instanceof CliExit) throw err;
+        emit({ success: false, errorClass: errorClassName(err) });
         deps.error(`Error: ${err.message}`);
         if (isScriptWorkflow) {
           const runIdMatch = typeof err?.message === 'string' ? err.message.match(/Run ID:\s*(\S+)/) : null;
