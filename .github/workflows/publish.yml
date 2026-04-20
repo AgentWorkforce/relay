@@ -68,6 +68,7 @@ permissions:
 
 env:
   NPM_CONFIG_FUND: false
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
 
 jobs:
   # Build Rust broker binary for all platforms (needed by SDK's AgentRelayClient)

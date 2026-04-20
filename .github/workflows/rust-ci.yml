@@ -7,6 +7,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
 
 jobs:
   changes:
