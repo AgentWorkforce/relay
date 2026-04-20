@@ -188,7 +188,11 @@ function installTelemetryHooks(program: Command): void {
     track('cli_command_run', {
       command_name: commandPath,
       flags_used: flags,
-      is_tty: Boolean(process.stdout.isTTY),
+      // stdin, not stdout — this property exists to distinguish interactive
+      // runs from scripted ones. `agent-relay status > file.txt` still has
+      // a TTY on stdin (human at the keyboard); `echo x | agent-relay spawn`
+      // doesn't (piped input). stdout.isTTY would get both wrong.
+      is_tty: Boolean(process.stdin.isTTY),
       is_ci: detectCi(),
     });
   });
