@@ -83,6 +83,10 @@ relay.onAgentExitRequested = ({ name, reason }) => {
 relay.onAgentIdle = ({ name, idleSecs }) => {
   console.log(`idle: ${name}`, idleSecs);
 };
+
+relay.onAgentActivityChanged = ({ name, active, pendingDeliveries, reason }) => {
+  console.log(`activity: ${name}`, { active, pendingDeliveries, reason });
+};
 ```
 
 ```python Python
@@ -120,6 +124,16 @@ relay.on_delivery_update = lambda event: print("delivery update", event["type"])
 
 - `onWorkerOutput` / `on_worker_output`: raw stdout or stderr from a worker.
 - `onDeliveryUpdate` / `on_delivery_update`: broker-level delivery events when you need transport visibility.
+- `onAgentActivityChanged`: high-level derived activity signal for UI badges like “thinking” without hand-rolling delivery event inference.
+
+```typescript
+const thinkingByAgent = new Map<string, boolean>();
+
+relay.onAgentActivityChanged = ({ name, active }) => {
+  thinkingByAgent.set(name, active);
+  renderThinkingBadge(name, active);
+};
+```
 
 ## Good uses for handlers
 
