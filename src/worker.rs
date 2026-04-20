@@ -21,7 +21,7 @@ use tokio::{
 
 use crate::{
     headless_provider_cli_name,
-    helpers::{normalize_cli_name, parse_cli_command},
+    helpers::{cli_supports_flag, normalize_cli_name, parse_cli_command},
     routing,
     spawner::terminate_child,
 };
@@ -211,15 +211,23 @@ impl WorkerRegistry {
                 // more effective at suppressing the "Do you trust the files in this folder?"
                 // dialog, which otherwise renders mid-session on first filesystem tool use
                 // and blocks a broker-wrapped PTY silently.
+                //
+                // `--permission-mode` was added to claude-code ~2.0; older installs reject
+                // unknown flags and the spawn would fail. `cli_supports_flag` probes
+                // `<cli> --help` once per (cli, flag) pair and caches the result, so older
+                // claude installs silently skip the extra flag and keep the original
+                // `--dangerously-skip-permissions`-only behavior.
                 let mut extra_bypass_flags: Vec<&str> = Vec::new();
                 let bypass_flag: Option<&str> = if is_claude
                     && !effective_args
                         .iter()
                         .any(|a| a.contains("dangerously-skip-permissions"))
                 {
-                    if !effective_args
+                    let user_set_permission_mode = effective_args
                         .iter()
-                        .any(|a| a == "--permission-mode" || a.starts_with("--permission-mode="))
+                        .any(|a| a == "--permission-mode" || a.starts_with("--permission-mode="));
+                    if !user_set_permission_mode
+                        && cli_supports_flag(&resolved_cli, "--permission-mode")
                     {
                         extra_bypass_flags.extend(["--permission-mode", "bypassPermissions"]);
                     }

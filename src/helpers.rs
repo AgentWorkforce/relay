@@ -2,7 +2,10 @@ use std::{
     collections::HashMap,
     ffi::OsStr,
     path::Path,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex, OnceLock,
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -71,6 +74,116 @@ pub(crate) fn normalize_cli_name(cli: &str) -> String {
         .and_then(OsStr::to_str)
         .unwrap_or(cli)
         .to_string()
+}
+
+/// Cache key: (resolved-cli-path, flag). Value: whether `<cli> --help`
+/// advertises the flag. Cached because `--help` is typically 50-100ms.
+type CliFlagCache = HashMap<(String, String), bool>;
+
+fn cli_flag_cache() -> &'static Mutex<CliFlagCache> {
+    static CACHE: OnceLock<Mutex<CliFlagCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Returns `true` if `<cli> --help` mentions `flag`.
+///
+/// Used to make flag injection backward-compatible: older versions of
+/// claude/codex/etc. may not know flags we'd like to inject by default.
+/// Passing an unknown flag typically causes the CLI to exit with an
+/// "unknown option" error before the agent can do anything useful.
+///
+/// The probe runs `<cli> --help` with a short timeout, captures stdout
+/// (some CLIs emit help to stderr — fall back to that if stdout is
+/// empty), and matches `flag` as a whole word. Results are cached per
+/// (cli, flag) pair for the process lifetime.
+///
+/// Failure modes: if the probe can't execute or times out, we return
+/// `false`. The caller is expected to treat an unknown flag as a
+/// reason to *skip* injection, so a failed probe errs on the side of
+/// not-injecting — preserving the pre-probe behavior.
+pub(crate) fn cli_supports_flag(cli: &str, flag: &str) -> bool {
+    let key = (cli.to_string(), flag.to_string());
+    if let Ok(cache) = cli_flag_cache().lock() {
+        if let Some(&cached) = cache.get(&key) {
+            return cached;
+        }
+    }
+
+    let supported = probe_cli_flag(cli, flag).unwrap_or(false);
+
+    if let Ok(mut cache) = cli_flag_cache().lock() {
+        cache.insert(key, supported);
+    }
+    supported
+}
+
+fn probe_cli_flag(cli: &str, flag: &str) -> Option<bool> {
+    use std::process::{Command, Stdio};
+    let output = Command::new(cli)
+        .arg("--help")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .ok()?;
+
+    // Some CLIs (claude, codex) emit --help to stdout; older / minimal
+    // tools put it on stderr. Concatenate both so either lands the flag.
+    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+    combined.push(' ');
+    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+
+    Some(help_advertises_flag(&combined, flag))
+}
+
+/// Word-boundary match on a flag name in `--help` text. Kept as a
+/// separate free function so it's covered by the detection tests
+/// without having to shell out to a real CLI.
+pub(crate) fn help_advertises_flag(help_text: &str, flag: &str) -> bool {
+    // `--permission-mode` should match; `--permission-mode-legacy` shouldn't.
+    // Accept the flag followed by whitespace, `=`, `,`, `]`, or end-of-line.
+    for idx in memchr_indices(help_text, flag) {
+        let end = idx + flag.len();
+        let next = help_text.as_bytes().get(end).copied();
+        let boundary = match next {
+            None => true,
+            Some(b) => {
+                let c = b as char;
+                c.is_whitespace() || c == '=' || c == ',' || c == ']' || c == ')'
+            }
+        };
+        if boundary {
+            return true;
+        }
+    }
+    false
+}
+
+/// Naive substring-iteration helper. Returns byte offsets of every
+/// occurrence of `needle` in `haystack`. ~10 lines avoids pulling
+/// `memchr` just for this.
+fn memchr_indices<'a>(haystack: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
+    let mut start = 0usize;
+    std::iter::from_fn(move || {
+        if start >= haystack.len() {
+            return None;
+        }
+        match haystack[start..].find(needle) {
+            Some(rel) => {
+                let abs = start + rel;
+                start = abs + needle.len().max(1);
+                Some(abs)
+            }
+            None => None,
+        }
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn reset_cli_flag_cache_for_test() {
+    if let Ok(mut cache) = cli_flag_cache().lock() {
+        cache.clear();
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1113,6 +1226,75 @@ pub(crate) async fn resolve_dm_participants_cached(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ==================== help_advertises_flag tests ====================
+
+    #[test]
+    fn help_advertises_flag_finds_exact_flag() {
+        // Snippet captured from `claude --help` in claude-code 2.1.19.
+        let help = "  --permission-mode <mode>  Permission mode to use for the session\n\
+                    (choices: \"acceptEdits\", \"bypassPermissions\", \"default\")";
+        assert!(help_advertises_flag(help, "--permission-mode"));
+    }
+
+    #[test]
+    fn help_advertises_flag_matches_equals_form() {
+        let help = "  --config=<PATH>  Path to a config file";
+        assert!(help_advertises_flag(help, "--config"));
+    }
+
+    #[test]
+    fn help_advertises_flag_rejects_superstring() {
+        // Ensures `--permission-mode` does NOT match `--permission-mode-legacy`.
+        let help = "  --permission-mode-legacy  Old permission mode\n";
+        assert!(!help_advertises_flag(help, "--permission-mode"));
+    }
+
+    #[test]
+    fn help_advertises_flag_absent() {
+        let help = "  --model <m>  Model to use\n  --help  Show help";
+        assert!(!help_advertises_flag(help, "--permission-mode"));
+    }
+
+    #[test]
+    fn help_advertises_flag_empty_help() {
+        assert!(!help_advertises_flag("", "--permission-mode"));
+    }
+
+    #[test]
+    fn help_advertises_flag_end_of_string_boundary() {
+        // Flag at EOF with no trailing whitespace is still a match.
+        let help = "  --permission-mode";
+        assert!(help_advertises_flag(help, "--permission-mode"));
+    }
+
+    #[test]
+    fn help_advertises_flag_bracket_grouped() {
+        // Some CLIs print `[--flag]` in synopsis-style help.
+        let help = "Usage: tool [--permission-mode bypassPermissions] file";
+        assert!(help_advertises_flag(help, "--permission-mode"));
+    }
+
+    // ==================== cli_supports_flag cache behavior ====================
+
+    #[test]
+    fn cli_supports_flag_unknown_binary_returns_false() {
+        reset_cli_flag_cache_for_test();
+        // Arbitrary nonexistent path — probe fails → result is false.
+        // Verifies the "probe failure → skip injection" invariant the
+        // worker.rs call site relies on for backward compatibility.
+        let result = cli_supports_flag(
+            "/nonexistent/this-is-not-a-real-cli-0ae3b5f2",
+            "--permission-mode",
+        );
+        assert!(!result);
+        // Second call should hit the cache (same answer, no crash).
+        let cached = cli_supports_flag(
+            "/nonexistent/this-is-not-a-real-cli-0ae3b5f2",
+            "--permission-mode",
+        );
+        assert!(!cached);
+    }
 
     #[test]
     fn check_echo_clean_text() {
