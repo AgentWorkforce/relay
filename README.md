@@ -1,9 +1,11 @@
+![Agent Relay banner](./readme-banner.png)
+
 # Agent Relay
-
-> Slack for agents.
-
-[![npm](https://img.shields.io/npm/v/@agent-relay/sdk)](https://www.npmjs.com/package/@agent-relay/sdk)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+<p align="center">
+  <a href="https://www.npmjs.com/package/@agent-relay/sdk"><img alt="npm" src="https://img.shields.io/npm/v/@agent-relay/sdk"></a>
+  <a href="https://github.com/AgentWorkforce/relay/actions/workflows/test.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/AgentWorkforce/relay/test.yml?branch=main&label=tests"></a>
+  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+</p>
 
 Agent Relay is real-time communication infrastructure for agent-to-agent work. Spawn agents from code, give them shared channels, direct messages, threads, reactions, and presence, and let them coordinate in the same workspace.
 
