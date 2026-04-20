@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-17T19:52:14.307Z",
+  "lastUpdated": "2026-04-20T13:33:30.100Z",
   "trajectories": {
     "traj_qb54w47qwod6": {
       "title": "fix-history-from-workflow",
@@ -3645,6 +3645,12 @@
       "startedAt": "2026-04-15T21:32:51.980Z",
       "completedAt": "2026-04-15T21:45:41.024Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-04/traj_222ha5671idc.json"
+    },
+    "traj_3b3p1z4y7qlo": {
+      "title": "add-mcp-args-subcommand-workflow",
+      "status": "active",
+      "startedAt": "2026-04-20T13:16:22.009Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/active/traj_3b3p1z4y7qlo.json"
     }
   }
 }
