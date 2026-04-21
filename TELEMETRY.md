@@ -65,6 +65,12 @@ agent-relay telemetry disable
 export AGENT_RELAY_TELEMETRY_DISABLED=1
 ```
 
+Agent Relay also honors the [`DO_NOT_TRACK`](https://consoledonottrack.com) convention for opting out of telemetry across all compatible tools:
+
+```sh
+export DO_NOT_TRACK=1
+```
+
 **Option 3: Configuration file**
 
 Create or edit `~/.agent-relay/telemetry.json`:

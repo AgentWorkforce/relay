@@ -630,7 +630,7 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
 function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
   if (action === 'enable') {
     if (isDisabledByEnv()) {
-      io.log('Cannot enable: AGENT_RELAY_TELEMETRY_DISABLED is set');
+      io.log('Cannot enable: AGENT_RELAY_TELEMETRY_DISABLED or DO_NOT_TRACK is set');
       io.log('Remove the environment variable to enable telemetry.');
       return;
     }
@@ -650,7 +650,7 @@ function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
   io.log('================');
   io.log(`Enabled: ${status.enabled ? 'Yes' : 'No'}`);
   if (status.disabledByEnv) {
-    io.log('(Disabled via AGENT_RELAY_TELEMETRY_DISABLED environment variable)');
+    io.log('(Disabled via AGENT_RELAY_TELEMETRY_DISABLED or DO_NOT_TRACK environment variable)');
   }
   io.log(`Anonymous ID: ${status.anonymousId}`);
   if (status.notifiedAt) {

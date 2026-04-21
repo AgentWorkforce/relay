@@ -28,6 +28,9 @@ on:
         type: string
         default: 'latest'
 
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
 jobs:
   verify:
     name: Verify Node ${{ matrix.node }}

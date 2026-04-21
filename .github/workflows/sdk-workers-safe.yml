@@ -9,6 +9,9 @@ on:
     paths:
       - 'packages/sdk/**'
 
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
 jobs:
   workers-safe:
     name: SDK Workers-safety probe
