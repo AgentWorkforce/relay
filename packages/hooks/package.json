@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/hooks",
-  "version": "4.0.33",
+  "version": "4.0.34",
   "description": "Hook emitter, registry, and trajectory hooks for Agent Relay",
   "type": "module",
   "main": "dist/index.js",
@@ -37,9 +37,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/config": "4.0.33",
-    "@agent-relay/trajectory": "4.0.33",
-    "@agent-relay/sdk": "4.0.33"
+    "@agent-relay/config": "4.0.34",
+    "@agent-relay/trajectory": "4.0.34",
+    "@agent-relay/sdk": "4.0.34"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",
