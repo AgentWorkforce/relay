@@ -2974,13 +2974,14 @@ export class WorkflowRunner {
       this.log(`Executing ${workflow.steps.length} steps (pattern: ${config.swarm.pattern})`);
       await this.executeSteps(workflow, stepStates, agentMap, config.errorHandling, runId);
 
-      const errorStrategy = config.errorHandling?.strategy ?? workflow.onError ?? 'fail-fast';
-      const continueOnError = errorStrategy === 'continue' || errorStrategy === 'skip';
+      // A run is successful iff every step completed or was skipped. Under
+      // continue-on-error we keep executing past a failure, but the run
+      // itself still "failed" — otherwise the final status contradicts the
+      // summary table ("1 passed, 3 failed" but run.status=completed) and
+      // downstream wrappers that key off run.status (e.g. the cloud
+      // orchestrator's bootstrap) silently report success.
       const allCompleted = [...stepStates.values()].every(
-        (s) =>
-          s.row.status === 'completed' ||
-          s.row.status === 'skipped' ||
-          (continueOnError && s.row.status === 'failed')
+        (s) => s.row.status === 'completed' || s.row.status === 'skipped'
       );
 
       if (allCompleted) {
