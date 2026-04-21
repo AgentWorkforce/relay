@@ -617,6 +617,30 @@ describe('Completion Pipeline', () => {
       expect(mockRelayInstance.spawnPty).toHaveBeenCalledTimes(2);
     }, 15000);
 
+    it('should mark the run failed even with errorHandling.strategy=continue when a step fails', async () => {
+      // Regression: previously `allCompleted` counted failed steps as success
+      // whenever continueOnError was true, so the summary table would render
+      // "FAILED 1 passed, 1 failed" while run.status landed on 'completed'.
+      // Any wrapper that keys off run.status (e.g. the cloud orchestrator's
+      // bootstrap) would then propagate a false success.
+      mockSpawnOutputs = [
+        'worker output\n',
+        'OWNER_DECISION: INCOMPLETE_FAIL\nREASON: relaycast unavailable\n',
+      ];
+
+      const config: RelayYamlConfig = {
+        ...makeSupervisedConfig({}),
+        errorHandling: { strategy: 'continue' },
+      };
+
+      const run = await runner.execute(config, 'default');
+
+      expect(run.status).toBe('failed');
+      const steps = await db.getStepsByRunId(run.id);
+      expect(steps[0]?.status).toBe('failed');
+      expect(steps[0]?.completionReason).toBe('failed_owner_decision');
+    }, 15000);
+
     it('should still complete by owner decision when COMPLETE and verification both pass', async () => {
       mockSpawnOutputs = [
         'worker output with expected content\n',
