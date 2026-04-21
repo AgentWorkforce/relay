@@ -136,7 +136,7 @@
   "dependencies": {
     "@agent-relay/config": "4.0.34",
     "@relaycast/sdk": "^1.1.0",
-    "@relayfile/sdk": "^0.1.2",
+    "@relayfile/sdk": ">=0.1.2 <1",
     "@sinclair/typebox": "^0.34.48",
     "agent-trajectories": "^0.5.4",
     "chalk": "^4.1.2",
