@@ -530,18 +530,28 @@ jobs:
           - broker_pkg: broker-darwin-arm64
             binary_name: agent-relay-broker-darwin-arm64
             binary_file: agent-relay-broker
+            os: darwin
+            cpu: arm64
           - broker_pkg: broker-darwin-x64
             binary_name: agent-relay-broker-darwin-x64
             binary_file: agent-relay-broker
+            os: darwin
+            cpu: x64
           - broker_pkg: broker-linux-arm64
             binary_name: agent-relay-broker-linux-arm64
             binary_file: agent-relay-broker
+            os: linux
+            cpu: arm64
           - broker_pkg: broker-linux-x64
             binary_name: agent-relay-broker-linux-x64
             binary_file: agent-relay-broker
+            os: linux
+            cpu: x64
           - broker_pkg: broker-win32-x64
             binary_name: agent-relay-broker-win32-x64.exe
             binary_file: agent-relay-broker.exe
+            os: win32
+            cpu: x64
 
     steps:
       - name: Checkout code
@@ -572,6 +582,22 @@ jobs:
           cp "/tmp/broker/${{ matrix.binary_name }}" "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
           chmod +x "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
           ls -lh packages/${{ matrix.broker_pkg }}/bin/
+
+      # os/cpu constraints are injected at publish time. Keeping them out of
+      # the committed package.json lets these packages live as plain
+      # workspaces during development — otherwise npm install trips
+      # EBADPLATFORM on the machines that don't match every platform.
+      - name: Inject os/cpu for ${{ matrix.os }}-${{ matrix.cpu }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const p = 'packages/${{ matrix.broker_pkg }}/package.json';
+            const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+            pkg.os = ['${{ matrix.os }}'];
+            pkg.cpu = ['${{ matrix.cpu }}'];
+            fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
+            console.log('Staged', pkg.name, 'for', pkg.os, pkg.cpu);
+          "
 
       - name: Update npm for OIDC support
         run: npm install -g npm@latest

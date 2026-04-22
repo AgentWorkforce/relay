@@ -86,11 +86,6 @@
   },
   "workspaces": [
     "packages/*",
-    "!packages/broker-darwin-arm64",
-    "!packages/broker-darwin-x64",
-    "!packages/broker-linux-arm64",
-    "!packages/broker-linux-x64",
-    "!packages/broker-win32-x64",
     "web"
   ],
   "bundledDependencies": [

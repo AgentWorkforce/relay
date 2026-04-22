@@ -2,8 +2,6 @@
   "name": "@agent-relay/broker-darwin-arm64",
   "version": "5.0.0",
   "description": "agent-relay-broker binary for darwin arm64. Installed automatically as an optional dependency of @agent-relay/sdk.",
-  "os": ["darwin"],
-  "cpu": ["arm64"],
   "files": [
     "bin"
   ],
