@@ -76,7 +76,7 @@ Run against a scratch repo:
 
 ```
 GITHUB_REPO=AgentWorkforce/scratch npx tsx \
-  packages/primitives/github/examples/end-to-end-pr-workflow.ts
+  packages/github-primitive/examples/end-to-end-pr-workflow.ts
 ```
 
 Runtime selection is automatic:

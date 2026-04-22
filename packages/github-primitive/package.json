@@ -45,6 +45,6 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AgentWorkforce/relay.git",
-    "directory": "packages/primitives/github"
+    "directory": "packages/github-primitive"
   }
 }

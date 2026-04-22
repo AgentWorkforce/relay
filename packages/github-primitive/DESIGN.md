@@ -5,7 +5,7 @@ A workflow primitive that enables agents to interact with GitHub repositories us
 ## Package Structure
 
 ```
-packages/primitives/github/
+packages/github-primitive/
 ├── DESIGN.md                 # This design document
 ├── README.md                # Package overview
 ├── package.json             # Package manifest

@@ -5,7 +5,7 @@ A workflow primitive that enables agents to perform browser automation using Pla
 ## Package Structure
 
 ```
-packages/primitives/browser/
+packages/browser-primitive/
 ├── DESIGN.md                 # This design document
 ├── package.json             # Package manifest
 ├── src/
@@ -45,7 +45,7 @@ packages/primitives/browser/
 
 ```typescript
 // Browser action types that map to workflow step actions
-export type BrowserAction = 
+export type BrowserAction =
   | 'navigate'
   | 'click'
   | 'fill'
@@ -249,32 +249,32 @@ steps:
     integration: browser
     action: navigate
     params:
-      url: "https://app.example.com/login"
-      waitUntil: "networkidle"
-    
+      url: 'https://app.example.com/login'
+      waitUntil: 'networkidle'
+
   - name: fill-credentials
-    type: integration  
+    type: integration
     integration: browser
     action: fill
     params:
       selector: 'input[name="email"]'
-      value: "{{steps.get-credentials.output.email}}"
-      
+      value: '{{steps.get-credentials.output.email}}'
+
   - name: submit-login
     type: integration
     integration: browser
     action: submit
     params:
       selector: 'form#login-form'
-      waitForNavigation: "true"
-      
+      waitForNavigation: 'true'
+
   - name: capture-dashboard
     type: integration
     integration: browser
     action: screenshot
     params:
-      path: "dashboard-screenshot.png"
-      fullPage: "true"
+      path: 'dashboard-screenshot.png'
+      fullPage: 'true'
 ```
 
 ### Global Browser Configuration
@@ -299,7 +299,7 @@ steps:
     integration: browser
     action: navigate
     params:
-      url: "https://example.com"
+      url: 'https://example.com'
 ```
 
 ### Step-Level Configuration Override
@@ -313,13 +313,13 @@ steps:
     integration: browser
     action: navigate
     params:
-      url: "https://example.com"
+      url: 'https://example.com'
       # Step-specific browser config
       browserConfig:
         viewport:
           width: 375
           height: 667
-        userAgent: "Mobile Safari"
+        userAgent: 'Mobile Safari'
 ```
 
 ## Example Workflow Usage
@@ -327,7 +327,7 @@ steps:
 ### 1. Data Extraction Workflow
 
 ```yaml
-version: "1.0"
+version: '1.0'
 name: extract-product-data
 description: Extract product information from e-commerce site
 
@@ -342,17 +342,17 @@ steps:
     integration: browser
     action: navigate
     params:
-      url: "https://store.example.com/products"
-      waitUntil: "networkidle"
-      
+      url: 'https://store.example.com/products'
+      waitUntil: 'networkidle'
+
   - name: search-for-item
     type: integration
     integration: browser
     action: fill
     params:
       selector: 'input[name="search"]'
-      value: "{{workflow.searchTerm}}"
-      
+      value: '{{workflow.searchTerm}}'
+
   - name: submit-search
     type: integration
     integration: browser
@@ -360,7 +360,7 @@ steps:
     params:
       selector: 'form.search-form'
       waitForNavigation: true
-      
+
   - name: extract-product-titles
     type: integration
     integration: browser
@@ -369,19 +369,19 @@ steps:
       script: |
         Array.from(document.querySelectorAll('.product-title'))
           .map(el => el.textContent.trim())
-      
+
   - name: capture-results-page
     type: integration
     integration: browser
     action: screenshot
     params:
-      path: "search-results-{{workflow.searchTerm}}.png"
+      path: 'search-results-{{workflow.searchTerm}}.png'
 ```
 
 ### 2. Form Automation Workflow
 
 ```yaml
-version: "1.0"
+version: '1.0'
 name: submit-application
 description: Automate job application form submission
 
@@ -396,32 +396,32 @@ steps:
     integration: browser
     action: navigate
     params:
-      url: "{{steps.get-job-url.output}}"
-      
+      url: '{{steps.get-job-url.output}}'
+
   - name: fill-personal-info
     type: integration
     integration: browser
     action: fill
     params:
       selector: 'input[name="fullName"]'
-      value: "{{steps.get-applicant-data.output.name}}"
-      
+      value: '{{steps.get-applicant-data.output.name}}'
+
   - name: fill-email
     type: integration
     integration: browser
     action: fill
     params:
       selector: 'input[name="email"]'
-      value: "{{steps.get-applicant-data.output.email}}"
-      
+      value: '{{steps.get-applicant-data.output.email}}'
+
   - name: upload-resume
     type: integration
     integration: browser
     action: upload
     params:
       selector: 'input[type="file"]'
-      filePath: "{{steps.generate-resume.output.filePath}}"
-      
+      filePath: '{{steps.generate-resume.output.filePath}}'
+
   - name: submit-application
     type: integration
     integration: browser
@@ -429,14 +429,14 @@ steps:
     params:
       selector: 'form.application-form'
       waitForNavigation: true
-      
+
   - name: capture-confirmation
     type: integration
     integration: browser
     action: screenshot
     params:
-      path: "application-confirmation.png"
-      
+      path: 'application-confirmation.png'
+
   - name: get-confirmation-text
     type: integration
     integration: browser
@@ -448,7 +448,7 @@ steps:
 ### 3. Multi-Step Testing Workflow
 
 ```yaml
-version: "1.0"
+version: '1.0'
 name: e2e-user-journey
 description: End-to-end test of user signup and onboarding
 
@@ -463,8 +463,8 @@ steps:
     integration: browser
     action: navigate
     params:
-      url: "https://app.example.com"
-      
+      url: 'https://app.example.com'
+
   - name: click-signup
     type: integration
     integration: browser
@@ -472,16 +472,16 @@ steps:
     params:
       selector: 'a[href="/signup"]'
       waitFor: true
-      
+
   - name: wait-for-signup-form
     type: integration
     integration: browser
     action: waitForElement
     params:
       selector: 'form#signup-form'
-      state: "visible"
+      state: 'visible'
       timeout: 10000
-      
+
   - name: fill-signup-form
     type: integration
     integration: browser
@@ -491,7 +491,7 @@ steps:
         document.querySelector('input[name="email"]').value = '{{workflow.testEmail}}';
         document.querySelector('input[name="password"]').value = '{{workflow.testPassword}}';
         document.querySelector('input[name="confirmPassword"]').value = '{{workflow.testPassword}}';
-        
+
   - name: submit-signup
     type: integration
     integration: browser
@@ -499,21 +499,21 @@ steps:
     params:
       selector: 'form#signup-form'
       waitForNavigation: true
-      
+
   - name: verify-welcome-message
     type: integration
     integration: browser
     action: waitForElement
     params:
       selector: '.welcome-message'
-      state: "visible"
-      
+      state: 'visible'
+
   - name: capture-onboarding-screen
     type: integration
     integration: browser
     action: screenshot
     params:
-      path: "onboarding-welcome.png"
+      path: 'onboarding-welcome.png'
 ```
 
 ## Integration with Existing Workflow System
@@ -529,30 +529,25 @@ export class BrowserExecutor implements WorkflowExecutor {
     resolvedParams: Record<string, string>,
     context: { workspaceId?: string }
   ): Promise<{ output: string; success: boolean }> {
-    
     if (step.integration !== 'browser') {
       throw new Error(`BrowserExecutor only handles browser integration steps`);
     }
-    
+
     try {
-      const result = await this.executeBrowserAction(
-        step.action as BrowserAction,
-        resolvedParams,
-        context
-      );
-      
+      const result = await this.executeBrowserAction(step.action as BrowserAction, resolvedParams, context);
+
       return {
         output: result.output,
-        success: result.success
+        success: result.success,
       };
     } catch (error) {
       return {
         output: error instanceof Error ? error.message : String(error),
-        success: false
+        success: false,
       };
     }
   }
-  
+
   private async executeBrowserAction(
     action: BrowserAction,
     params: Record<string, string>,
@@ -570,22 +565,19 @@ Sessions persist across steps when `persistSession: true`:
 ```typescript
 export class BrowserSessionManager {
   private sessions = new Map<string, BrowserSession>();
-  
-  async getOrCreateSession(
-    workspaceId: string, 
-    config: BrowserConfig
-  ): Promise<BrowserSession> {
+
+  async getOrCreateSession(workspaceId: string, config: BrowserConfig): Promise<BrowserSession> {
     const sessionKey = `${workspaceId}:${JSON.stringify(config)}`;
-    
+
     if (this.sessions.has(sessionKey)) {
       return this.sessions.get(sessionKey)!;
     }
-    
+
     const session = await this.createSession(config);
     this.sessions.set(sessionKey, session);
     return session;
   }
-  
+
   async cleanupSession(sessionId: string): Promise<void> {
     // Cleanup browser resources
   }
@@ -597,7 +589,7 @@ export class BrowserSessionManager {
 The browser executor provides robust error handling:
 
 1. **Automatic Screenshots**: Captures screenshot on action failure for debugging
-2. **Retry Logic**: Configurable retry attempts for transient failures  
+2. **Retry Logic**: Configurable retry attempts for transient failures
 3. **Timeout Management**: Respects workflow-level and action-level timeouts
 4. **Graceful Degradation**: Falls back to alternative selectors when primary fails
 
@@ -613,11 +605,11 @@ steps:
     action: getText
     params:
       selector: '.price'
-      
+
   - name: compare-price
     type: agent
     agent: price-analyst
-    task: "Analyze if price {{steps.extract-product-price.output}} is competitive"
+    task: 'Analyze if price {{steps.extract-product-price.output}} is competitive'
 ```
 
 ## Agent Interaction Features
@@ -684,11 +676,11 @@ Detailed error information helps agents understand failures:
 steps:
   - name: test-deployment
     type: integration
-    integration: browser  
+    integration: browser
     action: navigate
     params:
-      url: "{{steps.deploy-to-staging.output.url}}"
-      
+      url: '{{steps.deploy-to-staging.output.url}}'
+
   - name: run-smoke-tests
     type: integration
     integration: browser
@@ -699,13 +691,13 @@ steps:
         const results = [];
         // ... test implementation
         return JSON.stringify(results);
-        
+
   - name: create-test-report
     type: integration
     integration: github
     action: create-issue
     params:
-      title: "Smoke Test Results"
+      title: 'Smoke Test Results'
       body: |
         Deployment URL: {{steps.test-deployment.output}}
         Test Results: {{steps.run-smoke-tests.output}}
@@ -720,22 +712,22 @@ steps:
     integration: browser
     action: navigate
     params:
-      url: "https://store.example.com/checkout"
-      
+      url: 'https://store.example.com/checkout'
+
   - name: capture-checkout-error
     type: integration
     integration: browser
     action: screenshot
     params:
-      path: "checkout-error.png"
-      selector: ".error-message"
-      
+      path: 'checkout-error.png'
+      selector: '.error-message'
+
   - name: alert-team
-    type: integration  
+    type: integration
     integration: slack
     action: post-message
     params:
-      channel: "#alerts"
+      channel: '#alerts'
       text: |
         🚨 Checkout flow error detected
         Screenshot: {{steps.capture-checkout-error.output}}
@@ -744,7 +736,7 @@ steps:
 ## Security Considerations
 
 1. **Sandboxing**: Browser instances run in isolated containers
-2. **URL Validation**: Configurable allowlist/denylist for navigation targets  
+2. **URL Validation**: Configurable allowlist/denylist for navigation targets
 3. **File Access**: Upload/download operations respect workflow file permissions
 4. **Credential Management**: Secure handling of authentication data
 5. **Network Isolation**: Optional network access restrictions
@@ -752,20 +744,23 @@ steps:
 ## Implementation Priorities
 
 ### Phase 1: Core Actions (Week 1-2)
+
 - [ ] Basic navigation (navigate, reload, back, forward)
-- [ ] Element interaction (click, fill, submit)  
+- [ ] Element interaction (click, fill, submit)
 - [ ] Content extraction (getText, getHTML)
 - [ ] Screenshot capture
 - [ ] Session management
 
 ### Phase 2: Advanced Features (Week 3-4)
+
 - [ ] JavaScript execution (evaluate, addScript)
 - [ ] Iframe handling
 - [ ] File upload/download
 - [ ] Cookie and header management
 - [ ] Network request logging
 
-### Phase 3: Workflow Integration (Week 5-6)  
+### Phase 3: Workflow Integration (Week 5-6)
+
 - [ ] Executor implementation
 - [ ] Error handling and recovery
 - [ ] Output chaining support
@@ -773,8 +768,9 @@ steps:
 - [ ] Documentation and examples
 
 ### Phase 4: Production Readiness (Week 7-8)
+
 - [ ] Comprehensive test suite
-- [ ] Performance optimization  
+- [ ] Performance optimization
 - [ ] Security hardening
 - [ ] Monitoring and observability
 - [ ] CI/CD integration

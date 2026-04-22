@@ -490,6 +490,8 @@ jobs:
           - openclaw
           - brand
           - gateway
+          - github-primitive
+          - browser-primitive
 
     steps:
       - name: Checkout code

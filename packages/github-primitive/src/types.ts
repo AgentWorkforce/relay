@@ -154,7 +154,7 @@ export interface ListReposParams {
   perPage?: number;
 }
 
-export interface GetRepoParams extends RepositoryRef {}
+export type GetRepoParams = RepositoryRef;
 
 export interface ListIssuesParams extends RepositoryRef {
   state?: 'open' | 'closed' | 'all';
@@ -229,7 +229,7 @@ export interface ListFilesParams extends RepositoryRef {
   ref?: string;
 }
 
-export interface ReadFileParams extends FileRef {}
+export type ReadFileParams = FileRef;
 
 export interface CreateFileParams extends FileRef {
   content: string;
