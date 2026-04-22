@@ -265,7 +265,6 @@ export function BrandShowcase() {
               <div
                 className={`${s.kitPreview} ${asset.darkPreview ? s.kitPreviewDark : ''}`}
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={`/brand-kit/${asset.file}`}
                   alt={asset.label}
