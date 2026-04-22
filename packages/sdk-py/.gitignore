@@ -1,1 +1,10 @@
 .venv/
+
+# Embedded broker binary — populated by CI for wheel builds, or by
+# scripts/sync-broker-dev.sh for editable installs. Never committed.
+src/agent_relay/bin/
+
+# Build outputs
+dist/
+build/
+*.egg-info/
