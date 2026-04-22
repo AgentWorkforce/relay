@@ -1,7 +1,7 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { relativizeWorkflowPath } from './workflows.js';
 
@@ -40,8 +40,11 @@ describe('relativizeWorkflowPath', () => {
     expect(result).toBe('nested/workflow.ts');
   });
 
-  it('returns null for an absolute path outside cwd', () => {
-    const outside = path.resolve(os.tmpdir(), 'not-in-cwd', 'workflow.ts');
+  it('returns null for an absolute path outside cwd', async () => {
+    // realpath() so the comparison is symlink-stable on macOS (same
+    // reason we realpath() tmpRoot above).
+    const outsideDir = await realpath(os.tmpdir());
+    const outside = path.resolve(outsideDir, 'not-in-cwd', 'workflow.ts');
     const result = relativizeWorkflowPath(outside);
     expect(result).toBeNull();
   });
