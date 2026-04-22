@@ -1,7 +1,7 @@
 'use client';
 
 import type { CSSProperties } from 'react';
-import { Home, Search, Shapes, Tag, Trash2, User, Wand2 } from 'lucide-react';
+import { Download, Home, Search, Shapes, Tag, Trash2, User, Wand2 } from 'lucide-react';
 
 import { LogoIcon, LogoWordmark } from '../../components/SiteNav';
 import { Badge } from '../../components/ui/badge';
@@ -64,6 +64,25 @@ const HERO_PALETTE: HeroPaletteCard[] = [
       '#a5836a', '#98735e', '#7f5e4f', '#684e44', '#554139', '#2d211d',
     ],
   },
+];
+
+type BrandKitAsset = {
+  file: string;
+  label: string;
+  darkPreview?: boolean;
+};
+
+const BRAND_KIT: BrandKitAsset[] = [
+  { file: 'agent-relay-logo.png', label: 'Logo' },
+  { file: 'agent-relay-logo-light.png', label: 'Logo · Light', darkPreview: true },
+  { file: 'agent-relay-logo-tight.png', label: 'Logo · Tight' },
+  { file: 'agent-relay-logo-light-tight.png', label: 'Logo · Light, Tight', darkPreview: true },
+  { file: 'agent-relay-logo-circle.png', label: 'Logo · Circle' },
+  { file: 'agent-relay-logo-light-circle.png', label: 'Logo · Light, Circle', darkPreview: true },
+  { file: 'agent-relay-mark.png', label: 'Mark' },
+  { file: 'agent-relay-mark-transparent.png', label: 'Mark · Transparent' },
+  { file: 'agent-relay-mark-circle.png', label: 'Mark · Circle' },
+  { file: 'agent-relay-mark-light-circle.png', label: 'Mark · Light, Circle', darkPreview: true },
 ];
 
 const BRAND_ACCENTS = [
@@ -217,6 +236,59 @@ export function BrandShowcase() {
               </code>
             </div>
           </article>
+        </div>
+      </section>
+
+      <section className={s.section}>
+        <div className={s.sectionHeader}>
+          <div>
+            <p className={s.sectionEyebrow}>Brand Kit</p>
+            <h2 className={s.sectionTitle}>Logos &amp; assets</h2>
+            <p className={s.sectionText}>
+              PNGs for slide decks, README headers, and partner kits. Grab
+              the whole kit as a zip or download individual files.
+            </p>
+          </div>
+          <a
+            href="/brand-kit/agent-relay-brand-kit.zip"
+            download
+            className={s.kitDownloadAll}
+          >
+            <Download aria-hidden />
+            Download all (.zip)
+          </a>
+        </div>
+
+        <div className={s.kitGrid}>
+          {BRAND_KIT.map((asset) => (
+            <article key={asset.file} className={s.kitCard}>
+              <div
+                className={`${s.kitPreview} ${asset.darkPreview ? s.kitPreviewDark : ''}`}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={`/brand-kit/${asset.file}`}
+                  alt={asset.label}
+                  loading="lazy"
+                />
+              </div>
+              <div className={s.kitMeta}>
+                <div>
+                  <p className={s.tokenName}>{asset.label}</p>
+                  <code className={s.kitFile}>{asset.file}</code>
+                </div>
+                <a
+                  href={`/brand-kit/${asset.file}`}
+                  download
+                  className={s.kitDownloadBtn}
+                  aria-label={`Download ${asset.label}`}
+                >
+                  <Download aria-hidden />
+                  PNG
+                </a>
+              </div>
+            </article>
+          ))}
         </div>
       </section>
 
