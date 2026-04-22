@@ -156,7 +156,10 @@ export class BrowserStepExecutor implements RunnerStepExecutor {
     throw new Error('BrowserStepExecutor only executes browser integration steps.');
   }
 
-  async execute(config: BrowserStepConfig, context: BrowserStepExecutionContext = {}): Promise<BrowserStepExecutionResult> {
+  async execute(
+    config: BrowserStepConfig,
+    context: BrowserStepExecutionContext = {}
+  ): Promise<BrowserStepExecutionResult> {
     validateBrowserStepConfig(config);
 
     const client = context.client ?? this.getOrCreateClient(config, context);
@@ -199,7 +202,11 @@ export class BrowserStepExecutor implements RunnerStepExecutor {
     const success = hardFailure === undefined;
 
     if (config.closeSession || config.config?.persistSession === false) {
-      await this.closeSession(this.resolveSessionKey(config, context));
+      if (context.client) {
+        await context.client.close();
+      } else {
+        await this.closeSession(this.resolveSessionKey(config, context));
+      }
     }
 
     return {
@@ -229,7 +236,7 @@ export class BrowserStepExecutor implements RunnerStepExecutor {
 
       return {
         success: result.success,
-        output: result.success ? result.output : (result.output || result.error || 'Browser step failed'),
+        output: result.success ? result.output : result.output || result.error || 'Browser step failed',
       };
     } catch (error) {
       return {
@@ -350,7 +357,13 @@ function readActions(step: WorkflowStep, params: ResolvedParams): BrowserStepAct
 
   const actionParams: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(params)) {
-    if (key === 'config' || key === 'browserConfig' || key === 'output' || key === 'sessionId' || key === 'closeSession') {
+    if (
+      key === 'config' ||
+      key === 'browserConfig' ||
+      key === 'output' ||
+      key === 'sessionId' ||
+      key === 'closeSession'
+    ) {
       continue;
     }
     actionParams[key] = value;
@@ -430,8 +443,7 @@ function buildOutputProjection(
     for (const record of records) {
       const action = record.action;
       const actionConfig = actions[record.index];
-      const capture =
-        actionConfig?.capture ?? (EXTRACTION_ACTIONS.has(action) && record.success);
+      const capture = actionConfig?.capture ?? (EXTRACTION_ACTIONS.has(action) && record.success);
       if (!capture) continue;
 
       const key = actionConfig?.outputKey ?? actionConfig?.id ?? record.id ?? `action_${record.index}`;
@@ -464,7 +476,11 @@ function projectRecord(record: BrowserStepActionRecord, includeMetadata: boolean
   return projected;
 }
 
-function withOptionalSession(value: unknown, session: BrowserSession, outputConfig: BrowserStepOutputConfig): unknown {
+function withOptionalSession(
+  value: unknown,
+  session: BrowserSession,
+  outputConfig: BrowserStepOutputConfig
+): unknown {
   if (!outputConfig.includeSession) {
     return value;
   }
@@ -550,7 +566,9 @@ function readJsonParam<T>(value: unknown, name: string): T | undefined {
   try {
     return JSON.parse(value) as T;
   } catch (error) {
-    throw new Error(`Browser step params.${name} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `Browser step params.${name} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 }
 

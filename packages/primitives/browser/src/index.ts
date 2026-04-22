@@ -8,5 +8,3 @@ export * from './actions/interaction.js';
 export * from './actions/extraction.js';
 export * from './actions/waits.js';
 export * from './actions/script.js';
-export * from './workflow-step.js';
-export * from './mcp-server.js';
