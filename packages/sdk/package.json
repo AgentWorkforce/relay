@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/sdk",
-  "version": "4.0.38",
+  "version": "4.0.39",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -134,7 +134,7 @@
     "@types/ws": "^8.5.10"
   },
   "dependencies": {
-    "@agent-relay/config": "4.0.38",
+    "@agent-relay/config": "4.0.39",
     "@relaycast/sdk": "^1.1.0",
     "@relayfile/sdk": ">=0.1.2 <1",
     "@sinclair/typebox": "^0.34.48",
@@ -147,7 +147,7 @@
     "yaml": "^2.7.0"
   },
   "peerDependencies": {
-    "@agent-relay/credential-proxy": "4.0.38",
+    "@agent-relay/credential-proxy": "4.0.39",
     "@anthropic-ai/claude-agent-sdk": ">=0.1.0",
     "@google/adk": ">=0.5.0",
     "@langchain/langgraph": ">=1.2.0",

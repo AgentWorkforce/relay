@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/brand",
-  "version": "4.0.38",
+  "version": "4.0.39",
   "description": "Shared brand tokens, CSS variables, and color system for Agent Relay and associated properties",
   "main": "brand.css",
   "style": "brand.css",
