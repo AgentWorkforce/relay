@@ -9,6 +9,7 @@ export {
   isEnabled,
   getAnonymousId,
   getStatus,
+  type InitTelemetryOptions,
 } from './client.js';
 
 export {
@@ -28,19 +29,25 @@ export type {
   CommonProperties,
   ActionSource,
   ReleaseReason,
+  WorkflowFileType,
   BrokerStartEvent,
   BrokerStopEvent,
+  BrokerStartFailedEvent,
   AgentSpawnEvent,
   AgentReleaseEvent,
   AgentCrashEvent,
   MessageSendEvent,
   CliCommandRunEvent,
+  CliCommandCompleteEvent,
+  WorkflowRunEvent,
+  CloudAuthEvent,
+  CloudWorkflowRunEvent,
+  ProviderAuthEvent,
+  SetupInitEvent,
+  SwarmRunEvent,
+  BridgeSpawnEvent,
   TelemetryEventName,
   TelemetryEventMap,
 } from './events.js';
 
-export {
-  loadMachineId,
-  createAnonymousId,
-  getMachineIdPath,
-} from './machine-id.js';
+export { loadMachineId, createAnonymousId, getMachineIdPath } from './machine-id.js';

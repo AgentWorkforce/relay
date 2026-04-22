@@ -45,6 +45,7 @@ const expectedLeafCommands = [
   'cloud status',
   'cloud logs',
   'cloud sync',
+  'cloud cancel',
 ];
 
 function collectLeafCommandPaths(program: Command): string[] {
@@ -119,7 +120,7 @@ describe('bootstrap CLI', () => {
     const program = createProgram();
     const leafCommandPaths = collectLeafCommandPaths(program);
 
-    expect(leafCommandPaths).toHaveLength(41);
+    expect(leafCommandPaths).toHaveLength(expectedLeafCommands.length);
     expect(leafCommandPaths).toEqual(expect.arrayContaining(expectedLeafCommands));
     expect(leafCommandPaths).not.toContain('create-agent');
   });

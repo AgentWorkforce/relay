@@ -115,13 +115,7 @@ function never<T>(): Promise<T> {
   return new Promise(() => {});
 }
 
-const defaultSpawnPtyImplementation = async ({
-  name,
-  task,
-}: {
-  name: string;
-  task?: string;
-}) => {
+const defaultSpawnPtyImplementation = async ({ name, task }: { name: string; task?: string }) => {
   const queued = mockSpawnOutputs.shift();
   const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
   const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
@@ -152,6 +146,7 @@ const mockRelayInstance = {
   onAgentSpawned: null as any,
   onAgentExited: null as any,
   onAgentIdle: null as any,
+  listAgents: vi.fn().mockResolvedValue([]),
   listAgentsRaw: vi.fn().mockResolvedValue([]),
 };
 
@@ -234,6 +229,7 @@ type WorkflowStepOverride = Partial<NonNullable<RelayYamlConfig['workflows']>[nu
 
 function makeSupervisedConfig(stepOverrides: WorkflowStepOverride = {}): RelayYamlConfig {
   return makeConfig({
+    swarm: { pattern: 'hub-spoke' },
     agents: [
       { name: 'specialist', cli: 'claude', role: 'engineer' },
       { name: 'team-lead', cli: 'claude', role: 'lead coordinator' },
@@ -249,6 +245,27 @@ function makeSupervisedConfig(stepOverrides: WorkflowStepOverride = {}): RelayYa
             task: 'Implement the requested change',
             ...stepOverrides,
           },
+        ],
+      },
+    ],
+  });
+}
+
+function makeTwoStepSupervisedConfig(): RelayYamlConfig {
+  return makeConfig({
+    swarm: { pattern: 'hub-spoke' },
+    agents: [
+      { name: 'specialist-a', cli: 'claude', role: 'engineer' },
+      { name: 'specialist-b', cli: 'claude', role: 'engineer' },
+      { name: 'team-lead', cli: 'claude', role: 'lead coordinator' },
+      { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
+    ],
+    workflows: [
+      {
+        name: 'default',
+        steps: [
+          { name: 'step-1', agent: 'specialist-a', task: 'Do step 1' },
+          { name: 'step-2', agent: 'specialist-b', task: 'Do step 2', dependsOn: ['step-1'] },
         ],
       },
     ],
@@ -336,7 +353,8 @@ describe('Completion Pipeline', () => {
       });
 
       const run = await runner.execute(config, 'default');
-      expect(run.status).toBe('completed');    }, 15000);
+      expect(run.status).toBe('completed');
+    }, 15000);
   });
 
   // ── Unit Test 2: Owner approves despite malformed worker marker ────────
@@ -440,7 +458,6 @@ describe('Completion Pipeline', () => {
       expect(steps[0]?.retryCount).toBe(1);
       expect(mockRelayInstance.spawnPty).toHaveBeenCalledTimes(4);
     }, 15000);
-
 
     it('should honor INCOMPLETE_RETRY from a non-interactive reviewer step', async () => {
       const localDb = makeDb();
@@ -600,6 +617,30 @@ describe('Completion Pipeline', () => {
       expect(mockRelayInstance.spawnPty).toHaveBeenCalledTimes(2);
     }, 15000);
 
+    it('should mark the run failed even with errorHandling.strategy=continue when a step fails', async () => {
+      // Regression: previously `allCompleted` counted failed steps as success
+      // whenever continueOnError was true, so the summary table would render
+      // "FAILED 1 passed, 1 failed" while run.status landed on 'completed'.
+      // Any wrapper that keys off run.status (e.g. the cloud orchestrator's
+      // bootstrap) would then propagate a false success.
+      mockSpawnOutputs = [
+        'worker output\n',
+        'OWNER_DECISION: INCOMPLETE_FAIL\nREASON: relaycast unavailable\n',
+      ];
+
+      const config: RelayYamlConfig = {
+        ...makeSupervisedConfig({}),
+        errorHandling: { strategy: 'continue' },
+      };
+
+      const run = await runner.execute(config, 'default');
+
+      expect(run.status).toBe('failed');
+      const steps = await db.getStepsByRunId(run.id);
+      expect(steps[0]?.status).toBe('failed');
+      expect(steps[0]?.completionReason).toBe('failed_owner_decision');
+    }, 15000);
+
     it('should still complete by owner decision when COMPLETE and verification both pass', async () => {
       mockSpawnOutputs = [
         'worker output with expected content\n',
@@ -668,11 +709,12 @@ describe('Completion Pipeline', () => {
       });
 
       mockSpawnOutputs = [
+        'worker finished\n',
         'STEP_COMPLETE:step-1\n',
         'REVIEW_DECISION: APPROVE\nREVIEW_REASON: all good\n',
       ];
 
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('completed');
       expect(events).toContainEqual({ type: 'step:review-completed', decision: 'approved' });
     }, 15000);
@@ -686,11 +728,12 @@ describe('Completion Pipeline', () => {
       });
 
       mockSpawnOutputs = [
+        'worker finished\n',
         'STEP_COMPLETE:step-1\n',
         'REVIEW_DECISION: REJECT\nREVIEW_REASON: needs work\n',
       ];
 
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review rejected');
       expect(events).toContainEqual({ type: 'step:review-completed', decision: 'rejected' });
@@ -701,11 +744,12 @@ describe('Completion Pipeline', () => {
 
     it('should still fail on review output with no usable approval or rejection signal', async () => {
       mockSpawnOutputs = [
+        'worker finished\n',
         'STEP_COMPLETE:step-1\n',
         'I need more context before deciding.\n',
       ];
 
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review response malformed');
     }, 15000);
@@ -755,17 +799,19 @@ describe('Completion Pipeline', () => {
         await new Promise((resolve) => setTimeout(resolve, 5));
         return 'exited';
       });
-      mockRelayInstance.spawnPty.mockImplementation(async ({ name, task }: { name: string; task?: string }) => {
-        const agent = await defaultSpawnPtyImplementation({ name, task });
-        if (task?.includes('You are the step owner/supervisor for step "step-1".')) {
-          emitRelayChannelMessage({
-            from: agent.name,
-            to: 'completion-provenance',
-            text: 'WORKER_DONE: lead summarized the handoff',
-          });
+      mockRelayInstance.spawnPty.mockImplementation(
+        async ({ name, task }: { name: string; task?: string }) => {
+          const agent = await defaultSpawnPtyImplementation({ name, task });
+          if (task?.includes('You are the step owner/supervisor for step "step-1".')) {
+            emitRelayChannelMessage({
+              from: agent.name,
+              to: 'completion-provenance',
+              text: 'WORKER_DONE: lead summarized the handoff',
+            });
+          }
+          return agent;
         }
-        return agent;
-      });
+      );
       mockSpawnOutputs = [
         'worker progress update only\n',
         'Owner observed the channel but left no decision.\n',
@@ -785,7 +831,9 @@ describe('Completion Pipeline', () => {
           (post) => post.sender === 'team-lead' && post.text.includes('WORKER_DONE')
         ) ?? [];
       expect(spoofedPosts.length).toBeGreaterThan(0);
-      expect(evidence?.coordinationSignals.filter((signal) => signal.kind === 'worker_done') ?? []).toHaveLength(0);
+      expect(
+        evidence?.coordinationSignals.filter((signal) => signal.kind === 'worker_done') ?? []
+      ).toHaveLength(0);
       const spoofedPost = evidence?.channelPosts.find(
         (post) => post.sender === 'team-lead' && post.text.includes('WORKER_DONE')
       );
@@ -819,17 +867,19 @@ describe('Completion Pipeline', () => {
         await new Promise((resolve) => setTimeout(resolve, 5));
         return 'exited';
       });
-      mockRelayInstance.spawnPty.mockImplementation(async ({ name, task }: { name: string; task?: string }) => {
-        const agent = await defaultSpawnPtyImplementation({ name, task });
-        if (name.includes('step-1-worker')) {
-          emitRelayChannelMessage({
-            from: agent.name,
-            to: channel,
-            text: 'WORKER_DONE: implementation shipped',
-          });
+      mockRelayInstance.spawnPty.mockImplementation(
+        async ({ name, task }: { name: string; task?: string }) => {
+          const agent = await defaultSpawnPtyImplementation({ name, task });
+          if (name.includes('step-1-worker')) {
+            emitRelayChannelMessage({
+              from: agent.name,
+              to: channel,
+              text: 'WORKER_DONE: implementation shipped',
+            });
+          }
+          return agent;
         }
-        return agent;
-      });
+      );
       mockSpawnOutputs = [
         'artifact bundle ready\n',
         'Lead verified the worker handoff is complete and safe.\n',
@@ -845,9 +895,7 @@ describe('Completion Pipeline', () => {
       expect(
         evidence?.coordinationSignals.some(
           (signal) =>
-            signal.kind === 'worker_done' &&
-            signal.source === 'channel' &&
-            signal.sender === 'specialist'
+            signal.kind === 'worker_done' && signal.source === 'channel' && signal.sender === 'specialist'
         )
       ).toBe(true);
       expect(evidence?.coordinationSignals.some((signal) => signal.kind === 'step_complete')).toBe(false);
@@ -859,24 +907,26 @@ describe('Completion Pipeline', () => {
         await new Promise((resolve) => setTimeout(resolve, 5));
         return 'exited';
       });
-      mockRelayInstance.spawnPty.mockImplementation(async ({ name, task }: { name: string; task?: string }) => {
-        const agent = await defaultSpawnPtyImplementation({ name, task });
-        if (name.includes('step-1-worker')) {
-          emitRelayChannelMessage({
-            from: agent.name,
-            to: channel,
-            text: 'WORKER_DONE: handoff package posted',
-          });
+      mockRelayInstance.spawnPty.mockImplementation(
+        async ({ name, task }: { name: string; task?: string }) => {
+          const agent = await defaultSpawnPtyImplementation({ name, task });
+          if (name.includes('step-1-worker')) {
+            emitRelayChannelMessage({
+              from: agent.name,
+              to: channel,
+              text: 'WORKER_DONE: handoff package posted',
+            });
+          }
+          if (name.includes('step-1-owner')) {
+            emitRelayChannelMessage({
+              from: agent.name,
+              to: channel,
+              text: 'LEAD_DONE: lead confirmed the worker handoff',
+            });
+          }
+          return agent;
         }
-        if (name.includes('step-1-owner')) {
-          emitRelayChannelMessage({
-            from: agent.name,
-            to: channel,
-            text: 'LEAD_DONE: lead confirmed the worker handoff',
-          });
-        }
-        return agent;
-      });
+      );
       mockSpawnOutputs = [
         'artifact bundle ready\n',
         'Lead confirmed the handoff is complete and safe for review.\n',
@@ -892,17 +942,13 @@ describe('Completion Pipeline', () => {
       expect(
         evidence?.coordinationSignals.some(
           (signal) =>
-            signal.kind === 'worker_done' &&
-            signal.source === 'channel' &&
-            signal.sender === 'specialist'
+            signal.kind === 'worker_done' && signal.source === 'channel' && signal.sender === 'specialist'
         )
       ).toBe(true);
       expect(
         evidence?.coordinationSignals.some(
           (signal) =>
-            signal.kind === 'lead_done' &&
-            signal.source === 'channel' &&
-            signal.sender === 'team-lead'
+            signal.kind === 'lead_done' && signal.source === 'channel' && signal.sender === 'team-lead'
         )
       ).toBe(true);
     }, 15000);
@@ -933,54 +979,56 @@ describe('Completion Pipeline', () => {
         await new Promise((resolve) => setTimeout(resolve, 5));
         return 'exited';
       });
-      mockRelayInstance.spawnPty.mockImplementation(async ({ name, task }: { name: string; task?: string }) => {
-        const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
-        const output = isReview
-          ? 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: map-reduce happy path verified\n'
-          : name.includes('map-1-worker')
-            ? 'map artifact A ready\n'
-            : name.includes('map-1-owner')
-              ? 'Lead verified shard A is complete and safe.\n'
-              : name.includes('map-2-worker')
-                ? 'map artifact B ready\n'
-                : name.includes('map-2-owner')
-                  ? 'Lead verified shard B is complete and safe.\n'
-                  : name.includes('reduce-worker')
-                    ? 'reduce artifact ready\n'
-                    : name.includes('reduce-owner')
-                      ? 'Lead verified the reduction is complete and safe.\n'
-                      : 'STEP_COMPLETE:unknown\n';
+      mockRelayInstance.spawnPty.mockImplementation(
+        async ({ name, task }: { name: string; task?: string }) => {
+          const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
+          const output = isReview
+            ? 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: map-reduce happy path verified\n'
+            : name.includes('map-1-worker')
+              ? 'map artifact A ready\n'
+              : name.includes('map-1-owner')
+                ? 'Lead verified shard A is complete and safe.\n'
+                : name.includes('map-2-worker')
+                  ? 'map artifact B ready\n'
+                  : name.includes('map-2-owner')
+                    ? 'Lead verified shard B is complete and safe.\n'
+                    : name.includes('reduce-worker')
+                      ? 'reduce artifact ready\n'
+                      : name.includes('reduce-owner')
+                        ? 'Lead verified the reduction is complete and safe.\n'
+                        : 'STEP_COMPLETE:unknown\n';
 
-        queueMicrotask(() => {
-          if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-            mockRelayInstance.onWorkerOutput({ name, chunk: output });
+          queueMicrotask(() => {
+            if (typeof mockRelayInstance.onWorkerOutput === 'function') {
+              mockRelayInstance.onWorkerOutput({ name, chunk: output });
+            }
+          });
+
+          const agent = { ...mockAgent, name };
+          if (name.includes('map-1-worker')) {
+            emitRelayChannelMessage({
+              from: agent.name,
+              to: channel,
+              text: 'WORKER_DONE: map shard A complete',
+            });
           }
-        });
-
-        const agent = { ...mockAgent, name };
-        if (name.includes('map-1-worker')) {
-          emitRelayChannelMessage({
-            from: agent.name,
-            to: channel,
-            text: 'WORKER_DONE: map shard A complete',
-          });
+          if (name.includes('map-2-worker')) {
+            emitRelayChannelMessage({
+              from: agent.name,
+              to: channel,
+              text: 'WORKER_DONE: map shard B complete',
+            });
+          }
+          if (name.includes('reduce-worker')) {
+            emitRelayChannelMessage({
+              from: agent.name,
+              to: channel,
+              text: 'WORKER_DONE: reduce pass complete',
+            });
+          }
+          return agent;
         }
-        if (name.includes('map-2-worker')) {
-          emitRelayChannelMessage({
-            from: agent.name,
-            to: channel,
-            text: 'WORKER_DONE: map shard B complete',
-          });
-        }
-        if (name.includes('reduce-worker')) {
-          emitRelayChannelMessage({
-            from: agent.name,
-            to: channel,
-            text: 'WORKER_DONE: reduce pass complete',
-          });
-        }
-        return agent;
-      });
+      );
 
       const config = makeConfig({
         swarm: { pattern: 'map-reduce', channel },
@@ -997,7 +1045,12 @@ describe('Completion Pipeline', () => {
             steps: [
               { name: 'map-1', agent: 'mapper-1', task: 'Process shard A' },
               { name: 'map-2', agent: 'mapper-2', task: 'Process shard B' },
-              { name: 'reduce', agent: 'reducer', task: 'Combine mapped results', dependsOn: ['map-1', 'map-2'] },
+              {
+                name: 'reduce',
+                agent: 'reducer',
+                task: 'Combine mapped results',
+                dependsOn: ['map-1', 'map-2'],
+              },
             ],
           },
         ],
@@ -1019,9 +1072,7 @@ describe('Completion Pipeline', () => {
           .getStepCompletionEvidence('reduce')
           ?.coordinationSignals.some(
             (signal) =>
-              signal.kind === 'worker_done' &&
-              signal.source === 'channel' &&
-              signal.sender === 'reducer'
+              signal.kind === 'worker_done' && signal.source === 'channel' && signal.sender === 'reducer'
           )
       ).toBe(true);
     }, 15000);
@@ -1029,39 +1080,41 @@ describe('Completion Pipeline', () => {
     it('should still complete when WORKER_DONE lands after the lead checks the work', async () => {
       const channel = 'happy-path-delayed-worker-done';
       const observedOrder: string[] = [];
-      mockRelayInstance.spawnPty.mockImplementation(async ({ name, task }: { name: string; task?: string }) => {
-        const agent = await defaultSpawnPtyImplementation({ name, task });
+      mockRelayInstance.spawnPty.mockImplementation(
+        async ({ name, task }: { name: string; task?: string }) => {
+          const agent = await defaultSpawnPtyImplementation({ name, task });
 
-        if (name.includes('step-1-worker')) {
-          setTimeout(() => {
-            observedOrder.push('worker-done-message');
-            emitRelayChannelMessage({
-              from: agent.name,
-              to: channel,
-              text: 'WORKER_DONE: delayed handoff posted',
-            });
-          }, 10);
-          return {
-            ...agent,
-            waitForExit: vi.fn().mockImplementation(async () => {
-              await new Promise((resolve) => setTimeout(resolve, 15));
-              return 'exited' as const;
-            }),
-          };
+          if (name.includes('step-1-worker')) {
+            setTimeout(() => {
+              observedOrder.push('worker-done-message');
+              emitRelayChannelMessage({
+                from: agent.name,
+                to: channel,
+                text: 'WORKER_DONE: delayed handoff posted',
+              });
+            }, 10);
+            return {
+              ...agent,
+              waitForExit: vi.fn().mockImplementation(async () => {
+                await new Promise((resolve) => setTimeout(resolve, 15));
+                return 'exited' as const;
+              }),
+            };
+          }
+
+          if (name.includes('step-1-owner')) {
+            return {
+              ...agent,
+              waitForExit: vi.fn().mockImplementation(async () => {
+                observedOrder.push('owner-finished-check');
+                return 'exited' as const;
+              }),
+            };
+          }
+
+          return agent;
         }
-
-        if (name.includes('step-1-owner')) {
-          return {
-            ...agent,
-            waitForExit: vi.fn().mockImplementation(async () => {
-              observedOrder.push('owner-finished-check');
-              return 'exited' as const;
-            }),
-          };
-        }
-
-        return agent;
-      });
+      );
       mockSpawnOutputs = [
         'artifact bundle ready but handoff signal is delayed\n',
         'Lead checked the artifacts early and the work still looks complete and safe.\n',
@@ -1214,29 +1267,36 @@ describe('Completion Pipeline', () => {
         }
       });
 
-      const run = await runner.execute(makeConfig(), 'default');
+      mockSpawnOutputs = [
+        'worker finished\n',
+        'STEP_COMPLETE:step-1\n',
+        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: legacy approval\n',
+        'worker finished step 2\n',
+        'STEP_COMPLETE:step-2\n',
+        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: legacy approval step 2\n',
+      ];
+
+      const run = await runner.execute(makeTwoStepSupervisedConfig(), 'default');
       expect(run.status).toBe('completed');
       expect(events).toContainEqual({ type: 'step:review-completed', decision: 'approved' });
     }, 15000);
 
     it('should still support explicit REVIEW_DECISION: REJECT flow', async () => {
       mockSpawnOutputs = [
+        'worker finished\n',
         'STEP_COMPLETE:step-1\n',
         'REVIEW_DECISION: REJECT\nREVIEW_REASON: standard rejection\n',
       ];
 
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review rejected');
     }, 15000);
 
     it('should still fail closed on malformed review output', async () => {
-      mockSpawnOutputs = [
-        'STEP_COMPLETE:step-1\n',
-        'I think this looks ok\n',
-      ];
+      mockSpawnOutputs = ['worker finished\n', 'STEP_COMPLETE:step-1\n', 'I think this looks ok\n'];
 
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review response malformed');
     }, 15000);
@@ -1315,7 +1375,16 @@ describe('Completion Pipeline', () => {
         }
       });
 
-      await runner.execute(makeConfig(), 'default');
+      mockSpawnOutputs = [
+        'worker finished\n',
+        'STEP_COMPLETE:step-1\n',
+        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: looks good\n',
+        'worker finished step 2\n',
+        'STEP_COMPLETE:step-2\n',
+        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: looks good\n',
+      ];
+
+      await runner.execute(makeTwoStepSupervisedConfig(), 'default');
       expect(reviewEvents).toHaveLength(2);
     }, 15000);
   });
@@ -1422,9 +1491,9 @@ describe('Completion Pipeline', () => {
       const echoedPrompt =
         'Return exactly:\nREVIEW_DECISION: APPROVE or REJECT\nREVIEW_REASON: <one sentence>\n';
       const actualResponse = 'REVIEW_DECISION: REJECT\nREVIEW_REASON: code has bugs\n';
-      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', echoedPrompt + actualResponse];
+      mockSpawnOutputs = ['worker finished\n', 'STEP_COMPLETE:step-1\n', echoedPrompt + actualResponse];
 
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(events).toContainEqual({ type: 'step:review-completed', decision: 'rejected' });
     }, 15000);
@@ -1465,9 +1534,7 @@ describe('Completion Pipeline', () => {
       mockSpawnOutputs = ['STEP_COMPLETE:step-1\n'];
       const run1 = await runner.execute(
         makeConfig({
-          workflows: [
-            { name: 'default', steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do it' }] },
-          ],
+          workflows: [{ name: 'default', steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do it' }] }],
         }),
         'default'
       );
@@ -1537,9 +1604,7 @@ describe('Completion Pipeline', () => {
 
       const evidence = runner.getStepCompletionEvidence('step-1');
       if (evidence) {
-        const workerDoneSignals = evidence.coordinationSignals.filter(
-          (s) => s.kind === 'worker_done'
-        );
+        const workerDoneSignals = evidence.coordinationSignals.filter((s) => s.kind === 'worker_done');
         // If the evidence collector detected the WORKER_DONE signal, it should be present
         if (workerDoneSignals.length > 0) {
           expect(workerDoneSignals[0].kind).toBe('worker_done');
@@ -1555,7 +1620,7 @@ describe('Completion Pipeline', () => {
       const evidence2 = runner.getStepCompletionEvidence('step-1');
       if (evidence1 && evidence2) {
         expect(evidence1).not.toBe(evidence2); // structuredClone should return a new object
-        expect(evidence1).toEqual(evidence2);   // but with the same content
+        expect(evidence1).toEqual(evidence2); // but with the same content
       }
     }, 15000);
   });
@@ -1774,10 +1839,10 @@ describe('Completion Pipeline', () => {
         'worker completed locally\n',
         [
           'I reviewed the worker output. The task looks done but tests are failing.',
-          'OW NER_DECISION: INCOMPLETE_RETRY',  // garbled by PTY line wrap
+          'OW NER_DECISION: INCOMPLETE_RETRY', // garbled by PTY line wrap
           'REASON: tests failing',
           'The worker completed the implementation but verification failed.',
-          'OWNER_DECISION: INCOMPLETE_RETRY',  // clear signal in raw output
+          'OWNER_DECISION: INCOMPLETE_RETRY', // clear signal in raw output
         ].join('\n'),
       ];
 

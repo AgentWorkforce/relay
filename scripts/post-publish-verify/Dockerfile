@@ -35,9 +35,10 @@ ENV NODE_VERSION=${NODE_VERSION}
 ENV NPM_CONFIG_PREFIX=/home/testuser/.npm-global
 ENV PATH=/home/testuser/.npm-global/bin:$PATH
 
-# Copy verification script
+# Copy verification scripts
 COPY verify-install.sh /usr/local/bin/verify-install.sh
-RUN chmod +x /usr/local/bin/verify-install.sh
+COPY retry-command.sh /usr/local/bin/retry-command.sh
+RUN chmod +x /usr/local/bin/verify-install.sh /usr/local/bin/retry-command.sh
 
 # Switch to test user
 USER testuser

@@ -191,10 +191,7 @@ export function checkOutputContains(output: string, token: string, injectedTaskT
   return stripInjectedTaskEcho(output, injectedTaskText).includes(token);
 }
 
-const DEFAULT_CUSTOM_VERIFY_TIMEOUT_MS = parseInt(
-  process.env.CUSTOM_VERIFY_TIMEOUT_MS ?? '30000',
-  10
-);
+const DEFAULT_CUSTOM_VERIFY_TIMEOUT_MS = parseInt(process.env.CUSTOM_VERIFY_TIMEOUT_MS ?? '30000', 10);
 
 const REGEX_PREFIX = 'regex:';
 
@@ -218,17 +215,14 @@ export function execCustomVerification(
       stderr?: string | Buffer;
     };
     const stdout =
-      typeof execError.stdout === 'string'
-        ? execError.stdout
-        : execError.stdout?.toString('utf-8') ?? '';
+      typeof execError.stdout === 'string' ? execError.stdout : (execError.stdout?.toString('utf-8') ?? '');
     const stderr =
-      typeof execError.stderr === 'string'
-        ? execError.stderr
-        : execError.stderr?.toString('utf-8') ?? '';
-    const combinedOutput = [stdout, stderr].filter((chunk) => chunk.length > 0).join('\n').trim();
-    const truncated = combinedOutput.length > 2000
-      ? combinedOutput.slice(-2000)
-      : combinedOutput;
+      typeof execError.stderr === 'string' ? execError.stderr : (execError.stderr?.toString('utf-8') ?? '');
+    const combinedOutput = [stdout, stderr]
+      .filter((chunk) => chunk.length > 0)
+      .join('\n')
+      .trim();
+    const truncated = combinedOutput.length > 2000 ? combinedOutput.slice(-2000) : combinedOutput;
     return {
       passed: false,
       output: truncated || execError.message,
@@ -266,18 +260,22 @@ export function checkCustom(
     });
     return { passed: true, stdout: result.toString('utf-8').trim() };
   } catch (err) {
-    const message =
-      (err as { stderr?: Buffer })?.stderr?.toString('utf-8')?.trim() ||
-      (err as Error).message;
+    const message = (err as { stderr?: Buffer })?.stderr?.toString('utf-8')?.trim() || (err as Error).message;
     return { passed: false, error: message };
   }
 }
 
 export function checkFileExists(filePath: string, cwd = process.cwd()): boolean {
   const normalizedCwd = path.resolve(cwd);
-  const resolved = path.resolve(normalizedCwd, filePath);
-  // Prevent path traversal outside the working directory
-  if (!resolved.startsWith(normalizedCwd + path.sep) && resolved !== normalizedCwd) {
+  const resolved = path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(normalizedCwd, filePath);
+
+  // Relative artifact paths stay scoped to the workflow cwd; absolute paths
+  // are already explicit and are allowed for temp/output artifacts.
+  if (
+    !path.isAbsolute(filePath) &&
+    !resolved.startsWith(normalizedCwd + path.sep) &&
+    resolved !== normalizedCwd
+  ) {
     return false;
   }
   return existsSync(resolved);

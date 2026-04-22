@@ -5,7 +5,7 @@
  * confidence computation, and the disabled/enabled toggle.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -14,6 +14,8 @@ import { WorkflowTrajectory, type StepOutcome } from '../workflows/trajectory.js
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
 let tmpDir: string;
+let originalTrajectoriesDataDir: string | undefined;
+let originalWorkflowId: string | undefined;
 
 function makeTmpDir(): string {
   const dir = path.join(os.tmpdir(), `wf-traj-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -21,36 +23,56 @@ function makeTmpDir(): string {
   return dir;
 }
 
+function findFirstJsonFile(dir: string): string | null {
+  if (!existsSync(dir)) return null;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const nested = findFirstJsonFile(entryPath);
+      if (nested) return nested;
+    }
+    if (entry.isFile() && entry.name.endsWith('.json')) return entryPath;
+  }
+  return null;
+}
+
 function readTrajectoryFile(dir: string): any {
-  const activeDir = path.join(dir, '.trajectories', 'active');
-  if (!existsSync(activeDir)) return null;
-
-  const files = readdirSync(activeDir);
-  const jsonFiles = files.filter((f: string) => f.endsWith('.json'));
-  if (jsonFiles.length === 0) return null;
-
-  return JSON.parse(readFileSync(path.join(activeDir, jsonFiles[0]), 'utf-8'));
+  const file = findFirstJsonFile(path.join(dir, '.trajectories', 'active'));
+  return file ? JSON.parse(readFileSync(file, 'utf-8')) : null;
 }
 
 function readCompletedTrajectoryFile(dir: string): any {
-  const completedDir = path.join(dir, '.trajectories', 'completed');
-  if (!existsSync(completedDir)) return null;
+  const file = findFirstJsonFile(path.join(dir, '.trajectories', 'completed'));
+  return file ? JSON.parse(readFileSync(file, 'utf-8')) : null;
+}
 
-  const files = readdirSync(completedDir);
-  const jsonFiles = files.filter((f: string) => f.endsWith('.json'));
-  if (jsonFiles.length === 0) return null;
-
-  return JSON.parse(readFileSync(path.join(completedDir, jsonFiles[0]), 'utf-8'));
+function readTrajectoryFileAt(dataDir: string, status: 'active' | 'completed'): any {
+  const file = findFirstJsonFile(path.join(dataDir, status));
+  return file ? JSON.parse(readFileSync(file, 'utf-8')) : null;
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('WorkflowTrajectory', () => {
   beforeEach(() => {
+    originalTrajectoriesDataDir = process.env.TRAJECTORIES_DATA_DIR;
+    originalWorkflowId = process.env.TRAJECTORIES_WORKFLOW_ID;
+    delete process.env.TRAJECTORIES_DATA_DIR;
+    delete process.env.TRAJECTORIES_WORKFLOW_ID;
     tmpDir = makeTmpDir();
   });
 
   afterEach(() => {
+    if (originalTrajectoriesDataDir === undefined) {
+      delete process.env.TRAJECTORIES_DATA_DIR;
+    } else {
+      process.env.TRAJECTORIES_DATA_DIR = originalTrajectoriesDataDir;
+    }
+    if (originalWorkflowId === undefined) {
+      delete process.env.TRAJECTORIES_WORKFLOW_ID;
+    } else {
+      process.env.TRAJECTORIES_WORKFLOW_ID = originalWorkflowId;
+    }
     try {
       rmSync(tmpDir, { recursive: true, force: true });
     } catch {
@@ -99,6 +121,9 @@ describe('WorkflowTrajectory', () => {
       expect(data.task.title).toContain('my-workflow');
       expect(data.agents).toHaveLength(1);
       expect(data.agents[0].name).toBe('orchestrator');
+      expect(data.commits).toEqual([]);
+      expect(data.filesChanged).toEqual([]);
+      expect(data.tags).toEqual([]);
     });
 
     it('should create Planning chapter on start', async () => {
@@ -135,6 +160,26 @@ describe('WorkflowTrajectory', () => {
       expect(completed).toBeTruthy();
       expect(completed.status).toBe('abandoned');
     });
+
+    it('should stamp workflowId from TRAJECTORIES_WORKFLOW_ID on start', async () => {
+      process.env.TRAJECTORIES_WORKFLOW_ID = 'wf-env-123';
+      const traj = new WorkflowTrajectory({}, 'run-abc', tmpDir);
+      await traj.start('my-workflow', 1);
+
+      const data = readTrajectoryFile(tmpDir);
+      expect(data.workflowId).toBe('wf-env-123');
+    });
+
+    it('should write to TRAJECTORIES_DATA_DIR when set', async () => {
+      const customDataDir = path.join(tmpDir, 'custom-root', '.trajectories');
+      process.env.TRAJECTORIES_DATA_DIR = customDataDir;
+
+      const traj = new WorkflowTrajectory({}, 'run-abc', tmpDir);
+      await traj.start('my-workflow', 1);
+
+      expect(readTrajectoryFile(tmpDir)).toBeNull();
+      expect(readTrajectoryFileAt(customDataDir, 'active')).toBeTruthy();
+    });
   });
 
   // ── Step events ────────────────────────────────────────────────────────
@@ -143,10 +188,7 @@ describe('WorkflowTrajectory', () => {
     it('should record step started', async () => {
       const traj = new WorkflowTrajectory({}, 'run-1', tmpDir);
       await traj.start('wf', 2);
-      await traj.stepStarted(
-        { name: 'build', agent: 'builder', task: 'Build it' },
-        'builder-agent',
-      );
+      await traj.stepStarted({ name: 'build', agent: 'builder', task: 'Build it' }, 'builder-agent');
 
       const data = readTrajectoryFile(tmpDir);
       expect(data.agents).toHaveLength(2); // orchestrator + builder-agent
@@ -157,11 +199,7 @@ describe('WorkflowTrajectory', () => {
     it('should record step completed', async () => {
       const traj = new WorkflowTrajectory({}, 'run-1', tmpDir);
       await traj.start('wf', 1);
-      await traj.stepCompleted(
-        { name: 'test', agent: 'tester', task: 'Run tests' },
-        'All tests passing',
-        1,
-      );
+      await traj.stepCompleted({ name: 'test', agent: 'tester', task: 'Run tests' }, 'All tests passing', 1);
 
       const data = readTrajectoryFile(tmpDir);
       const events = data.chapters.flatMap((c: any) => c.events);
@@ -175,7 +213,7 @@ describe('WorkflowTrajectory', () => {
         { name: 'deploy', agent: 'deployer', task: 'Deploy' },
         'Connection refused',
         1,
-        3,
+        3
       );
 
       const data = readTrajectoryFile(tmpDir);
@@ -186,10 +224,7 @@ describe('WorkflowTrajectory', () => {
     it('should record step skipped', async () => {
       const traj = new WorkflowTrajectory({}, 'run-1', tmpDir);
       await traj.start('wf', 2);
-      await traj.stepSkipped(
-        { name: 'integration', agent: 'tester', task: 'Test' },
-        'Upstream failed',
-      );
+      await traj.stepSkipped({ name: 'integration', agent: 'tester', task: 'Test' }, 'Upstream failed');
 
       const data = readTrajectoryFile(tmpDir);
       const events = data.chapters.flatMap((c: any) => c.events);
@@ -402,6 +437,30 @@ describe('WorkflowTrajectory', () => {
       await expect(traj.reflect('test', 0.5)).resolves.not.toThrow();
       await expect(traj.decide('q', 'c', 'r')).resolves.not.toThrow();
       await expect(traj.complete('done', 0.9)).resolves.not.toThrow();
+    });
+
+    it('should save once when completing', async () => {
+      const traj = new WorkflowTrajectory({}, 'run-1', tmpDir);
+      await traj.start('wf', 1);
+
+      const save = vi.fn().mockResolvedValue(undefined);
+      (traj as any).storage = { initialize: vi.fn().mockResolvedValue(undefined), save };
+      (traj as any).storageInit = Promise.resolve();
+
+      await traj.complete('done', 0.9);
+      expect(save).toHaveBeenCalledTimes(1);
+    });
+
+    it('should save once when abandoning', async () => {
+      const traj = new WorkflowTrajectory({}, 'run-1', tmpDir);
+      await traj.start('wf', 1);
+
+      const save = vi.fn().mockResolvedValue(undefined);
+      (traj as any).storage = { initialize: vi.fn().mockResolvedValue(undefined), save };
+      (traj as any).storageInit = Promise.resolve();
+
+      await traj.abandon('nope');
+      expect(save).toHaveBeenCalledTimes(1);
     });
   });
 });

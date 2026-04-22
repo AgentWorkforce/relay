@@ -21,6 +21,9 @@ on:
       - '.github/workflows/build-openclaw-binary.yml'
   workflow_dispatch:
 
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
 jobs:
   test-build-script:
     name: Test build-bun.sh

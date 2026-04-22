@@ -158,6 +158,7 @@ relay.onAgentReleased  = (agent: Agent) => { ... }
 relay.onAgentExited    = (agent: Agent) => { ... }
 relay.onAgentReady     = (agent: Agent) => { ... }
 relay.onAgentIdle      = ({ name, idleSecs }) => { ... }
+relay.onAgentActivityChanged = ({ name, active, pendingDeliveries, reason }) => { ... }
 relay.onAgentExitRequested = ({ name, reason }) => { ... }
 relay.onWorkerOutput   = ({ name, stream, chunk }) => { ... }
 relay.onDeliveryUpdate = (event: BrokerEvent) => { ... }

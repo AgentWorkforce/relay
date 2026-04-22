@@ -122,6 +122,32 @@ impl WorkerRegistry {
             .map(|(_, v)| v.as_str())
     }
 
+    async fn build_mcp_args(
+        &self,
+        cli_name: &str,
+        agent_name: &str,
+        existing_args: &[String],
+        cwd: &Path,
+        worker_relay_api_key: Option<&str>,
+        skip_relay_prompt: bool,
+    ) -> Result<Vec<String>> {
+        if skip_relay_prompt {
+            return Ok(Vec::new());
+        }
+        configure_relaycast_mcp_with_token(
+            cli_name,
+            agent_name,
+            self.env_value("RELAY_API_KEY"),
+            self.env_value("RELAY_BASE_URL"),
+            existing_args,
+            cwd,
+            worker_relay_api_key,
+            self.env_value("RELAY_WORKSPACES_JSON"),
+            self.env_value("RELAY_DEFAULT_WORKSPACE"),
+        )
+        .await
+    }
+
     pub(crate) fn has_worker(&self, name: &str) -> bool {
         self.workers.contains_key(name)
     }
@@ -205,23 +231,16 @@ impl WorkerRegistry {
                     );
                 }
 
-                let mcp_args = if skip_relay_prompt {
-                    vec![]
-                } else {
-                    let cwd = spec.cwd.as_deref().unwrap_or(".");
-                    configure_relaycast_mcp_with_token(
+                let mcp_args = self
+                    .build_mcp_args(
                         cli,
                         &spec.name,
-                        self.env_value("RELAY_API_KEY"),
-                        self.env_value("RELAY_BASE_URL"),
                         &effective_args,
-                        Path::new(cwd),
+                        Path::new(spec.cwd.as_deref().unwrap_or(".")),
                         worker_relay_api_key.as_deref(),
-                        self.env_value("RELAY_WORKSPACES_JSON"),
-                        self.env_value("RELAY_DEFAULT_WORKSPACE"),
+                        skip_relay_prompt,
                     )
-                    .await?
-                };
+                    .await?;
 
                 let model_flag = spec.model.as_deref().and_then(|m| {
                     if m.is_empty()
@@ -263,8 +282,19 @@ impl WorkerRegistry {
                     .context("headless runtime requires `provider`")?;
                 command.arg("headless");
                 command.arg("--agent-name").arg(&spec.name);
-                command.arg(headless_provider_cli_name(provider));
-                let mcp_args: Vec<String> = vec![];
+                let provider_cli = headless_provider_cli_name(provider);
+                command.arg(provider_cli);
+
+                let mcp_args = self
+                    .build_mcp_args(
+                        provider_cli,
+                        &spec.name,
+                        &spec.args,
+                        Path::new(spec.cwd.as_deref().unwrap_or(".")),
+                        worker_relay_api_key.as_deref(),
+                        skip_relay_prompt,
+                    )
+                    .await?;
 
                 let model_arg =
                     spec.model.as_deref().and_then(|model| {

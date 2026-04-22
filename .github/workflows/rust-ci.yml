@@ -7,6 +7,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
 
 jobs:
   changes:
@@ -121,13 +122,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.web_only != 'true'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: packages/sdk
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - run: npm install
-      - run: npx tsc --noEmit
+      - run: npm run -w @agent-relay/sdk check

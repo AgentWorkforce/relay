@@ -38,6 +38,9 @@ const relay = new AgentRelay();
 // Event hooks
 relay.onMessageReceived = (msg) => console.log(`${msg.from}: ${msg.text}`);
 relay.onAgentIdle = ({ name, idleSecs }) => console.log(`${name} idle for ${idleSecs}s`);
+relay.onAgentActivityChanged = ({ name, active, pendingDeliveries }) => {
+  updateThinkingBadge(name, active ? `Thinking (${pendingDeliveries})` : 'Idle');
+};
 
 // Spawn agents using shorthand spawners
 const worker = await relay.claude.spawn({

@@ -19,5 +19,13 @@ function isEntrypoint(): boolean {
 }
 
 if (isEntrypoint()) {
-  runCli();
+  runCli().catch((err) => {
+    // Commander will have already printed a helpful message for parse errors.
+    // For other top-level failures, surface them to stderr and exit non-zero.
+    const message = err instanceof Error ? err.message : String(err);
+    if (message) {
+      process.stderr.write(`${message}\n`);
+    }
+    process.exit(1);
+  });
 }

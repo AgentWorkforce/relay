@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/cloud",
-  "version": "4.0.11",
+  "version": "4.0.35",
   "description": "Cloud SDK for Agent Relay — auth, workflow execution, and provider connections",
   "type": "module",
   "main": "dist/index.js",
@@ -23,14 +23,13 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/config": "4.0.11",
+    "@agent-relay/config": "4.0.35",
     "@aws-sdk/client-s3": "3.1020.0",
     "ignore": "^7.0.5",
     "tar": "^7.5.10"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",
-    "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   },
   "publishConfig": {

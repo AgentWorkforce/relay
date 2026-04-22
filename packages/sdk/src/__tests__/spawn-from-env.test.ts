@@ -6,69 +6,60 @@
  * Run:
  *   npm run build && node --test dist/__tests__/spawn-from-env.test.js
  */
-import assert from "node:assert/strict";
-import test from "node:test";
+import assert from 'node:assert/strict';
+import { test } from 'vitest';
 
-import { parseSpawnEnv, resolveSpawnPolicy } from "../spawn-from-env.js";
-import type { SpawnEnvInput } from "../spawn-from-env.js";
+import { parseSpawnEnv, resolveSpawnPolicy } from '../spawn-from-env.js';
+import type { SpawnEnvInput } from '../spawn-from-env.js';
 
 // ── Helper ─────────────────────────────────────────────────────────────────
 
 function makeEnv(overrides: Partial<SpawnEnvInput> = {}): SpawnEnvInput {
   return {
-    AGENT_NAME: "test-agent",
-    AGENT_CLI: "claude",
-    RELAY_API_KEY: "rk_live_test_123",
+    AGENT_NAME: 'test-agent',
+    AGENT_CLI: 'claude',
+    RELAY_API_KEY: 'rk_live_test_123',
     ...overrides,
   };
 }
 
 // ── parseSpawnEnv ──────────────────────────────────────────────────────────
 
-test("parseSpawnEnv: returns parsed input from valid env", () => {
+test('parseSpawnEnv: returns parsed input from valid env', () => {
   const result = parseSpawnEnv({
-    AGENT_NAME: "worker-1",
-    AGENT_CLI: "codex",
-    RELAY_API_KEY: "rk_live_abc",
-    AGENT_TASK: "fix bugs",
+    AGENT_NAME: 'worker-1',
+    AGENT_CLI: 'codex',
+    RELAY_API_KEY: 'rk_live_abc',
+    AGENT_TASK: 'fix bugs',
   });
 
-  assert.equal(result.AGENT_NAME, "worker-1");
-  assert.equal(result.AGENT_CLI, "codex");
-  assert.equal(result.RELAY_API_KEY, "rk_live_abc");
-  assert.equal(result.AGENT_TASK, "fix bugs");
+  assert.equal(result.AGENT_NAME, 'worker-1');
+  assert.equal(result.AGENT_CLI, 'codex');
+  assert.equal(result.RELAY_API_KEY, 'rk_live_abc');
+  assert.equal(result.AGENT_TASK, 'fix bugs');
 });
 
-test("parseSpawnEnv: throws on missing AGENT_NAME", () => {
-  assert.throws(
-    () => parseSpawnEnv({ AGENT_CLI: "claude", RELAY_API_KEY: "rk_live_abc" }),
-    /AGENT_NAME/,
-  );
+test('parseSpawnEnv: throws on missing AGENT_NAME', () => {
+  assert.throws(() => parseSpawnEnv({ AGENT_CLI: 'claude', RELAY_API_KEY: 'rk_live_abc' }), /AGENT_NAME/);
 });
 
-test("parseSpawnEnv: throws on missing AGENT_CLI", () => {
-  assert.throws(
-    () => parseSpawnEnv({ AGENT_NAME: "test", RELAY_API_KEY: "rk_live_abc" }),
-    /AGENT_CLI/,
-  );
+test('parseSpawnEnv: throws on missing AGENT_CLI', () => {
+  assert.throws(() => parseSpawnEnv({ AGENT_NAME: 'test', RELAY_API_KEY: 'rk_live_abc' }), /AGENT_CLI/);
 });
 
-test("parseSpawnEnv: throws on missing RELAY_API_KEY", () => {
-  assert.throws(
-    () => parseSpawnEnv({ AGENT_NAME: "test", AGENT_CLI: "claude" }),
-    /RELAY_API_KEY/,
-  );
+test('parseSpawnEnv: throws on missing RELAY_API_KEY', () => {
+  assert.throws(() => parseSpawnEnv({ AGENT_NAME: 'test', AGENT_CLI: 'claude' }), /RELAY_API_KEY/);
 });
 
-test("parseSpawnEnv: lists all missing keys in error", () => {
+test('parseSpawnEnv: lists all missing keys in error', () => {
   assert.throws(() => parseSpawnEnv({}), /AGENT_NAME.*AGENT_CLI.*RELAY_API_KEY/);
 });
 
-test("parseSpawnEnv: optional fields are undefined when absent", () => {
+test('parseSpawnEnv: optional fields are undefined when absent', () => {
   const result = parseSpawnEnv({
-    AGENT_NAME: "a",
-    AGENT_CLI: "claude",
-    RELAY_API_KEY: "rk_live_x",
+    AGENT_NAME: 'a',
+    AGENT_CLI: 'claude',
+    RELAY_API_KEY: 'rk_live_x',
   });
 
   assert.equal(result.AGENT_TASK, undefined);
@@ -79,229 +70,205 @@ test("parseSpawnEnv: optional fields are undefined when absent", () => {
   assert.equal(result.AGENT_DISABLE_DEFAULT_BYPASS, undefined);
 });
 
-test("parseSpawnEnv: parses all optional fields", () => {
+test('parseSpawnEnv: parses all optional fields', () => {
   const result = parseSpawnEnv({
-    AGENT_NAME: "a",
-    AGENT_CLI: "claude",
-    RELAY_API_KEY: "rk_live_x",
-    AGENT_TASK: "do stuff",
+    AGENT_NAME: 'a',
+    AGENT_CLI: 'claude',
+    RELAY_API_KEY: 'rk_live_x',
+    AGENT_TASK: 'do stuff',
     AGENT_ARGS: '["--model","opus"]',
-    AGENT_CWD: "/workspace",
-    AGENT_CHANNELS: "general,dev",
-    AGENT_MODEL: "opus",
-    RELAY_BASE_URL: "https://api.relaycast.dev",
-    BROKER_BINARY_PATH: "/usr/local/bin/agent-relay-broker",
-    AGENT_DISABLE_DEFAULT_BYPASS: "1",
+    AGENT_CWD: '/workspace',
+    AGENT_CHANNELS: 'general,dev',
+    AGENT_MODEL: 'opus',
+    RELAY_BASE_URL: 'https://api.relaycast.dev',
+    BROKER_BINARY_PATH: '/usr/local/bin/agent-relay-broker',
+    AGENT_DISABLE_DEFAULT_BYPASS: '1',
   });
 
-  assert.equal(result.AGENT_TASK, "do stuff");
+  assert.equal(result.AGENT_TASK, 'do stuff');
   assert.equal(result.AGENT_ARGS, '["--model","opus"]');
-  assert.equal(result.AGENT_CWD, "/workspace");
-  assert.equal(result.AGENT_CHANNELS, "general,dev");
-  assert.equal(result.AGENT_MODEL, "opus");
-  assert.equal(result.RELAY_BASE_URL, "https://api.relaycast.dev");
-  assert.equal(result.BROKER_BINARY_PATH, "/usr/local/bin/agent-relay-broker");
-  assert.equal(result.AGENT_DISABLE_DEFAULT_BYPASS, "1");
+  assert.equal(result.AGENT_CWD, '/workspace');
+  assert.equal(result.AGENT_CHANNELS, 'general,dev');
+  assert.equal(result.AGENT_MODEL, 'opus');
+  assert.equal(result.RELAY_BASE_URL, 'https://api.relaycast.dev');
+  assert.equal(result.BROKER_BINARY_PATH, '/usr/local/bin/agent-relay-broker');
+  assert.equal(result.AGENT_DISABLE_DEFAULT_BYPASS, '1');
 });
 
 // ── resolveSpawnPolicy: bypass flags ───────────────────────────────────────
 
-test("resolveSpawnPolicy: applies --dangerously-skip-permissions for claude", () => {
-  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: "claude" }));
-  assert.ok(result.args.includes("--dangerously-skip-permissions"));
+test('resolveSpawnPolicy: applies --dangerously-skip-permissions for claude', () => {
+  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: 'claude' }));
+  assert.ok(result.args.includes('--dangerously-skip-permissions'));
   assert.equal(result.bypassApplied, true);
 });
 
-test("resolveSpawnPolicy: applies --dangerously-skip-permissions for claude:opus", () => {
-  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: "claude:opus" }));
-  assert.ok(result.args.includes("--dangerously-skip-permissions"));
+test('resolveSpawnPolicy: applies --dangerously-skip-permissions for claude:opus', () => {
+  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: 'claude:opus' }));
+  assert.ok(result.args.includes('--dangerously-skip-permissions'));
   assert.equal(result.bypassApplied, true);
 });
 
-test("resolveSpawnPolicy: applies --dangerously-bypass-approvals-and-sandbox for codex", () => {
-  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: "codex" }));
-  assert.ok(result.args.includes("--dangerously-bypass-approvals-and-sandbox"));
+test('resolveSpawnPolicy: applies --dangerously-bypass-approvals-and-sandbox for codex', () => {
+  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: 'codex' }));
+  assert.ok(result.args.includes('--dangerously-bypass-approvals-and-sandbox'));
   assert.equal(result.bypassApplied, true);
 });
 
-test("resolveSpawnPolicy: applies --yolo for gemini", () => {
-  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: "gemini" }));
-  assert.ok(result.args.includes("--yolo"));
+test('resolveSpawnPolicy: applies --yolo for gemini', () => {
+  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: 'gemini' }));
+  assert.ok(result.args.includes('--yolo'));
   assert.equal(result.bypassApplied, true);
 });
 
-test("resolveSpawnPolicy: no bypass for unknown CLI", () => {
-  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: "aider" }));
+test('resolveSpawnPolicy: no bypass for unknown CLI', () => {
+  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: 'aider' }));
   assert.equal(result.args.length, 0);
   assert.equal(result.bypassApplied, false);
 });
 
 // ── resolveSpawnPolicy: bypass opt-out ─────────────────────────────────────
 
-test("resolveSpawnPolicy: disables bypass when AGENT_DISABLE_DEFAULT_BYPASS=1", () => {
-  const result = resolveSpawnPolicy(
-    makeEnv({ AGENT_CLI: "claude", AGENT_DISABLE_DEFAULT_BYPASS: "1" }),
-  );
-  assert.ok(!result.args.includes("--dangerously-skip-permissions"));
+test('resolveSpawnPolicy: disables bypass when AGENT_DISABLE_DEFAULT_BYPASS=1', () => {
+  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: 'claude', AGENT_DISABLE_DEFAULT_BYPASS: '1' }));
+  assert.ok(!result.args.includes('--dangerously-skip-permissions'));
   assert.equal(result.bypassApplied, false);
 });
 
-test("resolveSpawnPolicy: does not disable bypass when AGENT_DISABLE_DEFAULT_BYPASS is not 1", () => {
-  const result = resolveSpawnPolicy(
-    makeEnv({ AGENT_CLI: "claude", AGENT_DISABLE_DEFAULT_BYPASS: "0" }),
-  );
-  assert.ok(result.args.includes("--dangerously-skip-permissions"));
+test('resolveSpawnPolicy: does not disable bypass when AGENT_DISABLE_DEFAULT_BYPASS is not 1', () => {
+  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: 'claude', AGENT_DISABLE_DEFAULT_BYPASS: '0' }));
+  assert.ok(result.args.includes('--dangerously-skip-permissions'));
   assert.equal(result.bypassApplied, true);
 });
 
 // ── resolveSpawnPolicy: duplicate flag suppression ─────────────────────────
 
-test("resolveSpawnPolicy: does not duplicate bypass flag if already in AGENT_ARGS", () => {
+test('resolveSpawnPolicy: does not duplicate bypass flag if already in AGENT_ARGS', () => {
   const result = resolveSpawnPolicy(
     makeEnv({
-      AGENT_CLI: "claude",
+      AGENT_CLI: 'claude',
       AGENT_ARGS: '["--dangerously-skip-permissions"]',
-    }),
+    })
   );
-  const count = result.args.filter(
-    (a) => a === "--dangerously-skip-permissions",
-  ).length;
-  assert.equal(count, 1, "bypass flag should appear exactly once");
-  assert.equal(result.bypassApplied, false, "bypassApplied should be false when already present");
+  const count = result.args.filter((a) => a === '--dangerously-skip-permissions').length;
+  assert.equal(count, 1, 'bypass flag should appear exactly once');
+  assert.equal(result.bypassApplied, false, 'bypassApplied should be false when already present');
 });
 
-test("resolveSpawnPolicy: does not duplicate bypass if already in AGENT_ARGS", () => {
+test('resolveSpawnPolicy: does not duplicate bypass if already in AGENT_ARGS', () => {
   const result = resolveSpawnPolicy(
-    makeEnv({ AGENT_CLI: "codex", AGENT_ARGS: '["--dangerously-bypass-approvals-and-sandbox"]' }),
+    makeEnv({ AGENT_CLI: 'codex', AGENT_ARGS: '["--dangerously-bypass-approvals-and-sandbox"]' })
   );
-  const count = result.args.filter((a) => a === "--dangerously-bypass-approvals-and-sandbox").length;
+  const count = result.args.filter((a) => a === '--dangerously-bypass-approvals-and-sandbox').length;
   assert.equal(count, 1);
   assert.equal(result.bypassApplied, false);
 });
 
-test("resolveSpawnPolicy: does not duplicate codex bypass when --full-auto alias is present", () => {
-  const result = resolveSpawnPolicy(
-    makeEnv({ AGENT_CLI: "codex", AGENT_ARGS: '["--full-auto"]' }),
-  );
-  assert.deepEqual(result.args, ["--full-auto"]);
+test('resolveSpawnPolicy: does not duplicate codex bypass when --full-auto alias is present', () => {
+  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: 'codex', AGENT_ARGS: '["--full-auto"]' }));
+  assert.deepEqual(result.args, ['--full-auto']);
   assert.equal(result.bypassApplied, false);
 });
 
-test("resolveSpawnPolicy: does not duplicate --yolo if already in AGENT_ARGS", () => {
-  const result = resolveSpawnPolicy(
-    makeEnv({ AGENT_CLI: "gemini", AGENT_ARGS: '["--yolo"]' }),
-  );
-  const count = result.args.filter((a) => a === "--yolo").length;
+test('resolveSpawnPolicy: does not duplicate --yolo if already in AGENT_ARGS', () => {
+  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: 'gemini', AGENT_ARGS: '["--yolo"]' }));
+  const count = result.args.filter((a) => a === '--yolo').length;
   assert.equal(count, 1);
   assert.equal(result.bypassApplied, false);
 });
 
-test("resolveSpawnPolicy: does not duplicate --yolo when -y alias is already in AGENT_ARGS", () => {
-  const result = resolveSpawnPolicy(
-    makeEnv({ AGENT_CLI: "gemini", AGENT_ARGS: '["-y"]' }),
-  );
-  assert.deepEqual(result.args, ["-y"]);
+test('resolveSpawnPolicy: does not duplicate --yolo when -y alias is already in AGENT_ARGS', () => {
+  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: 'gemini', AGENT_ARGS: '["-y"]' }));
+  assert.deepEqual(result.args, ['-y']);
   assert.equal(result.bypassApplied, false);
 });
 
 // ── resolveSpawnPolicy: AGENT_ARGS parsing ─────────────────────────────────
 
-test("resolveSpawnPolicy: parses JSON array args", () => {
+test('resolveSpawnPolicy: parses JSON array args', () => {
   const result = resolveSpawnPolicy(
-    makeEnv({ AGENT_CLI: "gemini", AGENT_ARGS: '["--reasoning","high","--verbose"]' }),
+    makeEnv({ AGENT_CLI: 'gemini', AGENT_ARGS: '["--reasoning","high","--verbose"]' })
   );
-  assert.deepEqual(result.args, ["--reasoning", "high", "--verbose", "--yolo"]);
+  assert.deepEqual(result.args, ['--reasoning', 'high', '--verbose', '--yolo']);
 });
 
-test("resolveSpawnPolicy: falls back to space-delimited args", () => {
+test('resolveSpawnPolicy: falls back to space-delimited args', () => {
   const result = resolveSpawnPolicy(
-    makeEnv({ AGENT_CLI: "gemini", AGENT_ARGS: "--reasoning high --verbose" }),
+    makeEnv({ AGENT_CLI: 'gemini', AGENT_ARGS: '--reasoning high --verbose' })
   );
-  assert.deepEqual(result.args, ["--reasoning", "high", "--verbose", "--yolo"]);
+  assert.deepEqual(result.args, ['--reasoning', 'high', '--verbose', '--yolo']);
 });
 
-test("resolveSpawnPolicy: handles invalid JSON gracefully (falls back to split)", () => {
-  const result = resolveSpawnPolicy(
-    makeEnv({ AGENT_CLI: "gemini", AGENT_ARGS: "[invalid json" }),
-  );
-  assert.deepEqual(result.args, ["[invalid", "json", "--yolo"]);
+test('resolveSpawnPolicy: handles invalid JSON gracefully (falls back to split)', () => {
+  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: 'gemini', AGENT_ARGS: '[invalid json' }));
+  assert.deepEqual(result.args, ['[invalid', 'json', '--yolo']);
 });
 
-test("resolveSpawnPolicy: empty AGENT_ARGS produces bypass-only args", () => {
-  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: "gemini" }));
-  assert.deepEqual(result.args, ["--yolo"]);
+test('resolveSpawnPolicy: empty AGENT_ARGS produces bypass-only args', () => {
+  const result = resolveSpawnPolicy(makeEnv({ AGENT_CLI: 'gemini' }));
+  assert.deepEqual(result.args, ['--yolo']);
 });
 
 // ── resolveSpawnPolicy: channels ───────────────────────────────────────────
 
-test("resolveSpawnPolicy: defaults channels to [general]", () => {
+test('resolveSpawnPolicy: defaults channels to [general]', () => {
   const result = resolveSpawnPolicy(makeEnv());
-  assert.deepEqual(result.channels, ["general"]);
+  assert.deepEqual(result.channels, ['general']);
 });
 
-test("resolveSpawnPolicy: parses comma-separated channels", () => {
-  const result = resolveSpawnPolicy(
-    makeEnv({ AGENT_CHANNELS: "general, dev-team, alerts" }),
-  );
-  assert.deepEqual(result.channels, ["general", "dev-team", "alerts"]);
+test('resolveSpawnPolicy: parses comma-separated channels', () => {
+  const result = resolveSpawnPolicy(makeEnv({ AGENT_CHANNELS: 'general, dev-team, alerts' }));
+  assert.deepEqual(result.channels, ['general', 'dev-team', 'alerts']);
 });
 
-test("resolveSpawnPolicy: filters empty channel names", () => {
-  const result = resolveSpawnPolicy(
-    makeEnv({ AGENT_CHANNELS: "general,,dev," }),
-  );
-  assert.deepEqual(result.channels, ["general", "dev"]);
+test('resolveSpawnPolicy: filters empty channel names', () => {
+  const result = resolveSpawnPolicy(makeEnv({ AGENT_CHANNELS: 'general,,dev,' }));
+  assert.deepEqual(result.channels, ['general', 'dev']);
 });
 
 // ── resolveSpawnPolicy: other fields ───────────────────────────────────────
 
-test("resolveSpawnPolicy: passes through task, cwd, model", () => {
+test('resolveSpawnPolicy: passes through task, cwd, model', () => {
   const result = resolveSpawnPolicy(
     makeEnv({
-      AGENT_TASK: "fix the auth bug",
-      AGENT_CWD: "/workspace/repo",
-      AGENT_MODEL: "opus",
-    }),
+      AGENT_TASK: 'fix the auth bug',
+      AGENT_CWD: '/workspace/repo',
+      AGENT_MODEL: 'opus',
+    })
   );
-  assert.equal(result.task, "fix the auth bug");
-  assert.equal(result.cwd, "/workspace/repo");
-  assert.equal(result.model, "opus");
+  assert.equal(result.task, 'fix the auth bug');
+  assert.equal(result.cwd, '/workspace/repo');
+  assert.equal(result.model, 'opus');
 });
 
-test("resolveSpawnPolicy: name and cli come from input", () => {
-  const result = resolveSpawnPolicy(
-    makeEnv({ AGENT_NAME: "my-worker", AGENT_CLI: "codex" }),
-  );
-  assert.equal(result.name, "my-worker");
-  assert.equal(result.cli, "codex");
+test('resolveSpawnPolicy: name and cli come from input', () => {
+  const result = resolveSpawnPolicy(makeEnv({ AGENT_NAME: 'my-worker', AGENT_CLI: 'codex' }));
+  assert.equal(result.name, 'my-worker');
+  assert.equal(result.cli, 'codex');
 });
 
 // ── resolveSpawnPolicy: combined scenario ──────────────────────────────────
 
-test("resolveSpawnPolicy: full scenario with args + bypass + channels", () => {
+test('resolveSpawnPolicy: full scenario with args + bypass + channels', () => {
   const result = resolveSpawnPolicy(
     makeEnv({
-      AGENT_NAME: "worker-1",
-      AGENT_CLI: "claude",
+      AGENT_NAME: 'worker-1',
+      AGENT_CLI: 'claude',
       AGENT_ARGS: '["--model","opus"]',
-      AGENT_CHANNELS: "general,dev",
-      AGENT_TASK: "implement feature X",
-      AGENT_CWD: "/repos/project",
-      AGENT_MODEL: "opus",
-    }),
+      AGENT_CHANNELS: 'general,dev',
+      AGENT_TASK: 'implement feature X',
+      AGENT_CWD: '/repos/project',
+      AGENT_MODEL: 'opus',
+    })
   );
 
-  assert.equal(result.name, "worker-1");
-  assert.equal(result.cli, "claude");
-  assert.deepEqual(result.channels, ["general", "dev"]);
-  assert.equal(result.task, "implement feature X");
-  assert.equal(result.cwd, "/repos/project");
-  assert.equal(result.model, "opus");
+  assert.equal(result.name, 'worker-1');
+  assert.equal(result.cli, 'claude');
+  assert.deepEqual(result.channels, ['general', 'dev']);
+  assert.equal(result.task, 'implement feature X');
+  assert.equal(result.cwd, '/repos/project');
+  assert.equal(result.model, 'opus');
   // --model opus from AGENT_ARGS + bypass flag appended
-  assert.deepEqual(result.args, [
-    "--model",
-    "opus",
-    "--dangerously-skip-permissions",
-  ]);
+  assert.deepEqual(result.args, ['--model', 'opus', '--dangerously-skip-permissions']);
   assert.equal(result.bypassApplied, true);
 });

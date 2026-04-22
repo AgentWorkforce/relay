@@ -56,18 +56,27 @@ All telemetry operations run in the background and will not delay command execut
 You can disable telemetry using any of these methods:
 
 **Option 1: CLI command**
+
 ```sh
 agent-relay telemetry disable
 ```
 
 **Option 2: Environment variable**
+
 ```sh
 export AGENT_RELAY_TELEMETRY_DISABLED=1
+```
+
+Agent Relay also honors the [`DO_NOT_TRACK`](https://consoledonottrack.com) convention for opting out of telemetry across all compatible tools:
+
+```sh
+export DO_NOT_TRACK=1
 ```
 
 **Option 3: Configuration file**
 
 Create or edit `~/.agent-relay/telemetry.json`:
+
 ```json
 {
   "enabled": false

@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
 jobs:
   changes:
     name: Detect web-only change set
@@ -194,6 +197,40 @@ jobs:
           node dist/src/cli/index.js down --force --timeout 5000 || true
           kill $DAEMON_PID 2>/dev/null || true
 
+  publish-fresh-install-build:
+    name: Publish Fresh Install Build
+    needs: changes
+    if: needs.changes.outputs.web_only != 'true'
+    runs-on: ubuntu-latest
+    env:
+      NPM_CONFIG_FUND: false
+      TURBO_TELEMETRY_DISABLED: 1
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+
+      # The publish workflow bumps versions, removes package-lock.json, then
+      # runs npm install. This catches range-resolved dependency breaks before merge.
+      - name: Install dependencies with publish resolution
+        run: |
+          rm -rf node_modules packages/*/node_modules package-lock.json
+          npm install
+
+      - name: Show resolved trajectory dependency
+        run: npm ls agent-trajectories --all
+
+      - name: Ensure rollup optional dependencies are installed
+        run: npm install --no-save rollup || true
+
+      - name: Build full workspace
+        run: npm run build
+
   standalone-macos-smoke:
     name: Standalone macOS Smoke
     needs: changes
@@ -268,10 +305,14 @@ jobs:
             --minify \
             --target="$TARGET" \
             --external=better-sqlite3 \
-            --external=ssh2 \
             --define="process.env.AGENT_RELAY_VERSION=\"${VERSION}\"" \
             ./dist/src/cli/index.js \
             --outfile "release-binaries/${OUTPUT}"
+          if ! strings "release-binaries/${OUTPUT}" | grep -q 'ssh-userauth'; then
+            echo "FATAL: ssh2 protocol symbols missing from release-binaries/${OUTPUT}"
+            echo "cloud connect would hang; aborting validation."
+            exit 1
+          fi
           scripts/sign-macos-binary.sh "release-binaries/${OUTPUT}"
           scripts/verify-macos-binary.sh "release-binaries/${OUTPUT}" "$EXPECTED_ARCH" -- --version
           echo "STANDALONE_CLI=$PWD/release-binaries/${OUTPUT}" >> "$GITHUB_ENV"

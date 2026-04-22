@@ -2,14 +2,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
-import { AgentRelayClient, AgentRelayProtocolError } from '../client.js';
+import { AgentRelayClient } from '../client.js';
 import { AgentRelay } from '../relay.js';
-import { PROTOCOL_VERSION, type BrokerEvent } from '../protocol.js';
+import { AgentRelayProtocolError } from '../transport.js';
+import type { BrokerEvent } from '../protocol.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const TEST_BASE_URL = 'http://127.0.0.1:3888';
+const TEST_RELAY_API_KEY = 'relay_test_key';
 
 function readWave0Fixture<T>(name: string): T {
   const fixturePath = path.resolve(__dirname, '../../../../tests/fixtures/contracts/wave0', name);
@@ -59,15 +62,45 @@ function createMockFacadeClient() {
   };
 }
 
-function emitClientEvent(client: AgentRelayClient, event: BrokerEvent): void {
-  (client as any).handleStdoutLine(
-    JSON.stringify({
-      v: PROTOCOL_VERSION,
-      type: 'event',
-      payload: event,
-    })
-  );
+function createProtocolClient(): AgentRelayClient {
+  return new AgentRelayClient({ baseUrl: TEST_BASE_URL });
 }
+
+function createWiredRelay(client: AgentRelayClient): AgentRelay {
+  const relay = new AgentRelay({
+    env: { RELAY_API_KEY: TEST_RELAY_API_KEY },
+  });
+  (relay as any).client = client;
+  (relay as any).wireEvents(client);
+  return relay;
+}
+
+function emitClientEvent(client: AgentRelayClient, event: BrokerEvent): void {
+  const transport = (client as any).transport as {
+    eventBuffer: BrokerEvent[];
+    eventListeners: Set<(receivedEvent: BrokerEvent) => void>;
+    maxBufferSize: number;
+  };
+  transport.eventBuffer.push(event);
+  if (transport.eventBuffer.length > transport.maxBufferSize) {
+    transport.eventBuffer = transport.eventBuffer.slice(-transport.maxBufferSize);
+  }
+  for (const listener of transport.eventListeners) {
+    listener(event);
+  }
+}
+
+beforeEach(() => {
+  Object.defineProperty(AgentRelayClient, 'start', {
+    value: vi.fn(async () => {
+      throw new Error('AgentRelayClient.start was not mocked in this test');
+    }),
+    configurable: true,
+    writable: true,
+  });
+  vi.spyOn(AgentRelayClient, 'spawn').mockImplementation(((...args: unknown[]) =>
+    (AgentRelayClient as any).start(...args)) as typeof AgentRelayClient.spawn);
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -75,43 +108,32 @@ afterEach(() => {
 
 describe('AgentRelayClient orchestration payloads', () => {
   it('spawnPty supports per-agent cwd overrides', async () => {
-    const client = new AgentRelayClient({ cwd: '/workspace/default' });
-    vi.spyOn(client, 'start').mockResolvedValue(undefined);
-    const requestOk = vi
-      .spyOn(client as any, 'requestOk')
-      .mockResolvedValueOnce({ name: 'agent-a', runtime: 'pty' })
-      .mockResolvedValueOnce({ name: 'agent-b', runtime: 'pty' });
+    const client = createProtocolClient();
+    const request = vi
+      .spyOn((client as any).transport, 'request')
+      .mockResolvedValue({ name: 'agent-a', runtime: 'pty' });
 
     await client.spawnPty({ name: 'agent-a', cli: 'claude', cwd: '/workspace/a' });
     await client.spawnPty({ name: 'agent-b', cli: 'claude', cwd: '/workspace/b' });
 
-    expect(requestOk).toHaveBeenNthCalledWith(
-      1,
-      'spawn_agent',
-      expect.objectContaining({
-        agent: expect.objectContaining({
-          name: 'agent-a',
-          cwd: '/workspace/a',
-        }),
-      })
-    );
-    expect(requestOk).toHaveBeenNthCalledWith(
-      2,
-      'spawn_agent',
-      expect.objectContaining({
-        agent: expect.objectContaining({
-          name: 'agent-b',
-          cwd: '/workspace/b',
-        }),
-      })
-    );
+    expect(request).toHaveBeenNthCalledWith(1, '/api/spawn', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse(request.mock.calls[0]?.[1]?.body ?? '{}')).toMatchObject({
+      name: 'agent-a',
+      cli: 'claude',
+      cwd: '/workspace/a',
+    });
+    expect(request).toHaveBeenNthCalledWith(2, '/api/spawn', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse(request.mock.calls[1]?.[1]?.body ?? '{}')).toMatchObject({
+      name: 'agent-b',
+      cli: 'claude',
+      cwd: '/workspace/b',
+    });
   });
 
-  it('spawnPty maps model to CLI args when supported', async () => {
-    const client = new AgentRelayClient({ cwd: '/workspace/default' });
-    vi.spyOn(client, 'start').mockResolvedValue(undefined);
-    const requestOk = vi
-      .spyOn(client as any, 'requestOk')
+  it('spawnPty forwards model and args in the broker payload', async () => {
+    const client = createProtocolClient();
+    const request = vi
+      .spyOn((client as any).transport, 'request')
       .mockResolvedValue({ name: 'agent-model', runtime: 'pty' });
 
     await client.spawnPty({
@@ -121,22 +143,19 @@ describe('AgentRelayClient orchestration payloads', () => {
       args: ['--dangerously-skip-permissions'],
     });
 
-    expect(requestOk).toHaveBeenCalledWith(
-      'spawn_agent',
-      expect.objectContaining({
-        agent: expect.objectContaining({
-          model: 'opus',
-          args: ['--model', 'opus', '--dangerously-skip-permissions'],
-        }),
-      })
-    );
+    expect(request).toHaveBeenCalledWith('/api/spawn', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse(request.mock.calls[0]?.[1]?.body ?? '{}')).toMatchObject({
+      name: 'agent-model',
+      cli: 'claude',
+      model: 'opus',
+      args: ['--dangerously-skip-permissions'],
+    });
   });
 
   it('spawnClaude supports transport override to headless', async () => {
-    const client = new AgentRelayClient({ cwd: '/workspace/default' });
-    vi.spyOn(client, 'start').mockResolvedValue(undefined);
-    const requestOk = vi
-      .spyOn(client as any, 'requestOk')
+    const client = createProtocolClient();
+    const request = vi
+      .spyOn((client as any).transport, 'request')
       .mockResolvedValue({ name: 'agent-headless', runtime: 'headless' });
 
     await client.spawnClaude({
@@ -146,21 +165,18 @@ describe('AgentRelayClient orchestration payloads', () => {
       task: 'run headless',
     });
 
-    expect(requestOk).toHaveBeenCalledWith(
-      'spawn_agent',
-      expect.objectContaining({
-        agent: expect.objectContaining({
-          name: 'agent-headless',
-          runtime: 'headless',
-          provider: 'claude',
-        }),
-        initial_task: 'run headless',
-      })
-    );
+    expect(request).toHaveBeenCalledWith('/api/spawn', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse(request.mock.calls[0]?.[1]?.body ?? '{}')).toMatchObject({
+      name: 'agent-headless',
+      cli: 'claude',
+      channels: ['general'],
+      task: 'run headless',
+      transport: 'headless',
+    });
   });
 
   it('spawnHeadless forwards agentToken to headless provider spawns', async () => {
-    const client = new AgentRelayClient({ baseUrl: 'http://127.0.0.1:3888' });
+    const client = createProtocolClient();
     const request = vi
       .spyOn((client as any).transport, 'request')
       .mockResolvedValue({ name: 'agent-headless-token', runtime: 'headless' });
@@ -191,10 +207,9 @@ describe('AgentRelayClient orchestration payloads', () => {
   });
 
   it('sendMessage preserves structured data payload', async () => {
-    const client = new AgentRelayClient();
-    vi.spyOn(client, 'start').mockResolvedValue(undefined);
-    const requestOk = vi
-      .spyOn(client as any, 'requestOk')
+    const client = createProtocolClient();
+    const request = vi
+      .spyOn((client as any).transport, 'request')
       .mockResolvedValue({ event_id: 'evt_data', targets: ['worker'] });
 
     const data = { runId: 'run-1', step: 2, flags: { urgent: true } };
@@ -205,21 +220,18 @@ describe('AgentRelayClient orchestration payloads', () => {
       data,
     });
 
-    expect(requestOk).toHaveBeenCalledWith(
-      'send_message',
-      expect.objectContaining({
-        to: 'worker',
-        text: 'continue',
-        data,
-      })
-    );
+    expect(request).toHaveBeenCalledWith('/api/send', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse(request.mock.calls[0]?.[1]?.body ?? '{}')).toMatchObject({
+      to: 'worker',
+      text: 'continue',
+      data,
+    });
   });
 
   it('sendMessage forwards mode for injection behavior', async () => {
-    const client = new AgentRelayClient();
-    vi.spyOn(client, 'start').mockResolvedValue(undefined);
-    const requestOk = vi
-      .spyOn(client as any, 'requestOk')
+    const client = createProtocolClient();
+    const request = vi
+      .spyOn((client as any).transport, 'request')
       .mockResolvedValue({ event_id: 'evt_mode', targets: ['worker'] });
 
     await client.sendMessage({
@@ -228,31 +240,28 @@ describe('AgentRelayClient orchestration payloads', () => {
       mode: 'steer',
     });
 
-    expect(requestOk).toHaveBeenCalledWith(
-      'send_message',
-      expect.objectContaining({
-        to: 'worker',
-        text: 'urgent update',
-        mode: 'steer',
-      })
-    );
+    expect(request).toHaveBeenCalledWith('/api/send', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse(request.mock.calls[0]?.[1]?.body ?? '{}')).toMatchObject({
+      to: 'worker',
+      text: 'urgent update',
+      mode: 'steer',
+    });
   });
 
   it('release forwards optional reason', async () => {
-    const client = new AgentRelayClient();
-    vi.spyOn(client, 'start').mockResolvedValue(undefined);
-    const requestOk = vi.spyOn(client as any, 'requestOk').mockResolvedValue({ name: 'worker' });
+    const client = createProtocolClient();
+    const request = vi.spyOn((client as any).transport, 'request').mockResolvedValue({ name: 'worker' });
 
     await client.release('worker', 'task complete');
 
-    expect(requestOk).toHaveBeenCalledWith('release_agent', {
-      name: 'worker',
-      reason: 'task complete',
+    expect(request).toHaveBeenCalledWith('/api/spawned/worker', {
+      method: 'DELETE',
+      body: JSON.stringify({ reason: 'task complete' }),
     });
   });
 
   it('buffers broker events and supports query/getLast helpers', () => {
-    const client = new AgentRelayClient();
+    const client = createProtocolClient();
 
     emitClientEvent(client, {
       kind: 'delivery_queued',
@@ -291,8 +300,8 @@ describe('AgentRelayClient orchestration payloads', () => {
   });
 
   it('evicts oldest buffered events when maxBufferSize is reached', () => {
-    const client = new AgentRelayClient();
-    (client as any).maxBufferSize = 2;
+    const client = createProtocolClient();
+    (client as any).transport.maxBufferSize = 2;
 
     emitClientEvent(client, { kind: 'worker_ready', name: 'a', runtime: 'pty' });
     emitClientEvent(client, { kind: 'worker_ready', name: 'b', runtime: 'pty' });
@@ -308,8 +317,7 @@ describe('AgentRelayClient orchestration payloads', () => {
 describe('AgentRelay orchestration handles', () => {
   it('spawnPty forwards agentToken to the client', async () => {
     const { client, mock } = createMockFacadeClient();
-    const relay = new AgentRelay();
-    (relay as any).client = client;
+    const relay = createWiredRelay(client);
 
     try {
       await relay.spawnPty({
@@ -333,8 +341,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('spawn forwards agentToken through the facade wrapper', async () => {
     const { client, mock } = createMockFacadeClient();
-    const relay = new AgentRelay();
-    (relay as any).client = client;
+    const relay = createWiredRelay(client);
 
     try {
       await relay.spawn('token-wrapper', 'claude', 'Do work', {
@@ -356,8 +363,7 @@ describe('AgentRelay orchestration handles', () => {
 
   it('property spawners forward agentToken for pty and headless runtimes', async () => {
     const { client, mock } = createMockFacadeClient();
-    const relay = new AgentRelay();
-    (relay as any).client = client;
+    const relay = createWiredRelay(client);
 
     try {
       await relay.codex.spawn({

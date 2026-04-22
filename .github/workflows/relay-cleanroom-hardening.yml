@@ -1,0 +1,82 @@
+name: Relay Clean-Room Hardening
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'src/**'
+      - 'packages/**'
+      - 'workflows/relay-e2e-meta-workflow.ts'
+      - 'workflows/relay-clean-room-e2e-validation.ts'
+      - 'scripts/run-relay-cleanroom-ci.sh'
+      - '.github/workflows/relay-cleanroom-hardening.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
+jobs:
+  cleanroom-hardening:
+    name: Clean-Room Hardening (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build local CLI/runtime
+        run: npm run build
+
+      - name: Link local CLI
+        run: npm link
+
+      - name: Verify CLI
+        run: agent-relay --version
+
+      - name: Run clean-room hardening validator
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/run-relay-cleanroom-ci.sh
+
+      - name: Upload clean-room artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-cleanroom-${{ matrix.os }}
+          path: .e2e-artifacts/
+          if-no-files-found: warn
+
+      - name: Append job summary
+        if: always()
+        run: |
+          if [ -f .e2e-artifacts/ci-summary.md ]; then
+            cat .e2e-artifacts/ci-summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No CI summary produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f .e2e-artifacts/verdict.md ]; then
+            printf '\n## Reviewer Verdict\n\n' >> "$GITHUB_STEP_SUMMARY"
+            cat .e2e-artifacts/verdict.md >> "$GITHUB_STEP_SUMMARY"
+          fi

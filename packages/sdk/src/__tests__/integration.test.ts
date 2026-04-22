@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import test, { before } from 'node:test';
+import { beforeAll, test } from 'vitest';
 
-import { AgentRelayClient, AgentRelayProcessError } from '../client.js';
+import { AgentRelayClient } from '../client.js';
 import { RelayCast } from '@relaycast/sdk';
 
 function resolveBinaryPath(): string {
@@ -21,7 +21,7 @@ function resolveBundledBinaryPath(): string {
 
 // Ensure RELAY_API_KEY is available before any tests run.
 // Creates an ephemeral workspace if no key is set.
-before(async () => {
+beforeAll(async () => {
   if (process.env.RELAY_API_KEY?.trim()) return;
   const ws = await RelayCast.createWorkspace(`sdk-test-${Date.now().toString(36)}`);
   const workspace = ws as { apiKey?: string; api_key?: string };
@@ -39,7 +39,7 @@ test('sdk can use bundled binary by default', async (t) => {
     return;
   }
 
-  const client = await AgentRelayClient.start({
+  const client = await AgentRelayClient.spawn({
     env: process.env,
   });
 
@@ -58,10 +58,9 @@ test('sdk can start broker and manage agent lifecycle', async (t) => {
     return;
   }
 
-  const client = await AgentRelayClient.start({
+  const client = await AgentRelayClient.spawn({
     binaryPath,
     requestTimeoutMs: 8_000,
-    shutdownTimeoutMs: 2_000,
     env: process.env,
   });
 
@@ -110,10 +109,9 @@ test('sdk can spawn and release provider worker with transport override', async 
     return;
   }
 
-  const client = await AgentRelayClient.start({
+  const client = await AgentRelayClient.spawn({
     binaryPath,
     requestTimeoutMs: 8_000,
-    shutdownTimeoutMs: 2_000,
     env: process.env,
   });
 
@@ -155,17 +153,26 @@ test('sdk can spawn and release provider worker with transport override', async 
   }
 });
 
-test('sdk surfaces process error when binary is missing', async () => {
-  await assert.rejects(
-    AgentRelayClient.start({
-      binaryPath: '/definitely/missing/agent-relay-broker',
-      requestTimeoutMs: 1_000,
-    }),
-    (error: unknown) => {
-      return error instanceof AgentRelayProcessError || error instanceof Error;
-    }
-  );
-});
+test('sdk surfaces startup error when broker binary exits before becoming ready', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-failing-broker-'));
+  const fakeBinary = path.join(tempDir, 'agent-relay-broker');
+  fs.writeFileSync(fakeBinary, '#!/bin/sh\nexit 1\n');
+  fs.chmodSync(fakeBinary, 0o755);
+
+  try {
+    await assert.rejects(
+      AgentRelayClient.spawn({
+        binaryPath: fakeBinary,
+        startupTimeoutMs: 1_000,
+        requestTimeoutMs: 1_000,
+      }),
+      (error: unknown) =>
+        error instanceof Error && /before becoming ready|Failed to start broker/.test(error.message)
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}, 10_000);
 
 test('sdk includes broker stderr details when startup fails', async (t) => {
   const binaryPath = resolveBinaryPath();
@@ -175,25 +182,23 @@ test('sdk includes broker stderr details when startup fails', async (t) => {
   }
 
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-broker-lock-'));
-  const first = await AgentRelayClient.start({
+  const first = await AgentRelayClient.spawn({
     binaryPath,
     cwd,
     requestTimeoutMs: 8_000,
-    shutdownTimeoutMs: 2_000,
     env: process.env,
   });
 
   try {
     await assert.rejects(
-      AgentRelayClient.start({
+      AgentRelayClient.spawn({
         binaryPath,
         cwd,
         requestTimeoutMs: 2_000,
-        shutdownTimeoutMs: 2_000,
         env: process.env,
       }),
       (error: unknown) => {
-        assert.ok(error instanceof AgentRelayProcessError || error instanceof Error);
+        assert.ok(error instanceof Error);
         assert.match(String((error as Error).message), /another broker instance is already running/i);
         return true;
       }
@@ -224,17 +229,18 @@ test('sdk writes broker lifecycle logs to stderr so stdout stays machine-readabl
 
   let client: AgentRelayClient | undefined;
   try {
-    client = await AgentRelayClient.start({
+    client = await AgentRelayClient.spawn({
       binaryPath,
       requestTimeoutMs: 8_000,
-      shutdownTimeoutMs: 2_000,
       env: process.env,
     });
 
     await client.listAgents();
 
     assert.equal(
-      loggedStdout.some((line) => line.includes('[broker] Starting:') || line.includes('[broker] Broker ready')),
+      loggedStdout.some(
+        (line) => line.includes('[broker] Starting:') || line.includes('[broker] Broker ready')
+      ),
       false,
       `broker lifecycle logs should not be written to stdout: ${loggedStdout.join('\n')}`
     );

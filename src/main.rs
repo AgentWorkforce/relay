@@ -7,6 +7,7 @@ use std::{
 };
 
 mod broker;
+mod cli_mcp_args;
 mod helpers;
 mod listen_api;
 mod pty_worker;
@@ -56,7 +57,7 @@ use relay_broker::{
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
     snippets::ensure_relaycast_mcp_config,
-    telemetry::{TelemetryClient, TelemetryEvent},
+    telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
     types::{BrokerCommandEvent, BrokerCommandPayload, InboundKind, SenderKind},
 };
 
@@ -104,6 +105,9 @@ enum Commands {
     Init(InitCommand),
     Pty(PtyCommand),
     Headless(HeadlessCommand),
+    /// Compute MCP injection args and side-effect config file paths for a CLI
+    /// without spawning it. Outputs JSON to stdout.
+    McpArgs(McpArgsCommand),
     /// Run ad-hoc swarm execution via the relay broker
     Swarm(swarm::SwarmArgs),
     /// Internal: wraps a CLI in a PTY with interactive passthrough.
@@ -117,6 +121,49 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+}
+
+#[derive(Debug, clap::Args, Clone)]
+pub(crate) struct McpArgsCommand {
+    /// CLI name or command to compute MCP args for.
+    #[arg(long)]
+    cli: String,
+
+    /// Relaycast agent name to inject into the MCP configuration.
+    #[arg(long)]
+    agent_name: String,
+
+    /// Relaycast API key. Falls back to RELAY_API_KEY when omitted.
+    #[arg(long)]
+    api_key: Option<String>,
+
+    /// Relaycast base URL. Falls back to RELAY_BASE_URL when omitted.
+    #[arg(long)]
+    base_url: Option<String>,
+
+    /// Pre-registered agent token to pass to the child MCP server.
+    #[arg(long)]
+    agent_token: Option<String>,
+
+    /// Register a fresh Relaycast agent token and inject it into the child MCP server.
+    #[arg(long)]
+    register: bool,
+
+    /// Multi-workspace context JSON to pass to the child MCP server.
+    #[arg(long)]
+    workspaces_json: Option<String>,
+
+    /// Default workspace ID/name to pass to the child MCP server.
+    #[arg(long)]
+    default_workspace: Option<String>,
+
+    /// Working directory used by CLIs that need local MCP config files.
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+
+    /// Existing CLI args as a JSON string array, e.g. '["--foo","--bar"]'.
+    #[arg(long)]
+    existing_args: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -214,14 +261,15 @@ fn headless_provider_command(
             let mut args = vec![
                 "-p".to_string(),
                 "--dangerously-skip-permissions".to_string(),
-                task.to_string(),
             ];
             args.extend(extra_args.iter().cloned());
+            args.push(task.to_string());
             ("claude".to_string(), args)
         }
         ProtocolHeadlessProvider::Opencode => {
-            let mut args = vec!["run".to_string(), task.to_string()];
+            let mut args = vec!["run".to_string()];
             args.extend(extra_args.iter().cloned());
+            args.push(task.to_string());
             ("opencode".to_string(), args)
         }
     }
@@ -709,6 +757,7 @@ async fn main() -> Result<()> {
         Commands::Init(_) => "init",
         Commands::Pty(_) => "pty",
         Commands::Headless(_) => "headless",
+        Commands::McpArgs(_) => "mcp_args",
         Commands::Swarm(_) => "swarm",
         Commands::Wrap { .. } => "wrap",
     };
@@ -720,6 +769,7 @@ async fn main() -> Result<()> {
         Commands::Init(cmd) => run_init(cmd, telemetry).await,
         Commands::Pty(cmd) => pty_worker::run_pty_worker(cmd).await,
         Commands::Headless(cmd) => run_headless_worker(cmd).await,
+        Commands::McpArgs(cmd) => cli_mcp_args::run_mcp_args(cmd).await,
         Commands::Swarm(args) => swarm::run_swarm(args).await,
         Commands::Wrap { cli, args } => wrap::run_wrap(cli, args, false, telemetry).await,
     }
@@ -1327,6 +1377,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     telemetry.track(TelemetryEvent::AgentSpawn {
                                         cli: cli.clone(),
                                         runtime: runtime_label(&spec_for_state.runtime).to_string(),
+                                        spawn_source: ActionSource::HumanDashboard,
+                                        has_task: effective_task.is_some(),
+                                        is_shadow: spec_for_state.shadow_of.is_some()
+                                            || spec_for_state.shadow_mode.is_some(),
                                     });
                                     let pid = workers.worker_pid(&name).unwrap_or(0);
                                     state.agents.insert(
@@ -2077,6 +2131,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             cli: String::new(),
                                             release_reason: "relaycast_release".to_string(),
                                             lifetime_seconds: 0,
+                                            release_source: ActionSource::Protocol,
                                         });
                                         state.agents.remove(&name);
                                         if paths.persist {
@@ -2248,6 +2303,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         telemetry.track(TelemetryEvent::AgentSpawn {
                                             cli: cli.clone(),
                                             runtime: "pty".to_string(),
+                                            spawn_source: ActionSource::Protocol,
+                                            has_task: effective_task.is_some(),
+                                            is_shadow: false,
                                         });
                                         let pid = workers.worker_pid(&name).unwrap_or(0);
                                         state.agents.insert(
@@ -2429,6 +2487,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             telemetry.track(TelemetryEvent::AgentSpawn {
                                                 cli: cli.clone(),
                                                 runtime: "pty".to_string(),
+                                                spawn_source: ActionSource::Protocol,
+                                                has_task: effective_task.is_some(),
+                                                is_shadow: false,
                                             });
                                             let pid = workers.worker_pid(&name).unwrap_or(0);
                                             state.agents.insert(
@@ -3876,13 +3937,22 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                 let (binary, args) =
                     headless_provider_command(&provider, &task_text, &provider_args);
 
-                let mut child = match tokio::process::Command::new(&binary)
+                let mut child_cmd = tokio::process::Command::new(&binary);
+                child_cmd
                     .args(&args)
                     .stdin(Stdio::null())
                     .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                {
+                    .stderr(Stdio::piped());
+
+                // Auto-approve tool permissions for opencode in headless mode.
+                if matches!(provider, ProtocolHeadlessProvider::Opencode) {
+                    child_cmd.env(
+                        "OPENCODE_PERMISSION",
+                        r#"{"*":"allow","external_directory":{"*":"allow"}}"#,
+                    );
+                }
+
+                let mut child = match child_cmd.spawn() {
                     Ok(child) => child,
                     Err(error) => {
                         let _ = send_frame(
@@ -6495,6 +6565,40 @@ mod tests {
         ));
         assert!(spec.cli.is_none());
         assert_eq!(spec.model.as_deref(), Some("ignored"));
+    }
+
+    #[test]
+    fn headless_provider_command_claude_places_flags_before_task() {
+        let (bin, args) = super::headless_provider_command(
+            &ProtocolHeadlessProvider::Claude,
+            "hello world",
+            &[
+                "--mcp-config".to_string(),
+                "{\"mcpServers\":{}}".to_string(),
+            ],
+        );
+
+        assert_eq!(bin, "claude");
+        assert_eq!(args.last().map(String::as_str), Some("hello world"));
+        let mcp_pos = args.iter().position(|a| a == "--mcp-config").unwrap();
+        let task_pos = args.iter().position(|a| a == "hello world").unwrap();
+        assert!(mcp_pos < task_pos, "--mcp-config must precede task");
+    }
+
+    #[test]
+    fn headless_provider_command_opencode_places_flags_before_task() {
+        let (bin, args) = super::headless_provider_command(
+            &ProtocolHeadlessProvider::Opencode,
+            "hello world",
+            &["--agent".to_string(), "relaycast".to_string()],
+        );
+
+        assert_eq!(bin, "opencode");
+        assert_eq!(args.first().map(String::as_str), Some("run"));
+        assert_eq!(args.last().map(String::as_str), Some("hello world"));
+        let agent_pos = args.iter().position(|a| a == "--agent").unwrap();
+        let task_pos = args.iter().position(|a| a == "hello world").unwrap();
+        assert!(agent_pos < task_pos, "--agent must precede task");
     }
 
     #[test]

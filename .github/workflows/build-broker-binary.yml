@@ -16,6 +16,9 @@ on:
         default: 'latest'
         type: string
 
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
 jobs:
   build:
     name: Build (${{ matrix.target }})

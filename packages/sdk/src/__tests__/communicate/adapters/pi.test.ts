@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from 'vitest';
 
 const piAdapterModulePath = '../../../communicate/adapters/pi.js';
 
@@ -70,13 +70,7 @@ test('Pi onRelay appends relay tools to customTools', async () => {
 
   const toolNames = (config.customTools ?? []).map((tool: any) => tool.name);
 
-  assert.deepEqual(toolNames, [
-    'existing-tool',
-    'relay_send',
-    'relay_inbox',
-    'relay_post',
-    'relay_agents',
-  ]);
+  assert.deepEqual(toolNames, ['existing-tool', 'relay_send', 'relay_inbox', 'relay_post', 'relay_agents']);
 
   for (const toolName of ['relay_send', 'relay_inbox', 'relay_post', 'relay_agents']) {
     const tool = config.customTools.find((entry: any) => entry.name === toolName);

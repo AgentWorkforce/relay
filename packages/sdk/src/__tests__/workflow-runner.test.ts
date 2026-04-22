@@ -180,6 +180,7 @@ type WorkflowStepOverride = Partial<NonNullable<RelayYamlConfig['workflows']>[nu
 
 function makeSupervisedConfig(stepOverrides: WorkflowStepOverride = {}): RelayYamlConfig {
   return makeConfig({
+    swarm: { pattern: 'hub-spoke' },
     agents: [
       { name: 'specialist', cli: 'claude', role: 'engineer' },
       { name: 'team-lead', cli: 'claude', role: 'lead coordinator' },
@@ -420,12 +421,12 @@ agents:
         events.push({ type: event.type, stepName: 'stepName' in event ? event.stepName : undefined })
       );
 
-      await runner.execute(makeConfig(), 'default');
+      await runner.execute(makeSupervisedConfig(), 'default');
 
       const ownerAssigned = events.filter((e) => e.type === 'step:owner-assigned');
       const reviewCompleted = events.filter((e) => e.type === 'step:review-completed');
-      expect(ownerAssigned).toHaveLength(2);
-      expect(reviewCompleted).toHaveLength(2);
+      expect(ownerAssigned).toHaveLength(1);
+      expect(reviewCompleted).toHaveLength(1);
     });
 
     it('should prioritize lead owner when multiple hub-role candidates exist', async () => {
@@ -435,6 +436,7 @@ agents:
       });
 
       const config = makeConfig({
+        swarm: { pattern: 'hub-spoke' },
         agents: [
           { name: 'specialist', cli: 'claude', role: 'engineer' },
           { name: 'coord-1', cli: 'claude', role: 'coordinator' },
@@ -461,6 +463,7 @@ agents:
       });
 
       const config = makeConfig({
+        swarm: { pattern: 'hub-spoke' },
         agents: [
           { name: 'specialist', cli: 'claude', role: 'engineer' },
           { name: 'github-agent', cli: 'claude', role: 'github actions agent' },
@@ -488,6 +491,7 @@ agents:
       });
 
       const config = makeConfig({
+        swarm: { pattern: 'hub-spoke' },
         agents: [
           { name: 'specialist', cli: 'claude', role: 'engineer' },
           { name: 'github-bot', cli: 'claude', role: 'github integration' },
@@ -521,9 +525,9 @@ agents:
       const echoedPrompt =
         'Return exactly:\nREVIEW_DECISION: APPROVE or REJECT\nREVIEW_REASON: <one sentence>\n';
       const actualResponse = 'REVIEW_DECISION: REJECT\nREVIEW_REASON: code has bugs\n';
-      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', echoedPrompt + actualResponse];
+      mockSpawnOutputs = ['worker finished\n', 'STEP_COMPLETE:step-1\n', echoedPrompt + actualResponse];
 
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review rejected');
       // Should parse REJECT from actual response, not APPROVE from echoed instruction
@@ -784,8 +788,12 @@ agents:
     });
 
     it('should fail when review response lacks any usable decision signal', async () => {
-      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'I need more context before deciding.\n'];
-      const run = await runner.execute(makeConfig(), 'default');
+      mockSpawnOutputs = [
+        'worker finished\n',
+        'STEP_COMPLETE:step-1\n',
+        'I need more context before deciding.\n',
+      ];
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review response malformed');
     });
@@ -802,10 +810,11 @@ agents:
       });
 
       mockSpawnOutputs = [
+        'worker finished\n',
         'STEP_COMPLETE:step-1\n',
         'REVIEW_DECISION: REJECT\nREVIEW_REASON: missing checks\n',
       ];
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review rejected');
       expect(events).toContainEqual({ type: 'step:review-completed', decision: 'rejected' });
@@ -823,10 +832,11 @@ agents:
       });
 
       mockSpawnOutputs = [
+        'worker finished\n',
         'STEP_COMPLETE:step-1\n',
         'Return exactly:\nREVIEW_DECISION: APPROVE or REJECT\nREVIEW_REASON: <one sentence>\nREVIEW_DECISION: REJECT\nREVIEW_REASON: insufficient evidence\n',
       ];
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review rejected');
       expect(events).toContainEqual({ type: 'step:review-completed', decision: 'rejected' });
@@ -838,11 +848,14 @@ agents:
 
       try {
         mockSpawnOutputs = [
+          'worker finished\n',
           'STEP_COMPLETE:step-1\n',
           'REVIEW_DECISION: APPROVE\nREVIEW_REASON: durable review record\n',
         ];
 
-        const run = await runner.execute(makeConfig({ trajectories: {} }), 'default');
+        const config = makeSupervisedConfig();
+        config.trajectories = {};
+        const run = await runner.execute(config, 'default');
         expect(run.status).toBe('completed');
 
         const trajectory = readCompletedTrajectoryFile(tmpDir);
@@ -852,7 +865,7 @@ agents:
         expect(reviewEvent).toBeTruthy();
         expect(reviewEvent.raw).toMatchObject({
           stepName: 'step-1',
-          reviewer: 'agent-b',
+          reviewer: 'reviewer-1',
           decision: 'approved',
           reason: 'durable review record',
         });
@@ -972,22 +985,15 @@ agents:
     });
 
     it('should use the full remaining timeout as the review safety backstop', async () => {
-      const config = makeConfig({
-        workflows: [
-          {
-            name: 'default',
-            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 90_000 }],
-          },
-        ],
-      });
+      const config = makeSupervisedConfig({ timeoutMs: 90_000 });
       const run = await runner.execute(config, 'default');
 
       expect(run.status).toBe('completed');
       const waitCalls = (waitForExitFn as any).mock?.calls ?? [];
       expect(waitCalls.length).toBeGreaterThanOrEqual(2);
-      // first call: owner timeout; second call: review timeout
-      expect(waitCalls[1][0]).toBeGreaterThan(60_000);
-      expect(waitCalls[1][0]).toBeLessThanOrEqual(90_000);
+      const reviewWaitMs = waitCalls[waitCalls.length - 1][0];
+      expect(reviewWaitMs).toBeGreaterThan(60_000);
+      expect(reviewWaitMs).toBeLessThanOrEqual(90_000);
     });
   });
 

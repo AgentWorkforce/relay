@@ -57,6 +57,7 @@ export const docsNav: NavGroup[] = [
       { title: 'Run workflows', slug: 'cli-workflows' },
       { title: 'Cloud commands', slug: 'cli-cloud-commands' },
       { title: 'On the relay', slug: 'cli-on-the-relay' },
+      { title: 'CLI reference', slug: 'reference-cli' },
     ],
   },
   {

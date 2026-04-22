@@ -4,6 +4,10 @@ export * from './custom-steps.js';
 export * from './cli-session-collector.js';
 export * from './channel-messenger.js';
 export * from './process-spawner.js';
+export {
+  createProcessBackendExecutor,
+  type ProcessBackendExecutorOptions,
+} from './process-backend-executor.js';
 export * from './run-summary-table.js';
 export * from './template-resolver.js';
 export * from './verification.js';

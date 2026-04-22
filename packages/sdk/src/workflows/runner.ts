@@ -53,6 +53,7 @@ import { BudgetExceededError, BudgetTracker } from './budget-tracker.js';
 import { ChannelMessenger } from './channel-messenger.js';
 import { InMemoryWorkflowDb } from './memory-db.js';
 import { buildCommand as buildProcessCommand, spawnProcess } from './process-spawner.js';
+import { createProcessBackendExecutor } from './process-backend-executor.js';
 import { formatRunSummaryTable } from './run-summary-table.js';
 import {
   StepExecutor as WorkflowStepLifecycleExecutor,
@@ -98,6 +99,7 @@ import type {
   WorkflowStepCompletionReason,
   WorkflowStepRow,
   WorkflowStepStatus,
+  ProcessBackend,
 } from './types.js';
 import { WorkflowTrajectory, type StepOutcome } from './trajectory.js';
 import {
@@ -289,6 +291,17 @@ export interface WorkflowRunnerOptions {
   summaryDir?: string;
   executor?: RunnerStepExecutor;
   envSecrets?: Record<string, string>;
+  /**
+   * Process backend for remote execution environments.
+   * When set without an explicit executor, the runner wraps it in a
+   * RunnerStepExecutor that creates isolated environments for agent and
+   * deterministic steps. The runner builds CLI commands and passes auth env,
+   * cwd, and timeout; the backend provides create/exec/destroy primitives.
+   *
+   * When both executor and processBackend are set, executor takes precedence.
+   * When neither is set, the broker spawns local child processes (default).
+   */
+  processBackend?: ProcessBackend;
 }
 
 // ── Step executor interface ──────────────────────────────────────────────────
@@ -440,7 +453,7 @@ export class WorkflowRunner {
   private readonly relayOptions: AgentRelayOptions;
   private readonly cwd: string;
   private readonly summaryDir: string;
-  private readonly executor?: RunnerStepExecutor;
+  private executor?: RunnerStepExecutor;
   private readonly envSecrets?: Record<string, string>;
   private readonly templateResolver: TemplateResolver;
   private readonly channelMessenger: ChannelMessenger;
@@ -513,6 +526,7 @@ export class WorkflowRunner {
   /** Optional per-run token budget tracker; only created when budgets are configured. */
   private budgetTracker?: BudgetTracker;
   private static readonly PTY_TASK_ARG_SIZE_LIMIT = 2 * 1024 * 1024; // 2 MB
+  private readonly processBackend?: ProcessBackend;
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -522,7 +536,13 @@ export class WorkflowRunner {
     this.summaryDir = options.summaryDir ?? path.join(this.cwd, '.relay', 'summaries');
     this.workersPath = path.join(this.cwd, '.agent-relay', 'team', 'workers.json');
     this.executor = options.executor;
+    this.processBackend = options.processBackend;
     this.envSecrets = options.envSecrets;
+    if (!this.executor && this.processBackend) {
+      this.executor = createProcessBackendExecutor(this.processBackend, {
+        env: this.envSecrets,
+      });
+    }
     this.templateResolver = new TemplateResolver();
     this.channelMessenger = new ChannelMessenger({ postFn: (text) => this.postToChannel(text) });
   }
@@ -576,7 +596,9 @@ export class WorkflowRunner {
   }
 
   private initializeBudgetTracker(config: RelayYamlConfig, workflow: WorkflowDefinition): void {
-    const agentMap = new Map(config.agents.map((agent) => [agent.name, WorkflowRunner.resolveAgentDef(agent)]));
+    const agentMap = new Map(
+      config.agents.map((agent) => [agent.name, WorkflowRunner.resolveAgentDef(agent)])
+    );
     const stepConfigs = workflow.steps.flatMap((step) => {
       if (
         step.type === 'deterministic' ||
@@ -619,7 +641,12 @@ export class WorkflowRunner {
     const used = workflowBudget?.used.toLocaleString('en-US') ?? '0';
     const limit = workflowBudget?.limit?.toLocaleString('en-US') ?? '--';
     this.log(`[budget] Skipping step ${stepName} — workflow budget exhausted (used ${used} of ${limit})`);
-    throw new BudgetExceededError(stepName, 'workflow', workflowBudget?.limit ?? 0, workflowBudget?.used ?? 0);
+    throw new BudgetExceededError(
+      stepName,
+      'workflow',
+      workflowBudget?.limit ?? 0,
+      workflowBudget?.used ?? 0
+    );
   }
 
   private getTotalReportTokens(report: CliSessionReport): number | undefined {
@@ -1643,10 +1670,9 @@ export class WorkflowRunner {
 
   private async loadCredentialProxyModule(): Promise<CredentialProxyModule | null> {
     try {
-      const dynamicImport = new Function(
-        'specifier',
-        'return import(specifier)'
-      ) as (specifier: string) => Promise<unknown>;
+      const dynamicImport = new Function('specifier', 'return import(specifier)') as (
+        specifier: string
+      ) => Promise<unknown>;
       const module = (await dynamicImport('@agent-relay/credential-proxy')) as Partial<CredentialProxyModule>;
       return typeof module.mintProxyToken === 'function' ? (module as CredentialProxyModule) : null;
     } catch (error) {
@@ -1661,7 +1687,11 @@ export class WorkflowRunner {
   private resolveCredentialProxyProvider(agentDef: AgentDefinition, config: RelayYamlConfig): ProxyProvider {
     const configuredProviders = Object.keys(config.swarm.credentialProxy?.providers ?? {});
     const explicitProvider = agentDef.credentials?.provider?.trim().toLowerCase();
-    if (explicitProvider === 'openai' || explicitProvider === 'anthropic' || explicitProvider === 'openrouter') {
+    if (
+      explicitProvider === 'openai' ||
+      explicitProvider === 'anthropic' ||
+      explicitProvider === 'openrouter'
+    ) {
       return explicitProvider;
     }
 
@@ -1826,7 +1856,12 @@ export class WorkflowRunner {
     const inheritedProxyUrl = resolveProxyUrlFromEnv(env);
     const inheritedProxyToken = resolveProxyTokenFromEnv(env);
 
-    if (!this.relayApiKey && !this.relayOptions.env && !proxyMode && !(inheritedProxyUrl && inheritedProxyToken)) {
+    if (
+      !this.relayApiKey &&
+      !this.relayOptions.env &&
+      !proxyMode &&
+      !(inheritedProxyUrl && inheritedProxyToken)
+    ) {
       return undefined;
     }
 
@@ -3259,13 +3294,14 @@ export class WorkflowRunner {
       this.log(`Executing ${workflow.steps.length} steps (pattern: ${config.swarm.pattern})`);
       await this.executeSteps(workflow, stepStates, agentMap, config.errorHandling, runId);
 
-      const errorStrategy = config.errorHandling?.strategy ?? workflow.onError ?? 'fail-fast';
-      const continueOnError = errorStrategy === 'continue' || errorStrategy === 'skip';
+      // A run is successful iff every step completed or was skipped. Under
+      // continue-on-error we keep executing past a failure, but the run
+      // itself still "failed" — otherwise the final status contradicts the
+      // summary table ("1 passed, 3 failed" but run.status=completed) and
+      // downstream wrappers that key off run.status (e.g. the cloud
+      // orchestrator's bootstrap) silently report success.
       const allCompleted = [...stepStates.values()].every(
-        (s) =>
-          s.row.status === 'completed' ||
-          s.row.status === 'skipped' ||
-          (continueOnError && s.row.status === 'failed')
+        (s) => s.row.status === 'completed' || s.row.status === 'skipped'
       );
 
       if (allCompleted) {
@@ -4367,6 +4403,10 @@ export class WorkflowRunner {
           );
           const resolvedStep = { ...step, task: ownerTask };
           const ownerStartTime = Date.now();
+          // When processBackend is set without an explicit executor, the runner
+          // constructor synthesizes a RunnerStepExecutor that calls
+          // processBackend.createEnvironment(step.name).exec(command). Explicit
+          // executors still take precedence. See process-backend-executor.ts.
           const spawnResult = this.executor
             ? await this.executor.executeAgentStep(resolvedStep, effectiveOwner, ownerTask, timeoutMs)
             : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
@@ -4694,7 +4734,14 @@ export class WorkflowRunner {
         diagnosticTimeout
       );
       const elapsedMs = Date.now() - startedAt;
-      await this.captureAgentReport(runId, step.name, diagnosticAgentDef, diagnosticCwd, startedAt, Date.now());
+      await this.captureAgentReport(
+        runId,
+        step.name,
+        diagnosticAgentDef,
+        diagnosticCwd,
+        startedAt,
+        Date.now()
+      );
       const analysis = diagnosticResult.output.trim();
       const tokenCount = Math.max(1, Math.ceil(analysis.length / 4));
       const firstLine =
@@ -4703,9 +4750,7 @@ export class WorkflowRunner {
           .map((line) => line.trim())
           .find(Boolean) ?? '(no analysis returned)';
 
-      this.log(
-        `[${step.name}] Diagnostic complete (${elapsedMs}ms, ${tokenCount} tokens): ${firstLine}`
-      );
+      this.log(`[${step.name}] Diagnostic complete (${elapsedMs}ms, ${tokenCount} tokens): ${firstLine}`);
 
       return {
         analysis,
@@ -4716,7 +4761,14 @@ export class WorkflowRunner {
         },
       };
     } catch (error) {
-      await this.captureAgentReport(runId, step.name, diagnosticAgentDef, diagnosticCwd, startedAt, Date.now());
+      await this.captureAgentReport(
+        runId,
+        step.name,
+        diagnosticAgentDef,
+        diagnosticCwd,
+        startedAt,
+        Date.now()
+      );
       const message = error instanceof Error ? error.message : String(error);
       if (/\btimed out\b/i.test(message)) {
         this.log(`[${step.name}] Diagnostic timed out — falling back to standard retry`);
@@ -6881,9 +6933,7 @@ export class WorkflowRunner {
     const marker = `custom check "${check.value}" failed\n`;
     const markerIndex = errorMessage.indexOf(marker);
     const output =
-      markerIndex === -1
-        ? errorMessage.trim()
-        : errorMessage.slice(markerIndex + marker.length).trim();
+      markerIndex === -1 ? errorMessage.trim() : errorMessage.slice(markerIndex + marker.length).trim();
 
     this.lastCustomVerificationFailure.set(stepName, {
       command: check.value,
@@ -6963,7 +7013,8 @@ export class WorkflowRunner {
         const budgetStatus = this.budgetTracker.getBudgetStatus(stepName);
         if (budgetStatus.agentLimitExceeded) {
           const stepBudget = this.budgetTracker.getStepBudgetStatus(stepName);
-          const used = stepBudget?.used?.toLocaleString('en-US') ?? totalTokens?.toLocaleString('en-US') ?? '0';
+          const used =
+            stepBudget?.used?.toLocaleString('en-US') ?? totalTokens?.toLocaleString('en-US') ?? '0';
           const limit = stepBudget?.limit?.toLocaleString('en-US') ?? '--';
           this.log(`[budget] Step ${stepName} exceeded its agent budget (${used} of ${limit})`);
         }
@@ -7160,7 +7211,9 @@ export class WorkflowRunner {
 
     // Always show the summary table — with agent reports when available,
     // with just step/status/duration when not (non-interactive agents).
-    console.log(formatRunSummaryTable(outcomes, this.agentReports, this.budgetTracker?.getRunSummaryBudgetData()));
+    console.log(
+      formatRunSummaryTable(outcomes, this.agentReports, this.budgetTracker?.getRunSummaryBudgetData())
+    );
 
     // Show errors and output excerpts for failed steps below the table
     for (const outcome of outcomes) {
