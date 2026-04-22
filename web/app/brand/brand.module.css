@@ -611,6 +611,29 @@
   gap: 12px;
 }
 
+/* ── Theme page link (on /brand) ── */
+
+.themeLinkSection {
+  width: min(1080px, calc(100% - 24px));
+  margin: 56px auto 0;
+  padding: 20px 0 0;
+  display: flex;
+  justify-content: center;
+  border-top: 1px solid var(--line);
+}
+
+.themeLink {
+  color: var(--fg-muted);
+  font-size: 0.88rem;
+  letter-spacing: 0.01em;
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.themeLink:hover {
+  color: var(--primary);
+}
+
 /* ── Brand kit ── */
 
 .kitGrid {
@@ -675,6 +698,15 @@
   font-size: 0.72rem;
   color: var(--fg-faint);
   word-break: break-all;
+}
+
+.kitDownloadRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .kitDownloadBtn,

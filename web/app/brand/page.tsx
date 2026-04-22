@@ -8,7 +8,7 @@ import { BrandShowcase } from './BrandShowcase';
 
 const title = 'Brand Kit';
 const description =
-  'Agent Relay brand assets: downloadable logo, mark, and wordmark PNGs plus the full color palette, type scale, and component styles.';
+  'Agent Relay brand assets: downloadable logo, mark, and wordmark PNGs in every variant. Grab the kit as a zip or individual files.';
 
 export const metadata: Metadata = {
   title,
