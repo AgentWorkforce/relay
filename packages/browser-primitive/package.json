@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/browser-primitive",
-  "version": "4.0.40",
+  "version": "5.0.0",
   "description": "Browser automation workflow primitive for Agent Relay",
   "type": "module",
   "main": "dist/index.js",
@@ -38,7 +38,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/sdk": "4.0.40",
+    "@agent-relay/sdk": "5.0.0",
     "playwright": "^1.51.1"
   },
   "devDependencies": {

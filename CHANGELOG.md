@@ -36,6 +36,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
+## [5.0.0] - 2026-04-22
+
+### Product Perspective
+#### User-Impacting Fixes
+- Repair pre-existing test failures on main
+- Address Copilot review on broker resolution (#769)
+- Ship per-platform wheels with embedded broker (drop runtime download) (#769)
+
+### Technical Perspective
+#### Performance & Reliability
+- Include publish-sdk-py in summary job
+
+#### Releases
+- v5.0.0
+
+---
+
 ## [4.0.40] - 2026-04-22
 
 ### Product Perspective
