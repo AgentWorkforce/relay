@@ -14,7 +14,7 @@
 }
 
 .hero {
-  padding: 20px 0 16px;
+  padding: 64px 0 16px;
 }
 
 .heroIntro,
@@ -23,7 +23,6 @@
 .tokenCard,
 .accentCard,
 .previewCard,
-.logoPreviewCard,
 .snippet {
   border: 1px solid var(--card-border);
   background: var(--card-bg);
@@ -321,7 +320,7 @@
 
 .sectionText {
   margin-top: 6px;
-  max-width: 52ch;
+  max-width: 72ch;
   font-size: 0.95rem;
 }
 
@@ -438,6 +437,72 @@
   color: color-mix(in srgb, var(--primary) 55%, black);
 }
 
+.heroLogoCard {
+  grid-column: 2 / -1;
+  padding: 18px;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.heroLogoSurface {
+  display: grid;
+  place-items: center;
+  min-height: 140px;
+  padding: 18px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--primary) 10%, transparent) 0%, transparent 35%),
+    var(--section-bg);
+  color: var(--primary);
+}
+
+.heroLogoLockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.heroLogoLockup :global(svg:first-child) {
+  width: 46px;
+  height: auto;
+}
+
+.heroLogoLockup :global(svg:last-child) {
+  width: min(100%, 220px);
+  height: auto;
+}
+
+.heroLogoMeta {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.heroLogoHexes {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.heroLogoHex {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.heroLogoHexChip {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+  flex-shrink: 0;
+}
+
 .logoBoardLockup {
   display: inline-flex;
   align-items: center;
@@ -484,7 +549,6 @@
 }
 
 .tokenGrid,
-.logoPreviewSection,
 .accentGrid,
 .previewGrid {
   display: grid;
@@ -493,10 +557,6 @@
 
 .tokenGrid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.logoPreviewSection {
-  margin-top: 12px;
 }
 
 .accentGrid {
@@ -549,48 +609,6 @@
   display: flex;
   align-items: flex-start;
   gap: 12px;
-}
-
-.logoPreviewCard {
-  border-radius: 18px;
-  padding: 12px;
-}
-
-.logoPreviewSurface {
-  display: grid;
-  place-items: center;
-  min-height: 156px;
-  padding: 20px;
-  border-radius: 12px;
-  border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
-  background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--primary) 10%, transparent) 0%, transparent 35%),
-    var(--section-bg);
-  color: var(--primary);
-}
-
-.logoPreviewLockup {
-  display: inline-flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.logoPreviewLockup :global(svg:first-child) {
-  width: 46px;
-  height: auto;
-}
-
-.logoPreviewLockup :global(svg:last-child) {
-  width: min(100%, 220px);
-  height: auto;
-}
-
-.logoPreviewMeta {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 10px;
 }
 
 /* ── Brand kit ── */
@@ -1048,8 +1066,11 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .heroLogoCard {
+    grid-column: 1 / -1;
+  }
+
   .tokenGrid,
-  .logoPreviewSection,
   .accentGrid,
   .previewGrid {
     grid-template-columns: 1fr;
@@ -1067,7 +1088,7 @@
 
 @media (max-width: 720px) {
   .hero {
-    padding-top: 14px;
+    padding-top: 40px;
   }
 
   .heroIntro,
@@ -1101,7 +1122,7 @@
     flex-direction: column;
   }
 
-  .logoPreviewMeta {
+  .heroLogoMeta {
     align-items: flex-start;
     flex-direction: column;
   }

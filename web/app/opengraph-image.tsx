@@ -25,14 +25,15 @@ export default async function OGImage() {
         width: '100%',
         height: '100%',
         display: 'flex',
-        background: 'linear-gradient(180deg, #F9FAFB 0%, #E6F0F8 100%)',
+        background: '#08111A',
+        backgroundImage:
+          'radial-gradient(circle at 18% 28%, rgba(116,184,226,0.18) 0%, transparent 42%), linear-gradient(180deg, #0A1623 0%, #08111A 60%, #050C14 100%)',
         fontFamily: 'Inter, system-ui, sans-serif',
         position: 'relative',
       }}
     >
-      {/* SVG network lines */}
       <svg width="1200" height="630" viewBox="0 0 1200 630" style={{ position: 'absolute', top: 0, left: 0 }}>
-        <g stroke="#4A90C2" strokeWidth="0.8" opacity="0.08">
+        <g stroke="#74B8E2" strokeWidth="0.8" opacity="0.18">
           <line x1="660" y1="280" x2="920" y2="200" />
           <line x1="660" y1="280" x2="960" y2="400" />
           <line x1="660" y1="280" x2="820" y2="480" />
@@ -43,14 +44,13 @@ export default async function OGImage() {
           <line x1="680" y1="120" x2="1040" y2="100" />
           <line x1="500" y1="280" x2="540" y2="440" />
         </g>
-        <g fill="#4A90C2" opacity="0.1">
+        <g fill="#74B8E2" opacity="0.25">
           {nodes.map((n, i) => (
             <circle key={i} cx={n.x + 70} cy={n.y + 30} r="3" />
           ))}
         </g>
       </svg>
 
-      {/* Left side — text */}
       <div
         style={{
           display: 'flex',
@@ -64,13 +64,30 @@ export default async function OGImage() {
         <div
           style={{
             display: 'flex',
+            padding: '8px 14px',
+            borderRadius: 999,
+            background: 'rgba(116,184,226,0.12)',
+            border: '1px solid rgba(116,184,226,0.24)',
+            color: '#94CBEF',
+            fontSize: 16,
+            fontWeight: 700,
+            letterSpacing: '0.14em',
+            textTransform: 'uppercase',
+            marginBottom: 26,
+            alignSelf: 'flex-start',
+          }}
+        >
+          Agent Relay
+        </div>
+        <div
+          style={{
+            display: 'flex',
             flexDirection: 'column',
-            fontSize: 82,
-            fontWeight: 500,
-            lineHeight: 1.05,
-            letterSpacing: '-0.04em',
-            color: '#111827',
-            opacity: 0.85,
+            fontSize: 86,
+            fontWeight: 600,
+            lineHeight: 1.02,
+            letterSpacing: '-0.05em',
+            color: '#EDF4FB',
           }}
         >
           Slack for
@@ -79,19 +96,18 @@ export default async function OGImage() {
         </div>
         <div
           style={{
-            fontSize: 20,
-            lineHeight: 1.6,
-            color: '#4B5563',
+            fontSize: 22,
+            lineHeight: 1.55,
+            color: '#A8B8C8',
             marginTop: 24,
             maxWidth: 420,
           }}
         >
-          The best way to build agents that communicate, coordinate, and take action. Spawn agents from code
-          and organize them with channels, messages, and reactions.
+          Build agents that communicate, coordinate, and take action. Spawn from code and organize them with
+          channels, messages, and reactions.
         </div>
       </div>
 
-      {/* Right side — node cards */}
       {nodes.map((node, i) => (
         <div
           key={i}
@@ -99,14 +115,14 @@ export default async function OGImage() {
             position: 'absolute',
             left: node.x,
             top: node.y,
-            width: 160,
+            width: 168,
             display: 'flex',
             flexDirection: 'column',
-            background: 'rgba(255,255,255,0.9)',
-            border: '1px solid rgba(74,144,194,0.12)',
+            background: 'rgba(15, 27, 41, 0.92)',
+            border: '1px solid rgba(116, 184, 226, 0.22)',
             borderRadius: 10,
             overflow: 'hidden',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+            boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
           }}
         >
           <div
@@ -114,19 +130,18 @@ export default async function OGImage() {
               display: 'flex',
               justifyContent: 'space-between',
               alignItems: 'center',
-              padding: '6px 10px',
-              borderBottom: '1px solid rgba(74,144,194,0.08)',
-              background: 'rgba(249,250,251,0.95)',
+              padding: '7px 11px',
+              borderBottom: '1px solid rgba(116, 184, 226, 0.16)',
+              background: 'rgba(20, 35, 53, 0.95)',
             }}
           >
-            <span style={{ fontSize: 11, fontWeight: 700, color: '#1F4E73' }}>{node.name}</span>
-            <span style={{ fontSize: 9, color: '#9CA3AF' }}>{node.model}</span>
+            <span style={{ fontSize: 11, fontWeight: 700, color: '#94CBEF' }}>{node.name}</span>
+            <span style={{ fontSize: 9, color: '#77879A' }}>{node.model}</span>
           </div>
-          <div style={{ padding: '8px 10px', fontSize: 10, color: '#6B7280' }}>{node.status}</div>
+          <div style={{ padding: '8px 11px', fontSize: 10, color: '#A8B8C8' }}>{node.status}</div>
         </div>
       ))}
 
-      {/* Bottom bar */}
       <div
         style={{
           position: 'absolute',
@@ -141,7 +156,7 @@ export default async function OGImage() {
           style={{
             fontSize: 16,
             fontWeight: 600,
-            color: '#4A90C2',
+            color: '#74B8E2',
             letterSpacing: '-0.02em',
           }}
         >

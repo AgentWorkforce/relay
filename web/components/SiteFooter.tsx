@@ -50,6 +50,9 @@ export function SiteFooter() {
             <Link href="/blog" className={s.link}>
               Blog
             </Link>
+            <Link href="/brand" className={s.link}>
+              Brand
+            </Link>
             <a href={`mailto:${SITE_EMAIL}`} className={s.link}>
               Contact
             </a>

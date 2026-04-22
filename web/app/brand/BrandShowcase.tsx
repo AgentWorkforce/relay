@@ -24,15 +24,15 @@ type HeroPaletteCard = {
 };
 
 const THEME_TOKENS: ThemeToken[] = [
-  { name: 'bg', value: '#F9FAFB', use: 'Page background' },
-  { name: 'fg', value: '#111827', use: 'Main text' },
-  { name: 'fg-muted', value: '#4B5563', use: 'Secondary text' },
-  { name: 'primary', value: '#4A90C2', use: 'Primary brand color (500)' },
-  { name: 'primary-hover', value: '#2D6A9C', use: 'Button hover (600)' },
+  { name: 'bg', value: '#08111A', use: 'Page background' },
+  { name: 'fg', value: '#EDF4FB', use: 'Main text' },
+  { name: 'fg-muted', value: '#A8B8C8', use: 'Secondary text' },
+  { name: 'primary', value: '#74B8E2', use: 'Primary brand color (500)' },
+  { name: 'primary-hover', value: '#94CBEF', use: 'Button hover (600)' },
   { name: 'primary-ink', value: '#234969', use: 'Deep blue text accent (800)' },
   { name: 'secondary', value: '#C1674B', use: 'Secondary brand color (500)' },
-  { name: 'surface', value: '#F3F4F6', use: 'Panels and code blocks' },
-  { name: 'card-bg', value: 'rgba(255, 255, 255, 0.90)', use: 'Raised cards' },
+  { name: 'surface', value: '#0F1B29', use: 'Panels and code blocks' },
+  { name: 'card-bg', value: 'rgba(15, 27, 41, 0.84)', use: 'Raised cards' },
 ];
 
 const HERO_PALETTE: HeroPaletteCard[] = [
@@ -122,25 +122,22 @@ export function BrandShowcase() {
   return (
     <main className={s.page}>
       <section className={s.hero}>
-        <div className={s.heroIntro}>
+        <div className={s.sectionHeader}>
           <div>
-            <p className={s.eyebrow}>Brand Kit</p>
-            <h1 className={s.title}>Logos &amp; assets</h1>
-            <p className={s.lead}>
-              PNGs for slide decks, README headers, and partner kits. Grab
-              the whole kit as a zip or download individual files.
+            <p className={s.sectionEyebrow}>Brand Kit</p>
+            <h1 className={s.sectionTitle}>Logos &amp; assets</h1>
+            <p className={s.sectionText}>
+              PNGs in various forms of the logo, mark and wordmark.
             </p>
           </div>
-          <div className={s.heroFacts}>
-            <a
-              href="/brand-kit/agent-relay-brand-kit.zip"
-              download
-              className={s.kitDownloadAll}
-            >
-              <Download aria-hidden />
-              Download all (.zip)
-            </a>
-          </div>
+          <a
+            href="/brand-kit/agent-relay-brand-kit.zip"
+            download
+            className={s.kitDownloadAll}
+          >
+            <Download aria-hidden />
+            Download all (.zip)
+          </a>
         </div>
 
         <div className={s.kitGrid}>
@@ -267,30 +264,33 @@ export function BrandShowcase() {
               <Button variant="ghost" size="icon" className={s.iconChipDanger}><Trash2 /></Button>
             </div>
           </Card>
-        </div>
-      </section>
 
-      <section className={s.section}>
-        <div className={s.logoPreviewSection}>
-          <article className={s.logoPreviewCard}>
-            <div className={s.logoPreviewSurface}>
-              <div className={s.logoPreviewLockup}>
+          <Card className={`${s.heroCard} ${s.heroLogoCard}`}>
+            <div className={s.heroLogoSurface}>
+              <div className={s.heroLogoLockup}>
                 <LogoIcon />
                 <LogoWordmark />
               </div>
             </div>
-            <div className={s.logoPreviewMeta}>
+            <div className={s.heroLogoMeta}>
               <div>
                 <p className={s.tokenName}>Primary-color logo</p>
                 <p className={s.tokenUse}>
-                  The logo mark and wordmark rendered in the theme primary.
+                  The mark has two colors. The wordmark is white.
                 </p>
               </div>
-              <code className={s.tokenValue}>
-                {THEME_TOKENS.find((token) => token.name === 'primary')?.value}
-              </code>
+              <div className={s.heroLogoHexes}>
+                <span className={s.heroLogoHex}>
+                  <span className={s.heroLogoHexChip} style={{ background: '#75B8E2' }} />
+                  <code className={s.tokenValue}>#75B8E2</code>
+                </span>
+                <span className={s.heroLogoHex}>
+                  <span className={s.heroLogoHexChip} style={{ background: '#3F6A86' }} />
+                  <code className={s.tokenValue}>#3F6A86</code>
+                </span>
+              </div>
             </div>
-          </article>
+          </Card>
         </div>
       </section>
 
@@ -348,11 +348,10 @@ export function BrandShowcase() {
       <section className={s.section}>
         <div className={s.sectionHeader}>
           <div>
-            <p className={s.sectionEyebrow}>UI Primitives</p>
-            <h2 className={s.sectionTitle}>shadcn component examples</h2>
+            <p className={s.sectionEyebrow}>Controls</p>
+            <h2 className={s.sectionTitle}>Buttons in every state</h2>
             <p className={s.sectionText}>
-              The palette page now uses these primitives directly instead of
-              hand-rolled controls.
+              How brand tokens render across primary, secondary, ghost, and destructive controls.
             </p>
           </div>
         </div>
