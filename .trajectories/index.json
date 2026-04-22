@@ -1,0 +1,176 @@
+{
+  "version": 1,
+  "lastUpdated": "2026-04-22T07:55:00.537Z",
+  "trajectories": {
+    "traj_1775914133873_35667beb": {
+      "title": "fix-sdk-build-resolution-workflow",
+      "status": "active",
+      "startedAt": "2026-04-11T13:28:53.873Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/active/traj_1775914133873_35667beb.json"
+    },
+    "traj_1776073106646_1839be2d": {
+      "title": "autofix-swarm-Agentworkforce-relay-workflow",
+      "status": "active",
+      "startedAt": "2026-04-13T09:38:26.646Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/active/traj_1776073106646_1839be2d.json"
+    },
+    "traj_1776113772922_bc92f121": {
+      "title": "autofix-swarm-Agentworkforce-relay-workflow",
+      "status": "active",
+      "startedAt": "2026-04-13T20:56:12.922Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/active/traj_1776113772922_bc92f121.json"
+    },
+    "traj_3b3p1z4y7qlo": {
+      "title": "add-mcp-args-subcommand-workflow",
+      "status": "active",
+      "startedAt": "2026-04-20T13:16:22.009Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/active/traj_3b3p1z4y7qlo.json"
+    },
+    "traj_o9cx33xn5u39": {
+      "title": "add-mcp-args-register-flag-workflow",
+      "status": "active",
+      "startedAt": "2026-04-20T15:06:23.387Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/active/traj_o9cx33xn5u39.json"
+    },
+    "traj_0t92gxaz6igh": {
+      "title": "Move docs sidebar into the mobile hamburger menu",
+      "status": "completed",
+      "startedAt": "2026-04-10T16:29:40.674Z",
+      "completedAt": "2026-04-10T16:32:14.544Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_0t92gxaz6igh.json"
+    },
+    "traj_1776105620545_9dcebb3d": {
+      "title": "fix-inbox-agent-flag-workflow",
+      "status": "completed",
+      "startedAt": "2026-04-13T18:40:20.545Z",
+      "completedAt": "2026-04-13T18:41:52.831Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_1776105620545_9dcebb3d.json"
+    },
+    "traj_1776105988184_29f1270c": {
+      "title": "fix-inbox-agent-flag-workflow",
+      "status": "completed",
+      "startedAt": "2026-04-13T18:46:28.184Z",
+      "completedAt": "2026-04-13T20:23:54.308Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_1776105988184_29f1270c.json"
+    },
+    "traj_222ha5671idc": {
+      "title": "validate-cloud-connect-e2e-workflow",
+      "status": "completed",
+      "startedAt": "2026-04-15T21:32:51.980Z",
+      "completedAt": "2026-04-15T21:45:41.024Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_222ha5671idc.json"
+    },
+    "traj_4zqhfqw7g28l": {
+      "title": "Investigate GitHub Actions failure for run 24255758219 job 70826792063",
+      "status": "completed",
+      "startedAt": "2026-04-10T17:48:33.502Z",
+      "completedAt": "2026-04-10T17:49:14.485Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_4zqhfqw7g28l.json"
+    },
+    "traj_703m7sqyq89t": {
+      "title": "Fix production docs loader using build-machine absolute MDX paths",
+      "status": "completed",
+      "startedAt": "2026-04-10T16:33:10.601Z",
+      "completedAt": "2026-04-10T16:35:33.660Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_703m7sqyq89t.json"
+    },
+    "traj_9tt55is74dq5": {
+      "title": "Pin TypeScript build resolution for acp-bridge, memory, trajectory, and cloud",
+      "status": "completed",
+      "startedAt": "2026-04-11T13:34:46.304Z",
+      "completedAt": "2026-04-11T13:35:22.677Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_9tt55is74dq5.json"
+    },
+    "traj_abjovknvcijv": {
+      "title": "Scope CI so web-only changes do not run unrelated relay and SDK tests",
+      "status": "completed",
+      "startedAt": "2026-04-10T16:08:30.070Z",
+      "completedAt": "2026-04-10T16:11:08.673Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_abjovknvcijv.json"
+    },
+    "traj_d48czxmgx4ac": {
+      "title": "Shift dark-mode footer from black to Relay blue",
+      "status": "completed",
+      "startedAt": "2026-04-10T16:12:27.477Z",
+      "completedAt": "2026-04-10T16:13:14.348Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_d48czxmgx4ac.json"
+    },
+    "traj_dw8ihhdb8ip7": {
+      "title": "fix-dm-history-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-04-13T19:51:57.984Z",
+      "completedAt": "2026-04-13T19:57:27.195Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_dw8ihhdb8ip7.json"
+    },
+    "traj_e5i62wdjx0jd": {
+      "title": "Plan autofix finding groups",
+      "status": "completed",
+      "startedAt": "2026-04-13T09:40:42.044Z",
+      "completedAt": "2026-04-13T09:41:07.789Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_e5i62wdjx0jd.json"
+    },
+    "traj_g3muawdq6bsb": {
+      "title": "Invert dark footer gradient so the lighter blue is at the top",
+      "status": "completed",
+      "startedAt": "2026-04-10T16:13:19.744Z",
+      "completedAt": "2026-04-10T16:13:43.289Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_g3muawdq6bsb.json"
+    },
+    "traj_mk0t0cgn4ytq": {
+      "title": "Merge origin/main into better-nav and resolve trajectory conflicts",
+      "status": "completed",
+      "startedAt": "2026-04-10T15:10:03.877Z",
+      "completedAt": "2026-04-10T15:10:29.410Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_mk0t0cgn4ytq.json"
+    },
+    "traj_o8kgzhfu6jth": {
+      "title": "Add /cloud link to footer",
+      "status": "completed",
+      "startedAt": "2026-04-10T16:07:15.131Z",
+      "completedAt": "2026-04-10T16:07:42.930Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_o8kgzhfu6jth.json"
+    },
+    "traj_qb54w47qwod6": {
+      "title": "fix-history-from-workflow",
+      "status": "completed",
+      "startedAt": "2026-04-13T20:16:10.459Z",
+      "completedAt": "2026-04-13T20:25:09.219Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_qb54w47qwod6.json"
+    },
+    "traj_rs2bt3x0fqba": {
+      "title": "Compare failed web deploy to prior deploys and identify no-downtime fix",
+      "status": "completed",
+      "startedAt": "2026-04-10T17:50:43.088Z",
+      "completedAt": "2026-04-10T18:00:44.095Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_rs2bt3x0fqba.json"
+    },
+    "traj_tjadoebpscps": {
+      "title": "fix-dm-history-workflow",
+      "status": "completed",
+      "startedAt": "2026-04-13T20:02:27.719Z",
+      "completedAt": "2026-04-13T20:02:35.662Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_tjadoebpscps.json"
+    },
+    "traj_w0xpsaoxuiyw": {
+      "title": "Pin TypeScript compiler version and build invocation in selected packages",
+      "status": "completed",
+      "startedAt": "2026-04-11T13:35:52.600Z",
+      "completedAt": "2026-04-11T13:36:48.341Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_w0xpsaoxuiyw.json"
+    },
+    "traj_1775914296101_a4397efe": {
+      "title": "fix-sdk-build-resolution-workflow",
+      "status": "completed",
+      "startedAt": "2026-04-11T13:31:36.101Z",
+      "completedAt": "2026-04-11T13:39:53.105Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/traj_1775914296101_a4397efe.json"
+    },
+    "traj_1776024661304_cfc829b9": {
+      "title": "fix-workflow-resume-elegant-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-04-12T20:11:01.304Z",
+      "completedAt": "2026-04-12T20:11:16.381Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/traj_1776024661304_cfc829b9.json"
+    }
+  }
+}
