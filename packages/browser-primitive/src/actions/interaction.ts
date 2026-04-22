@@ -219,15 +219,16 @@ export async function submit(
   const selector = params.selector ?? 'form';
   const locator = await locatorForInteraction(context, selector, true, params.timeout);
 
-  const submitAction = locator.evaluate((element) => {
-    const form = element.tagName.toLowerCase() === 'form' ? element : element.closest('form');
+  const requestSubmit = () =>
+    locator.evaluate((element) => {
+      const form = element.tagName.toLowerCase() === 'form' ? element : element.closest('form');
 
-    if (!form) {
-      throw new Error('No form found for submit action');
-    }
+      if (!form) {
+        throw new Error('No form found for submit action');
+      }
 
-    (form as HTMLFormElement).requestSubmit();
-  });
+      (form as HTMLFormElement).requestSubmit();
+    });
 
   if (params.waitForNavigation) {
     await Promise.all([
@@ -235,10 +236,10 @@ export async function submit(
         waitUntil: params.waitUntil ?? 'load',
         timeout: params.timeout ?? context.config.timeout,
       }),
-      submitAction,
+      requestSubmit(),
     ]);
   } else {
-    await submitAction;
+    await requestSubmit();
   }
 
   return {
