@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-22T07:55:00.537Z",
+  "lastUpdated": "2026-04-22T20:43:30.983Z",
   "trajectories": {
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -171,6 +171,41 @@
       "startedAt": "2026-04-12T20:11:01.304Z",
       "completedAt": "2026-04-12T20:11:16.381Z",
       "path": "/home/runner/work/relay/relay/.trajectories/completed/traj_1776024661304_cfc829b9.json"
+    },
+    "traj_05xg7j388bc4": {
+      "title": "Add browser workflow step integration",
+      "status": "completed",
+      "startedAt": "2026-04-10T14:56:33.229Z",
+      "completedAt": "2026-04-10T15:05:14.660Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_05xg7j388bc4.json"
+    },
+    "traj_530xmbfeljyb": {
+      "title": "Implement GitHub primitive adapter base layer",
+      "status": "completed",
+      "startedAt": "2026-04-10T15:16:25.682Z",
+      "completedAt": "2026-04-10T15:25:16.937Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_530xmbfeljyb.json"
+    },
+    "traj_8oh4r5km5eic": {
+      "title": "Implement GitHub primitive actions",
+      "status": "completed",
+      "startedAt": "2026-04-10T15:26:11.355Z",
+      "completedAt": "2026-04-10T15:33:35.150Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_8oh4r5km5eic.json"
+    },
+    "traj_avmkyoo2s3rt": {
+      "title": "Implement Browser primitive client",
+      "status": "completed",
+      "startedAt": "2026-04-10T14:42:17.242Z",
+      "completedAt": "2026-04-10T14:55:45.196Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_avmkyoo2s3rt.json"
+    },
+    "traj_tv1x9pamkqad": {
+      "title": "Add GitHub primitive workflow step integration",
+      "status": "completed",
+      "startedAt": "2026-04-10T15:34:36.611Z",
+      "completedAt": "2026-04-10T15:42:17.590Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_tv1x9pamkqad.json"
     }
   }
 }
