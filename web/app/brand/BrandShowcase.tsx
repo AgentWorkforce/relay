@@ -77,6 +77,10 @@ const BRAND_KIT: BrandKitAsset[] = [
   { file: 'agent-relay-logo-light.png', label: 'Logo · Light', darkPreview: true },
   { file: 'agent-relay-logo-tight.png', label: 'Logo · Tight' },
   { file: 'agent-relay-logo-light-tight.png', label: 'Logo · Light, Tight', darkPreview: true },
+  { file: 'agent-relay-logo-horizontal.png', label: 'Logo · Horizontal' },
+  { file: 'agent-relay-logo-horizontal-transparent.png', label: 'Logo · Horizontal, Transparent' },
+  { file: 'agent-relay-logo-light-horizontal.png', label: 'Logo · Light, Horizontal', darkPreview: true },
+  { file: 'agent-relay-logo-light-horizontal-transparent.png', label: 'Logo · Light, Horizontal, Transparent', darkPreview: true },
   { file: 'agent-relay-logo-circle.png', label: 'Logo · Circle' },
   { file: 'agent-relay-logo-light-circle.png', label: 'Logo · Light, Circle', darkPreview: true },
   { file: 'agent-relay-mark.png', label: 'Mark' },
@@ -120,16 +124,67 @@ export function BrandShowcase() {
       <section className={s.hero}>
         <div className={s.heroIntro}>
           <div>
-            <p className={s.eyebrow}>Brand System</p>
-            <h1 className={s.title}>Brand &amp; color system</h1>
+            <p className={s.eyebrow}>Brand Kit</p>
+            <h1 className={s.title}>Logos &amp; assets</h1>
             <p className={s.lead}>
-              Palette, type scale, controls, and logo treatment.
+              PNGs for slide decks, README headers, and partner kits. Grab
+              the whole kit as a zip or download individual files.
             </p>
           </div>
           <div className={s.heroFacts}>
-            <Badge className={s.factPill}>Agent Relay</Badge>
-            <a href="/brand.css" className={s.pathPill}>/brand.css</a>
+            <a
+              href="/brand-kit/agent-relay-brand-kit.zip"
+              download
+              className={s.kitDownloadAll}
+            >
+              <Download aria-hidden />
+              Download all (.zip)
+            </a>
           </div>
+        </div>
+
+        <div className={s.kitGrid}>
+          {BRAND_KIT.map((asset) => (
+            <article key={asset.file} className={s.kitCard}>
+              <div
+                className={`${s.kitPreview} ${asset.darkPreview ? s.kitPreviewDark : ''}`}
+              >
+                <img
+                  src={`/brand-kit/${asset.file}`}
+                  alt={asset.label}
+                  loading="lazy"
+                />
+              </div>
+              <div className={s.kitMeta}>
+                <div>
+                  <p className={s.tokenName}>{asset.label}</p>
+                  <code className={s.kitFile}>{asset.file}</code>
+                </div>
+                <a
+                  href={`/brand-kit/${asset.file}`}
+                  download
+                  className={s.kitDownloadBtn}
+                  aria-label={`Download ${asset.label}`}
+                >
+                  <Download aria-hidden />
+                  PNG
+                </a>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className={s.section}>
+        <div className={s.sectionHeader}>
+          <div>
+            <p className={s.sectionEyebrow}>Brand System</p>
+            <h2 className={s.sectionTitle}>Color system</h2>
+            <p className={s.sectionText}>
+              Palette, type scale, controls, and logo treatment.
+            </p>
+          </div>
+          <a href="/brand.css" className={s.pathPill}>/brand.css</a>
         </div>
 
         <div className={s.heroBoard}>
@@ -236,58 +291,6 @@ export function BrandShowcase() {
               </code>
             </div>
           </article>
-        </div>
-      </section>
-
-      <section className={s.section}>
-        <div className={s.sectionHeader}>
-          <div>
-            <p className={s.sectionEyebrow}>Brand Kit</p>
-            <h2 className={s.sectionTitle}>Logos &amp; assets</h2>
-            <p className={s.sectionText}>
-              PNGs for slide decks, README headers, and partner kits. Grab
-              the whole kit as a zip or download individual files.
-            </p>
-          </div>
-          <a
-            href="/brand-kit/agent-relay-brand-kit.zip"
-            download
-            className={s.kitDownloadAll}
-          >
-            <Download aria-hidden />
-            Download all (.zip)
-          </a>
-        </div>
-
-        <div className={s.kitGrid}>
-          {BRAND_KIT.map((asset) => (
-            <article key={asset.file} className={s.kitCard}>
-              <div
-                className={`${s.kitPreview} ${asset.darkPreview ? s.kitPreviewDark : ''}`}
-              >
-                <img
-                  src={`/brand-kit/${asset.file}`}
-                  alt={asset.label}
-                  loading="lazy"
-                />
-              </div>
-              <div className={s.kitMeta}>
-                <div>
-                  <p className={s.tokenName}>{asset.label}</p>
-                  <code className={s.kitFile}>{asset.file}</code>
-                </div>
-                <a
-                  href={`/brand-kit/${asset.file}`}
-                  download
-                  className={s.kitDownloadBtn}
-                  aria-label={`Download ${asset.label}`}
-                >
-                  <Download aria-hidden />
-                  PNG
-                </a>
-              </div>
-            </article>
-          ))}
         </div>
       </section>
 
