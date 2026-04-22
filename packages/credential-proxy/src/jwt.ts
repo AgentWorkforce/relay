@@ -1,3 +1,4 @@
+import './crypto-polyfill.js';
 import { SignJWT, errors, jwtVerify } from 'jose';
 
 import type { ProxyTokenClaims, ProviderType } from './types.js';

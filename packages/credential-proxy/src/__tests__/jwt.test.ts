@@ -1,3 +1,4 @@
+import '../crypto-polyfill.js';
 import { decodeJwt, jwtVerify, SignJWT } from 'jose';
 import { describe, expect, it } from 'vitest';
 

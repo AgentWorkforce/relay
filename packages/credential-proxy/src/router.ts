@@ -1,3 +1,4 @@
+import './crypto-polyfill.js';
 import { randomUUID } from 'node:crypto';
 
 import { errors as joseErrors, jwtVerify } from 'jose';
@@ -178,10 +179,7 @@ export function createCredentialProxyApp(options: CredentialProxyOptions = {}): 
             if (reservation > 0) {
               metering.releasePending(claims.sub, reservation);
             }
-            console.error(
-              `[credential-proxy] streaming failed requestId=${c.get('requestId')}`,
-              error
-            );
+            console.error(`[credential-proxy] streaming failed requestId=${c.get('requestId')}`, error);
           }
         );
       }
@@ -245,11 +243,7 @@ function adminJwtMiddleware(options: CredentialProxyOptions): MiddlewareHandler<
   };
 }
 
-async function verifyAdminToken(
-  token: string,
-  secret: string,
-  audience: string
-): Promise<AdminTokenClaims> {
+async function verifyAdminToken(token: string, secret: string, audience: string): Promise<AdminTokenClaims> {
   try {
     const { payload } = await jwtVerify(token, encoder.encode(secret), {
       algorithms: ['HS256'],
@@ -312,9 +306,9 @@ function hasUsageReadAccess(claims: AdminTokenClaims): boolean {
       : [];
 
   return (
-    claims.permissions?.includes('usage:read') === true
-    || scopes.includes('usage:read')
-    || scopes.includes('admin')
+    claims.permissions?.includes('usage:read') === true ||
+    scopes.includes('usage:read') ||
+    scopes.includes('admin')
   );
 }
 
@@ -341,11 +335,11 @@ function getProxyJwtSecret(options: CredentialProxyOptions): string {
 
 function getAdminJwtSecret(options: CredentialProxyOptions): string {
   const secret =
-    options.adminJwtSecret
-    ?? process.env.CREDENTIAL_PROXY_ADMIN_JWT_SECRET
-    ?? options.jwtSecret
-    ?? process.env.CREDENTIAL_PROXY_JWT_SECRET
-    ?? process.env.PROXY_JWT_SECRET;
+    options.adminJwtSecret ??
+    process.env.CREDENTIAL_PROXY_ADMIN_JWT_SECRET ??
+    options.jwtSecret ??
+    process.env.CREDENTIAL_PROXY_JWT_SECRET ??
+    process.env.PROXY_JWT_SECRET;
 
   if (!secret) {
     throw new ProxyHttpError(500, 'configuration_error', 'Admin JWT secret is not configured', {
