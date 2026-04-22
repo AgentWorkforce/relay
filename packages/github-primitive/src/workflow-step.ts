@@ -324,23 +324,24 @@ function mergeRuntimeConfig(...configs: Array<GitHubRuntimeConfig | undefined>):
   for (const config of configs) {
     if (!config) continue;
 
-    Object.assign(merged, config);
-    if (config.nango) {
+    const { nango, relayCloud, env, ...flatConfig } = config;
+    Object.assign(merged, flatConfig);
+    if (nango) {
       merged.nango = {
         ...merged.nango,
-        ...config.nango,
+        ...nango,
       };
     }
-    if (config.relayCloud) {
+    if (relayCloud) {
       merged.relayCloud = {
         ...merged.relayCloud,
-        ...config.relayCloud,
+        ...relayCloud,
       };
     }
-    if (config.env) {
+    if (env) {
       merged.env = {
         ...merged.env,
-        ...config.env,
+        ...env,
       };
     }
   }
