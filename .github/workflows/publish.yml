@@ -75,7 +75,7 @@ jobs:
   build-broker:
     name: Build broker (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'sdk'
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'sdk' || github.event.inputs.package == 'sdk-py'
     strategy:
       fail-fast: false
       matrix:
@@ -130,6 +130,12 @@ jobs:
         run: |
           mkdir -p release-binaries
           cp target/${{ matrix.target }}/release/agent-relay-broker release-binaries/${{ matrix.binary_name }}
+
+      # Ad-hoc sign macOS binaries at build time so the Python SDK wheel
+      # doesn't have to invoke codesign at install time.
+      - name: Ad-hoc sign macOS broker
+        if: runner.os == 'macOS'
+        run: codesign --force --sign - release-binaries/${{ matrix.binary_name }}
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
@@ -641,15 +647,28 @@ jobs:
         working-directory: packages/sdk
         run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
-  # Publish Python SDK to PyPI
+  # Publish Python SDK to PyPI as per-platform wheels with the broker binary
+  # embedded. One wheel per (broker_artifact, plat_tag) — see issue #769.
   publish-sdk-py:
-    name: Publish Python SDK to PyPI
-    needs: build
+    name: Publish Python SDK wheel (${{ matrix.plat_tag }})
+    needs: [build, build-broker]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk-py'
     environment:
       name: pypi
       url: https://pypi.org/project/agent-relay-sdk/
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - binary_name: agent-relay-broker-darwin-arm64
+            plat_tag: macosx_11_0_arm64
+          - binary_name: agent-relay-broker-darwin-x64
+            plat_tag: macosx_10_12_x86_64
+          - binary_name: agent-relay-broker-linux-x64
+            plat_tag: manylinux_2_17_x86_64.manylinux2014_x86_64
+          - binary_name: agent-relay-broker-linux-arm64
+            plat_tag: manylinux_2_17_aarch64.manylinux2014_aarch64
 
     steps:
       - name: Checkout code
@@ -667,21 +686,39 @@ jobs:
           python-version: '3.11'
 
       - name: Install build tools
-        run: pip install hatchling build
+        run: pip install hatchling build wheel
 
-      - name: Dry run check
+      - name: Download broker binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.binary_name }}
+          path: /tmp/broker
+
+      - name: Stage broker binary into wheel tree
+        run: |
+          mkdir -p packages/sdk-py/src/agent_relay/bin
+          cp /tmp/broker/${{ matrix.binary_name }} packages/sdk-py/src/agent_relay/bin/agent-relay-broker
+          chmod +x packages/sdk-py/src/agent_relay/bin/agent-relay-broker
+
+      - name: Build wheel
+        working-directory: packages/sdk-py
+        run: python -m build --wheel
+
+      # `python -m build` produces a `py3-none-any` wheel. Retag it with the
+      # actual platform we just embedded a binary for; --remove drops the old
+      # any-platform wheel atomically.
+      - name: Retag wheel to ${{ matrix.plat_tag }}
+        working-directory: packages/sdk-py
+        run: |
+          python -m wheel tags --platform-tag=${{ matrix.plat_tag }} --remove dist/*.whl
+          ls -lh dist/
+
+      - name: Dry run summary
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/sdk-py
         run: |
-          echo "Dry run - would publish agent-relay==${{ needs.build.outputs.new_version }} to PyPI"
-          python -m build
-          echo "Built distributions:"
+          echo "Dry run - would publish agent-relay-sdk==${{ needs.build.outputs.new_version }} (${{ matrix.plat_tag }}) to PyPI"
           ls -lh dist/
-
-      - name: Build distribution
-        if: github.event.inputs.dry_run != 'true'
-        working-directory: packages/sdk-py
-        run: python -m build
 
       - name: Publish to PyPI (attempt 1)
         id: pypi_publish_1

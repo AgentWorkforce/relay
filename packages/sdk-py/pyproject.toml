@@ -33,6 +33,13 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_relay"]
 
+# Embedded broker binary. The publish-sdk-py CI job stages the per-platform
+# binary at this path before invoking `python -m build`, then retags the wheel
+# with the matching platform tag. Locally, scripts/sync-broker-dev.sh fills it
+# in for editable installs.
+[tool.hatch.build.targets.wheel.force-include]
+"src/agent_relay/bin/agent-relay-broker" = "agent_relay/bin/agent-relay-broker"
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 asyncio_mode = "auto"
