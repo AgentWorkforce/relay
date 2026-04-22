@@ -411,15 +411,23 @@ jobs:
             const path = require('path');
             const version = '$NEW_VERSION';
 
-            // Update root package internal dependencies (both regular and dev)
-            const rootPkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            for (const depType of ['dependencies', 'devDependencies']) {
-              for (const dep of Object.keys(rootPkg[depType] || {})) {
-                if (dep.startsWith('@agent-relay/')) {
-                  rootPkg[depType][dep] = version;
+            // Update @agent-relay/* references across dependencies,
+            // devDependencies, and peerDependencies so sibling packages
+            // stay pinned to the same version we're about to publish.
+            const DEP_SECTIONS = ['dependencies', 'devDependencies', 'peerDependencies'];
+            const rewriteInternalRefs = (pkg) => {
+              for (const depType of DEP_SECTIONS) {
+                for (const dep of Object.keys(pkg[depType] || {})) {
+                  if (dep.startsWith('@agent-relay/')) {
+                    pkg[depType][dep] = version;
+                  }
                 }
               }
-            }
+            };
+
+            // Update root package internal dependencies
+            const rootPkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            rewriteInternalRefs(rootPkg);
             fs.writeFileSync('package.json', JSON.stringify(rootPkg, null, 2) + '\n');
 
             // Update all sub-packages: version + internal dependencies
@@ -434,14 +442,7 @@ jobs:
                 console.log('@agent-relay/' + dir);
                 console.log('v' + version);
 
-                // Update internal dependencies (both regular and dev)
-                for (const depType of ['dependencies', 'devDependencies']) {
-                  for (const dep of Object.keys(pkg[depType] || {})) {
-                    if (dep.startsWith('@agent-relay/')) {
-                      pkg[depType][dep] = version;
-                    }
-                  }
-                }
+                rewriteInternalRefs(pkg);
                 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
               }
             }

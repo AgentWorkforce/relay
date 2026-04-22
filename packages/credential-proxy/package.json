@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/credential-proxy",
-  "version": "4.0.10",
+  "version": "4.0.35",
   "description": "JWT-authenticated credential proxy for upstream LLM providers",
   "type": "module",
   "main": "dist/index.js",
@@ -17,8 +17,10 @@
     "README.md"
   ],
   "scripts": {
-    "build": "npx tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
     "test": "vitest run",
+    "test:watch": "vitest",
     "dev": "npm run build && PORT=${PORT:-3001} node dist/index.js"
   },
   "dependencies": {
