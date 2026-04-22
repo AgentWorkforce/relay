@@ -1,0 +1,53 @@
+{
+  "id": "traj_530xmbfeljyb",
+  "version": 1,
+  "task": {
+    "title": "Implement GitHub primitive adapter base layer"
+  },
+  "status": "completed",
+  "startedAt": "2026-04-10T15:16:25.682Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-04-10T15:17:47.242Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_zpy70g2adds2",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-04-10T15:17:47.242Z",
+      "events": [
+        {
+          "ts": 1775834267243,
+          "type": "decision",
+          "content": "Implemented GitHub primitive as base adapter layer with action stubs: Implemented GitHub primitive as base adapter layer with action stubs",
+          "raw": {
+            "question": "Implemented GitHub primitive as base adapter layer with action stubs",
+            "chosen": "Implemented GitHub primitive as base adapter layer with action stubs",
+            "alternatives": [],
+            "reasoning": "The requested step creates client/runtime infrastructure only; action-specific methods should exist on the contract but throw until the next implementation phase."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-04-10T15:25:16.937Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "e3853a983feca165c17142f740487172dced606e",
+    "endRef": "e3853a983feca165c17142f740487172dced606e"
+  },
+  "completedAt": "2026-04-10T15:25:16.937Z",
+  "retrospective": {
+    "summary": "Created GitHub primitive adapter base layer with shared types, runtime detection/factory, gh CLI runtime, Nango/relay-cloud runtime, and public exports. Verified the new TypeScript entrypoint with tsc --noEmit.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  }
+}

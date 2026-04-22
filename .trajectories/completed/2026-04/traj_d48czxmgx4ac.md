@@ -18,6 +18,7 @@ Adjusted the dark-mode footer to use a Relay blue gradient and blue-tinted divid
 ## Key Decisions
 
 ### Shifted dark footer styling to the existing Relay blue gradient
+
 - **Chose:** Shifted dark footer styling to the existing Relay blue gradient
 - **Reasoning:** The footer tokens lived in brand.css, so the cleanest change was to swap the dark footer background from near-black to the same blue range already used elsewhere in the dark theme and tint the divider line to match.
 
@@ -26,6 +27,7 @@ Adjusted the dark-mode footer to use a Relay blue gradient and blue-tinted divid
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Shifted dark footer styling to the existing Relay blue gradient: Shifted dark footer styling to the existing Relay blue gradient

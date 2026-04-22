@@ -18,6 +18,7 @@ Inverted the dark footer gradient so the lighter Relay blue sits at the top, and
 ## Key Decisions
 
 ### Reversed the dark footer gradient so the brighter Relay blue sits on the top edge
+
 - **Chose:** Reversed the dark footer gradient so the brighter Relay blue sits on the top edge
 - **Reasoning:** The footer background is driven by a single dark-mode token, so flipping the gradient stop order achieves the requested visual change without affecting the footer layout or light theme.
 
@@ -26,6 +27,7 @@ Inverted the dark footer gradient so the lighter Relay blue sits at the top, and
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Reversed the dark footer gradient so the brighter Relay blue sits on the top edge: Reversed the dark footer gradient so the brighter Relay blue sits on the top edge

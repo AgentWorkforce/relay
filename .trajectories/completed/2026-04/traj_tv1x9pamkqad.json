@@ -1,0 +1,53 @@
+{
+  "id": "traj_tv1x9pamkqad",
+  "version": 1,
+  "task": {
+    "title": "Add GitHub primitive workflow step integration"
+  },
+  "status": "completed",
+  "startedAt": "2026-04-10T15:34:36.611Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-04-10T15:39:58.367Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_yv9bokecbjix",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-04-10T15:39:58.367Z",
+      "events": [
+        {
+          "ts": 1775835598368,
+          "type": "decision",
+          "content": "Mirrored browser primitive workflow-step pattern for GitHub: Mirrored browser primitive workflow-step pattern for GitHub",
+          "raw": {
+            "question": "Mirrored browser primitive workflow-step pattern for GitHub",
+            "chosen": "Mirrored browser primitive workflow-step pattern for GitHub",
+            "alternatives": [],
+            "reasoning": "The SDK already routes integration steps through RunnerStepExecutor; serializing params/config/output preserves workflow template interpolation and keeps GitHub primitive behavior local to the primitive package."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-04-10T15:42:17.590Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "e3853a983feca165c17142f740487172dced606e",
+    "endRef": "e3853a983feca165c17142f740487172dced606e"
+  },
+  "completedAt": "2026-04-10T15:42:17.590Z",
+  "retrospective": {
+    "summary": "Added GitHub workflow-step integration, package exports, and workflow example",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  }
+}

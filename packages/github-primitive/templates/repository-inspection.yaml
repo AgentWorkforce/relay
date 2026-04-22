@@ -1,0 +1,28 @@
+version: '1.0'
+name: github-repository-inspection
+description: Inspect a GitHub repository and read its README.
+swarm:
+  pattern: pipeline
+agents: []
+workflows:
+  - name: inspect
+    steps:
+      - name: inspect-repository
+        type: integration
+        integration: github
+        action: getRepo
+        params:
+          repo: AgentWorkforce/relay
+          output: '{"mode":"summary","includeRuntime":true,"pretty":true}'
+      - name: read-readme
+        type: integration
+        integration: github
+        action: readFile
+        dependsOn:
+          - inspect-repository
+        params:
+          repo: AgentWorkforce/relay
+          path: README.md
+          output: '{"mode":"data","format":"text"}'
+errorHandling:
+  strategy: fail-fast

@@ -18,6 +18,7 @@ Added a /cloud link to the footer company links and verified the web app still b
 ## Key Decisions
 
 ### Added /cloud to the footer company links
+
 - **Chose:** Added /cloud to the footer company links
 - **Reasoning:** Cloud is a first-class site destination and fits the footer's secondary navigation without adding new layout complexity.
 
@@ -26,6 +27,7 @@ Added a /cloud link to the footer company links and verified the web app still b
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Added /cloud to the footer company links: Added /cloud to the footer company links

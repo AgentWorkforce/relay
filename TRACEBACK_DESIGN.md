@@ -3,13 +3,14 @@
 ## Problem
 
 When a verification check fails and the runner retries a step, the retry prompt currently includes:
+
 1. The raw error message
 2. The last 2000 characters of the previous agent's output
 3. For custom verification: the command and its output
 
 This is a blunt instrument. The failing agent receives a wall of text and must self-diagnose what went wrong. For complex verification failures (e.g., `npx nango compile` producing 50 lines of TypeScript errors), the agent often wastes its retry attempt misinterpreting the error or fixing the wrong file.
 
-**Marcin's insight**: "It's a DAG, so technically no loops." The review-loop template (`builtin-templates/review-loop.yaml`) achieves review via a DAG topology — separate steps for implement, review, consolidate, address. But diagnostic traceback is fundamentally different: it must happen *within* the retry loop, not as a separate DAG step.
+**Marcin's insight**: "It's a DAG, so technically no loops." The review-loop template (`builtin-templates/review-loop.yaml`) achieves review via a DAG topology — separate steps for implement, review, consolidate, address. But diagnostic traceback is fundamentally different: it must happen _within_ the retry loop, not as a separate DAG step.
 
 **Solution**: Spawn an ephemeral diagnostic agent inside the runner's retry flow. This agent analyzes the failure and produces targeted guidance that gets injected into the retry prompt — replacing the raw 2000-char truncation with intelligent analysis.
 
@@ -49,6 +50,7 @@ In `schema.json`, add to the `VerificationCheck` definition:
 ### Validation
 
 During preflight/dry-run, if `diagnosticAgent` is set:
+
 - The named agent **must** exist in the workflow's `agents` list
 - Warning if the step has `retries: 0` or no `retries` (diagnostic agent would never run)
 
@@ -61,6 +63,7 @@ During preflight/dry-run, if `diagnosticAgent` is set:
 The traceback logic lives in `executeAgentStep()` in `runner.ts`, specifically in the retry prompt construction block (currently lines ~4203-4219).
 
 Current flow:
+
 ```
 attempt loop start
   → resolve task with step output variables
@@ -74,6 +77,7 @@ attempt loop end
 ```
 
 New flow:
+
 ```
 attempt loop start
   → resolve task with step output variables
@@ -172,6 +176,7 @@ private async runDiagnosticAgent(
 ```
 
 Returns the diagnostic output, or `null` if:
+
 - The diagnostic agent is not configured
 - The diagnostic agent timed out
 - The diagnostic agent failed to spawn
@@ -242,6 +247,7 @@ workflows:
 ### Ephemeral Spawning
 
 The diagnostic agent:
+
 - Is defined in the workflow's `agents` list (same as any other agent)
 - Uses the same agent definition (CLI, model, permissions, cwd)
 - Is spawned **ephemerally** by the runner — it does NOT appear as a step in the DAG
@@ -252,6 +258,7 @@ The diagnostic agent:
 ### Not a DAG Step
 
 The diagnostic agent invocation:
+
 - Has no `WorkflowStepRow` in the database
 - Has no entry in `stepStates`
 - Does not appear in dry-run reports
@@ -286,11 +293,11 @@ This requires adding `'diagnostic_agent'` to the `CompletionEvidenceToolSideEffe
 
 The diagnostic agent runs with a dedicated sub-timeout:
 
-| Source | Timeout |
-|--------|---------|
-| Diagnostic agent's own `constraints.timeoutMs` | Used if set |
-| Default | 60,000 ms (60 seconds) |
-| Step's remaining time | Capped to avoid exceeding step timeout |
+| Source                                         | Timeout                                |
+| ---------------------------------------------- | -------------------------------------- |
+| Diagnostic agent's own `constraints.timeoutMs` | Used if set                            |
+| Default                                        | 60,000 ms (60 seconds)                 |
+| Step's remaining time                          | Capped to avoid exceeding step timeout |
 
 ```typescript
 const diagnosticTimeout = Math.min(
@@ -302,6 +309,7 @@ const diagnosticTimeout = Math.min(
 ### Fallback on Timeout
 
 If the diagnostic agent times out or errors:
+
 1. Log a warning: `[step-name] Diagnostic agent timed out, falling back to raw retry`
 2. Fall back to the existing retry behavior (raw error + 2000 chars)
 3. The retry still happens — diagnostic failure does NOT consume a retry attempt
@@ -313,6 +321,7 @@ If the diagnostic agent times out or errors:
 ### Token Accounting
 
 When budget enforcement is enabled (`swarm.tokenBudget`):
+
 - Diagnostic agent token usage counts toward the **workflow's total budget**
 - Diagnostic token usage is attributed to the step being retried
 - If the workflow budget is exhausted, the diagnostic agent is NOT spawned (fall back to raw retry)
@@ -322,7 +331,7 @@ When budget enforcement is enabled (`swarm.tokenBudget`):
 ```typescript
 if (this.budgetTracker && !this.budgetTracker.canSpend(estimatedDiagnosticTokens)) {
   this.log(`[${step.name}] Skipping diagnostic agent — budget exhausted`);
-  return null;  // fall back to raw retry
+  return null; // fall back to raw retry
 }
 ```
 
@@ -332,15 +341,15 @@ The `estimatedDiagnosticTokens` is a conservative estimate (default: 2000 tokens
 
 ## 7. How This Differs from Existing Retry
 
-| Aspect | Current Retry | Traceback Retry |
-|--------|--------------|-----------------|
-| Error context | Raw error string | Diagnostic agent analysis |
-| Output context | Last 2000 chars (blind truncation) | Agent-analyzed output (targeted) |
-| Root cause | Agent must self-diagnose | Diagnostic agent identifies root cause |
-| Fix guidance | None | Specific files, errors, and suggested approach |
-| Cost | Free (string ops) | 1 additional agent invocation per retry |
-| Latency | None | 10-60s per diagnostic invocation |
-| Fallback | N/A | Falls back to current behavior on timeout/error |
+| Aspect         | Current Retry                      | Traceback Retry                                 |
+| -------------- | ---------------------------------- | ----------------------------------------------- |
+| Error context  | Raw error string                   | Diagnostic agent analysis                       |
+| Output context | Last 2000 chars (blind truncation) | Agent-analyzed output (targeted)                |
+| Root cause     | Agent must self-diagnose           | Diagnostic agent identifies root cause          |
+| Fix guidance   | None                               | Specific files, errors, and suggested approach  |
+| Cost           | Free (string ops)                  | 1 additional agent invocation per retry         |
+| Latency        | None                               | 10-60s per diagnostic invocation                |
+| Fallback       | N/A                                | Falls back to current behavior on timeout/error |
 
 ### When to Use Traceback vs Plain Retry
 

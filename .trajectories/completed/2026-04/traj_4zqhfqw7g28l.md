@@ -18,6 +18,7 @@ Confirmed GitHub Actions deploy failed because SST tried to create a CloudFront 
 ## Key Decisions
 
 ### Identified deploy failure as CloudFront CNAME conflict on production web domain
+
 - **Chose:** Identified deploy failure as CloudFront CNAME conflict on production web domain
 - **Reasoning:** GitHub Actions logs show sst deploy failed in WebCdnDistribution creation with AWS CloudFront 409 CNAMEAlreadyExists after the Next.js build completed successfully.
 
@@ -26,6 +27,7 @@ Confirmed GitHub Actions deploy failed because SST tried to create a CloudFront 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Identified deploy failure as CloudFront CNAME conflict on production web domain: Identified deploy failure as CloudFront CNAME conflict on production web domain

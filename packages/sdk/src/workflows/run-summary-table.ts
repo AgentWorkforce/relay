@@ -76,10 +76,14 @@ export function formatRunSummaryTable(
       : [20, 6, 16, 10, 10, 10];
   const lines: string[] = [];
 
-  lines.push(headers.map((h, i) => {
-    const align = i <= 2 ? 'left' : 'right';
-    return pad(h, widths[i], align);
-  }).join('  '));
+  lines.push(
+    headers
+      .map((h, i) => {
+        const align = i <= 2 ? 'left' : 'right';
+        return pad(h, widths[i], align);
+      })
+      .join('  ')
+  );
 
   let totalCost = 0;
   let totalTokens = 0;
@@ -127,7 +131,9 @@ export function formatRunSummaryTable(
   const totalCols: string[] = [pad('Total', totalLabelWidth)];
   if (hasCost) totalCols.push(pad(formatCurrency(totalCost), widths[3], 'right'));
   const tokenIdx = hasCost ? 4 : 3;
-  totalCols.push(pad(totalTokens > 0 ? totalTokens.toLocaleString('en-US') : '--', widths[tokenIdx], 'right'));
+  totalCols.push(
+    pad(totalTokens > 0 ? totalTokens.toLocaleString('en-US') : '--', widths[tokenIdx], 'right')
+  );
   if (hasBudget) {
     const workflowBudget = budgetData?.workflow;
     const budgetTotal =

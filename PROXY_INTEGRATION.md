@@ -81,8 +81,7 @@ if (proxyConfig) {
   for (const agent of config.agents) {
     if (!agent.credentials?.proxy) continue;
 
-    const providers = agent.credentials.providers
-      ?? (Object.keys(proxyConfig.providers) as ProviderType[]);
+    const providers = agent.credentials.providers ?? (Object.keys(proxyConfig.providers) as ProviderType[]);
 
     // Mint one JWT per provider per agent
     // For simplicity, mint for the first configured provider.
@@ -100,7 +99,7 @@ if (proxyConfig) {
       };
 
       const secret = proxyConfig.jwtSecret.startsWith('$')
-        ? process.env[proxyConfig.jwtSecret.slice(1)] ?? proxyConfig.jwtSecret
+        ? (process.env[proxyConfig.jwtSecret.slice(1)] ?? proxyConfig.jwtSecret)
         : proxyConfig.jwtSecret;
 
       const token = await mintProxyToken(claims, secret);
@@ -176,9 +175,7 @@ function filteredEnv(
 ): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};
   const stripKeys = new Set(
-    options?.stripApiKeys
-      ? ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY']
-      : []
+    options?.stripApiKeys ? ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY'] : []
   );
   for (const key of ENV_ALLOWLIST) {
     if (stripKeys.has(key)) continue;
@@ -211,7 +208,7 @@ const CLI_BASE_URL_OVERRIDES: Record<string, (proxyUrl: string) => Record<string
   // Claude Code
   claude: (url) => ({
     ANTHROPIC_BASE_URL: url,
-    ANTHROPIC_API_KEY: 'proxy',  // Claude Code requires a non-empty key
+    ANTHROPIC_API_KEY: 'proxy', // Claude Code requires a non-empty key
   }),
 
   // OpenAI Codex CLI
@@ -275,10 +272,7 @@ const GENERIC_FALLBACK = (url: string): Record<string, string> => ({
  * @param proxyUrl - The credential proxy endpoint URL
  * @returns Record of env vars to inject into the agent's environment
  */
-export function resolveCliBaseUrlOverrides(
-  cli: AgentCli | string,
-  proxyUrl: string
-): Record<string, string> {
+export function resolveCliBaseUrlOverrides(cli: AgentCli | string, proxyUrl: string): Record<string, string> {
   const resolver = CLI_BASE_URL_OVERRIDES[cli] ?? GENERIC_FALLBACK;
   return resolver(proxyUrl);
 }
@@ -289,44 +283,44 @@ export function resolveCliBaseUrlOverrides(
 ## 4. Workflow Config Example
 
 ```yaml
-version: "1"
+version: '1'
 name: multi-agent-with-proxy
 description: Agents use credential proxy instead of raw API keys
 
 swarm:
   pattern: fan-out
   credentialProxy:
-    proxyUrl: "https://agentrelay.com/llm-proxy"
-    jwtSecret: "$RELAY_PROXY_SECRET"  # resolved from env
+    proxyUrl: 'https://agentrelay.com/llm-proxy'
+    jwtSecret: '$RELAY_PROXY_SECRET' # resolved from env
     defaultBudget: 100000
     providers:
       anthropic:
-        credentialId: "nango-anthropic-prod"
+        credentialId: 'nango-anthropic-prod'
       openai:
-        credentialId: "nango-openai-prod"
+        credentialId: 'nango-openai-prod'
       openrouter:
-        credentialId: "nango-openrouter-prod"
+        credentialId: 'nango-openrouter-prod'
 
 agents:
   - name: generator
     cli: claude
-    role: "Code generator"
+    role: 'Code generator'
     credentials:
-      proxy: true  # opt-in to proxy mode
+      proxy: true # opt-in to proxy mode
     # Agent receives ANTHROPIC_BASE_URL pointing to proxy
     # and a scoped JWT — never sees the real Anthropic key
 
   - name: reviewer
     cli: codex
-    role: "Code reviewer"
+    role: 'Code reviewer'
     credentials:
       proxy: true
-      budget: 50000  # override default budget
+      budget: 50000 # override default budget
     # Agent receives OPENAI_BASE_URL pointing to proxy
 
   - name: legacy-agent
     cli: aider
-    role: "Legacy helper"
+    role: 'Legacy helper'
     # No credentials.proxy — gets normal env, no proxy
 ```
 
@@ -382,12 +376,12 @@ credentialProxy config ──→ provisionAgents()
 
 ## 8. Files to Modify
 
-| File | Change |
-|------|--------|
-| `packages/sdk/src/workflows/types.ts` | Add `AgentCredentials`, `CredentialProxyConfig`, update `AgentDefinition` and `SwarmConfig` |
-| `packages/sdk/src/workflows/runner.ts` | Import proxy JWT, add `proxyTokens` map, modify `provisionAgents()`, `execNonInteractive()`, `spawnAndWait()` |
-| `packages/sdk/src/workflows/cli-proxy-overrides.ts` | **New file** — CLI base URL override registry |
-| `packages/sdk/src/workflows/schema.json` | Add `credentialProxy` and `credentials` to validation schema |
+| File                                                | Change                                                                                                        |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `packages/sdk/src/workflows/types.ts`               | Add `AgentCredentials`, `CredentialProxyConfig`, update `AgentDefinition` and `SwarmConfig`                   |
+| `packages/sdk/src/workflows/runner.ts`              | Import proxy JWT, add `proxyTokens` map, modify `provisionAgents()`, `execNonInteractive()`, `spawnAndWait()` |
+| `packages/sdk/src/workflows/cli-proxy-overrides.ts` | **New file** — CLI base URL override registry                                                                 |
+| `packages/sdk/src/workflows/schema.json`            | Add `credentialProxy` and `credentials` to validation schema                                                  |
 
 ---
 

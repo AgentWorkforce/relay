@@ -147,7 +147,9 @@ export class BudgetTracker {
           ? Math.max(0, this.defaultAgentBudget - this.totalUsage.total)
           : undefined,
       workflow:
-        this.workflowBudget !== undefined ? Math.max(0, this.workflowBudget - this.totalUsage.total) : undefined,
+        this.workflowBudget !== undefined
+          ? Math.max(0, this.workflowBudget - this.totalUsage.total)
+          : undefined,
     };
   }
 
@@ -172,13 +174,14 @@ export class BudgetTracker {
       if (remainingWorkflowBudget <= minimumHeadroom) {
         return {
           allowed: false,
-          reason: stepLimit !== undefined
-            ? `Cannot spawn ${stepName}: remaining workflow budget ${remainingWorkflowBudget} is below step budget ${stepLimit}`
-            : this.defaultAgentBudget !== undefined
-              ? `Cannot spawn ${stepName}: remaining workflow budget ${remainingWorkflowBudget} ` +
-                `is below 10% of per-agent budget ${this.defaultAgentBudget}`
-              : `Cannot spawn ${stepName}: remaining workflow budget ${remainingWorkflowBudget} ` +
-                `is below 10% headroom threshold for workflow budget ${this.workflowBudget}`,
+          reason:
+            stepLimit !== undefined
+              ? `Cannot spawn ${stepName}: remaining workflow budget ${remainingWorkflowBudget} is below step budget ${stepLimit}`
+              : this.defaultAgentBudget !== undefined
+                ? `Cannot spawn ${stepName}: remaining workflow budget ${remainingWorkflowBudget} ` +
+                  `is below 10% of per-agent budget ${this.defaultAgentBudget}`
+                : `Cannot spawn ${stepName}: remaining workflow budget ${remainingWorkflowBudget} ` +
+                  `is below 10% headroom threshold for workflow budget ${this.workflowBudget}`,
         };
       }
     }
@@ -211,9 +214,11 @@ export class BudgetTracker {
     const stepLimit = this.getStepLimit(stepName);
     return {
       agentLimitExceeded: stepLimit !== undefined && stepUsage.total > stepLimit,
-      workflowBudgetExceeded: this.workflowBudget !== undefined && this.totalUsage.total > this.workflowBudget,
+      workflowBudgetExceeded:
+        this.workflowBudget !== undefined && this.totalUsage.total > this.workflowBudget,
       workflowBudgetExhausted:
-        this.workflowBudget !== undefined && (this.workflowBudgetExhausted || this.totalUsage.total >= this.workflowBudget),
+        this.workflowBudget !== undefined &&
+        (this.workflowBudgetExhausted || this.totalUsage.total >= this.workflowBudget),
     };
   }
 
@@ -250,7 +255,8 @@ export class BudgetTracker {
             used: this.totalUsage.total,
             limit: this.workflowBudget,
             exhausted:
-              this.workflowBudget !== undefined && (this.workflowBudgetExhausted || this.totalUsage.total >= this.workflowBudget),
+              this.workflowBudget !== undefined &&
+              (this.workflowBudgetExhausted || this.totalUsage.total >= this.workflowBudget),
           }
         : undefined;
 

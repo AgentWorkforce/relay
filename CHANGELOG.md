@@ -39,11 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.38] - 2026-04-22
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Retry get_session on 503 + correct quickstart idle wait
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.38
 
 ---
@@ -51,11 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.37] - 2026-04-22
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Send workflowPath so the launcher can skip the $HOME upload (#766)** (#766)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.37
 
 ---
@@ -63,14 +71,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.36] - 2026-04-22
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Add credential proxy workflows runtime stack (#717)** (#717)
 
 #### User-Impacting Fixes
+
 - Bootstrap for first publish (#764) (#764)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.36
 
 ---

@@ -171,7 +171,9 @@ export default async function BlogPostOpenGraphImage({ params }: PageProps) {
               >
                 Written by
               </span>
-              <span style={{ fontSize: 24, fontWeight: 600, color: '#EDF4FB' }}>{post.frontmatter.author}</span>
+              <span style={{ fontSize: 24, fontWeight: 600, color: '#EDF4FB' }}>
+                {post.frontmatter.author}
+              </span>
             </div>
           </div>
 

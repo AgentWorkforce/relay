@@ -41,8 +41,17 @@ const HERO_PALETTE: HeroPaletteCard[] = [
     value: '#4A90C2',
     textLight: true,
     scale: [
-      '#F3F7FC', '#E7EFF7', '#C9DDEE', '#99C2E0', '#62A1CE',
-      '#4A90C2', '#2D6A9C', '#26557E', '#234969', '#223E58', '#16283B',
+      '#F3F7FC',
+      '#E7EFF7',
+      '#C9DDEE',
+      '#99C2E0',
+      '#62A1CE',
+      '#4A90C2',
+      '#2D6A9C',
+      '#26557E',
+      '#234969',
+      '#223E58',
+      '#16283B',
     ],
   },
   {
@@ -50,8 +59,17 @@ const HERO_PALETTE: HeroPaletteCard[] = [
     value: '#C1674B',
     textLight: true,
     scale: [
-      '#FBF5F1', '#F5E8DF', '#EACEBE', '#DCAD95', '#CD866A',
-      '#C1674B', '#B45542', '#964338', '#793833', '#62302C', '#341716',
+      '#FBF5F1',
+      '#F5E8DF',
+      '#EACEBE',
+      '#DCAD95',
+      '#CD866A',
+      '#C1674B',
+      '#B45542',
+      '#964338',
+      '#793833',
+      '#62302C',
+      '#341716',
     ],
   },
   { label: 'Surface', value: '#F3F4F6' },
@@ -60,8 +78,17 @@ const HERO_PALETTE: HeroPaletteCard[] = [
     value: '#a5836a',
     textLight: true,
     scale: [
-      '#f5f2ee', '#efebe5', '#dfd5c9', '#cab9a7', '#b49a83',
-      '#a5836a', '#98735e', '#7f5e4f', '#684e44', '#554139', '#2d211d',
+      '#f5f2ee',
+      '#efebe5',
+      '#dfd5c9',
+      '#cab9a7',
+      '#b49a83',
+      '#a5836a',
+      '#98735e',
+      '#7f5e4f',
+      '#684e44',
+      '#554139',
+      '#2d211d',
     ],
   },
 ];
@@ -140,11 +167,11 @@ export function ThemeShowcase() {
           <div>
             <p className={s.sectionEyebrow}>Brand System</p>
             <h1 className={s.sectionTitle}>Color system</h1>
-            <p className={s.sectionText}>
-              Palette, type scale, controls, and logo treatment.
-            </p>
+            <p className={s.sectionText}>Palette, type scale, controls, and logo treatment.</p>
           </div>
-          <a href="/brand.css" className={s.pathPill}>/brand.css</a>
+          <a href="/brand.css" className={s.pathPill}>
+            /brand.css
+          </a>
         </div>
 
         <div className={s.heroBoard}>
@@ -182,17 +209,29 @@ export function ThemeShowcase() {
             </div>
             <div>
               <p className={s.heroCardLabel}>Body</p>
-              <div className={s.bodySpecimen}>Spawn, coordinate, and connect AI agents in real-time from TypeScript or Python.</div>
+              <div className={s.bodySpecimen}>
+                Spawn, coordinate, and connect AI agents in real-time from TypeScript or Python.
+              </div>
             </div>
           </Card>
 
           <Card className={s.heroCard}>
             <div className={s.buttonMatrix}>
-              <Button type="button" className={`w-full ${s.brandCtaPrimary}`}>Primary</Button>
-              <Button type="button" variant="secondary" className={`w-full ${s.brandCtaSecondary}`}>Secondary</Button>
-              <Button type="button" variant="outline" className="w-full">Outline</Button>
-              <Button type="button" variant="ghost" className="w-full">Ghost</Button>
-              <Button type="button" variant="destructive" className="w-full">Destructive</Button>
+              <Button type="button" className={`w-full ${s.brandCtaPrimary}`}>
+                Primary
+              </Button>
+              <Button type="button" variant="secondary" className={`w-full ${s.brandCtaSecondary}`}>
+                Secondary
+              </Button>
+              <Button type="button" variant="outline" className="w-full">
+                Outline
+              </Button>
+              <Button type="button" variant="ghost" className="w-full">
+                Ghost
+              </Button>
+              <Button type="button" variant="destructive" className="w-full">
+                Destructive
+              </Button>
             </div>
           </Card>
 
@@ -213,18 +252,32 @@ export function ThemeShowcase() {
 
           <Card className={s.heroCard}>
             <div className={s.navPill}>
-              <Button variant="secondary" size="icon" className={s.navPillActive}><Home /></Button>
-              <Button variant="ghost" size="icon" className={s.navPillIcon}><Search /></Button>
-              <Button variant="ghost" size="icon" className={s.navPillIcon}><User /></Button>
+              <Button variant="secondary" size="icon" className={s.navPillActive}>
+                <Home />
+              </Button>
+              <Button variant="ghost" size="icon" className={s.navPillIcon}>
+                <Search />
+              </Button>
+              <Button variant="ghost" size="icon" className={s.navPillIcon}>
+                <User />
+              </Button>
             </div>
           </Card>
 
           <Card className={s.heroCard}>
             <div className={s.iconRow}>
-              <Button variant="ghost" size="icon" className={s.iconChip}><Wand2 /></Button>
-              <Button variant="ghost" size="icon" className={s.iconChip}><Shapes /></Button>
-              <Button variant="ghost" size="icon" className={s.iconChip}><Tag /></Button>
-              <Button variant="ghost" size="icon" className={s.iconChipDanger}><Trash2 /></Button>
+              <Button variant="ghost" size="icon" className={s.iconChip}>
+                <Wand2 />
+              </Button>
+              <Button variant="ghost" size="icon" className={s.iconChip}>
+                <Shapes />
+              </Button>
+              <Button variant="ghost" size="icon" className={s.iconChip}>
+                <Tag />
+              </Button>
+              <Button variant="ghost" size="icon" className={s.iconChipDanger}>
+                <Trash2 />
+              </Button>
             </div>
           </Card>
 
@@ -238,9 +291,7 @@ export function ThemeShowcase() {
             <div className={s.heroLogoMeta}>
               <div>
                 <p className={s.tokenName}>Primary-color logo</p>
-                <p className={s.tokenUse}>
-                  The mark has two colors. The wordmark is white.
-                </p>
+                <p className={s.tokenUse}>The mark has two colors. The wordmark is white.</p>
               </div>
               <div className={s.heroLogoHexes}>
                 <span className={s.heroLogoHex}>
@@ -288,8 +339,7 @@ export function ThemeShowcase() {
             <p className={s.sectionEyebrow}>Shared Accents</p>
             <h2 className={s.sectionTitle}>Brand-supporting colors</h2>
             <p className={s.sectionText}>
-              These show up in the logo, illustrations, terminal chrome, and
-              product demo surfaces.
+              These show up in the logo, illustrations, terminal chrome, and product demo surfaces.
             </p>
           </div>
         </div>
@@ -320,12 +370,14 @@ export function ThemeShowcase() {
         </div>
 
         <div className={s.buttonShowcase}>
-          {([
-            { variant: 'default', label: 'Primary' },
-            { variant: 'secondary', label: 'Secondary' },
-            { variant: 'ghost', label: 'Ghost' },
-            { variant: 'destructive', label: 'Destructive' },
-          ] as const).map(({ variant, label }) => (
+          {(
+            [
+              { variant: 'default', label: 'Primary' },
+              { variant: 'secondary', label: 'Secondary' },
+              { variant: 'ghost', label: 'Ghost' },
+              { variant: 'destructive', label: 'Destructive' },
+            ] as const
+          ).map(({ variant, label }) => (
             <Card key={variant} className={s.buttonVariantCard}>
               <p className={s.buttonVariantLabel}>{label}</p>
               <div className={s.buttonStateGrid}>
@@ -358,7 +410,12 @@ export function ThemeShowcase() {
                   <span className={s.buttonStateLabel}>Active</span>
                 </div>
                 <div className={s.buttonStateCol}>
-                  <Button type="button" variant={variant} className={`w-full ${brandButtonClass(variant)}`} disabled>
+                  <Button
+                    type="button"
+                    variant={variant}
+                    className={`w-full ${brandButtonClass(variant)}`}
+                    disabled
+                  >
                     {label}
                   </Button>
                   <span className={s.buttonStateLabel}>Disabled</span>
@@ -404,8 +461,7 @@ export function ThemeShowcase() {
             <p className={s.sectionEyebrow}>Component Preview</p>
             <h2 className={s.sectionTitle}>Common UI surfaces</h2>
             <p className={s.sectionText}>
-              This is the fastest way to judge whether the theme feels usable,
-              not just attractive.
+              This is the fastest way to judge whether the theme feels usable, not just attractive.
             </p>
           </div>
         </div>
@@ -417,12 +473,14 @@ export function ThemeShowcase() {
               <Badge variant="secondary">Live Preview</Badge>
             </div>
             <h3 className={s.previewTitle}>Primary actions</h3>
-            <p className={s.previewText}>
-              Buttons, tags, and neutral containers using the semantic palette.
-            </p>
+            <p className={s.previewText}>Buttons, tags, and neutral containers using the semantic palette.</p>
             <div className={s.buttonRow}>
-              <Button size={'lg'} type="button" className={s.brandCtaPrimary}>Read the Docs</Button>
-              <Button size={'lg'} type="button" variant="secondary" className={s.brandCtaSecondary}>Open GitHub</Button>
+              <Button size={'lg'} type="button" className={s.brandCtaPrimary}>
+                Read the Docs
+              </Button>
+              <Button size={'lg'} type="button" variant="secondary" className={s.brandCtaSecondary}>
+                Open GitHub
+              </Button>
             </div>
           </Card>
 
@@ -466,12 +524,27 @@ export function ThemeShowcase() {
               <span className={s.dotGreen} />
             </div>
             <pre className={s.codeBlock}>
-              <span className="syn-comment">{'// semantic token example'}</span>{'\n'}
-              <span className="syn-keyword">const</span>{' palette = {'}{'\n'}
-              {'  '}<span className="syn-type">primary</span>{': '}<span className="syn-string">{`'${THEME_TOKENS.find((t) => t.name === 'primary')?.value}'`}</span>{','}{'\n'}
-              {'  '}<span className="syn-type">surface</span>{': '}<span className="syn-string">{`'${THEME_TOKENS.find((t) => t.name === 'surface')?.value}'`}</span>{','}{'\n'}
-              {'};'}{'\n'}
-              <span className="syn-keyword">export</span>{' '}<span className="syn-keyword">default</span>{' palette;'}
+              <span className="syn-comment">{'// semantic token example'}</span>
+              {'\n'}
+              <span className="syn-keyword">const</span>
+              {' palette = {'}
+              {'\n'}
+              {'  '}
+              <span className="syn-type">primary</span>
+              {': '}
+              <span className="syn-string">{`'${THEME_TOKENS.find((t) => t.name === 'primary')?.value}'`}</span>
+              {','}
+              {'\n'}
+              {'  '}
+              <span className="syn-type">surface</span>
+              {': '}
+              <span className="syn-string">{`'${THEME_TOKENS.find((t) => t.name === 'surface')?.value}'`}</span>
+              {','}
+              {'\n'}
+              {'};'}
+              {'\n'}
+              <span className="syn-keyword">export</span> <span className="syn-keyword">default</span>
+              {' palette;'}
             </pre>
           </Card>
         </div>
@@ -483,8 +556,7 @@ export function ThemeShowcase() {
             <p className={s.sectionEyebrow}>Copy/Paste</p>
             <h2 className={s.sectionTitle}>Theme snippet</h2>
             <p className={s.sectionText}>
-              Compact version of the theme tokens for quick copy-paste into
-              another project.
+              Compact version of the theme tokens for quick copy-paste into another project.
             </p>
           </div>
         </div>

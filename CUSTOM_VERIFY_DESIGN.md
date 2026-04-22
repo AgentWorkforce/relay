@@ -23,11 +23,12 @@ is executed via `execSync`. The agent's output is available as `$STEP_OUTPUT` en
 
 ```yaml
 verification:
-  type: "custom"
-  value: "cd nango-integrations && npx nango compile"
+  type: 'custom'
+  value: 'cd nango-integrations && npx nango compile'
 ```
 
 **Behavior:**
+
 - Exit code 0 = verification passed
 - Non-zero exit code = verification failed
 - stderr is captured as the verification error message
@@ -40,11 +41,12 @@ Prefix the value with `regex:` to match a pattern against the step output:
 
 ```yaml
 verification:
-  type: "custom"
-  value: "regex:Successfully compiled"
+  type: 'custom'
+  value: 'regex:Successfully compiled'
 ```
 
 **Behavior:**
+
 - Pattern is compiled as a JavaScript `RegExp`
 - Tested against the step's combined output
 - Invalid regex returns a clear error message
@@ -82,7 +84,7 @@ export interface VerificationCheck {
 ### `checkCustom(value, output, cwd)` — verification.ts
 
 ```typescript
-function checkCustom(value, output, cwd): { passed: boolean; stdout?: string; error?: string }
+function checkCustom(value, output, cwd): { passed: boolean; stdout?: string; error?: string };
 ```
 
 1. **Regex branch** (`value.startsWith('regex:')`)
@@ -99,6 +101,7 @@ function checkCustom(value, output, cwd): { passed: boolean; stdout?: string; er
 ### Side Effects on Failure
 
 When custom verification fails, `runVerification()` records:
+
 - A `verification_observed` tool side effect with `passed: false`
 - A `verification_failed` coordination signal in the step's evidence record
 - If `allowFailure` is false (default), throws `WorkflowCompletionError`
@@ -128,6 +131,7 @@ interface VerificationCheck {
 ```
 
 **Behavior:**
+
 - If `callback` is present and `type === 'custom'`, invoke the callback
 - The callback receives the step's combined output
 - Return `true` = passed, `false` = failed
@@ -153,11 +157,11 @@ workflows:
     steps:
       - name: implement-feature
         agent: coder
-        task: "Implement the new API endpoint"
+        task: 'Implement the new API endpoint'
         verification:
-          type: "custom"
-          value: "cd nango-integrations && npx nango compile"
-          description: "Ensure Nango integration compiles"
+          type: 'custom'
+          value: 'cd nango-integrations && npx nango compile'
+          description: 'Ensure Nango integration compiles'
         retries: 2
 ```
 

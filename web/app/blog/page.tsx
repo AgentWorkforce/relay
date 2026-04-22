@@ -102,11 +102,15 @@ export default function BlogIndexPage() {
                   </Link>
                   <div className={styles.postListMeta}>
                     <span className={styles.postListAuthor}>{post.frontmatter.author}</span>
-                    <span className={styles.postListDot} aria-hidden="true">&middot;</span>
+                    <span className={styles.postListDot} aria-hidden="true">
+                      &middot;
+                    </span>
                     <time className={styles.postListDate} dateTime={post.frontmatter.date}>
                       {formatDate(post.frontmatter.date)}
                     </time>
-                    <span className={styles.postListDot} aria-hidden="true">&middot;</span>
+                    <span className={styles.postListDot} aria-hidden="true">
+                      &middot;
+                    </span>
                     <span className={styles.postListRead}>{post.readTime}</span>
                   </div>
                 </article>

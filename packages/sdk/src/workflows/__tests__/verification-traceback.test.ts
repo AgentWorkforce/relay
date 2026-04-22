@@ -68,7 +68,10 @@ const mockSubprocessSpawn = vi.fn().mockImplementation((_cmd, _args, _options) =
       delayTimer = undefined;
     }
   };
-  const closeChild = (code: number | null = result.code ?? 0, signal: string | null = result.signal ?? null) => {
+  const closeChild = (
+    code: number | null = result.code ?? 0,
+    signal: string | null = result.signal ?? null
+  ) => {
     if (closed) return;
     closed = true;
     clearPending();
@@ -291,10 +294,7 @@ function verificationCommand(): string {
   );
 }
 
-function taskFromExecCall(
-  execSpy: ReturnType<typeof vi.spyOn>,
-  callIndex: number
-): string {
+function taskFromExecCall(execSpy: ReturnType<typeof vi.spyOn>, callIndex: number): string {
   const call = execSpy.mock.calls[callIndex] as [AgentDefinition, { task?: string }] | undefined;
   return String(call?.[1]?.task ?? '');
 }
@@ -389,7 +389,9 @@ describe('verification traceback retry handling', () => {
 
     const diagnosticCall = execSpy.mock.calls[1] as [AgentDefinition, { task?: string }];
     expect(diagnosticCall[0].name).toBe('diag');
-    expect(String(diagnosticCall[1].task)).toContain('Analyze what went wrong. Be specific. Do NOT fix the code.');
+    expect(String(diagnosticCall[1].task)).toContain(
+      'Analyze what went wrong. Be specific. Do NOT fix the code.'
+    );
 
     const retryTask = taskFromExecCall(execSpy, 2);
     expect(retryTask).toContain('Diagnostic analysis:');

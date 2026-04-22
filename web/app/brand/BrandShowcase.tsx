@@ -18,7 +18,10 @@ const BRAND_KIT: BrandKitAsset[] = [
   { file: 'agent-relay-logo-horizontal.png', label: 'Logo · Horizontal' },
   { file: 'agent-relay-logo-horizontal-transparent.png', label: 'Logo · Horizontal, Transparent' },
   { file: 'agent-relay-logo-light-horizontal.png', label: 'Logo · Light, Horizontal', darkPreview: true },
-  { file: 'agent-relay-logo-light-horizontal-transparent.png', label: 'Logo · Light, Horizontal, Transparent' },
+  {
+    file: 'agent-relay-logo-light-horizontal-transparent.png',
+    label: 'Logo · Light, Horizontal, Transparent',
+  },
   { file: 'agent-relay-logo-circle.png', label: 'Logo · Circle' },
   { file: 'agent-relay-logo-light-circle.png', label: 'Logo · Light, Circle', darkPreview: true },
   { file: 'agent-relay-mark.png', label: 'Mark' },
@@ -36,15 +39,9 @@ export function BrandShowcase() {
           <div>
             <p className={s.sectionEyebrow}>Brand Kit</p>
             <h1 className={s.sectionTitle}>Logos &amp; assets</h1>
-            <p className={s.sectionText}>
-              PNGs in various forms of the logo, mark and wordmark.
-            </p>
+            <p className={s.sectionText}>PNGs in various forms of the logo, mark and wordmark.</p>
           </div>
-          <a
-            href="/brand-kit/agent-relay-brand-kit.zip"
-            download
-            className={s.kitDownloadAll}
-          >
+          <a href="/brand-kit/agent-relay-brand-kit.zip" download className={s.kitDownloadAll}>
             <Download aria-hidden />
             Download all (.zip)
           </a>
@@ -53,14 +50,8 @@ export function BrandShowcase() {
         <div className={s.kitGrid}>
           {BRAND_KIT.map((asset) => (
             <article key={asset.file} className={s.kitCard}>
-              <div
-                className={`${s.kitPreview} ${asset.darkPreview ? s.kitPreviewDark : ''}`}
-              >
-                <img
-                  src={`/brand-kit/${asset.file}`}
-                  alt={asset.label}
-                  loading="lazy"
-                />
+              <div className={`${s.kitPreview} ${asset.darkPreview ? s.kitPreviewDark : ''}`}>
+                <img src={`/brand-kit/${asset.file}`} alt={asset.label} loading="lazy" />
               </div>
               <div className={s.kitMeta}>
                 <div>

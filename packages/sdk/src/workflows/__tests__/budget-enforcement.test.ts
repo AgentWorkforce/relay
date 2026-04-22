@@ -33,9 +33,7 @@ let activeRunner: InstanceType<typeof WorkflowRunner> | undefined;
 
 const mockCollectCliSession = vi.fn(async (query: CliSessionQuery): Promise<CliSessionReport | null> => {
   const next =
-    queuedCollectorResults.length > 0
-      ? queuedCollectorResults.shift()
-      : collectorResultsByCwd.get(query.cwd);
+    queuedCollectorResults.length > 0 ? queuedCollectorResults.shift() : collectorResultsByCwd.get(query.cwd);
 
   if (typeof next === 'function') {
     return next(query);
@@ -308,14 +306,8 @@ describe('WorkflowRunner budget enforcement integration', () => {
 
     const run = await runner.execute(
       makeConfig({
-        agents: [
-          makeAgent('worker-1', { cwd: 'step-1' }),
-          makeAgent('worker-2', { cwd: 'step-2' }),
-        ],
-        steps: [
-          makeStep('step-1', 'worker-1'),
-          makeStep('step-2', 'worker-2', { dependsOn: ['step-1'] }),
-        ],
+        agents: [makeAgent('worker-1', { cwd: 'step-1' }), makeAgent('worker-2', { cwd: 'step-2' })],
+        steps: [makeStep('step-1', 'worker-1'), makeStep('step-2', 'worker-2', { dependsOn: ['step-1'] })],
       }),
       'default'
     );
@@ -333,10 +325,7 @@ describe('WorkflowRunner budget enforcement integration', () => {
     activeRunner = runner;
 
     queuedSubprocessResults = [{ stdout: 'draft complete\n', code: 0 }];
-    collectorResultsByCwd.set(
-      path.join(workspace, 'writer'),
-      makeReport({ input: 800, output: 150 })
-    );
+    collectorResultsByCwd.set(path.join(workspace, 'writer'), makeReport({ input: 800, output: 150 }));
 
     const run = await runner.execute(
       makeConfig({
@@ -375,21 +364,12 @@ describe('WorkflowRunner budget enforcement integration', () => {
     activeRunner = runner;
 
     queuedSubprocessResults = [{ stdout: 'plan complete\n', code: 0 }];
-    collectorResultsByCwd.set(
-      path.join(workspace, 'planner'),
-      makeReport({ input: 1_500, output: 300 })
-    );
+    collectorResultsByCwd.set(path.join(workspace, 'planner'), makeReport({ input: 1_500, output: 300 }));
 
     const run = await runner.execute(
       makeConfig({
-        agents: [
-          makeAgent('planner', { cwd: 'planner' }),
-          makeAgent('writer', { cwd: 'writer' }),
-        ],
-        steps: [
-          makeStep('step-1', 'planner'),
-          makeStep('step-2', 'writer', { dependsOn: ['step-1'] }),
-        ],
+        agents: [makeAgent('planner', { cwd: 'planner' }), makeAgent('writer', { cwd: 'writer' })],
+        steps: [makeStep('step-1', 'planner'), makeStep('step-2', 'writer', { dependsOn: ['step-1'] })],
         swarm: {
           tokenBudget: 2_000,
         },
@@ -431,10 +411,7 @@ describe('WorkflowRunner budget enforcement integration', () => {
 
     const run = await runner.execute(
       makeConfig({
-        agents: [
-          makeAgent('first-agent', { cwd: 'first' }),
-          makeAgent('second-agent', { cwd: 'second' }),
-        ],
+        agents: [makeAgent('first-agent', { cwd: 'first' }), makeAgent('second-agent', { cwd: 'second' })],
         steps: [
           makeStep('step-1', 'first-agent'),
           makeStep('step-2', 'second-agent', { dependsOn: ['step-1'] }),
@@ -524,10 +501,7 @@ describe('WorkflowRunner budget enforcement integration', () => {
           makeAgent('parallel-a', { cwd: 'parallel-a' }),
           makeAgent('parallel-b', { cwd: 'parallel-b' }),
         ],
-        steps: [
-          makeStep('parallel-a', 'parallel-a'),
-          makeStep('parallel-b', 'parallel-b'),
-        ],
+        steps: [makeStep('parallel-a', 'parallel-a'), makeStep('parallel-b', 'parallel-b')],
         swarm: {
           tokenBudget: 5_000,
         },

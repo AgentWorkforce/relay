@@ -29,9 +29,7 @@ async function getGitHubStars(): Promise<string | null> {
     if (!response.ok) return null;
 
     const data = (await response.json()) as GitHubRepoResponse;
-    return typeof data.stargazers_count === 'number'
-      ? formatStarCount(data.stargazers_count)
-      : null;
+    return typeof data.stargazers_count === 'number' ? formatStarCount(data.stargazers_count) : null;
   } catch {
     return null;
   }

@@ -18,6 +18,7 @@ Fixed docs/blog content loading so runtime resolves MDX from the deployed filesy
 ## Key Decisions
 
 ### Stopped docs and blog content loaders from binding to build-machine absolute paths, and explicitly traced MDX content into the Next server bundle
+
 - **Chose:** Stopped docs and blog content loaders from binding to build-machine absolute paths, and explicitly traced MDX content into the Next server bundle
 - **Reasoning:** The production stack showed a read against /home/runner/work/.../web/content/docs/introduction.mdx, which means the docs loader baked the GitHub runner path into the server chunk via import.meta.url. Resolving content from runtime cwd candidates fixes the path, and tracing content/docs plus content/blog ensures those source files are present in the deployed artifact.
 
@@ -26,6 +27,7 @@ Fixed docs/blog content loading so runtime resolves MDX from the deployed filesy
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Stopped docs and blog content loaders from binding to build-machine absolute paths, and explicitly traced MDX content into the Next server bundle: Stopped docs and blog content loaders from binding to build-machine absolute paths, and explicitly traced MDX content into the Next server bundle

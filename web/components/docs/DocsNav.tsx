@@ -98,9 +98,7 @@ export function DocsNav({ variant = 'sidebar' }: { variant?: 'sidebar' | 'mobile
 
       const docsBodyRect = docsBody.getBoundingClientRect();
       const atBoundary =
-        event.deltaY > 0
-          ? docsBodyRect.bottom <= window.innerHeight + 1
-          : docsBodyRect.top >= restingTop - 1;
+        event.deltaY > 0 ? docsBodyRect.bottom <= window.innerHeight + 1 : docsBodyRect.top >= restingTop - 1;
 
       if (!atBoundary) return;
 
@@ -133,10 +131,7 @@ export function DocsNav({ variant = 'sidebar' }: { variant?: 'sidebar' | 'mobile
               const Icon = navIcons[item.slug];
               return (
                 <li key={item.slug}>
-                  <a
-                    href={href}
-                    className={`${styles.navLink} ${isActive ? styles.navLinkActive : ''}`}
-                  >
+                  <a href={href} className={`${styles.navLink} ${isActive ? styles.navLinkActive : ''}`}>
                     {Icon && <Icon className={styles.navIcon} aria-hidden="true" />}
                     <span className={styles.navLabel}>{item.title}</span>
                   </a>

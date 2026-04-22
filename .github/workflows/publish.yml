@@ -503,6 +503,8 @@ jobs:
           - brand
           - gateway
           - credential-proxy
+          - github-primitive
+          - browser-primitive
 
     steps:
       - name: Checkout code

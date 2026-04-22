@@ -24,11 +24,7 @@ export type {
   ProxyTokenClaims,
   UsageSummary,
 } from './types.js';
-export type {
-  CredentialProxyOptions,
-  CredentialProxyVariables,
-  CredentialStore,
-} from './router.js';
+export type { CredentialProxyOptions, CredentialProxyVariables, CredentialStore } from './router.js';
 
 export interface StandaloneServeOptions extends CredentialProxyOptions {
   app?: CredentialProxyApp;
@@ -89,9 +85,7 @@ function createWebRequest(req: IncomingMessage): Request {
 
   const method = req.method ?? 'GET';
   const body =
-    method === 'GET' || method === 'HEAD'
-      ? undefined
-      : (Readable.toWeb(req) as ReadableStream<Uint8Array>);
+    method === 'GET' || method === 'HEAD' ? undefined : (Readable.toWeb(req) as ReadableStream<Uint8Array>);
 
   return new Request(url, {
     method,

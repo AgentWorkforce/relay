@@ -18,6 +18,7 @@ Moved docs navigation into the hamburger menu on mobile, hid the separate mobile
 ## Key Decisions
 
 ### Collapsed the mobile docs sidebar into the hamburger menu instead of rendering it above the content rail
+
 - **Chose:** Collapsed the mobile docs sidebar into the hamburger menu instead of rendering it above the content rail
 - **Reasoning:** On small screens the left rail consumes vertical space and duplicates navigation. Passing a mobile-only DocsNav into SiteNav keeps the docs tree available from the existing hamburger while preserving the desktop sidebar unchanged.
 
@@ -26,6 +27,7 @@ Moved docs navigation into the hamburger menu on mobile, hid the separate mobile
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Collapsed the mobile docs sidebar into the hamburger menu instead of rendering it above the content rail: Collapsed the mobile docs sidebar into the hamburger menu instead of rendering it above the content rail

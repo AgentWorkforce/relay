@@ -98,37 +98,30 @@ describe('deterministic/worktree steps in builder', () => {
 
   it('deterministic step without command throws', () => {
     expect(() => {
-      workflow('test')
-        .step('bad', { type: 'deterministic' } as any);
+      workflow('test').step('bad', { type: 'deterministic' } as any);
     }).toThrow('deterministic steps must have a command');
   });
 
   it('deterministic step with agent throws', () => {
     expect(() => {
-      workflow('test')
-        .step('bad', { type: 'deterministic', command: 'ls', agent: 'x', task: 'y' } as any);
+      workflow('test').step('bad', { type: 'deterministic', command: 'ls', agent: 'x', task: 'y' } as any);
     }).toThrow('deterministic steps must not have agent or task');
   });
 
   it('agent step without agent/task throws', () => {
     expect(() => {
-      workflow('test')
-        .step('bad', {} as any);
+      workflow('test').step('bad', {} as any);
     }).toThrow('Agent steps must have both agent and task');
   });
 
   it('agent steps without any agent definition throws', () => {
     expect(() => {
-      workflow('test')
-        .step('work', { agent: 'worker', task: 'Do work' })
-        .toConfig();
+      workflow('test').step('work', { agent: 'worker', task: 'Do work' }).toConfig();
     }).toThrow('Workflow must have at least one agent when using agent steps');
   });
 
   it('toYaml includes deterministic steps', () => {
-    const yamlStr = workflow('test')
-      .step('check', { type: 'deterministic', command: 'echo hello' })
-      .toYaml();
+    const yamlStr = workflow('test').step('check', { type: 'deterministic', command: 'echo hello' }).toYaml();
 
     expect(yamlStr).toContain('type: deterministic');
     expect(yamlStr).toContain('command: echo hello');

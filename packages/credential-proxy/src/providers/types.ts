@@ -97,9 +97,9 @@ export function extractAnthropicUsage(payload: unknown): TokenUsage | null {
   }
 
   const usage =
-    (isRecord(payload.usage) && payload.usage)
-    || (isRecord(payload.message) && isRecord(payload.message.usage) && payload.message.usage)
-    || (isRecord(payload.delta) && isRecord(payload.delta.usage) && payload.delta.usage);
+    (isRecord(payload.usage) && payload.usage) ||
+    (isRecord(payload.message) && isRecord(payload.message.usage) && payload.message.usage) ||
+    (isRecord(payload.delta) && isRecord(payload.delta.usage) && payload.delta.usage);
 
   if (!usage) {
     return null;
@@ -141,11 +141,7 @@ export async function forwardProviderRequest(options: {
     redirect: 'manual',
   });
 
-  return captureProviderResponse(
-    upstreamResponse,
-    options.usageExtractor,
-    options.streamingUsageExtractor
-  );
+  return captureProviderResponse(upstreamResponse, options.usageExtractor, options.streamingUsageExtractor);
 }
 
 function createUpstreamRequestHeaders(
@@ -213,11 +209,7 @@ function captureProviderResponse(
 ): Promise<Response> | Response {
   const contentType = upstreamResponse.headers.get('content-type')?.toLowerCase() ?? '';
 
-  if (
-    upstreamResponse.body &&
-    contentType.includes('text/event-stream') &&
-    streamingUsageExtractor
-  ) {
+  if (upstreamResponse.body && contentType.includes('text/event-stream') && streamingUsageExtractor) {
     return captureStreamingResponse(upstreamResponse, streamingUsageExtractor);
   }
 

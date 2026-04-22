@@ -347,14 +347,20 @@ test(
 
       assert.equal(result.status, 'completed', result.error ?? '(no error)');
       assert.match(result.stepOutput ?? '', new RegExp(`RELAY_API_KEY=${relayApiKey}`));
-      assert.match(result.stepOutput ?? '', new RegExp(`RELAY_LLM_PROXY=${proxyUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.match(
+        result.stepOutput ?? '',
+        new RegExp(`RELAY_LLM_PROXY=${proxyUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
+      );
       assert.match(
         result.stepOutput ?? '',
         new RegExp(`RELAY_LLM_PROXY_URL=${proxyUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
       );
       assert.match(result.stepOutput ?? '', new RegExp(`CREDENTIAL_PROXY_TOKEN=${proxyToken}`));
       assert.match(result.stepOutput ?? '', new RegExp(`RELAY_LLM_PROXY_TOKEN=${proxyToken}`));
-      assert.match(result.stepOutput ?? '', new RegExp(`OPENAI_BASE_URL=${proxyUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.match(
+        result.stepOutput ?? '',
+        new RegExp(`OPENAI_BASE_URL=${proxyUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
+      );
       assert.match(result.stepOutput ?? '', new RegExp(`OPENAI_API_KEY=${proxyToken}`));
     } finally {
       fs.rmSync(fakeCliDir, { recursive: true, force: true });

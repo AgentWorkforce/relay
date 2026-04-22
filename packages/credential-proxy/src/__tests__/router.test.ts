@@ -205,9 +205,7 @@ describe('credential proxy router integration', () => {
       return new Response(
         new ReadableStream<Uint8Array>({
           async start(controller) {
-            controller.enqueue(
-              encoder.encode('data: {"choices":[{"delta":{"content":"hel"}}]}\n\n')
-            );
+            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"hel"}}]}\n\n'));
             await finalChunkReleased;
             controller.enqueue(
               encoder.encode(
@@ -287,9 +285,7 @@ describe('credential proxy router integration', () => {
       return new Response(
         new ReadableStream<Uint8Array>({
           async start(controller) {
-            controller.enqueue(
-              encoder.encode('data: {"choices":[{"delta":{"content":"hel"}}]}\n\n')
-            );
+            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"hel"}}]}\n\n'));
             await finalChunkReleased;
             controller.enqueue(
               encoder.encode(

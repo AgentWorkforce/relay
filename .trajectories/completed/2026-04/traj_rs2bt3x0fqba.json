@@ -25,20 +25,11 @@
           "type": "reflection",
           "content": "Deploy history points to a credential/state access regression rather than a web-code regression: production updated the existing stack successfully through run 24125038176, then every production deploy after the OIDC workflow change tried to create a fresh CloudFront distribution for the same alias and failed with CNAMEAlreadyExists.",
           "raw": {
-            "focalPoints": [
-              "deploy-history",
-              "credentials",
-              "state-access"
-            ],
+            "focalPoints": ["deploy-history", "credentials", "state-access"],
             "confidence": 0.87
           },
           "significance": "high",
-          "tags": [
-            "focal:deploy-history",
-            "focal:credentials",
-            "focal:state-access",
-            "confidence:0.87"
-          ]
+          "tags": ["focal:deploy-history", "focal:credentials", "focal:state-access", "confidence:0.87"]
         },
         {
           "ts": 1775843938763,

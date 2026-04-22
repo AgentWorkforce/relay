@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  BudgetExceededError,
-  BudgetTracker,
-  type TokenUsage,
-} from '../budget-tracker.js';
+import { BudgetExceededError, BudgetTracker, type TokenUsage } from '../budget-tracker.js';
 
 function expectUsage(actual: TokenUsage, expected: TokenUsage): void {
   expect(actual).toEqual(expected);

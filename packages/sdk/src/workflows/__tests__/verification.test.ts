@@ -128,9 +128,7 @@ describe('verification logic', () => {
     });
 
     it('should fail when shell command exits non-zero', () => {
-      expect(() => run({ type: 'custom', value: 'false' }, 'output')).toThrow(
-        WorkflowCompletionError
-      );
+      expect(() => run({ type: 'custom', value: 'false' }, 'output')).toThrow(WorkflowCompletionError);
     });
 
     it('should return failure with allowFailure', () => {
@@ -147,9 +145,14 @@ describe('verification logic', () => {
     });
 
     it('should include command output in the failure message', () => {
-      const result = run({ type: 'custom', value: 'printf "compile failed" >&2; exit 1' }, 'output', 'test-step', {
-        allowFailure: true,
-      });
+      const result = run(
+        { type: 'custom', value: 'printf "compile failed" >&2; exit 1' },
+        'output',
+        'test-step',
+        {
+          allowFailure: true,
+        }
+      );
       expect(result.error).toContain('custom check "printf "compile failed" >&2; exit 1" failed');
       expect(result.error).toContain('compile failed');
     });

@@ -52,10 +52,10 @@ export interface ProxyJwtClaims {
   sub: string;
 
   /** Fixed audience — must be "relay-llm-proxy" */
-  aud: "relay-llm-proxy";
+  aud: 'relay-llm-proxy';
 
   /** LLM provider this token authorizes */
-  provider: "openai" | "anthropic" | "openrouter";
+  provider: 'openai' | 'anthropic' | 'openrouter';
 
   /** Reference to encrypted credential in relay's credential store */
   credentialId: string;
@@ -123,7 +123,7 @@ Mirrors `packages/gateway/src/types.ts` — each surface adapter normalizes inbo
 
 export interface ProviderAdapter {
   /** Provider identifier */
-  readonly type: "openai" | "anthropic" | "openrouter";
+  readonly type: 'openai' | 'anthropic' | 'openrouter';
 
   /** The upstream base URL for this provider */
   readonly baseUrl: string;
@@ -169,6 +169,7 @@ export interface TokenUsage {
 ### Adapter Implementations
 
 **OpenAI** (`src/providers/openai.ts`):
+
 - Base URL: `https://api.openai.com`
 - Auth header: `Authorization: Bearer <key>`
 - Path: `/v1/chat/completions` (passthrough)
@@ -176,6 +177,7 @@ export interface TokenUsage {
 - Streaming: final SSE chunk contains `usage` when `stream_options.include_usage` is set; proxy injects this option
 
 **Anthropic** (`src/providers/anthropic.ts`):
+
 - Base URL: `https://api.anthropic.com`
 - Auth header: `x-api-key: <key>` (NOT Bearer)
 - Also sets: `anthropic-version: 2023-06-01`
@@ -184,6 +186,7 @@ export interface TokenUsage {
 - Streaming: `message_delta` event contains `usage` in the final event
 
 **OpenRouter** (`src/providers/openrouter.ts`):
+
 - Base URL: `https://openrouter.ai/api`
 - Auth header: `Authorization: Bearer <key>`
 - Path: `/v1/chat/completions` (passthrough — OpenAI-compatible)
@@ -197,43 +200,46 @@ export interface TokenUsage {
 ```typescript
 // src/router.ts
 
-import { Hono } from "hono";
-import type { ProxyJwtClaims } from "./jwt.js";
+import { Hono } from 'hono';
+import type { ProxyJwtClaims } from './jwt.js';
 
 const app = new Hono();
 
 // Health check
-app.get("/health", (c) => c.json({ status: "ok" }));
+app.get('/health', (c) => c.json({ status: 'ok' }));
 
 // OpenAI-compatible endpoint
-app.post("/v1/chat/completions", jwtMiddleware, proxyHandler);
+app.post('/v1/chat/completions', jwtMiddleware, proxyHandler);
 
 // Anthropic-compatible endpoint
-app.post("/v1/messages", jwtMiddleware, proxyHandler);
+app.post('/v1/messages', jwtMiddleware, proxyHandler);
 ```
 
 **Route → Provider mapping:**
+
 - `/v1/chat/completions` → uses `claims.provider` to select OpenAI or OpenRouter adapter
 - `/v1/messages` → Anthropic adapter (validated against `claims.provider === "anthropic"`)
 
 If the route doesn't match the JWT's `provider` claim, return 400.
 
 **jwtMiddleware** extracts and validates the JWT, attaches claims to context:
+
 ```typescript
 async function jwtMiddleware(c: Context, next: Next) {
-  const token = c.req.header("Authorization")?.replace("Bearer ", "");
-  if (!token) return c.json({ error: "Missing authorization" }, 401);
+  const token = c.req.header('Authorization')?.replace('Bearer ', '');
+  if (!token) return c.json({ error: 'Missing authorization' }, 401);
 
   const claims = await validateJwt(token, signingSecret);
-  c.set("claims", claims);
+  c.set('claims', claims);
   await next();
 }
 ```
 
 **proxyHandler** orchestrates the forward-and-stream:
+
 ```typescript
 async function proxyHandler(c: Context) {
-  const claims = c.get("claims") as ProxyJwtClaims;
+  const claims = c.get('claims') as ProxyJwtClaims;
   const adapter = resolveAdapter(claims.provider);
   const apiKey = await credentialStore.resolve(claims.credentialId);
 
@@ -241,7 +247,7 @@ async function proxyHandler(c: Context) {
   if (claims.budget) {
     const used = await metering.getSessionUsage(claims.jti);
     if (used >= claims.budget) {
-      return c.json({ error: "Token budget exceeded" }, 429);
+      return c.json({ error: 'Token budget exceeded' }, 429);
     }
   }
 
@@ -253,7 +259,7 @@ async function proxyHandler(c: Context) {
   const isStreaming = JSON.parse(body).stream === true;
 
   const upstream = await fetch(upstreamUrl, {
-    method: "POST",
+    method: 'POST',
     headers,
     body,
   });
@@ -295,7 +301,7 @@ async function streamResponse(c, upstream, adapter, claims) {
       const text = decoder.decode(value, { stream: true });
       const usage = adapter.extractStreamingUsage(text);
       if (usage) finalUsage = usage;
-      await writer.write(value);  // Pass through unchanged
+      await writer.write(value); // Pass through unchanged
     }
     writer.close();
 
@@ -307,9 +313,9 @@ async function streamResponse(c, upstream, adapter, claims) {
 
   return new Response(readable, {
     headers: {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache",
-      "connection": "keep-alive",
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
     },
   });
 }
@@ -322,44 +328,42 @@ async function streamResponse(c, upstream, adapter, claims) {
 ```typescript
 // src/jwt.ts
 
-import { createHmac, timingSafeEqual } from "node:crypto";
-import type { ProxyJwtClaims } from "./providers/types.js";
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import type { ProxyJwtClaims } from './providers/types.js';
 
-const ALLOWED_AUDIENCES = ["relay-llm-proxy"] as const;
+const ALLOWED_AUDIENCES = ['relay-llm-proxy'] as const;
 const CLOCK_SKEW_SECONDS = 30;
 
 export function validateJwt(token: string, secret: string): ProxyJwtClaims {
-  const parts = token.split(".");
-  if (parts.length !== 3) throw new JwtError("Malformed token");
+  const parts = token.split('.');
+  if (parts.length !== 3) throw new JwtError('Malformed token');
 
   const [headerB64, payloadB64, signatureB64] = parts;
 
   // 1. Verify signature (HMAC-SHA256, timing-safe)
   const unsigned = `${headerB64}.${payloadB64}`;
-  const expected = createHmac("sha256", secret)
-    .update(unsigned)
-    .digest("base64url");
+  const expected = createHmac('sha256', secret).update(unsigned).digest('base64url');
 
   if (!timingSafeEqual(Buffer.from(expected), Buffer.from(signatureB64))) {
-    throw new JwtError("Invalid signature");
+    throw new JwtError('Invalid signature');
   }
 
   // 2. Decode and parse
   const header = JSON.parse(base64urlDecode(headerB64));
-  if (header.alg !== "HS256") throw new JwtError("Unsupported algorithm");
+  if (header.alg !== 'HS256') throw new JwtError('Unsupported algorithm');
 
   const claims = JSON.parse(base64urlDecode(payloadB64)) as ProxyJwtClaims;
 
   // 3. Validate standard claims
   const now = Math.floor(Date.now() / 1000);
   if (claims.exp < now - CLOCK_SKEW_SECONDS) {
-    throw new JwtError("Token expired");
+    throw new JwtError('Token expired');
   }
-  if (claims.aud !== "relay-llm-proxy") {
-    throw new JwtError("Invalid audience");
+  if (claims.aud !== 'relay-llm-proxy') {
+    throw new JwtError('Invalid audience');
   }
-  if (!["openai", "anthropic", "openrouter"].includes(claims.provider)) {
-    throw new JwtError("Invalid provider");
+  if (!['openai', 'anthropic', 'openrouter'].includes(claims.provider)) {
+    throw new JwtError('Invalid provider');
   }
 
   return claims;
@@ -390,11 +394,12 @@ export interface CredentialStore {
 ### Implementation Options
 
 **Option A — API call to relay cloud** (recommended for production):
+
 ```typescript
 export class CloudCredentialStore implements CredentialStore {
   constructor(
     private readonly apiUrl: string,
-    private readonly serviceToken: string,
+    private readonly serviceToken: string
   ) {}
 
   async resolve(credentialId: string): Promise<string> {
@@ -411,6 +416,7 @@ export class CloudCredentialStore implements CredentialStore {
 This follows the same pattern as `packages/cloud/src/auth.ts` — the proxy never holds decryption keys; cloud API decrypts via KMS and returns the plaintext key over a TLS-protected internal channel.
 
 **Option B — Local cache with TTL** (for performance):
+
 ```typescript
 export class CachedCredentialStore implements CredentialStore {
   private cache = new Map<string, { key: string; expiresAt: number }>();
@@ -446,13 +452,13 @@ export interface MeteringEvent {
   timestamp: string;
 
   /** From JWT claims */
-  workspaceId: string;     // claims.sub
-  provider: string;        // claims.provider
-  credentialId: string;    // claims.credentialId
-  tokenId: string;         // claims.jti (for budget tracking)
+  workspaceId: string; // claims.sub
+  provider: string; // claims.provider
+  credentialId: string; // claims.credentialId
+  tokenId: string; // claims.jti (for budget tracking)
 
   /** From provider response */
-  model: string;           // e.g., "gpt-4o", "claude-sonnet-4-20250514"
+  model: string; // e.g., "gpt-4o", "claude-sonnet-4-20250514"
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -467,6 +473,7 @@ export interface MeteringEvent {
 ### Recording Strategy
 
 **Phase 1 — Append to local log** (simple, works everywhere):
+
 ```typescript
 export class MeteringRecorder {
   async record(claims: ProxyJwtClaims, usage: TokenUsage, meta: RequestMeta): Promise<void> {
@@ -477,7 +484,7 @@ export class MeteringRecorder {
       provider: claims.provider,
       credentialId: claims.credentialId,
       tokenId: claims.jti,
-      model: usage.model ?? "unknown",
+      model: usage.model ?? 'unknown',
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       totalTokens: usage.totalTokens,
@@ -497,11 +504,13 @@ export class MeteringRecorder {
 ```
 
 **Phase 2 — Push to relay cloud metering API** (for billing):
+
 - Batch events and flush every N seconds or N events
 - POST to `/api/v1/metering/events`
 - Cloud aggregates per workspace for billing
 
 **Metering sinks** (pluggable):
+
 - `StdoutSink` — JSON lines to stdout (Lambda CloudWatch / local dev)
 - `ApiSink` — POST to relay cloud metering endpoint
 - `InMemorySink` — for tests and budget enforcement in single-process mode
@@ -510,19 +519,19 @@ export class MeteringRecorder {
 
 ## Error Handling
 
-| Error Condition | HTTP Status | Response Body |
-|---|---|---|
-| Missing Authorization header | 401 | `{ "error": "Missing authorization" }` |
-| Malformed JWT | 401 | `{ "error": "Malformed token" }` |
-| Invalid JWT signature | 401 | `{ "error": "Invalid signature" }` |
-| Expired JWT | 401 | `{ "error": "Token expired" }` |
-| Wrong audience claim | 401 | `{ "error": "Invalid audience" }` |
-| Provider mismatch (route vs claim) | 400 | `{ "error": "Provider mismatch" }` |
-| Credential not found | 502 | `{ "error": "Credential resolution failed" }` |
-| Budget exceeded | 429 | `{ "error": "Token budget exceeded" }` |
-| Provider returns error | pass-through | Provider's original error response |
-| Provider unreachable | 502 | `{ "error": "Upstream unreachable" }` |
-| Provider rate limit (429) | 429 | Provider's original 429 response |
+| Error Condition                    | HTTP Status  | Response Body                                 |
+| ---------------------------------- | ------------ | --------------------------------------------- |
+| Missing Authorization header       | 401          | `{ "error": "Missing authorization" }`        |
+| Malformed JWT                      | 401          | `{ "error": "Malformed token" }`              |
+| Invalid JWT signature              | 401          | `{ "error": "Invalid signature" }`            |
+| Expired JWT                        | 401          | `{ "error": "Token expired" }`                |
+| Wrong audience claim               | 401          | `{ "error": "Invalid audience" }`             |
+| Provider mismatch (route vs claim) | 400          | `{ "error": "Provider mismatch" }`            |
+| Credential not found               | 502          | `{ "error": "Credential resolution failed" }` |
+| Budget exceeded                    | 429          | `{ "error": "Token budget exceeded" }`        |
+| Provider returns error             | pass-through | Provider's original error response            |
+| Provider unreachable               | 502          | `{ "error": "Upstream unreachable" }`         |
+| Provider rate limit (429)          | 429          | Provider's original 429 response              |
 
 **Design principle:** Provider errors are passed through unchanged. The agent SDK already handles OpenAI/Anthropic error formats — the proxy should not transform them. Only proxy-level errors (JWT, budget, credential resolution) use the proxy's own error format.
 
@@ -533,7 +542,7 @@ export class ProxyError extends Error {
   constructor(
     message: string,
     public readonly status: number,
-    public readonly code: string,
+    public readonly code: string
   ) {
     super(message);
   }
@@ -541,31 +550,32 @@ export class ProxyError extends Error {
 
 export class JwtError extends ProxyError {
   constructor(message: string) {
-    super(message, 401, "jwt_error");
+    super(message, 401, 'jwt_error');
   }
 }
 
 export class CredentialError extends ProxyError {
   constructor(message: string) {
-    super(message, 502, "credential_error");
+    super(message, 502, 'credential_error');
   }
 }
 
 export class BudgetExceededError extends ProxyError {
   constructor() {
-    super("Token budget exceeded", 429, "budget_exceeded");
+    super('Token budget exceeded', 429, 'budget_exceeded');
   }
 }
 ```
 
 Hono error handler catches `ProxyError` and returns structured JSON:
+
 ```typescript
 app.onError((err, c) => {
   if (err instanceof ProxyError) {
     return c.json({ error: err.message, code: err.code }, err.status);
   }
-  console.error("Unexpected error:", err);
-  return c.json({ error: "Internal server error" }, 500);
+  console.error('Unexpected error:', err);
+  return c.json({ error: 'Internal server error' }, 500);
 });
 ```
 
@@ -575,17 +585,17 @@ app.onError((err, c) => {
 
 Hono runs on all of these with zero code changes:
 
-| Target | Entry Point | Notes |
-|---|---|---|
-| **Node.js** | `hono/node-server` | Local dev, Docker, EC2 |
-| **AWS Lambda** | `hono/aws-lambda` | Nango's likely deployment |
-| **Cloudflare Workers** | `hono/cloudflare-workers` | Edge deployment |
+| Target                 | Entry Point               | Notes                     |
+| ---------------------- | ------------------------- | ------------------------- |
+| **Node.js**            | `hono/node-server`        | Local dev, Docker, EC2    |
+| **AWS Lambda**         | `hono/aws-lambda`         | Nango's likely deployment |
+| **Cloudflare Workers** | `hono/cloudflare-workers` | Edge deployment           |
 
 The `src/index.ts` exports the Hono app; the deployment adapter wraps it:
 
 ```typescript
 // src/index.ts
-export { createProxy } from "./router.js";
+export { createProxy } from './router.js';
 
 // For Node.js standalone:
 // import { serve } from '@hono/node-server';
@@ -615,12 +625,12 @@ export { createProxy } from "./router.js";
 
 ## Integration with Existing Packages
 
-| Package | Integration |
-|---|---|
-| `packages/sdk` | JWT minting functions extended to mint proxy tokens; `TokenClaims` type extended with proxy-specific fields |
-| `packages/cloud` | Credential store API serves decrypted keys to the proxy; new `/api/v1/credentials/:id` endpoint |
-| `packages/gateway` | No direct integration; shared adapter pattern for consistency |
-| `packages/config` | Proxy configuration (signing secret, credential store URL) follows existing config patterns |
+| Package            | Integration                                                                                                 |
+| ------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `packages/sdk`     | JWT minting functions extended to mint proxy tokens; `TokenClaims` type extended with proxy-specific fields |
+| `packages/cloud`   | Credential store API serves decrypted keys to the proxy; new `/api/v1/credentials/:id` endpoint             |
+| `packages/gateway` | No direct integration; shared adapter pattern for consistency                                               |
+| `packages/config`  | Proxy configuration (signing secret, credential store URL) follows existing config patterns                 |
 
 ---
 
