@@ -1,8 +1,7 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
-import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { relativizeWorkflowPath } from './workflows.js';
 
@@ -27,33 +26,33 @@ describe('relativizeWorkflowPath', () => {
 
   it('returns a forward-slash relative path for a sibling of cwd', () => {
     const result = relativizeWorkflowPath('workflows/foo.ts');
-    assert.equal(result, 'workflows/foo.ts');
+    expect(result).toBe('workflows/foo.ts');
   });
 
   it('strips a leading ./', () => {
     const result = relativizeWorkflowPath('./workflows/foo.ts');
-    assert.equal(result, 'workflows/foo.ts');
+    expect(result).toBe('workflows/foo.ts');
   });
 
   it('relativizes an absolute path that lives inside cwd', () => {
     const abs = path.join(tmpRoot, 'nested', 'workflow.ts');
     const result = relativizeWorkflowPath(abs);
-    assert.equal(result, 'nested/workflow.ts');
+    expect(result).toBe('nested/workflow.ts');
   });
 
   it('returns null for an absolute path outside cwd', () => {
     const outside = path.resolve(os.tmpdir(), 'not-in-cwd', 'workflow.ts');
     const result = relativizeWorkflowPath(outside);
-    assert.equal(result, null);
+    expect(result).toBeNull();
   });
 
   it('returns null for a path that escapes cwd via ..', () => {
     const result = relativizeWorkflowPath('../escaped.ts');
-    assert.equal(result, null);
+    expect(result).toBeNull();
   });
 
   it('returns null when the arg resolves to cwd itself', () => {
     const result = relativizeWorkflowPath('.');
-    assert.equal(result, null);
+    expect(result).toBeNull();
   });
 });
