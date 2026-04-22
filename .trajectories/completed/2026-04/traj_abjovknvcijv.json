@@ -1,0 +1,25 @@
+{
+  "id": "traj_abjovknvcijv",
+  "version": 1,
+  "task": {
+    "title": "Scope CI so web-only changes do not run unrelated relay and SDK tests"
+  },
+  "status": "completed",
+  "startedAt": "2026-04-10T16:08:30.070Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6358106e6814adee7ee1d11f8d258ee11c4bed99",
+    "endRef": "6358106e6814adee7ee1d11f8d258ee11c4bed99"
+  },
+  "completedAt": "2026-04-10T16:11:08.673Z",
+  "retrospective": {
+    "summary": "Added web-only CI gating to the heavy core test, package validation, rust CI, and node compatibility workflows; validated the edited YAML.",
+    "approach": "Standard approach",
+    "confidence": 0.89
+  }
+}

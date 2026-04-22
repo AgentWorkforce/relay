@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import matter from 'gray-matter';
 
@@ -10,12 +9,11 @@ import {
   getSpawnOptionRows,
   type SpawnOptionsTableVariant,
 } from './spawn-options-table';
+import { resolveContentDir } from './content-paths';
 import { getAllDocSlugs } from './docs-nav';
 import { absoluteUrl } from './site';
 
-const moduleFilename = fileURLToPath(import.meta.url);
-const moduleDirname = path.dirname(moduleFilename);
-const DOCS_DIR = path.resolve(moduleDirname, '../content/docs');
+const DOCS_DIR = resolveContentDir('docs');
 const DOCS_BASE_URL = absoluteUrl('/docs');
 
 export function getDocMarkdownUrl(slug: string): string {

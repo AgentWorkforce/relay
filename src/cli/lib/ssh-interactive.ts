@@ -8,12 +8,7 @@
 import { createServer } from 'node:net';
 import { spawn as spawnProcess } from 'node:child_process';
 import { stripAnsiCodes, findMatchingError, type ErrorPattern } from '@agent-relay/config/cli-auth-config';
-import {
-  loadSSH2,
-  createAskpassScript,
-  buildSystemSshArgs,
-  type AuthSshRuntime,
-} from './auth-ssh.js';
+import { loadSSH2, createAskpassScript, buildSystemSshArgs, type AuthSshRuntime } from './auth-ssh.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -39,6 +34,18 @@ export interface InteractiveSessionResult {
   exitCode: number | null;
   exitSignal: string | null;
   authDetected: boolean;
+}
+
+// ── Debug (env-gated) ────────────────────────────────────────────────────────
+
+const DEBUG = process.env.AGENT_RELAY_DEBUG_SSH === '1';
+function dbg(event: string, fields: Record<string, unknown> = {}): void {
+  if (!DEBUG) return;
+  const ts = new Date().toISOString();
+  const parts = Object.entries(fields)
+    .map(([k, v]) => `${k}=${typeof v === 'string' ? JSON.stringify(v) : v}`)
+    .join(' ');
+  process.stderr.write(`[ssh-debug ${ts}] ${event}${parts ? ' ' + parts : ''}\n`);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -69,7 +76,10 @@ function getSshErrorMessage(host: string, port: number, err: Error): string {
 
 // ── Main function ────────────────────────────────────────────────────────────
 
-const DEFAULT_RUNTIME: Pick<AuthSshRuntime, 'loadSSH2' | 'createAskpassScript' | 'buildSystemSshArgs' | 'spawnProcess' | 'createServer' | 'setTimeout'> = {
+const DEFAULT_RUNTIME: Pick<
+  AuthSshRuntime,
+  'loadSSH2' | 'createAskpassScript' | 'buildSystemSshArgs' | 'spawnProcess' | 'createServer' | 'setTimeout'
+> = {
   loadSSH2,
   createAskpassScript,
   buildSystemSshArgs,
@@ -77,6 +87,43 @@ const DEFAULT_RUNTIME: Pick<AuthSshRuntime, 'loadSSH2' | 'createAskpassScript' |
   createServer,
   setTimeout,
 };
+
+/**
+ * Format a remote command for execution inside an ssh2 shell() PTY.
+ *
+ * Wraps the command in `exec sh -c '…'` so the PTY closes cleanly when the
+ * target CLI exits (no shell-teardown race with a TUI's alt-screen flush)
+ * while still letting `sh` parse leading prefix assignments like
+ * `PATH=/foo/bin claude`. A bare `exec PATH=… claude` does not work in zsh
+ * because zsh's exec builtin treats `PATH=…` as the command name instead of
+ * a prefix assignment.
+ *
+ * We intentionally use `shell()` rather than `exec(cmd, { pty })` because
+ * Daytona's sandbox sshd only populates the full login-shell environment
+ * (including nvm-managed PATH entries where `claude` / `codex` actually live)
+ * for interactive shell sessions. An `exec` channel with a PTY gets a
+ * stripped-down environment and the target CLI fails to start silently.
+ */
+export function formatShellInvocation(command: string): string {
+  const escaped = command.replace(/'/g, `'\\''`);
+  return `exec sh -c '${escaped}'\n`;
+}
+
+/**
+ * Wrap the remote command with a visible checkpoint so the user sees proof
+ * the ssh pipeline reached the sandbox before the provider CLI takes over
+ * the terminal. Without this, claude/codex enter alt-screen immediately and
+ * the user sees zero output — indistinguishable from a hang.
+ *
+ * The printf runs before the exec that launches the provider CLI, so the
+ * user gets one visible line ("launching provider CLI…") right before
+ * alt-screen engages. When the provider CLI later exits and the alt-screen
+ * tears down, this line remains in scrollback as a breadcrumb.
+ */
+export function wrapWithLaunchCheckpoint(command: string): string {
+  // Escape single quotes for inclusion in the printf argument.
+  return `printf '\\033[2m[agent-relay] launching provider CLI…\\033[0m\\n' >&2; ${command}`;
+}
 
 /**
  * Run an interactive SSH session with PTY.
@@ -88,19 +135,24 @@ const DEFAULT_RUNTIME: Pick<AuthSshRuntime, 'loadSSH2' | 'createAskpassScript' |
 export async function runInteractiveSession(
   options: InteractiveSessionOptions
 ): Promise<InteractiveSessionResult> {
-  const {
-    ssh,
-    remoteCommand,
-    successPatterns,
-    errorPatterns,
-    timeoutMs,
-    io,
-    tunnelPort = 1455,
-  } = options;
+  const { ssh, successPatterns, errorPatterns, timeoutMs, io, tunnelPort = 1455 } = options;
 
   const runtime = { ...DEFAULT_RUNTIME, ...options.runtime };
 
+  // Wrap the remote command with a visible checkpoint so the user sees proof
+  // the ssh pipeline is alive before the provider CLI enters alt-screen.
+  const remoteCommand = wrapWithLaunchCheckpoint(options.remoteCommand);
+
   const ssh2 = await runtime.loadSSH2();
+
+  io.log(color.yellow('Starting interactive authentication...'));
+  io.log(color.dim(`Transport: ${ssh2 ? 'ssh2 (bundled)' : 'system ssh (fallback)'}`));
+  io.log(color.dim('The provider CLI may take 5-15s to render its first screen after connecting.'));
+  io.log(
+    color.dim('A welcome / theme picker may appear before the sign-in step. Follow the on-screen prompts.')
+  );
+  io.log(color.dim('Wait for the CLI to render before pressing Ctrl+C.'));
+  io.log('');
 
   let execResult: InteractiveSessionResult | null = null;
   let execError: Error | null = null;
@@ -160,7 +212,9 @@ export async function runInteractiveSession(
 
       await Promise.race([
         sshReadyPromise,
-        new Promise<void>((_, reject) => runtime.setTimeout(() => reject(new Error('SSH connection timeout')), 15000)),
+        new Promise<void>((_, reject) =>
+          runtime.setTimeout(() => reject(new Error('SSH connection timeout')), 15000)
+        ),
       ]);
     } catch (err) {
       io.error(color.red(`Failed to connect via SSH: ${err instanceof Error ? err.message : String(err)}`));
@@ -175,30 +229,37 @@ export async function runInteractiveSession(
         const rows = process.stdout.rows || 24;
         const term = process.env.TERM || 'xterm-256color';
 
-        // Use shell() instead of exec() — some CLIs (e.g. claude) only produce
-        // output inside a proper login shell with full TTY environment.
+        dbg('shell-request', { term, cols, rows });
+        // Use shell() so the remote side sources its login-shell init files
+        // (/etc/profile, ~/.zprofile, nvm setup, …). Daytona's sandbox image
+        // populates the nvm-managed PATH (/usr/local/share/nvm/current/bin)
+        // from those init files, and without them the target CLIs (claude,
+        // codex) are not on PATH and fail to start silently. An exec channel
+        // with `{ pty }` was tried and produced zero output for this reason.
         sshClient.shell({ term, cols, rows }, (err, stream) => {
-          if (err) return reject(err);
-
-          // Send the command through the shell, then exit with its status
-          stream.write(`${command}; exit $?\n`);
+          if (err) {
+            dbg('shell-error', { message: err.message });
+            return reject(err);
+          }
+          dbg('shell-opened');
 
           let exitCode: number | null = null;
           let exitSignal: string | null = null;
           let authDetected = false;
           let outputBuffer = '';
+          // Gate pattern matching so shell MOTD (e.g. "Last logged in …")
+          // does not trigger the broad `/logged\s*in/i` success pattern
+          // before the target CLI has even started.
+          let patternMatchingEnabled = false;
+          // Track whether we've drawn the dim "waiting" hint so we can clear
+          // it the moment the remote CLI starts producing real output.
+          let hintVisible = false;
 
           const stdin = process.stdin;
           const stdout = process.stdout;
           const stderr = process.stderr;
 
           const wasRaw = (stdin as unknown as { isRaw?: boolean }).isRaw ?? false;
-          try {
-            stdin.setRawMode?.(true);
-          } catch {
-            // ignore
-          }
-          stdin.resume();
 
           const onStdinData = (data: Buffer) => {
             if (authDetected && (data[0] === 0x1b || data[0] === 0x03)) {
@@ -213,7 +274,6 @@ export async function runInteractiveSession(
             }
             stream.write(data);
           };
-          stdin.on('data', onStdinData);
 
           const cleanup = () => {
             stdin.off('data', onStdinData);
@@ -234,7 +294,30 @@ export async function runInteractiveSession(
             stdout.write('\n');
           };
 
+          let totalBytes = 0;
+          let firstByteAt: number | null = null;
+          const sessionStart = Date.now();
+
           stream.on('data', (data: Buffer) => {
+            totalBytes += data.length;
+            if (firstByteAt === null) {
+              firstByteAt = Date.now();
+              dbg('first-byte', {
+                elapsedMs: firstByteAt - sessionStart,
+                bytes: data.length,
+                preview: data.toString('utf8').slice(0, 120),
+              });
+              if (hintVisible) {
+                // Clear the dim "waiting" hint line before the remote CLI
+                // paints its own UI. \r moves to col 0, \x1b[2K clears the
+                // line, so the subsequent bytes (including any alt-screen
+                // switch) render from a known-clean state.
+                stdout.write('\r\x1b[2K');
+                hintVisible = false;
+              }
+            } else if (DEBUG) {
+              dbg('data-out', { bytes: data.length, totalBytes });
+            }
             stdout.write(data);
 
             outputBuffer += data.toString();
@@ -242,7 +325,7 @@ export async function runInteractiveSession(
               outputBuffer = outputBuffer.slice(-8192);
             }
 
-            if (!authDetected && successPatterns.length > 0) {
+            if (patternMatchingEnabled && !authDetected && successPatterns.length > 0) {
               const clean = stripAnsiCodes(outputBuffer);
               for (const pattern of successPatterns) {
                 if (pattern.test(clean)) {
@@ -252,7 +335,7 @@ export async function runInteractiveSession(
               }
             }
 
-            if (!authDetected && errorPatterns.length > 0) {
+            if (patternMatchingEnabled && !authDetected && errorPatterns.length > 0) {
               const matched = findMatchingError(outputBuffer, errorPatterns);
               if (matched) {
                 clearTimeout(timer);
@@ -268,6 +351,7 @@ export async function runInteractiveSession(
           });
 
           stream.stderr.on('data', (data: Buffer) => {
+            dbg('stderr-out', { bytes: data.length });
             stderr.write(data);
           });
 
@@ -278,7 +362,55 @@ export async function runInteractiveSession(
               // ignore
             }
           };
+
+          stream.on('exit', (code: unknown, signal?: unknown) => {
+            dbg('stream-exit', { code, signal });
+            if (typeof code === 'number') exitCode = code;
+            if (typeof signal === 'string') exitSignal = signal;
+          });
+
+          stream.on('close', () => {
+            dbg('stream-close', {
+              totalBytes,
+              firstByteAt: firstByteAt !== null ? firstByteAt - sessionStart : null,
+              exitCode,
+              exitSignal,
+              authDetected,
+            });
+            clearTimeout(timer);
+            cleanup();
+            if (totalBytes === 0 && !authDetected) {
+              io.log('');
+              io.error(
+                color.red('No output received from the remote auth command before the session closed.')
+              );
+              io.error(
+                color.dim(
+                  '  This usually means the remote CLI failed to start. Re-run with AGENT_RELAY_DEBUG_SSH=1 for details.'
+                )
+              );
+            }
+            resolve({ exitCode, exitSignal, authDetected });
+          });
+
+          stream.on('error', (streamErr: unknown) => {
+            dbg('stream-error', {
+              message: streamErr instanceof Error ? streamErr.message : String(streamErr),
+            });
+            clearTimeout(timer);
+            cleanup();
+            reject(streamErr instanceof Error ? streamErr : new Error(String(streamErr)));
+          });
+
           stdout.on('resize', onResize);
+          stdin.on('data', onStdinData);
+
+          try {
+            stdin.setRawMode?.(true);
+          } catch {
+            // ignore
+          }
+          stdin.resume();
 
           const timer = runtime.setTimeout(() => {
             cleanup();
@@ -290,29 +422,24 @@ export async function runInteractiveSession(
             reject(new Error(`Authentication timed out after ${Math.floor(commandTimeoutMs / 1000)}s`));
           }, commandTimeoutMs);
 
-          stream.on('exit', (code: unknown, signal?: unknown) => {
-            if (typeof code === 'number') exitCode = code;
-            if (typeof signal === 'string') exitSignal = signal;
-          });
+          const invocation = formatShellInvocation(command);
+          dbg('shell-write', { bytes: invocation.length, preview: invocation.slice(0, 200) });
+          stream.write(invocation);
+          // Reset the output buffer so pattern matching only considers output
+          // produced by the command we just wrote, not the shell's MOTD.
+          outputBuffer = '';
+          patternMatchingEnabled = true;
 
-          stream.on('close', () => {
-            clearTimeout(timer);
-            cleanup();
-            resolve({ exitCode, exitSignal, authDetected });
-          });
-
-          stream.on('error', (streamErr: unknown) => {
-            clearTimeout(timer);
-            cleanup();
-            reject(streamErr instanceof Error ? streamErr : new Error(String(streamErr)));
-          });
+          // Show a single-line dim hint so the user can see something is
+          // happening while the remote shell starts. As soon as the first
+          // byte comes back from the target CLI, we clear this line (see
+          // stream.on('data')) and hand the terminal over to the remote.
+          stdout.write(color.dim('  Waiting for provider CLI to launch…'));
+          hintVisible = true;
         });
       });
 
     try {
-      io.log(color.yellow('Starting interactive authentication...'));
-      io.log(color.dim('Follow the prompts below. The session will close automatically when auth completes.'));
-      io.log('');
       execResult = await execInteractive(remoteCommand, timeoutMs);
     } catch (err) {
       execError = err instanceof Error ? err : new Error(String(err));
@@ -336,10 +463,6 @@ export async function runInteractiveSession(
       sshArgs.push('-tt');
       sshArgs.push(`${ssh.user}@${ssh.host}`);
       sshArgs.push(remoteCommand);
-
-      io.log(color.yellow('Starting interactive authentication...'));
-      io.log(color.dim('Follow the prompts below.'));
-      io.log('');
 
       const child = runtime.spawnProcess('ssh', sshArgs, {
         stdio: 'inherit',
@@ -378,9 +501,14 @@ export async function runInteractiveSession(
     }
   }
 
+  // Authentication is only considered successful when the interactive session
+  // reported a positive pattern match. A shell exit code of 0 is NOT trusted:
+  // zsh stays alive after a failed `exec` in interactive mode, and a user
+  // closing the session with Ctrl+D produces exit 0 even though nothing was
+  // authenticated. Callers currently always supply `successPatterns`.
   return {
     exitCode: execError ? 1 : (execResult?.exitCode ?? null),
     exitSignal: execResult?.exitSignal ?? null,
-    authDetected: execError === null && (execResult?.authDetected === true || execResult?.exitCode === 0),
+    authDetected: execError === null && execResult?.authDetected === true,
   };
 }

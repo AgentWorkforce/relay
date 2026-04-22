@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 const sdkStatusClient = {
   getStatus: vi.fn(async () => ({ agent_count: 0, pending_delivery_count: 0 })),
+  getSession: vi.fn(async () => ({ workspace_key: '' }) as { workspace_key?: string }),
   disconnect: vi.fn(() => undefined),
 };
 
@@ -545,6 +546,7 @@ describe('registerCoreCommands', () => {
     const connectionPath = '/tmp/project/.agent-relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
     sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 4, pending_delivery_count: 2 });
+    sdkStatusClient.getSession.mockResolvedValueOnce({ workspace_key: 'rk_live_test123' });
 
     const { program, deps } = createHarness({ fs });
 
@@ -554,6 +556,25 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Status: RUNNING');
     expect(deps.log).toHaveBeenCalledWith('Agents: 4');
     expect(deps.log).toHaveBeenCalledWith('Pending deliveries: 2');
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_test123');
+    expect(deps.log).toHaveBeenCalledWith('Observer: https://agentrelay.com/observer?key=rk_live_test123');
+    expect(sdkStatusClient.disconnect).toHaveBeenCalled();
+  });
+
+  it('status omits workspace key and observer when broker has no workspace_key', async () => {
+    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
+    sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 0, pending_delivery_count: 0 });
+    sdkStatusClient.getSession.mockResolvedValueOnce({});
+
+    const { program, deps } = createHarness({ fs });
+
+    const exitCode = await runCommand(program, ['status']);
+
+    expect(exitCode).toBeUndefined();
+    const logCalls = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(logCalls.some((call) => String(call[0]).startsWith('Workspace Key:'))).toBe(false);
+    expect(logCalls.some((call) => String(call[0]).startsWith('Observer:'))).toBe(false);
     expect(sdkStatusClient.disconnect).toHaveBeenCalled();
   });
 

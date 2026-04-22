@@ -59,7 +59,7 @@ describe('TemplateResolver', () => {
       };
       const result = resolver.resolveVariables(config as any, { project: 'relay', env: 'prod' });
       expect(result.workflows![0].steps[0].task).toBe('Build relay');
-      expect(result.workflows![0].steps[1].command).toBe('deploy --env=prod');
+      expect(result.workflows![0].steps[1].command).toBe("deploy --env='prod'");
     });
 
     it('replaces variables in step params', () => {
@@ -99,7 +99,9 @@ describe('TemplateResolver', () => {
         swarm: { mode: 'coordinate' as const },
         agents: [{ name: 'a1', cli: 'claude', task: 'Deploy to {{missing_var}}' }],
       };
-      expect(() => resolver.resolveVariables(config as any, {})).toThrow('Unresolved variable: {{missing_var}}');
+      expect(() => resolver.resolveVariables(config as any, {})).toThrow(
+        'Unresolved variable: {{missing_var}}'
+      );
     });
 
     it('does not mutate the original config', () => {

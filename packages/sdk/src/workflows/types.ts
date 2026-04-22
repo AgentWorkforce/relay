@@ -70,12 +70,36 @@ export interface IdleNudgeConfig {
   maxNudges?: number;
 }
 
+/** Provider-specific credential settings for the credential proxy. */
+export interface CredentialProxyProviderConfig {
+  /** Reference to the credential in the credential store. */
+  credentialId: string;
+  /** Optional env var name to read the provider API key from as a fallback. */
+  apiKeyEnvVar?: string;
+}
+
+/** Swarm-level credential proxy configuration. */
+export interface CredentialProxyConfig {
+  /** Proxy endpoint URL. */
+  proxyUrl: string;
+  /** JWT signing secret. Defaults to env RELAY_PROXY_JWT_SECRET when omitted. */
+  jwtSecret?: string;
+  /** Default max-token budget per agent session. */
+  defaultBudget?: number;
+  /** Provider credential mappings keyed by provider name. */
+  providers: Record<string, CredentialProxyProviderConfig>;
+}
+
 /** Swarm-level settings controlling the overall pattern. */
 export interface SwarmConfig {
   pattern: SwarmPattern;
   maxConcurrency?: number;
   timeoutMs?: number;
+  /** Max total tokens across all steps in the workflow. */
+  tokenBudget?: number;
   channel?: string;
+  /** Optional credential proxy configuration for agent API access. */
+  credentialProxy?: CredentialProxyConfig;
   /** Idle agent detection and nudging configuration for interactive agents. */
   idleNudge?: IdleNudgeConfig;
   /**
@@ -118,6 +142,14 @@ export type SwarmPattern =
 
 export type AgentPreset = 'lead' | 'worker' | 'reviewer' | 'analyst';
 
+/** Optional credential settings for a workflow agent. */
+export interface AgentCredentialConfig {
+  /** Opt the agent into credential proxy mode. */
+  proxy?: boolean;
+  /** Override the provider used for proxy credential resolution. */
+  provider?: string;
+}
+
 /** Definition of an agent participating in a workflow. */
 export interface AgentDefinition {
   name: string;
@@ -152,6 +184,8 @@ export interface AgentDefinition {
    *   analyst  → interactive: false, reads code/files, writes findings, no sub-agents
    */
   preset?: AgentPreset;
+  /** Optional credential proxy settings for this agent. */
+  credentials?: AgentCredentialConfig;
   /** System prompt / skills for API-mode agents (cli: 'api'). */
   skills?: string;
 }
@@ -588,6 +622,22 @@ export interface VerificationCheck {
   type: 'output_contains' | 'exit_code' | 'file_exists' | 'custom';
   value: string;
   description?: string;
+  timeoutMs?: number;
+  /** Name of the agent to analyze verification failures before retrying. */
+  diagnosticAgent?: string;
+  /** Timeout for the diagnostic agent in milliseconds. Default: 60_000. */
+  diagnosticTimeout?: number;
+}
+
+/** Diagnostic output captured after a verification failure analysis run. */
+export interface DiagnosticResult {
+  agentName: string;
+  analysis: string;
+  durationMs: number;
+  tokens?: {
+    input: number;
+    output: number;
+  };
 }
 
 // ── Completion evidence ─────────────────────────────────────────────────────
@@ -836,6 +886,7 @@ export type WorkflowStepCompletionReason =
   | 'completed_by_process_exit'
   | 'retry_requested_by_owner'
   | 'failed_verification'
+  | 'failed_verification_with_diagnostic'
   | 'failed_owner_decision'
   | 'failed_no_evidence';
 
@@ -860,4 +911,34 @@ export interface WorkflowStepRow {
   retryCount: number;
   createdAt: string;
   updatedAt: string;
+}
+
+// ── ProcessBackend: cloud-injected execution environment ─────────────────────
+//
+// Relay owns command construction, auth env, cwd, timeout, and step lifecycle.
+// The backend owns execution environments (create VM, run command, destroy VM).
+// uploadFile is reserved for future file asset staging; current executors run
+// commands directly with env/cwd/timeout passed through exec options.
+
+/** Backend for creating isolated execution environments (e.g. Daytona sandboxes). */
+export interface ProcessBackend {
+  /** Create an isolated execution environment. */
+  createEnvironment(label: string): Promise<ProcessEnvironment>;
+}
+
+/** An isolated execution environment provisioned by a ProcessBackend. */
+export interface ProcessEnvironment {
+  /** Unique identifier for this environment. */
+  id: string;
+  /** Home directory inside the environment. */
+  homeDir: string;
+  /** Execute a shell command in the environment. */
+  exec(
+    command: string,
+    opts?: { cwd?: string; env?: Record<string, string>; timeoutSeconds?: number }
+  ): Promise<{ output: string; exitCode: number }>;
+  /** Upload a file into the environment. */
+  uploadFile(content: string | Buffer, remotePath: string): Promise<void>;
+  /** Tear down the environment and release resources. */
+  destroy(): Promise<void>;
 }

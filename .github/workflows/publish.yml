@@ -68,6 +68,7 @@ permissions:
 
 env:
   NPM_CONFIG_FUND: false
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
 
 jobs:
   # Build Rust broker binary for all platforms (needed by SDK's AgentRelayClient)
@@ -190,10 +191,20 @@ jobs:
             --minify \
             --target=${{ matrix.target }} \
             --external=better-sqlite3 \
-            --external=ssh2 \
             --define="process.env.AGENT_RELAY_VERSION=\"${{ needs.build.outputs.new_version }}\"" \
             ./dist/src/cli/index.js \
             --outfile release-binaries/${{ matrix.binary_name }}
+
+      - name: Verify ssh2 is bundled into binary
+        run: |
+          BIN="release-binaries/${{ matrix.binary_name }}"
+          if ! strings "$BIN" | grep -q 'ssh-userauth'; then
+            echo "FATAL: ssh2 protocol symbols missing from $BIN"
+            echo "The cloud connect command will hang in the fallback path."
+            echo "Check that --external=ssh2 is NOT passed to bun build."
+            exit 1
+          fi
+          echo "OK: ssh2 is bundled (ssh-userauth symbol present)"
 
       - name: Sign macOS binary
         if: startsWith(matrix.target, 'bun-darwin-')
@@ -400,15 +411,23 @@ jobs:
             const path = require('path');
             const version = '$NEW_VERSION';
 
-            // Update root package internal dependencies (both regular and dev)
-            const rootPkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            for (const depType of ['dependencies', 'devDependencies']) {
-              for (const dep of Object.keys(rootPkg[depType] || {})) {
-                if (dep.startsWith('@agent-relay/')) {
-                  rootPkg[depType][dep] = version;
+            // Update @agent-relay/* references across dependencies,
+            // devDependencies, and peerDependencies so sibling packages
+            // stay pinned to the same version we're about to publish.
+            const DEP_SECTIONS = ['dependencies', 'devDependencies', 'peerDependencies'];
+            const rewriteInternalRefs = (pkg) => {
+              for (const depType of DEP_SECTIONS) {
+                for (const dep of Object.keys(pkg[depType] || {})) {
+                  if (dep.startsWith('@agent-relay/')) {
+                    pkg[depType][dep] = version;
+                  }
                 }
               }
-            }
+            };
+
+            // Update root package internal dependencies
+            const rootPkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            rewriteInternalRefs(rootPkg);
             fs.writeFileSync('package.json', JSON.stringify(rootPkg, null, 2) + '\n');
 
             // Update all sub-packages: version + internal dependencies
@@ -423,14 +442,7 @@ jobs:
                 console.log('@agent-relay/' + dir);
                 console.log('v' + version);
 
-                // Update internal dependencies (both regular and dev)
-                for (const depType of ['dependencies', 'devDependencies']) {
-                  for (const dep of Object.keys(pkg[depType] || {})) {
-                    if (dep.startsWith('@agent-relay/')) {
-                      pkg[depType][dep] = version;
-                    }
-                  }
-                }
+                rewriteInternalRefs(pkg);
                 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
               }
             }
@@ -490,6 +502,7 @@ jobs:
           - openclaw
           - brand
           - gateway
+          - credential-proxy
           - github-primitive
           - browser-primitive
 

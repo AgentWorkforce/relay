@@ -1,13 +1,36 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { execFileSync, spawn as spawnProcess } from 'node:child_process';
+import { execFileSync, spawn as spawnProcess, spawnSync } from 'node:child_process';
 import { Command } from 'commander';
 import { getProjectPaths } from '@agent-relay/config';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
-import { enableTelemetry, disableTelemetry, getStatus, isDisabledByEnv } from '@agent-relay/telemetry';
+import {
+  enableTelemetry,
+  disableTelemetry,
+  getStatus,
+  isDisabledByEnv,
+  track,
+  type WorkflowFileType as TelemetryWorkflowFileType,
+} from '@agent-relay/telemetry';
 import { runWorkflow } from '@agent-relay/sdk/workflows';
 import type { WorkflowEvent } from '@agent-relay/sdk/workflows';
+import { CliExit, defaultExit } from '../lib/exit.js';
+import { errorClassName } from '../lib/telemetry-helpers.js';
+
+function diag(msg: string): void {
+  try {
+    process.stderr.write(`[agent-relay] ${msg}\n`);
+  } catch {
+    // Fallback: if stderr is closed, try stdout. Never throw.
+    try {
+      process.stdout.write(`[agent-relay] ${msg}\n`);
+    } catch {
+      // Both streams closed — silently give up. Never throw from diag().
+    }
+  }
+}
+
 type ExitFn = (code: number) => never;
 type RunInitOptions = {
   yes?: boolean;
@@ -49,7 +72,7 @@ export interface SetupDependencies {
   runScriptWorkflow: (
     filePath: string,
     options?: { dryRun?: boolean; resume?: string; startFrom?: string; previousRunId?: string }
-  ) => void;
+  ) => void | Promise<void>;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
@@ -58,9 +81,6 @@ interface SetupIo {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
-}
-function defaultExit(code: number): never {
-  process.exit(code);
 }
 function withDefaults(overrides: Partial<SetupDependencies> = {}): SetupDependencies {
   const log = overrides.log ?? ((...args: unknown[]) => console.log(...args));
@@ -155,10 +175,190 @@ export function ensureLocalSdkWorkflowRuntime(
   }
 }
 
-function runScriptFile(
+/**
+ * Parsed workflow parse error, normalized from whatever shape the tsx/esbuild
+ * subprocess produced on stderr. Decoupling this from any specific error class
+ * means the formatter is testable in isolation and works regardless of how
+ * the error surfaced (TransformError from tsx, Bun-bundled esbuild error, etc.).
+ */
+export interface ParsedWorkflowError {
+  file: string;
+  line?: number;
+  column?: number;
+  message: string;
+  lineText?: string;
+}
+
+/**
+ * Parse tsx's stderr for the esbuild parse-error fingerprint and extract a
+ * normalized {@link ParsedWorkflowError}. Returns null if nothing looks like
+ * a parse error — runtime errors, module-not-found, etc. pass through.
+ *
+ * We match two common esbuild output formats:
+ *   1. `/path/file.ts:LINE:COL: ERROR: message` (most common, one-liner)
+ *   2. `✘ [ERROR] message\n\n    /path/file.ts:LINE:COL:\n      LINE │ text\n           ╵ pointer`
+ *      (pretty-printed, multi-line)
+ */
+export function parseTsxStderr(stderr: string): ParsedWorkflowError | null {
+  // Strip ANSI color codes so our regex isn't thrown off by escape sequences.
+  // eslint-disable-next-line no-control-regex
+  const clean = stderr.replace(/\x1b\[[0-9;]*m/g, '');
+
+  // Format 1: file:line:col: ERROR: message
+  const inlineMatch = clean.match(/(\/[^\s:]+\.(?:ts|tsx|mts|cts)):(\d+):(\d+):\s*ERROR:\s*([^\n]+)/);
+  if (inlineMatch) {
+    return {
+      file: inlineMatch[1]!,
+      line: Number(inlineMatch[2]),
+      column: Number(inlineMatch[3]),
+      message: inlineMatch[4]!.trim(),
+    };
+  }
+
+  // Format 2: ✘ [ERROR] message ... file:line:col:
+  const prettyError = clean.match(/✘\s*\[ERROR\]\s*([^\n]+)/);
+  if (prettyError) {
+    const locationMatch = clean.match(/(\/[^\s:]+\.(?:ts|tsx|mts|cts)):(\d+):(\d+):/);
+    if (locationMatch) {
+      return {
+        file: locationMatch[1]!,
+        line: Number(locationMatch[2]),
+        column: Number(locationMatch[3]),
+        message: prettyError[1]!.trim(),
+      };
+    }
+  }
+
+  // Format 3: "Transform failed with N errors" — loose fallback, any file+loc pair
+  if (/Transform failed with \d+ error/i.test(clean) || /TransformError/.test(clean)) {
+    const looseMatch = clean.match(/(\/[^\s:]+\.(?:ts|tsx|mts|cts)):(\d+):(\d+)/);
+    if (looseMatch) {
+      return {
+        file: looseMatch[1]!,
+        line: Number(looseMatch[2]),
+        column: Number(looseMatch[3]),
+        message: 'TypeScript parse error (see tsx output above)',
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Format a {@link ParsedWorkflowError} as an actionable workflow-author error
+ * message with hints keyed off the most common mistakes in `command:` /
+ * `task:` template literals.
+ */
+export function formatWorkflowParseError(parsed: ParsedWorkflowError): Error {
+  const where =
+    parsed.line !== undefined
+      ? `${parsed.file}:${parsed.line}${parsed.column !== undefined ? `:${parsed.column}` : ''}`
+      : parsed.file;
+
+  const hints: string[] = [];
+  const text = parsed.message;
+
+  if (/Expected "\}" but found/i.test(text) || /Unterminated template literal/i.test(text)) {
+    hints.push(
+      'Likely a JavaScript template literal metacharacter inside a `command:` or `task:` block. ' +
+        'Inside workflow .ts files every `command: \\`...\\`` is a JavaScript template literal — ' +
+        'backticks terminate it and `${...}` triggers JS interpolation before the shell ever sees the string.',
+      'Fixes: use single quotes instead of backticks in prose/commit messages; ' +
+        'for shell variables use `$VAR` (no braces) or escape as `\\${VAR}`; ' +
+        'never write literal `\\n` inside a shell comment (it becomes a real newline).'
+    );
+  }
+
+  if (/Unexpected "\$"/.test(text)) {
+    hints.push(
+      'Unexpected `$` inside a template literal usually means `${...}` was interpreted as JS interpolation. ' +
+        'Escape it as `\\${...}` or drop the braces and use plain `$VAR`.'
+    );
+  }
+
+  if (/Expected identifier/.test(text) && /template/i.test(text)) {
+    hints.push(
+      'A template literal interpolation `${...}` needs a valid JS expression inside. ' +
+        'If you meant a shell variable, escape the `$` or drop the braces.'
+    );
+  }
+
+  const lines = ['', `Workflow file failed to parse: ${where}`, `  ${text}`];
+  if (parsed.lineText) {
+    lines.push(`  | ${parsed.lineText}`);
+    if (parsed.column !== undefined && parsed.column >= 0) {
+      lines.push(`  | ${' '.repeat(parsed.column)}^`);
+    }
+  }
+  if (hints.length > 0) {
+    lines.push('');
+    for (const hint of hints) {
+      lines.push(`Hint: ${hint}`);
+    }
+  }
+  lines.push('');
+
+  const wrapped = new Error(lines.join('\n'));
+  (wrapped as Error & { code?: string }).code = 'WORKFLOW_PARSE_ERROR';
+  return wrapped;
+}
+
+/**
+ * Spawn a TypeScript runner (tsx, ts-node, npx tsx) with stdin/stdout
+ * inherited and stderr tee'd to both the user's terminal and an internal
+ * buffer. The buffer is inspected on non-zero exit to produce actionable
+ * error messages for workflow parse errors.
+ *
+ * Why this instead of `spawnSync({ stdio: 'inherit' })`: sync + inherit makes
+ * it impossible to post-process stderr. Async + tee gives us the best of
+ * both worlds — live progress for the user AND captured stderr for the
+ * parse-error wrapper.
+ */
+interface SpawnRunnerResult {
+  status: number | null;
+  stderr: string;
+  error?: NodeJS.ErrnoException;
+}
+
+async function spawnRunnerWithStderrCapture(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv
+): Promise<SpawnRunnerResult> {
+  return new Promise((resolve) => {
+    const child = spawnProcess(command, args, {
+      stdio: ['inherit', 'inherit', 'pipe'],
+      env,
+    });
+
+    let stderrBuf = '';
+
+    child.stderr?.on('data', (chunk: Buffer | string) => {
+      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      stderrBuf += text;
+      try {
+        process.stderr.write(text);
+      } catch {
+        // stderr closed — keep buffering for post-processing.
+      }
+    });
+
+    child.on('error', (err: NodeJS.ErrnoException) => {
+      resolve({ status: null, stderr: stderrBuf, error: err });
+    });
+
+    child.on('close', (status) => {
+      resolve({ status, stderr: stderrBuf });
+    });
+  });
+}
+
+async function runScriptFile(
   filePath: string,
   options: { dryRun?: boolean; resume?: string; startFrom?: string; previousRunId?: string } = {}
-): void {
+): Promise<void> {
+  diag(`runScriptFile: resolving ${filePath}`);
   const resolved = path.resolve(filePath);
   if (!fs.existsSync(resolved)) {
     throw new Error(`File not found: ${resolved}`);
@@ -209,40 +409,95 @@ Run ID: ${runId}`;
   };
 
   if (ext === '.ts' || ext === '.tsx') {
+    diag('runScriptFile: ensureLocalSdkWorkflowRuntime start');
     ensureLocalSdkWorkflowRuntime(path.dirname(resolved));
+    diag('runScriptFile: ensureLocalSdkWorkflowRuntime done');
 
-    const runners = ['tsx', 'ts-node'];
-    for (const runner of runners) {
-      try {
-        execFileSync(runner, [resolved], { stdio: 'inherit', env: childEnv });
-        cleanupRunIdFile();
-        return;
-      } catch (err: any) {
-        if (err?.code !== 'ENOENT') {
-          return augmentErrorWithRunId(err);
-        }
+    // Wrap a runner exit in an actionable workflow parse error if the
+    // captured stderr looks like esbuild tripped on a template literal.
+    // Otherwise fall through to a plain exit-code error (stderr was
+    // already live-streamed to the terminal).
+    const wrapRunnerError = (runner: string, result: SpawnRunnerResult): Error => {
+      const parsed = parseTsxStderr(result.stderr);
+      if (parsed) {
+        return formatWorkflowParseError(parsed);
       }
-    }
-    try {
-      execFileSync('npx', ['tsx', resolved], { stdio: 'inherit', env: childEnv });
+      return new Error(`${runner} exited with code ${result.status}`);
+    };
+
+    // Prefer Node's built-in type stripping (Node 22.6+) — no extra deps,
+    // no tsx CJS resolver quirks walking node_modules. Falls through to
+    // tsx/ts-node on older Nodes (they exit non-zero with an unknown-flag
+    // error, not ENOENT, so we treat any non-zero from this runner as a
+    // "try the next runner" signal rather than a real user error).
+    const runners: Array<{ label: string; bin: string; preArgs: string[] }> = [
+      {
+        label: 'node --experimental-strip-types',
+        bin: 'node',
+        preArgs: ['--experimental-strip-types', '--no-warnings=ExperimentalWarning'],
+      },
+      { label: 'tsx', bin: 'tsx', preArgs: [] },
+      { label: 'ts-node', bin: 'ts-node', preArgs: [] },
+    ];
+    for (const { label, bin, preArgs } of runners) {
+      diag(`runScriptFile: trying runner ${label}`);
+      const result = await spawnRunnerWithStderrCapture(bin, [...preArgs, resolved], childEnv);
+      if (result.error) {
+        if ((result.error as NodeJS.ErrnoException).code === 'ENOENT') {
+          diag(`runScriptFile: runner ${label} returned ENOENT — trying next`);
+          continue;
+        }
+        return augmentErrorWithRunId(result.error);
+      }
+      if (result.status !== 0) {
+        // Node exits with code 9 ("Invalid Argument") when it doesn't
+        // recognise --experimental-strip-types (Node <22.6). Only skip
+        // to the next runner for that specific exit code; any other
+        // non-zero status is a real script failure.
+        if (bin === 'node' && result.status === 9) {
+          diag(`runScriptFile: runner ${label} unsupported on this Node (exit 9) — trying next`);
+          continue;
+        }
+        return augmentErrorWithRunId(wrapRunnerError(label, result));
+      }
+      diag(`runScriptFile: runner ${label} completed exit=0`);
       cleanupRunIdFile();
-    } catch (err: any) {
-      return augmentErrorWithRunId(err);
+      return;
     }
+    diag('runScriptFile: falling back to npx tsx');
+    const npxResult = await spawnRunnerWithStderrCapture('npx', ['tsx', resolved], childEnv);
+    if (npxResult.error) {
+      return augmentErrorWithRunId(npxResult.error);
+    }
+    if (npxResult.status !== 0) {
+      return augmentErrorWithRunId(wrapRunnerError('npx tsx', npxResult));
+    }
+    diag('runScriptFile: npx tsx completed');
+    cleanupRunIdFile();
     return;
   }
   if (ext === '.py') {
     const runners = ['python3', 'python'];
     for (const runner of runners) {
-      try {
-        execFileSync(runner, [resolved], { stdio: 'inherit', env: childEnv });
-        cleanupRunIdFile();
-        return;
-      } catch (err: any) {
-        if (err?.code !== 'ENOENT') {
-          return augmentErrorWithRunId(err);
+      diag(`runScriptFile: trying runner ${runner}`);
+      const spawnResult = spawnSync(runner, [resolved], {
+        stdio: 'inherit',
+        env: childEnv,
+      });
+      if (spawnResult.error) {
+        if ((spawnResult.error as NodeJS.ErrnoException).code === 'ENOENT') {
+          diag(`runScriptFile: runner ${runner} returned ENOENT — trying next`);
+          continue;
         }
+        return augmentErrorWithRunId(spawnResult.error);
       }
+      if (spawnResult.status !== 0) {
+        const err = new Error(`${runner} exited with code ${spawnResult.status}`);
+        return augmentErrorWithRunId(err);
+      }
+      diag(`runScriptFile: runner ${runner} completed exit=0`);
+      cleanupRunIdFile();
+      return;
     }
     cleanupRunIdFile();
     throw new Error('Python not found. Install Python 3.10+ to run .py workflow files.');
@@ -267,6 +522,8 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
     if (!normalized) return defaultYes;
     return normalized === 'y' || normalized === 'yes';
   };
+  const yesFlag = Boolean(options.yes);
+  const skipBrokerFlag = Boolean(options.skipBroker);
   io.log('');
   io.log('  ╭─────────────────────────────────────╮');
   io.log('  │                                     │');
@@ -281,6 +538,13 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
     io.log('  ℹ  Detected: Cloud workspace');
     io.log('     MCP tools are pre-configured in cloud environments.');
     io.log('');
+    track('setup_init', {
+      is_cloud: true,
+      broker_was_running: false,
+      user_started_broker: false,
+      yes_flag: yesFlag,
+      skip_broker: skipBrokerFlag,
+    });
     return;
   }
   io.log('  ℹ  Detected: Local environment');
@@ -296,6 +560,8 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
       // Process dead — stale connection file
     }
   }
+  const brokerWasRunning = brokerRunning;
+  let userStartedBroker = false;
   if (brokerRunning) {
     io.log('  ✓  Broker is already running');
   } else {
@@ -324,6 +590,7 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
       io.log('  ✓  Broker started in background');
       io.log('');
       brokerRunning = true;
+      userStartedBroker = true;
     }
   }
   io.log('  ╭─────────────────────────────────────────────────────────╮');
@@ -352,11 +619,18 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
   io.log('');
   io.log('  Dashboard: http://localhost:3888 (when broker is running)');
   io.log('');
+  track('setup_init', {
+    is_cloud: false,
+    broker_was_running: brokerWasRunning,
+    user_started_broker: userStartedBroker,
+    yes_flag: yesFlag,
+    skip_broker: skipBrokerFlag,
+  });
 }
 function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
   if (action === 'enable') {
     if (isDisabledByEnv()) {
-      io.log('Cannot enable: AGENT_RELAY_TELEMETRY_DISABLED is set');
+      io.log('Cannot enable: AGENT_RELAY_TELEMETRY_DISABLED or DO_NOT_TRACK is set');
       io.log('Remove the environment variable to enable telemetry.');
       return;
     }
@@ -376,7 +650,7 @@ function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
   io.log('================');
   io.log(`Enabled: ${status.enabled ? 'Yes' : 'No'}`);
   if (status.disabledByEnv) {
-    io.log('(Disabled via AGENT_RELAY_TELEMETRY_DISABLED environment variable)');
+    io.log('(Disabled via AGENT_RELAY_TELEMETRY_DISABLED or DO_NOT_TRACK environment variable)');
   }
   io.log(`Anonymous ID: ${status.anonymousId}`);
   if (status.notifiedAt) {
@@ -426,10 +700,34 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
     .option('--start-from <step>', 'Start from a specific step and skip predecessor steps')
     .option('--previous-run-id <runId>', 'Use cached outputs from a previous run when starting from a step')
     .action(async (filePath: string, options: RunWorkflowOptions) => {
-      let isScriptWorkflow = false;
+      const ext = path.extname(filePath).toLowerCase();
+      const isScriptWorkflow = ext === '.ts' || ext === '.tsx' || ext === '.py';
+      const fileType: TelemetryWorkflowFileType =
+        ext === '.yaml' || ext === '.yml'
+          ? 'yaml'
+          : ext === '.ts' || ext === '.tsx'
+            ? 'ts'
+            : ext === '.py'
+              ? 'py'
+              : 'unknown';
+      const started = Date.now();
+      let tracked = false;
+      const emit = (result: { success: boolean; errorClass?: string }): void => {
+        if (tracked) return;
+        tracked = true;
+        track('workflow_run', {
+          file_type: fileType,
+          is_dry_run: Boolean(options.dryRun),
+          is_resume: Boolean(options.resume),
+          is_start_from: Boolean(options.startFrom),
+          is_script: isScriptWorkflow,
+          success: result.success,
+          duration_ms: Date.now() - started,
+          ...(result.errorClass ? { error_class: result.errorClass } : {}),
+        });
+      };
+
       try {
-        const ext = path.extname(filePath).toLowerCase();
-        isScriptWorkflow = ext === '.ts' || ext === '.tsx' || ext === '.py';
         if (ext === '.yaml' || ext === '.yml') {
           if (options.resume) {
             deps.log(`Resuming workflow run ${options.resume} from ${filePath}...`);
@@ -440,11 +738,13 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
             });
             if (result.status === 'completed') {
               deps.log('\nWorkflow resumed and completed successfully.');
+              emit({ success: true });
             } else {
               deps.error(`\nWorkflow ${result.status}${result.error ? `: ${result.error}` : ''}`);
               deps.error(
                 `Run ID: ${result.id} — resume with: agent-relay run ${filePath} --resume ${result.id}`
               );
+              emit({ success: false, errorClass: 'WorkflowNotCompleted' });
               deps.exit(1);
             }
             return;
@@ -464,32 +764,43 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
           });
           if (options.dryRun) {
             // Report was already printed by runWorkflow
+            emit({ success: true });
             return;
           }
           if (result.status === 'completed') {
             deps.log('\nWorkflow completed successfully.');
+            emit({ success: true });
           } else {
             deps.error(`\nWorkflow ${result.status}${result.error ? `: ${result.error}` : ''}`);
             deps.error(
               `Run ID: ${result.id} — resume with: agent-relay run ${filePath} --resume ${result.id}`
             );
+            emit({ success: false, errorClass: 'WorkflowNotCompleted' });
             deps.exit(1);
           }
           return;
         }
         if (ext === '.ts' || ext === '.tsx' || ext === '.py') {
           deps.log(`Running workflow script ${filePath}...`);
-          deps.runScriptWorkflow(filePath, {
+          await deps.runScriptWorkflow(filePath, {
             dryRun: options.dryRun,
             resume: options.resume,
             startFrom: options.startFrom,
             previousRunId: options.previousRunId,
           });
+          emit({ success: true });
           return;
         }
         deps.error(`Unsupported file type: ${ext}. Use .yaml, .yml, .ts, or .py`);
+        emit({ success: false, errorClass: 'UnsupportedFileType' });
         deps.exit(1);
       } catch (err: any) {
+        // `deps.exit(1)` above throws `CliExit` in production so runCli can
+        // flush telemetry — let that bubble straight through instead of
+        // treating it as an unexpected error (which would print the internal
+        // "cli-exit:1" message and clobber `error_class` with 'CliExit').
+        if (err instanceof CliExit) throw err;
+        emit({ success: false, errorClass: errorClassName(err) });
         deps.error(`Error: ${err.message}`);
         if (isScriptWorkflow) {
           const runIdMatch = typeof err?.message === 'string' ? err.message.match(/Run ID:\s*(\S+)/) : null;

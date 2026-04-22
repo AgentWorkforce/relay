@@ -62,6 +62,20 @@ function createWorkdir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'relay-wf-ni-'));
 }
 
+function createEnvEchoCliDir(cliName: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-wf-ni-cli-'));
+  const scriptPath = path.join(dir, cliName);
+  const script = `#!/usr/bin/env bash
+printf 'RELAY_LLM_PROXY=%s\n' "\${RELAY_LLM_PROXY:-}"
+printf 'RELAY_LLM_PROXY_URL=%s\n' "\${RELAY_LLM_PROXY_URL:-}"
+printf 'CREDENTIAL_PROXY_TOKEN=%s\n' "\${CREDENTIAL_PROXY_TOKEN:-}"
+printf 'RELAY_LLM_PROXY_TOKEN=%s\n' "\${RELAY_LLM_PROXY_TOKEN:-}"
+printf 'OPENAI_API_KEY=%s\n' "\${OPENAI_API_KEY:-}"
+`;
+  fs.writeFileSync(scriptPath, script, { mode: 0o755 });
+  return dir;
+}
+
 /** Copy the project .mcp.json into workdir so claude loads the MCP server. */
 function injectMcpJson(workdir: string): void {
   const src = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../../.mcp.json');
@@ -116,7 +130,7 @@ async function runWorkflow(
   config: RelayYamlConfig,
   workdir: string,
   relayEnv?: NodeJS.ProcessEnv
-): Promise<{ status: string; error?: string; stepError?: string }> {
+): Promise<{ status: string; error?: string; stepError?: string; stepOutput?: string }> {
   const apiKey = await ensureApiKey();
   const env = {
     ...process.env,
@@ -132,18 +146,20 @@ async function runWorkflow(
     },
   });
 
-  const events: Array<{ type: string; error?: string; stepName?: string }> = [];
+  const events: Array<{ type: string; error?: string; stepName?: string; output?: string }> = [];
   runner.on((event) => events.push(event as (typeof events)[0]));
 
   try {
     const run = await runner.execute(config, 'default');
 
     const stepFailed = events.find((e) => e.type === 'step:failed' && e.stepName === 'check');
+    const stepCompleted = events.find((e) => e.type === 'step:completed' && e.stepName === 'check');
 
     return {
       status: run.status,
       error: run.error,
       stepError: stepFailed?.error,
+      stepOutput: stepCompleted?.output,
     };
   } catch (err: unknown) {
     return {
@@ -198,6 +214,46 @@ test(
       );
     } finally {
       if (prevSentinel !== undefined) process.env[sentinelKey] = prevSentinel;
+      fs.rmSync(workdir, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
+  'non-interactive: legacy proxy env names are normalized and reach subprocesses',
+  { timeout: 60_000 },
+  async (t) => {
+    if (skipIfMissing(t) || skipIfNestedClaude(t)) return;
+
+    const workdir = createWorkdir();
+    const fakeCliDir = createEnvEchoCliDir('claude');
+
+    try {
+      const config = makeNonInteractiveConfig({
+        task: 'Print the current proxy-related environment variables.',
+        verification: { type: 'output_contains', value: 'RELAY_LLM_PROXY=https://legacy.proxy.local' },
+        stepTimeoutMs: 30_000,
+      });
+      config.agents[0] = {
+        ...config.agents[0],
+        credentials: { proxy: true },
+      } as any;
+
+      const result = await runWorkflow(config, workdir, {
+        PATH: `${fakeCliDir}${path.delimiter}${process.env.PATH ?? ''}`,
+        RELAY_LLM_PROXY_URL: 'https://legacy.proxy.local',
+        RELAY_LLM_PROXY_TOKEN: 'legacy-token',
+        OPENAI_API_KEY: 'should-strip',
+      });
+
+      assert.equal(result.status, 'completed', result.error ?? result.stepError ?? '(no error)');
+      assert.match(result.stepOutput ?? '', /RELAY_LLM_PROXY=https:\/\/legacy\.proxy\.local/);
+      assert.match(result.stepOutput ?? '', /RELAY_LLM_PROXY_URL=https:\/\/legacy\.proxy\.local/);
+      assert.match(result.stepOutput ?? '', /CREDENTIAL_PROXY_TOKEN=legacy-token/);
+      assert.match(result.stepOutput ?? '', /RELAY_LLM_PROXY_TOKEN=legacy-token/);
+      assert.doesNotMatch(result.stepOutput ?? '', /OPENAI_API_KEY=should-strip/);
+    } finally {
+      fs.rmSync(fakeCliDir, { recursive: true, force: true });
       fs.rmSync(workdir, { recursive: true, force: true });
     }
   }

@@ -190,11 +190,11 @@
   --nav-inset: rgba(255, 255, 255, 0.05);
   --nav-logo-wordmark: var(--nav-fg);
   --nav-logo-mark: var(--primary);
-  --footer-bg: #050B12;
+  --footer-bg: linear-gradient(180deg, #10263A 0%, #08111A 100%);
   --footer-fg: #EDF4FB;
   --footer-muted: rgba(237, 244, 251, 0.72);
   --footer-faint: rgba(237, 244, 251, 0.42);
-  --footer-line: rgba(255, 255, 255, 0.1);
+  --footer-line: rgba(116, 184, 226, 0.18);
   --btn-bg: #3B789F;
   --btn-hover: #366D98;
   --hero-gradient: linear-gradient(180deg, #08111A 0%, #10263A 56%, #0A1724 100%);

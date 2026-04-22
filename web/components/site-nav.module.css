@@ -194,6 +194,9 @@
   flex-direction: column;
   padding: 6px 14px 16px;
   gap: 4px;
+  max-height: min(72vh, calc(100vh - 88px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .mobileLink {

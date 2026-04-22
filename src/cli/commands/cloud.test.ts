@@ -36,6 +36,7 @@ describe('registerCloudCommands', () => {
       'status',
       'logs',
       'sync',
+      'cancel',
     ]);
   });
 
@@ -91,5 +92,15 @@ describe('registerCloudCommands', () => {
     expect(sync).toBeDefined();
     const optionNames = sync?.options.map((option) => option.long);
     expect(optionNames).toContain('--dry-run');
+  });
+
+  it('registers cloud cancel subcommand', () => {
+    const { program } = createHarness();
+    const cloud = program.commands.find((command) => command.name() === 'cloud');
+    const cancel = cloud?.commands.find((command) => command.name() === 'cancel');
+
+    expect(cancel).toBeDefined();
+    expect(cancel?.registeredArguments[0]?.required).toBe(true);
+    expect(cancel?.registeredArguments[0]?.name()).toBe('runId');
   });
 });

@@ -35,7 +35,13 @@ function findPackageJson(startDir: string): string | null {
   return null;
 }
 
-function getVersion(): string {
+/**
+ * Fallback version reader — walks up from the telemetry package's own
+ * `__dirname`. In an installed layout this resolves to the telemetry
+ * package's `package.json`, which is NOT meaningful to the product.
+ * Prefer having the caller pass explicit versions via `initTelemetry()`.
+ */
+function getFallbackVersion(): string {
   try {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = path.dirname(__filename);
@@ -50,9 +56,23 @@ function getVersion(): string {
   return 'unknown';
 }
 
-function buildCommonProperties(): CommonProperties {
+function buildCommonProperties(versions: {
+  cliVersion?: string;
+  sdkVersion?: string;
+  brokerVersion?: string;
+}): CommonProperties {
+  // The primary version depends on who's emitting: prefer CLI > broker > SDK
+  // > fallback. This keeps `agent_relay_version` meaningful for existing
+  // dashboards while the typed `cli_version`/`sdk_version`/`broker_version`
+  // fields carry the precise per-component versions.
+  const primary =
+    versions.cliVersion ?? versions.brokerVersion ?? versions.sdkVersion ?? getFallbackVersion();
+
   return {
-    agent_relay_version: getVersion(),
+    agent_relay_version: primary,
+    ...(versions.cliVersion ? { cli_version: versions.cliVersion } : {}),
+    ...(versions.sdkVersion ? { sdk_version: versions.sdkVersion } : {}),
+    ...(versions.brokerVersion ? { broker_version: versions.brokerVersion } : {}),
     os: process.platform,
     os_version: os.release(),
     node_version: process.version.slice(1),
@@ -77,7 +97,22 @@ function showFirstRunNotice(): void {
   markNotified();
 }
 
-export function initTelemetry(options: { showNotice?: boolean } = {}): void {
+export interface InitTelemetryOptions {
+  /** Whether to show the first-run telemetry notice. Default: true. */
+  showNotice?: boolean;
+  /**
+   * The emitter's own CLI version, e.g. the root `agent-relay` package version.
+   * Pass this explicitly — the fallback auto-detection resolves the *telemetry*
+   * package's `package.json`, not the product's.
+   */
+  cliVersion?: string;
+  /** Resolved `@agent-relay/sdk` version, if known. */
+  sdkVersion?: string;
+  /** `agent-relay-broker` Rust binary version, if known. */
+  brokerVersion?: string;
+}
+
+export function initTelemetry(options: InitTelemetryOptions = {}): void {
   if (initialized) return;
   initialized = true;
 
@@ -97,7 +132,11 @@ export function initTelemetry(options: { showNotice?: boolean } = {}): void {
     disableGeoip: false, // CLI runs on user's machine, so IP is correct for geo
   });
 
-  commonProps = buildCommonProperties();
+  commonProps = buildCommonProperties({
+    cliVersion: options.cliVersion,
+    sdkVersion: options.sdkVersion,
+    brokerVersion: options.brokerVersion,
+  });
   anonymousId = getAnonymousId();
 }
 

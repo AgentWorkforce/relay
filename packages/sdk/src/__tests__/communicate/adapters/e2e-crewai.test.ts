@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import test from 'node:test';
+import { test } from 'vitest';
 
 import { Relay } from '../../../communicate/core.js';
 import { onRelay, onCrewRelay } from '../../../communicate/adapters/crewai.js';
@@ -15,8 +15,13 @@ function createAgent(role: string) {
   };
 }
 
-test('CrewAI adapter e2e: onRelay tools work against live Relaycast', async () => {
-  const relay = new Relay(AGENT_NAME, { autoCleanup: false });
+test('CrewAI adapter e2e: onRelay tools work against live Relaycast', async (t) => {
+  const workspace = process.env.RELAY_WORKSPACE?.trim();
+  if (!workspace) {
+    t.skip('RELAY_WORKSPACE is required');
+  }
+
+  const relay = new Relay(AGENT_NAME, { autoCleanup: false, workspace });
 
   try {
     const agent = createAgent(AGENT_NAME);
@@ -44,7 +49,10 @@ test('CrewAI adapter e2e: onRelay tools work against live Relaycast', async () =
     assert.ok(sendResult.includes('Sent relay message'), 'Expected send confirmation');
 
     // relay_post: post to general channel
-    const postResult = await relayPost.execute({ channel: 'general', text: `e2e crewai test from ${AGENT_NAME}` });
+    const postResult = await relayPost.execute({
+      channel: 'general',
+      text: `e2e crewai test from ${AGENT_NAME}`,
+    });
     console.log('relay_post result:', postResult);
     assert.ok(postResult.includes('Posted relay message'), 'Expected post confirmation');
 
@@ -62,11 +70,16 @@ test('CrewAI adapter e2e: onRelay tools work against live Relaycast', async () =
     await relay.close();
     console.log('Relay connection closed.');
   }
-});
+}, 20_000);
 
-test('CrewAI adapter e2e: onCrewRelay adds tools to all crew agents', async () => {
+test('CrewAI adapter e2e: onCrewRelay adds tools to all crew agents', async (t) => {
+  const workspace = process.env.RELAY_WORKSPACE?.trim();
+  if (!workspace) {
+    t.skip('RELAY_WORKSPACE is required');
+  }
+
   const crewAgentName = `e2e-crew-${randomUUID().slice(0, 8)}`;
-  const relay = new Relay(crewAgentName, { autoCleanup: false });
+  const relay = new Relay(crewAgentName, { autoCleanup: false, workspace });
 
   try {
     const agent1 = createAgent('researcher');
@@ -98,4 +111,4 @@ test('CrewAI adapter e2e: onCrewRelay adds tools to all crew agents', async () =
     await relay.close();
     console.log('Crew relay connection closed.');
   }
-});
+}, 20_000);

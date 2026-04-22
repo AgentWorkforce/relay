@@ -251,8 +251,22 @@ class AgentRelayClient:
         client._stderr_task = stderr_task
         client._process = process
 
-        # Get session metadata
-        session = await client.get_session()
+        # Broker may still be connecting to Relaycast after binding its API
+        # listener. Retry get_session with backoff while it returns 503.
+        # Mirrors packages/sdk/src/client.ts.
+        session: Optional[dict[str, Any]] = None
+        last_error: Optional[Exception] = None
+        for attempt in range(10):
+            try:
+                session = await client.get_session()
+                break
+            except AgentRelayProtocolError as err:
+                last_error = err
+                is_503 = err.code == "http_503" or "Service Unavailable" in str(err)
+                if not is_503 or attempt >= 9:
+                    raise
+                await asyncio.sleep(1.0)
+        assert session is not None, last_error
         client.workspace_key = session.get("workspace_key")
 
         # Start event stream

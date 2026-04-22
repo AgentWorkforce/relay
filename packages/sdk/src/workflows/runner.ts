@@ -30,6 +30,13 @@ import type { BrokerEvent } from '../protocol.js';
 import { resolveSpawnPolicy } from '../spawn-from-env.js';
 import { getCliDefinition } from '../cli-registry.js';
 import { resolveCliSync } from '../cli-resolver.js';
+import {
+  buildNormalizedProxyEnv,
+  getStrippedApiKeyVars,
+  resolveProxyEnv,
+  resolveProxyTokenFromEnv,
+  resolveProxyUrlFromEnv,
+} from './proxy-env.js';
 
 import {
   loadCustomSteps,
@@ -42,9 +49,11 @@ import { provisionWorkflowAgents, resolveAgentPermissions } from '../provisioner
 import type { MountHandle } from '../provisioner/mount.js';
 import { collectCliSession, type CliSessionReport } from './cli-session-collector.js';
 import { executeApiStep } from './api-executor.js';
+import { BudgetExceededError, BudgetTracker } from './budget-tracker.js';
 import { ChannelMessenger } from './channel-messenger.js';
 import { InMemoryWorkflowDb } from './memory-db.js';
 import { buildCommand as buildProcessCommand, spawnProcess } from './process-spawner.js';
+import { createProcessBackendExecutor } from './process-backend-executor.js';
 import { formatRunSummaryTable } from './run-summary-table.js';
 import {
   StepExecutor as WorkflowStepLifecycleExecutor,
@@ -90,6 +99,7 @@ import type {
   WorkflowStepCompletionReason,
   WorkflowStepRow,
   WorkflowStepStatus,
+  ProcessBackend,
 } from './types.js';
 import { WorkflowTrajectory, type StepOutcome } from './trajectory.js';
 import {
@@ -127,6 +137,10 @@ const ENV_ALLOWLIST = new Set([
   'RUST_BACKTRACE',
   'RELAY_API_KEY',
   'RELAYCAST_BASE_URL',
+  'RELAY_LLM_PROXY',
+  'RELAY_LLM_PROXY_URL',
+  'CREDENTIAL_PROXY_TOKEN',
+  'RELAY_LLM_PROXY_TOKEN',
   'AGENT_RELAY_DASHBOARD_PORT',
   'AGENT_RELAY_RUN_ID_FILE',
   'EDITOR',
@@ -145,6 +159,26 @@ const ENV_ALLOWLIST = new Set([
   'XDG_DATA_HOME',
   'XDG_CACHE_HOME',
 ]);
+
+type ProxyProvider = 'openai' | 'anthropic' | 'openrouter';
+
+interface ProxyModeConfig {
+  token: string;
+  url: string;
+}
+
+interface ProxyTokenClaims {
+  sub: string;
+  aud: 'relay-llm-proxy';
+  provider: ProxyProvider;
+  credentialId: string;
+  budget?: number;
+  exp?: number;
+}
+
+interface CredentialProxyModule {
+  mintProxyToken: (claims: ProxyTokenClaims, secret: string) => Promise<string>;
+}
 
 /** Return a filtered copy of process.env containing only allowlisted keys. */
 function filteredEnv(extra?: Record<string, string | undefined>): Record<string, string | undefined> {
@@ -257,6 +291,17 @@ export interface WorkflowRunnerOptions {
   summaryDir?: string;
   executor?: RunnerStepExecutor;
   envSecrets?: Record<string, string>;
+  /**
+   * Process backend for remote execution environments.
+   * When set without an explicit executor, the runner wraps it in a
+   * RunnerStepExecutor that creates isolated environments for agent and
+   * deterministic steps. The runner builds CLI commands and passes auth env,
+   * cwd, and timeout; the backend provides create/exec/destroy primitives.
+   *
+   * When both executor and processBackend are set, executor takes precedence.
+   * When neither is set, the broker spawns local child processes (default).
+   */
+  processBackend?: ProcessBackend;
 }
 
 // ── Step executor interface ──────────────────────────────────────────────────
@@ -345,6 +390,25 @@ interface StepSignalParticipants {
   workerSenders: Set<string>;
 }
 
+interface CustomVerificationFailure {
+  command: string;
+  output: string;
+}
+
+interface DiagnosticResult {
+  analysis: string;
+  metadata: {
+    agentName: string;
+    elapsedMs: number;
+    tokenCount: number;
+  };
+}
+
+type DiagnosticVerificationCheck = VerificationCheck & {
+  diagnosticAgent?: string;
+  diagnosticTimeout?: number;
+};
+
 interface ChannelEvidenceOptions {
   stepName?: string;
   sender?: string;
@@ -389,7 +453,7 @@ export class WorkflowRunner {
   private readonly relayOptions: AgentRelayOptions;
   private readonly cwd: string;
   private readonly summaryDir: string;
-  private readonly executor?: RunnerStepExecutor;
+  private executor?: RunnerStepExecutor;
   private readonly envSecrets?: Record<string, string>;
   private readonly templateResolver: TemplateResolver;
   private readonly channelMessenger: ChannelMessenger;
@@ -415,6 +479,8 @@ export class WorkflowRunner {
   private readonly activeAgentHandles = new Map<string, Agent>();
   /** Per-agent workflow tokens for relay/relayfile auth across spawn modes. */
   private readonly agentTokens = new Map<string, string>();
+  /** Per-agent credential proxy tokens keyed by logical agent definition name. */
+  private readonly proxyTokens = new Map<string, string>();
   /** Per-agent relayfile mounts keyed by logical agent definition name. */
   private readonly agentMounts = new Map<string, MountHandle>();
 
@@ -422,6 +488,8 @@ export class WorkflowRunner {
   private readonly ptyOutputBuffers = new Map<string, string[]>();
   /** Snapshot of PTY output from the most recent failed attempt, keyed by step name. */
   private readonly lastFailedStepOutput = new Map<string, string>();
+  /** Most recent custom verification failure details, keyed by step name. */
+  private readonly lastCustomVerificationFailure = new Map<string, CustomVerificationFailure>();
   private readonly ptyListeners = new Map<string, (chunk: string) => void>();
   private readonly ptyLogStreams = new Map<string, WriteStream>();
   /** Path to workers.json so `agents:kill` can find workflow-spawned agents */
@@ -455,7 +523,10 @@ export class WorkflowRunner {
   private readonly activeReviewers = new Map<string, number>();
   /** Structured CLI session reports captured during the current run, keyed by step name. */
   private readonly agentReports = new Map<string, CliSessionReport>();
+  /** Optional per-run token budget tracker; only created when budgets are configured. */
+  private budgetTracker?: BudgetTracker;
   private static readonly PTY_TASK_ARG_SIZE_LIMIT = 2 * 1024 * 1024; // 2 MB
+  private readonly processBackend?: ProcessBackend;
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -465,7 +536,13 @@ export class WorkflowRunner {
     this.summaryDir = options.summaryDir ?? path.join(this.cwd, '.relay', 'summaries');
     this.workersPath = path.join(this.cwd, '.agent-relay', 'team', 'workers.json');
     this.executor = options.executor;
+    this.processBackend = options.processBackend;
     this.envSecrets = options.envSecrets;
+    if (!this.executor && this.processBackend) {
+      this.executor = createProcessBackendExecutor(this.processBackend, {
+        env: this.envSecrets,
+      });
+    }
     this.templateResolver = new TemplateResolver();
     this.channelMessenger = new ChannelMessenger({ postFn: (text) => this.postToChannel(text) });
   }
@@ -516,6 +593,65 @@ export class WorkflowRunner {
     }
 
     return { resolved, errors, warnings };
+  }
+
+  private initializeBudgetTracker(config: RelayYamlConfig, workflow: WorkflowDefinition): void {
+    const agentMap = new Map(
+      config.agents.map((agent) => [agent.name, WorkflowRunner.resolveAgentDef(agent)])
+    );
+    const stepConfigs = workflow.steps.flatMap((step) => {
+      if (
+        step.type === 'deterministic' ||
+        step.type === 'worktree' ||
+        step.type === 'integration' ||
+        !step.agent
+      ) {
+        return [];
+      }
+
+      const agentDef = agentMap.get(step.agent);
+      return [
+        {
+          stepName: step.name,
+          agentName: step.agent,
+          maxTokens: agentDef?.constraints?.maxTokens,
+        },
+      ];
+    });
+
+    const hasWorkflowBudget = config.swarm.tokenBudget !== undefined;
+    const hasAgentBudgets = stepConfigs.some((step) => step.maxTokens !== undefined);
+
+    this.budgetTracker =
+      hasWorkflowBudget || hasAgentBudgets
+        ? new BudgetTracker({
+            workflowBudget: config.swarm.tokenBudget,
+            steps: stepConfigs,
+          })
+        : undefined;
+  }
+
+  private ensureBudgetAllowsSpawn(stepName: string, agentName: string): void {
+    if (!this.budgetTracker) return;
+
+    const budgetCheck = this.budgetTracker.checkCanSpawn(stepName);
+    if (budgetCheck.allowed) return;
+
+    const workflowBudget = this.budgetTracker.getRunSummaryBudgetData()?.workflow;
+    const used = workflowBudget?.used.toLocaleString('en-US') ?? '0';
+    const limit = workflowBudget?.limit?.toLocaleString('en-US') ?? '--';
+    this.log(`[budget] Skipping step ${stepName} — workflow budget exhausted (used ${used} of ${limit})`);
+    throw new BudgetExceededError(
+      stepName,
+      'workflow',
+      workflowBudget?.limit ?? 0,
+      workflowBudget?.used ?? 0
+    );
+  }
+
+  private getTotalReportTokens(report: CliSessionReport): number | undefined {
+    if (!report.tokens) return undefined;
+    return report.tokens.input + report.tokens.output + report.tokens.cacheRead;
   }
 
   private validatePermissions(
@@ -1532,16 +1668,218 @@ export class WorkflowRunner {
       });
   }
 
-  private getRelayEnv(): NodeJS.ProcessEnv | undefined {
-    if (!this.relayApiKey && !this.relayOptions.env) {
+  private async loadCredentialProxyModule(): Promise<CredentialProxyModule | null> {
+    try {
+      const dynamicImport = new Function('specifier', 'return import(specifier)') as (
+        specifier: string
+      ) => Promise<unknown>;
+      const module = (await dynamicImport('@agent-relay/credential-proxy')) as Partial<CredentialProxyModule>;
+      return typeof module.mintProxyToken === 'function' ? (module as CredentialProxyModule) : null;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === 'ERR_MODULE_NOT_FOUND') {
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
+  private resolveCredentialProxyProvider(agentDef: AgentDefinition, config: RelayYamlConfig): ProxyProvider {
+    const configuredProviders = Object.keys(config.swarm.credentialProxy?.providers ?? {});
+    const explicitProvider = agentDef.credentials?.provider?.trim().toLowerCase();
+    if (
+      explicitProvider === 'openai' ||
+      explicitProvider === 'anthropic' ||
+      explicitProvider === 'openrouter'
+    ) {
+      return explicitProvider;
+    }
+
+    const model = agentDef.constraints?.model?.trim().toLowerCase() ?? '';
+    if (model.includes('openrouter')) {
+      return 'openrouter';
+    }
+    if (model.includes('claude') || model.includes('anthropic')) {
+      return 'anthropic';
+    }
+    if (
+      model.includes('openai') ||
+      model.includes('chatgpt') ||
+      model.includes('gpt') ||
+      /\bo[134](?:\b|-)/.test(model)
+    ) {
+      return 'openai';
+    }
+
+    if (configuredProviders.length === 1) {
+      const [onlyProvider] = configuredProviders;
+      if (onlyProvider === 'openai' || onlyProvider === 'anthropic' || onlyProvider === 'openrouter') {
+        return onlyProvider;
+      }
+    }
+
+    switch (agentDef.cli) {
+      case 'claude':
+        return 'anthropic';
+      case 'codex':
+      case 'aider':
+      case 'goose':
+      case 'opencode':
+      case 'cursor':
+      case 'cursor-agent':
+        return 'openai';
+      default:
+        throw new Error(
+          `Unable to resolve credential proxy provider for agent "${agentDef.name}". Set credentials.provider or constraints.model.`
+        );
+    }
+  }
+
+  private resolveCredentialProxySecret(config: RelayYamlConfig): string {
+    const configuredSecret = config.swarm.credentialProxy?.jwtSecret;
+    if (configuredSecret?.startsWith('$')) {
+      const envSecret = process.env[configuredSecret.slice(1)];
+      if (envSecret) {
+        return envSecret;
+      }
+    } else if (configuredSecret) {
+      return configuredSecret;
+    }
+
+    const defaultSecret = process.env.RELAY_PROXY_JWT_SECRET;
+    if (defaultSecret) {
+      return defaultSecret;
+    }
+
+    throw new Error(
+      'Credential proxy JWT secret is missing. Set swarm.credentialProxy.jwtSecret or RELAY_PROXY_JWT_SECRET.'
+    );
+  }
+
+  private async mintAgentProxyToken(
+    agentDef: AgentDefinition,
+    config: RelayYamlConfig
+  ): Promise<string | undefined> {
+    const proxyConfig = config.swarm?.credentialProxy;
+    if (!proxyConfig?.proxyUrl || !agentDef.credentials?.proxy) {
       return undefined;
     }
 
+    const provider = this.resolveCredentialProxyProvider(agentDef, config);
+    const providerConfig = proxyConfig.providers?.[provider];
+    const credentialId = providerConfig?.credentialId;
+    if (!credentialId) {
+      throw new Error(
+        `Credential proxy provider "${provider}" is not configured for agent "${agentDef.name}".`
+      );
+    }
+
+    const budget = agentDef.constraints?.maxTokens ?? proxyConfig.defaultBudget;
+    const cacheKey = `${agentDef.name}:${provider}:${credentialId}:${budget ?? 'default'}`;
+    const cachedToken = this.proxyTokens.get(cacheKey);
+    if (cachedToken) {
+      return cachedToken;
+    }
+
+    const credentialProxy = await this.loadCredentialProxyModule();
+    if (!credentialProxy) {
+      throw new Error(
+        'Credential proxy mode requires the optional peer dependency "@agent-relay/credential-proxy".'
+      );
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const token = await credentialProxy.mintProxyToken(
+      {
+        sub: this.workspaceId,
+        aud: 'relay-llm-proxy',
+        provider,
+        credentialId,
+        budget,
+        exp: nowSeconds + 15 * 60,
+      },
+      this.resolveCredentialProxySecret(config)
+    );
+
+    this.proxyTokens.set(cacheKey, token);
+    return token;
+  }
+
+  private async resolveAgentProxyMode(
+    agentDef: AgentDefinition,
+    config?: RelayYamlConfig
+  ): Promise<ProxyModeConfig | undefined> {
+    if (!agentDef.credentials?.proxy) {
+      return undefined;
+    }
+
+    const env = this.getMergedRelayEnvSource();
+    const configuredProxyUrl = config?.swarm?.credentialProxy?.proxyUrl;
+    const proxyUrl = configuredProxyUrl ?? resolveProxyUrlFromEnv(env);
+    if (!proxyUrl) {
+      return undefined;
+    }
+
+    if (!configuredProxyUrl) {
+      const injectedToken = resolveProxyTokenFromEnv(env);
+      if (!injectedToken) {
+        return undefined;
+      }
+
+      return {
+        url: proxyUrl,
+        token: injectedToken,
+      };
+    }
+
+    const token = await this.mintAgentProxyToken(agentDef, config);
+    if (!token) {
+      return undefined;
+    }
+
+    return {
+      url: proxyUrl,
+      token,
+    };
+  }
+
+  private getMergedRelayEnvSource(): NodeJS.ProcessEnv {
     return {
       ...process.env,
       ...(this.relayOptions.env ?? {}),
       ...(this.relayApiKey ? { RELAY_API_KEY: this.relayApiKey } : {}),
     };
+  }
+
+  private getRelayEnv(proxyMode?: ProxyModeConfig): NodeJS.ProcessEnv | undefined {
+    const env = this.getMergedRelayEnvSource();
+    const inheritedProxyUrl = resolveProxyUrlFromEnv(env);
+    const inheritedProxyToken = resolveProxyTokenFromEnv(env);
+
+    if (
+      !this.relayApiKey &&
+      !this.relayOptions.env &&
+      !proxyMode &&
+      !(inheritedProxyUrl && inheritedProxyToken)
+    ) {
+      return undefined;
+    }
+
+    const normalizedProxy =
+      proxyMode?.url && proxyMode.token
+        ? proxyMode
+        : inheritedProxyUrl && inheritedProxyToken
+          ? { url: inheritedProxyUrl, token: inheritedProxyToken }
+          : undefined;
+
+    if (normalizedProxy) {
+      Object.assign(env, buildNormalizedProxyEnv(normalizedProxy.url, normalizedProxy.token));
+      for (const key of getStrippedApiKeyVars()) {
+        delete env[key];
+      }
+    }
+
+    return env;
   }
 
   private async provisionAgents(config: RelayYamlConfig): Promise<void> {
@@ -1553,6 +1891,7 @@ export class WorkflowRunner {
     }
 
     this.agentTokens.clear();
+    this.proxyTokens.clear();
     await this.stopProvisionedMounts();
 
     const agentsToProvision: Record<string, NonNullable<AgentDefinition['permissions']>> = {};
@@ -2668,6 +3007,7 @@ export class WorkflowRunner {
     this.runtimeStepAgents.clear();
     this.stepCompletionEvidence.clear();
     this.agentReports.clear();
+    this.initializeBudgetTracker(config, workflow);
 
     this.log(`Starting workflow "${workflow.name}" (${workflow.steps.length} steps)`);
 
@@ -2954,13 +3294,14 @@ export class WorkflowRunner {
       this.log(`Executing ${workflow.steps.length} steps (pattern: ${config.swarm.pattern})`);
       await this.executeSteps(workflow, stepStates, agentMap, config.errorHandling, runId);
 
-      const errorStrategy = config.errorHandling?.strategy ?? workflow.onError ?? 'fail-fast';
-      const continueOnError = errorStrategy === 'continue' || errorStrategy === 'skip';
+      // A run is successful iff every step completed or was skipped. Under
+      // continue-on-error we keep executing past a failure, but the run
+      // itself still "failed" — otherwise the final status contradicts the
+      // summary table ("1 passed, 3 failed" but run.status=completed) and
+      // downstream wrappers that key off run.status (e.g. the cloud
+      // orchestrator's bootstrap) silently report success.
       const allCompleted = [...stepStates.values()].every(
-        (s) =>
-          s.row.status === 'completed' ||
-          s.row.status === 'skipped' ||
-          (continueOnError && s.row.status === 'failed')
+        (s) => s.row.status === 'completed' || s.row.status === 'skipped'
       );
 
       if (allCompleted) {
@@ -3035,6 +3376,7 @@ export class WorkflowRunner {
       }
     } finally {
       this.lastFailedStepOutput.clear();
+      this.lastCustomVerificationFailure.clear();
       for (const stream of this.ptyLogStreams.values()) stream.end();
       this.ptyLogStreams.clear();
       this.ptyOutputBuffers.clear();
@@ -3348,6 +3690,9 @@ export class WorkflowRunner {
 
         const stepCwd = this.resolveEffectiveCwd(step);
         this.beginStepEvidence(step.name, [stepCwd], state.row.startedAt);
+        this.log(
+          `[${step.name}] Running: ${resolvedCommand.slice(0, 200)}${resolvedCommand.length > 200 ? '...' : ''}`
+        );
 
         if (this.executor?.executeDeterministicStep) {
           const executorResult = await this.executor.executeDeterministicStep(step, resolvedCommand, stepCwd);
@@ -3355,6 +3700,10 @@ export class WorkflowRunner {
           lastExitSignal = undefined;
           const failOnError = step.failOnError !== false;
           if (failOnError && executorResult.exitCode !== 0) {
+            this.log(`[${step.name}] Command failed (exit code ${executorResult.exitCode})`);
+            if (executorResult.output) {
+              this.log(`[${step.name}] Output:\n${executorResult.output}`);
+            }
             throw new Error(
               `Command failed with exit code ${executorResult.exitCode}: ${executorResult.output.slice(0, 500)}`
             );
@@ -3443,6 +3792,13 @@ export class WorkflowRunner {
 
             const failOnError = step.failOnError !== false;
             if (failOnError && code !== 0 && code !== null) {
+              this.log(`[${step.name}] Command failed (exit code ${code})`);
+              if (stdout) {
+                this.log(`[${step.name}] stdout:\n${stdout}`);
+              }
+              if (stderr) {
+                this.log(`[${step.name}] stderr:\n${stderr}`);
+              }
               reject(
                 new Error(`Command failed with exit code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`)
               );
@@ -3782,6 +4138,7 @@ export class WorkflowRunner {
 
     // API-mode agents: execute via direct API call instead of spawning a PTY/subprocess.
     if (specialistDef.cli === 'api') {
+      this.ensureBudgetAllowsSpawn(step.name, agentName);
       const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
       const resolvedTask = this.interpolateStepTask(step.task ?? '', stepOutputContext);
 
@@ -3871,6 +4228,8 @@ export class WorkflowRunner {
     let lastAttemptStartedAt: number | undefined;
     let lastEffectiveAgentDef: AgentDefinition | undefined;
     let lastEffectiveCwd: string | undefined;
+    let lastAttemptReportCaptured = false;
+    let lastDiagnosticResult: DiagnosticResult | null = null;
 
     // OWNER_DECISION: INCOMPLETE_RETRY is enforced here at the attempt-loop level so every
     // interactive execution path shares the same contract:
@@ -3883,6 +4242,11 @@ export class WorkflowRunner {
       // Reset per-attempt exit info so stale values don't leak across retries
       lastExitCode = undefined;
       lastExitSignal = undefined;
+      lastAttemptStartedAt = undefined;
+      lastEffectiveAgentDef = undefined;
+      lastEffectiveCwd = undefined;
+      lastAttemptReportCaptured = false;
+      let stepOutputForDiagnostic = '';
 
       if (attempt > 0) {
         this.emit({ type: 'step:retrying', runId, stepName: step.name, attempt });
@@ -3902,6 +4266,7 @@ export class WorkflowRunner {
       }
 
       try {
+        this.ensureBudgetAllowsSpawn(step.name, agentName);
         lastAttemptStartedAt = Date.now();
         // Mark step as running
         state.row.status = 'running';
@@ -3941,12 +4306,28 @@ export class WorkflowRunner {
 
         // On retry attempts, prepend failure context so the agent knows what went wrong
         if (attempt > 0 && lastError) {
-          const priorOutput = (this.lastFailedStepOutput.get(step.name) ?? '').slice(-2000);
-          resolvedTask =
-            `[RETRY — Attempt ${attempt + 1}/${maxRetries + 1}]\n` +
-            `Previous attempt failed: ${lastError}\n` +
-            (priorOutput ? `Previous output (last 2000 chars):\n${priorOutput}\n` : '') +
-            `---\n${resolvedTask}`;
+          if (lastDiagnosticResult) {
+            resolvedTask =
+              `[RETRY — Attempt ${attempt + 1}/${maxRetries + 1}] Verification failed.\n` +
+              `Diagnostic analysis:\n${lastDiagnosticResult.analysis}\n\n` +
+              `Original error: ${lastError}\n---\n${resolvedTask}`;
+          } else {
+            const priorOutput = (this.lastFailedStepOutput.get(step.name) ?? '').slice(-2000);
+            const customVerificationFailure = this.lastCustomVerificationFailure.get(step.name);
+            const verificationFailurePrompt = customVerificationFailure
+              ? `[VERIFICATION FAILED] Your code did not pass the verification check.\n` +
+                `Command: ${customVerificationFailure.command}\n` +
+                `Output:\n` +
+                `${customVerificationFailure.output}\n\n` +
+                `Fix the issues above before proceeding.\n`
+              : '';
+            resolvedTask =
+              `[RETRY — Attempt ${attempt + 1}/${maxRetries + 1}]\n` +
+              `Previous attempt failed: ${lastError}\n` +
+              verificationFailurePrompt +
+              (priorOutput ? `Previous output (last 2000 chars):\n${priorOutput}\n` : '') +
+              `---\n${resolvedTask}`;
+          }
         }
 
         // If this is an interactive agent, append awareness of non-interactive workers
@@ -4001,6 +4382,7 @@ export class WorkflowRunner {
             attempt
           );
           specialistOutput = result.specialistOutput;
+          stepOutputForDiagnostic = result.specialistOutput;
           ownerOutput = result.ownerOutput;
           ownerElapsed = result.ownerElapsed;
           completionReason = result.completionReason;
@@ -4021,6 +4403,10 @@ export class WorkflowRunner {
           );
           const resolvedStep = { ...step, task: ownerTask };
           const ownerStartTime = Date.now();
+          // When processBackend is set without an explicit executor, the runner
+          // constructor synthesizes a RunnerStepExecutor that calls
+          // processBackend.createEnvironment(step.name).exec(command). Explicit
+          // executors still take precedence. See process-backend-executor.ts.
           const spawnResult = this.executor
             ? await this.executor.executeAgentStep(resolvedStep, effectiveOwner, ownerTask, timeoutMs)
             : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
@@ -4085,6 +4471,7 @@ export class WorkflowRunner {
             }
           }
           specialistOutput = output;
+          stepOutputForDiagnostic = output;
           ownerOutput = output;
         }
 
@@ -4172,6 +4559,7 @@ export class WorkflowRunner {
           lastAttemptStartedAt,
           Date.now()
         );
+        lastAttemptReportCaptured = true;
 
         // Mark completed
         state.row.status = 'completed';
@@ -4203,6 +4591,40 @@ export class WorkflowRunner {
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
         lastCompletionReason = err instanceof WorkflowCompletionError ? err.completionReason : undefined;
+        const diagnosticVerification = step.verification as DiagnosticVerificationCheck | undefined;
+        if (
+          err instanceof WorkflowCompletionError &&
+          err.completionReason === 'failed_verification' &&
+          diagnosticVerification?.diagnosticAgent &&
+          attempt < maxRetries
+        ) {
+          lastDiagnosticResult = await this.runDiagnosticAgent(
+            step,
+            lastError,
+            stepOutputForDiagnostic || (this.lastFailedStepOutput.get(step.name) ?? ''),
+            agentMap,
+            runId
+          );
+        } else {
+          lastDiagnosticResult = null;
+        }
+        if (lastCompletionReason !== 'failed_verification') {
+          this.lastCustomVerificationFailure.delete(step.name);
+        }
+        if (!(err instanceof BudgetExceededError) && !lastAttemptReportCaptured) {
+          await this.captureAgentReport(
+            runId,
+            step.name,
+            lastEffectiveAgentDef,
+            lastEffectiveCwd,
+            lastAttemptStartedAt,
+            Date.now()
+          );
+          lastAttemptReportCaptured = true;
+        }
+        if (err instanceof BudgetExceededError) {
+          break;
+        }
         if (lastCompletionReason === 'retry_requested_by_owner' && attempt >= maxRetries) {
           lastError = this.buildOwnerRetryBudgetExceededMessage(step.name, maxRetries, lastError);
         }
@@ -4226,14 +4648,16 @@ export class WorkflowRunner {
       typeof step.verification === 'object' && 'value' in step.verification
         ? String(step.verification.value)
         : undefined;
-    await this.captureAgentReport(
-      runId,
-      step.name,
-      lastEffectiveAgentDef,
-      lastEffectiveCwd,
-      lastAttemptStartedAt,
-      Date.now()
-    );
+    if (!lastAttemptReportCaptured) {
+      await this.captureAgentReport(
+        runId,
+        step.name,
+        lastEffectiveAgentDef,
+        lastEffectiveCwd,
+        lastAttemptStartedAt,
+        Date.now()
+      );
+    }
     await this.trajectory?.stepFailed(step, lastError ?? 'Unknown error', maxRetries + 1, maxRetries, {
       agent: agentName,
       nonInteractive,
@@ -4253,6 +4677,106 @@ export class WorkflowRunner {
     throw new Error(
       `Step "${step.name}" failed after ${maxRetries} retries: ${lastError ?? 'Unknown error'}`
     );
+  }
+
+  private async runDiagnosticAgent(
+    step: WorkflowStep,
+    verificationError: string,
+    stepOutput: string,
+    agentMap: Map<string, AgentDefinition>,
+    runId: string
+  ): Promise<DiagnosticResult | null> {
+    const verification = step.verification as DiagnosticVerificationCheck | undefined;
+    const diagnosticAgentName = verification?.diagnosticAgent;
+    if (!verification || !diagnosticAgentName) {
+      return null;
+    }
+
+    const rawDiagnosticDef = agentMap.get(diagnosticAgentName);
+    if (!rawDiagnosticDef) {
+      this.log(
+        `[${step.name}] Diagnostic agent "${diagnosticAgentName}" not found — falling back to standard retry`
+      );
+      return null;
+    }
+
+    const diagnosticAgentDef: AgentDefinition = {
+      ...WorkflowRunner.resolveAgentDef(rawDiagnosticDef),
+      interactive: false,
+    };
+    const verificationCommand =
+      verification.type === 'custom' ? verification.value : `${verification.type}: ${verification.value}`;
+    const diagnosticTimeout = verification.diagnosticTimeout ?? 60_000;
+    const diagnosticPrompt =
+      `The following verification failed after step "${step.name}".\n\n` +
+      `Verification command: ${verificationCommand}\n` +
+      `Verification output:\n${verificationError}\n\n` +
+      `Step task was:\n${step.task ?? ''}\n\n` +
+      `Step output (last 2000 chars):\n${stepOutput.slice(-2000)}\n\n` +
+      `Analyze what went wrong. Be specific. Do NOT fix the code.`;
+    const diagnosticStep: WorkflowStep = {
+      ...step,
+      name: `${step.name}-diagnostic-${runId.slice(0, 8)}`,
+      agent: diagnosticAgentName,
+      task: diagnosticPrompt,
+      verification: undefined,
+      retries: 0,
+    };
+    const diagnosticCwd = this.resolveExecutionCwd(diagnosticStep, diagnosticAgentDef);
+    const startedAt = Date.now();
+
+    try {
+      this.ensureBudgetAllowsSpawn(step.name, diagnosticAgentName);
+      this.log(`[${step.name}] Verification failed — running diagnostic agent '${diagnosticAgentName}'...`);
+      const diagnosticResult = await this.execNonInteractive(
+        diagnosticAgentDef,
+        diagnosticStep,
+        diagnosticTimeout
+      );
+      const elapsedMs = Date.now() - startedAt;
+      await this.captureAgentReport(
+        runId,
+        step.name,
+        diagnosticAgentDef,
+        diagnosticCwd,
+        startedAt,
+        Date.now()
+      );
+      const analysis = diagnosticResult.output.trim();
+      const tokenCount = Math.max(1, Math.ceil(analysis.length / 4));
+      const firstLine =
+        analysis
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find(Boolean) ?? '(no analysis returned)';
+
+      this.log(`[${step.name}] Diagnostic complete (${elapsedMs}ms, ${tokenCount} tokens): ${firstLine}`);
+
+      return {
+        analysis,
+        metadata: {
+          agentName: diagnosticAgentName,
+          elapsedMs,
+          tokenCount,
+        },
+      };
+    } catch (error) {
+      await this.captureAgentReport(
+        runId,
+        step.name,
+        diagnosticAgentDef,
+        diagnosticCwd,
+        startedAt,
+        Date.now()
+      );
+      const message = error instanceof Error ? error.message : String(error);
+      if (/\btimed out\b/i.test(message)) {
+        this.log(`[${step.name}] Diagnostic timed out — falling back to standard retry`);
+      } else {
+        this.log(`[${step.name}] Diagnostic failed — falling back to standard retry: ${message}`);
+      }
+      return null;
+    }
   }
 
   private buildOwnerRetryBudgetExceededMessage(
@@ -5569,7 +6093,11 @@ export class WorkflowRunner {
 
     const stdoutChunks: string[] = [];
     const stderrChunks: string[] = [];
-    const env = { ...(this.getRelayEnv() ?? filteredEnv()) };
+    const proxyMode = await this.resolveAgentProxyMode(agentDef, this.currentConfig);
+    const env = { ...(this.getRelayEnv(proxyMode) ?? filteredEnv()) };
+    if (proxyMode?.url && proxyMode.token) {
+      Object.assign(env, resolveProxyEnv(agentDef.cli, proxyMode.url, proxyMode.token));
+    }
     const agentToken = this.agentTokens.get(agentDef.name);
     const mount = this.agentMounts.get(agentDef.name);
     if (agentToken) {
@@ -5585,7 +6113,7 @@ export class WorkflowRunner {
     }
     env.RELAYFILE_BASE_URL =
       env.RELAYFILE_BASE_URL ??
-      this.getRelayEnv()?.RELAYFILE_BASE_URL ??
+      this.getRelayEnv(proxyMode)?.RELAYFILE_BASE_URL ??
       process.env.RELAYFILE_BASE_URL ??
       'http://127.0.0.1:8080';
 
@@ -5828,6 +6356,12 @@ export class WorkflowRunner {
         RELAY_API_KEY: this.relayApiKey ?? 'workflow-runner',
         AGENT_CHANNELS: (agentChannels ?? []).join(','),
       });
+      const proxyMode = await this.resolveAgentProxyMode(agentDef, this.currentConfig);
+      const baseEnv = this.getRelayEnv(proxyMode);
+      const proxyEnvOverrides =
+        proxyMode?.url && proxyMode.token
+          ? resolveProxyEnv(agentDef.cli, proxyMode.url, proxyMode.token)
+          : undefined;
       const spawnOptions = {
         name: agentName,
         model: agentDef.constraints?.model,
@@ -5837,19 +6371,20 @@ export class WorkflowRunner {
         idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
         cwd: agentCwd,
         agentToken: this.agentTokens.get(agentDef.name),
+        env: proxyEnvOverrides ? { ...baseEnv, ...proxyEnvOverrides } : baseEnv,
       };
       const sdkSpawner = getWorkflowSdkSpawner(this.relay, agentDef.cli);
       if (sdkSpawner) {
         this.log(
           `[${step.name}] Using SDK spawner for ${agentDef.cli} (requested runtime: ${agentDef.cli === 'opencode' ? 'headless' : 'pty'})`
         );
-        agent = await sdkSpawner.spawn(spawnOptions);
+        agent = await sdkSpawner.spawn(spawnOptions as Parameters<AgentSpawner['spawn']>[0]);
       } else {
         this.log(`[${step.name}] Using PTY fallback for ${agentDef.cli}`);
         agent = await this.relay.spawnPty({
-          ...spawnOptions,
+          ...(spawnOptions as Record<string, unknown>),
           cli: agentDef.cli,
-        });
+        } as Parameters<AgentRelay['spawnPty']>[0]);
       }
 
       // Re-key PTY maps if broker assigned a different name than requested
@@ -6359,18 +6894,51 @@ export class WorkflowRunner {
     injectedTaskText?: string,
     options?: VerificationOptions
   ): VerificationResult {
-    return runVerification(
-      check,
+    try {
+      const result = runVerification(
+        check,
+        output,
+        stepName,
+        injectedTaskText,
+        { ...options, cwd: this.cwd },
+        {
+          recordStepToolSideEffect: (name, effect) => this.recordStepToolSideEffect(name, effect),
+          getOrCreateStepEvidenceRecord: (name) => this.getOrCreateStepEvidenceRecord(name),
+          log: (message) => this.log(message),
+        }
+      );
+
+      this.updateCustomVerificationFailure(stepName, check, result.error);
+      return result;
+    } catch (error) {
+      this.updateCustomVerificationFailure(
+        stepName,
+        check,
+        error instanceof Error ? error.message : String(error)
+      );
+      throw error;
+    }
+  }
+
+  private updateCustomVerificationFailure(
+    stepName: string,
+    check: VerificationCheck,
+    errorMessage?: string
+  ): void {
+    if (check.type !== 'custom' || !check.value || !errorMessage) {
+      this.lastCustomVerificationFailure.delete(stepName);
+      return;
+    }
+
+    const marker = `custom check "${check.value}" failed\n`;
+    const markerIndex = errorMessage.indexOf(marker);
+    const output =
+      markerIndex === -1 ? errorMessage.trim() : errorMessage.slice(markerIndex + marker.length).trim();
+
+    this.lastCustomVerificationFailure.set(stepName, {
+      command: check.value,
       output,
-      stepName,
-      injectedTaskText,
-      { ...options, cwd: this.cwd },
-      {
-        recordStepToolSideEffect: (name, effect) => this.recordStepToolSideEffect(name, effect),
-        getOrCreateStepEvidenceRecord: (name) => this.getOrCreateStepEvidenceRecord(name),
-        log: (message) => this.log(message),
-      }
-    );
+    });
   }
 
   // ── State helpers ─────────────────────────────────────────────────────
@@ -6437,6 +7005,20 @@ export class WorkflowRunner {
         completedAt,
       });
       if (!report) return;
+
+      const totalTokens = this.getTotalReportTokens(report);
+      if (this.budgetTracker && report.tokens) {
+        this.budgetTracker.recordUsage(stepName, report.tokens);
+        this.budgetTracker.isOverBudget(stepName);
+        const budgetStatus = this.budgetTracker.getBudgetStatus(stepName);
+        if (budgetStatus.agentLimitExceeded) {
+          const stepBudget = this.budgetTracker.getStepBudgetStatus(stepName);
+          const used =
+            stepBudget?.used?.toLocaleString('en-US') ?? totalTokens?.toLocaleString('en-US') ?? '0';
+          const limit = stepBudget?.limit?.toLocaleString('en-US') ?? '--';
+          this.log(`[budget] Step ${stepName} exceeded its agent budget (${used} of ${limit})`);
+        }
+      }
 
       this.agentReports.set(stepName, report);
       this.emit({ type: 'step:agent-report', runId, stepName, report });
@@ -6629,7 +7211,9 @@ export class WorkflowRunner {
 
     // Always show the summary table — with agent reports when available,
     // with just step/status/duration when not (non-interactive agents).
-    console.log(formatRunSummaryTable(outcomes, this.agentReports));
+    console.log(
+      formatRunSummaryTable(outcomes, this.agentReports, this.budgetTracker?.getRunSummaryBudgetData())
+    );
 
     // Show errors and output excerpts for failed steps below the table
     for (const outcome of outcomes) {

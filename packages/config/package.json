@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/config",
-  "version": "4.0.9",
+  "version": "4.0.39",
   "description": "Shared configuration schemas and loaders for Agent Relay",
   "type": "module",
   "main": "dist/index.js",
@@ -77,7 +77,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "npx -p typescript@5.7.3 tsc",
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -88,7 +88,6 @@
   },
   "devDependencies": {
     "@types/node": "^22.19.3",
-    "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   },
   "publishConfig": {

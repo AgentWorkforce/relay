@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 
+import { GitHubStarsBadge } from '../../components/GitHubStars';
 import { SiteFooter } from '../../components/SiteFooter';
 import { SiteNav } from '../../components/SiteNav';
 import { absoluteUrl } from '../../lib/site';
@@ -16,7 +17,7 @@ export const metadata: Metadata = {
 export default function TelemetryPage() {
   return (
     <div className={s.page}>
-      <SiteNav />
+      <SiteNav actions={<GitHubStarsBadge />} />
 
       <main className={s.content}>
         <h1 className={s.title}>Telemetry</h1>
@@ -36,6 +37,21 @@ export default function TelemetryPage() {
           <p>Or set the environment variable:</p>
           <pre className={s.code}>
             <code>export AGENT_RELAY_TELEMETRY_DISABLED=1</code>
+          </pre>
+          <p>
+            Agent Relay also honors the{' '}
+            <a
+              href="https://consoledonottrack.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
+              <code>DO_NOT_TRACK</code>
+            </a>{' '}
+            convention for opting out across compatible tools:
+          </p>
+          <pre className={s.code}>
+            <code>export DO_NOT_TRACK=1</code>
           </pre>
           <p>To re-enable:</p>
           <pre className={s.code}>

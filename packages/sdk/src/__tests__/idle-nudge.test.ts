@@ -63,6 +63,8 @@ const mockRelease = vi.fn().mockResolvedValue(undefined);
 
 const mockAgent = {
   name: 'test-agent-abc',
+  exitCode: 0,
+  exitSignal: undefined,
   get waitForExit() {
     return waitForExitFn;
   },
@@ -194,27 +196,24 @@ describe('Idle Nudge Detection', () => {
         return Promise.resolve(exitCallCount === 1 ? 'timeout' : 'exited');
       });
 
-      const run = await runner.execute(
-        makeConfig({
-          swarm: {
-            pattern: 'hub-spoke',
-            idleNudge: { nudgeAfterMs: 100, escalateAfterMs: 100, maxNudges: 1 },
-          },
-          agents: [
-            { name: 'lead', cli: 'claude', role: 'Lead coordinator' },
-            { name: 'worker', cli: 'claude' },
-          ],
-          workflows: [
-            {
-              name: 'default',
-              steps: [{ name: 'step-1', agent: 'worker', task: 'Do work' }],
-            },
-          ],
-        }),
-        'default'
-      );
+      const config = makeConfig({
+        swarm: {
+          pattern: 'hub-spoke',
+          idleNudge: { nudgeAfterMs: 100, escalateAfterMs: 100, maxNudges: 1 },
+        },
+        agents: [
+          { name: 'lead', cli: 'claude', role: 'Lead coordinator' },
+          { name: 'worker', cli: 'claude' },
+        ],
+      });
+      const step = { name: 'step-1', agent: 'worker', task: 'Do work' };
+      const agentDef = { name: 'worker', cli: 'claude' };
 
-      expect(run.status).toBe('completed');
+      (runner as any).currentConfig = config;
+      (runner as any).relay = { human: vi.fn().mockReturnValue(mockHuman) };
+      const result = await (runner as any).waitForExitWithIdleNudging(mockAgent, agentDef, step, 500);
+
+      expect(result).toBe('exited');
       expect(mockHumanSendMessage).toHaveBeenCalledTimes(1);
     });
 
@@ -231,7 +230,8 @@ describe('Idle Nudge Detection', () => {
         'default'
       );
 
-      expect(run.status).toBe('completed');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('force-released');
       expect(mockHumanSendMessage).toHaveBeenCalledTimes(1);
       expect(mockRelease).toHaveBeenCalledTimes(1);
       expect(waitForIdleFn).not.toHaveBeenCalled();
@@ -250,7 +250,8 @@ describe('Idle Nudge Detection', () => {
         'default'
       );
 
-      expect(run.status).toBe('completed');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('force-released');
       expect(mockHumanSendMessage).toHaveBeenCalledTimes(3);
       expect(mockRelease).toHaveBeenCalledTimes(1);
     });
@@ -310,7 +311,8 @@ describe('Idle Nudge Detection', () => {
         'default'
       );
 
-      expect(run.status).toBe('completed');
+      expect(run.status).toBe('failed');
+      expect(run.error).toContain('force-released');
       // default maxNudges is 1
       expect(mockHumanSendMessage).toHaveBeenCalledTimes(1);
       expect(mockRelease).toHaveBeenCalledTimes(1);
@@ -370,6 +372,7 @@ describe('Idle Nudge Detection', () => {
         agentDef,
         step,
         500,
+        undefined,
         true
       );
 
@@ -428,6 +431,7 @@ describe('Idle Nudge Detection', () => {
         agentDef,
         step,
         500,
+        undefined,
         true
       );
 

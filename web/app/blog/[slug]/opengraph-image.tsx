@@ -28,8 +28,10 @@ export default async function BlogPostOpenGraphImage({ params }: PageProps) {
         height: '100%',
         display: 'flex',
         position: 'relative',
-        background: 'linear-gradient(145deg, #f8fbff 0%, #eef5fb 40%, #dbe8f4 100%)',
-        color: '#102033',
+        background: '#08111A',
+        backgroundImage:
+          'radial-gradient(circle at 12% 18%, rgba(116,184,226,0.22) 0%, transparent 45%), radial-gradient(circle at 88% 92%, rgba(193,103,75,0.12) 0%, transparent 45%), linear-gradient(180deg, #0A1623 0%, #08111A 60%, #050C14 100%)',
+        color: '#EDF4FB',
         fontFamily: 'Inter, system-ui, sans-serif',
       }}
     >
@@ -38,9 +40,9 @@ export default async function BlogPostOpenGraphImage({ params }: PageProps) {
           position: 'absolute',
           inset: 32,
           borderRadius: 28,
-          border: '1px solid rgba(16, 32, 51, 0.08)',
-          background: 'rgba(255,255,255,0.72)',
-          boxShadow: '0 30px 80px rgba(16, 32, 51, 0.08)',
+          border: '1px solid rgba(116, 184, 226, 0.16)',
+          background: 'rgba(15, 27, 41, 0.7)',
+          boxShadow: '0 30px 80px rgba(0, 0, 0, 0.45)',
         }}
       />
 
@@ -50,7 +52,7 @@ export default async function BlogPostOpenGraphImage({ params }: PageProps) {
           display: 'flex',
           flexDirection: 'column',
           justifyContent: 'space-between',
-          padding: '56px 64px',
+          padding: '64px 72px',
           width: '100%',
         }}
       >
@@ -58,7 +60,7 @@ export default async function BlogPostOpenGraphImage({ params }: PageProps) {
           style={{
             display: 'flex',
             flexDirection: 'column',
-            gap: 22,
+            gap: 24,
             maxWidth: 920,
           }}
         >
@@ -74,11 +76,12 @@ export default async function BlogPostOpenGraphImage({ params }: PageProps) {
                 display: 'flex',
                 padding: '10px 16px',
                 borderRadius: 999,
-                background: 'rgba(53, 117, 170, 0.12)',
-                color: '#1e5d8d',
-                fontSize: 22,
+                background: 'rgba(116, 184, 226, 0.14)',
+                border: '1px solid rgba(116, 184, 226, 0.28)',
+                color: '#94CBEF',
+                fontSize: 20,
                 fontWeight: 700,
-                letterSpacing: '0.08em',
+                letterSpacing: '0.1em',
                 textTransform: 'uppercase',
               }}
             >
@@ -86,8 +89,8 @@ export default async function BlogPostOpenGraphImage({ params }: PageProps) {
             </span>
             <span
               style={{
-                color: '#62758a',
-                fontSize: 24,
+                color: '#A8B8C8',
+                fontSize: 22,
               }}
             >
               {post.readTime}
@@ -97,11 +100,12 @@ export default async function BlogPostOpenGraphImage({ params }: PageProps) {
           <div
             style={{
               fontSize: 64,
-              lineHeight: 1.03,
+              lineHeight: 1.04,
               fontWeight: 700,
               letterSpacing: '-0.05em',
               display: 'flex',
               maxWidth: 930,
+              color: '#EDF4FB',
             }}
           >
             {post.frontmatter.title}
@@ -109,9 +113,9 @@ export default async function BlogPostOpenGraphImage({ params }: PageProps) {
 
           <div
             style={{
-              fontSize: 28,
+              fontSize: 26,
               lineHeight: 1.5,
-              color: '#44566a',
+              color: '#A8B8C8',
               display: 'flex',
               maxWidth: 900,
             }}
@@ -139,8 +143,8 @@ export default async function BlogPostOpenGraphImage({ params }: PageProps) {
                 width: 52,
                 height: 52,
                 borderRadius: '50%',
-                background: '#1e5d8d',
-                color: '#ffffff',
+                background: 'linear-gradient(145deg, #74B8E2 0%, #3B789F 100%)',
+                color: '#08111A',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -159,22 +163,24 @@ export default async function BlogPostOpenGraphImage({ params }: PageProps) {
             >
               <span
                 style={{
-                  fontSize: 18,
-                  color: '#62758a',
+                  fontSize: 16,
+                  color: '#77879A',
                   textTransform: 'uppercase',
-                  letterSpacing: '0.08em',
+                  letterSpacing: '0.1em',
                 }}
               >
                 Written by
               </span>
-              <span style={{ fontSize: 26, fontWeight: 600 }}>{post.frontmatter.author}</span>
+              <span style={{ fontSize: 24, fontWeight: 600, color: '#EDF4FB' }}>
+                {post.frontmatter.author}
+              </span>
             </div>
           </div>
 
           <div
             style={{
-              fontSize: 24,
-              color: '#1e5d8d',
+              fontSize: 22,
+              color: '#74B8E2',
               fontWeight: 600,
             }}
           >

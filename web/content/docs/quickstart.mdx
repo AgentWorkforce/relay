@@ -113,9 +113,9 @@ async def main():
 
     # Wait for everyone to finish, then shut down.
     await asyncio.gather(
-        relay.wait_for_agent_idle("Planner"),
-        relay.wait_for_agent_idle("Coder"),
-        relay.wait_for_agent_idle("Reviewer"),
+        planner.wait_for_idle(),
+        coder.wait_for_idle(),
+        reviewer.wait_for_idle(),
     )
     await relay.shutdown()
 

@@ -1,0 +1,53 @@
+{
+  "id": "traj_mk0t0cgn4ytq",
+  "version": 1,
+  "task": {
+    "title": "Merge origin/main into better-nav and resolve trajectory conflicts"
+  },
+  "status": "completed",
+  "startedAt": "2026-04-10T15:10:03.877Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-04-10T15:10:09.752Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_wa60a4hvx8z9",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-04-10T15:10:09.752Z",
+      "events": [
+        {
+          "ts": 1775833809753,
+          "type": "decision",
+          "content": "Preserved both sides of the trajectory merge by combining events and keeping the completed-file form: Preserved both sides of the trajectory merge by combining events and keeping the completed-file form",
+          "raw": {
+            "question": "Preserved both sides of the trajectory merge by combining events and keeping the completed-file form",
+            "chosen": "Preserved both sides of the trajectory merge by combining events and keeping the completed-file form",
+            "alternatives": [],
+            "reasoning": "Your branch still contained recent UI and preview-routing decisions on the old active trajectory, while main had already abandoned that trajectory and added new CI hardening notes. The safe resolution was to keep all recorded events, move the entry to the completed path, and advance its completion time to the latest preserved event."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-04-10T15:10:29.410Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "32f7a699308b9fa3788a13319989f0c2b249f84d",
+    "endRef": "32f7a699308b9fa3788a13319989f0c2b249f84d"
+  },
+  "completedAt": "2026-04-10T15:10:29.410Z",
+  "retrospective": {
+    "summary": "Merged origin/main into better-nav, resolved the trajectory conflicts by preserving both histories, and verified the web app still builds.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

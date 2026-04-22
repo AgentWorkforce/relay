@@ -28,6 +28,9 @@ on:
         type: string
         default: 'latest'
 
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
 jobs:
   verify:
     name: Verify Node ${{ matrix.node }}
@@ -83,34 +86,20 @@ jobs:
           echo "spec=$SPEC" >> $GITHUB_OUTPUT
           echo "Testing: $SPEC"
 
-      # Wait for npm to propagate the package
-      # Note: npm view checks registry metadata which propagates before the
-      # tarball is available on the CDN. We use npm cache add to verify the
-      # actual tarball is downloadable before proceeding.
-      - name: Wait for npm propagation
+      - name: Wait for package metadata
         if: inputs.version != 'latest'
         run: |
-          echo "Waiting for npm to propagate version ${{ inputs.version }}..."
-          FOUND=0
-          for i in {1..30}; do
-            if npm cache add agent-relay@${{ inputs.version }} 2>/dev/null; then
-              echo "Package tarball available on npm registry"
-              FOUND=1
-              break
-            fi
-            echo "Attempt $i: Package not yet available, waiting 10s..."
-            sleep 10
-          done
-          if [ "$FOUND" -eq 0 ]; then
-            echo "ERROR: Package agent-relay@${{ inputs.version }} not found on npm after 5 minutes"
-            exit 1
-          fi
+          scripts/post-publish-verify/retry-command.sh \
+            "Wait for npm metadata for agent-relay@${{ inputs.version }}" \
+            npm view agent-relay@${{ inputs.version }} version
 
       # Test 1: Global npm install
       - name: 'Test: Global npm install'
         run: |
           echo "Installing ${{ steps.pkg.outputs.spec }} globally..."
-          npm install -g ${{ steps.pkg.outputs.spec }}
+          scripts/post-publish-verify/retry-command.sh \
+            "Global npm install of ${{ steps.pkg.outputs.spec }}" \
+            npm install -g ${{ steps.pkg.outputs.spec }}
           # Add npm global bin to PATH
           echo "$(npm config get prefix)/bin" >> $GITHUB_PATH
 
@@ -289,7 +278,9 @@ jobs:
           mkdir -p /tmp/test-project
           cd /tmp/test-project
           npm init -y
-          npm install ${{ steps.pkg.outputs.spec }}
+          "$GITHUB_WORKSPACE/scripts/post-publish-verify/retry-command.sh" \
+            "Local npm install of ${{ steps.pkg.outputs.spec }}" \
+            npm install ${{ steps.pkg.outputs.spec }}
 
       - name: 'Test: Local npx execution'
         run: |
@@ -482,32 +473,21 @@ jobs:
           echo "spec=$SPEC" >> $GITHUB_OUTPUT
           echo "Testing: $SPEC"
 
-      # Wait for npm to propagate the package (same as verify job)
-      - name: Wait for npm propagation
+      - name: Wait for package metadata
         if: inputs.version != 'latest'
         run: |
-          echo "Waiting for npm to propagate version ${{ inputs.version }}..."
-          FOUND=0
-          for i in {1..30}; do
-            if npm cache add agent-relay@${{ inputs.version }} 2>/dev/null; then
-              echo "Package tarball available on npm registry"
-              FOUND=1
-              break
-            fi
-            echo "Attempt $i: Package not yet available, waiting 10s..."
-            sleep 10
-          done
-          if [ "$FOUND" -eq 0 ]; then
-            echo "ERROR: Package agent-relay@${{ inputs.version }} not found on npm after 5 minutes"
-            exit 1
-          fi
+          scripts/post-publish-verify/retry-command.sh \
+            "Wait for npm metadata for agent-relay@${{ inputs.version }}" \
+            npm view agent-relay@${{ inputs.version }} version
 
       - name: 'Test: npm install'
         run: |
           mkdir -p /tmp/test-project
           cd /tmp/test-project
           npm init -y
-          npm install ${{ steps.pkg.outputs.spec }}
+          "$GITHUB_WORKSPACE/scripts/post-publish-verify/retry-command.sh" \
+            "macOS local npm install of ${{ steps.pkg.outputs.spec }}" \
+            npm install ${{ steps.pkg.outputs.spec }}
 
       - name: 'Test: CLI version'
         run: |
@@ -693,25 +673,12 @@ jobs:
         with:
           node-version: '20'
 
-      # Wait for npm to propagate the package (same as other verify jobs)
-      - name: Wait for npm propagation
+      - name: Wait for package metadata
         if: inputs.version != 'latest'
         run: |
-          echo "Waiting for npm to propagate version ${{ inputs.version }}..."
-          FOUND=0
-          for i in {1..30}; do
-            if npm cache add agent-relay@${{ inputs.version }} 2>/dev/null; then
-              echo "Package tarball available on npm registry"
-              FOUND=1
-              break
-            fi
-            echo "Attempt $i: Package not yet available, waiting 10s..."
-            sleep 10
-          done
-          if [ "$FOUND" -eq 0 ]; then
-            echo "ERROR: Package agent-relay@${{ inputs.version }} not found on npm after 5 minutes"
-            exit 1
-          fi
+          scripts/post-publish-verify/retry-command.sh \
+            "Wait for npm metadata for agent-relay@${{ inputs.version }}" \
+            npm view agent-relay@${{ inputs.version }} version
 
       - name: Build verification image
         run: |

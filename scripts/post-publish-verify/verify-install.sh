@@ -66,15 +66,12 @@ log_info "Updated PATH to include: $NPM_BIN"
 log_info "Cleaning previous global installation..."
 npm uninstall -g agent-relay 2>/dev/null || true
 
-# Install globally
+# Install globally (with retry for CDN propagation delays)
 log_info "Installing ${PACKAGE_SPEC} globally..."
-npm install -g "$PACKAGE_SPEC"
-INSTALL_EXIT=$?
-log_info "npm install exit code: $INSTALL_EXIT"
-if [ $INSTALL_EXIT -eq 0 ]; then
+if retry-command.sh "Global npm install of ${PACKAGE_SPEC}" npm install -g "$PACKAGE_SPEC"; then
     record_pass "Global npm install succeeded"
 else
-    record_fail "Global npm install failed with exit code $INSTALL_EXIT"
+    record_fail "Global npm install failed after retries"
 fi
 
 # Verify the binary exists
@@ -189,12 +186,12 @@ cd "$TEST_PROJECT_DIR"
 log_info "Initializing package.json..."
 npm init -y > /dev/null 2>&1
 
-# Install as local dependency
+# Install as local dependency (with retry for CDN propagation delays)
 log_info "Installing ${PACKAGE_SPEC} locally..."
-if npm install "$PACKAGE_SPEC" 2>&1; then
+if retry-command.sh "Local npm install of ${PACKAGE_SPEC}" npm install "$PACKAGE_SPEC"; then
     record_pass "Local npm install succeeded"
 else
-    record_fail "Local npm install failed"
+    record_fail "Local npm install failed after retries"
 fi
 
 # Test via npx (should use local version)
@@ -355,6 +352,122 @@ if echo "$BINARY_RESOLUTION" | grep -q "RESOLUTION_OK"; then
     record_pass "Binary resolution finds agent-relay-broker"
 else
     record_fail "Binary resolution failed - agent-relay-broker not found"
+fi
+
+# ============================================
+# Test 6: @agent-relay/utils resolution (regression guard for bundledDependencies)
+# ============================================
+log_header "Test 6: @agent-relay/utils resolution"
+
+log_info "Verifying @agent-relay/utils resolves from installed agent-relay..."
+UTILS_RESOLUTION=$(node -e "
+try {
+    const path = require('path');
+    const pkgDir = path.dirname(require.resolve('agent-relay/package.json'));
+    const resolved = require.resolve('@agent-relay/utils', { paths: [pkgDir] });
+    console.log('RESOLVED:', resolved);
+    console.log('UTILS_RESOLVE_OK');
+} catch (e) {
+    console.log('UTILS_RESOLVE_FAIL:', e.code || e.message);
+}
+" 2>&1) || true
+
+log_info "Utils resolution output: $UTILS_RESOLUTION"
+if echo "$UTILS_RESOLUTION" | grep -q "UTILS_RESOLVE_OK"; then
+    record_pass "@agent-relay/utils resolves from installed agent-relay"
+else
+    record_fail "@agent-relay/utils is NOT resolvable - bundledDependencies regression"
+fi
+
+log_info "Inspecting installed CLI cloud command directory..."
+ls -la ./node_modules/agent-relay/dist/cli/commands/cloud/ 2>/dev/null || \
+    ls -la ./node_modules/agent-relay/dist/src/cli/commands/cloud/ 2>/dev/null || \
+    log_warn "No packaged cloud command directory found; falling back to dist scan"
+
+log_info "Resolving packaged module that imports @agent-relay/utils..."
+UTILS_IMPORT_TARGET=$(node -e "
+const fs = require('fs');
+const path = require('path');
+
+try {
+    const pkgDir = path.dirname(require.resolve('agent-relay/package.json'));
+    const candidates = [
+        path.join(pkgDir, 'dist/cli/commands/cloud/connect.js'),
+        path.join(pkgDir, 'dist/src/cli/commands/cloud/connect.js'),
+        path.join(pkgDir, 'dist/cli/commands/core.js'),
+        path.join(pkgDir, 'dist/src/cli/commands/core.js'),
+        path.join(pkgDir, 'dist/cli/bootstrap.js'),
+        path.join(pkgDir, 'dist/src/cli/bootstrap.js')
+    ];
+
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+            console.log(candidate);
+            process.exit(0);
+        }
+    }
+
+    const distDir = path.join(pkgDir, 'dist');
+    const stack = [distDir];
+    while (stack.length > 0) {
+        const current = stack.pop();
+        if (!current || !fs.existsSync(current)) {
+            continue;
+        }
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+            const fullPath = path.join(current, entry.name);
+            if (entry.isDirectory()) {
+                stack.push(fullPath);
+                continue;
+            }
+            if (!entry.isFile() || !fullPath.endsWith('.js')) {
+                continue;
+            }
+            const content = fs.readFileSync(fullPath, 'utf8');
+            if (content.includes('@agent-relay/utils')) {
+                console.log(fullPath);
+                process.exit(0);
+            }
+        }
+    }
+
+    console.log('UTILS_IMPORT_TARGET_NOT_FOUND');
+} catch (e) {
+    console.log('UTILS_IMPORT_TARGET_ERROR:', e.code || e.message);
+}
+" 2>&1 | tail -n 1) || true
+
+log_info "Selected smoke-test target: $UTILS_IMPORT_TARGET"
+log_info "Dynamic-import smoke test for packaged module that imports @agent-relay/utils..."
+CLOUD_CONNECT_SMOKE=$(node --input-type=module -e "
+import { pathToFileURL } from 'node:url';
+
+try {
+    const target = process.argv[1];
+    if (!target || target === 'UTILS_IMPORT_TARGET_NOT_FOUND' || target.startsWith('UTILS_IMPORT_TARGET_ERROR:')) {
+        console.log('CLOUD_CONNECT_IMPORT_FAIL:', target || 'missing target');
+    } else {
+        await import(pathToFileURL(target).href);
+        console.log('CLOUD_CONNECT_IMPORT_OK');
+    }
+} catch (e) {
+    if (e && e.code === 'ERR_MODULE_NOT_FOUND') {
+        console.log('CLOUD_CONNECT_IMPORT_FAIL:', e.message);
+    } else {
+        // A different error (e.g. expecting argv) is fine - the module loaded
+        console.log('CLOUD_CONNECT_IMPORT_OK_WITH_RUNTIME_ERR');
+    }
+}
+" "$UTILS_IMPORT_TARGET" 2>&1) || true
+
+log_info "Cloud connect import output: $CLOUD_CONNECT_SMOKE"
+if echo "$CLOUD_CONNECT_SMOKE" | grep -q "CLOUD_CONNECT_IMPORT_OK"; then
+    record_pass "cloud connect module imports without ERR_MODULE_NOT_FOUND"
+elif echo "$CLOUD_CONNECT_SMOKE" | grep -q "CLOUD_CONNECT_IMPORT_FAIL"; then
+    record_fail "cloud connect import FAILED with ERR_MODULE_NOT_FOUND: $CLOUD_CONNECT_SMOKE"
+else
+    log_warn "cloud connect import had unknown outcome: $CLOUD_CONNECT_SMOKE"
+    record_fail "cloud connect import indeterminate"
 fi
 
 # Cleanup test project

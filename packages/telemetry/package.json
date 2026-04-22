@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/telemetry",
-  "version": "4.0.9",
+  "version": "4.0.39",
   "description": "Anonymous telemetry for Agent Relay usage analytics",
   "type": "module",
   "main": "dist/index.js",
@@ -23,11 +23,10 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "posthog-node": "^4.0.1"
+    "posthog-node": "^5.29.2"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",
-    "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   },
   "publishConfig": {

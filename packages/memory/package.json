@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/memory",
-  "version": "4.0.9",
+  "version": "4.0.39",
   "description": "Semantic memory storage and retrieval system for agent-relay with multiple backend support",
   "type": "module",
   "main": "dist/index.js",
@@ -22,11 +22,10 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/hooks": "4.0.9"
+    "@agent-relay/hooks": "4.0.39"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",
-    "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   },
   "publishConfig": {

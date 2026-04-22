@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { stringify as stringifyYaml } from 'yaml';
 
 import type { AgentRelayOptions } from '../relay.js';
@@ -20,6 +21,7 @@ import type {
   WorkflowRunRow,
   WorkflowStep,
 } from './types.js';
+import { JsonFileWorkflowDb } from './file-db.js';
 import { WorkflowRunner, type WorkflowEventListener, type RunnerStepExecutor } from './runner.js';
 import { formatDryRunReport } from './dry-run-format.js';
 import { createDefaultEventLogger, type LogLevel } from './default-logger.js';
@@ -332,8 +334,7 @@ export class WorkflowBuilder {
     return this;
   }
 
-  /** Build and return the RelayYamlConfig object. */
-  toConfig(): RelayYamlConfig {
+  private validateBuilderState(): void {
     const hasAgentSteps = this._steps.some((s) => s.type !== 'deterministic' && s.type !== 'worktree');
     if (hasAgentSteps && this._agents.length === 0) {
       throw new Error('Workflow must have at least one agent when using agent steps');
@@ -341,6 +342,27 @@ export class WorkflowBuilder {
     if (this._steps.length === 0) {
       throw new Error('Workflow must have at least one step');
     }
+
+    const agentNames = new Set(this._agents.map((agent) => agent.name));
+    for (const step of this._steps) {
+      const diagnosticAgent = step.verification?.diagnosticAgent;
+      if (!diagnosticAgent) continue;
+
+      if (!agentNames.has(diagnosticAgent)) {
+        throw new Error(`Step "${step.name}" references unknown diagnosticAgent "${diagnosticAgent}"`);
+      }
+
+      if (step.retries === undefined || step.retries === 0) {
+        console.warn(
+          `Step "${step.name}": diagnosticAgent configured but no retries — diagnostic will never run`
+        );
+      }
+    }
+  }
+
+  /** Build and return the RelayYamlConfig object. */
+  toConfig(): RelayYamlConfig {
+    this.validateBuilderState();
 
     const wfDef: WorkflowDefinition = {
       name: `${this._name}-workflow`,
@@ -384,12 +406,16 @@ export class WorkflowBuilder {
   async run(options?: WorkflowRunOptions): Promise<WorkflowRunRow>;
   async run(options: WorkflowRunOptions = {}): Promise<WorkflowRunRow | DryRunReport> {
     const config = this.toConfig();
+    const runnerCwd = options.cwd ?? process.cwd();
+    const dbPath = path.join(runnerCwd, '.agent-relay', 'workflow-runs.jsonl');
+    const db = new JsonFileWorkflowDb(dbPath);
 
     const runner = new WorkflowRunner({
       cwd: options.cwd,
       relay: options.relay,
       executor: options.executor,
       envSecrets: options.envSecrets,
+      db,
     });
 
     // Auto-detect DRY_RUN env var so existing scripts get dry-run for free
@@ -448,7 +474,7 @@ export class WorkflowBuilder {
       runner.on(renderer.onEvent);
 
       const runPromise = resumeRunId
-        ? runner.resume(resumeRunId, options.vars)
+        ? runner.resume(resumeRunId, options.vars, config)
         : runner.execute(config, options.workflow, options.vars, executeOptions);
 
       try {
@@ -460,7 +486,7 @@ export class WorkflowBuilder {
     }
 
     if (resumeRunId) {
-      return runner.resume(resumeRunId, options.vars);
+      return runner.resume(resumeRunId, options.vars, config);
     }
 
     return runner.execute(config, options.workflow, options.vars, executeOptions);

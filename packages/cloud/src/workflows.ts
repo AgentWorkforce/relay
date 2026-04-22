@@ -261,6 +261,20 @@ export async function runWorkflow(
 
     requestBody.runId = prepared.runId;
     requestBody.s3CodeKey = prepared.s3CodeKey;
+
+    // Send the workflow's path inside the synced tarball so the cloud
+    // launcher can set WORKFLOW_FILE directly — no $HOME upload dance,
+    // sibling-relative imports (e.g. `../shared/models.ts`) resolve
+    // against the repo layout. The tarball was produced from
+    // process.cwd(), so relativize the user-typed argument against cwd.
+    //
+    // Absolute paths outside cwd OR paths that would escape the tarball
+    // via `..` are dropped silently — the server falls back to the
+    // legacy $HOME upload path in that case.
+    const workflowPath = relativizeWorkflowPath(workflowArg);
+    if (workflowPath) {
+      requestBody.workflowPath = workflowPath;
+    }
   }
 
   const t3 = Date.now();
@@ -571,4 +585,27 @@ function normalizeEntryPath(entryPath: string): string {
 
 function scopedCodeKey(prefix: string, key: string): string {
   return [prefix, key].filter(Boolean).join('/');
+}
+
+/**
+ * Turn the user-typed workflow path into a path **relative to the tarball
+ * root** (process.cwd()) that the cloud launcher can append to
+ * `/project/` to locate the file inside the synced code tree.
+ *
+ * Returns `null` when the result would escape the tarball (absolute
+ * outside cwd, or contains `..`). Callers drop the hint in that case —
+ * the server falls back to the legacy $HOME upload path, which still
+ * works (it just breaks sibling-relative imports, the pre-existing
+ * behaviour this field was added to fix).
+ */
+export function relativizeWorkflowPath(workflowArg: string): string | null {
+  const absolute = path.resolve(process.cwd(), workflowArg);
+  let rel = path.relative(process.cwd(), absolute);
+  if (rel.length === 0) return null;
+  // Normalize to forward slashes so the server-side validator (which
+  // runs on Linux Lambda) gets the same shape regardless of the CLI OS.
+  rel = rel.split(path.sep).join('/');
+  if (rel.startsWith('../') || rel === '..') return null;
+  if (path.isAbsolute(rel)) return null;
+  return rel;
 }
