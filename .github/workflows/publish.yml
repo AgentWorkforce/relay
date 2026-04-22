@@ -1517,6 +1517,7 @@ jobs:
         verify-acp-macos,
         publish-packages,
         publish-brand-only,
+        publish-sdk-py,
         publish-main,
         verify-publish,
       ]
@@ -1557,6 +1558,7 @@ jobs:
           echo "| Verify relay-acp (macOS) | ${{ needs.verify-acp-macos.result == 'success' && '✅' || (needs.verify-acp-macos.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-acp-macos.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Packages | ${{ needs.publish-packages.result == 'success' && '✅' || (needs.publish-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Brand | ${{ needs.publish-brand-only.result == 'success' && '✅' || (needs.publish-brand-only.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-brand-only.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Publish Python SDK | ${{ needs.publish-sdk-py.result == 'success' && '✅' || (needs.publish-sdk-py.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-sdk-py.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Main | ${{ needs.publish-main.result == 'success' && '✅' || (needs.publish-main.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-main.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Post-Publish Verify | ${{ needs.verify-publish.result == 'success' && '✅' || (needs.verify-publish.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-publish.result }} |" >> $GITHUB_STEP_SUMMARY
           if [ "$IS_PRERELEASE" = "true" ]; then
