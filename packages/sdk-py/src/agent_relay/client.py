@@ -60,12 +60,28 @@ def _resolve_spawn_transport(provider: str, transport: Optional[AgentTransport])
 # ── Binary resolution ─────────────────────────────────────────────────────────
 
 
+_ARCH_ALIASES = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
+
+
+def _normalized_platform_tag() -> str:
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    arch = _ARCH_ALIASES.get(machine, machine)
+    return f"{system}-{arch}"
+
+
 def _resolve_default_binary_path() -> str:
     broker_exe = "agent-relay-broker"
 
-    override = os.environ.get("BROKER_BINARY_PATH") or os.environ.get("AGENT_RELAY_BIN")
-    if override and Path(override).exists():
-        return override
+    for env_var in ("BROKER_BINARY_PATH", "AGENT_RELAY_BIN"):
+        override = os.environ.get(env_var)
+        if not override:
+            continue
+        if Path(override).exists():
+            return override
+        raise AgentRelayProcessError(
+            f"{env_var} is set to {override!r}, but no file exists at that path."
+        )
 
     embedded = Path(__file__).parent / "bin" / broker_exe
     if embedded.exists():
@@ -75,11 +91,11 @@ def _resolve_default_binary_path() -> str:
     if found:
         return found
 
-    plat = f"{platform.system().lower()}-{platform.machine().lower()}"
     raise AgentRelayProcessError(
         "agent-relay-broker not found. The installed wheel does not include a "
-        f"binary for this platform ({plat}). Supported platforms: darwin-arm64, "
-        "darwin-x64, linux-x64, linux-arm64. Set BROKER_BINARY_PATH to override."
+        f"binary for this platform ({_normalized_platform_tag()}). Supported "
+        "platforms: darwin-arm64, darwin-x64, linux-x64, linux-arm64. "
+        "Set BROKER_BINARY_PATH to override."
     )
 
 
