@@ -132,7 +132,6 @@ export interface CoreDependencies {
   exit: ExitFn;
 }
 
-
 function findPackageJson(startDir: string, fileSystem: CoreFileSystem): string {
   let current = startDir;
   while (current !== path.dirname(current)) {

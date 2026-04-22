@@ -39,11 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.35] - 2026-04-21
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Widen @relayfile/sdk dep range to allow 0.2.x + 0.3.x (#763)** (#763)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.35
 
 ---
@@ -51,11 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.34] - 2026-04-21
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Mark run failed under continue-on-error when steps fail (#762) (#762)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.34
 
 ---
@@ -63,14 +71,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.33] - 2026-04-20
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Add --register flag to mcp-args subcommand (#760)** (#760)
 
 #### User-Impacting Fixes
+
 - Bundle local mount package
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.33
 
 ---
@@ -78,15 +91,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.32] - 2026-04-20
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Add agent-relay mcp-args subcommand (#759)** (#759)
 - **Add agent activity hook**
 
 #### User-Impacting Fixes
+
 - Ignore late delivery ack activity
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.32
 
 ---
@@ -94,12 +112,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.31] - 2026-04-20
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Align Rust AgentSpawn/AgentRelease with TS schema**
 - **Per-component version properties on every event**
 - **Instrument all CLI commands with rich events**
 
 #### User-Impacting Fixes
+
 - FileDb in-memory cache authoritative — fixes stale status after disk write failures (#757) (#757)
 - Extract runSignalHandler helper; apply in monitoring
 - Is_tty should check stdin, not stdout
@@ -108,7 +129,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upgrade posthog-node from v4 to v5
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.31
 
 ---
@@ -116,11 +139,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.30] - 2026-04-19
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Export A2A communicate subpaths (#753) (#753)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.30
 
 ---
@@ -128,11 +155,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.29] - 2026-04-17
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Add ProcessBackend workflow for cloud sandbox execution (#747)** (#747)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.29
 
 ---
@@ -140,11 +171,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.28] - 2026-04-15
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Bundle ssh2 in release pipeline, not just scripts/build-bun.sh (#746) (#746)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.28
 
 ---
@@ -152,11 +187,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.27] - 2026-04-15
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Bundle ssh2 into Bun binary so cloud connect exercises the ssh2 path (#745) (#745)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.27
 
 ---
@@ -164,11 +203,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.26] - 2026-04-15
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Add visible launch checkpoint for cloud connect (#744) (#744)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.26
 
 ---
@@ -176,11 +219,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.25] - 2026-04-15
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Stop cloud connect hangs and re-auth loops (#743) (#743)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.25
 
 ---
@@ -188,11 +235,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.24] - 2026-04-15
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Prefer native Node TS stripping over tsx fallback (#741) (#741)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.24
 
 ---
@@ -200,11 +251,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.23] - 2026-04-14
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Show workspace key and observer URL in agent-relay status (#740)** (#740)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.23
 
 ---
@@ -212,11 +267,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.22] - 2026-04-14
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Cloud-connect fix workflows (claude hang + utils bundling) (#738)** (#738)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.22
 
 ---
@@ -224,14 +283,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.21] - 2026-04-13
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Env-var auth fallback for headless consumers (#734)** (#734)
 
 #### User-Impacting Fixes
+
 - Inbox --agent flag, history DM support, history --from DM context (#737) (#737)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.21
 
 ---
@@ -239,14 +303,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.20] - 2026-04-13
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Replace esbuild pre-parse with tsx stderr post-processing (#735) (#735)
 
 ### Technical Perspective
+
 #### Architecture & API Changes
+
 - Unify WorkflowTrajectory on agent-trajectories SDK (#732) (#732)
 
 #### Releases
+
 - v4.0.20
 
 ---
@@ -254,11 +323,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.19] - 2026-04-13
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Make preParseWorkflowFile async to avoid Bun-compiled CLI hang (#733) (#733)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.19
 
 ---
@@ -266,12 +339,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.18] - 2026-04-13
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Add progress diagnostics and spawnSync to runScriptFile (#731) (#731)
 - History/inbox fetch workspace_key via broker HTTP API (#729) (#729)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.18
 
 ---
@@ -279,16 +356,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.17] - 2026-04-13
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Workerd export condition + narrow entry + workers-safety probe (#726)** (#726)
 
 #### User-Impacting Fixes
+
 - Restore packages/sdk vitest suite to green (#728) (#728)
 - Pre-parse workflow script files with actionable error hints (#727) (#727)
 - Make --resume work for script workflows (#725) (#725)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.17
 
 ---

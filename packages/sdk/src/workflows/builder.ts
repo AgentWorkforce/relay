@@ -334,8 +334,7 @@ export class WorkflowBuilder {
     return this;
   }
 
-  /** Build and return the RelayYamlConfig object. */
-  toConfig(): RelayYamlConfig {
+  private validateBuilderState(): void {
     const hasAgentSteps = this._steps.some((s) => s.type !== 'deterministic' && s.type !== 'worktree');
     if (hasAgentSteps && this._agents.length === 0) {
       throw new Error('Workflow must have at least one agent when using agent steps');
@@ -343,6 +342,27 @@ export class WorkflowBuilder {
     if (this._steps.length === 0) {
       throw new Error('Workflow must have at least one step');
     }
+
+    const agentNames = new Set(this._agents.map((agent) => agent.name));
+    for (const step of this._steps) {
+      const diagnosticAgent = step.verification?.diagnosticAgent;
+      if (!diagnosticAgent) continue;
+
+      if (!agentNames.has(diagnosticAgent)) {
+        throw new Error(`Step "${step.name}" references unknown diagnosticAgent "${diagnosticAgent}"`);
+      }
+
+      if (step.retries === undefined || step.retries === 0) {
+        console.warn(
+          `Step "${step.name}": diagnosticAgent configured but no retries — diagnostic will never run`
+        );
+      }
+    }
+  }
+
+  /** Build and return the RelayYamlConfig object. */
+  toConfig(): RelayYamlConfig {
+    this.validateBuilderState();
 
     const wfDef: WorkflowDefinition = {
       name: `${this._name}-workflow`,

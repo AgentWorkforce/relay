@@ -18,6 +18,7 @@ Created and validated .msd/autofix-plan.json with two non-overlapping finding gr
 ## Key Decisions
 
 ### Grouped findings by file ownership into two conflict-free buckets
+
 - **Chose:** Grouped findings by file ownership into two conflict-free buckets
 - **Reasoning:** All findings on messaging.ts must stay together, all findings on fix-history-inbox-v2.ts must stay together, and both groups remain under the six-finding limit for parallel assignment.
 
@@ -26,6 +27,7 @@ Created and validated .msd/autofix-plan.json with two non-overlapping finding gr
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Grouped findings by file ownership into two conflict-free buckets: Grouped findings by file ownership into two conflict-free buckets

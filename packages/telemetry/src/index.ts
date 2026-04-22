@@ -50,8 +50,4 @@ export type {
   TelemetryEventMap,
 } from './events.js';
 
-export {
-  loadMachineId,
-  createAnonymousId,
-  getMachineIdPath,
-} from './machine-id.js';
+export { loadMachineId, createAnonymousId, getMachineIdPath } from './machine-id.js';

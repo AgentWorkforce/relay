@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
@@ -101,8 +102,25 @@ export function runVerification(
       }
       break;
 
-    case 'custom':
-      return { passed: false };
+    case 'custom': {
+      if (check.value) {
+        const result = execCustomVerification(check.value, cwd, check.timeoutMs);
+        if (!result.passed) {
+          return fail(
+            'Verification failed for "' +
+              stepName +
+              '": custom check "' +
+              check.value +
+              '" failed\n' +
+              result.output
+          );
+        }
+      } else {
+        // No command provided — preserved legacy no-op behavior
+        return { passed: false };
+      }
+      break;
+    }
 
     default:
       break;
@@ -171,6 +189,80 @@ export function checkOutputContains(output: string, token: string, injectedTaskT
     return false;
   }
   return stripInjectedTaskEcho(output, injectedTaskText).includes(token);
+}
+
+const DEFAULT_CUSTOM_VERIFY_TIMEOUT_MS = parseInt(process.env.CUSTOM_VERIFY_TIMEOUT_MS ?? '30000', 10);
+
+const REGEX_PREFIX = 'regex:';
+
+export function execCustomVerification(
+  command: string,
+  cwd: string,
+  timeoutMs = DEFAULT_CUSTOM_VERIFY_TIMEOUT_MS
+): { passed: boolean; output: string } {
+  try {
+    const stdout = execSync(command, {
+      cwd,
+      timeout: timeoutMs,
+      killSignal: 'SIGKILL',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf-8',
+    });
+    return { passed: true, output: stdout.trim() };
+  } catch (error) {
+    const execError = error as Error & {
+      stdout?: string | Buffer;
+      stderr?: string | Buffer;
+    };
+    const stdout =
+      typeof execError.stdout === 'string' ? execError.stdout : (execError.stdout?.toString('utf-8') ?? '');
+    const stderr =
+      typeof execError.stderr === 'string' ? execError.stderr : (execError.stderr?.toString('utf-8') ?? '');
+    const combinedOutput = [stdout, stderr]
+      .filter((chunk) => chunk.length > 0)
+      .join('\n')
+      .trim();
+    const truncated = combinedOutput.length > 2000 ? combinedOutput.slice(-2000) : combinedOutput;
+    return {
+      passed: false,
+      output: truncated || execError.message,
+    };
+  }
+}
+
+export function checkCustom(
+  value: string,
+  output: string,
+  cwd = process.cwd()
+): { passed: boolean; stdout?: string; error?: string } {
+  // Regex shorthand: "regex:<pattern>"
+  if (value.startsWith(REGEX_PREFIX)) {
+    const pattern = value.slice(REGEX_PREFIX.length);
+    try {
+      const re = new RegExp(pattern);
+      const matched = re.test(output);
+      return matched
+        ? { passed: true }
+        : { passed: false, error: `output did not match pattern /${pattern}/` };
+    } catch (err) {
+      return { passed: false, error: `invalid regex: ${(err as Error).message}` };
+    }
+  }
+
+  // Shell command: execute value with STEP_OUTPUT env var
+  try {
+    const result = execSync(value, {
+      cwd,
+      env: { ...process.env, STEP_OUTPUT: output },
+      timeout: DEFAULT_CUSTOM_VERIFY_TIMEOUT_MS,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      maxBuffer: 1024 * 1024,
+    });
+    return { passed: true, stdout: result.toString('utf-8').trim() };
+  } catch (err) {
+    const message = (err as { stderr?: Buffer })?.stderr?.toString('utf-8')?.trim() || (err as Error).message;
+    return { passed: false, error: message };
+  }
 }
 
 export function checkFileExists(filePath: string, cwd = process.cwd()): boolean {

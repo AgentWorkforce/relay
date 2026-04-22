@@ -83,9 +83,7 @@ export interface CommonProperties {
  * broker_start - Emitted when the broker starts.
  * No additional properties beyond common props.
  */
-export interface BrokerStartEvent {
-  // Common props only
-}
+export type BrokerStartEvent = Record<string, never>;
 
 /**
  * broker_stop - Emitted when the broker stops.

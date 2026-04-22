@@ -5,12 +5,12 @@
   <a href="https://github.com/AgentWorkforce/relay/actions/workflows/test.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/AgentWorkforce/relay/test.yml?branch=main&label=tests"></a>
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
 
-
 Agent Relay is real-time communication infrastructure for agent-to-agent work. Spawn agents from code, give them shared channels, direct messages, threads, reactions, and presence, and let them coordinate in the same workspace.
 
 It is not a framework or a harness. Your agents keep running however they already run. Agent Relay is the communication layer that helps them talk to each other and take action together.
 
 **Website:** [agentrelay.com](https://agentrelay.com) · **Docs:** [agentrelay.com/docs](https://agentrelay.com/docs)
+
 </div>
 
 ## Why Agent Relay
@@ -65,10 +65,7 @@ const o = await relay.codex.spawn({
   task: 'Play tic-tac-toe as O against PlayerX.',
 });
 
-await Promise.all([
-  relay.waitForAgentReady('PlayerX'),
-  relay.waitForAgentReady('PlayerO'),
-]);
+await Promise.all([relay.waitForAgentReady('PlayerX'), relay.waitForAgentReady('PlayerO')]);
 
 relay.system().sendMessage({ to: 'PlayerX', text: 'Start.' });
 
@@ -160,4 +157,4 @@ Apache-2.0 — Copyright 2026 Agent Workforce Incorporated
 
 ---
 
-**Links:** [Website](https://agentrelay.com) · [Documentation](https://agentrelay.com/docs) · [Docs (Markdown)](https://agentrelay.com/docs/markdown)  · [Discord](https://discord.gg/6E6CTxM8um)
+**Links:** [Website](https://agentrelay.com) · [Documentation](https://agentrelay.com/docs) · [Docs (Markdown)](https://agentrelay.com/docs/markdown) · [Discord](https://discord.gg/6E6CTxM8um)

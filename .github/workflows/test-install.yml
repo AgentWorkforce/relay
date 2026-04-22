@@ -31,27 +31,27 @@ jobs:
         include:
           # macOS - Apple Silicon
           - os: macos-latest
-            node: "with-node"
+            node: 'with-node'
             arch: arm64
 
           # macOS - No Node.js (tests standalone binary path)
           - os: macos-latest
-            node: "no-node"
+            node: 'no-node'
             arch: arm64
 
           # Ubuntu - Latest LTS
           - os: ubuntu-latest
-            node: "with-node"
+            node: 'with-node'
             arch: x64
 
           # Ubuntu - No Node.js
           - os: ubuntu-latest
-            node: "no-node"
+            node: 'no-node'
             arch: x64
 
           # Ubuntu - Old LTS (20.04)
           - os: ubuntu-20.04
-            node: "with-node"
+            node: 'with-node'
             arch: x64
 
     steps:
@@ -62,7 +62,7 @@ jobs:
         if: matrix.node == 'with-node'
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
 
       - name: Remove Node.js (if testing no-node)
         if: matrix.node == 'no-node'

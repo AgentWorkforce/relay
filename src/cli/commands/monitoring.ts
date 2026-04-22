@@ -67,7 +67,6 @@ export interface MonitoringDependencies {
 
 const DEFAULT_DASHBOARD_PORT = process.env.AGENT_RELAY_DASHBOARD_PORT || '3888';
 
-
 async function createDefaultMetricsClient(cwd: string): Promise<MonitoringMetricsClient> {
   // Connect to existing broker for read-only metrics queries
   try {

@@ -122,12 +122,12 @@ function detectCi(): boolean {
   if (env.CI && env.CI !== 'false' && env.CI !== '0') return true;
   return Boolean(
     env.GITHUB_ACTIONS ||
-      env.GITLAB_CI ||
-      env.BUILDKITE ||
-      env.CIRCLECI ||
-      env.TRAVIS ||
-      env.JENKINS_URL ||
-      env.TEAMCITY_VERSION
+    env.GITLAB_CI ||
+    env.BUILDKITE ||
+    env.CIRCLECI ||
+    env.TRAVIS ||
+    env.JENKINS_URL ||
+    env.TEAMCITY_VERSION
   );
 }
 

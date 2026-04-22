@@ -83,10 +83,7 @@
           "significance": "high",
           "raw": {
             "confidence": 0.75,
-            "focalPoints": [
-              "init-msd-dir: completed",
-              "read-context: completed"
-            ]
+            "focalPoints": ["init-msd-dir: completed", "read-context: completed"]
           }
         }
       ],
@@ -128,9 +125,7 @@
               "channelPosts": [
                 "**[plan] Output:**\n```\nhen I’ll notify the broker and retire the worker.◦WoorrkkiinWng5Wogorrk•kiinngg◦6•WWoorrkkiin◦Wng7Wog0orrk · 1 background terminal runnin"
               ],
-              "files": [
-                "created:.msd/autofix-plan.json"
-              ]
+              "files": ["created:.msd/autofix-plan.json"]
             }
           }
         },

@@ -1187,8 +1187,6 @@ export class AgentRelay {
     return typeof candidate === 'number' ? candidate : Date.now();
   }
 
-
-
   private addAgentChannels(name: string, channels: string[]): void {
     const agent = this.knownAgents.get(name) as InternalAgent | undefined;
     if (!agent || channels.length === 0) return;

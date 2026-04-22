@@ -17,8 +17,7 @@ export interface TelemetryPrefs {
 }
 
 export function getPrefsPath(): string {
-  const configDir = process.env.AGENT_RELAY_DATA_DIR ||
-    path.join(os.homedir(), '.agent-relay');
+  const configDir = process.env.AGENT_RELAY_DATA_DIR || path.join(os.homedir(), '.agent-relay');
   return path.join(configDir, 'telemetry.json');
 }
 
@@ -69,10 +68,7 @@ function isTruthyEnv(value: string | undefined): boolean {
 }
 
 export function isDisabledByEnv(): boolean {
-  return (
-    isTruthyEnv(process.env.AGENT_RELAY_TELEMETRY_DISABLED) ||
-    isTruthyEnv(process.env.DO_NOT_TRACK)
-  );
+  return isTruthyEnv(process.env.AGENT_RELAY_TELEMETRY_DISABLED) || isTruthyEnv(process.env.DO_NOT_TRACK);
 }
 
 /**

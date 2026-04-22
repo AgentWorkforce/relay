@@ -1,10 +1,14 @@
 /**
  * Tests for deterministic and worktree step support in WorkflowBuilder.
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { workflow } from '../workflows/builder.js';
 
 describe('deterministic/worktree steps in builder', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('deterministic step emits correct config', () => {
     const config = workflow('test')
       .agent('worker', { cli: 'claude' })
@@ -128,5 +132,68 @@ describe('deterministic/worktree steps in builder', () => {
 
     expect(yamlStr).toContain('type: deterministic');
     expect(yamlStr).toContain('command: echo hello');
+  });
+
+  it('preserves diagnosticAgent in agent step verification', () => {
+    const config = workflow('traceback')
+      .agent('generator', { cli: 'claude' })
+      .agent('reviewer', { cli: 'claude' })
+      .step('generate', {
+        agent: 'generator',
+        task: 'Implement the change',
+        verification: {
+          type: 'custom',
+          value: 'npx nango compile',
+          diagnosticAgent: 'reviewer',
+        },
+        retries: 2,
+      })
+      .toConfig();
+
+    expect(config.workflows?.[0].steps[0].verification).toEqual({
+      type: 'custom',
+      value: 'npx nango compile',
+      diagnosticAgent: 'reviewer',
+    });
+  });
+
+  it('throws when diagnosticAgent is not in the agents list', () => {
+    expect(() => {
+      workflow('traceback')
+        .agent('generator', { cli: 'claude' })
+        .step('generate', {
+          agent: 'generator',
+          task: 'Implement the change',
+          verification: {
+            type: 'custom',
+            value: 'npx nango compile',
+            diagnosticAgent: 'reviewer',
+          },
+          retries: 2,
+        })
+        .toConfig();
+    }).toThrow('Step "generate" references unknown diagnosticAgent "reviewer"');
+  });
+
+  it('warns when diagnosticAgent is configured without step retries', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    workflow('traceback')
+      .agent('generator', { cli: 'claude' })
+      .agent('reviewer', { cli: 'claude' })
+      .step('generate', {
+        agent: 'generator',
+        task: 'Implement the change',
+        verification: {
+          type: 'custom',
+          value: 'npx nango compile',
+          diagnosticAgent: 'reviewer',
+        },
+      })
+      .toConfig();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Step "generate": diagnosticAgent configured but no retries — diagnostic will never run'
+    );
   });
 });

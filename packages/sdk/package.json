@@ -116,7 +116,7 @@
   },
   "scripts": {
     "prebuild": "npm --prefix ../config run build",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "npx tsc -p tsconfig.build.json",
     "build:full": "tsc -p tsconfig.json && npm run bundle:binary",
     "bundle:binary": "node ./scripts/bundle-agent-relay.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
@@ -147,6 +147,7 @@
     "yaml": "^2.7.0"
   },
   "peerDependencies": {
+    "@agent-relay/credential-proxy": "4.0.10",
     "@anthropic-ai/claude-agent-sdk": ">=0.1.0",
     "@google/adk": ">=0.5.0",
     "@langchain/langgraph": ">=1.2.0",
@@ -156,6 +157,9 @@
     "crewai": ">=1.0.0"
   },
   "peerDependenciesMeta": {
+    "@agent-relay/credential-proxy": {
+      "optional": true
+    },
     "@anthropic-ai/claude-agent-sdk": {
       "optional": true
     },

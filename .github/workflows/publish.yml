@@ -501,6 +501,7 @@ jobs:
           - openclaw
           - brand
           - gateway
+          - credential-proxy
 
     steps:
       - name: Checkout code
