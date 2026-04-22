@@ -82,16 +82,29 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
+            broker_pkg: broker-darwin-arm64
             binary_name: agent-relay-broker-darwin-arm64
+            binary_file: agent-relay-broker
           - os: macos-latest
             target: x86_64-apple-darwin
+            broker_pkg: broker-darwin-x64
             binary_name: agent-relay-broker-darwin-x64
+            binary_file: agent-relay-broker
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
+            broker_pkg: broker-linux-x64
             binary_name: agent-relay-broker-linux-x64
+            binary_file: agent-relay-broker
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
+            broker_pkg: broker-linux-arm64
             binary_name: agent-relay-broker-linux-arm64
+            binary_file: agent-relay-broker
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            broker_pkg: broker-win32-x64
+            binary_name: agent-relay-broker-win32-x64.exe
+            binary_file: agent-relay-broker.exe
 
     steps:
       - name: Checkout code
@@ -117,19 +130,35 @@ jobs:
         with:
           key: broker-${{ matrix.target }}
 
-      - name: Build broker binary
+      - name: Build broker binary (unix)
+        if: runner.os != 'Windows'
         run: |
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
             RUSTFLAGS="-C target-feature=+crt-static" cross build --release --bin agent-relay-broker --target ${{ matrix.target }}
           else
             RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --bin agent-relay-broker --target ${{ matrix.target }}
           fi
-          strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || true
+          strip target/${{ matrix.target }}/release/${{ matrix.binary_file }} 2>/dev/null || true
 
-      - name: Copy binary with platform name
+      - name: Build broker binary (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:RUSTFLAGS = "-C target-feature=+crt-static"
+          cargo build --release --bin agent-relay-broker --target ${{ matrix.target }}
+
+      - name: Copy binary with platform name (unix)
+        if: runner.os != 'Windows'
         run: |
           mkdir -p release-binaries
-          cp target/${{ matrix.target }}/release/agent-relay-broker release-binaries/${{ matrix.binary_name }}
+          cp target/${{ matrix.target }}/release/${{ matrix.binary_file }} release-binaries/${{ matrix.binary_name }}
+
+      - name: Copy binary with platform name (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-binaries | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_file }}" "release-binaries/${{ matrix.binary_name }}"
 
       # Ad-hoc sign macOS binaries at build time so the Python SDK wheel
       # doesn't have to invoke codesign at install time.
@@ -483,10 +512,120 @@ jobs:
             dist/
           retention-days: 1
 
+  # Publish the per-platform broker packages first. @agent-relay/sdk declares
+  # these as exact-version optionalDependencies, so they must exist on the
+  # registry at the matching version before the SDK is published — otherwise
+  # `npm install @agent-relay/sdk@<v>` races the registry for the broker
+  # package at the same version.
+  publish-broker-packages:
+    name: Publish ${{ matrix.broker_pkg }}
+    needs: [build, build-broker]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk'
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - broker_pkg: broker-darwin-arm64
+            binary_name: agent-relay-broker-darwin-arm64
+            binary_file: agent-relay-broker
+          - broker_pkg: broker-darwin-x64
+            binary_name: agent-relay-broker-darwin-x64
+            binary_file: agent-relay-broker
+          - broker_pkg: broker-linux-arm64
+            binary_name: agent-relay-broker-linux-arm64
+            binary_file: agent-relay-broker
+          - broker_pkg: broker-linux-x64
+            binary_name: agent-relay-broker-linux-x64
+            binary_file: agent-relay-broker
+          - broker_pkg: broker-win32-x64
+            binary_name: agent-relay-broker-win32-x64.exe
+            binary_file: agent-relay-broker.exe
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Download broker binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.binary_name }}
+          path: /tmp/broker
+
+      - name: Stage broker binary into package tree
+        run: |
+          set -euo pipefail
+          mkdir -p packages/${{ matrix.broker_pkg }}/bin
+          cp "/tmp/broker/${{ matrix.binary_name }}" "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+          chmod +x "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+          ls -lh packages/${{ matrix.broker_pkg }}/bin/
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
+      - name: Dry run check
+        if: github.event.inputs.dry_run == 'true'
+        working-directory: packages/${{ matrix.broker_pkg }}
+        run: |
+          echo "Dry run - would publish @agent-relay/${{ matrix.broker_pkg }}"
+          npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      # Retry up to 3 times — npm registry occasionally flakes and we cannot
+      # reuse the version on rerun, so transient failures must be absorbed
+      # here rather than failing the whole release.
+      - name: Publish to NPM (attempt 1)
+        id: publish_1
+        if: github.event.inputs.dry_run != 'true'
+        continue-on-error: true
+        working-directory: packages/${{ matrix.broker_pkg }}
+        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Wait before retry
+        if: github.event.inputs.dry_run != 'true' && steps.publish_1.outcome == 'failure'
+        run: sleep 30
+
+      - name: Publish to NPM (attempt 2)
+        id: publish_2
+        if: github.event.inputs.dry_run != 'true' && steps.publish_1.outcome == 'failure'
+        continue-on-error: true
+        working-directory: packages/${{ matrix.broker_pkg }}
+        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Wait before retry
+        if: github.event.inputs.dry_run != 'true' && steps.publish_2.outcome == 'failure'
+        run: sleep 60
+
+      - name: Publish to NPM (attempt 3)
+        id: publish_3
+        if: github.event.inputs.dry_run != 'true' && steps.publish_1.outcome == 'failure' && steps.publish_2.outcome == 'failure'
+        working-directory: packages/${{ matrix.broker_pkg }}
+        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Fail if all publish attempts failed
+        if: >-
+          github.event.inputs.dry_run != 'true' &&
+          steps.publish_1.outcome == 'failure' &&
+          steps.publish_2.outcome == 'failure' &&
+          steps.publish_3.outcome == 'failure'
+        run: exit 1
+
   # Publish all packages in parallel (npm publish doesn't need deps published first)
   publish-packages:
     name: Publish ${{ matrix.package }}
-    needs: [build, build-broker]
+    needs: [build, build-broker, publish-broker-packages]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all'
     strategy:
@@ -528,6 +667,10 @@ jobs:
           name: build-output
           path: .
 
+      # Keep bundling all platform broker binaries into the SDK tarball for
+      # one release cycle. The SDK prefers the optional-dep package but falls
+      # back to this bundled copy so mixed-version installs keep working
+      # during the migration. Delete this step in the next major.
       - name: Download broker binaries (SDK only)
         if: matrix.package == 'sdk'
         uses: actions/download-artifact@v4
@@ -539,7 +682,7 @@ jobs:
       - name: Make broker binaries executable (SDK only)
         if: matrix.package == 'sdk'
         run: |
-          chmod +x packages/sdk/bin/agent-relay-broker-*
+          chmod +x packages/sdk/bin/agent-relay-broker-* || true
           # Remove stale generic binary — SDK resolves platform-specific names at runtime
           rm -f packages/sdk/bin/agent-relay-broker
 
@@ -603,7 +746,7 @@ jobs:
   # Publish SDK only (when selected)
   publish-sdk-only:
     name: Publish SDK to NPM
-    needs: [build, build-broker]
+    needs: [build, build-broker, publish-broker-packages]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'sdk'
 
@@ -623,6 +766,10 @@ jobs:
           name: build-output
           path: .
 
+      # Bundled broker binaries in packages/sdk/bin/ are kept for one release
+      # cycle as a fallback. New installs resolve the binary via the
+      # per-platform @agent-relay/broker-* optional deps published by the
+      # publish-broker-packages job above.
       - name: Download broker binaries
         uses: actions/download-artifact@v4
         with:
@@ -632,7 +779,7 @@ jobs:
 
       - name: Make broker binaries executable
         run: |
-          chmod +x packages/sdk/bin/agent-relay-broker-*
+          chmod +x packages/sdk/bin/agent-relay-broker-* || true
           # Remove stale generic binary — SDK resolves platform-specific names at runtime
           rm -f packages/sdk/bin/agent-relay-broker
 
@@ -1001,17 +1148,10 @@ jobs:
           name: build-output
           path: .
 
-      - name: Download broker binaries
-        if: github.event.inputs.package != 'cli-prerelease'
-        uses: actions/download-artifact@v4
-        with:
-          pattern: agent-relay-broker-*
-          path: bin/
-          merge-multiple: true
-
-      - name: Make binaries executable
-        if: github.event.inputs.package != 'cli-prerelease'
-        run: chmod +x bin/agent-relay-broker-*
+      # NOTE: the root `agent-relay` CLI no longer bundles broker binaries in
+      # its own tarball. Brokers ship as `@agent-relay/broker-<platform>-<arch>`
+      # optional-deps of `@agent-relay/sdk` (which is itself bundled here via
+      # bundledDependencies), so users still get a broker on install.
 
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
@@ -1432,6 +1572,7 @@ jobs:
             - `agent-relay-broker-linux-arm64` - Linux ARM64
             - `agent-relay-broker-darwin-x64` - macOS Intel
             - `agent-relay-broker-darwin-arm64` - macOS Apple Silicon
+            - `agent-relay-broker-win32-x64.exe` - Windows x86_64
 
             ### relay-acp binaries (Zed editor integration)
             ACP bridge for Zed editor:
@@ -1517,6 +1658,7 @@ jobs:
         verify-standalone-macos,
         verify-acp-linux,
         verify-acp-macos,
+        publish-broker-packages,
         publish-packages,
         publish-brand-only,
         publish-sdk-py,
@@ -1558,6 +1700,7 @@ jobs:
           echo "| Verify Standalone (macOS) | ${{ needs.verify-standalone-macos.result == 'success' && '✅' || (needs.verify-standalone-macos.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-standalone-macos.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Verify relay-acp (Linux) | ${{ needs.verify-acp-linux.result == 'success' && '✅' || (needs.verify-acp-linux.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-acp-linux.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Verify relay-acp (macOS) | ${{ needs.verify-acp-macos.result == 'success' && '✅' || (needs.verify-acp-macos.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-acp-macos.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Publish Broker Packages | ${{ needs.publish-broker-packages.result == 'success' && '✅' || (needs.publish-broker-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-broker-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Packages | ${{ needs.publish-packages.result == 'success' && '✅' || (needs.publish-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Brand | ${{ needs.publish-brand-only.result == 'success' && '✅' || (needs.publish-brand-only.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-brand-only.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Python SDK | ${{ needs.publish-sdk-py.result == 'success' && '✅' || (needs.publish-sdk-py.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-sdk-py.result }} |" >> $GITHUB_STEP_SUMMARY
