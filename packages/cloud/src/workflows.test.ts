@@ -359,6 +359,45 @@ describe('runWorkflow code sync', () => {
     expect((runBodies[0] as { s3CodeKey?: unknown }).s3CodeKey).toBeUndefined();
   });
 
+  it('relativizes workflowPath against the declared path that contains it, not paths[0]', async () => {
+    await mkdir('cloud', { recursive: true });
+    await mkdir('relay/workflows', { recursive: true });
+    await writeFile('cloud/README.md', 'cloud\n');
+    await writeFile('relay/README.md', 'relay\n');
+
+    // Workflow file lives inside the SECOND declared path (relay/), not the first (cloud/).
+    const workflowPath = path.join(tmpRoot, 'relay/workflows/thing.yaml');
+    await writeFile(
+      workflowPath,
+      [
+        'version: "1.0"',
+        'name: multi',
+        'paths:',
+        '  - name: cloud',
+        '    path: ../cloud',
+        '  - name: relay',
+        '    path: ../relay',
+        'swarm:',
+        '  pattern: dag',
+        'agents: []',
+        'workflows: []',
+      ].join('\n')
+    );
+    const runBodies: unknown[] = [];
+    mockPrepareAndRun(runBodies);
+
+    // Run from the relay dir so `../cloud` and `../relay` resolve correctly.
+    const prevCwd = process.cwd();
+    process.chdir(path.join(tmpRoot, 'relay'));
+    try {
+      await runWorkflow(workflowPath);
+    } finally {
+      process.chdir(prevCwd);
+    }
+
+    expect((runBodies[0] as { workflowPath?: string }).workflowPath).toBe('workflows/thing.yaml');
+  });
+
   it('falls back to the legacy single tarball when no paths are declared', async () => {
     await writeFile('README.md', 'legacy\n');
     const workflowPath = path.join(tmpRoot, 'workflow.yaml');

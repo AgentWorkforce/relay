@@ -101,8 +101,8 @@ export type WorkflowLogsResponse = {
 };
 
 export type SyncPatchResponse = {
-  patch: string;
-  hasChanges: boolean;
+  patch?: string;
+  hasChanges?: boolean;
   patches?: Record<string, { patch: string; hasChanges: boolean }>;
   [key: string]: unknown;
 };

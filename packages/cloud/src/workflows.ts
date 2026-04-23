@@ -98,10 +98,11 @@ function stripYamlScalar(raw: string): string {
 }
 
 function assignPathField(target: Partial<WorkflowPathDefinition>, text: string): void {
-  const match = text.match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
-  if (!match) return;
-  const key = match[1];
-  const value = stripYamlScalar(match[2]);
+  const colonIdx = text.indexOf(':');
+  if (colonIdx === -1) return;
+  const key = text.slice(0, colonIdx).trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(key)) return;
+  const value = stripYamlScalar(text.slice(colonIdx + 1).trim());
   switch (key) {
     case 'name':
       target.name = value;
@@ -548,7 +549,11 @@ export async function runWorkflow(
       }
 
       requestBody.paths = pathSubmissions;
-      const workflowPath = relativizeWorkflowPathFromRoot(workflowArg, resolvedPathRoots[0]);
+      let workflowPath: string | null = null;
+      for (const root of resolvedPathRoots) {
+        workflowPath = relativizeWorkflowPathFromRoot(workflowArg, root);
+        if (workflowPath) break;
+      }
       if (workflowPath) {
         requestBody.workflowPath = workflowPath;
       }

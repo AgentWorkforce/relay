@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const cloudMocks = vi.hoisted(() => ({
   runWorkflow: vi.fn(),
   getRunStatus: vi.fn(),
+  syncWorkflowPatch: vi.fn(),
 }));
 
 vi.mock('@agent-relay/cloud', () => ({
@@ -18,7 +19,7 @@ vi.mock('@agent-relay/cloud', () => ({
   getRunStatus: (...args: unknown[]) => cloudMocks.getRunStatus(...args),
   readStoredAuth: vi.fn(),
   runWorkflow: (...args: unknown[]) => cloudMocks.runWorkflow(...args),
-  syncWorkflowPatch: vi.fn(),
+  syncWorkflowPatch: (...args: unknown[]) => cloudMocks.syncWorkflowPatch(...args),
 }));
 
 vi.mock('@agent-relay/telemetry', () => ({
@@ -164,6 +165,52 @@ describe('registerCloudCommands', () => {
       '  cloud: https://github.com/acme/cloud/pull/12 (agent-relay/run-run-1)'
     );
     expect(deps.log).toHaveBeenCalledWith('  relay: push failed: base_branch_moved: Base branch moved');
+  });
+
+  it('cloud sync refuses to apply multi-path responses (no silent data loss)', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.syncWorkflowPatch.mockResolvedValueOnce({
+      patches: {
+        cloud: { patch: 'diff --git a/x b/x\n', hasChanges: true },
+        relay: { patch: 'diff --git a/y b/y\n', hasChanges: true },
+      },
+    });
+
+    await expect(program.parseAsync(['node', 'agent-relay', 'cloud', 'sync', 'run-42'])).rejects.toThrow(
+      'exit:1'
+    );
+
+    expect(deps.error).toHaveBeenCalledWith(expect.stringContaining('2 per-path patches (cloud, relay)'));
+    expect(deps.log).not.toHaveBeenCalledWith('No changes to sync — the workflow did not modify any files.');
+  });
+
+  it('cloud sync --dry-run prints each multi-path patch', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.syncWorkflowPatch.mockResolvedValueOnce({
+      patches: {
+        cloud: { patch: 'CLOUD_PATCH_BODY', hasChanges: true },
+        relay: { patch: '', hasChanges: false },
+      },
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'sync', 'run-42', '--dry-run']);
+
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('Patch for "cloud" (dry run)'));
+    expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('Patch for "relay"'));
+  });
+
+  it('cloud sync reports no-changes when multi-path response has all empty patches', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.syncWorkflowPatch.mockResolvedValueOnce({
+      patches: {
+        cloud: { patch: '', hasChanges: false },
+        relay: { patch: '', hasChanges: false },
+      },
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'sync', 'run-42']);
+
+    expect(deps.log).toHaveBeenCalledWith('No changes to sync — the workflow did not modify any files.');
   });
 
   it('cloud status renders pending patch push state', async () => {
