@@ -512,6 +512,213 @@ jobs:
             dist/
           retention-days: 1
 
+  # End-to-end smoke test of the optional-dep broker pattern on every target
+  # platform, using locally-packed tarballs — no registry round-trip, no
+  # mocking. Each matrix leg:
+  #   1. Stages the platform's broker binary into its package tree and
+  #      injects os/cpu so the package validates like the published one.
+  #   2. `npm pack`s the SDK (with packages/sdk/bin emptied so the SDK
+  #      tarball cannot fall back to a bundled binary).
+  #   3. `npm pack`s the matching broker package.
+  #   4. Installs both tarballs into a scratch project.
+  #   5. Asserts getBrokerBinaryPath() resolves through the optional-dep
+  #      package and returns an executable file.
+  #   6. Runs AgentRelayClient.spawn() end-to-end and shuts it down.
+  # Gates publish-broker-packages — we do not ship if any platform fails.
+  smoke-broker-packages:
+    name: Smoke ${{ matrix.platform }}
+    needs: [build, build-broker]
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            os: macos-14
+            broker_pkg: broker-darwin-arm64
+            binary_name: agent-relay-broker-darwin-arm64
+            binary_file: agent-relay-broker
+            pkg_os: darwin
+            pkg_cpu: arm64
+          - platform: darwin-x64
+            os: macos-13
+            broker_pkg: broker-darwin-x64
+            binary_name: agent-relay-broker-darwin-x64
+            binary_file: agent-relay-broker
+            pkg_os: darwin
+            pkg_cpu: x64
+          - platform: linux-x64
+            os: ubuntu-latest
+            broker_pkg: broker-linux-x64
+            binary_name: agent-relay-broker-linux-x64
+            binary_file: agent-relay-broker
+            pkg_os: linux
+            pkg_cpu: x64
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+            broker_pkg: broker-linux-arm64
+            binary_name: agent-relay-broker-linux-arm64
+            binary_file: agent-relay-broker
+            pkg_os: linux
+            pkg_cpu: arm64
+          - platform: win32-x64
+            os: windows-latest
+            broker_pkg: broker-win32-x64
+            binary_name: agent-relay-broker-win32-x64.exe
+            binary_file: agent-relay-broker.exe
+            pkg_os: win32
+            pkg_cpu: x64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Download broker binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.binary_name }}
+          path: /tmp/broker
+
+      - name: Stage broker binary (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "packages/${{ matrix.broker_pkg }}/bin"
+          cp "/tmp/broker/${{ matrix.binary_name }}" "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+          chmod +x "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+
+      - name: Stage broker binary (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "packages/${{ matrix.broker_pkg }}/bin" | Out-Null
+          Copy-Item "/tmp/broker/${{ matrix.binary_name }}" "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+
+      - name: Inject os/cpu for ${{ matrix.pkg_os }}-${{ matrix.pkg_cpu }}
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const p = 'packages/${{ matrix.broker_pkg }}/package.json';
+            const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+            pkg.os = ['${{ matrix.pkg_os }}'];
+            pkg.cpu = ['${{ matrix.pkg_cpu }}'];
+            fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Pack SDK and broker tarballs
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALLS="$RUNNER_TEMP/tarballs"
+          mkdir -p "$TARBALLS"
+          echo "TARBALLS=$TARBALLS" >> "$GITHUB_ENV"
+          # Empty packages/sdk/bin so the SDK tarball has NO bundled broker
+          # binary. This forces the smoke test to exercise the optional-dep
+          # resolution path instead of the legacy bundled fallback.
+          rm -rf packages/sdk/bin
+          mkdir -p packages/sdk/bin
+          (cd packages/sdk && npm pack --ignore-scripts --pack-destination "$TARBALLS")
+          (cd "packages/${{ matrix.broker_pkg }}" && npm pack --ignore-scripts --pack-destination "$TARBALLS")
+          ls -lh "$TARBALLS"
+
+      - name: Install tarballs into scratch project
+        shell: bash
+        run: |
+          set -euo pipefail
+          SCRATCH="$RUNNER_TEMP/smoke"
+          mkdir -p "$SCRATCH"
+          echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
+          cd "$SCRATCH"
+          npm init -y --silent >/dev/null
+          SDK_TGZ=$(ls "$TARBALLS"/agent-relay-sdk-*.tgz | head -n1)
+          BROKER_TGZ=$(ls "$TARBALLS"/agent-relay-broker-${{ matrix.platform }}-*.tgz | head -n1)
+          echo "Installing $SDK_TGZ + $BROKER_TGZ"
+          npm install --ignore-scripts --no-audit --no-fund "$SDK_TGZ" "$BROKER_TGZ"
+          ls node_modules/@agent-relay/
+
+      - name: Resolver smoke — getBrokerBinaryPath()
+        shell: bash
+        run: |
+          cd "$SCRATCH"
+          node --input-type=module -e "
+            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+            import { accessSync, constants } from 'node:fs';
+            const expectedPkg = getOptionalDepPackageName();
+            const p = getBrokerBinaryPath();
+            console.log('expected pkg:', expectedPkg);
+            console.log('resolved:', p);
+            if (!p) { console.error('FAIL: resolver returned null'); process.exit(1); }
+            if (!p.includes('${{ matrix.broker_pkg }}')) {
+              console.error('FAIL: expected path through ${{ matrix.broker_pkg }}, got', p);
+              process.exit(1);
+            }
+            accessSync(p, constants.X_OK);
+            console.log('OK: resolver returned executable binary from optional-dep package');
+          "
+
+      - name: Spawn smoke — AgentRelayClient.spawn()
+        shell: bash
+        run: |
+          cd "$SCRATCH"
+          node --input-type=module -e "
+            import { AgentRelayClient } from '@agent-relay/sdk';
+            const client = await AgentRelayClient.spawn({
+              cwd: process.cwd(),
+              channels: ['general'],
+              startupTimeoutMs: 45000,
+              onStderr: (line) => console.error('[broker]', line),
+            });
+            console.log('OK: AgentRelayClient.spawn() returned');
+            await client.shutdown();
+            console.log('OK: client.shutdown() completed');
+          " || { echo 'SPAWN_FAILED'; exit 1; }
+
+      - name: Negative smoke — optional dep missing (linux-x64 only)
+        if: matrix.platform == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEGATIVE="$RUNNER_TEMP/smoke-negative"
+          mkdir -p "$NEGATIVE"
+          cd "$NEGATIVE"
+          npm init -y --silent >/dev/null
+          SDK_TGZ=$(ls "$TARBALLS"/agent-relay-sdk-*.tgz | head -n1)
+          # Install SDK alone without the broker. The SDK's optionalDependencies
+          # at exact '5.x' cannot resolve from this local install, so the
+          # resolver should return null and spawn() should throw a clear error.
+          npm install --ignore-scripts --no-audit --no-fund --no-optional "$SDK_TGZ"
+          node --input-type=module -e "
+            import { AgentRelayClient } from '@agent-relay/sdk';
+            try {
+              await AgentRelayClient.spawn({ cwd: process.cwd() });
+              console.error('FAIL: spawn() should have thrown');
+              process.exit(1);
+            } catch (err) {
+              const msg = err && err.message ? err.message : String(err);
+              console.log('got error:', msg);
+              const expected = 'couldn\\'t find an agent-relay-broker binary for linux-x64';
+              if (!msg.includes(expected)) {
+                console.error('FAIL: error message does not name platform/package');
+                process.exit(1);
+              }
+              console.log('OK: spawn() threw the expected clear error');
+            }
+          "
+
   # Publish the per-platform broker packages first. @agent-relay/sdk declares
   # these as exact-version optionalDependencies, so they must exist on the
   # registry at the matching version before the SDK is published — otherwise
@@ -519,7 +726,7 @@ jobs:
   # package at the same version.
   publish-broker-packages:
     name: Publish ${{ matrix.broker_pkg }}
-    needs: [build, build-broker]
+    needs: [build, build-broker, smoke-broker-packages]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk'
     strategy:
@@ -1684,6 +1891,7 @@ jobs:
         verify-standalone-macos,
         verify-acp-linux,
         verify-acp-macos,
+        smoke-broker-packages,
         publish-broker-packages,
         publish-packages,
         publish-brand-only,
@@ -1726,6 +1934,7 @@ jobs:
           echo "| Verify Standalone (macOS) | ${{ needs.verify-standalone-macos.result == 'success' && '✅' || (needs.verify-standalone-macos.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-standalone-macos.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Verify relay-acp (Linux) | ${{ needs.verify-acp-linux.result == 'success' && '✅' || (needs.verify-acp-linux.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-acp-linux.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Verify relay-acp (macOS) | ${{ needs.verify-acp-macos.result == 'success' && '✅' || (needs.verify-acp-macos.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-acp-macos.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Smoke Broker Packages | ${{ needs.smoke-broker-packages.result == 'success' && '✅' || (needs.smoke-broker-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.smoke-broker-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Broker Packages | ${{ needs.publish-broker-packages.result == 'success' && '✅' || (needs.publish-broker-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-broker-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Packages | ${{ needs.publish-packages.result == 'success' && '✅' || (needs.publish-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Brand | ${{ needs.publish-brand-only.result == 'success' && '✅' || (needs.publish-brand-only.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-brand-only.result }} |" >> $GITHUB_STEP_SUMMARY
