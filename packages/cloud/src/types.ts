@@ -54,6 +54,9 @@ export type PathSubmission = {
   s3CodeKey: string;
   repoOwner?: string;
   repoName?: string;
+  pushBranch?: string;
+  pushBase?: string;
+  pushPrBody?: string;
 };
 
 export type RunWorkflowOptions = {
@@ -66,7 +69,26 @@ export type RunWorkflowResponse = {
   runId: string;
   sandboxId?: string;
   status: string;
-  patches?: Record<string, { s3Key: string; hasChanges?: boolean }>;
+  patches?: Record<
+    string,
+    {
+      s3Key: string;
+      hasChanges?: boolean;
+      pushedTo?: {
+        branch: string;
+        prUrl: string;
+        sha: string;
+        base: { branch: string; sha: string };
+        strategy?: 'contents_api' | 'git_db';
+      };
+      pushError?: {
+        code: string;
+        message: string;
+        observedBaseSha?: string;
+        base?: { branch: string; sha: string };
+      };
+    }
+  >;
   [key: string]: unknown;
 };
 

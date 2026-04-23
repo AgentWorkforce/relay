@@ -39,6 +39,9 @@ type PrepareWorkflowResponse = {
 type WorkflowPathDefinition = {
   name: string;
   path: string;
+  pushBranch?: string;
+  pushBase?: string;
+  pushPrBody?: string;
 };
 
 type RunWorkflowOptions = {
@@ -98,8 +101,24 @@ function assignPathField(target: Partial<WorkflowPathDefinition>, text: string):
   const match = text.match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
   if (!match) return;
   const key = match[1];
-  if (key !== 'name' && key !== 'path') return;
-  target[key] = stripYamlScalar(match[2]);
+  const value = stripYamlScalar(match[2]);
+  switch (key) {
+    case 'name':
+      target.name = value;
+      break;
+    case 'path':
+      target.path = value;
+      break;
+    case 'pushBranch':
+      target.pushBranch = value;
+      break;
+    case 'pushBase':
+      target.pushBase = value;
+      break;
+    case 'pushPrBody':
+      target.pushPrBody = value;
+      break;
+  }
 }
 
 function parseYamlWorkflowPaths(content: string): WorkflowPathDefinition[] {
@@ -111,7 +130,13 @@ function parseYamlWorkflowPaths(content: string): WorkflowPathDefinition[] {
 
   const flush = () => {
     if (current?.name && current.path) {
-      paths.push({ name: current.name, path: current.path });
+      paths.push({
+        name: current.name,
+        path: current.path,
+        ...(current.pushBranch ? { pushBranch: current.pushBranch } : {}),
+        ...(current.pushBase ? { pushBase: current.pushBase } : {}),
+        ...(current.pushPrBody ? { pushPrBody: current.pushPrBody } : {}),
+      });
     }
     current = null;
   };
@@ -237,7 +262,16 @@ function parseTypeScriptWorkflowPaths(content: string): WorkflowPathDefinition[]
       const name = readStringProperty(objectLiteral, 'name');
       const pathValue = readStringProperty(objectLiteral, 'path');
       if (name && pathValue) {
-        paths.push({ name, path: pathValue });
+        const pushBranch = readStringProperty(objectLiteral, 'pushBranch');
+        const pushBase = readStringProperty(objectLiteral, 'pushBase');
+        const pushPrBody = readStringProperty(objectLiteral, 'pushPrBody');
+        paths.push({
+          name,
+          path: pathValue,
+          ...(pushBranch ? { pushBranch } : {}),
+          ...(pushBase ? { pushBase } : {}),
+          ...(pushPrBody ? { pushPrBody } : {}),
+        });
       }
     }
   }
@@ -507,6 +541,9 @@ export async function runWorkflow(
           name: pathDef.name,
           s3CodeKey,
           ...(repo ? { repoOwner: repo.repoOwner, repoName: repo.repoName } : {}),
+          ...(pathDef.pushBranch ? { pushBranch: pathDef.pushBranch } : {}),
+          ...(pathDef.pushBase ? { pushBase: pathDef.pushBase } : {}),
+          ...(pathDef.pushPrBody ? { pushPrBody: pathDef.pushPrBody } : {}),
         });
       }
 

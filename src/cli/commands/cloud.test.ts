@@ -1,7 +1,35 @@
 import { Command } from 'commander';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const cloudMocks = vi.hoisted(() => ({
+  runWorkflow: vi.fn(),
+  getRunStatus: vi.fn(),
+}));
+
+vi.mock('@agent-relay/cloud', () => ({
+  AUTH_FILE_PATH: '/tmp/cloud-auth.json',
+  REFRESH_WINDOW_MS: 60_000,
+  authorizedApiFetch: vi.fn(),
+  cancelWorkflow: vi.fn(),
+  clearStoredAuth: vi.fn(),
+  defaultApiUrl: () => 'https://cloud.test',
+  ensureAuthenticated: vi.fn(),
+  getRunLogs: vi.fn(),
+  getRunStatus: (...args: unknown[]) => cloudMocks.getRunStatus(...args),
+  readStoredAuth: vi.fn(),
+  runWorkflow: (...args: unknown[]) => cloudMocks.runWorkflow(...args),
+  syncWorkflowPatch: vi.fn(),
+}));
+
+vi.mock('@agent-relay/telemetry', () => ({
+  track: vi.fn(),
+}));
 
 import { registerCloudCommands, type CloudDependencies } from './cloud.js';
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 function createHarness() {
   const exit = vi.fn((code: number) => {
@@ -102,5 +130,57 @@ describe('registerCloudCommands', () => {
     expect(cancel).toBeDefined();
     expect(cancel?.registeredArguments[0]?.required).toBe(true);
     expect(cancel?.registeredArguments[0]?.name()).toBe('runId');
+  });
+
+  it('cloud run renders pushed PR and push errors for patches', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.runWorkflow.mockResolvedValueOnce({
+      runId: 'run-1',
+      status: 'completed',
+      patches: {
+        cloud: {
+          s3Key: 'user/run/changes-cloud.patch',
+          pushedTo: {
+            branch: 'agent-relay/run-run-1',
+            prUrl: 'https://github.com/acme/cloud/pull/12',
+            sha: 'abc123',
+            base: { branch: 'main', sha: 'base123' },
+          },
+        },
+        relay: {
+          s3Key: 'user/run/changes-relay.patch',
+          pushError: {
+            code: 'base_branch_moved',
+            message: 'Base branch moved',
+          },
+        },
+      },
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'run', 'workflow.yaml']);
+
+    expect(deps.log).toHaveBeenCalledWith('Patches:');
+    expect(deps.log).toHaveBeenCalledWith(
+      '  cloud: https://github.com/acme/cloud/pull/12 (agent-relay/run-run-1)'
+    );
+    expect(deps.log).toHaveBeenCalledWith('  relay: push failed: base_branch_moved: Base branch moved');
+  });
+
+  it('cloud status renders pending patch push state', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.getRunStatus.mockResolvedValueOnce({
+      runId: 'run-1',
+      status: 'completed',
+      patches: {
+        cloud: {
+          s3Key: 'user/run/changes-cloud.patch',
+        },
+      },
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'status', 'run-1']);
+
+    expect(deps.log).toHaveBeenCalledWith('Patches:');
+    expect(deps.log).toHaveBeenCalledWith('  cloud: patch pending - run still active');
   });
 });
