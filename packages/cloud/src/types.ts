@@ -49,6 +49,13 @@ export type AuthSessionResponse = {
 
 export type WorkflowFileType = 'yaml' | 'ts' | 'py';
 
+export type PathSubmission = {
+  name: string;
+  s3CodeKey: string;
+  repoOwner?: string;
+  repoName?: string;
+};
+
 export type RunWorkflowOptions = {
   apiUrl?: string;
   fileType?: WorkflowFileType;
@@ -59,6 +66,7 @@ export type RunWorkflowResponse = {
   runId: string;
   sandboxId?: string;
   status: string;
+  patches?: Record<string, { s3Key: string; hasChanges?: boolean }>;
   [key: string]: unknown;
 };
 
@@ -73,7 +81,12 @@ export type WorkflowLogsResponse = {
 export type SyncPatchResponse = {
   patch: string;
   hasChanges: boolean;
+  patches?: Record<string, { patch: string; hasChanges: boolean }>;
   [key: string]: unknown;
+};
+
+export type GetPatchesResponse = {
+  patches: Record<string, { patch: string; hasChanges: boolean }>;
 };
 
 export const SUPPORTED_PROVIDERS = ['anthropic', 'openai', 'google', 'cursor', 'opencode', 'droid'] as const;
