@@ -21,13 +21,15 @@ Workflows turn ad-hoc "I typed prompts into three Claude windows" coordination i
 
 A workflow doesn't replace the [primitives](/docs/sending-messages) — it composes them:
 
-- **Channels** are where agents in a workflow coordinate. Each workflow opens a dedicated channel (`.channel('wf-my-feature')`) so the team has a clean, isolated room.
-- **DMs** let a lead address a specific worker without broadcasting.
-- **Threads** keep sub-conversations organized when a workflow step has its own back-and-forth.
-- **File sharing** is how agents hand artifacts to each other (diff payloads, review bundles, etc.) when they span processes.
-- **Scheduling** turns a workflow into a cron job via [RelayCron](/docs/scheduling) — the same workflow file runs on a schedule, unchanged.
+- **[Channels](/docs/channels)** are where agents in a workflow coordinate. Each workflow opens a dedicated channel (`.channel('wf-my-feature')`) so the team has a clean, isolated room.
+- **[DMs](/docs/dms)** let a lead address a specific worker without broadcasting.
+- **[Threads](/docs/threads)** keep sub-conversations organized when a workflow step has its own back-and-forth.
+- **[File sharing](/docs/file-sharing)** is how agents hand artifacts to each other (diff payloads, review bundles, etc.) when they span processes.
+- **[Scheduling](/docs/scheduling)** turns a workflow into a cron job via RelayCron — the same workflow file runs on a schedule, unchanged.
 
 If a primitive gives you atomic agent-to-agent capabilities, a workflow gives you the orchestration that makes them useful at scale.
+
+Workflows also ship their own **workflow-specific primitives** — e.g. the [GitHub primitive](/docs/github-primitive) — integration steps shaped specifically for `workflow()`. Most production workflows use it for PR creation, file reads, issue updates.
 
 ## Mental model
 
@@ -140,6 +142,36 @@ agent-relay cloud run workflows/my-workflow.ts --sync-code
 ```
 
 The tarball is built from `HEAD` — only committed files go. **Staged, unstaged, and untracked files are all excluded.** If you forget to commit a helper file, the cloud sandbox starts without it and the run fails "file not found." See [Cloud commands → `--sync-code`](/docs/cli-cloud-commands#-sync-code-uploading-your-local-repo) for the full flow.
+
+## Let an agent write your workflows
+
+If you want a host agent (Claude, Codex, etc.) to autonomously author workflow files — follow the canonical patterns, avoid the common pitfalls, get features to 100% instead of 80% — install the workflow-authoring skills. The agent reads them alongside your prompt and writes workflows that match repo conventions.
+
+<CodeGroup>
+```bash prpm (recommended)
+# Install for a specific host
+npx prpm install @agent-relay/writing-agent-relay-workflows --as claude
+npx prpm install @agent-relay/relay-80-100-workflow --as claude
+
+# Or install both for multiple hosts at once
+npx prpm install @agent-relay/writing-agent-relay-workflows @agent-relay/relay-80-100-workflow --as claude,codex
+```
+```bash skills
+npx skills add https://github.com/agentworkforce/skills --skill writing-agent-relay-workflows
+npx skills add https://github.com/agentworkforce/skills --skill relay-80-100-workflow
+```
+</CodeGroup>
+
+**The two skills:**
+
+- **`writing-agent-relay-workflows`** — the core authoring guide. Failure prevention rules, step sizing, pattern selection, parallelism/waves, common mistakes, multi-file edit patterns, DAG deadlock anti-patterns, lead+worker teams.
+- **`relay-80-100-workflow`** — the validation-gate layer. Test-fix-rerun loop, verify gates after every edit, PGlite for in-memory Postgres testing, regression-check patterns. Takes features from "compiles" to "tested and proven-working before commit."
+
+Once installed, prompts like these just work:
+
+> "Write a workflow that adds a `pending` status to `src/types.ts` and the service layer, with tests. Use the 80-to-100 pattern so the commit only lands if tests pass."
+
+> "Split the migration work into two parallel waves. Cross-repo: sage + cloud. Open linked PRs at the end."
 
 ## Next
 

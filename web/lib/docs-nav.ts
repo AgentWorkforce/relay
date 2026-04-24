@@ -54,6 +54,7 @@ export const docsNav: NavGroup[] = [
       { title: 'Builder API', slug: 'reference-workflows' },
       { title: 'Patterns', slug: 'workflows-patterns' },
       { title: 'Setup helpers', slug: 'workflows-setup-helpers' },
+      { title: 'GitHub primitive', slug: 'github-primitive' },
       { title: 'Common mistakes', slug: 'workflows-common-mistakes' },
       { title: 'Run from CLI', slug: 'cli-workflows' },
     ],
