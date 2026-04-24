@@ -446,10 +446,13 @@ jobs:
             const path = require('path');
             const version = '$NEW_VERSION';
 
-            // Update @agent-relay/* references across dependencies,
-            // devDependencies, and peerDependencies so sibling packages
-            // stay pinned to the same version we're about to publish.
-            const DEP_SECTIONS = ['dependencies', 'devDependencies', 'peerDependencies'];
+            // Update @agent-relay/* references across every dep section so
+            // sibling packages stay pinned to the same version we're about
+            // to publish. optionalDependencies is critical here: @agent-relay/sdk
+            // pins the per-platform broker packages by exact version, and
+            // forgetting this section leaves a freshly-published SDK pointing
+            // at the prior release's broker packages.
+            const DEP_SECTIONS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'];
             const rewriteInternalRefs = (pkg) => {
               for (const depType of DEP_SECTIONS) {
                 for (const dep of Object.keys(pkg[depType] || {})) {

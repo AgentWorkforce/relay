@@ -78,7 +78,14 @@ function getResolutionReferences(): string[] {
     addUniquePath(refs, process.argv[1]);
   }
 
-  // Fall back to the cwd so unusual runtime layouts still resolve.
+  // Fall back to the cwd's package.json as a final resolution anchor.
+  // `createRequire` only needs a file path that sits inside a project root
+  // — it doesn't have to exist. This catches setups where the SDK's module
+  // path and the entry script both sit outside the consumer's node_modules
+  // tree (e.g. a globally-installed SDK importing per-project optional deps,
+  // some vite/webpack bundling configurations, repl experimentation), but
+  // the consumer's cwd is inside their own project. We only use this
+  // reference to run require.resolve; no file I/O is triggered on misses.
   addUniquePath(refs, join(process.cwd(), 'package.json'));
 
   return refs;
@@ -99,8 +106,8 @@ function requireResolveFromRefs(specifier: string): string | null {
  * Resolve the broker binary via the platform-specific optional-dependency
  * package (`@agent-relay/broker-<platform>-<arch>`). Returns null when the
  * optional dep is not installed (expected when users install with
- * --no-optional / --ignore-scripts or when the broker hasn't been published
- * for their platform yet).
+ * --no-optional / --omit=optional / --include= omits optional, or when the
+ * broker hasn't been published for their platform yet).
  */
 function getOptionalDepBinaryPath(ext: string): string | null {
   const pkgName = getOptionalDepPackageName();
