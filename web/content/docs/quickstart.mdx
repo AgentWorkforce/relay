@@ -125,10 +125,22 @@ asyncio.run(main())
 
 ## CLI
 
-If you want to run Agent Relay directly from the terminal instead of embedding the SDK in an app, install the CLI globally and start a local relay session:
+If you want to run Agent Relay directly from the terminal instead of embedding the SDK in an app, install the CLI globally and start a local relay session.
+
+Install `agent-relay`:
+
+<CodeGroup>
+```bash npm
+npm install -g agent-relay
+```
+```bash install script
+curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+```
+</CodeGroup>
+
+Start a local broker and spawn agents:
 
 ```bash
-npm i -g agent-relay
 agent-relay up
 agent-relay spawn planner claude "Break the work into steps"
 agent-relay spawn coder codex "Implement the approved plan"
