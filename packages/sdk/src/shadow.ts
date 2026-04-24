@@ -7,7 +7,7 @@
  *
  * @example
  * ```ts
- * import { AgentRelay, ShadowManager } from "@agent-relay/sdk";
+ * import { AgentRelay, ShadowManager } from "agent-relay";
  *
  * const relay = new AgentRelay();
  * const shadows = new ShadowManager();
