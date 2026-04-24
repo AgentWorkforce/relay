@@ -1172,7 +1172,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let mut lease_check = tokio::time::interval(Duration::from_secs(10));
     lease_check.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+    // Graceful-shutdown signal: SIGTERM on unix, Ctrl+Break/Close on Windows.
+    // `tokio::signal::ctrl_c()` is handled in its own select! arm below and
+    // works on both platforms.
+    #[cfg(unix)]
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    #[cfg(windows)]
+    let mut sigterm = tokio::signal::windows::ctrl_shutdown()?;
 
     while !shutdown {
         tokio::select! {
@@ -4853,26 +4859,14 @@ fn record_thread_history_event(history: &mut VecDeque<Value>, event: Value) {
     history.push_back(event);
 }
 
-/// Get current terminal size via ioctl.
-#[cfg(unix)]
+/// Get current terminal size. Returns (rows, cols).
+///
+/// Uses `crossterm::terminal::size()`, which is cross-platform:
+/// TIOCGWINSZ on unix, GetConsoleScreenBufferInfo on Windows.
 fn get_terminal_size() -> Option<(u16, u16)> {
-    use nix::libc;
-    use nix::pty::Winsize;
-
-    let mut winsize = Winsize {
-        ws_row: 0,
-        ws_col: 0,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-
-    unsafe {
-        if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut winsize) == 0 {
-            Some((winsize.ws_row, winsize.ws_col))
-        } else {
-            None
-        }
-    }
+    crossterm::terminal::size()
+        .ok()
+        .map(|(cols, rows)| (rows, cols))
 }
 
 /// Detect Claude Code auto-suggestion ghost text.
