@@ -1891,6 +1891,24 @@ jobs:
     with:
       version: ${{ needs.build.outputs.new_version }}
 
+  # Post-publish cross-platform verification of @agent-relay/sdk and its
+  # per-platform broker optional deps. Installs from the registry on every
+  # target (macOS arm64/x64, Linux x64/arm64, Windows x64) and runs spawn
+  # end-to-end. Catches registry-round-trip failures that smoke-broker-packages
+  # can't see (missing/wrong os/cpu on published manifests, CDN propagation).
+  verify-publish-sdk:
+    name: Verify Published SDK (Cross-Platform)
+    needs: [build, publish-broker-packages, publish-packages]
+    if: |
+      always() &&
+      github.event.inputs.dry_run != 'true' &&
+      (github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk') &&
+      needs.publish-broker-packages.result == 'success' &&
+      needs.publish-packages.result == 'success'
+    uses: ./.github/workflows/verify-publish-sdk.yml
+    with:
+      version: ${{ needs.build.outputs.new_version }}
+
   summary:
     name: Summary
     needs:
@@ -1911,6 +1929,7 @@ jobs:
         publish-sdk-py,
         publish-main,
         verify-publish,
+        verify-publish-sdk,
       ]
     runs-on: ubuntu-latest
     if: always()
@@ -1954,6 +1973,7 @@ jobs:
           echo "| Publish Python SDK | ${{ needs.publish-sdk-py.result == 'success' && '✅' || (needs.publish-sdk-py.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-sdk-py.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Main | ${{ needs.publish-main.result == 'success' && '✅' || (needs.publish-main.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-main.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Post-Publish Verify | ${{ needs.verify-publish.result == 'success' && '✅' || (needs.verify-publish.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-publish.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Post-Publish Verify SDK (cross-platform) | ${{ needs.verify-publish-sdk.result == 'success' && '✅' || (needs.verify-publish-sdk.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-publish-sdk.result }} |" >> $GITHUB_STEP_SUMMARY
           if [ "$IS_PRERELEASE" = "true" ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
