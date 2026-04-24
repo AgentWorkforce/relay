@@ -100,6 +100,22 @@ function getBundledWorkspacePackageDirs() {
     }
   }
 
+  // Also accept workspace packages that are declared as regular dependencies
+  // (or optional/peer) of the root. These are shipped intentionally so the
+  // CLI's subpath `exports` (e.g. `agent-relay/broker` → `packages/sdk/dist/...`)
+  // resolve from the tarball without requiring users to add @agent-relay/sdk
+  // to their own deps. The actual SDK code is also installed via the regular
+  // dep — the tarball copy is just a static-export anchor.
+  const DEP_SECTIONS = ['dependencies', 'optionalDependencies', 'peerDependencies'];
+  for (const section of DEP_SECTIONS) {
+    for (const dependencyName of Object.keys(rootPackageJson[section] || {})) {
+      const workspaceDir = workspaceDirsByName.get(dependencyName);
+      if (workspaceDir) {
+        bundledPackageDirs.add(workspaceDir);
+      }
+    }
+  }
+
   return bundledPackageDirs;
 }
 
