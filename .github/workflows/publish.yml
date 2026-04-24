@@ -544,13 +544,10 @@ jobs:
             binary_file: agent-relay-broker
             pkg_os: darwin
             pkg_cpu: arm64
-          - platform: darwin-x64
-            os: macos-13
-            broker_pkg: broker-darwin-x64
-            binary_name: agent-relay-broker-darwin-x64
-            binary_file: agent-relay-broker
-            pkg_os: darwin
-            pkg_cpu: x64
+          # darwin-x64 smoke is intentionally omitted: GitHub's macos-13
+          # (Intel) runner pool is capacity-constrained and routinely queues
+          # for hours. The x86_64-apple-darwin broker binary is still
+          # cross-compiled and published; we just don't exercise it in CI.
           - platform: linux-x64
             os: ubuntu-latest
             broker_pkg: broker-linux-x64
