@@ -1,11 +1,12 @@
 'use client';
 
 import type { ComponentType, ReactElement } from 'react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import {
   Activity,
   Bot,
+  ChevronRight,
   Cloud,
   Clock3,
   Compass,
@@ -124,26 +125,77 @@ export function DocsNav({ variant = 'sidebar' }: { variant?: 'sidebar' | 'mobile
       {docsNav.map((group) => (
         <div key={group.title} className={styles.navGroup}>
           <h4 className={styles.navGroupTitle}>{group.title}</h4>
-          <ul className={styles.navList}>{group.items.map((item) => renderNavItem(item, pathname))}</ul>
+          <ul className={styles.navList}>
+            {group.items.map((item) => (
+              <NavItemRow key={item.slug} item={item} pathname={pathname} />
+            ))}
+          </ul>
         </div>
       ))}
     </nav>
   );
 }
 
-function renderNavItem(item: NavItem, pathname: string): ReactElement {
+function isLinkActive(slug: string, pathname: string): boolean {
+  return pathname === `/docs/${slug}` || (slug === 'introduction' && pathname === '/docs');
+}
+
+function containsActive(item: NavItem, pathname: string): boolean {
+  if (isLinkActive(item.slug, pathname)) return true;
+  return item.children?.some((child) => containsActive(child, pathname)) ?? false;
+}
+
+function NavItemRow({ item, pathname }: { item: NavItem; pathname: string }): ReactElement {
   const href = `/docs/${item.slug}`;
-  const isActive = pathname === href || (item.slug === 'introduction' && pathname === '/docs');
+  const isActive = isLinkActive(item.slug, pathname);
   const Icon = navIcons[item.slug];
+  const hasChildren = Boolean(item.children && item.children.length > 0);
+
+  // Collapsed by default; auto-expanded if the current page is in this
+  // item's subtree so users don't lose their bearings when navigating.
+  const activeInSubtree = hasChildren && containsActive(item, pathname);
+  const [open, setOpen] = useState(activeInSubtree);
+
+  // Re-sync open state when the pathname changes (e.g. nav click).
+  useEffect(() => {
+    if (activeInSubtree) setOpen(true);
+  }, [activeInSubtree]);
+
+  if (!hasChildren) {
+    return (
+      <li>
+        <a href={href} className={`${styles.navLink} ${isActive ? styles.navLinkActive : ''}`}>
+          {Icon && <Icon className={styles.navIcon} aria-hidden="true" />}
+          <span className={styles.navLabel}>{item.title}</span>
+        </a>
+      </li>
+    );
+  }
+
+  const childListId = `nav-children-${item.slug}`;
   return (
-    <li key={item.slug}>
-      <a href={href} className={`${styles.navLink} ${isActive ? styles.navLinkActive : ''}`}>
-        {Icon && <Icon className={styles.navIcon} aria-hidden="true" />}
-        <span className={styles.navLabel}>{item.title}</span>
-      </a>
-      {item.children && item.children.length > 0 && (
-        <ul className={`${styles.navList} ${styles.navChildren ?? ''}`}>
-          {item.children.map((child) => renderNavItem(child, pathname))}
+    <li>
+      <div className={styles.navLinkRow}>
+        <a href={href} className={`${styles.navLink} ${isActive ? styles.navLinkActive : ''}`}>
+          {Icon && <Icon className={styles.navIcon} aria-hidden="true" />}
+          <span className={styles.navLabel}>{item.title}</span>
+        </a>
+        <button
+          type="button"
+          className={`${styles.navToggle} ${open ? styles.navToggleOpen : ''}`}
+          aria-expanded={open}
+          aria-controls={childListId}
+          aria-label={open ? `Collapse ${item.title}` : `Expand ${item.title}`}
+          onClick={() => setOpen((prev) => !prev)}
+        >
+          <ChevronRight className={styles.navToggleIcon} aria-hidden="true" />
+        </button>
+      </div>
+      {open && (
+        <ul id={childListId} className={`${styles.navList} ${styles.navChildren}`}>
+          {item.children!.map((child) => (
+            <NavItemRow key={child.slug} item={child} pathname={pathname} />
+          ))}
         </ul>
       )}
     </li>
