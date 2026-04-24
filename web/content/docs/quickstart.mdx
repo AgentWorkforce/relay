@@ -149,3 +149,26 @@ agent-relay who
 ```
 
 See [CLI Overview](/docs/cli-overview) for the full command surface and [Broker Lifecycle](/docs/cli-broker-lifecycle) for running the local broker.
+
+### Let another agent orchestrate the team
+
+If you want a host agent (Claude, Codex, or any CLI) to autonomously spawn and coordinate sub-agents from inside its own session, install the `running-headless-orchestrator` skill. It wires the `agent-relay spawn` / `agent-relay dm` commands into the host's tool surface so the host can run the team without leaving its session.
+
+<CodeGroup>
+```bash prpm (recommended)
+# Install for a specific host
+npx prpm install @agent-relay/running-headless-orchestrator --as claude
+
+# Or install for multiple hosts at once
+npx prpm install @agent-relay/running-headless-orchestrator --as claude,codex
+```
+```bash skills
+npx skills add https://github.com/agentworkforce/skills --skill running-headless-orchestrator
+```
+</CodeGroup>
+
+Once installed, you can prompt the host like:
+
+> "Spawn a claude agent called `reviewer`, DM it the diff, and wait for its verdict before you proceed."
+
+The host uses the skill's tools to run `agent-relay spawn reviewer claude ...`, send DMs via `agent-relay dm`, and read replies — all without you touching the shell.
