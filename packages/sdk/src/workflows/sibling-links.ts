@@ -121,14 +121,18 @@ export function applySiblingLinks<T>(wf: T, opts: SiblingLinkOptions): T {
 
 // ─── Internal: shell-script generation ─────────────────────────────────────
 
-/** Shell-quote a string for safe single-quoted inclusion in a bash command. */
+/**
+ * Shell-quote a string for safe single-quoted inclusion in a bash command.
+ * Single-quoted strings in bash are literal for every character except the
+ * single quote itself, so `$` and backticks are NOT interpreted — which is
+ * exactly what we want for link.name / link.path / JSON payloads that must
+ * pass through bash unchanged.
+ *
+ * Embedded single quotes are escaped via the standard `'\''` POSIX idiom
+ * (close, escape, reopen).
+ */
 function shSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-/** JSON-encode a string for safe inclusion inside a shell double-quoted string. */
-function shJsonString(value: string): string {
-  return JSON.stringify(value);
 }
 
 /**
@@ -143,12 +147,11 @@ export function buildSiblingLinkScript(links: SiblingLink[]): string {
   const lines: string[] = ['set -euo pipefail', 'echo "=== applySiblingLinks: setting up ==="'];
 
   for (const link of links) {
-    const escapedName = shJsonString(link.name);
-    const escapedPath = shJsonString(link.path);
-    // Bind the shell vars BEFORE echoing so we don't interpolate unescaped
-    // link.name / link.path (which may contain `"`, `$`, backticks) into a
-    // double-quoted echo. Use them via $SIBLING_NAME / $SIBLING_PATH, which
-    // are already quoted-safe because shJsonString produced them.
+    // Use SINGLE-quoted shell literals for the assignments. Double-quoted
+    // literals (via JSON.stringify) would let `$`, backticks, and `\` still
+    // trigger substitution or escaping — single-quoted is literal end-to-end.
+    const escapedName = shSingleQuote(link.name);
+    const escapedPath = shSingleQuote(link.path);
     lines.push(linkOneBlock(link, escapedName, escapedPath));
   }
 
@@ -164,11 +167,11 @@ export function buildSiblingLinkScript(links: SiblingLink[]): string {
   return lines.join('\n');
 }
 
-function linkOneBlock(link: SiblingLink, jsonName: string, jsonPath: string): string {
+function linkOneBlock(link: SiblingLink, escapedName: string, escapedPath: string): string {
   void link;
   return [
-    `SIBLING_PATH=${jsonPath}`,
-    `SIBLING_NAME=${jsonName}`,
+    `SIBLING_PATH=${escapedPath}`,
+    `SIBLING_NAME=${escapedName}`,
     'echo "--- link: $SIBLING_NAME <- $SIBLING_PATH ---"',
     'if [ ! -d "$SIBLING_PATH" ]; then',
     '  echo "SIBLING_PATH_MISSING: $SIBLING_PATH" >&2',
@@ -204,14 +207,16 @@ function linkOneBlock(link: SiblingLink, jsonName: string, jsonPath: string): st
 }
 
 function verifyExportsBlock(link: SiblingLink): string {
-  const jsonName = shJsonString(link.name);
-  const jsonPath = shJsonString(link.path);
-  const expectList = JSON.stringify(link.expect ?? []);
+  const escapedName = shSingleQuote(link.name);
+  const escapedPath = shSingleQuote(link.path);
+  const expectJson = JSON.stringify(link.expect ?? []);
   // Pick the smoke-test runtime based on what manifest type the sibling had.
+  // Single-quoted assignments are literal — the JSON payload inside EXPECT
+  // survives bash untouched and downstream Node/Python JSON.parse it back.
   return [
-    `SIBLING_PATH=${jsonPath}`,
-    `SIBLING_NAME=${jsonName}`,
-    `EXPECT=${shJsonString(expectList)}`,
+    `SIBLING_PATH=${escapedPath}`,
+    `SIBLING_NAME=${escapedName}`,
+    `EXPECT=${shSingleQuote(expectJson)}`,
     'if [ -f "$SIBLING_PATH/package.json" ]; then',
     nodeVerifyCommand(),
     'else',

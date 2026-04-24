@@ -47,14 +47,15 @@ describe('buildSiblingLinkScript', () => {
     expect(script).toContain('APPLY_SIBLING_LINKS_OK');
   });
 
-  it('JSON-encodes expected exports safely for shell and downstream JSON.parse', () => {
+  it('expects-list survives bash env var round-trip via single-quoted JSON payload', () => {
     const script = buildSiblingLinkScript([{ name: 'p', path: './p', expect: ["it's-ok", 'with"quote'] }]);
-    // Expect list is embedded as: EXPECT=<shell-string-of-json-array>
-    // so the inner JSON survives round-trip through bash env var into
-    // Node.JSON.parse / Python json.loads.
-    const expectedInner = JSON.stringify(["it's-ok", 'with"quote']);
-    const expectedShellArg = JSON.stringify(expectedInner);
-    expect(script).toContain(`EXPECT=${expectedShellArg}`);
+    // Assignment is `EXPECT='<JSON>'` where the JSON is single-quoted so
+    // bash leaves it literal (no `$` / backtick substitution), then
+    // Node/Python JSON.parse it back to the original array. Embedded `'`
+    // gets the '\'' POSIX-escape treatment.
+    const jsonPayload = JSON.stringify(["it's-ok", 'with"quote']);
+    const shellArg = `'${jsonPayload.replace(/'/g, `'\\''`)}'`;
+    expect(script).toContain(`EXPECT=${shellArg}`);
   });
 
   it('emits both node and python verifiers wrapped in manifest-conditional', () => {
@@ -66,21 +67,35 @@ describe('buildSiblingLinkScript', () => {
     expect(script).toMatch(/if \[ -f "\$SIBLING_PATH\/package\.json" \]; then[\s\S]+?else[\s\S]+?python/);
   });
 
-  it('echoes link name/path via shell vars, not raw interpolation (review: shell injection)', () => {
-    // Fix for review: a name containing `"$(cmd)` previously broke out of the
-    // echo's double-quoting and triggered command substitution. With the fix,
-    // the echo happens AFTER the SIBLING_NAME / SIBLING_PATH assignments
-    // (which use JSON-encoded safe literals) and references them via
-    // $-expansion.
-    const script = buildSiblingLinkScript([{ name: 'pkg"$(evil)', path: '../path"$(also-evil)' }]);
+  it('assignments use single-quoted literals so $() / backticks do not substitute (review: shell injection)', () => {
+    // Two-stage review fix:
+    //   (1) echo happens AFTER assignments and references the shell vars,
+    //       not raw link.name / link.path template interpolation.
+    //   (2) assignments themselves use SINGLE-quoted bash literals so that
+    //       `$(cmd)` and backticks inside the value are NOT interpreted as
+    //       command substitution (which JSON.stringify / double-quoted form
+    //       did NOT protect against).
+    const script = buildSiblingLinkScript([{ name: 'pkg$(evil)', path: '../path`also-evil`' }]);
     const echoLines = script.split('\n').filter((l) => l.startsWith('echo "--- link:'));
     expect(echoLines).toHaveLength(1);
     expect(echoLines[0]).toBe('echo "--- link: $SIBLING_NAME <- $SIBLING_PATH ---"');
     const assignmentLines = script
       .split('\n')
       .filter((l) => l.startsWith('SIBLING_NAME=') || l.startsWith('SIBLING_PATH='));
-    expect(assignmentLines.some((l) => l.includes(JSON.stringify('pkg"$(evil)')))).toBe(true);
-    expect(assignmentLines.some((l) => l.includes(JSON.stringify('../path"$(also-evil)')))).toBe(true);
+    // Assignments should wrap the value in single quotes — the exact literal
+    // passes through bash. `$(evil)` sits inside single quotes → no
+    // substitution; same for backticks.
+    expect(assignmentLines.some((l) => l === "SIBLING_NAME='pkg$(evil)'")).toBe(true);
+    expect(assignmentLines.some((l) => l === "SIBLING_PATH='../path`also-evil`'")).toBe(true);
+    // Sanity: no double-quoted assignment form present for these lines.
+    expect(assignmentLines.some((l) => l.startsWith('SIBLING_NAME="'))).toBe(false);
+    expect(assignmentLines.some((l) => l.startsWith('SIBLING_PATH="'))).toBe(false);
+  });
+
+  it("escapes embedded single quotes in link values via POSIX '\\'' idiom", () => {
+    const script = buildSiblingLinkScript([{ name: "pkg'q", path: "../p'q" }]);
+    expect(script).toContain("SIBLING_NAME='pkg'\\''q'");
+    expect(script).toContain("SIBLING_PATH='../p'\\''q'");
   });
 
   it('uv is invoked with --system and falls through to pip on failure (review: non-venv)', () => {
