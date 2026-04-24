@@ -221,71 +221,53 @@ else
 fi
 
 # ============================================
-# Test 4: agent-relay-broker binary verification
+# Test 4: broker binary resolution via SDK resolver
 # ============================================
-log_header "Test 4: agent-relay-broker binary verification"
+# The broker is delivered as a platform-specific optional dependency
+# (@agent-relay/broker-<platform>-<arch>). getBrokerBinaryPath() is the
+# canonical way clients locate it at runtime.
+log_header "Test 4: broker binary resolution"
 
-# Check if agent-relay-broker binary exists
-log_info "Checking for agent-relay-broker binary..."
+BROKER_TEST=$(node --input-type=module -e "
+import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+import { accessSync, constants } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+try {
+    const expected = getOptionalDepPackageName();
+    const p = getBrokerBinaryPath();
+    console.log('expected:', expected);
+    console.log('resolved:', p);
+    if (!p) { console.log('BROKER_FAIL: resolver returned null'); process.exit(0); }
+    if (!p.replace(/\\\\/g, '/').includes(expected)) {
+        console.log('BROKER_FAIL: not via optional-dep package');
+        process.exit(0);
+    }
+    accessSync(p, constants.X_OK);
+    const out = execFileSync(p, ['--help'], { encoding: 'utf8' });
+    if (!out.includes('agent-relay-broker')) {
+        console.log('BROKER_FAIL: --help output missing agent-relay-broker');
+        process.exit(0);
+    }
+    console.log('BROKER_OK');
+} catch (e) {
+    console.log('BROKER_FAIL:', e && e.message ? e.message : String(e));
+}
+" 2>&1) || true
 
-# Get the installed package location
-PACKAGE_DIR="./node_modules/agent-relay"
-BIN_DIR="$PACKAGE_DIR/bin"
+log_info "Broker resolution output:"
+echo "$BROKER_TEST"
 
-if [ -d "$BIN_DIR" ]; then
-    log_info "Binary directory found: $BIN_DIR"
-    log_info "Contents of bin directory:"
-    ls -la "$BIN_DIR"
-
-    # Check for platform-specific binaries
-    PLATFORM=$(uname -s | tr '[:upper:]' '[:lower:]')
-    ARCH=$(uname -m)
-
-    # Map architecture names
-    case "$ARCH" in
-        x86_64) ARCH_NAME="x64" ;;
-        aarch64|arm64) ARCH_NAME="arm64" ;;
-        *) ARCH_NAME="$ARCH" ;;
-    esac
-
-    log_info "Platform: $PLATFORM, Architecture: $ARCH_NAME"
-
-    # Check for the platform-specific agent-relay-broker binary
-    PLATFORM_BINARY="agent-relay-broker-${PLATFORM}-${ARCH_NAME}"
-    if [ -f "$BIN_DIR/$PLATFORM_BINARY" ]; then
-        record_pass "agent-relay-broker binary exists: $PLATFORM_BINARY"
-
-        # Check if executable
-        if [ -x "$BIN_DIR/$PLATFORM_BINARY" ]; then
-            record_pass "agent-relay-broker binary is executable"
-
-            # Test the binary
-            log_info "Testing agent-relay-broker --help..."
-            BROKER_HELP=$("$BIN_DIR/$PLATFORM_BINARY" --help 2>&1) || true
-            if [ -n "$BROKER_HELP" ]; then
-                record_pass "agent-relay-broker --help works"
-            else
-                log_info "agent-relay-broker output: $BROKER_HELP"
-                record_fail "agent-relay-broker --help returned empty output"
-            fi
-        else
-            record_fail "agent-relay-broker binary is not executable"
-        fi
-    else
-        record_fail "agent-relay-broker binary not found: $BIN_DIR/$PLATFORM_BINARY"
-        log_info "Available binaries:"
-        ls "$BIN_DIR"/agent-relay-broker-* 2>/dev/null || echo "  (none)"
-    fi
+if echo "$BROKER_TEST" | grep -q "BROKER_OK"; then
+    record_pass "broker binary resolves via optional-dep package and --help works"
 else
-    record_fail "Binary directory not found: $BIN_DIR"
+    record_fail "broker binary resolution failed"
 fi
 
 # ============================================
-# Test 5: SDK exports and binary resolution
+# Test 5: SDK exports
 # ============================================
-log_header "Test 5: SDK exports and binary resolution"
+log_header "Test 5: SDK exports"
 
-# Verify key SDK exports can be loaded
 log_info "Testing if SDK exports are accessible..."
 SDK_TEST=$(node -e "
 try {
@@ -310,48 +292,6 @@ elif echo "$SDK_TEST" | grep -q "NO_CLIENT"; then
     record_fail "AgentRelayClient not found in exports"
 else
     record_fail "Failed to load agent-relay package: $SDK_TEST"
-fi
-
-# Test binary resolution for agent-relay-broker
-log_info "Testing agent-relay-broker binary resolution..."
-BINARY_RESOLUTION=$(node -e "
-const path = require('path');
-const fs = require('fs');
-
-const packageDir = path.dirname(require.resolve('agent-relay/package.json'));
-const binDir = path.join(packageDir, 'bin');
-
-const platform = process.platform;
-const arch = process.arch;
-
-const platformMap = { darwin: 'darwin', linux: 'linux', win32: 'windows' };
-const archMap = { x64: 'x64', arm64: 'arm64' };
-
-const platformName = platformMap[platform] || platform;
-const archName = archMap[arch] || arch;
-
-const brokerBinary = path.join(binDir, 'agent-relay-broker-' + platformName + '-' + archName);
-
-console.log('Package dir:', packageDir);
-console.log('Looking for:', brokerBinary);
-
-if (fs.existsSync(brokerBinary)) {
-    console.log('RESOLUTION_OK');
-} else {
-    // List what's actually in the bin dir
-    const files = fs.readdirSync(binDir).filter(f => f.startsWith('agent-relay-broker'));
-    console.log('Available broker binaries:', files.join(', '));
-    console.log('RESOLUTION_FAILED');
-}
-" 2>&1) || true
-
-log_info "Binary resolution output:"
-echo "$BINARY_RESOLUTION"
-
-if echo "$BINARY_RESOLUTION" | grep -q "RESOLUTION_OK"; then
-    record_pass "Binary resolution finds agent-relay-broker"
-else
-    record_fail "Binary resolution failed - agent-relay-broker not found"
 fi
 
 # ============================================
