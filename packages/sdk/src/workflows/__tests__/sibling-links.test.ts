@@ -15,7 +15,7 @@ describe('buildSiblingLinkScript', () => {
     const script = buildSiblingLinkScript([{ name: 'my_pkg', path: '../py/pkg' }]);
     expect(script).toContain('-f "$SIBLING_PATH/pyproject.toml"');
     expect(script).toContain('pip install -e');
-    expect(script).toContain('uv pip install -e');
+    expect(script).toContain('uv pip install --system -e');
   });
 
   it('fails-fast shell: script uses set -euo pipefail', () => {
@@ -64,6 +64,46 @@ describe('buildSiblingLinkScript', () => {
     // The wrapping if/elif/else pattern keeps python as a fallback inside
     // the non-package.json branch.
     expect(script).toMatch(/if \[ -f "\$SIBLING_PATH\/package\.json" \]; then[\s\S]+?else[\s\S]+?python/);
+  });
+
+  it('echoes link name/path via shell vars, not raw interpolation (review: shell injection)', () => {
+    // Fix for review: a name containing `"$(cmd)` previously broke out of the
+    // echo's double-quoting and triggered command substitution. With the fix,
+    // the echo happens AFTER the SIBLING_NAME / SIBLING_PATH assignments
+    // (which use JSON-encoded safe literals) and references them via
+    // $-expansion.
+    const script = buildSiblingLinkScript([{ name: 'pkg"$(evil)', path: '../path"$(also-evil)' }]);
+    const echoLines = script.split('\n').filter((l) => l.startsWith('echo "--- link:'));
+    expect(echoLines).toHaveLength(1);
+    expect(echoLines[0]).toBe('echo "--- link: $SIBLING_NAME <- $SIBLING_PATH ---"');
+    const assignmentLines = script
+      .split('\n')
+      .filter((l) => l.startsWith('SIBLING_NAME=') || l.startsWith('SIBLING_PATH='));
+    expect(assignmentLines.some((l) => l.includes(JSON.stringify('pkg"$(evil)')))).toBe(true);
+    expect(assignmentLines.some((l) => l.includes(JSON.stringify('../path"$(also-evil)')))).toBe(true);
+  });
+
+  it('uv is invoked with --system and falls through to pip on failure (review: non-venv)', () => {
+    // Fix for review: uv refuses to install outside a venv without --system.
+    // The dispatch now uses --system AND wraps the uv attempt in an `if` so
+    // failure falls through to pip/pip3 instead of exiting under `set -e`.
+    const script = buildSiblingLinkScript([{ name: 'p', path: '../p' }]);
+    expect(script).toContain('uv pip install --system -e');
+    expect(script).toMatch(
+      /if command -v uv[^\n]+uv pip install --system[^\n]+; then\s*\n\s*:\s*\n\s*elif command -v pip/
+    );
+  });
+
+  it('python verifier avoids backslashes inside f-string expressions (review: Python < 3.12 SyntaxError)', () => {
+    // Fix for review: backslashes (e.g. `\",\"`) inside f-string expression
+    // braces are a SyntaxError on Python < 3.12. We bind `sep = ","` outside
+    // the f-string and reference it from inside. The old escaped form must
+    // not appear anywhere in the emitted script.
+    const script = buildSiblingLinkScript([{ name: 'p', path: './p', expect: ['foo'] }]);
+    expect(script).toContain('sep = ","');
+    expect(script).toContain('sep.join(missing)');
+    expect(script).toContain('sep.join(want)');
+    expect(script).not.toContain('\\",\\".join(');
   });
 });
 

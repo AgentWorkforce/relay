@@ -145,10 +145,11 @@ export function buildSiblingLinkScript(links: SiblingLink[]): string {
   for (const link of links) {
     const escapedName = shJsonString(link.name);
     const escapedPath = shJsonString(link.path);
-    lines.push(
-      `echo "--- link: ${link.name} <- ${link.path} ---"`,
-      linkOneBlock(link, escapedName, escapedPath)
-    );
+    // Bind the shell vars BEFORE echoing so we don't interpolate unescaped
+    // link.name / link.path (which may contain `"`, `$`, backticks) into a
+    // double-quoted echo. Use them via $SIBLING_NAME / $SIBLING_PATH, which
+    // are already quoted-safe because shJsonString produced them.
+    lines.push(linkOneBlock(link, escapedName, escapedPath));
   }
 
   lines.push('echo "=== applySiblingLinks: verifying exports ==="');
@@ -164,9 +165,11 @@ export function buildSiblingLinkScript(links: SiblingLink[]): string {
 }
 
 function linkOneBlock(link: SiblingLink, jsonName: string, jsonPath: string): string {
+  void link;
   return [
     `SIBLING_PATH=${jsonPath}`,
     `SIBLING_NAME=${jsonName}`,
+    'echo "--- link: $SIBLING_NAME <- $SIBLING_PATH ---"',
     'if [ ! -d "$SIBLING_PATH" ]; then',
     '  echo "SIBLING_PATH_MISSING: $SIBLING_PATH" >&2',
     '  exit 1',
@@ -177,14 +180,20 @@ function linkOneBlock(link: SiblingLink, jsonName: string, jsonPath: string): st
     '  npm link --silent "$SIBLING_NAME"',
     'elif [ -f "$SIBLING_PATH/pyproject.toml" ] || [ -f "$SIBLING_PATH/setup.py" ] || [ -f "$SIBLING_PATH/setup.cfg" ]; then',
     '  echo "detected: python"',
-    '  if command -v uv >/dev/null 2>&1; then',
-    '    uv pip install -e "$SIBLING_PATH" --quiet',
+    // Try uv first (fastest when available), but uv refuses to install
+    // outside a venv without --system. Pass --system explicitly so uv
+    // works in non-venv sandboxes (common CI/agent runner shape).
+    // If uv still fails (e.g. broken install), fall through to pip/pip3
+    // via the explicit OR chain rather than relying on `set -e` to
+    // short-circuit between elif branches.
+    '  if command -v uv >/dev/null 2>&1 && uv pip install --system -e "$SIBLING_PATH" --quiet 2>/dev/null; then',
+    '    :',
     '  elif command -v pip >/dev/null 2>&1; then',
     '    pip install -e "$SIBLING_PATH" --quiet',
     '  elif command -v pip3 >/dev/null 2>&1; then',
     '    pip3 install -e "$SIBLING_PATH" --quiet',
     '  else',
-    '    echo "NO_PYTHON_INSTALLER: uv / pip / pip3 not found" >&2',
+    '    echo "NO_PYTHON_INSTALLER: uv / pip / pip3 not found or all failed" >&2',
     '    exit 1',
     '  fi',
     'else',
@@ -227,16 +236,21 @@ function nodeVerifyCommand(): string {
 }
 
 function pythonVerifyCommand(): string {
+  // Python < 3.12 forbids backslashes inside f-string expressions, so we
+  // can't inline `{",".join(missing)}` (which needs `\",\".` when written
+  // as a JS string literal). Bind the separator to a name outside the
+  // f-string first.
   const script = [
     'import json, os, importlib',
     'name = os.environ["APPLY_SIBLING_LINKS_NAME"]',
     'want = json.loads(os.environ["APPLY_SIBLING_LINKS_EXPECT"])',
     'mod = importlib.import_module(name)',
     'missing = [k for k in want if not hasattr(mod, k)]',
+    'sep = ","',
     'if missing:',
-    '    print(f"MISSING_EXPORTS in {name}: {\\",\\".join(missing)}", flush=True)',
+    '    print(f"MISSING_EXPORTS in {name}: {sep.join(missing)}", flush=True)',
     '    raise SystemExit(1)',
-    'print(f"{name} OK: {\\",\\".join(want)}", flush=True)',
+    'print(f"{name} OK: {sep.join(want)}", flush=True)',
   ].join('\n');
   return [
     '  APPLY_SIBLING_LINKS_NAME="$SIBLING_NAME" APPLY_SIBLING_LINKS_EXPECT="$EXPECT" \\',
