@@ -3,27 +3,59 @@ title: 'Workflows'
 description: 'Orchestrate multi-step, multi-agent execution across Relay workers. Write once, run locally or in the cloud.'
 ---
 
-Workflows are how Relay runs real work. A workflow is a DAG of steps — some are deterministic shell commands, others spawn agents that edit code, run tests, and push PRs. You write them in TypeScript, Python, or YAML; you run them with `agent-relay run`.
+Workflows are how Relay runs real work. A workflow **composes the Relay primitives** — [channels](/docs/channels), [DMs](/docs/dms), [threads](/docs/threads), [file sharing](/docs/file-sharing), [scheduling](/docs/scheduling) — into a repeatable, multi-step, multi-agent execution plan. You write them in TypeScript, Python, or YAML; you run them with `agent-relay run`.
 
-## When to use a workflow
+## Why workflows (vs. just spawning an agent)
 
-Use workflows when you need:
+Spawning a single agent is fine for a one-off. Workflows earn their weight when you need:
 
-- **Multiple agents coordinating** — a lead that plans, workers that implement, a reviewer that gates.
+- **Multiple agents coordinating** — a lead that plans, workers that implement, a reviewer that gates. Wired together over channels + DMs.
 - **Cross-repo changes** — edit two repos as part of one unit of work, open linked PRs.
 - **Verification gates** — tests must pass before the commit. Build must pass before the push. Regressions must be zero before the PR opens.
 - **Parallelism with barriers** — fan out independent work, wait at the right moments, move on.
+- **Repeatability** — this is the point. A workflow file is an artifact. Commit it, re-run it next week, share it with the team, let a scheduler fire it nightly, resume it from a partial failure. Same shape every time.
 
-If you just want to spawn one agent and talk to it, [spawning an agent](/docs/spawning-an-agent) is simpler. Workflows earn their weight when you have steps that depend on each other.
+Workflows turn ad-hoc "I typed prompts into three Claude windows" coordination into something you can automate, review, and repeat. That's the whole point.
+
+## How workflows use primitives
+
+A workflow doesn't replace the [primitives](/docs/sending-messages) — it composes them:
+
+- **Channels** are where agents in a workflow coordinate. Each workflow opens a dedicated channel (`.channel('wf-my-feature')`) so the team has a clean, isolated room.
+- **DMs** let a lead address a specific worker without broadcasting.
+- **Threads** keep sub-conversations organized when a workflow step has its own back-and-forth.
+- **File sharing** is how agents hand artifacts to each other (diff payloads, review bundles, etc.) when they span processes.
+- **Scheduling** turns a workflow into a cron job via [RelayCron](/docs/scheduling) — the same workflow file runs on a schedule, unchanged.
+
+If a primitive gives you atomic agent-to-agent capabilities, a workflow gives you the orchestration that makes them useful at scale.
 
 ## Mental model
 
-A workflow is a typed DAG. Steps come in two flavors:
+A workflow is a named, typed orchestration of **steps** run by the Relay runner. Step types:
 
-- **Agent steps** — spawn a CLI (`claude`, `codex`, `gemini`, etc.) with a task prompt. Agent reads the prompt and whatever context the workflow has injected, edits files, writes tests, commits.
-- **Deterministic steps** — shell commands. Reads, builds, tests, verifications, commits, pushes. No LLM.
+- **Agent** — spawn a CLI (`claude`, `codex`, `gemini`, etc.) with a task prompt. Agent reads the prompt, edits files, writes tests, posts on channels.
+- **Deterministic** — a shell command. Reads, builds, tests, verifications, commits, pushes. No LLM.
+- **Worktree** — create or clean up a git worktree for isolated work.
+- **Integration** — call a registered external integration (e.g. a job runner) as a typed step.
 
-Steps declare dependencies (`dependsOn`). Steps with no shared dependency run in parallel. The runner enforces this topology, captures each step's stdout/stderr, and feeds one step's output into a downstream step's prompt via `{{steps.X.output}}`.
+Steps declare dependencies (`dependsOn`). Steps with no shared dependency run in parallel up to `maxConcurrency`.
+
+### Patterns
+
+The default topology is a **DAG** (`.pattern('dag')`), but the SDK ships 25 swarm patterns. Pick the one that matches how work actually flows between agents:
+
+| Shape | Patterns |
+|---|---|
+| **DAG / trees** | `dag`, `pipeline`, `fan-out`, `scatter-gather`, `map-reduce`, `hierarchical`, `cascade` |
+| **Hub + workers** | `hub-spoke`, `supervisor`, `handoff` |
+| **Iterative loops** | `debate`, `reflection`, `review-loop`, `red-team`, `verifier` |
+| **Non-fixed topology** | `mesh`, `swarm`, `blackboard` |
+| **Selection / competition** | `auction`, `competitive`, `consensus` |
+| **Error handling** | `circuit-breaker`, `saga`, `escalation` |
+
+When you use a hub pattern (`supervisor`, `hub-spoke`, `fan-out`), the runner auto-hardens it — a supervisor gets spawned to monitor workers and issue `OWNER_DECISION` if they stall. Plain `dag` and `pipeline` don't auto-harden; you wire supervision yourself if you want it.
+
+See [Patterns](/docs/workflows-patterns) for the canonical shapes most workflows actually use.
 
 ## A minimal example
 
