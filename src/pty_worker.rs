@@ -174,10 +174,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut effective_args = inline_cli_args;
     effective_args.extend(cmd.args.clone());
 
-    #[cfg(unix)]
     let (init_rows, init_cols) = get_terminal_size().unwrap_or((24, 80));
-    #[cfg(not(unix))]
-    let (init_rows, init_cols) = (24u16, 80u16);
     let (pty, mut pty_rx) =
         PtySession::spawn(&resolved_cli, &effective_args, init_rows, init_cols)?;
     let mut terminal_query_parser = TerminalQueryParser::default();
@@ -207,10 +204,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
         Some(Duration::from_secs(cmd.idle_threshold_secs))
     };
 
-    // --- SIGWINCH (terminal resize) ---
-    let mut sigwinch =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
-            .expect("failed to register SIGWINCH handler");
+    // Terminal resize arrives from the broker as a `resize_pty` protocol
+    // frame on stdin (see the frame handler below) — the worker itself
+    // never observes the user's TTY, since its stdout is a pipe.
 
     let mut auto_enter_interval = tokio::time::interval(Duration::from_secs(2));
     auto_enter_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -927,13 +923,6 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             "idle_secs": idle_secs,
                         })).await;
                     }
-                }
-            }
-
-            // --- SIGWINCH: forward terminal resize to PTY ---
-            _ = sigwinch.recv() => {
-                if let Some((rows, cols)) = get_terminal_size() {
-                    let _ = pty.resize(rows, cols);
                 }
             }
 

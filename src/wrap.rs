@@ -700,10 +700,13 @@ pub(crate) async fn run_wrap(
     let mut reap_tick = tokio::time::interval(Duration::from_secs(5));
     reap_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-    // SIGWINCH (terminal resize)
-    let mut sigwinch =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
-            .expect("failed to register SIGWINCH handler");
+    // Terminal resize: polled cross-platform. We can't use SIGWINCH (unix-only)
+    // or crossterm::event::EventStream (steals keystrokes from the stdin
+    // passthrough because it reads /dev/tty / CONIN$). A cheap size query
+    // every 200ms keeps the PTY in sync with perceptibly no latency.
+    let mut resize_poll = tokio::time::interval(Duration::from_millis(200));
+    resize_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut last_terminal_size = get_terminal_size();
 
     let mut running = true;
     let mut stdout = tokio::io::stdout();
@@ -1300,10 +1303,14 @@ pub(crate) async fn run_wrap(
                 }
             }
 
-            // SIGWINCH: forward terminal resize to PTY
-            _ = sigwinch.recv() => {
-                if let Some((rows, cols)) = get_terminal_size() {
-                    let _ = pty.resize(rows, cols);
+            // Poll terminal size; forward to PTY when it changes.
+            _ = resize_poll.tick() => {
+                let size = get_terminal_size();
+                if size != last_terminal_size {
+                    last_terminal_size = size;
+                    if let Some((rows, cols)) = size {
+                        let _ = pty.resize(rows, cols);
+                    }
                 }
             }
         }
