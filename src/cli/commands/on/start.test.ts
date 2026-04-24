@@ -14,6 +14,7 @@ vi.mock('./dotfiles.js', () => ({
 }));
 
 import { requestWorkspaceSession } from './start.js';
+import { createLocalJwksKeyPair } from '../../../../packages/sdk/src/provisioner/local-jwks.js';
 
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
@@ -25,6 +26,11 @@ function jsonResponse(payload: unknown, status = 200): Response {
 function decodeJwtPayload(token: string): Record<string, unknown> {
   const [, payload = ''] = token.split('.');
   return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Record<string, unknown>;
+}
+
+function testSigningKey() {
+  const { privateKey, kid } = createLocalJwksKeyPair();
+  return { privateKey, kid };
 }
 
 describe('requestWorkspaceSession', () => {
@@ -135,7 +141,7 @@ describe('requestWorkspaceSession', () => {
         workspaceName: 'my-project',
         agentName: 'codex',
         scopes: ['fs:read', 'fs:write'],
-        signingSecret: 'dev-secret',
+        tokenSigningKey: testSigningKey(),
         relayDir,
         fetchFn: fetchFn as unknown as typeof fetch,
       });
@@ -183,7 +189,7 @@ describe('requestWorkspaceSession', () => {
         workspaceName: 'my-project',
         agentName: 'claude',
         scopes: ['fs:read', 'fs:write'],
-        signingSecret: 'dev-secret',
+        tokenSigningKey: testSigningKey(),
         relayDir,
         preferLocalSession: true,
         fetchFn: fetchFn as unknown as typeof fetch,
@@ -224,7 +230,7 @@ describe('requestWorkspaceSession', () => {
         workspaceName: 'my-project',
         agentName: 'claude',
         scopes: ['fs:read'],
-        signingSecret: 'dev-secret',
+        tokenSigningKey: testSigningKey(),
         relayDir,
         preferLocalSession: true,
         fetchFn: fetchFn as unknown as typeof fetch,
@@ -266,7 +272,7 @@ describe('requestWorkspaceSession', () => {
         requestedWorkspaceId: 'rw_a7f3x9k2',
         agentName: 'claude',
         scopes: ['fs:read'],
-        signingSecret: 'dev-secret',
+        tokenSigningKey: testSigningKey(),
         relayDir,
         fetchFn: fetchFn as unknown as typeof fetch,
       });

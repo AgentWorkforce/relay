@@ -46,6 +46,13 @@ import {
   CustomStepResolutionError,
 } from './custom-steps.js';
 import { provisionWorkflowAgents, resolveAgentPermissions } from '../provisioner/index.js';
+import {
+  createLocalJwksKeyPair,
+  importPrivateKeyPem,
+  RELAYAUTH_JWT_KID_ENV,
+  RELAYAUTH_JWT_PRIVATE_KEY_PEM_ENV,
+  type LocalJwksSigningKey,
+} from '../provisioner/local-jwks.js';
 import type { MountHandle } from '../provisioner/mount.js';
 import { collectCliSession, type CliSessionReport } from './cli-session-collector.js';
 import { executeApiStep } from './api-executor.js';
@@ -443,6 +450,23 @@ function getWorkflowSdkSpawner(relay: AgentRelay, cli: AgentCli): AgentSpawner |
     default:
       return null;
   }
+}
+
+function resolveWorkflowTokenSigningKey(env: NodeJS.ProcessEnv): LocalJwksSigningKey {
+  const privateKeyPem = env[RELAYAUTH_JWT_PRIVATE_KEY_PEM_ENV];
+  const kid = env[RELAYAUTH_JWT_KID_ENV];
+  if (privateKeyPem && kid) {
+    return {
+      privateKey: importPrivateKeyPem(privateKeyPem),
+      kid,
+    };
+  }
+
+  const generated = createLocalJwksKeyPair();
+  return {
+    privateKey: generated.privateKey,
+    kid: generated.kid,
+  };
 }
 
 // ── WorkflowRunner ──────────────────────────────────────────────────────────
@@ -1910,9 +1934,9 @@ export class WorkflowRunner {
       ...process.env,
       ...(this.getRelayEnv() ?? {}),
     };
+    const tokenSigningKey = resolveWorkflowTokenSigningKey(relayEnv);
     const result = await provisionWorkflowAgents({
-      secret:
-        this.envSecrets?.RELAY_AUTH_SECRET ?? relayEnv.RELAY_AUTH_SECRET ?? randomBytes(32).toString('hex'),
+      tokenSigningKey,
       workspace: this.workspaceId,
       projectDir: this.cwd,
       relayfileBaseUrl: relayEnv.RELAYFILE_BASE_URL ?? 'http://127.0.0.1:8080',

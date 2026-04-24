@@ -6,7 +6,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ensureRelayfileMount } from '../provisioner/mount.js';
-import { provisionWorkflowAgents } from '../provisioner/index.js';
+import { createLocalJwksKeyPair, provisionWorkflowAgents } from '../provisioner/index.js';
 
 const tempDirs: string[] = [];
 
@@ -103,7 +103,7 @@ describe('provisionWorkflowAgents mount integration', () => {
     await writeFile(path.join(projectDir, 'src', 'index.ts'), 'export const value = 1;\n');
 
     const result = await provisionWorkflowAgents({
-      secret: 'test-secret',
+      tokenSigningKey: createLocalJwksKeyPair(),
       workspace: 'rw_workspace',
       projectDir,
       relayfileBaseUrl: 'http://127.0.0.1:8080',

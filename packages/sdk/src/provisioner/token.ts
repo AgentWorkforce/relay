@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { randomUUID, sign as cryptoSign, type KeyObject } from 'node:crypto';
 
 export const DEFAULT_WORKFLOW_TOKEN_TTL_SECONDS = 2 * 60 * 60;
 export const DEFAULT_ADMIN_AGENT_NAME = 'relay-admin';
@@ -12,8 +12,6 @@ export const DEFAULT_ADMIN_SCOPES = [
   'ops:read',
   'admin:read',
 ];
-
-const JWT_HEADER = { alg: 'HS256', typ: 'JWT' } as const;
 
 export interface TokenClaims {
   sub: string;
@@ -33,7 +31,8 @@ export interface TokenClaims {
 }
 
 export interface MintAgentTokenOptions {
-  secret: string;
+  privateKey: KeyObject;
+  kid: string;
   agentName: string;
   workspace: string;
   scopes: string[];
@@ -54,6 +53,7 @@ function normalizeTtlSeconds(ttlSeconds?: number): number {
 
 export function mintAgentToken(opts: MintAgentTokenOptions): string {
   const now = Math.floor(Date.now() / 1000);
+  const header = { alg: 'RS256', typ: 'JWT', kid: opts.kid } as const;
   const payload: TokenClaims = {
     sub: `agent_${opts.agentName}`,
     org: 'org_relay',
@@ -71,8 +71,8 @@ export function mintAgentToken(opts: MintAgentTokenOptions): string {
     jti: `tok-${now}-${randomUUID()}`,
   };
 
-  const unsigned = `${base64urlEncode(JWT_HEADER)}.${base64urlEncode(payload)}`;
-  const signature = createHmac('sha256', opts.secret).update(unsigned).digest('base64url');
+  const unsigned = `${base64urlEncode(header)}.${base64urlEncode(payload)}`;
+  const signature = cryptoSign('RSA-SHA256', Buffer.from(unsigned), opts.privateKey).toString('base64url');
 
   return `${unsigned}.${signature}`;
 }
@@ -82,7 +82,8 @@ export class WorkflowTokenFactory {
   private readonly ttlSeconds: number;
 
   constructor(
-    private readonly secret: string,
+    private readonly privateKey: KeyObject,
+    private readonly kid: string,
     private readonly workspace: string,
     ttlSeconds = DEFAULT_WORKFLOW_TOKEN_TTL_SECONDS
   ) {
@@ -91,7 +92,8 @@ export class WorkflowTokenFactory {
 
   mintForAgent(agentName: string, scopes: string[], ttlSeconds = this.ttlSeconds): string {
     const token = mintAgentToken({
-      secret: this.secret,
+      privateKey: this.privateKey,
+      kid: this.kid,
       workspace: this.workspace,
       agentName,
       scopes,

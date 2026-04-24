@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createLocalJwksKeyPair } from '../local-jwks.js';
 import { DEFAULT_WORKFLOW_TOKEN_TTL_SECONDS, mintAgentToken, type TokenClaims } from '../token.js';
 
 function decodeJwtPayload(token: string): TokenClaims {
@@ -8,9 +9,14 @@ function decodeJwtPayload(token: string): TokenClaims {
   return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as TokenClaims;
 }
 
+function testSigningKey() {
+  const { privateKey, kid } = createLocalJwksKeyPair();
+  return { privateKey, kid };
+}
+
 test('mintAgentToken returns a valid JWT', () => {
   const token = mintAgentToken({
-    secret: 'test-secret',
+    ...testSigningKey(),
     agentName: 'worker',
     workspace: 'workspace-123',
     scopes: ['relayfile:fs:read:/src/index.ts'],
@@ -24,7 +30,7 @@ test('mintAgentToken returns a valid JWT', () => {
 test('mintAgentToken payload contains agent_name, workspace, and scopes', () => {
   const scopes = ['relayfile:fs:read:/src/index.ts', 'relayfile:fs:write:/src/index.ts'];
   const token = mintAgentToken({
-    secret: 'test-secret',
+    ...testSigningKey(),
     agentName: 'compiler',
     workspace: 'workspace-abc',
     scopes,
@@ -40,7 +46,7 @@ test('mintAgentToken payload contains agent_name, workspace, and scopes', () => 
 
 test('mintAgentToken defaults expiry to 2 hours', () => {
   const token = mintAgentToken({
-    secret: 'test-secret',
+    ...testSigningKey(),
     agentName: 'worker',
     workspace: 'workspace-123',
     scopes: [],

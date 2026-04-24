@@ -20,6 +20,7 @@ interface ServiceConfigCache {
   portAuth?: string | number;
   portFile?: string | number;
   secret?: string;
+  jwksUrl?: string;
 }
 
 interface PidFile {
@@ -30,7 +31,8 @@ interface PidFile {
 export interface ServiceConfig {
   relayauthRoot: string; // path to relayauth repo
   relayfileRoot: string; // path to relayfile repo
-  secret: string; // shared signing secret
+  secret: string; // legacy shared signing secret for older local services
+  jwksUrl?: string; // local JWKS endpoint for RS256 token verification
   portAuth: number; // default 8787
   portFile: number; // default 8080
   logDir: string; // .relay/logs/
@@ -101,6 +103,7 @@ function getCachedConfig(): ServiceConfigCache {
           : typeof data.signingSecret === 'string'
             ? data.signingSecret
             : undefined,
+      jwksUrl: getStringValue('RELAYAUTH_JWKS_URL', 'jwksUrl'),
     };
   } catch {
     return {};
@@ -173,6 +176,11 @@ export function resolveServiceConfig(overrides: Partial<ServiceConfig> = {}): Se
       process.env.SIGNING_KEY,
       cache.secret,
     ]),
+    jwksUrl: pickFirstString([
+      overrides.jwksUrl,
+      process.env.RELAYAUTH_JWKS_URL,
+      cache.jwksUrl,
+    ]) || undefined,
     portAuth: parsePositiveInt(
       pickFirst<string | number>([
         process.env.RELAY_AUTH_PORT,
@@ -321,6 +329,7 @@ function spawnRelayauth(config: ServiceConfig, relayauthLogPath: string): ChildP
     {
       ...process.env,
       SIGNING_KEY: config.secret,
+      ...(config.jwksUrl ? { RELAYAUTH_JWKS_URL: config.jwksUrl } : {}),
     },
     relayauthLogPath
   );
@@ -336,6 +345,7 @@ function spawnRelayfile(config: ServiceConfig, relayfileLogPath: string): ChildP
       {
         ...process.env,
         RELAYFILE_JWT_SECRET: config.secret,
+        ...(config.jwksUrl ? { RELAYAUTH_JWKS_URL: config.jwksUrl } : {}),
         RELAYFILE_BACKEND_PROFILE: 'durable-local',
       },
       relayfileLogPath
@@ -349,6 +359,7 @@ function spawnRelayfile(config: ServiceConfig, relayfileLogPath: string): ChildP
     {
       ...process.env,
       RELAYFILE_JWT_SECRET: config.secret,
+      ...(config.jwksUrl ? { RELAYAUTH_JWKS_URL: config.jwksUrl } : {}),
       RELAYFILE_BACKEND_PROFILE: 'durable-local',
     },
     relayfileLogPath
