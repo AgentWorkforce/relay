@@ -132,16 +132,16 @@ See also:
 **Cloud execution.** Submit the same workflow file to `agent-relay cloud` to run it in a Daytona sandbox. Files get committed + pushed; PRs open automatically if your master workflow is set up for it.
 
 ```bash
-# Almost always pass --sync-code — without it, the sandbox pulls from
-# origin and any local commits you haven't pushed aren't there.
-# Note: --sync-code uploads HEAD, so you must COMMIT (not just stage)
-# the files the run needs.
+# Almost always pass --sync-code — without it, the sandbox has NO
+# code at all (there's no fallback clone from origin). The tarball
+# is built from `git ls-files` + working-tree contents: tracked
+# files (including staged-but-uncommitted) are synced; untracked
+# files are NOT. `git add` is enough — commit is optional.
 git add workflows/my-workflow.ts
-git commit -m "wip"
 agent-relay cloud run workflows/my-workflow.ts --sync-code
 ```
 
-The tarball is built from `HEAD` — only committed files go. **Staged, unstaged, and untracked files are all excluded.** If you forget to commit a helper file, the cloud sandbox starts without it and the run fails "file not found." See [Cloud commands → `--sync-code`](/docs/cli-cloud-commands#-sync-code-uploading-your-local-repo) for the full flow.
+See [Cloud commands → `--sync-code`](/docs/cli-cloud-commands#-sync-code-uploading-your-local-repo) for the full sync semantics (what's in, what's out, edge cases).
 
 ## Let an agent write your workflows
 

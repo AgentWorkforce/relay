@@ -105,7 +105,7 @@ Only these four verification types are valid: `exit_code`, `output_contains`, `f
 |---------|-----|
 | Relying on `agent-relay run` exit code for sub-workflow status | The runner exits 0 even when the inner workflow fails. Check `$?` AND grep `"Workflow status: failed"` from the log. |
 | Committing `.trajectories/`, `logs/`, or `package-lock.json` along with code | Stage only product files: `git add src/ test/` etc. Execution exhaust shouldn't be in PRs unless the user explicitly asks. |
-| `--sync-code` leaves out changes I just made | Cloud tarball contains **committed** files only (HEAD). Staged and unstaged changes are both excluded. `git commit` before `agent-relay cloud --sync-code` — you don't need to push, but you do need to commit. |
+| `--sync-code` leaves out a file I just created | Cloud tarball is built from `git ls-files` (tracked paths only) + working-tree contents. Untracked files are silently excluded. `git add` the file before `agent-relay cloud run --sync-code` — staging is enough, commit is optional. |
 
 ## See also
 

@@ -49,29 +49,33 @@ agent-relay cloud sync <run-id>
 
 ## `--sync-code`: uploading your local repo
 
-`--sync-code` tarballs your current working copy and ships it to the cloud sandbox as the starting point for the run. Without it, the sandbox pulls from the remote tracked branch (whatever's on `origin`) — which means local changes, uncommitted edits, and untracked helper files are missing.
+`--sync-code` tarballs your current working copy and ships it to the cloud sandbox as the starting point for the run. Without it, the sandbox starts with **no code on disk** — it doesn't clone from `origin`, it just has an empty `$HOME`. Any workflow that reads your source needs `--sync-code`.
 
-**In almost every case, you want `--sync-code`.** Running a workflow against whatever is on `origin/main` is rarely what you mean; you almost always want to test against the exact state of your worktree.
+**In almost every case, you want `--sync-code`.** Running a workflow against an empty sandbox is rarely what you mean; you almost always want your local worktree state there.
 
 ### What gets uploaded
 
-**Only committed files.** The tarball is built from `HEAD` — anything that isn't in a commit on your current branch is excluded:
+The tarball is built from `git ls-files` — the **tracked** paths — and `tar` reads their current working-tree contents. No `git clone` anywhere.
 
-- ✅ Files committed on the current branch (even if not pushed)
-- ❌ **Staged-but-not-committed changes are excluded**
-- ❌ Uncommitted working-tree edits are excluded
-- ❌ Untracked files are excluded
+| State | Synced? |
+|---|---|
+| Committed, unmodified | ✅ Working-tree version |
+| Committed, then modified | ✅ Working-tree version (your edits go too) |
+| Committed, then modified + `git add`ed | ✅ Working-tree version |
+| New file + `git add`ed (not committed) | ✅ — once added, the file is tracked |
+| New file, never added | ❌ Untracked → excluded |
+| `.gitignore`d path | ❌ Excluded |
 
-This catches new workflow authors regularly. If you just created `workflows/my-new.ts` or edited an existing file but haven't committed, the cloud sandbox sees the pre-edit state and the run fails with "file not found" or unexpected old behavior.
+**Rule of thumb:** `git add` whatever the run needs. Commit is NOT required — staging is enough because `git ls-files` returns indexed paths. You don't need to push either.
 
-**Rule of thumb:** `git commit` before `agent-relay cloud run --sync-code`. You don't need to push — local commits are enough, but staging isn't.
+If you're not in a git repo at all, there's a fallback: the packer walks the filesystem and uses `.gitignore` as the exclude list.
 
 ### When NOT to use `--sync-code`
 
 Rare but real:
 
-- You want to run exactly what's on `origin/main` (e.g. reproducing a CI failure against a known-good commit).
-- You're running a workflow that explicitly checks out a branch in its `setup-branch` step and doesn't care about local state.
+- You're running a cloud-managed workflow that doesn't touch local code (a fully `config`-typed workflow).
+- You've set up a workflow whose `setup-branch` step explicitly `git clone`s something and doesn't care about local state.
 
 ### Typical flow
 
@@ -79,12 +83,11 @@ Rare but real:
 # Edit your workflow locally
 vim workflows/fix-bug.ts
 
-# Commit it (and anything else the workflow needs). --sync-code only
-# picks up committed files, so staging alone is NOT enough.
+# Stage everything the run needs — `git add` is enough; commit is optional.
+# Untracked files would be silently excluded otherwise.
 git add workflows/fix-bug.ts
-git commit -m "wip: new workflow"
 
-# Ship HEAD to the cloud sandbox and run
+# Ship your working tree to the cloud sandbox and run
 agent-relay cloud run workflows/fix-bug.ts --sync-code
 # note the run ID printed...
 
