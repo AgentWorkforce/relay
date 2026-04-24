@@ -5,14 +5,15 @@ import type {
   FilePermissions,
   PermissionSource,
 } from '../workflows/types.js';
+import type { LocalJwksSigningKey } from './local-jwks.js';
 import type { MountHandle } from './mount.js';
 
 // ── Input Configuration ────────────────────────────────────────────────────
 
 /** Configuration for provisioning workflow agents. */
 export interface WorkflowProvisionConfig {
-  /** HMAC secret used to sign JWT tokens. */
-  secret: string;
+  /** RS256 signing key used to mint JWT tokens. */
+  tokenSigningKey: LocalJwksSigningKey;
 
   /** Workspace identifier (e.g. 'my-project'). */
   workspace: string;
