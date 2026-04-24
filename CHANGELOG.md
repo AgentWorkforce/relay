@@ -36,6 +36,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
+## [6.0.0] - 2026-04-24
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **ApplySiblingLinks — link sibling-repo packages during workflow setup (#776)** (#776)
+- **Split broker binaries into per-platform optional-dep packages** (#770)
+
+#### User-Impacting Fixes
+- Keep SIGWINCH on unix, background-thread poll on Windows
+- Unbreak Windows build
+- Convert rewrites to direct redirects
+- Verify-publish-sdk must accept publish-sdk-only too
+- Pack @agent-relay/config alongside SDK for smoke test
+- Address PR review feedback on broker optional-deps
+- Keep broker packages as workspaces so npm ci passes
+
+### Technical Perspective
+#### Performance & Reliability
+- Drop darwin-x64 smoke test
+- Cross-platform post-publish verification of @agent-relay/sdk
+- Skip dist check for broker-* packages in package-validation
+- Add cross-platform smoke test for broker optional-deps
+
+#### Dependencies & Tooling
+- Update Cursor models to latest (#777) (#777)
+
+#### Releases
+- v6.0.0
+
+---
+
 ## [5.0.0] - 2026-04-22
 
 ### Product Perspective
