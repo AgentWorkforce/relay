@@ -164,7 +164,7 @@ async function readFileDelta(
  *
  * @example
  * ```ts
- * import { getLogs } from "agent-relay";
+ * import { getLogs } from "@agent-relay/sdk";
  *
  * const result = await getLogs("Worker1", { lines: 100 });
  * if (result.found) {
@@ -211,7 +211,7 @@ export async function getLogs(
  *
  * @example
  * ```ts
- * import { followLogs } from "agent-relay";
+ * import { followLogs } from "@agent-relay/sdk";
  *
  * const handle = followLogs("Worker1", {
  *   historyLines: 100,
@@ -334,7 +334,7 @@ export function followLogs(agent: string, options: FollowLogsOptions): LogFollow
  *
  * @example
  * ```ts
- * import { listLoggedAgents } from "agent-relay";
+ * import { listLoggedAgents } from "@agent-relay/sdk";
  *
  * const agents = await listLoggedAgents();
  * console.log("Agents with logs:", agents);
