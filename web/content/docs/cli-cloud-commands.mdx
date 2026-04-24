@@ -55,15 +55,16 @@ agent-relay cloud sync <run-id>
 
 ### What gets uploaded
 
-The tarball is built from `git ls-files` — every **tracked or staged** file in your repo:
+**Only committed files.** The tarball is built from `HEAD` — anything that isn't in a commit on your current branch is excluded:
 
-- ✅ Files you've committed
-- ✅ Files you've `git add`ed but not committed yet
-- ❌ **Untracked files are silently excluded** — `.gitignore`d or just never-added files will not appear in the sandbox
+- ✅ Files committed on the current branch (even if not pushed)
+- ❌ **Staged-but-not-committed changes are excluded**
+- ❌ Uncommitted working-tree edits are excluded
+- ❌ Untracked files are excluded
 
-This catches new workflow authors regularly. If you just created `workflows/my-new.ts` and didn't `git add` it, the cloud sandbox receives nothing at that path and the run fails with "file not found."
+This catches new workflow authors regularly. If you just created `workflows/my-new.ts` or edited an existing file but haven't committed, the cloud sandbox sees the pre-edit state and the run fails with "file not found" or unexpected old behavior.
 
-**Rule of thumb:** `git add` (or commit) before `agent-relay cloud run --sync-code`. You don't need to push — staged is enough.
+**Rule of thumb:** `git commit` before `agent-relay cloud run --sync-code`. You don't need to push — local commits are enough, but staging isn't.
 
 ### When NOT to use `--sync-code`
 
@@ -78,10 +79,12 @@ Rare but real:
 # Edit your workflow locally
 vim workflows/fix-bug.ts
 
-# Stage it (and anything else the workflow needs)
+# Commit it (and anything else the workflow needs). --sync-code only
+# picks up committed files, so staging alone is NOT enough.
 git add workflows/fix-bug.ts
+git commit -m "wip: new workflow"
 
-# Ship the current worktree state to cloud and run
+# Ship HEAD to the cloud sandbox and run
 agent-relay cloud run workflows/fix-bug.ts --sync-code
 # note the run ID printed...
 

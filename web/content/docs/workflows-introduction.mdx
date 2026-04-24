@@ -99,13 +99,15 @@ See also:
 
 ```bash
 # Almost always pass --sync-code — without it, the sandbox pulls from
-# origin and your local worktree (including new workflow files you haven't
-# pushed yet) isn't there.
+# origin and any local commits you haven't pushed aren't there.
+# Note: --sync-code uploads HEAD, so you must COMMIT (not just stage)
+# the files the run needs.
 git add workflows/my-workflow.ts
+git commit -m "wip"
 agent-relay cloud run workflows/my-workflow.ts --sync-code
 ```
 
-The tarball covers every git-tracked or staged file. **Untracked files are silently excluded** — if you forget to `git add` a helper file, the cloud sandbox receives nothing at that path and the run fails "file not found." See [Cloud commands → `--sync-code`](/docs/cli-cloud-commands#-sync-code-uploading-your-local-repo) for the full flow.
+The tarball is built from `HEAD` — only committed files go. **Staged, unstaged, and untracked files are all excluded.** If you forget to commit a helper file, the cloud sandbox starts without it and the run fails "file not found." See [Cloud commands → `--sync-code`](/docs/cli-cloud-commands#-sync-code-uploading-your-local-repo) for the full flow.
 
 ## Next
 

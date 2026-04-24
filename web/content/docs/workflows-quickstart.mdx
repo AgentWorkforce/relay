@@ -139,9 +139,10 @@ You'll see the lead agent post a plan on the workflow channel, the worker implem
 The same workflow file runs unchanged in a Daytona sandbox:
 
 ```bash
-# IMPORTANT: stage the workflow file first. `--sync-code` tarballs
-# tracked + staged files — untracked ones are silently excluded.
+# IMPORTANT: commit the workflow file first. `--sync-code` tarballs
+# HEAD — staged-but-uncommitted and untracked files are BOTH excluded.
 git add workflows/add-greeting.ts
+git commit -m "wip: greet workflow"
 agent-relay cloud run workflows/add-greeting.ts --sync-code
 
 # ...note the run ID printed, then:
@@ -149,7 +150,7 @@ agent-relay cloud logs <run-id> --follow
 agent-relay cloud sync <run-id>   # pull the produced diff back locally
 ```
 
-Almost every cloud run should pass `--sync-code` — it uploads your current worktree as the starting point. Without it, the sandbox starts from `origin/main` and your local changes (including the workflow file you just wrote) are missing. See [Cloud commands → `--sync-code`](/docs/cli-cloud-commands#-sync-code-uploading-your-local-repo).
+Almost every cloud run should pass `--sync-code` — it uploads your current HEAD as the starting point. Without it, the sandbox starts from `origin/main` and your local commits (including the workflow file you just wrote) are missing. See [Cloud commands → `--sync-code`](/docs/cli-cloud-commands#-sync-code-uploading-your-local-repo).
 
 ## 6. Things to try next
 
