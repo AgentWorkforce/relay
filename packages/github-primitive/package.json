@@ -32,7 +32,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/sdk": "5.0.0"
+    "@agent-relay/workflow-types": "5.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

@@ -101,6 +101,11 @@
       "types": "./dist/broker-path.d.ts",
       "import": "./dist/broker-path.js",
       "default": "./dist/broker-path.js"
+    },
+    "./github": {
+      "types": "./dist/github.d.ts",
+      "import": "./dist/github.js",
+      "default": "./dist/github.js"
     }
   },
   "files": [
@@ -135,6 +140,8 @@
   },
   "dependencies": {
     "@agent-relay/config": "5.0.0",
+    "@agent-relay/github-primitive": "5.0.0",
+    "@agent-relay/workflow-types": "5.0.0",
     "@relaycast/sdk": "^1.1.0",
     "@relayfile/sdk": ">=0.1.2 <1",
     "@sinclair/typebox": "^0.34.48",
