@@ -9,10 +9,12 @@ name: Verify Published Package
 # - On PR (for testing the workflow itself)
 
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/verify-publish.yml'
-      - 'scripts/post-publish-verify/**'
+  # Intentionally no `pull_request` trigger: these are post-publish
+  # verification tests that install agent-relay from the registry.
+  # After unbundling @agent-relay/* workspace packages, the CLI tarball
+  # can only install once all internal packages have been published at
+  # the matching version — which is not the case during a PR. For
+  # pre-merge testing of this workflow itself, dispatch it manually.
   workflow_dispatch:
     inputs:
       version:
@@ -44,22 +46,6 @@ jobs:
       - name: Checkout (for scripts)
         uses: actions/checkout@v4
 
-      - name: Install deps for pack (PR only)
-        if: github.event_name == 'pull_request'
-        run: npm ci
-
-      - name: Build packages (PR only)
-        if: github.event_name == 'pull_request'
-        run: npm run build
-
-      - name: Pack local tarball (PR only)
-        if: github.event_name == 'pull_request'
-        id: pack
-        run: |
-          TARBALL="$(npm pack | tail -1)"
-          echo "tarball=$TARBALL" >> $GITHUB_OUTPUT
-          echo "Packed tarball: $TARBALL"
-
       - name: Setup Node.js ${{ matrix.node }}
         uses: actions/setup-node@v4
         with:
@@ -69,19 +55,10 @@ jobs:
         id: pkg
         run: |
           VERSION_INPUT="${{ inputs.version }}"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            # Use the exact tarball packed in this workflow run.
-            SPEC="$(pwd)/${{ steps.pack.outputs.tarball }}"
-          elif [ -z "$VERSION_INPUT" ] || [ "$VERSION_INPUT" = "latest" ]; then
-            VERSION="latest"
+          if [ -z "$VERSION_INPUT" ] || [ "$VERSION_INPUT" = "latest" ]; then
             SPEC="agent-relay"
           else
-            VERSION="$VERSION_INPUT"
-            SPEC="agent-relay@${VERSION}"
-          fi
-          if [ -z "$SPEC" ]; then
-            echo "ERROR: package spec resolved to empty value"
-            exit 1
+            SPEC="agent-relay@${VERSION_INPUT}"
           fi
           echo "spec=$SPEC" >> $GITHUB_OUTPUT
           echo "Testing: $SPEC"
@@ -185,11 +162,9 @@ jobs:
           fi
 
       # Test: broker binary resolution after installing agent-relay.
-      # The SDK is bundled inside agent-relay (node_modules/agent-relay/
-      # node_modules/@agent-relay/sdk/), so we run the resolver from the
-      # agent-relay package dir — that's where the SDK actually lives, and
-      # Node's ESM resolver needs to see @agent-relay/sdk in a reachable
-      # node_modules.
+      # The broker is delivered as a platform-specific optional-dep of
+      # @agent-relay/sdk (itself a regular dep of agent-relay), so npm
+      # hoists both to node_modules/@agent-relay/ at install time.
       - name: 'Test: broker binary resolves after npm install agent-relay'
         run: |
           rm -rf ~/.npm/_npx 2>/dev/null || true
@@ -198,7 +173,6 @@ jobs:
           cd "$TMP_DIR"
           npm init -y --silent >/dev/null
           npm install --no-audit --no-fund "${{ steps.pkg.outputs.spec }}"
-          cd "$TMP_DIR/node_modules/agent-relay"
           node --input-type=module -e "
             import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
             import { accessSync, constants } from 'node:fs';
@@ -250,11 +224,10 @@ jobs:
       # Test 4: Broker binary resolution via SDK resolver.
       # The broker ships as a platform-specific optional-dep package
       # (@agent-relay/broker-<platform>-<arch>); getBrokerBinaryPath()
-      # is the canonical way clients find it. Run from inside the
-      # installed agent-relay package so the bundled SDK is reachable.
+      # is the canonical way clients find it.
       - name: 'Test: broker binary resolves and runs'
         run: |
-          cd /tmp/test-project/node_modules/agent-relay
+          cd /tmp/test-project
           node --input-type=module -e "
             import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
             import { accessSync, constants } from 'node:fs';
@@ -296,39 +269,14 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install deps for pack (PR only)
-        if: github.event_name == 'pull_request'
-        run: npm ci
-
-      - name: Build packages (PR only)
-        if: github.event_name == 'pull_request'
-        run: npm run build
-
-      - name: Pack local tarball (PR only)
-        if: github.event_name == 'pull_request'
-        id: pack
-        run: |
-          TARBALL="$(npm pack | tail -1)"
-          echo "tarball=$TARBALL" >> $GITHUB_OUTPUT
-          echo "Packed tarball: $TARBALL"
-
       - name: Get package spec
         id: pkg
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            # Use absolute path so it works when cd'ing to /tmp/test-project
-            SPEC="$(pwd)/${{ steps.pack.outputs.tarball }}"
+          VERSION="${{ inputs.version || 'latest' }}"
+          if [ "$VERSION" = "latest" ]; then
+            SPEC="agent-relay"
           else
-            VERSION="${{ inputs.version || 'latest' }}"
-            if [ "$VERSION" = "latest" ]; then
-              SPEC="agent-relay"
-            else
-              SPEC="agent-relay@${VERSION}"
-            fi
-          fi
-          if [ -z "$SPEC" ]; then
-            echo "ERROR: package spec resolved to empty value"
-            exit 1
+            SPEC="agent-relay@${VERSION}"
           fi
           echo "spec=$SPEC" >> $GITHUB_OUTPUT
           echo "Testing: $SPEC"
@@ -363,12 +311,10 @@ jobs:
       # Broker resolution on macOS arm64. Under the optional-dep model the
       # SDK's resolver finds the binary at
       # node_modules/@agent-relay/broker-darwin-arm64/bin/agent-relay-broker;
-      # running it also exercises macOS code signing end-to-end. Run from
-      # inside the installed agent-relay package so the bundled SDK is
-      # reachable.
+      # running it also exercises macOS code signing end-to-end.
       - name: 'Test: broker binary resolves and runs (macOS arm64)'
         run: |
-          cd /tmp/test-project/node_modules/agent-relay
+          cd /tmp/test-project
           node --input-type=module -e "
             import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
             import { accessSync, constants } from 'node:fs';
