@@ -6,6 +6,20 @@
  */
 
 export * from '@agent-relay/workflow-types';
+export type {
+  AccessPreset,
+  AgentCli,
+  AgentDefinition,
+  AgentPermissions,
+  AgentPreset,
+  NetworkPermission,
+  PermissionProfileDefinition,
+  RunnerStepExecutor,
+  SwarmPattern,
+  VerificationCheck,
+  WorkflowStep,
+  WorkflowStepType,
+} from '@agent-relay/workflow-types';
 
 import type {
   AccessPreset,
