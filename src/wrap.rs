@@ -700,13 +700,39 @@ pub(crate) async fn run_wrap(
     let mut reap_tick = tokio::time::interval(Duration::from_secs(5));
     reap_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-    // Terminal resize: polled cross-platform. We can't use SIGWINCH (unix-only)
-    // or crossterm::event::EventStream (steals keystrokes from the stdin
-    // passthrough because it reads /dev/tty / CONIN$). A cheap size query
-    // every 200ms keeps the PTY in sync with perceptibly no latency.
-    let mut resize_poll = tokio::time::interval(Duration::from_millis(200));
-    resize_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut last_terminal_size = get_terminal_size();
+    // Terminal resize notifications.
+    //
+    // Unix: SIGWINCH is event-driven, fires exactly when the TTY resizes,
+    // zero CPU when idle.
+    //
+    // Windows: no SIGWINCH, and crossterm's `EventStream` can't be used
+    // alongside our stdin passthrough — reading CONIN$ consumes keypresses
+    // that we need to forward to the child PTY. A dedicated background
+    // thread polls the console size at 100ms and notifies via a channel
+    // only when it actually changes. The main select! loop stays
+    // event-driven; polling happens off the hot path.
+    #[cfg(unix)]
+    let mut resize_signal =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
+            .expect("failed to register SIGWINCH handler");
+    #[cfg(windows)]
+    let mut resize_signal = {
+        let (tx, rx) = mpsc::channel::<()>(4);
+        std::thread::spawn(move || {
+            let mut last = crossterm::terminal::size().ok();
+            loop {
+                std::thread::sleep(Duration::from_millis(100));
+                let current = crossterm::terminal::size().ok();
+                if current != last {
+                    last = current;
+                    if tx.blocking_send(()).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        rx
+    };
 
     let mut running = true;
     let mut stdout = tokio::io::stdout();
@@ -1303,14 +1329,10 @@ pub(crate) async fn run_wrap(
                 }
             }
 
-            // Poll terminal size; forward to PTY when it changes.
-            _ = resize_poll.tick() => {
-                let size = get_terminal_size();
-                if size != last_terminal_size {
-                    last_terminal_size = size;
-                    if let Some((rows, cols)) = size {
-                        let _ = pty.resize(rows, cols);
-                    }
+            // Terminal resize: forward current size to PTY.
+            _ = resize_signal.recv() => {
+                if let Some((rows, cols)) = get_terminal_size() {
+                    let _ = pty.resize(rows, cols);
                 }
             }
         }
