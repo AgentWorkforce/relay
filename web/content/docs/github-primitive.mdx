@@ -1,67 +1,19 @@
 ---
 title: 'GitHub primitive'
-description: 'Workflow-specific primitive: a typed GitHub client + workflow integration step. Runs through the local `gh` CLI or a cloud proxy.'
+description: 'Workflow-specific primitive: a typed GitHub integration step. Runs through the local `gh` CLI or a cloud proxy.'
 ---
 
-The `@agent-relay/github-primitive` package is a **workflow-specific primitive** — it's not a general Relay primitive like channels or DMs, it's specifically shaped to drop into a `workflow()` as an integration step. It gives workflows a first-class GitHub surface — create issues, open PRs, read files, merge branches — with one call site that works the same locally via `gh` or in cloud via Nango / relay-cloud.
+The GitHub primitive is a **workflow-specific primitive** — an integration step shaped for `workflow()`. It gives a workflow a typed GitHub surface (create issues, open PRs, read files, merge branches) with one call site that works the same locally via `gh` or in cloud via Nango / relay-cloud.
 
-Use this when your workflow needs to talk to GitHub, rather than having an agent shell out to `gh` and parse text.
+It's **bundled with the SDK** — no separate install. If you've run `npm install @agent-relay/sdk`, you already have it.
 
-## Install
+## Usage inside a workflow
 
-```bash
-npm install @agent-relay/github-primitive
-```
-
-## Runtime selection
-
-The primitive auto-picks the right backend for the environment it's running in:
-
-| Mode | Triggered when |
-|---|---|
-| `local` (via `gh` CLI) | `gh auth status` succeeds and no cloud creds are set |
-| `cloud` (via Nango) | `NANGO_SECRET_KEY` + `NANGO_GITHUB_CONNECTION_ID` + `NANGO_GITHUB_PROVIDER_CONFIG_KEY` are present |
-| `cloud` (via relay-cloud) | `RELAY_CLOUD_API_URL` + `RELAY_CLOUD_API_TOKEN` + `WORKSPACE_ID` are present (fallback when Nango absent) |
-
-Pick the default (`runtime: 'auto'`) unless you need to pin one for testing.
-
-## Client usage
-
-```ts
-import { GitHubClient } from '@agent-relay/github-primitive';
-
-const github = await GitHubClient.create({ runtime: 'auto' });
-
-const repo = await github.getRepo('AgentWorkforce', 'relay');
-console.log(repo.defaultBranch);
-
-const pr = await github.createPR({
-  repo: 'AgentWorkforce/relay',
-  head: 'feat/my-change',
-  base: 'main',
-  title: 'Ship the thing',
-  body: 'Closes #123',
-});
-```
-
-### Supported actions
-
-- **Repositories** — `listRepos`, `getRepo`
-- **Issues** — `listIssues`, `createIssue`, `updateIssue`, `closeIssue`
-- **Pull requests** — `listPRs`, `getPR`, `createPR`, `updatePR`, `mergePR`
-- **Files** — `listFiles`, `readFile`, `createFile`, `updateFile`, `deleteFile`
-- **Branches + commits** — `listBranches`, `createBranch`, `listCommits`, `createCommit`
-- **Identity** — `getUser`, `listOrganizations`
-
-All methods return typed responses; errors are thrown rather than returned so you can `try/catch` normally.
-
-## Use inside a workflow
-
-The primitive ships a workflow integration step for declarative use inside a `workflow()`:
+Import `createGitHubStep` from the SDK's `/github` subpath and drop it in anywhere you'd use a regular `.step()`:
 
 ```ts
 import { workflow } from '@agent-relay/sdk/workflows';
-import { createGitHubStep } from '@agent-relay/github-primitive/workflow-step';
+import { createGitHubStep } from '@agent-relay/sdk/github';
 
 await workflow('ship-readme')
   .agent('writer', { cli: 'claude' })
@@ -93,11 +45,34 @@ await workflow('ship-readme')
   .run({ cwd: process.cwd() });
 ```
 
-The step is `type: 'integration'` under the hood — the runner scheduling and verification applies the same way as any other step.
+Under the hood each `createGitHubStep(...)` call produces a `type: 'integration'` step — the runner schedules it, applies verification, and captures output the same way as any other step.
+
+## Supported actions
+
+- **Repositories** — `listRepos`, `getRepo`
+- **Issues** — `listIssues`, `createIssue`, `updateIssue`, `closeIssue`
+- **Pull requests** — `listPRs`, `getPR`, `createPR`, `updatePR`, `mergePR`
+- **Files** — `listFiles`, `readFile`, `createFile`, `updateFile`, `deleteFile`
+- **Branches + commits** — `listBranches`, `createBranch`, `listCommits`, `createCommit`
+- **Identity** — `getUser`, `listOrganizations`
+
+All actions work through the `action` + `params` shape. Outputs are typed — downstream steps can use `{{steps.<name>.output}}` to chain values through the workflow.
+
+## Runtime selection
+
+The primitive auto-picks the right backend for the environment it's running in:
+
+| Mode | Triggered when |
+|---|---|
+| `local` (via `gh` CLI) | `gh auth status` succeeds and no cloud creds are set |
+| `cloud` (via Nango) | `NANGO_SECRET_KEY` + `NANGO_GITHUB_CONNECTION_ID` + `NANGO_GITHUB_PROVIDER_CONFIG_KEY` are present |
+| `cloud` (via relay-cloud) | `RELAY_CLOUD_API_URL` + `RELAY_CLOUD_API_TOKEN` + `WORKSPACE_ID` are present (fallback when Nango absent) |
+
+Pick the default (`runtime: 'auto'`) unless you need to pin one for testing. You can also set `runtime` per step via the `config` field — useful when the same workflow creates PRs across multiple tenants with different GitHub App installs.
 
 ## Multi-tenant cloud routing
 
-Every cloud workspace can have its own GitHub App install — one Nango connection per tenant. `createGitHubStep` accepts a per-step `config` field so a single workflow can route different actions through different connections.
+Every cloud workspace can have its own GitHub App install — one Nango connection per tenant. `createGitHubStep` accepts a per-step `config` field so a single workflow can route different actions through different connections:
 
 ```ts
 createGitHubStep({
@@ -115,6 +90,6 @@ The primitive itself stays tenant-unaware — it takes a `GitHubRuntimeConfig` a
 
 ## See also
 
-- [Workflows](/docs/workflows-introduction) — where this primitive shines.
-- [File sharing](/docs/file-sharing) — pair with GitHub when agents pass large artifacts.
+- [Workflows introduction](/docs/workflows-introduction) — where this primitive shines.
+- [Patterns](/docs/workflows-patterns) — canonical workflow shapes that commonly use GitHub steps (PR review loops, multi-repo shipping, etc.).
 - [Authentication](/docs/authentication) — credentials model for the cloud runtime modes.
