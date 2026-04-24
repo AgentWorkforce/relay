@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { randomUUID, sign as cryptoSign, type KeyObject } from 'node:crypto';
 
 interface TokenClaims {
   sub: string;
@@ -18,14 +18,15 @@ interface TokenClaims {
 }
 
 export function mintToken(opts: {
-  secret: string;
+  privateKey: KeyObject;
+  kid: string;
   agentName: string;
   workspace: string;
   scopes: string[];
   ttlSeconds?: number;
 }): string {
   const now = Math.floor(Date.now() / 1000);
-  const header = { alg: 'HS256', typ: 'JWT' };
+  const header = { alg: 'RS256', typ: 'JWT', kid: opts.kid };
   const payload: TokenClaims = {
     sub: 'agent_' + opts.agentName,
     org: 'org_relay',
@@ -46,7 +47,7 @@ export function mintToken(opts: {
   const base64url = (obj: unknown) => Buffer.from(JSON.stringify(obj)).toString('base64url');
 
   const unsigned = base64url(header) + '.' + base64url(payload);
-  const signature = createHmac('sha256', opts.secret).update(unsigned).digest('base64url');
+  const signature = cryptoSign('RSA-SHA256', Buffer.from(unsigned), opts.privateKey).toString('base64url');
 
   return `${unsigned}.${signature}`;
 }

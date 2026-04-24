@@ -22,6 +22,14 @@ import { launchOnMount } from '@relayfile/local-mount';
 import { mintToken } from './token.js';
 import { seedAclRules } from './workspace.js';
 import { seedWorkspace } from '../../../../packages/sdk/src/provisioner/seeder.js';
+import {
+  createLocalJwks,
+  exportPrivateKeyPem,
+  RELAYAUTH_JWKS_URL_ENV,
+  RELAYAUTH_JWT_KID_ENV,
+  RELAYAUTH_JWT_PRIVATE_KEY_PEM_ENV,
+  type LocalJwksSigningKey,
+} from '../../../../packages/sdk/src/provisioner/local-jwks.js';
 import { ensureAuthenticated, readStoredAuth } from '@agent-relay/cloud';
 
 interface OnOptions {
@@ -86,7 +94,7 @@ interface WorkspaceSessionRequest {
   workspaceName?: string;
   agentName: string;
   scopes: string[];
-  signingSecret?: string;
+  tokenSigningKey?: LocalJwksSigningKey;
   relayDir?: string;
   relaycastBaseUrl?: string;
   fetchFn?: FetchFn;
@@ -473,14 +481,14 @@ async function createRelaycastWorkspace(
 async function requestLocalWorkspaceSession(options: WorkspaceSessionRequest): Promise<WorkspaceSession> {
   const fetchFn = options.fetchFn ?? fetch;
   const relayDir = options.relayDir;
-  const signingSecret = toString(options.signingSecret);
+  const tokenSigningKey = options.tokenSigningKey;
   const requestedWorkspaceId = normalizeWorkspaceId(options.requestedWorkspaceId);
 
   if (!relayDir) {
     throw new Error('relayDir is required for local workspace sessions');
   }
-  if (!signingSecret) {
-    throw new Error('signingSecret is required for local workspace sessions');
+  if (!tokenSigningKey) {
+    throw new Error('tokenSigningKey is required for local workspace sessions');
   }
 
   const workspaceId = requestedWorkspaceId ?? generateWorkspaceId();
@@ -517,7 +525,8 @@ async function requestLocalWorkspaceSession(options: WorkspaceSessionRequest): P
     created: !requestedWorkspaceId,
     workspaceId,
     token: mintToken({
-      secret: signingSecret,
+      privateKey: tokenSigningKey.privateKey,
+      kid: tokenSigningKey.kid,
       agentName: options.agentName,
       workspace: workspaceId,
       scopes: options.scopes,
@@ -535,7 +544,7 @@ export async function requestWorkspaceSession(options: WorkspaceSessionRequest):
   if (
     (isLocalBaseUrl(options.authBase) || options.preferLocalSession) &&
     options.relayDir &&
-    options.signingSecret
+    options.tokenSigningKey
   ) {
     return requestLocalWorkspaceSession({ ...options, fetchFn, requestedWorkspaceId });
   }
@@ -658,12 +667,6 @@ function loadConfigFromFile(configPath: string, projectDir: string): RelayConfig
     payload.signing_secret,
     toString(root.signing_secret, process.env.SIGNING_KEY ?? '')
   );
-  if (!signing_secret) {
-    throw new Error(
-      `relay config at ${configPath} is missing signing_secret and SIGNING_KEY env var is not set. ` +
-        'Set signing_secret in your config or export SIGNING_KEY.'
-    );
-  }
   const agents = normalizeAgents(payload.agents ?? root.agents);
 
   return { workspace, signing_secret, agents };
@@ -1015,12 +1018,14 @@ function pickDeniedCount(syncOutput: string): number {
 function generateTokenFromScript(
   config: RelayConfig,
   agent: RelayConfigAgent,
+  tokenSigningKey: LocalJwksSigningKey,
   log: LogFn,
   error: LogFn
 ): string | null {
   try {
     return mintToken({
-      secret: config.signing_secret,
+      privateKey: tokenSigningKey.privateKey,
+      kid: tokenSigningKey.kid,
       agentName: agent.name,
       workspace: config.workspace,
       scopes: agent.scopes,
@@ -1067,14 +1072,19 @@ interface GoOnRelayDeps {
   error?: LogFn;
   exit?: (code: number) => never | void;
   fetch?: FetchFn;
-  provision?: (config: RelayConfig, agent: RelayConfigAgent) => Promise<void>;
+  provision?: (
+    config: RelayConfig,
+    agent: RelayConfigAgent,
+    tokenSigningKey: LocalJwksSigningKey
+  ) => Promise<void>;
   provisionAgentToken?: (opts: {
     config: RelayConfig;
     agent: RelayConfigAgent;
     tokenPath: string;
+    tokenSigningKey: LocalJwksSigningKey;
   }) => Promise<string | undefined>;
-  ensureServicesRunning?: (authBase: string, fileBase: string) => Promise<void>;
-  startServices?: (opts: { authBase: string; fileBase: string }) => Promise<void>;
+  ensureServicesRunning?: (authBase: string, fileBase: string, jwksUrl: string) => Promise<void>;
+  startServices?: (opts: { authBase: string; fileBase: string; jwksUrl: string }) => Promise<void>;
 }
 
 function getSandboxFlags(cli: string): string[] {
@@ -1096,6 +1106,7 @@ function getSandboxFlags(cli: string): string[] {
 async function ensureProvisioned(
   config: RelayConfig,
   agent: RelayConfigAgent,
+  tokenSigningKey: LocalJwksSigningKey,
   relayfileRoot: string,
   projectDir: string,
   tokenPath: string,
@@ -1110,7 +1121,7 @@ async function ensureProvisioned(
   }
 
   if (typeof deps?.provision === 'function') {
-    await deps.provision(config, { ...agent });
+    await deps.provision(config, { ...agent }, tokenSigningKey);
     try {
       return readFileSync(tokenPath, 'utf8').trim();
     } catch {
@@ -1119,7 +1130,7 @@ async function ensureProvisioned(
   }
 
   if (typeof deps?.provisionAgentToken === 'function') {
-    const generated = await deps.provisionAgentToken({ config, agent, tokenPath });
+    const generated = await deps.provisionAgentToken({ config, agent, tokenPath, tokenSigningKey });
     if (typeof generated === 'string' && generated.trim()) {
       const generatedToken = generated.trim();
       writeFileSync(tokenPath, `${generatedToken}\n`, { encoding: 'utf8', mode: 0o600 });
@@ -1127,7 +1138,7 @@ async function ensureProvisioned(
     }
   }
 
-  const generatedToken = generateTokenFromScript(config, agent, log, error);
+  const generatedToken = generateTokenFromScript(config, agent, tokenSigningKey, log, error);
   if (generatedToken) {
     ensureDirectory(path.dirname(tokenPath));
     writeFileSync(tokenPath, `${generatedToken}\n`, { encoding: 'utf8', mode: 0o600 });
@@ -1140,6 +1151,7 @@ async function ensureProvisioned(
 async function ensureServices(
   authBase: string,
   fileBase: string,
+  jwksUrl: string,
   deps: GoOnRelayDeps,
   log: LogFn,
   error: LogFn
@@ -1155,14 +1167,14 @@ async function ensureServices(
   if (authHealthy && fileHealthy) return;
 
   if (typeof deps?.ensureServicesRunning === 'function') {
-    await deps.ensureServicesRunning(authBase, fileBase);
+    await deps.ensureServicesRunning(authBase, fileBase, jwksUrl);
     const postAuthHealthy = !needsLocalAuth || (await waitForHttpHealthy(authBase));
     const postFileHealthy = !needsLocalFile || (await waitForHttpHealthy(fileBase));
     if (postAuthHealthy && postFileHealthy) return;
   }
 
   if (typeof deps?.startServices === 'function') {
-    await deps.startServices({ authBase, fileBase });
+    await deps.startServices({ authBase, fileBase, jwksUrl });
     const postAuthHealthy = !needsLocalAuth || (await waitForHttpHealthy(authBase));
     const postFileHealthy = !needsLocalFile || (await waitForHttpHealthy(fileBase));
     if (postAuthHealthy && postFileHealthy) return;
@@ -1221,6 +1233,8 @@ export async function goOnTheRelay(
 
   const projectDir = process.cwd();
   const relayDir = path.join(projectDir, '.relay');
+  const localJwks = await createLocalJwks();
+  const privateKeyPem = exportPrivateKeyPem(localJwks.privateKey);
 
   if (!isCommandAvailable('node') || !isCommandAvailable('npx')) {
     throw new Error('node and npx must be available in PATH to run relay.');
@@ -1235,7 +1249,7 @@ export async function goOnTheRelay(
   // Default: solo local (symlink mount). --shared or --cloud: use relayfile.
   const useSymlinkMount = !options.shared && !options.cloud;
 
-  await ensureServices(authBase, fileBase, deps, log, error);
+  await ensureServices(authBase, fileBase, localJwks.jwksUrl, deps, log, error);
 
   const workspaceSession = await requestWorkspaceSession({
     authBase,
@@ -1244,7 +1258,7 @@ export async function goOnTheRelay(
     workspaceName: config.workspace,
     agentName: agent.name,
     scopes: agent.scopes,
-    signingSecret: config.signing_secret,
+    tokenSigningKey: localJwks,
     relayDir,
     relaycastBaseUrl: process.env.RELAYCAST_BASE_URL,
     fetchFn: deps.fetch,
@@ -1291,6 +1305,9 @@ export async function goOnTheRelay(
     RELAYFILE_TOKEN: workspaceSession.token,
     RELAYFILE_BASE_URL: workspaceSession.relayfileUrl,
     RELAYFILE_WORKSPACE: workspaceSession.workspaceId,
+    [RELAYAUTH_JWKS_URL_ENV]: localJwks.jwksUrl,
+    [RELAYAUTH_JWT_PRIVATE_KEY_PEM_ENV]: privateKeyPem,
+    [RELAYAUTH_JWT_KID_ENV]: localJwks.kid,
     RELAY_WORKSPACE_ID: workspaceSession.workspaceId,
     RELAY_DEFAULT_WORKSPACE: workspaceSession.workspaceId,
     RELAY_WORKSPACE: mountDir,
@@ -1352,6 +1369,7 @@ export async function goOnTheRelay(
     });
 
     log('Off the relay.');
+    await localJwks.shutdown();
     exit(launchResult.exitCode);
     return;
   }
@@ -1412,7 +1430,11 @@ export async function goOnTheRelay(
     mountDir,
   ];
   const onceArgs = [...mountBaseArgs, '--once'];
-  const mountEnv: NodeJS.ProcessEnv = { ...process.env, RELAYFILE_TOKEN: workspaceSession.token };
+  const mountEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    RELAYFILE_TOKEN: workspaceSession.token,
+    [RELAYAUTH_JWKS_URL_ENV]: localJwks.jwksUrl,
+  };
 
   log(`Mounting workspace at ${mountDir}...`);
   let initialSyncOutput = '';
@@ -1563,8 +1585,10 @@ export async function goOnTheRelay(
 
     await finalizeCleanup();
     log('Off the relay.');
+    await localJwks.shutdown();
     exit(agentExitCode);
   } finally {
     await finalizeCleanup();
+    await localJwks.shutdown();
   }
 }
