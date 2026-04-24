@@ -236,6 +236,13 @@
     "zod": "^3.23.8",
     "zod-to-json-schema": "^3.23.1"
   },
+  "optionalDependencies": {
+    "@agent-relay/broker-darwin-arm64": "5.0.0",
+    "@agent-relay/broker-darwin-x64": "5.0.0",
+    "@agent-relay/broker-linux-arm64": "5.0.0",
+    "@agent-relay/broker-linux-x64": "5.0.0",
+    "@agent-relay/broker-win32-x64": "5.0.0"
+  },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
