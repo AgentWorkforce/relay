@@ -1898,13 +1898,16 @@ jobs:
   # can't see (missing/wrong os/cpu on published manifests, CDN propagation).
   verify-publish-sdk:
     name: Verify Published SDK (Cross-Platform)
-    needs: [build, publish-broker-packages, publish-packages]
+    # publish-packages and publish-sdk-only are mutually exclusive: the first
+    # runs on package='all', the second on package='sdk'. Depend on both and
+    # accept a success from either so this gate fires for both release flows.
+    needs: [build, publish-broker-packages, publish-packages, publish-sdk-only]
     if: |
       always() &&
       github.event.inputs.dry_run != 'true' &&
       (github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk') &&
       needs.publish-broker-packages.result == 'success' &&
-      needs.publish-packages.result == 'success'
+      (needs.publish-packages.result == 'success' || needs.publish-sdk-only.result == 'success')
     uses: ./.github/workflows/verify-publish-sdk.yml
     with:
       version: ${{ needs.build.outputs.new_version }}
