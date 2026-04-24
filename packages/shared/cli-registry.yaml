@@ -33,15 +33,9 @@ clis:
     version: '0.124.0'
     install: 'npm install -g @openai/codex'
     models:
-      gpt_5_5:
-        id: 'gpt-5.4'
-        label: 'GPT-5.4 — Frontier model for complex coding, research, and real-world work.'
-        default: true
-        reasoning_efforts: ['low', 'medium', 'high', 'xhigh']
-        default_reasoning_effort: 'high'
       gpt_5_4:
         id: 'gpt-5.4'
-        label: 'GPT-5.4 — Strong model for everyday coding'
+        label: 'GPT-5.4 — Frontier model for complex coding, research, and real-world work.'
         default: true
         reasoning_efforts: ['low', 'medium', 'high', 'xhigh']
         default_reasoning_effort: 'xhigh'
