@@ -15,7 +15,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { BrokerTransport, AgentRelayProtocolError } from './transport.js';
-import { getBrokerBinaryPath } from './broker-path.js';
+import { getBrokerBinaryPath, formatBrokerNotFoundError } from './broker-path.js';
 import type {
   AgentRuntime,
   BrokerEvent,
@@ -210,7 +210,14 @@ export class AgentRelayClient {
    * 6. Starts event stream + lease renewal
    */
   static async spawn(options?: AgentRelaySpawnOptions): Promise<AgentRelayClient> {
-    const binaryPath = options?.binaryPath ?? getBrokerBinaryPath() ?? 'agent-relay-broker';
+    let binaryPath = options?.binaryPath;
+    if (!binaryPath) {
+      const resolved = getBrokerBinaryPath();
+      if (!resolved) {
+        throw new Error(formatBrokerNotFoundError());
+      }
+      binaryPath = resolved;
+    }
     const cwd = options?.cwd ?? process.cwd();
     const brokerName = options?.brokerName ?? (path.basename(cwd) || 'project');
     const channels = options?.channels ?? ['general'];

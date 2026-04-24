@@ -102,8 +102,10 @@ jobs:
           echo "=== Validating packages ==="
           ERRORS=0
 
-          # Check dist files exist (skip non-Node package directories)
-          SKIP_PACKAGES="build-plans brand"
+          # Check dist files exist (skip non-Node package directories).
+          # broker-* packages ship a Rust-built binary in bin/, not a JS
+          # dist — they live under packages/ only for workspace linkage.
+          SKIP_PACKAGES="build-plans brand broker-darwin-arm64 broker-darwin-x64 broker-linux-arm64 broker-linux-x64 broker-win32-x64"
           for pkg_dir in packages/*/; do
             pkg_name=$(basename "$pkg_dir")
             if [ ! -f "$pkg_dir/package.json" ]; then

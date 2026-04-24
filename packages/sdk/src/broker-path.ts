@@ -14,6 +14,13 @@ import { fileURLToPath } from 'node:url';
 
 const BROKER_NAME = 'agent-relay-broker';
 
+export function getOptionalDepPackageName(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch
+): string {
+  return `@agent-relay/broker-${platform}-${arch}`;
+}
+
 function addUniquePath(paths: string[], candidate: string | null | undefined): void {
   if (!candidate || paths.includes(candidate)) {
     return;
@@ -60,6 +67,59 @@ function getCurrentModuleReference(): string | null {
   return getImportMetaUrl();
 }
 
+function getResolutionReferences(): string[] {
+  const refs: string[] = [];
+  addUniquePath(refs, getCurrentModuleReference());
+
+  // Also try the entry script so CLI consumers and bundled installs
+  // (where the SDK lives under the consuming package's node_modules) can
+  // still find the optional-dep package.
+  if (process.argv[1]) {
+    addUniquePath(refs, process.argv[1]);
+  }
+
+  // Fall back to the cwd's package.json as a final resolution anchor.
+  // `createRequire` only needs a file path that sits inside a project root
+  // — it doesn't have to exist. This catches setups where the SDK's module
+  // path and the entry script both sit outside the consumer's node_modules
+  // tree (e.g. a globally-installed SDK importing per-project optional deps,
+  // some vite/webpack bundling configurations, repl experimentation), but
+  // the consumer's cwd is inside their own project. We only use this
+  // reference to run require.resolve; no file I/O is triggered on misses.
+  addUniquePath(refs, join(process.cwd(), 'package.json'));
+
+  return refs;
+}
+
+function requireResolveFromRefs(specifier: string): string | null {
+  for (const ref of getResolutionReferences()) {
+    try {
+      return createRequire(ref).resolve(specifier);
+    } catch {
+      // Try the next reference.
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve the broker binary via the platform-specific optional-dependency
+ * package (`@agent-relay/broker-<platform>-<arch>`). Returns null when the
+ * optional dep is not installed (expected when users install with
+ * --no-optional / --omit=optional / --include= omits optional, or when the
+ * broker hasn't been published for their platform yet).
+ */
+function getOptionalDepBinaryPath(ext: string): string | null {
+  const pkgName = getOptionalDepPackageName();
+  const binaryFile = `${BROKER_NAME}${ext}`;
+
+  const pkgJsonPath = requireResolveFromRefs(`${pkgName}/package.json`);
+  if (!pkgJsonPath) return null;
+
+  const binPath = join(dirname(pkgJsonPath), 'bin', binaryFile);
+  return existsSync(binPath) ? binPath : null;
+}
+
 function getSdkBinDirs(): string[] {
   const binDirs: string[] = [];
 
@@ -90,10 +150,11 @@ function getSdkBinDirs(): string[] {
   return binDirs;
 }
 
-// The `agent-relay` npm tarball ships platform-specific brokers at its
-// top-level `bin/` (not inside `packages/sdk/bin/`). Walk up from the SDK
-// module looking for any ancestor with a `bin/` directory so we can find
-// the binary without depending on postinstall to copy it.
+// The `agent-relay` npm tarball historically shipped platform-specific
+// brokers at its top-level `bin/`. Walk up from the SDK module looking for
+// any ancestor with a `bin/` directory. This fallback is retained for one
+// release cycle while downstream installs migrate to the optional-dep
+// package; delete it in the next major.
 function getAncestorBinDirs(): string[] {
   const binDirs: string[] = [];
   const start = getCurrentModuleDir();
@@ -162,13 +223,16 @@ function getSourceCheckoutBinaryPaths(ext: string, binDirs: string[]): string[] 
  *
  * Search order:
  *   1. Explicit env override (BROKER_BINARY_PATH / AGENT_RELAY_BIN)
- *   2. Local Cargo build when the SDK is loaded from an agent-relay source checkout
- *   3. SDK's bin/ directory (resolved via CJS globals, createRequire, or import.meta.url)
- *   4. Platform-specific name (agent-relay-broker-{platform}-{arch}) in bin/
- *   5. Ancestor bin/ directories (the `agent-relay` tarball ships platform-
- *      specific broker binaries at its package-root `bin/` — finding them
- *      here removes the postinstall copy dependency)
- *   6. Common Cargo development paths (target/release and target/debug)
+ *   2. Local Cargo build when the SDK is loaded from an agent-relay source
+ *      checkout — keeps dev workflows snappy by preferring a fresh
+ *      `target/release` binary over anything staged in bin/
+ *   3. Platform-specific optional-dep package
+ *      (`@agent-relay/broker-<platform>-<arch>`) — primary production path
+ *   4. SDK's bin/ directory (legacy bundled binary — kept for one release
+ *      cycle so mixed-version installs still work)
+ *   5. Ancestor bin/ directories (legacy, from PR #768 — kept for one
+ *      release cycle so stale `agent-relay` tarballs still resolve)
+ *   6. Cargo development paths (target/release and target/debug)
  *   7. PATH lookup via `which` / `where`
  *
  * @returns Absolute path to the broker binary, or null if not found
@@ -188,15 +252,21 @@ export function getBrokerBinaryPath(): string | null {
   }
 
   // 1. Prefer a local Cargo build when this SDK is being used from a source checkout.
-  // In development, the bundled packages/sdk/bin binary can be stale relative to
-  // the current Rust build in target/release.
+  // In development, a binary staged in packages/sdk/bin can be stale relative
+  // to the current Rust build in target/release.
   for (const developmentPath of getSourceCheckoutBinaryPaths(ext, binDirs)) {
     if (existsSync(developmentPath)) {
       return developmentPath;
     }
   }
 
-  // 2. Exact name in bin/
+  // 2. Platform-specific optional-dep package — the primary production path.
+  const optionalDepBinary = getOptionalDepBinaryPath(ext);
+  if (optionalDepBinary) {
+    return optionalDepBinary;
+  }
+
+  // 3. SDK's bin/ (legacy bundled binary — kept for one release cycle).
   for (const binDir of binDirs) {
     const exactPath = join(binDir, `${BROKER_NAME}${ext}`);
     if (existsSync(exactPath)) {
@@ -204,7 +274,7 @@ export function getBrokerBinaryPath(): string | null {
     }
   }
 
-  // 3. Platform-specific name in bin/
+  // 4. Platform-specific name in SDK's bin/ (legacy).
   for (const binDir of binDirs) {
     const platformPath = join(binDir, platformSpecific);
     if (existsSync(platformPath)) {
@@ -212,9 +282,8 @@ export function getBrokerBinaryPath(): string | null {
     }
   }
 
-  // 4. Ancestor bin/ directories (the agent-relay tarball ships brokers at
-  // its package-root bin/ — exact name first for parity with bundled SDKs,
-  // then platform-specific name for the prebuilt-only case).
+  // 5. Ancestor bin/ directories (legacy from PR #768 — the `agent-relay`
+  // tarball historically shipped brokers at its package-root bin/).
   for (const binDir of ancestorBinDirs) {
     const exactPath = join(binDir, `${BROKER_NAME}${ext}`);
     if (existsSync(exactPath)) {
@@ -226,14 +295,14 @@ export function getBrokerBinaryPath(): string | null {
     }
   }
 
-  // 5. Common development paths for local Cargo builds.
+  // 6. Common development paths for local Cargo builds.
   for (const developmentPath of getDevelopmentBinaryPaths(ext, binDirs)) {
     if (existsSync(developmentPath)) {
       return developmentPath;
     }
   }
 
-  // 6. PATH lookup
+  // 7. PATH lookup
   try {
     const cmd = process.platform === 'win32' ? 'where' : 'which';
     const result = execFileSync(cmd, [BROKER_NAME], {
@@ -248,4 +317,21 @@ export function getBrokerBinaryPath(): string | null {
   }
 
   return null;
+}
+
+/**
+ * Human-readable error message explaining that the optional-dep broker
+ * package for the current platform/arch isn't installed. Used by the SDK
+ * at broker-spawn time so users get a clear message instead of an
+ * inscrutable `spawn agent-relay-broker ENOENT`.
+ */
+export function formatBrokerNotFoundError(): string {
+  const pkgName = getOptionalDepPackageName();
+  return (
+    `@agent-relay/sdk couldn't find an agent-relay-broker binary for ` +
+    `${process.platform}-${process.arch}. The optional dependency ` +
+    `${pkgName} is expected to be installed alongside @agent-relay/sdk. ` +
+    `Try reinstalling with --include=optional, or set BROKER_BINARY_PATH ` +
+    `to point at a broker binary you've downloaded manually.`
+  );
 }
