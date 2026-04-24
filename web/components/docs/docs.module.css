@@ -211,6 +211,7 @@
 }
 
 .navList { list-style: none; padding: 0; margin: 0; }
+.navChildren { padding-left: 0.9rem; margin-top: 0.1rem; border-left: 1px solid rgba(255, 255, 255, 0.08); }
 
 .navLink {
   display: flex;

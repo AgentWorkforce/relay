@@ -1,6 +1,6 @@
 'use client';
 
-import type { ComponentType } from 'react';
+import type { ComponentType, ReactElement } from 'react';
 import { useEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 import {
@@ -30,7 +30,7 @@ import { PiBroadcastFill, PiLockKeyDuotone } from 'react-icons/pi';
 import { RiLayout5Line } from 'react-icons/ri';
 import { SiClaude, SiPython, SiTypescript } from 'react-icons/si';
 
-import { docsNav } from '../../lib/docs-nav';
+import { docsNav, type NavItem } from '../../lib/docs-nav';
 import styles from './docs.module.css';
 
 type NavIcon = ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' | 'false' }>;
@@ -124,23 +124,28 @@ export function DocsNav({ variant = 'sidebar' }: { variant?: 'sidebar' | 'mobile
       {docsNav.map((group) => (
         <div key={group.title} className={styles.navGroup}>
           <h4 className={styles.navGroupTitle}>{group.title}</h4>
-          <ul className={styles.navList}>
-            {group.items.map((item) => {
-              const href = `/docs/${item.slug}`;
-              const isActive = pathname === href || (item.slug === 'introduction' && pathname === '/docs');
-              const Icon = navIcons[item.slug];
-              return (
-                <li key={item.slug}>
-                  <a href={href} className={`${styles.navLink} ${isActive ? styles.navLinkActive : ''}`}>
-                    {Icon && <Icon className={styles.navIcon} aria-hidden="true" />}
-                    <span className={styles.navLabel}>{item.title}</span>
-                  </a>
-                </li>
-              );
-            })}
-          </ul>
+          <ul className={styles.navList}>{group.items.map((item) => renderNavItem(item, pathname))}</ul>
         </div>
       ))}
     </nav>
+  );
+}
+
+function renderNavItem(item: NavItem, pathname: string): ReactElement {
+  const href = `/docs/${item.slug}`;
+  const isActive = pathname === href || (item.slug === 'introduction' && pathname === '/docs');
+  const Icon = navIcons[item.slug];
+  return (
+    <li key={item.slug}>
+      <a href={href} className={`${styles.navLink} ${isActive ? styles.navLinkActive : ''}`}>
+        {Icon && <Icon className={styles.navIcon} aria-hidden="true" />}
+        <span className={styles.navLabel}>{item.title}</span>
+      </a>
+      {item.children && item.children.length > 0 && (
+        <ul className={`${styles.navList} ${styles.navChildren ?? ''}`}>
+          {item.children.map((child) => renderNavItem(child, pathname))}
+        </ul>
+      )}
+    </li>
   );
 }

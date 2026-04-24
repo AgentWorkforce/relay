@@ -1,0 +1,272 @@
+---
+title: 'Workflow patterns'
+description: 'Canonical shapes for multi-agent workflows: test-fix-rerun, lead + workers, cross-repo, supervisor.'
+---
+
+These are the patterns that show up over and over in production workflows. Copy the shape, adapt the details.
+
+## Test-fix-rerun (the 80-to-100 pattern)
+
+Most workflows get features to ~80%: code written, types check, maybe a build passes. The gap to 100% is **running the tests inside the workflow and fixing failures before commit**.
+
+Three-step loop:
+
+```typescript
+// 1. Run tests (don't fail the workflow — let the agent fix it)
+.step('run-tests', {
+  type: 'deterministic',
+  dependsOn: ['write-tests'],
+  command: 'npx vitest run test/my-feature.test.ts 2>&1 | tail -60',
+  captureOutput: true,
+  failOnError: false,
+})
+
+// 2. Agent reads output, fixes, re-runs
+.step('fix-tests', {
+  agent: 'tester',
+  dependsOn: ['run-tests'],
+  task: `Check the test output and fix any failures.
+
+Output:
+{{steps.run-tests.output}}
+
+If all pass, do nothing. If there are failures, read the test + source,
+fix, re-run via \`npx vitest run test/my-feature.test.ts\`. Keep iterating
+until ALL tests pass.`,
+  verification: { type: 'exit_code' },
+})
+
+// 3. Deterministic final run — this one MUST pass
+.step('run-tests-final', {
+  type: 'deterministic',
+  dependsOn: ['fix-tests'],
+  command: 'npx vitest run test/my-feature.test.ts 2>&1',
+  failOnError: true,
+})
+```
+
+**Why three steps instead of one:**
+- First run captures output for the agent to diagnose.
+- Agent step can iterate (read errors, fix, re-run) multiple times.
+- Final deterministic run is the gate — no agent judgment, pass/fail.
+
+Follow the same shape for `npx tsc --noEmit`, `npm run build`, `npm test` — any deterministic check you want a gate behind.
+
+## Verify gates after every agent edit
+
+Never trust that an agent edited a file correctly. Add a deterministic verify step after every agent edit:
+
+```typescript
+.step('edit-schema', {
+  agent: 'impl',
+  task: 'Edit packages/web/lib/db/schema.ts ...',
+  verification: { type: 'exit_code' },
+})
+.step('verify-schema', {
+  type: 'deterministic',
+  dependsOn: ['edit-schema'],
+  command: `if git diff --quiet packages/web/lib/db/schema.ts; then echo "NOT MODIFIED"; exit 1; fi
+grep "my_new_table" packages/web/lib/db/schema.ts >/dev/null && echo OK`,
+  failOnError: true,
+})
+```
+
+What to verify:
+- File was actually modified (`git diff --quiet` returns non-zero).
+- Key content exists (grep for table names, function names, imports).
+- For new files: `verification: { type: 'file_exists', value: '...' }`.
+
+What NOT to verify:
+- Exact content (too brittle — agents format differently).
+- Line counts (meaningless).
+
+## Lead + workers (interactive team)
+
+When a task touches multiple files and may need iteration, use a **lead + workers team on a shared channel** rather than a sequential DAG of one-shot agents. The lead coordinates, reviews, and posts feedback; workers implement and iterate.
+
+```typescript
+.agent('lead', {
+  cli: 'claude',
+  preset: 'lead',
+  role: 'Architect and reviewer — assigns work, reviews diffs, posts feedback',
+})
+.agent('impl-new', {
+  cli: 'codex',
+  role: 'Creates new files. Listens on channel for assignments + feedback.',
+  // No preset — interactive, receives channel messages
+})
+.agent('impl-modify', {
+  cli: 'codex',
+  role: 'Edits existing files. Listens on channel.',
+})
+
+// All three share the same dependsOn — they start concurrently
+.step('lead-coordinate', {
+  agent: 'lead',
+  dependsOn: ['context'],
+  task: `You are the lead on #channel. Workers: impl-new, impl-modify.
+Post the plan. Assign files. Review their work. Post feedback.
+Workers iterate. Exit when all files are correct.`,
+})
+.step('impl-new-work', {
+  agent: 'impl-new',
+  dependsOn: ['context'],   // same dep as lead = parallel start
+  task: 'You are impl-new on #channel. Wait for the lead\'s plan. Create files as assigned.',
+})
+.step('impl-modify-work', {
+  agent: 'impl-modify',
+  dependsOn: ['context'],
+  task: 'You are impl-modify on #channel. Wait for plan. Edit as assigned.',
+})
+
+// Downstream gates on lead — lead exits when satisfied
+.step('verify', { type: 'deterministic', dependsOn: ['lead-coordinate'], ... })
+```
+
+**Key behaviors:**
+- **Workers self-organize from channel context.** They read each other's completion messages and start dependent work without waiting for the lead to relay.
+- **Lead-as-reviewer is more efficient than a separate reviewer agent.** The lead reads actual files and runs typecheck between rounds.
+- **No feedback loop needed = fast path.** If workers get it right first try, the interactive pattern completes just as fast as one-shot.
+
+When to use interactive team vs one-shot DAG:
+
+| Scenario | Pattern |
+|----------|---------|
+| 4+ files, likely needs iteration | Interactive team |
+| Simple edits, well-specified | One-shot DAG with `preset: 'worker'` |
+| Cross-agent review feedback loop | Interactive team |
+| Independent tasks, no coordination | Fan-out with non-interactive workers |
+
+## Multi-file edit pattern (one file per step)
+
+Agents reliably edit 1-2 files per step but fail on 4+. Split multi-file edits into **one agent step per file**, each with a deterministic verify gate:
+
+```typescript
+.step('read-types', {
+  type: 'deterministic',
+  command: 'cat src/types.ts',
+  captureOutput: true,
+})
+.step('edit-types', {
+  agent: 'impl',
+  dependsOn: ['read-types'],
+  task: `Edit src/types.ts. Current contents:
+{{steps.read-types.output}}
+Add 'pending' to the Status union. Only edit this one file.`,
+  verification: { type: 'exit_code' },
+})
+.step('verify-types', {
+  type: 'deterministic',
+  dependsOn: ['edit-types'],
+  command: `if git diff --quiet src/types.ts; then echo "NOT MODIFIED"; exit 1; fi; echo OK`,
+  failOnError: true,
+})
+
+.step('read-service', {
+  type: 'deterministic',
+  dependsOn: ['verify-types'],
+  command: 'cat src/service.ts',
+  captureOutput: true,
+})
+.step('edit-service', { ... })
+.step('verify-service', { ... })
+
+.step('commit', {
+  type: 'deterministic',
+  dependsOn: ['verify-service'],
+  command: 'git add src/types.ts src/service.ts && git commit -m "feat: add pending status"',
+})
+```
+
+**Rules:**
+- Read the file in a deterministic step **right before** the edit (not all files upfront — agent sees stale state if main moved).
+- Tell the agent "Only edit this one file" to prevent it touching others.
+- Verify with `git diff --quiet` after each edit — fail fast if the agent didn't write.
+- Always commit with a deterministic step, never an agent step.
+
+## Cross-repo workflows
+
+When the unit of work spans two repos (e.g. a feature that touches both `sage` and `cloud/infra`), the master creates a sibling worktree for the second repo and orchestrates work across both:
+
+```typescript
+const CLOUD_WORKTREE = '../cloud-my-feature';
+
+// Wave 0: ensure both repos are ready
+.step('setup-cloud-worktree', {
+  type: 'deterministic',
+  command: `if [ ! -d "${CLOUD_WORKTREE}" ]; then
+    git -C ../cloud worktree add -B feat/my-change "${CLOUD_WORKTREE}" origin/main
+  fi`,
+})
+
+// Wave 1: parallel work on each repo
+.step('wave1-cloud-change', {
+  type: 'deterministic',
+  dependsOn: ['setup-cloud-worktree'],
+  command: `cd ${CLOUD_WORKTREE} && agent-relay run $OLDPWD/workflows/01-cloud.ts`,
+})
+.step('wave1-sage-change', {
+  type: 'deterministic',
+  dependsOn: ['install-deps'],
+  command: 'agent-relay run workflows/02-sage.ts',
+})
+
+// Final: cross-repo commit + push + two linked PRs
+.step('open-cloud-pr', {
+  type: 'deterministic',
+  dependsOn: ['wave1-cloud-change'],
+  command: `cd ${CLOUD_WORKTREE} && gh pr create --title '...' --body '...'`,
+})
+.step('open-sage-pr', { ... })
+```
+
+**Gotchas:**
+- Don't touch the user's main `../cloud` checkout — always create a sibling worktree.
+- Sibling repos linked as dependencies? See [Setup helpers → applySiblingLinks](/docs/workflows-setup-helpers#applysiblinglinks) to avoid "agents see stale interfaces" bugs.
+- Each repo gets its own PR; merge order depends on dependency direction (infra usually first).
+
+## Supervisor pattern
+
+Use `.pattern('supervisor')` (or `hub-spoke` / `fan-out`) when workers need oversight — the runner auto-assigns a supervisor agent as owner for worker steps. The supervisor monitors progress, nudges idle workers, and issues `OWNER_DECISION`.
+
+| Use case | Pattern | Why |
+|----------|---------|-----|
+| Sequential, no monitoring | `pipeline` | Simple, no overhead |
+| Workers need oversight | `supervisor` | Auto-owner monitors |
+| Local/small models | `supervisor` | Supervisor catches stuck workers |
+| All non-interactive | `pipeline` or `dag` | No PTY = no supervision needed |
+
+Auto-hardening only activates for hub patterns (`supervisor`, `hub-spoke`, `fan-out`) — not `pipeline` or `dag`.
+
+## Parallelism: waves and fan-out
+
+Two workflows or two steps can run in parallel if they don't conflict on files. Heuristics:
+
+| Touch zone | Can parallelize? |
+|---|---|
+| Different `packages/*/src/` dirs | ✅ Yes |
+| Different `app/` routes | ✅ Yes |
+| Same package, different subdirs | ⚠️ Usually yes |
+| Same files (shared config, root `package.json`) | ❌ No |
+| Explicit dep | ❌ No — ordered waves |
+
+Fan out by having multiple steps share the same `dependsOn`:
+
+```typescript
+// BAD — unnecessary sequential chain
+.step('fix-component-a', { dependsOn: ['review'] })
+.step('fix-component-b', { dependsOn: ['fix-component-a'] })  // why wait?
+
+// GOOD — parallel fan-out, merge at the end
+.step('fix-component-a', { agent: 'impl-1', dependsOn: ['review'] })
+.step('fix-component-b', { agent: 'impl-2', dependsOn: ['review'] })  // parallel
+.step('verify-all', { agent: 'reviewer', dependsOn: ['fix-component-a', 'fix-component-b'] })
+```
+
+Cap `maxConcurrency` at **4-6**. Spawning 10+ agents simultaneously causes broker timeouts.
+
+## See also
+
+- [Setup helpers](/docs/workflows-setup-helpers) — repo-setup conventions and `applySiblingLinks`.
+- [Common mistakes](/docs/workflows-common-mistakes) — the bugs that break these patterns in practice.
+- [Builder API reference](/docs/reference-workflows) — every method on `workflow()`.

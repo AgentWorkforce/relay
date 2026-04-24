@@ -1,0 +1,104 @@
+---
+title: 'Workflows'
+description: 'Orchestrate multi-step, multi-agent execution across Relay workers. Write once, run locally or in the cloud.'
+---
+
+Workflows are how Relay runs real work. A workflow is a DAG of steps — some are deterministic shell commands, others spawn agents that edit code, run tests, and push PRs. You write them in TypeScript, Python, or YAML; you run them with `agent-relay run`.
+
+## When to use a workflow
+
+Use workflows when you need:
+
+- **Multiple agents coordinating** — a lead that plans, workers that implement, a reviewer that gates.
+- **Cross-repo changes** — edit two repos as part of one unit of work, open linked PRs.
+- **Verification gates** — tests must pass before the commit. Build must pass before the push. Regressions must be zero before the PR opens.
+- **Parallelism with barriers** — fan out independent work, wait at the right moments, move on.
+
+If you just want to spawn one agent and talk to it, [spawning an agent](/docs/spawning-an-agent) is simpler. Workflows earn their weight when you have steps that depend on each other.
+
+## Mental model
+
+A workflow is a typed DAG. Steps come in two flavors:
+
+- **Agent steps** — spawn a CLI (`claude`, `codex`, `gemini`, etc.) with a task prompt. Agent reads the prompt and whatever context the workflow has injected, edits files, writes tests, commits.
+- **Deterministic steps** — shell commands. Reads, builds, tests, verifications, commits, pushes. No LLM.
+
+Steps declare dependencies (`dependsOn`). Steps with no shared dependency run in parallel. The runner enforces this topology, captures each step's stdout/stderr, and feeds one step's output into a downstream step's prompt via `{{steps.X.output}}`.
+
+## A minimal example
+
+```typescript
+import { workflow } from '@agent-relay/sdk/workflows';
+
+async function main() {
+  const result = await workflow('add-tests-to-parser')
+    .description('Write tests for the parser and run them until green')
+    .pattern('dag')
+    .channel('wf-parser-tests')
+
+    .agent('impl', { cli: 'codex', preset: 'worker' })
+    .agent('tester', { cli: 'codex', preset: 'worker' })
+
+    .step('read-parser', {
+      type: 'deterministic',
+      command: 'cat src/parser.ts',
+      captureOutput: true,
+    })
+    .step('write-tests', {
+      agent: 'tester',
+      dependsOn: ['read-parser'],
+      task: `Write vitest tests for the parser. Current contents:
+
+{{steps.read-parser.output}}
+
+Create test/parser.test.ts.`,
+      verification: { type: 'file_exists', value: 'test/parser.test.ts' },
+    })
+    .step('run-tests', {
+      type: 'deterministic',
+      dependsOn: ['write-tests'],
+      command: 'npx vitest run test/parser.test.ts',
+      failOnError: true,
+    })
+
+    .run({ cwd: process.cwd() });
+
+  console.log('Status:', result.status);
+  if (result.status !== 'completed') process.exit(1);
+}
+
+main().catch((e) => { console.error(e); process.exit(1); });
+```
+
+Run it:
+
+```bash
+agent-relay run workflows/add-tests-to-parser.ts
+```
+
+See also:
+
+- [Quickstart](/docs/workflows-quickstart) — walks through a working example end-to-end.
+- [Builder API reference](/docs/reference-workflows) — every method on `workflow()`.
+- [Patterns](/docs/workflows-patterns) — 80-to-100, lead+workers, test-fix-rerun, cross-repo.
+- [Setup helpers](/docs/workflows-setup-helpers) — `applySageRepoSetup`, `applySiblingLinks`, repo-setup conventions.
+- [Common mistakes](/docs/workflows-common-mistakes) — the bugs every workflow author hits once.
+- [Run from CLI](/docs/cli-workflows) — the `agent-relay run` command, dry-runs, resumes.
+
+## Two-minute concept guide
+
+**Patterns.** `dag` (default), `fan-out`, `pipeline`, `hub-spoke`, `supervisor`, `debate`, and a dozen more. Pick based on how work flows between agents. See [Patterns](/docs/workflows-patterns).
+
+**Verification gates.** Every step can declare `verification: { type: 'exit_code' }` / `file_exists` / `output_contains`. The runner won't mark a step complete without the gate passing. Use `exit_code` for code-editing steps; use `file_exists` for creation steps.
+
+**Step output chaining.** `{{steps.<name>.output}}` in a downstream task injects the upstream step's stdout. Works great for deterministic steps; fragile for interactive agents (their output has ANSI/spinner noise).
+
+**Completion signals.** Steps complete through a multi-signal pipeline: verification gate → `OWNER_DECISION` → evidence + clean exit → marker fast-path → process-exit fallback. You describe the deliverable; you don't have to add sentinels.
+
+**Cloud execution.** Submit the same workflow file to `agent-relay cloud` to run it in a Daytona sandbox. Files get committed + pushed; PRs open automatically if your master workflow is set up for it. See [Cloud](/docs/cloud).
+
+## Next
+
+- Start with the [Quickstart](/docs/workflows-quickstart) for a working example you can run in 5 minutes.
+- Already comfortable? Jump to [Patterns](/docs/workflows-patterns) for canonical multi-agent shapes.
+- Fighting a bug? [Common mistakes](/docs/workflows-common-mistakes) has the usual suspects.

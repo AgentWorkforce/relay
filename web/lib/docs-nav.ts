@@ -1,6 +1,12 @@
 export interface NavItem {
   title: string;
   slug: string;
+  /**
+   * Optional nested items rendered as an indented sub-list beneath this
+   * item. Used to group related pages (e.g. all messaging primitives under
+   * "Message") without creating a separate top-level nav group.
+   */
+  children?: NavItem[];
 }
 
 export interface NavGroup {
@@ -14,28 +20,47 @@ export const docsNav: NavGroup[] = [
     items: [
       { title: 'Introduction', slug: 'introduction' },
       { title: 'Quickstart', slug: 'quickstart' },
+      { title: 'Spawning an agent', slug: 'spawning-an-agent' },
+      { title: 'Event handlers', slug: 'event-handlers' },
     ],
   },
   {
-    title: 'Basics',
+    title: 'Primitives',
     items: [
-      { title: 'Spawning an agent', slug: 'spawning-an-agent' },
-      { title: 'Sending messages', slug: 'sending-messages' },
-      { title: 'Event handlers', slug: 'event-handlers' },
-      { title: 'Channels', slug: 'channels' },
-      { title: 'DMs', slug: 'dms' },
-      { title: 'Threads', slug: 'threads' },
-      { title: 'Emoji reactions', slug: 'emoji-reactions' },
-      { title: 'File sharing', slug: 'file-sharing' },
-      { title: 'Authentication', slug: 'authentication' },
-      { title: 'Permissions', slug: 'permissions' },
-      { title: 'Scheduling', slug: 'scheduling' },
+      {
+        title: 'Message',
+        slug: 'sending-messages',
+        children: [
+          { title: 'Channels', slug: 'channels' },
+          { title: 'DMs', slug: 'dms' },
+          { title: 'Threads', slug: 'threads' },
+          { title: 'Emoji reactions', slug: 'emoji-reactions' },
+        ],
+      },
+      { title: 'File', slug: 'file-sharing' },
+      {
+        title: 'Auth',
+        slug: 'authentication',
+        children: [{ title: 'Permissions', slug: 'permissions' }],
+      },
+      { title: 'Schedule', slug: 'scheduling' },
+    ],
+  },
+  {
+    title: 'Workflows',
+    items: [
+      { title: 'Introduction', slug: 'workflows-introduction' },
+      { title: 'Quickstart', slug: 'workflows-quickstart' },
+      { title: 'Builder API', slug: 'reference-workflows' },
+      { title: 'Patterns', slug: 'workflows-patterns' },
+      { title: 'Setup helpers', slug: 'workflows-setup-helpers' },
+      { title: 'Common mistakes', slug: 'workflows-common-mistakes' },
+      { title: 'Run from CLI', slug: 'cli-workflows' },
     ],
   },
   {
     title: 'Advanced',
     items: [
-      { title: 'Workflows', slug: 'reference-workflows' },
       { title: 'Cloud', slug: 'cloud' },
       { title: 'Workforce', slug: 'workforce' },
     ],
@@ -54,7 +79,6 @@ export const docsNav: NavGroup[] = [
       { title: 'Broker lifecycle', slug: 'cli-broker-lifecycle' },
       { title: 'Agent management', slug: 'cli-agent-management' },
       { title: 'Messaging', slug: 'cli-messaging' },
-      { title: 'Run workflows', slug: 'cli-workflows' },
       { title: 'Cloud commands', slug: 'cli-cloud-commands' },
       { title: 'On the relay', slug: 'cli-on-the-relay' },
       { title: 'CLI reference', slug: 'reference-cli' },
@@ -79,9 +103,19 @@ export const docsNav: NavGroup[] = [
   },
 ];
 
+/** Walk a NavItem tree and collect every slug (root + children). */
+function collectSlugs(items: NavItem[]): string[] {
+  const out: string[] = [];
+  for (const item of items) {
+    out.push(item.slug);
+    if (item.children) out.push(...collectSlugs(item.children));
+  }
+  return out;
+}
+
 /** All doc slugs including hidden pages (for static generation + search) */
 const ALL_SLUGS = [
-  ...docsNav.flatMap((group) => group.items.map((item) => item.slug)),
+  ...docsNav.flatMap((group) => collectSlugs(group.items)),
   // Hidden from nav but still routable
   'communicate',
   'communicate-ai-sdk',
@@ -94,7 +128,6 @@ const ALL_SLUGS = [
   'communicate-crewai',
   'local-mode',
   'reference-openclaw',
-  'reference-workflows',
 ];
 
 /** Flat list of all doc slugs for static generation */

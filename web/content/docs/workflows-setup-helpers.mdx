@@ -1,0 +1,168 @@
+---
+title: 'Setup helpers'
+description: 'Shared setup steps for workflows — branch checkout, install, build, sibling linking. Keep boilerplate out of each workflow file.'
+---
+
+Every workflow that produces code needs roughly the same prelude: checkout a branch, install deps, maybe build a shared package or two. Without a shared helper, the first workflow that adds a new prerequisite (e.g. "build the platform package because its types point at `dist/`") only fixes itself — every other workflow silently misses it.
+
+This page covers two conventions that compose well:
+
+1. **Per-repo setup helper** — one file per consumer repo that adds `setup-branch` + `install-deps` steps.
+2. **`applySiblingLinks`** — the SDK helper that links sibling-repo packages into the workflow's working directory so agents see the real, current interface instead of whatever's on npm.
+
+## Per-repo setup helper
+
+Put shared prelude in `workflows/lib/<repo>-setup.ts`. Every workflow in that repo calls it.
+
+```typescript
+// workflows/lib/my-repo-setup.ts
+export interface MyRepoSetupOptions {
+  branch: string;
+  committerName?: string;
+  extraSetupCommands?: string[];
+  skipWorkspaceBuild?: boolean;
+}
+
+interface StepChain {
+  step: (name: string, cfg: unknown) => StepChain;
+}
+
+export function applyMyRepoSetup<T>(wf: T, opts: MyRepoSetupOptions): T {
+  const committerName = opts.committerName ?? 'My Workflow Bot';
+  const setupBranchCommand = [
+    'set -e',
+    'git config user.email "agent@my-org.local"',
+    `git config user.name ${JSON.stringify(committerName)}`,
+    `git checkout -B ${opts.branch}`,
+    ...(opts.extraSetupCommands ?? []),
+  ].join(' && ');
+
+  const installCommand = opts.skipWorkspaceBuild
+    ? 'npm install --legacy-peer-deps --no-audit --no-fund 2>&1 | tail -10'
+    : [
+        'npm install --legacy-peer-deps --no-audit --no-fund 2>&1 | tail -10',
+        'npm run build --workspaces --if-present 2>&1 | tail -20',
+      ].join(' && ');
+
+  const chain = wf as unknown as StepChain;
+  chain
+    .step('setup-branch', {
+      type: 'deterministic',
+      command: setupBranchCommand,
+      captureOutput: true,
+      failOnError: true,
+    })
+    .step('install-deps', {
+      type: 'deterministic',
+      dependsOn: ['setup-branch'],
+      command: installCommand,
+      captureOutput: true,
+      failOnError: true,
+    });
+
+  return wf;
+}
+```
+
+Usage:
+
+```typescript
+import { workflow } from '@agent-relay/sdk/workflows';
+import { applyMyRepoSetup } from './lib/my-repo-setup';
+
+const baseWf = workflow(NAME)
+  .description('...')
+  .pattern('dag')
+  .agent('impl', { ... });
+
+const wf = applyMyRepoSetup(baseWf, {
+  branch: 'feat/my-change',
+  committerName: 'Feature X Bot',
+});
+
+await wf
+  .step('read-spec', { type: 'deterministic', dependsOn: ['install-deps'], ... })
+  // ... rest of the workflow
+  .run({ cwd: process.cwd() });
+```
+
+**Rules:**
+- The helper lives in the **consumer repo**, not the SDK. Different repos have different languages, package managers, build graphs.
+- Pre-build any workspace package whose `package.json` `main`/`types` point at a generated `dist/`. Fresh sandboxes don't have that `dist/` yet; agents will invent workarounds (e.g. `external-modules.d.ts` shims) rather than run the build.
+- Every install step includes `--legacy-peer-deps --no-audit --no-fund 2>&1 | tail -10` (or equivalent) because full install output blows past `captureOutput` size limits.
+
+## `applySiblingLinks`
+
+Ships as part of `@agent-relay/sdk/workflows`. Adds one deterministic step that links sibling-repo packages into the workflow's working directory so agents see the real, head-of-main interface — not whatever `npm install` resolved.
+
+**Problem it solves:** a workflow consumes `@my-org/some-package`. The producer repo has new exports on its `main` branch that aren't published to npm yet. Without linking, agents writing workflow code hit `has no exported member 'newThing'` and — rather than stop — reach for `declare module` augmentations or fallback implementations. The workflow ships code that can't integrate with the real package once it publishes.
+
+```typescript
+import { workflow, applySiblingLinks } from '@agent-relay/sdk/workflows';
+
+const baseWf = workflow('my-feature').pattern('dag').agent('impl', { ... });
+
+const wf = applySiblingLinks(baseWf, {
+  dependsOn: ['install-deps'],
+  links: [
+    {
+      name: '@my-org/some-package',
+      path: '../some-repo/packages/some-package',
+      expect: ['newThing', 'anotherThing'],
+    },
+    {
+      name: 'my_python_pkg',
+      path: '../py-repo/src/my_python_pkg',
+      expect: ['classify_signal'],
+    },
+  ],
+});
+```
+
+**Auto-detect by manifest:**
+
+| Manifest in sibling | Mechanism |
+|---|---|
+| `package.json` | `npm link` (symlinks into `node_modules` — committed files untouched) |
+| `pyproject.toml` / `setup.py` / `setup.cfg` | `uv pip install --system -e` (falls back to `pip` / `pip3`) |
+
+**Fail-fast on:**
+- Missing sibling path.
+- Unknown manifest (none of the supported files present).
+- Link command failure.
+- Missing expected export (post-link smoke test via `node --input-type=module` or `python3 -c`).
+
+The `expect` array is the final guardrail. Even if the link command succeeded, if the real interface doesn't match what the workflow expects, the step fails before any agent writes a line.
+
+### When to use it
+
+Use `applySiblingLinks` whenever your workflow consumes a package that:
+- Lives in a sibling repo (monorepo-of-repos setup).
+- Has changes on its `main` branch that may not be published yet.
+- Your workflow targets head-of-main semantics, not published semantics.
+
+Don't use it for third-party packages (no sibling worktree). Use it for your own org's packages that you're iterating on concurrently.
+
+### Options
+
+| Option | Default | Notes |
+|---|---|---|
+| `links` | (required) | Array of `{name, path, expect?}` |
+| `stepName` | `'setup-sibling-links'` | Name of the emitted step |
+| `dependsOn` | `['install-deps']` | Typically after install so `node_modules` exists |
+
+## Shell rules for setup helpers
+
+Setup helpers emit shell commands. A few hard-won rules from debugging them in Daytona sandboxes:
+
+- **Use `bash -c '...'` (single-quoted) for multi-line scripts.** Daytona's `/bin/sh` is dash, which doesn't support `${PIPESTATUS[0]}`. Bash with single-quoted outer prevents dash from expanding bash-only syntax.
+- **Single-quote values in bash assignments** (`VAR='literal'`, not `VAR="literal"`). Double-quoted strings still expand `$VAR`, `$(cmd)`, and backticks — which is fine for tokens you control but dangerous for user-supplied paths / names.
+- **`set -euo pipefail` at the top.** Fail on unset vars, fail on any pipe stage failure.
+- **`2>&1 | tail -N` on noisy installers.** Full npm/pip output blows past `captureOutput` size limits; tail keeps enough to diagnose.
+
+See the SDK source for [`applySiblingLinks`](https://github.com/AgentWorkforce/relay/blob/main/packages/sdk/src/workflows/sibling-links.ts) for a reference implementation that handles all of these.
+
+## See also
+
+- [Patterns](/docs/workflows-patterns) — how these helpers plug into real workflow shapes.
+- [Common mistakes](/docs/workflows-common-mistakes) — shell-quoting pitfalls, hook-related failures.
