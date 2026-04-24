@@ -4864,7 +4864,9 @@ fn record_thread_history_event(history: &mut VecDeque<Value>, event: Value) {
 /// Uses `crossterm::terminal::size()`, which is cross-platform:
 /// TIOCGWINSZ on unix, GetConsoleScreenBufferInfo on Windows.
 fn get_terminal_size() -> Option<(u16, u16)> {
-    crossterm::terminal::size().ok().map(|(cols, rows)| (rows, cols))
+    crossterm::terminal::size()
+        .ok()
+        .map(|(cols, rows)| (rows, cols))
 }
 
 /// Detect Claude Code auto-suggestion ghost text.
