@@ -134,7 +134,24 @@ You'll see the lead agent post a plan on the workflow channel, the worker implem
 - **`verification`** — gates the step. `file_exists` for creation; `exit_code` for edits; `output_contains` for marker-based checks.
 - **`failOnError: true`** — a failed deterministic step stops the whole workflow.
 
-## 5. Things to try next
+## 5. Run it in the cloud
+
+The same workflow file runs unchanged in a Daytona sandbox:
+
+```bash
+# IMPORTANT: stage the workflow file first. `--sync-code` tarballs
+# tracked + staged files — untracked ones are silently excluded.
+git add workflows/add-greeting.ts
+agent-relay cloud run workflows/add-greeting.ts --sync-code
+
+# ...note the run ID printed, then:
+agent-relay cloud logs <run-id> --follow
+agent-relay cloud sync <run-id>   # pull the produced diff back locally
+```
+
+Almost every cloud run should pass `--sync-code` — it uploads your current worktree as the starting point. Without it, the sandbox starts from `origin/main` and your local changes (including the workflow file you just wrote) are missing. See [Cloud commands → `--sync-code`](/docs/cli-cloud-commands#-sync-code-uploading-your-local-repo).
+
+## 6. Things to try next
 
 - Add a **reviewer step** that reads the diff and posts either `LGTM` or `BLOCKERS:`. Gate the commit behind it.
 - Swap `pattern('dag')` for `pattern('supervisor')` and see the auto-spawned supervisor monitor the workers.

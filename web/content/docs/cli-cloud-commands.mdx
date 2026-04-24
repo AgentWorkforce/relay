@@ -47,6 +47,53 @@ agent-relay cloud sync <run-id>
 - `logs` streams workflow or per-agent output.
 - `sync` downloads the generated patch and applies it locally.
 
+## `--sync-code`: uploading your local repo
+
+`--sync-code` tarballs your current working copy and ships it to the cloud sandbox as the starting point for the run. Without it, the sandbox pulls from the remote tracked branch (whatever's on `origin`) — which means local changes, uncommitted edits, and untracked helper files are missing.
+
+**In almost every case, you want `--sync-code`.** Running a workflow against whatever is on `origin/main` is rarely what you mean; you almost always want to test against the exact state of your worktree.
+
+### What gets uploaded
+
+The tarball is built from `git ls-files` — every **tracked or staged** file in your repo:
+
+- ✅ Files you've committed
+- ✅ Files you've `git add`ed but not committed yet
+- ❌ **Untracked files are silently excluded** — `.gitignore`d or just never-added files will not appear in the sandbox
+
+This catches new workflow authors regularly. If you just created `workflows/my-new.ts` and didn't `git add` it, the cloud sandbox receives nothing at that path and the run fails with "file not found."
+
+**Rule of thumb:** `git add` (or commit) before `agent-relay cloud run --sync-code`. You don't need to push — staged is enough.
+
+### When NOT to use `--sync-code`
+
+Rare but real:
+
+- You want to run exactly what's on `origin/main` (e.g. reproducing a CI failure against a known-good commit).
+- You're running a workflow that explicitly checks out a branch in its `setup-branch` step and doesn't care about local state.
+
+### Typical flow
+
+```bash
+# Edit your workflow locally
+vim workflows/fix-bug.ts
+
+# Stage it (and anything else the workflow needs)
+git add workflows/fix-bug.ts
+
+# Ship the current worktree state to cloud and run
+agent-relay cloud run workflows/fix-bug.ts --sync-code
+# note the run ID printed...
+
+# Stream logs as it runs
+agent-relay cloud logs <run-id> --follow
+
+# When complete, pull the produced diff back into your local worktree
+agent-relay cloud sync <run-id>
+```
+
+See [Workflows → Common mistakes](/docs/workflows-common-mistakes#output-and-exit-codes) for the "untracked files silently excluded" pitfall.
+
 ## Inspect a patch before applying it
 
 ```bash

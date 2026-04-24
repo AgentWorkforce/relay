@@ -95,7 +95,17 @@ See also:
 
 **Completion signals.** Steps complete through a multi-signal pipeline: verification gate → `OWNER_DECISION` → evidence + clean exit → marker fast-path → process-exit fallback. You describe the deliverable; you don't have to add sentinels.
 
-**Cloud execution.** Submit the same workflow file to `agent-relay cloud` to run it in a Daytona sandbox. Files get committed + pushed; PRs open automatically if your master workflow is set up for it. See [Cloud](/docs/cloud).
+**Cloud execution.** Submit the same workflow file to `agent-relay cloud` to run it in a Daytona sandbox. Files get committed + pushed; PRs open automatically if your master workflow is set up for it.
+
+```bash
+# Almost always pass --sync-code — without it, the sandbox pulls from
+# origin and your local worktree (including new workflow files you haven't
+# pushed yet) isn't there.
+git add workflows/my-workflow.ts
+agent-relay cloud run workflows/my-workflow.ts --sync-code
+```
+
+The tarball covers every git-tracked or staged file. **Untracked files are silently excluded** — if you forget to `git add` a helper file, the cloud sandbox receives nothing at that path and the run fails "file not found." See [Cloud commands → `--sync-code`](/docs/cli-cloud-commands#-sync-code-uploading-your-local-repo) for the full flow.
 
 ## Next
 
