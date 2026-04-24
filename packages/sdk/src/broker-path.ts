@@ -7,7 +7,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -98,26 +98,48 @@ function getResolutionReferences(): string[] {
  * --no-optional / --omit=optional / --include= omits optional, or when the
  * broker hasn't been published for their platform yet).
  *
- * We iterate every resolution reference (not just the first that resolves)
- * because the CLI's bundledDependencies tree can contain an empty broker
- * package (just a .gitkeep in bin/) alongside a real copy hoisted elsewhere
- * in node_modules — a top-level `optionalDependencies` entry on the CLI
- * produces exactly that layout. Accept the first copy that actually has
- * the binary file.
+ * Walks ancestor `node_modules/` directories in addition to
+ * `require.resolve` hits because the CLI's bundledDependencies tree can
+ * contain an empty broker package (just `bin/.gitkeep`) that shadows a
+ * real copy hoisted in an outer node_modules. That layout happens by
+ * design whenever the CLI declares the broker optional-deps at its own
+ * top level while also bundling the SDK. Node's resolver stops at the
+ * first match, so we probe outer scopes explicitly.
  */
 function getOptionalDepBinaryPath(ext: string): string | null {
   const pkgName = getOptionalDepPackageName();
   const binaryFile = `${BROKER_NAME}${ext}`;
+  const pkgSegments = pkgName.split('/');
+
+  const candidateDirs = new Set<string>();
 
   for (const ref of getResolutionReferences()) {
     try {
       const pkgJsonPath = createRequire(ref).resolve(`${pkgName}/package.json`);
-      const binPath = join(dirname(pkgJsonPath), 'bin', binaryFile);
-      if (existsSync(binPath)) return binPath;
+      candidateDirs.add(dirname(pkgJsonPath));
     } catch {
       // Try the next reference.
     }
   }
+
+  // For each seed, also add the same package at every shallower
+  // node_modules boundary along its path.
+  for (const seed of Array.from(candidateDirs)) {
+    const parts = seed.split(sep);
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if (parts[i] === 'node_modules') {
+        const outerScope = parts.slice(0, i).join(sep);
+        if (!outerScope) continue;
+        candidateDirs.add(join(outerScope, 'node_modules', ...pkgSegments));
+      }
+    }
+  }
+
+  for (const dir of candidateDirs) {
+    const binPath = join(dir, 'bin', binaryFile);
+    if (existsSync(binPath)) return binPath;
+  }
+
   return null;
 }
 

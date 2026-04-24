@@ -225,9 +225,11 @@ fi
 # ============================================
 # The broker is delivered as a platform-specific optional dependency
 # (@agent-relay/broker-<platform>-<arch>). getBrokerBinaryPath() is the
-# canonical way clients locate it at runtime.
+# canonical way clients locate it at runtime. Run from inside the
+# installed agent-relay package so the bundled SDK is reachable.
 log_header "Test 4: broker binary resolution"
 
+cd "$TEST_PROJECT_DIR/node_modules/agent-relay"
 BROKER_TEST=$(node --input-type=module -e "
 import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
 import { accessSync, constants } from 'node:fs';
@@ -262,6 +264,9 @@ if echo "$BROKER_TEST" | grep -q "BROKER_OK"; then
 else
     record_fail "broker binary resolution failed"
 fi
+
+# Restore cwd for subsequent tests that resolve from $TEST_PROJECT_DIR.
+cd "$TEST_PROJECT_DIR"
 
 # ============================================
 # Test 5: SDK exports

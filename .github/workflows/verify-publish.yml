@@ -184,11 +184,13 @@ jobs:
             exit 1
           fi
 
-      # Test: npx binary resolution (critical for spawn - postinstall doesn't run with npx)
-      # The broker is delivered as a platform-specific optional dependency
-      # (@agent-relay/broker-<platform>-<arch>). Install into a scratch project
-      # and ask the SDK's own resolver where the binary is.
-      - name: 'Test: npx binary resolution'
+      # Test: broker binary resolution after installing agent-relay.
+      # The SDK is bundled inside agent-relay (node_modules/agent-relay/
+      # node_modules/@agent-relay/sdk/), so we run the resolver from the
+      # agent-relay package dir — that's where the SDK actually lives, and
+      # Node's ESM resolver needs to see @agent-relay/sdk in a reachable
+      # node_modules.
+      - name: 'Test: broker binary resolves after npm install agent-relay'
         run: |
           rm -rf ~/.npm/_npx 2>/dev/null || true
           TMP_DIR=$(mktemp -d)
@@ -196,6 +198,7 @@ jobs:
           cd "$TMP_DIR"
           npm init -y --silent >/dev/null
           npm install --no-audit --no-fund "${{ steps.pkg.outputs.spec }}"
+          cd "$TMP_DIR/node_modules/agent-relay"
           node --input-type=module -e "
             import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
             import { accessSync, constants } from 'node:fs';
@@ -247,10 +250,11 @@ jobs:
       # Test 4: Broker binary resolution via SDK resolver.
       # The broker ships as a platform-specific optional-dep package
       # (@agent-relay/broker-<platform>-<arch>); getBrokerBinaryPath()
-      # is the canonical way clients find it.
+      # is the canonical way clients find it. Run from inside the
+      # installed agent-relay package so the bundled SDK is reachable.
       - name: 'Test: broker binary resolves and runs'
         run: |
-          cd /tmp/test-project
+          cd /tmp/test-project/node_modules/agent-relay
           node --input-type=module -e "
             import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
             import { accessSync, constants } from 'node:fs';
@@ -359,10 +363,12 @@ jobs:
       # Broker resolution on macOS arm64. Under the optional-dep model the
       # SDK's resolver finds the binary at
       # node_modules/@agent-relay/broker-darwin-arm64/bin/agent-relay-broker;
-      # running it also exercises macOS code signing end-to-end.
+      # running it also exercises macOS code signing end-to-end. Run from
+      # inside the installed agent-relay package so the bundled SDK is
+      # reachable.
       - name: 'Test: broker binary resolves and runs (macOS arm64)'
         run: |
-          cd /tmp/test-project
+          cd /tmp/test-project/node_modules/agent-relay
           node --input-type=module -e "
             import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
             import { accessSync, constants } from 'node:fs';
