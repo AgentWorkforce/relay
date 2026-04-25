@@ -161,7 +161,9 @@ jobs:
             console.log('expected package:', expected);
             console.log('resolved:', p);
             if (!p) { console.error('FAIL: resolver returned null'); process.exit(1); }
-            if (!p.includes(expected)) {
+            // Normalize Windows backslashes so the includes() check matches
+            // on every platform.
+            if (!p.replace(/\\\\/g, '/').includes(expected)) {
               console.error('FAIL: resolution did not go through the optional-dep package; got', p);
               process.exit(1);
             }

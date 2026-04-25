@@ -91,17 +91,6 @@ function getResolutionReferences(): string[] {
   return refs;
 }
 
-function requireResolveFromRefs(specifier: string): string | null {
-  for (const ref of getResolutionReferences()) {
-    try {
-      return createRequire(ref).resolve(specifier);
-    } catch {
-      // Try the next reference.
-    }
-  }
-  return null;
-}
-
 /**
  * Resolve the broker binary via the platform-specific optional-dependency
  * package (`@agent-relay/broker-<platform>-<arch>`). Returns null when the
@@ -113,11 +102,16 @@ function getOptionalDepBinaryPath(ext: string): string | null {
   const pkgName = getOptionalDepPackageName();
   const binaryFile = `${BROKER_NAME}${ext}`;
 
-  const pkgJsonPath = requireResolveFromRefs(`${pkgName}/package.json`);
-  if (!pkgJsonPath) return null;
-
-  const binPath = join(dirname(pkgJsonPath), 'bin', binaryFile);
-  return existsSync(binPath) ? binPath : null;
+  for (const ref of getResolutionReferences()) {
+    try {
+      const pkgJsonPath = createRequire(ref).resolve(`${pkgName}/package.json`);
+      const binPath = join(dirname(pkgJsonPath), 'bin', binaryFile);
+      if (existsSync(binPath)) return binPath;
+    } catch {
+      // Try the next reference.
+    }
+  }
+  return null;
 }
 
 function getSdkBinDirs(): string[] {
