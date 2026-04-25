@@ -884,6 +884,7 @@ jobs:
           - hooks
           - user-directory
           - config
+          - cloud
           - sdk
           - telemetry
           - acp-bridge
