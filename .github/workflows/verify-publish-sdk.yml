@@ -48,9 +48,10 @@ jobs:
           - platform: darwin-arm64
             os: macos-14
             expected_pkg: '@agent-relay/broker-darwin-arm64'
-          - platform: darwin-x64
-            os: macos-13
-            expected_pkg: '@agent-relay/broker-darwin-x64'
+          # darwin-x64 verify is intentionally omitted: GitHub's macos-13
+          # (Intel) runner pool is capacity-constrained and routinely queues
+          # for hours. Mirrors the same omission in publish.yml's
+          # smoke-broker-packages matrix.
           - platform: linux-x64
             os: ubuntu-latest
             expected_pkg: '@agent-relay/broker-linux-x64'
