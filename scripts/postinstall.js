@@ -563,16 +563,7 @@ function patchRelayauthCoreExports() {
   }
 }
 
-function logPostinstallDiagnostics(sqliteStatus, linkResult) {
-  // Workspace packages status (for global installs)
-  if (linkResult && linkResult.needed) {
-    if (linkResult.success) {
-      console.log(`✓ Workspace packages linked (${linkResult.linked} packages)`);
-    } else {
-      console.log('⚠ Workspace package linking failed - CLI may not work');
-    }
-  }
-
+function logPostinstallDiagnostics(sqliteStatus) {
   if (sqliteStatus.ok && sqliteStatus.driver === 'better-sqlite3') {
     console.log('✓ SQLite ready (better-sqlite3)');
   } else if (sqliteStatus.ok && sqliteStatus.driver === 'node:sqlite') {
@@ -609,7 +600,7 @@ async function main() {
   const hasAcpBinary = await installRelayAcpBinary();
 
   // Always print diagnostics (even in CI)
-  logPostinstallDiagnostics(sqliteStatus, linkResult);
+  logPostinstallDiagnostics(sqliteStatus);
 
   if (hasDashboardBinary) {
     console.log('✓ dashboard-server binary installed');
