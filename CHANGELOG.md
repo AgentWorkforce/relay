@@ -36,6 +36,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
+## [6.0.1] - 2026-04-25
+
+### Product Perspective
+#### Breaking Changes
+- **Drop legacy agent-relay/broker* exports and shipped workspace dirs**
+
+#### User-Facing Features & Improvements
+- **Restore agent-relay/* subpath exports via shim re-exports**
+
+#### User-Impacting Fixes
+- Drop dead linkResult reference
+- Allow shipped workspace packages declared as regular deps
+- Unbundle @agent-relay/* to restore optional-dep broker resolution
+- Walk ancestor node_modules for shadowed broker packages
+- Install broker optional-deps for CLI users
+
+### Technical Perspective
+#### Performance & Reliability
+- Fix stale broker checks and PyPI retry
+
+#### Releases
+- v6.0.1
+
+---
+
 ## [6.0.0] - 2026-04-24
 
 ### Product Perspective
