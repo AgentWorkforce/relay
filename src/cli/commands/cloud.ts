@@ -581,9 +581,13 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         return;
       }
 
+      if (typeof result.patch !== 'string' || !result.patch) {
+        throw new Error('Server reported changes but returned no patch data. The response may be malformed.');
+      }
+
       if (options.dryRun) {
         deps.log('\n--- Patch (dry run) ---');
-        process.stdout.write(result.patch ?? '');
+        process.stdout.write(result.patch);
         deps.log('\n--- End patch ---');
         return;
       }
@@ -591,7 +595,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       const { execSync } = await import('node:child_process');
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-sync-'));
       const tmpPatch = path.join(tmpDir, 'changes.patch');
-      fs.writeFileSync(tmpPatch, result.patch ?? '', { mode: 0o600 });
+      fs.writeFileSync(tmpPatch, result.patch, { mode: 0o600 });
 
       try {
         const stat = execSync(`git apply --stat "${tmpPatch}"`, {
