@@ -431,11 +431,25 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
     .option('--sync-code', 'Upload the current working directory before running')
     .option('--no-sync-code', 'Skip uploading the current working directory')
+    .option('--resume <runId>', 'Resume a previously failed cloud workflow run from where it left off')
+    .option('--start-from <step>', 'Start from a specific step in cloud and skip predecessor steps')
+    .option(
+      '--previous-run-id <runId>',
+      'Use cached outputs from a previous cloud run when starting from a step'
+    )
     .option('--json', 'Print raw JSON response', false)
     .action(
       async (
         workflow: string,
-        options: { apiUrl?: string; fileType?: WorkflowFileType; syncCode?: boolean; json?: boolean }
+        options: {
+          apiUrl?: string;
+          fileType?: WorkflowFileType;
+          syncCode?: boolean;
+          resume?: string;
+          startFrom?: string;
+          previousRunId?: string;
+          json?: boolean;
+        }
       ) => {
         const started = Date.now();
         let success = false;
@@ -565,6 +579,10 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       if (!result.hasChanges) {
         deps.log('No changes to sync — the workflow did not modify any files.');
         return;
+      }
+
+      if (typeof result.patch !== 'string' || !result.patch) {
+        throw new Error('Server reported changes but returned no patch data. The response may be malformed.');
       }
 
       if (options.dryRun) {
