@@ -60,6 +60,10 @@ describe('registerCloudCommands', () => {
 
     expect(run).toBeDefined();
     expect(run?.description()).toContain('workflow run');
+    const optionNames = run?.options.map((option) => option.long);
+    expect(optionNames).toContain('--resume');
+    expect(optionNames).toContain('--start-from');
+    expect(optionNames).toContain('--previous-run-id');
   });
 
   it('status requires a runId argument', () => {

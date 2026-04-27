@@ -53,6 +53,9 @@ export type RunWorkflowOptions = {
   apiUrl?: string;
   fileType?: WorkflowFileType;
   syncCode?: boolean;
+  resume?: string;
+  startFrom?: string;
+  previousRunId?: string;
 };
 
 export type RunWorkflowResponse = {

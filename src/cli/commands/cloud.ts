@@ -431,11 +431,25 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
     .option('--sync-code', 'Upload the current working directory before running')
     .option('--no-sync-code', 'Skip uploading the current working directory')
+    .option('--resume <runId>', 'Resume a previously failed cloud workflow run from where it left off')
+    .option('--start-from <step>', 'Start from a specific step in cloud and skip predecessor steps')
+    .option(
+      '--previous-run-id <runId>',
+      'Use cached outputs from a previous cloud run when starting from a step'
+    )
     .option('--json', 'Print raw JSON response', false)
     .action(
       async (
         workflow: string,
-        options: { apiUrl?: string; fileType?: WorkflowFileType; syncCode?: boolean; json?: boolean }
+        options: {
+          apiUrl?: string;
+          fileType?: WorkflowFileType;
+          syncCode?: boolean;
+          resume?: string;
+          startFrom?: string;
+          previousRunId?: string;
+          json?: boolean;
+        }
       ) => {
         const started = Date.now();
         let success = false;
@@ -569,7 +583,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
 
       if (options.dryRun) {
         deps.log('\n--- Patch (dry run) ---');
-        process.stdout.write(result.patch);
+        process.stdout.write(result.patch ?? '');
         deps.log('\n--- End patch ---');
         return;
       }
@@ -577,7 +591,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       const { execSync } = await import('node:child_process');
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-sync-'));
       const tmpPatch = path.join(tmpDir, 'changes.patch');
-      fs.writeFileSync(tmpPatch, result.patch, { mode: 0o600 });
+      fs.writeFileSync(tmpPatch, result.patch ?? '', { mode: 0o600 });
 
       try {
         const stat = execSync(`git apply --stat "${tmpPatch}"`, {
