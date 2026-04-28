@@ -1,0 +1,190 @@
+name: Verify Published SDK (Cross-Platform)
+
+# Clean-room verification that @agent-relay/sdk — freshly installed from the
+# public registry on each target OS/arch — pulls in the correct
+# @agent-relay/broker-<platform>-<arch> optional dep and actually spawns a
+# broker end-to-end. This is the last line of defense for the optional-dep
+# pattern: pre-publish the smoke-broker-packages job exercises the logic via
+# locally-packed tarballs, but it cannot catch registry round-trip bugs
+# (wrong os/cpu manifest, selection logic, CDN propagation).
+#
+# Triggered:
+#   - Automatically after the publish workflow completes (via workflow_call)
+#   - Manually via workflow_dispatch (useful for re-verifying an existing
+#     version, e.g. after a registry flake or to check propagation).
+#
+# Not wired to pull_request: the workflow installs from the public registry,
+# which means it can only verify versions that have already shipped. For
+# pre-publish validation of this logic, use the smoke-broker-packages job in
+# publish.yml — it runs the same assertions against locally-packed tarballs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'SDK version to verify (default: latest)'
+        required: false
+        type: string
+        default: 'latest'
+  workflow_call:
+    inputs:
+      version:
+        description: 'SDK version to verify'
+        required: false
+        type: string
+        default: 'latest'
+
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
+jobs:
+  verify-sdk:
+    name: Verify @agent-relay/sdk (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            os: macos-14
+            expected_pkg: '@agent-relay/broker-darwin-arm64'
+          # darwin-x64 verify is intentionally omitted: GitHub's macos-13
+          # (Intel) runner pool is capacity-constrained and routinely queues
+          # for hours. Mirrors the same omission in publish.yml's
+          # smoke-broker-packages matrix.
+          - platform: linux-x64
+            os: ubuntu-latest
+            expected_pkg: '@agent-relay/broker-linux-x64'
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+            expected_pkg: '@agent-relay/broker-linux-arm64'
+          - platform: win32-x64
+            os: windows-latest
+            expected_pkg: '@agent-relay/broker-win32-x64'
+
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+
+      - name: Resolve version spec
+        id: spec
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="latest"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "spec=@agent-relay/sdk@$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Using spec: @agent-relay/sdk@$VERSION"
+
+      # Registry/CDN propagation can lag the publish by up to a minute. Retry
+      # with exponential backoff so the first run after publish doesn't miss.
+      - name: Wait for package on registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          SPEC="${{ steps.spec.outputs.spec }}"
+          VERSION="${{ steps.spec.outputs.version }}"
+          if [ "$VERSION" = "latest" ]; then
+            echo "version=latest — no wait needed"
+            exit 0
+          fi
+          for i in 1 2 3 4 5 6; do
+            if npm view "$SPEC" version >/dev/null 2>&1; then
+              echo "registry has $SPEC"
+              exit 0
+            fi
+            WAIT=$((2 ** i))
+            echo "attempt $i: registry not ready, sleeping ${WAIT}s"
+            sleep "$WAIT"
+          done
+          echo "FAIL: registry never surfaced $SPEC"
+          exit 1
+
+      - name: Install @agent-relay/sdk into scratch project
+        shell: bash
+        run: |
+          set -euo pipefail
+          SCRATCH="$RUNNER_TEMP/verify-sdk"
+          mkdir -p "$SCRATCH"
+          echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
+          cd "$SCRATCH"
+          npm init -y --silent >/dev/null
+          echo "Installing ${{ steps.spec.outputs.spec }}"
+          npm install --no-audit --no-fund "${{ steps.spec.outputs.spec }}"
+          echo ""
+          echo "=== installed @agent-relay/ packages ==="
+          ls node_modules/@agent-relay/
+
+      - name: Verify only the matching broker package was installed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SCRATCH"
+          EXPECTED="${{ matrix.expected_pkg }}"
+          if [ ! -d "node_modules/$EXPECTED" ]; then
+            echo "FAIL: expected optional dep $EXPECTED was not installed"
+            echo "installed @agent-relay/ packages:"
+            ls node_modules/@agent-relay/ 2>&1 || true
+            exit 1
+          fi
+          echo "OK: $EXPECTED present in node_modules"
+
+          # npm should skip every sibling whose os/cpu doesn't match this
+          # runner. Catch a missing os/cpu constraint by asserting the
+          # unmatched packages were NOT installed.
+          for pkg in \
+            @agent-relay/broker-darwin-arm64 \
+            @agent-relay/broker-darwin-x64 \
+            @agent-relay/broker-linux-arm64 \
+            @agent-relay/broker-linux-x64 \
+            @agent-relay/broker-win32-x64; do
+            if [ "$pkg" != "$EXPECTED" ] && [ -d "node_modules/$pkg" ]; then
+              echo "FAIL: sibling optional dep $pkg was installed on ${{ matrix.platform }}"
+              echo "npm should skip it based on os/cpu — published manifest may be missing constraints"
+              exit 1
+            fi
+          done
+          echo "OK: only ${{ matrix.expected_pkg }} was installed; siblings correctly skipped"
+
+      - name: Resolver smoke — getBrokerBinaryPath()
+        shell: bash
+        run: |
+          cd "$SCRATCH"
+          node --input-type=module -e "
+            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+            import { accessSync, constants } from 'node:fs';
+            const expected = getOptionalDepPackageName();
+            const p = getBrokerBinaryPath();
+            console.log('expected package:', expected);
+            console.log('resolved:', p);
+            if (!p) { console.error('FAIL: resolver returned null'); process.exit(1); }
+            // Normalize Windows backslashes so the includes() check matches
+            // on every platform.
+            if (!p.replace(/\\\\/g, '/').includes(expected)) {
+              console.error('FAIL: resolution did not go through the optional-dep package; got', p);
+              process.exit(1);
+            }
+            accessSync(p, constants.X_OK);
+            console.log('OK: resolver returned executable binary from optional-dep package');
+          "
+
+      - name: Spawn smoke — AgentRelayClient.spawn()
+        shell: bash
+        run: |
+          cd "$SCRATCH"
+          node --input-type=module -e "
+            import { AgentRelayClient } from '@agent-relay/sdk';
+            const client = await AgentRelayClient.spawn({
+              cwd: process.cwd(),
+              channels: ['general'],
+              startupTimeoutMs: 45000,
+              onStderr: (line) => console.error('[broker]', line),
+            });
+            console.log('OK: AgentRelayClient.spawn() returned');
+            await client.shutdown();
+            console.log('OK: client.shutdown() completed');
+          "

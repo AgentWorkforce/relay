@@ -38,6 +38,9 @@ type RunWorkflowOptions = {
   apiUrl?: string;
   fileType?: WorkflowFileType;
   syncCode?: boolean;
+  resume?: string;
+  startFrom?: string;
+  previousRunId?: string;
 };
 
 const CODE_SYNC_EXCLUDES = [
@@ -209,6 +212,15 @@ export async function runWorkflow(
     workflow: input.workflow,
     fileType: input.fileType,
   };
+  if (options.resume) {
+    requestBody.resume = options.resume;
+  }
+  if (options.startFrom) {
+    requestBody.startFrom = options.startFrom;
+  }
+  if (options.previousRunId) {
+    requestBody.previousRunId = options.previousRunId;
+  }
   if (input.sourceFileType) {
     requestBody.sourceFileType = input.sourceFileType;
   }

@@ -11,16 +11,17 @@ const nextConfig = {
   outputFileTracingIncludes: {
     '/*': ['content/docs/**/*', 'content/blog/**/*', '../packages/openclaw/skill/SKILL.md'],
   },
-  async rewrites() {
+  async redirects() {
     return [
-      { source: '/relayfile', destination: '/file' },
-      { source: '/relayfile/:path*', destination: '/file/:path*' },
-      { source: '/relayauth', destination: '/auth' },
-      { source: '/relayauth/:path*', destination: '/auth/:path*' },
-      { source: '/relaycast', destination: '/message' },
-      { source: '/relaycast/:path*', destination: '/message/:path*' },
-      { source: '/docs/reference-sdk', destination: '/docs/typescript-sdk' },
-      { source: '/docs/reference-sdk-py', destination: '/docs/python-sdk' },
+      { source: '/quickstart', destination: '/docs/quickstart', permanent: true },
+      { source: '/relayfile', destination: '/primitives#file', permanent: true },
+      { source: '/relayfile/:path*', destination: '/primitives#file', permanent: true },
+      { source: '/relayauth', destination: '/primitives#auth', permanent: true },
+      { source: '/relayauth/:path*', destination: '/primitives#auth', permanent: true },
+      { source: '/relaycast', destination: '/primitives#message', permanent: true },
+      { source: '/relaycast/:path*', destination: '/primitives#message', permanent: true },
+      { source: '/docs/reference-sdk', destination: '/docs/typescript-sdk', permanent: true },
+      { source: '/docs/reference-sdk-py', destination: '/docs/python-sdk', permanent: true },
     ];
   },
 };

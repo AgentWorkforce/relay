@@ -1,34 +1,15 @@
 {
   "name": "agent-relay",
-  "version": "5.0.0",
+  "version": "6.0.2",
   "description": "Real-time agent-to-agent communication system",
   "type": "module",
   "main": "dist/index.cjs",
   "types": "dist/src/index.d.ts",
   "files": [
     "dist",
-    "bin",
     "install.sh",
     "scripts/postinstall.js",
     "scripts/build-cjs.mjs",
-    "packages/cloud/dist",
-    "packages/cloud/package.json",
-    "packages/config/dist",
-    "packages/config/package.json",
-    "packages/hooks/dist",
-    "packages/hooks/package.json",
-    "packages/sdk/bin",
-    "packages/sdk/dist",
-    "packages/sdk/package.json",
-    "packages/sdk/README.md",
-    "packages/telemetry/dist",
-    "packages/telemetry/package.json",
-    "packages/trajectory/dist",
-    "packages/trajectory/package.json",
-    "packages/user-directory/dist",
-    "packages/user-directory/package.json",
-    "packages/utils/dist",
-    "packages/utils/package.json",
     "relay-snippets",
     "LICENSE",
     "README.md"
@@ -40,47 +21,7 @@
       "import": "./dist/src/index.js",
       "default": "./dist/index.cjs"
     },
-    "./package.json": "./package.json",
-    "./broker": {
-      "types": "./packages/sdk/dist/index.d.ts",
-      "import": "./packages/sdk/dist/index.js",
-      "default": "./packages/sdk/dist/index.js"
-    },
-    "./broker/client": {
-      "types": "./packages/sdk/dist/client.d.ts",
-      "import": "./packages/sdk/dist/client.js",
-      "default": "./packages/sdk/dist/client.js"
-    },
-    "./broker/protocol": {
-      "types": "./packages/sdk/dist/protocol.d.ts",
-      "import": "./packages/sdk/dist/protocol.js",
-      "default": "./packages/sdk/dist/protocol.js"
-    },
-    "./broker/relay": {
-      "types": "./packages/sdk/dist/relay.d.ts",
-      "import": "./packages/sdk/dist/relay.js",
-      "default": "./packages/sdk/dist/relay.js"
-    },
-    "./broker/logs": {
-      "types": "./packages/sdk/dist/logs.d.ts",
-      "import": "./packages/sdk/dist/logs.js",
-      "default": "./packages/sdk/dist/logs.js"
-    },
-    "./broker/consensus": {
-      "types": "./packages/sdk/dist/consensus.d.ts",
-      "import": "./packages/sdk/dist/consensus.js",
-      "default": "./packages/sdk/dist/consensus.js"
-    },
-    "./broker/shadow": {
-      "types": "./packages/sdk/dist/shadow.d.ts",
-      "import": "./packages/sdk/dist/shadow.js",
-      "default": "./packages/sdk/dist/shadow.js"
-    },
-    "./broker/browser": {
-      "types": "./packages/sdk/dist/browser.d.ts",
-      "import": "./packages/sdk/dist/browser.js",
-      "default": "./packages/sdk/dist/browser.js"
-    }
+    "./package.json": "./package.json"
   },
   "bin": {
     "agent-relay": "dist/src/cli/index.js"
@@ -90,14 +31,6 @@
     "web"
   ],
   "bundledDependencies": [
-    "@agent-relay/cloud",
-    "@agent-relay/config",
-    "@agent-relay/hooks",
-    "@agent-relay/sdk",
-    "@agent-relay/telemetry",
-    "@agent-relay/trajectory",
-    "@agent-relay/user-directory",
-    "@agent-relay/utils",
     "@relaycast/sdk",
     "@relayfile/local-mount"
   ],
@@ -197,14 +130,14 @@
   },
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "dependencies": {
-    "@agent-relay/cloud": "5.0.0",
-    "@agent-relay/config": "5.0.0",
-    "@agent-relay/hooks": "5.0.0",
-    "@agent-relay/sdk": "5.0.0",
-    "@agent-relay/telemetry": "5.0.0",
-    "@agent-relay/trajectory": "5.0.0",
-    "@agent-relay/user-directory": "5.0.0",
-    "@agent-relay/utils": "5.0.0",
+    "@agent-relay/cloud": "6.0.2",
+    "@agent-relay/config": "6.0.2",
+    "@agent-relay/hooks": "6.0.2",
+    "@agent-relay/sdk": "6.0.2",
+    "@agent-relay/telemetry": "6.0.2",
+    "@agent-relay/trajectory": "6.0.2",
+    "@agent-relay/user-directory": "6.0.2",
+    "@agent-relay/utils": "6.0.2",
     "@aws-sdk/client-s3": "3.1020.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@relayauth/core": "^0.1.2",
@@ -271,17 +204,5 @@
     "flatted": "^3.4.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
-  },
-  "bundleDependencies": [
-    "@agent-relay/cloud",
-    "@agent-relay/config",
-    "@agent-relay/hooks",
-    "@agent-relay/sdk",
-    "@agent-relay/telemetry",
-    "@agent-relay/trajectory",
-    "@agent-relay/user-directory",
-    "@agent-relay/utils",
-    "@relaycast/sdk",
-    "@relayfile/local-mount"
-  ]
+  }
 }

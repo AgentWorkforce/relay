@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/user-directory",
-  "version": "5.0.0",
+  "version": "6.0.2",
   "description": "User directory service for agent-relay (per-user credential storage)",
   "type": "module",
   "main": "dist/index.js",
@@ -22,7 +22,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/utils": "5.0.0"
+    "@agent-relay/utils": "6.0.2"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

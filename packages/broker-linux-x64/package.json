@@ -1,0 +1,17 @@
+{
+  "name": "@agent-relay/broker-linux-x64",
+  "version": "6.0.2",
+  "description": "agent-relay-broker binary for linux x64. Installed automatically as an optional dependency of @agent-relay/sdk.",
+  "files": [
+    "bin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/broker-linux-x64"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}
