@@ -1,0 +1,393 @@
+version: '1.0'
+name: implement-acp-runtime
+description: >
+  Implements a functional ACP runtime in the relay SDK so ACP can be tested
+  as a viable alternative to PTY for agent management.
+
+  Produces working code — not stubs. After running, `runtime: 'acp'` in a
+  workflow YAML will spawn an ACP adapter process, send session/new, deliver
+  relay messages via session/prompt at turn boundaries, and stream
+  acp_turn_update events back to the broker.
+
+  3 phases, maxConcurrency 4:
+    Phase 1: Context reads (deterministic)
+    Phase 2: Implementation (2 waves — types first, then runner/client)
+    Phase 3: Typecheck → review → fix → final typecheck
+
+swarm:
+  pattern: dag
+  maxConcurrency: 4
+  timeoutMs: 7200000
+  channel: wf-impl-acp
+  idleNudge:
+    nudgeAfterMs: 300000
+    escalateAfterMs: 180000
+    maxNudges: 2
+
+agents:
+  # Wave A: protocol + workflow types (independent files, parallel)
+  - name: protocol-worker
+    cli: claude
+    preset: worker
+    role: 'Adds ACP types to protocol.ts'
+    constraints:
+      model: sonnet
+
+  - name: wf-types-worker
+    cli: claude
+    preset: worker
+    role: 'Adds runtime field to types.ts and builder.ts'
+    constraints:
+      model: sonnet
+
+  # Wave B: runner + client (depend on types, parallel with each other)
+  - name: runner-worker
+    cli: claude
+    preset: worker
+    role: 'Implements resolveRuntime, ACP_ADAPTERS, and spawnAcp in runner.ts'
+    constraints:
+      model: sonnet
+
+  - name: client-worker
+    cli: claude
+    preset: worker
+    role: 'Adds spawnAcp method to client.ts'
+    constraints:
+      model: sonnet
+
+  # Phase 3: review + fix
+  - name: reviewer
+    cli: claude
+    preset: reviewer
+    role: 'Reviews ACP implementation for spec compliance and completeness'
+    constraints:
+      model: sonnet
+
+  - name: fixer
+    cli: claude
+    preset: worker
+    role: 'Fixes type errors and test failures'
+    constraints:
+      model: sonnet
+
+workflows:
+  - name: default
+    steps:
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 1: Context Gathering (deterministic reads)
+      # ════════════════════════════════════════════════════════════════════════
+
+      - name: read-spec
+        type: deterministic
+        command: cat docs/adr/acp-runtime-spec.md
+        captureOutput: true
+
+      - name: read-protocol
+        type: deterministic
+        command: cat packages/sdk/src/protocol.ts
+        captureOutput: true
+
+      - name: read-types
+        type: deterministic
+        command: cat packages/sdk/src/workflows/types.ts
+        captureOutput: true
+
+      - name: read-builder
+        type: deterministic
+        command: cat packages/sdk/src/workflows/builder.ts
+        captureOutput: true
+
+      - name: read-client
+        type: deterministic
+        command: cat packages/sdk/src/client.ts
+        captureOutput: true
+
+      - name: read-acp-bridge
+        type: deterministic
+        command: cat packages/acp-bridge/src/acp-agent.ts
+        captureOutput: true
+
+      - name: read-runner-spawn
+        type: deterministic
+        command: |
+          # spawnAndWait + execNonInteractive (the two execution paths)
+          grep -n "private async spawnAndWait\|private async execNonInteractive\|private static readonly HUB_PATTERNS\|private static readonly HUB_ROLES" packages/sdk/src/workflows/runner.ts
+          echo "--- SECTION: spawnAndWait first 120 lines ---"
+          sed -n '/private async spawnAndWait/,+120p' packages/sdk/src/workflows/runner.ts
+          echo "--- SECTION: execNonInteractive first 60 lines ---"
+          sed -n '/private async execNonInteractive/,+60p' packages/sdk/src/workflows/runner.ts
+          echo "--- SECTION: imports ---"
+          head -60 packages/sdk/src/workflows/runner.ts
+          echo "--- SECTION: HUB_PATTERNS + HUB_ROLES ---"
+          grep -A5 "HUB_PATTERNS\|HUB_ROLES" packages/sdk/src/workflows/runner.ts | head -30
+          echo "--- SECTION: resolveAgentCwd ---"
+          sed -n '/private resolveAgentCwd/,+20p' packages/sdk/src/workflows/runner.ts
+          echo "--- SECTION: getRelayEnv ---"
+          sed -n '/private getRelayEnv/,+15p' packages/sdk/src/workflows/runner.ts
+          echo "--- SECTION: registerWorker ---"
+          sed -n '/private registerWorker/,+20p' packages/sdk/src/workflows/runner.ts
+          echo "--- SECTION: captureStepTerminalEvidence ---"
+          sed -n '/private captureStepTerminalEvidence/,+15p' packages/sdk/src/workflows/runner.ts
+        captureOutput: true
+
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 2: Implementation
+      # ════════════════════════════════════════════════════════════════════════
+
+      # ── Wave A: protocol.ts + types.ts + builder.ts (parallel) ─────────────
+
+      - name: protocol-impl
+        agent: protocol-worker
+        dependsOn: [read-spec, read-protocol]
+        task: |
+          Edit `packages/sdk/src/protocol.ts` to add ACP runtime support.
+
+          CURRENT FILE:
+          {{steps.read-protocol.output}}
+
+          SPEC (sections 1-2):
+          {{steps.read-spec.output}}
+
+          Changes — preserve ALL existing types, only ADD:
+
+          1. `AgentRuntime` → `'pty' | 'headless' | 'acp'`
+          2. Add `AcpMcpServerConfig` interface (from spec section 1)
+          3. Add ACP fields to `AgentSpec`: `acp_adapter?`, `acp_adapter_args?`, `acp_mcp_servers?`
+          4. Add `AcpStopReason` type
+          5. Add `AcpTurnUpdate` interface
+          6. Add `AcpPermissionRequest` interface
+          7. Add `BrokerToAcpWorker` and `AcpWorkerToBroker` message types
+          8. Add ACP event kinds to `BrokerEvent` union
+          9. Add `permission_response` to `SdkToBroker` union
+
+          Write the file to disk. Do NOT output code to stdout.
+        verification:
+          type: exit_code
+
+      - name: wf-types-impl
+        agent: wf-types-worker
+        dependsOn: [read-spec, read-types, read-builder]
+        task: |
+          Edit TWO files to add ACP runtime fields.
+
+          FILE 1 — packages/sdk/src/workflows/types.ts:
+          {{steps.read-types.output}}
+
+          Add to `AgentDefinition` (after `preset?`):
+            runtime?: 'pty' | 'acp' | 'headless';
+            acpAdapter?: string;
+
+          FILE 2 — packages/sdk/src/workflows/builder.ts:
+          {{steps.read-builder.output}}
+
+          Add to `AgentOptions` (after `preset?`):
+            runtime?: 'pty' | 'acp' | 'headless';
+            acpAdapter?: string;
+
+          Wire through in the `agent()` method body where other fields are mapped.
+
+          Write BOTH files to disk. Preserve ALL existing code.
+        verification:
+          type: exit_code
+
+      # ── Wave A gate ────────────────────────────────────────────────────────
+
+      - name: verify-types
+        type: deterministic
+        dependsOn: [protocol-impl, wf-types-impl]
+        command: |
+          errors=0
+          grep -q "'acp'" packages/sdk/src/protocol.ts || { echo "FAIL: protocol.ts missing 'acp'"; errors=$((errors+1)); }
+          grep -q "AcpTurnUpdate" packages/sdk/src/protocol.ts || { echo "FAIL: missing AcpTurnUpdate"; errors=$((errors+1)); }
+          grep -q "AcpWorkerToBroker" packages/sdk/src/protocol.ts || { echo "FAIL: missing AcpWorkerToBroker"; errors=$((errors+1)); }
+          grep -q "BrokerToAcpWorker" packages/sdk/src/protocol.ts || { echo "FAIL: missing BrokerToAcpWorker"; errors=$((errors+1)); }
+          grep -q "AcpMcpServerConfig" packages/sdk/src/protocol.ts || { echo "FAIL: missing AcpMcpServerConfig"; errors=$((errors+1)); }
+          grep -qE "runtime.*'pty'.*'acp'" packages/sdk/src/workflows/types.ts || { echo "FAIL: types.ts missing runtime"; errors=$((errors+1)); }
+          grep -q "acpAdapter" packages/sdk/src/workflows/types.ts || { echo "FAIL: types.ts missing acpAdapter"; errors=$((errors+1)); }
+          grep -q "runtime" packages/sdk/src/workflows/builder.ts || { echo "FAIL: builder.ts missing runtime"; errors=$((errors+1)); }
+          [ $errors -gt 0 ] && exit 1
+          echo "All types wave checks passed"
+        captureOutput: true
+        failOnError: true
+
+      # ── Wave B: runner.ts + client.ts (parallel, after types verified) ─────
+
+      - name: runner-impl
+        agent: runner-worker
+        dependsOn: [read-spec, read-runner-spawn, read-acp-bridge, verify-types]
+        task: |
+          Edit `packages/sdk/src/workflows/runner.ts` to add a WORKING ACP runtime.
+
+          RUNNER CONTEXT:
+          {{steps.read-runner-spawn.output}}
+
+          ACP BRIDGE REFERENCE (shows how ACP JSON-RPC works over stdio):
+          {{steps.read-acp-bridge.output}}
+
+          SPEC:
+          {{steps.read-spec.output}}
+
+          Implement these changes:
+
+          1. Add import: `import type { AcpMcpServerConfig, AcpTurnUpdate, AcpStopReason } from '../protocol.js';`
+
+          2. Add `ACP_ADAPTERS` map (from spec section 3) as a private static field next to HUB_PATTERNS.
+
+          3. Add `INJECTION_PATTERNS` set: `new Set(['mesh', 'consensus', 'debate'])`
+
+          4. Add `resolveRuntime()` method (from spec section 4) that auto-selects runtime.
+
+          5. In `spawnAndWait()`, BEFORE the PTY spawn logic, add a runtime check:
+             ```
+             const runtime = this.resolveRuntime(agentDef, this.currentConfig?.swarm.pattern ?? 'dag');
+             if (runtime === 'acp') {
+               return this.spawnAcp(agentDef, step, timeoutMs, options);
+             }
+             ```
+
+          6. Implement a WORKING `spawnAcp()` method that:
+             a. Resolves the ACP adapter command from ACP_ADAPTERS or agentDef.acpAdapter
+             b. If no adapter available, falls back to spawnAndWait with runtime forced to 'pty'
+             c. Spawns the adapter process via child_process.spawn with stdio: ['pipe', 'pipe', 'pipe']
+             d. Sends JSON-RPC `initialize` request over stdin (read response from stdout)
+             e. Builds mcpServers array: injects Relaycast MCP server + any user-specified ones
+             f. Sends JSON-RPC `session/new` with { cwd, mcpServers }
+             g. Sends JSON-RPC `session/prompt` with the step task
+             h. Reads streaming JSON-RPC notifications (session/update) and maps them to
+                acp_turn_update broker events via this.postToChannel()
+             i. Waits for the prompt response (stopReason: 'end_turn')
+             j. Returns the response text as SpawnResult output
+             k. On error/timeout, kills the adapter process and throws
+
+             Model the JSON-RPC communication after the acp-bridge's pattern:
+             - Write JSON-RPC requests as newline-delimited JSON to stdin
+             - Read newline-delimited JSON responses/notifications from stdout
+             - Each request has { jsonrpc: "2.0", id: <number>, method: <string>, params: <object> }
+             - Notifications have no `id` field
+             - Responses match by `id`
+
+          7. Register the agent in workers.json and Relaycast for observability (same as execNonInteractive).
+
+          8. Open a log file for the agent (same pattern as spawnAndWait).
+
+          Write the file to disk. Do NOT output code to stdout.
+          Do NOT make spawnAcp a stub that throws — it must actually spawn the adapter and run a turn.
+        verification:
+          type: exit_code
+
+      - name: client-impl
+        agent: client-worker
+        dependsOn: [read-spec, read-client, verify-types]
+        task: |
+          Edit `packages/sdk/src/client.ts` to add ACP spawn support.
+
+          CURRENT FILE:
+          {{steps.read-client.output}}
+
+          SPEC:
+          {{steps.read-spec.output}}
+
+          Changes — preserve ALL existing code, only ADD:
+
+          1. Import `AcpMcpServerConfig` from `./protocol.js`
+          2. Add `SpawnAcpInput` interface (from spec section 2)
+          3. Add `spawnAcp()` method to `AgentRelayClient` after `spawnProvider`:
+             - Sets runtime: 'acp' on the AgentSpec
+             - Includes acp_adapter, acp_mcp_servers fields
+             - Calls this.requestOk('spawn_agent', { agent, ... })
+          4. Update `spawnProvider()` to handle ACP transport:
+             When transport is 'acp', call spawnAcp() instead of spawnPty()
+
+          Write the file to disk. Preserve ALL existing code.
+        verification:
+          type: exit_code
+
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 3: Verification + Review + Fix
+      # ════════════════════════════════════════════════════════════════════════
+
+      - name: verify-impl
+        type: deterministic
+        dependsOn: [runner-impl, client-impl]
+        command: |
+          errors=0
+          # Protocol types
+          grep -q "AcpTurnUpdate" packages/sdk/src/protocol.ts || { echo "FAIL: missing AcpTurnUpdate"; errors=$((errors+1)); }
+          grep -q "AcpWorkerToBroker" packages/sdk/src/protocol.ts || { echo "FAIL: missing AcpWorkerToBroker"; errors=$((errors+1)); }
+          # Runner — must have working implementation, not a stub
+          grep -q "resolveRuntime" packages/sdk/src/workflows/runner.ts || { echo "FAIL: missing resolveRuntime"; errors=$((errors+1)); }
+          grep -q "ACP_ADAPTERS" packages/sdk/src/workflows/runner.ts || { echo "FAIL: missing ACP_ADAPTERS"; errors=$((errors+1)); }
+          grep -q "spawnAcp" packages/sdk/src/workflows/runner.ts || { echo "FAIL: missing spawnAcp"; errors=$((errors+1)); }
+          grep -q "session/new" packages/sdk/src/workflows/runner.ts || { echo "FAIL: spawnAcp doesn't send session/new — it's a stub"; errors=$((errors+1)); }
+          grep -q "session/prompt" packages/sdk/src/workflows/runner.ts || { echo "FAIL: spawnAcp doesn't send session/prompt — it's a stub"; errors=$((errors+1)); }
+          grep -q "jsonrpc" packages/sdk/src/workflows/runner.ts || { echo "FAIL: spawnAcp has no JSON-RPC — it's a stub"; errors=$((errors+1)); }
+          # Client
+          grep -q "SpawnAcpInput" packages/sdk/src/client.ts || { echo "FAIL: missing SpawnAcpInput"; errors=$((errors+1)); }
+          grep -q "spawnAcp" packages/sdk/src/client.ts || { echo "FAIL: missing spawnAcp method"; errors=$((errors+1)); }
+          [ $errors -gt 0 ] && { echo "$errors failures"; exit 1; }
+          echo "All implementation checks passed — spawnAcp is functional (not a stub)"
+        captureOutput: true
+        failOnError: true
+
+      - name: typecheck
+        type: deterministic
+        dependsOn: [verify-impl]
+        command: |
+          cd packages/sdk
+          npx tsc --noEmit 2>&1 | tail -50
+        captureOutput: true
+        failOnError: false
+
+      - name: review
+        agent: reviewer
+        dependsOn: [typecheck]
+        task: |
+          Review the ACP runtime implementation for spec compliance.
+
+          Typecheck results:
+          {{steps.typecheck.output}}
+
+          Check that:
+          1. protocol.ts has all ACP types from the spec
+          2. types.ts and builder.ts have runtime/acpAdapter fields
+          3. runner.ts has a WORKING spawnAcp that spawns an adapter, sends
+             session/new and session/prompt via JSON-RPC, reads responses,
+             and returns the agent's output. It must NOT be a stub that throws.
+          4. client.ts has SpawnAcpInput and spawnAcp()
+          5. All existing PTY/headless logic is preserved unchanged
+
+          If type errors exist, list the specific fixes needed.
+          Output your verdict as: VERDICT: PASS or VERDICT: ISSUES followed by a list.
+        verification:
+          type: exit_code
+
+      - name: fix
+        agent: fixer
+        dependsOn: [review]
+        task: |
+          Fix any type errors or review issues from the ACP implementation.
+
+          Review:
+          {{steps.review.output}}
+
+          Typecheck:
+          {{steps.typecheck.output}}
+
+          If the review passed and tsc had no errors, output: ALL_CLEAR
+
+          Otherwise fix every issue, then run `cd packages/sdk && npx tsc --noEmit`
+          to verify. Output: ALL_CLEAR when done.
+        verification:
+          type: exit_code
+
+      - name: final-typecheck
+        type: deterministic
+        dependsOn: [fix]
+        command: |
+          cd packages/sdk
+          npx tsc --noEmit 2>&1
+          exit_code=$?
+          [ $exit_code -eq 0 ] && echo "TYPECHECK_PASSED" || echo "TYPECHECK_FAILED (exit $exit_code)"
+          exit $exit_code
+        captureOutput: true
+        failOnError: true
