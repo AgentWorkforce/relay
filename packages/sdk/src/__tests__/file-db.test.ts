@@ -13,7 +13,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import os from 'node:os';
 import path from 'node:path';
 
-import { JsonFileWorkflowDb } from '../workflows/file-db.js';
+import { JsonFileWorkflowDb, shouldUseWorkflowDbHomeFallback } from '../workflows/file-db.js';
 import type { WorkflowRunRow, WorkflowStepRow } from '../workflows/types.js';
 
 function makeRun(overrides: Partial<WorkflowRunRow> = {}): WorkflowRunRow {
@@ -47,6 +47,23 @@ describe('JsonFileWorkflowDb', () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(path.join(os.tmpdir(), 'filedb-test-'));
+  });
+
+  it('enables home fallback for cloud and relayfile workflow environments', () => {
+    expect(shouldUseWorkflowDbHomeFallback({ DAYTONA_SANDBOX_ID: 'sandbox-id' })).toBe(true);
+    expect(shouldUseWorkflowDbHomeFallback({ RELAY_CLOUD_PROVISIONING_DONE: '1' })).toBe(true);
+    expect(
+      shouldUseWorkflowDbHomeFallback({
+        RELAYFILE_TOKEN: 'token',
+        RELAYFILE_WORKSPACE_ID: 'rw_test123',
+      })
+    ).toBe(true);
+    expect(
+      shouldUseWorkflowDbHomeFallback({
+        RELAYFILE_TOKEN: 'token',
+      })
+    ).toBe(false);
+    expect(shouldUseWorkflowDbHomeFallback({})).toBe(false);
   });
 
   afterEach(() => {

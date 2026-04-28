@@ -21,7 +21,7 @@ import type {
   WorkflowRunRow,
   WorkflowStep,
 } from './types.js';
-import { JsonFileWorkflowDb } from './file-db.js';
+import { JsonFileWorkflowDb, shouldUseWorkflowDbHomeFallback } from './file-db.js';
 import { WorkflowRunner, type WorkflowEventListener, type RunnerStepExecutor } from './runner.js';
 import { formatDryRunReport } from './dry-run-format.js';
 import { createDefaultEventLogger, type LogLevel } from './default-logger.js';
@@ -408,7 +408,10 @@ export class WorkflowBuilder {
     const config = this.toConfig();
     const runnerCwd = options.cwd ?? process.cwd();
     const dbPath = path.join(runnerCwd, '.agent-relay', 'workflow-runs.jsonl');
-    const db = new JsonFileWorkflowDb(dbPath);
+    const db = new JsonFileWorkflowDb({
+      filePath: dbPath,
+      homeFallback: shouldUseWorkflowDbHomeFallback(),
+    });
 
     const runner = new WorkflowRunner({
       cwd: options.cwd,

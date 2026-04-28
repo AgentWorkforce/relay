@@ -14,7 +14,7 @@ import chalk from 'chalk';
 
 import type { WorkflowEvent } from './runner.js';
 import { WorkflowRunner } from './runner.js';
-import { JsonFileWorkflowDb } from './file-db.js';
+import { JsonFileWorkflowDb, shouldUseWorkflowDbHomeFallback } from './file-db.js';
 
 function printUsage(): void {
   console.log(
@@ -328,7 +328,10 @@ async function main(): Promise<void> {
 
   // Use a file-backed DB so runs survive process restarts and --resume works.
   const dbPath = path.join(process.cwd(), '.agent-relay', 'workflow-runs.jsonl');
-  const fileDb = new JsonFileWorkflowDb(dbPath);
+  const fileDb = new JsonFileWorkflowDb({
+    filePath: dbPath,
+    homeFallback: shouldUseWorkflowDbHomeFallback(),
+  });
   if (!fileDb.isWritable()) {
     console.warn(
       `[workflow] warning: cannot write to ${dbPath} — run state will not be persisted (--resume unavailable)`

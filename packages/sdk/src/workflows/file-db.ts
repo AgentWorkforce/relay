@@ -40,6 +40,16 @@ export interface JsonFileWorkflowDbOptions {
   homeFallback?: boolean;
 }
 
+export function shouldUseWorkflowDbHomeFallback(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.DAYTONA_SANDBOX_ID || env.RELAY_CLOUD_PROVISIONING_DONE === '1') {
+    return true;
+  }
+
+  return Boolean(
+    env.RELAYFILE_TOKEN && (env.RELAYFILE_WORKSPACE_ID || env.RELAYFILE_WORKSPACE || env.RELAY_WORKSPACE_ID)
+  );
+}
+
 /**
  * JSONL-backed WorkflowDb for the CLI.
  *
