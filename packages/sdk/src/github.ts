@@ -14,4 +14,3 @@
  */
 
 export * from '@agent-relay/github-primitive';
-export * from '@agent-relay/github-primitive/workflow-step';
