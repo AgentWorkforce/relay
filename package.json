@@ -133,7 +133,7 @@
     "@agent-relay/cloud": "6.0.2",
     "@agent-relay/config": "6.0.2",
     "@agent-relay/hooks": "6.0.2",
-    "@agent-relay/sdk": "6.0.2",
+    "@agent-relay/sdk": "6.1.0",
     "@agent-relay/telemetry": "6.0.2",
     "@agent-relay/trajectory": "6.0.2",
     "@agent-relay/user-directory": "6.0.2",

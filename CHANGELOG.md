@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`@agent-relay/sdk/workflows` script runner** (6.1.0): Exposes `runScriptWorkflow()`, `parseTsxStderr`, `formatWorkflowParseError`, `findLocalSdkWorkspace`, `ensureLocalSdkWorkflowRuntime`, plus `RunScriptWorkflowOptions` / `ParsedWorkflowError` types. The body of `agent-relay run <script>` now lives in the SDK, so other CLIs (ricky, future tools) can drive the same `.ts` / `.tsx` / `.py` execution flow in-process instead of shelling out. The relay CLI's `run` command is unchanged externally — it now delegates to the SDK function.
 - **CLI SSH Authentication**: New SSH-based authentication for CLI local auth workflows, enabling secure agent spawning and communication (#648e7782).
 - **Multi-Repository Spawning**: Agents can now be spawned across multiple repositories in a single operation, improving orchestration flexibility (#2d2bf610).
 - **Model Hotswap**: Runtime model switching for agents, allowing dynamic provider and model changes without restart (#5a80bdc0).
@@ -39,12 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.2] - 2026-04-25
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Drop darwin-x64 verify leg (macos-13 queue stuck again)
 - Re-add @agent-relay/cloud to publish-packages matrix (#788)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.2
 
 ---
@@ -52,24 +57,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.1] - 2026-04-25
 
 ### Product Perspective
+
 #### Breaking Changes
-- **Drop legacy agent-relay/broker* exports and shipped workspace dirs**
+
+- **Drop legacy agent-relay/broker\* exports and shipped workspace dirs**
 
 #### User-Facing Features & Improvements
-- **Restore agent-relay/* subpath exports via shim re-exports**
+
+- **Restore agent-relay/\* subpath exports via shim re-exports**
 
 #### User-Impacting Fixes
+
 - Drop dead linkResult reference
 - Allow shipped workspace packages declared as regular deps
-- Unbundle @agent-relay/* to restore optional-dep broker resolution
+- Unbundle @agent-relay/\* to restore optional-dep broker resolution
 - Walk ancestor node_modules for shadowed broker packages
 - Install broker optional-deps for CLI users
 
 ### Technical Perspective
+
 #### Performance & Reliability
+
 - Fix stale broker checks and PyPI retry
 
 #### Releases
+
 - v6.0.1
 
 ---
@@ -77,11 +89,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.0] - 2026-04-24
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **ApplySiblingLinks — link sibling-repo packages during workflow setup (#776)** (#776)
 - **Split broker binaries into per-platform optional-dep packages** (#770)
 
 #### User-Impacting Fixes
+
 - Keep SIGWINCH on unix, background-thread poll on Windows
 - Unbreak Windows build
 - Convert rewrites to direct redirects
@@ -91,16 +106,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep broker packages as workspaces so npm ci passes
 
 ### Technical Perspective
+
 #### Performance & Reliability
+
 - Drop darwin-x64 smoke test
 - Cross-platform post-publish verification of @agent-relay/sdk
-- Skip dist check for broker-* packages in package-validation
+- Skip dist check for broker-\* packages in package-validation
 - Add cross-platform smoke test for broker optional-deps
 
 #### Dependencies & Tooling
+
 - Update Cursor models to latest (#777) (#777)
 
 #### Releases
+
 - v6.0.0
 
 ---
@@ -108,16 +127,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [5.0.0] - 2026-04-22
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Repair pre-existing test failures on main
 - Address Copilot review on broker resolution (#769)
 - Ship per-platform wheels with embedded broker (drop runtime download) (#769)
 
 ### Technical Perspective
+
 #### Performance & Reliability
+
 - Include publish-sdk-py in summary job
 
 #### Releases
+
 - v5.0.0
 
 ---
@@ -125,11 +149,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.0.40] - 2026-04-22
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Add browser and github workflow primitives (#718)** (#718)
 
 ### Technical Perspective
+
 #### Releases
+
 - v4.0.40
 
 ---
