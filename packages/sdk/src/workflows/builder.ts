@@ -22,7 +22,8 @@ import type {
   WorkflowStep,
 } from './types.js';
 import { JsonFileWorkflowDb } from './file-db.js';
-import { WorkflowRunner, type WorkflowEventListener, type RunnerStepExecutor } from './runner.js';
+import { WorkflowRunner, type WorkflowEventListener } from './runner.js';
+import type { RunnerStepExecutor } from './types.js';
 import { formatDryRunReport } from './dry-run-format.js';
 import { createDefaultEventLogger, type LogLevel } from './default-logger.js';
 import { runInCloud, type CloudRunOptions } from './cloud-runner.js';

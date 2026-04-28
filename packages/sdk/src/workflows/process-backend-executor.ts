@@ -11,8 +11,7 @@
  */
 
 import { buildCommand } from './process-spawner.js';
-import type { ProcessBackend, AgentDefinition, WorkflowStep } from './types.js';
-import type { RunnerStepExecutor } from './runner.js';
+import type { ProcessBackend, AgentDefinition, WorkflowStep, RunnerStepExecutor } from './types.js';
 
 function shellEscape(value: string): string {
   if (value === '') return "''";

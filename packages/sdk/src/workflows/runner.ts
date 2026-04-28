@@ -107,6 +107,7 @@ import type {
   WorkflowStepRow,
   WorkflowStepStatus,
   ProcessBackend,
+  RunnerStepExecutor,
 } from './types.js';
 import { WorkflowTrajectory, type StepOutcome } from './trajectory.js';
 import {
@@ -309,34 +310,6 @@ export interface WorkflowRunnerOptions {
    * When neither is set, the broker spawns local child processes (default).
    */
   processBackend?: ProcessBackend;
-}
-
-// ── Step executor interface ──────────────────────────────────────────────────
-
-/**
- * Extension point for delegating step execution to an external backend
- * (e.g. Daytona sandboxes) while keeping the runner's DAG/retry/verification
- * machinery intact.
- */
-export interface RunnerStepExecutor {
-  executeAgentStep(
-    step: WorkflowStep,
-    agentDef: AgentDefinition,
-    resolvedTask: string,
-    timeoutMs?: number
-  ): Promise<string>;
-
-  executeDeterministicStep?(
-    step: WorkflowStep,
-    resolvedCommand: string,
-    cwd: string
-  ): Promise<{ output: string; exitCode: number }>;
-
-  executeIntegrationStep?(
-    step: WorkflowStep,
-    resolvedParams: Record<string, string>,
-    context: { workspaceId?: string }
-  ): Promise<{ output: string; success: boolean }>;
 }
 
 // ── Internal step state ─────────────────────────────────────────────────────
