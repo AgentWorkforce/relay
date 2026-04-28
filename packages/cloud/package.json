@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/cloud",
-  "version": "6.0.2",
+  "version": "6.1.0",
   "description": "Cloud SDK for Agent Relay — auth, workflow execution, and provider connections",
   "type": "module",
   "main": "dist/index.js",
@@ -28,8 +28,12 @@
     "ignore": "^7.0.5",
     "tar": "^7.5.10"
   },
+  "optionalDependencies": {
+    "ssh2": "^1.17.0"
+  },
   "devDependencies": {
     "@types/node": "^22.19.3",
+    "@types/ssh2": "^1.15.5",
     "vitest": "^3.2.4"
   },
   "publishConfig": {
