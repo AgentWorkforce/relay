@@ -106,7 +106,7 @@
     ],
     "packages/shared/cli-registry.yaml": [
       "npm run codegen:models",
-      "git add packages/config/src/cli-registry.generated.ts packages/sdk-py/agent_relay/models.py packages/sdk-py/agent_relay/__init__.py"
+      "git add packages/config/src/cli-registry.generated.ts packages/sdk-py/src/agent_relay/models.py"
     ]
   },
   "keywords": [
