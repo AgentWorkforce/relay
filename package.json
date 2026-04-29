@@ -106,7 +106,7 @@
     ],
     "packages/shared/cli-registry.yaml": [
       "npm run codegen:models",
-      "git add packages/config/src/cli-registry.generated.ts packages/sdk-py/agent_relay/models.py packages/sdk-py/agent_relay/__init__.py"
+      "git add packages/config/src/cli-registry.generated.ts packages/sdk-py/src/agent_relay/models.py"
     ]
   },
   "keywords": [
@@ -133,7 +133,7 @@
     "@agent-relay/cloud": "6.1.0",
     "@agent-relay/config": "6.0.2",
     "@agent-relay/hooks": "6.0.2",
-    "@agent-relay/sdk": "6.0.2",
+    "@agent-relay/sdk": "6.1.0",
     "@agent-relay/telemetry": "6.0.2",
     "@agent-relay/trajectory": "6.0.2",
     "@agent-relay/user-directory": "6.0.2",

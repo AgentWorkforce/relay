@@ -38,7 +38,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/sdk": "6.0.2",
+    "@agent-relay/sdk": "6.1.0",
     "playwright": "^1.51.1"
   },
   "devDependencies": {

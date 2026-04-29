@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`@agent-relay/cloud` provider connect SDK** (6.1.0): Exposes `connectProvider()`, `runInteractiveSession()`, and SSH runtime helpers (`loadSSH2`, `createAskpassScript`, `buildSystemSshArgs`) so other CLIs can drive the same Daytona-brokered provider auth flow that powers `agent-relay cloud connect`. `ssh2` is now an `optionalDependency` of the cloud package.
+- **`@agent-relay/sdk/workflows` script runner** (6.1.0): Exposes `runScriptWorkflow()`, `parseTsxStderr`, `formatWorkflowParseError`, `findLocalSdkWorkspace`, `ensureLocalSdkWorkflowRuntime`, plus `RunScriptWorkflowOptions` / `ParsedWorkflowError` types. The body of `agent-relay run <script>` now lives in the SDK, so other CLIs (ricky, future tools) can drive the same `.ts` / `.tsx` / `.py` execution flow in-process instead of shelling out. The relay CLI's `run` command is unchanged externally — it now delegates to the SDK function.
 - **CLI SSH Authentication**: New SSH-based authentication for CLI local auth workflows, enabling secure agent spawning and communication (#648e7782).
 - **Multi-Repository Spawning**: Agents can now be spawned across multiple repositories in a single operation, improving orchestration flexibility (#2d2bf610).
 - **Model Hotswap**: Runtime model switching for agents, allowing dynamic provider and model changes without restart (#5a80bdc0).
