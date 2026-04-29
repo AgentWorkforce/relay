@@ -1,0 +1,165 @@
+---
+title: 'Workflows quickstart'
+description: 'A working workflow in 5 minutes: plan, implement, test, verify, commit.'
+---
+
+This page walks through building and running a real workflow end-to-end. By the end, you'll have a workflow that plans a small feature with a lead agent, implements it with a worker agent, runs tests, and commits — only if everything passes.
+
+## Prerequisites
+
+- `@agent-relay/cli` installed globally: `npm i -g @agent-relay/cli`
+- `@agent-relay/sdk` installed in the target repo: `npm i @agent-relay/sdk`
+- One CLI installed and authenticated: `claude`, `codex`, `gemini`, `aider`, or `goose`
+
+Check: `agent-relay --version`.
+
+## 1. Create the workflow file
+
+```bash
+mkdir -p workflows
+```
+
+`workflows/add-greeting.ts`:
+
+```typescript
+import { workflow } from '@agent-relay/sdk/workflows';
+import { ClaudeModels, CodexModels } from '@agent-relay/config';
+
+async function main() {
+  const result = await workflow('add-greeting')
+    .description('Add a greeting function + tests')
+    .pattern('dag')
+    .channel('wf-add-greeting')
+    .maxConcurrency(3)
+    .timeout(900_000)
+
+    .agent('lead', {
+      cli: 'claude',
+      model: ClaudeModels.SONNET,
+      preset: 'lead',
+      role: 'Plans the shape of the greeting function and tests',
+      retries: 1,
+    })
+    .agent('impl', {
+      cli: 'codex',
+      model: CodexModels.GPT_5_4,
+      role: 'Writes src/greeting.ts and its tests',
+      retries: 2,
+    })
+
+    .step('plan', {
+      agent: 'lead',
+      task: `Post a short plan for:
+  src/greeting.ts — export greet(name: string): string
+    returns "Hello, <name>!"; empty name -> "Hello, friend!"
+  test/greeting.test.ts — vitest covering both cases
+
+Keep plan to 5 bullets.`,
+    })
+
+    .step('write-code', {
+      agent: 'impl',
+      dependsOn: ['plan'],
+      task: 'Create src/greeting.ts per the lead plan. Only this file.',
+      verification: { type: 'file_exists', value: 'src/greeting.ts' },
+    })
+
+    .step('write-tests', {
+      agent: 'impl',
+      dependsOn: ['write-code'],
+      task: 'Create test/greeting.test.ts per the lead plan. Only this file.',
+      verification: { type: 'file_exists', value: 'test/greeting.test.ts' },
+    })
+
+    .step('run-tests', {
+      type: 'deterministic',
+      dependsOn: ['write-tests'],
+      command: 'npx vitest run test/greeting.test.ts 2>&1 | tail -30',
+      captureOutput: true,
+      failOnError: true,
+    })
+
+    .step('commit', {
+      type: 'deterministic',
+      dependsOn: ['run-tests'],
+      command: 'git add src/greeting.ts test/greeting.test.ts && git commit -m "feat: add greet()"',
+      failOnError: true,
+    })
+
+    .run({ cwd: process.cwd() });
+
+  console.log('Workflow status:', result.status);
+  if (result.status !== 'completed') process.exit(1);
+}
+
+main().catch((e) => { console.error(e); process.exit(1); });
+```
+
+## 2. Dry-run to validate
+
+Always dry-run before a real run — catches typos, missing dependencies, and invalid patterns before you spend agent time:
+
+```bash
+agent-relay run --dry-run workflows/add-greeting.ts
+```
+
+You should see:
+
+```
+Validation: PASS (0 errors, 0 warnings)
+
+Execution Plan (5 steps, 5 waves):
+  Wave  1:  plan (lead)
+  Wave  2:  write-code (impl)
+  Wave  3:  write-tests (impl)
+  Wave  4:  run-tests (undefined)
+  Wave  5:  commit (undefined)
+```
+
+## 3. Run it
+
+```bash
+agent-relay run workflows/add-greeting.ts
+```
+
+You'll see the lead agent post a plan on the workflow channel, the worker implement each file in sequence, vitest run against the fresh code, and the commit land only after tests pass.
+
+## 4. What just happened
+
+- **`workflow('add-greeting')`** — named the run. Log files + trajectories use this name.
+- **`.pattern('dag')`** — steps run in dependency order; independent steps parallelize.
+- **`.agent(...)`** — declares the CLIs and their roles. The `preset: 'lead'` gives the lead an interactive shell so it can post to the channel; workers are non-interactive by default.
+- **`.step(...)` with `agent: ...`** — spawns the named CLI with the task prompt. The agent runs in the workflow's cwd and can edit files.
+- **`type: 'deterministic'`** — pure shell command. No LLM. Use these for reads, tests, builds, commits.
+- **`verification`** — gates the step. `file_exists` for creation; `exit_code` for edits; `output_contains` for marker-based checks.
+- **`failOnError: true`** — a failed deterministic step stops the whole workflow.
+
+## 5. Run it in the cloud
+
+The same workflow file runs unchanged in a Daytona sandbox:
+
+```bash
+# IMPORTANT: `git add` the workflow file first. `--sync-code` tarballs
+# git-tracked paths with working-tree contents. Untracked files are
+# silently excluded. `git add` is enough — commit is optional.
+git add workflows/add-greeting.ts
+agent-relay cloud run workflows/add-greeting.ts --sync-code
+
+# ...note the run ID printed, then:
+agent-relay cloud logs <run-id> --follow
+agent-relay cloud sync <run-id>   # pull the produced diff back locally
+```
+
+Almost every cloud run should pass `--sync-code` — without it the sandbox has no code at all (there's no fallback clone from `origin`). See [Cloud commands → `--sync-code`](/docs/cli-cloud-commands#-sync-code-uploading-your-local-repo) for the full sync semantics.
+
+## 6. Things to try next
+
+- Add a **reviewer step** that reads the diff and posts either `LGTM` or `BLOCKERS:`. Gate the commit behind it.
+- Swap `pattern('dag')` for `pattern('supervisor')` and see the auto-spawned supervisor monitor the workers.
+- Break `write-code` and `write-tests` into a **team** by giving them a shared channel and having the lead post feedback between rounds. See [Patterns → Lead + workers](/docs/workflows-patterns#lead--workers).
+
+## Full reference
+
+- [Builder API](/docs/reference-workflows) — every method on `workflow()`.
+- [YAML alternative](/docs/reference-workflows#yaml-shape) — same concepts, config-driven.
+- [Common mistakes](/docs/workflows-common-mistakes) — bugs everyone hits once.

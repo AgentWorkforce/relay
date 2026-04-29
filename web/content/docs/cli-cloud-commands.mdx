@@ -47,6 +47,59 @@ agent-relay cloud sync <run-id>
 - `logs` streams workflow or per-agent output.
 - `sync` downloads the generated patch and applies it locally.
 
+## `--sync-code`: uploading your local repo
+
+`--sync-code` tarballs your current working copy and ships it to the cloud sandbox as the starting point for the run. Without it, the sandbox starts with **no code on disk** — it doesn't clone from `origin`, it just has an empty `$HOME`. Any workflow that reads your source needs `--sync-code`.
+
+**In almost every case, you want `--sync-code`.** Running a workflow against an empty sandbox is rarely what you mean; you almost always want your local worktree state there.
+
+### What gets uploaded
+
+The tarball is built from `git ls-files` — the **tracked** paths — and `tar` reads their current working-tree contents. No `git clone` anywhere.
+
+| State | Synced? |
+|---|---|
+| Committed, unmodified | ✅ Working-tree version |
+| Committed, then modified | ✅ Working-tree version (your edits go too) |
+| Committed, then modified + `git add`ed | ✅ Working-tree version |
+| New file + `git add`ed (not committed) | ✅ — once added, the file is tracked |
+| New file, never added | ❌ Untracked → excluded |
+| `.gitignore`d path | ❌ Excluded |
+
+**Rule of thumb:** `git add` whatever the run needs. Commit is NOT required — staging is enough because `git ls-files` returns indexed paths. You don't need to push either.
+
+If you're not in a git repo at all, there's a fallback: the packer walks the filesystem and uses `.gitignore` as the exclude list.
+
+### When NOT to use `--sync-code`
+
+Rare but real:
+
+- You're running a cloud-managed workflow that doesn't touch local code (a fully `config`-typed workflow).
+- You've set up a workflow whose `setup-branch` step explicitly `git clone`s something and doesn't care about local state.
+
+### Typical flow
+
+```bash
+# Edit your workflow locally
+vim workflows/fix-bug.ts
+
+# Stage everything the run needs — `git add` is enough; commit is optional.
+# Untracked files would be silently excluded otherwise.
+git add workflows/fix-bug.ts
+
+# Ship your working tree to the cloud sandbox and run
+agent-relay cloud run workflows/fix-bug.ts --sync-code
+# note the run ID printed...
+
+# Stream logs as it runs
+agent-relay cloud logs <run-id> --follow
+
+# When complete, pull the produced diff back into your local worktree
+agent-relay cloud sync <run-id>
+```
+
+See [Workflows → Common mistakes](/docs/workflows-common-mistakes#output-and-exit-codes) for the "untracked files silently excluded" pitfall.
+
 ## Inspect a patch before applying it
 
 ```bash

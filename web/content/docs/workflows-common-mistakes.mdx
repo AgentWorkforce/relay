@@ -1,0 +1,114 @@
+---
+title: 'Common mistakes'
+description: 'Every workflow author hits these once. Here is the list, so you can hit them zero times.'
+---
+
+Every one of these has bitten a real workflow. Copy the fix column.
+
+## General
+
+| Mistake | Fix |
+|---------|-----|
+| Using raw top-level `await` in a workflow file | Wrap in `async function main() { ... }` — executor-driven files sometimes behave like CJS. |
+| `export default workflow(...)...build()` | No `.build()`. Chain ends with `.run()` — and the file MUST call `.run()`, not just export config. |
+| `createWorkflowRenderer` | Does not exist. Use `.run({ cwd: process.cwd() })`. |
+| Hardcoded model strings (`model: 'opus'`) | Use constants: `import { ClaudeModels } from '@agent-relay/config'` → `model: ClaudeModels.OPUS`. |
+| Using `require()` in ESM projects | Check `package.json` for `"type": "module"` — use `import` if ESM. |
+| Relative import `'../workflows/builder.js'` | Use `import { workflow } from '@agent-relay/sdk/workflows'`. |
+
+## Parallelism and waves
+
+| Mistake | Fix |
+|---------|-----|
+| Every step depends on the previous one | Only add `dependsOn` when there's a real data dependency. Independent steps with the same `dependsOn` parallelize. |
+| One giant workflow per feature | Split into smaller workflows that can run in parallel waves (4-7× speedup). |
+| `maxConcurrency: 16` with many parallel steps | Cap at 5-6. Broker times out at 10+. |
+| Workers depending on lead step (DAG deadlock) | Both depend on the shared context step; downstream depends on the lead. |
+
+**DAG deadlock anti-pattern:**
+```yaml
+# WRONG
+steps:
+  - name: coordinate
+    dependsOn: [context]    # lead waits for WORKER_DONE...
+  - name: work-a
+    dependsOn: [coordinate] # ...but work-a can't start until coordinate finishes
+
+# RIGHT
+steps:
+  - name: work-a
+    dependsOn: [context]    # starts with lead
+  - name: coordinate
+    dependsOn: [context]    # starts with workers
+  - name: merge
+    dependsOn: [work-a, coordinate]
+```
+
+Rule: if a lead step's task mentions downstream step names alongside waiting keywords, that's a deadlock.
+
+## Steps and verification
+
+| Mistake | Fix |
+|---------|-----|
+| Self-review step with no timeout | Set `timeout: 300_000` (5 min). Codex hangs in non-interactive review. |
+| Adding exit instructions to tasks | Runner handles self-termination automatically. |
+| Setting `timeoutMs` on agents/steps | Use global `.timeout()` only. |
+| Using the `general` channel | Set `.channel('wf-name')` for isolation. |
+| `{{steps.X.output}}` without `dependsOn: ['X']` | Output won't be available yet. |
+| Requiring exact sentinel as only completion gate | Use `exit_code` or `file_exists` verification. |
+| Writing 100-line task prompts | Split into lead + workers on a channel. |
+| Single step editing 4+ files | Agents modify 1-2 then exit. Split to one file per step with verify gates. |
+| Relying on agents to `git commit` | Agents emit markers without running git. Use deterministic commit step. |
+| File-writing steps without `file_exists` verification | `exit_code` auto-passes even if no file written. Use `{ type: 'file_exists', value: 'path' }` for creation. |
+| Non-interactive agent reading large files via tools | Pre-read in deterministic step, inject via `{{steps.X.output}}`. |
+
+**Verification token gotcha:** If the token (e.g. `STEP_COMPLETE`) appears in the task text, the runner requires it **twice** in output (once from task echo, once from agent). Prefer `exit_code` for code-editing steps to avoid this.
+
+Only these four verification types are valid: `exit_code`, `output_contains`, `file_exists`, `custom`. Invalid types are silently ignored and fall through to process-exit auto-pass.
+
+## Patterns
+
+| Mistake | Fix |
+|---------|-----|
+| `pattern('single')` on cloud runner | Not supported — use `dag`. |
+| `pattern('supervisor')` with one agent | Same agent is owner + specialist. Use `dag`. |
+| `pipeline` but expecting auto-supervisor | Only hub patterns auto-harden. Use `.pattern('supervisor')`. |
+| `fan-out` / `hub-spoke` for simple parallel workers | Use `dag` instead. |
+| Workers without `preset: 'worker'` in one-shot DAG lead+worker flows | Add preset for clean stdout when chaining `{{steps.X.output}}`. Not needed for interactive team patterns. |
+| Separate reviewer agent from lead in interactive team | Merge lead + reviewer into one interactive Claude agent — reviews between rounds, fewer agents. |
+| Chaining `{{steps.X.output}}` from interactive agents | PTY output is garbled. Use deterministic steps or `preset: 'worker'`. |
+
+## Shell and YAML
+
+| Mistake | Fix |
+|---------|-----|
+| Using `_` in YAML numbers (`timeoutMs: 1_200_000`) | YAML doesn't support `_` separators. |
+| Workflow timeout under 30 min for complex workflows | Use `3600000` (1 hour) as default. |
+| Raw fenced code blocks inside workflow task template literals | Avoid fenced examples inside template strings, or move to referenced files. Especially fragile with language tags like `swift` or `diff`. |
+| `grep "foo\|bar\|baz"` (basic alternation) | Use `grep -Eq "foo\|bar\|baz"` — basic alternation can silently misbehave. |
+| Cloud sandbox `/bin/sh` trying to parse `${PIPESTATUS[0]}` | Wrap in `bash -c '...'` (SINGLE quotes). `/bin/sh` on Daytona is dash; single quotes stop sh from expanding bash-only syntax. |
+| `SIBLING_PATH="$RAW_VALUE"` (double-quoted shell assignments from user input) | Use single-quoted form: `SIBLING_PATH='...'`. Double quotes still expand `$(...)`, backticks, `\`. |
+
+## Cross-repo / worktrees
+
+| Mistake | Fix |
+|---------|-----|
+| Workflow ending without worktree + PR for cross-repo changes | Add `setup-worktree` at start and `push-and-pr` + `cleanup-worktree` at end. |
+| Not printing PR URL after `gh pr create` | Add a final deterministic step: `echo "PR: $(cat pr-url.txt)"` or capture in the `gh pr create` command. |
+| Touching the user's main `../other-repo` checkout | Create a sibling worktree instead: `git -C ../other-repo worktree add ../other-repo-<branch> -b <branch>`. |
+| Linking sibling packages via relative imports (`file:`) | Use `applySiblingLinks` from `@agent-relay/sdk/workflows`. `file:` paths end up in committed `package.json`, which is wrong. |
+| Agent fabricates an interface via `declare module` | See [Setup helpers → applySiblingLinks](/docs/workflows-setup-helpers#applysiblinglinks). Link the real sibling so agents see head-of-main types. |
+
+## Output and exit codes
+
+| Mistake | Fix |
+|---------|-----|
+| Relying on `agent-relay run` exit code for sub-workflow status | The runner exits 0 even when the inner workflow fails. Check `$?` AND grep `"Workflow status: failed"` from the log. |
+| Committing `.trajectories/`, `logs/`, or `package-lock.json` along with code | Stage only product files: `git add src/ test/` etc. Execution exhaust shouldn't be in PRs unless the user explicitly asks. |
+| `--sync-code` leaves out a file I just created | Cloud tarball is built from `git ls-files` (tracked paths only) + working-tree contents. Untracked files are silently excluded. `git add` the file before `agent-relay cloud run --sync-code` — staging is enough, commit is optional. |
+
+## See also
+
+- [Patterns](/docs/workflows-patterns) — shapes that avoid most of these mistakes.
+- [Setup helpers](/docs/workflows-setup-helpers) — conventions that compound (everyone benefits when the helper's right).
+- [Builder API reference](/docs/reference-workflows) — the canonical API surface.

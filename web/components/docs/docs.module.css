@@ -211,6 +211,49 @@
 }
 
 .navList { list-style: none; padding: 0; margin: 0; }
+.navChildren { padding-left: 0.9rem; margin-top: 0.1rem; border-left: 1px solid rgba(255, 255, 255, 0.08); }
+
+.navLinkRow {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.navLinkRow .navLink {
+  flex: 1;
+  min-width: 0;
+}
+
+.navToggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0.3rem;
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0.65;
+  transition: transform 0.15s ease, opacity 0.15s, background 0.15s;
+}
+
+.navToggle:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.navToggleOpen {
+  transform: rotate(90deg);
+  opacity: 1;
+}
+
+.navToggleIcon {
+  width: 0.85rem;
+  height: 0.85rem;
+}
 
 .navLink {
   display: flex;
