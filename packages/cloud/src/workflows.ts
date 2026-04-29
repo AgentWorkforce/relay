@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import ignore from 'ignore';
@@ -12,6 +13,7 @@ import {
   type RunWorkflowResponse,
   type WorkflowLogsResponse,
   type SyncPatchResponse,
+  type PathSubmission,
 } from './types.js';
 
 type ResolvedWorkflowInput = {
@@ -32,6 +34,14 @@ type PrepareWorkflowResponse = {
   runId: string;
   s3Credentials: S3Credentials;
   s3CodeKey: string;
+};
+
+type WorkflowPathDefinition = {
+  name: string;
+  path: string;
+  pushBranch?: string;
+  pushBase?: string;
+  pushPrBody?: string;
 };
 
 type RunWorkflowOptions = {
@@ -59,6 +69,7 @@ const CODE_SYNC_EXCLUDES = [
   '.aws',
   '.ssh',
 ];
+const PATH_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
 function validateYamlWorkflow(content: string): void {
   const hasField = (field: string) => new RegExp(`^${field}\\s*:`, 'm').test(content);
@@ -75,6 +86,210 @@ function validateYamlWorkflow(content: string): void {
   if (!hasField('workflows')) {
     throw new Error('missing required field "workflows"');
   }
+}
+
+function stripYamlScalar(raw: string): string {
+  let value = raw.trim();
+  const commentIndex = value.search(/\s#/);
+  if (commentIndex !== -1) {
+    value = value.slice(0, commentIndex).trim();
+  }
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function assignPathField(target: Partial<WorkflowPathDefinition>, text: string): void {
+  const colonIdx = text.indexOf(':');
+  if (colonIdx === -1) return;
+  const key = text.slice(0, colonIdx).trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(key)) return;
+  const value = stripYamlScalar(text.slice(colonIdx + 1).trim());
+  switch (key) {
+    case 'name':
+      target.name = value;
+      break;
+    case 'path':
+      target.path = value;
+      break;
+    case 'pushBranch':
+      target.pushBranch = value;
+      break;
+    case 'pushBase':
+      target.pushBase = value;
+      break;
+    case 'pushPrBody':
+      target.pushPrBody = value;
+      break;
+  }
+}
+
+function parseYamlWorkflowPaths(content: string): WorkflowPathDefinition[] {
+  const paths: WorkflowPathDefinition[] = [];
+  const lines = content.split(/\r?\n/);
+  let inPaths = false;
+  let baseIndent = 0;
+  let current: Partial<WorkflowPathDefinition> | null = null;
+
+  const flush = () => {
+    if (current?.name && current.path) {
+      paths.push({
+        name: current.name,
+        path: current.path,
+        ...(current.pushBranch ? { pushBranch: current.pushBranch } : {}),
+        ...(current.pushBase ? { pushBase: current.pushBase } : {}),
+        ...(current.pushPrBody ? { pushPrBody: current.pushPrBody } : {}),
+      });
+    }
+    current = null;
+  };
+
+  for (const rawLine of lines) {
+    if (!rawLine.trim() || rawLine.trimStart().startsWith('#')) continue;
+    const indent = rawLine.match(/^\s*/)?.[0].length ?? 0;
+    const trimmed = rawLine.trim();
+
+    if (!inPaths) {
+      if (/^paths\s*:/.test(trimmed)) {
+        inPaths = true;
+        baseIndent = indent;
+      }
+      continue;
+    }
+
+    if (indent <= baseIndent && !trimmed.startsWith('-')) {
+      break;
+    }
+
+    if (trimmed.startsWith('-')) {
+      flush();
+      current = {};
+      const rest = trimmed.slice(1).trim();
+      if (rest) assignPathField(current, rest);
+      continue;
+    }
+
+    if (current) {
+      assignPathField(current, trimmed);
+    }
+  }
+  flush();
+
+  return paths;
+}
+
+function findMatchingBracket(source: string, startIndex: number, open: string, close: string): number {
+  let depth = 0;
+  let quote: '"' | "'" | '`' | null = null;
+  let escaped = false;
+
+  for (let i = startIndex; i < source.length; i += 1) {
+    const ch = source[i] as '"' | "'" | '`' | string;
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === open) {
+      depth += 1;
+    } else if (ch === close) {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+
+  return -1;
+}
+
+function extractPathArrayLiterals(source: string): string[] {
+  const literals: string[] = [];
+
+  const propertyPattern = /\bpaths\s*:/g;
+  let propertyMatch: RegExpExecArray | null;
+  while ((propertyMatch = propertyPattern.exec(source)) !== null) {
+    const arrayStart = source.indexOf('[', propertyPattern.lastIndex);
+    if (arrayStart === -1) continue;
+    const arrayEnd = findMatchingBracket(source, arrayStart, '[', ']');
+    if (arrayEnd !== -1) {
+      literals.push(source.slice(arrayStart, arrayEnd + 1));
+      propertyPattern.lastIndex = arrayEnd + 1;
+    }
+  }
+
+  const methodPattern = /\.paths\s*\(/g;
+  let methodMatch: RegExpExecArray | null;
+  while ((methodMatch = methodPattern.exec(source)) !== null) {
+    const arrayStart = source.indexOf('[', methodPattern.lastIndex);
+    if (arrayStart === -1) continue;
+    const arrayEnd = findMatchingBracket(source, arrayStart, '[', ']');
+    if (arrayEnd !== -1) {
+      literals.push(source.slice(arrayStart, arrayEnd + 1));
+      methodPattern.lastIndex = arrayEnd + 1;
+    }
+  }
+
+  return literals;
+}
+
+function extractObjectLiterals(arrayLiteral: string): string[] {
+  const objects: string[] = [];
+  for (let i = 0; i < arrayLiteral.length; i += 1) {
+    if (arrayLiteral[i] !== '{') continue;
+    const end = findMatchingBracket(arrayLiteral, i, '{', '}');
+    if (end === -1) break;
+    objects.push(arrayLiteral.slice(i, end + 1));
+    i = end;
+  }
+  return objects;
+}
+
+function readStringProperty(objectLiteral: string, propertyName: string): string | null {
+  const pattern = new RegExp(`\\b${propertyName}\\s*:\\s*(['"])(.*?)\\1`, 's');
+  const match = objectLiteral.match(pattern);
+  return match?.[2] ?? null;
+}
+
+function parseTypeScriptWorkflowPaths(content: string): WorkflowPathDefinition[] {
+  const paths: WorkflowPathDefinition[] = [];
+  for (const literal of extractPathArrayLiterals(content)) {
+    for (const objectLiteral of extractObjectLiterals(literal)) {
+      const name = readStringProperty(objectLiteral, 'name');
+      const pathValue = readStringProperty(objectLiteral, 'path');
+      if (name && pathValue) {
+        const pushBranch = readStringProperty(objectLiteral, 'pushBranch');
+        const pushBase = readStringProperty(objectLiteral, 'pushBase');
+        const pushPrBody = readStringProperty(objectLiteral, 'pushPrBody');
+        paths.push({
+          name,
+          path: pathValue,
+          ...(pushBranch ? { pushBranch } : {}),
+          ...(pushBase ? { pushBase } : {}),
+          ...(pushPrBody ? { pushPrBody } : {}),
+        });
+      }
+    }
+  }
+  return paths;
+}
+
+export function parseWorkflowPaths(content: string, fileType: WorkflowFileType): WorkflowPathDefinition[] {
+  if (fileType === 'yaml') {
+    return parseYamlWorkflowPaths(content);
+  }
+  if (fileType === 'ts') {
+    return parseTypeScriptWorkflowPaths(content);
+  }
+  return [];
 }
 
 async function validateTypeScriptWorkflow(content: string): Promise<void> {
@@ -154,6 +369,52 @@ export function inferWorkflowFileType(filePath: string): WorkflowFileType | null
 
 export function shouldSyncCodeByDefault(_workflowArg: string, _explicitFileType?: WorkflowFileType): boolean {
   return true;
+}
+
+function normalizeRepoName(repoName: string): string {
+  return repoName.replace(/\.git$/i, '');
+}
+
+function parseGitHubPath(pathname: string): { repoOwner: string; repoName: string } | null {
+  const parts = pathname.replace(/^\/+|\/+$/g, '').split('/');
+  if (parts.length < 2) return null;
+  const repoOwner = parts[0];
+  const repoName = normalizeRepoName(parts[1]);
+  if (!repoOwner || !repoName) return null;
+  return { repoOwner, repoName };
+}
+
+export function parseGitHubRemote(remote: string): { repoOwner: string; repoName: string } | null {
+  const trimmed = remote.trim();
+  const scpMatch = trimmed.match(/^git@github\.com:([^/]+)\/(.+?)\/?$/i);
+  if (scpMatch) {
+    return {
+      repoOwner: scpMatch[1],
+      repoName: normalizeRepoName(scpMatch[2]),
+    };
+  }
+
+  try {
+    const url = new URL(trimmed);
+    if (url.hostname.toLowerCase() !== 'github.com') return null;
+    if (url.protocol !== 'https:' && url.protocol !== 'ssh:') return null;
+    return parseGitHubPath(url.pathname);
+  } catch {
+    return null;
+  }
+}
+
+function parseGitHubRemoteForPath(absPath: string): { repoOwner: string; repoName: string } | null {
+  try {
+    const remote = execFileSync('git', ['-C', absPath, 'remote', 'get-url', 'origin'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000,
+    });
+    return parseGitHubRemote(remote);
+  } catch {
+    return null;
+  }
 }
 
 export async function resolveWorkflowInput(
@@ -250,42 +511,100 @@ export async function runWorkflow(
     const prepared = prepPayload;
     console.error(`  Prepared in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
-    const t1 = Date.now();
-    console.error('Creating tarball...');
     const s3Client = createScopedS3Client(prepared.s3Credentials);
-    const tarball = await createTarball(process.cwd());
-    console.error(
-      `  Tarball: ${(tarball.length / 1024).toFixed(0)}KB in ${((Date.now() - t1) / 1000).toFixed(1)}s`
-    );
-
-    const t2 = Date.now();
-    console.error('Uploading to S3...');
-    const key = scopedCodeKey(prepared.s3Credentials.prefix, prepared.s3CodeKey);
-    await s3Client.send(
-      new PutObjectCommand({
-        Bucket: prepared.s3Credentials.bucket,
-        Key: key,
-        Body: tarball,
-        ContentType: 'application/gzip',
-      })
-    );
-    console.error(`  Uploaded in ${((Date.now() - t2) / 1000).toFixed(1)}s`);
-
     requestBody.runId = prepared.runId;
-    requestBody.s3CodeKey = prepared.s3CodeKey;
 
-    // Send the workflow's path inside the synced tarball so the cloud
-    // launcher can set WORKFLOW_FILE directly — no $HOME upload dance,
-    // sibling-relative imports (e.g. `../shared/models.ts`) resolve
-    // against the repo layout. The tarball was produced from
-    // process.cwd(), so relativize the user-typed argument against cwd.
-    //
-    // Absolute paths outside cwd OR paths that would escape the tarball
-    // via `..` are dropped silently — the server falls back to the
-    // legacy $HOME upload path in that case.
-    const workflowPath = relativizeWorkflowPath(workflowArg);
-    if (workflowPath) {
-      requestBody.workflowPath = workflowPath;
+    const declaredPaths = parseWorkflowPaths(input.workflow, input.fileType);
+    if (declaredPaths.length > 0) {
+      const seenNames = new Set<string>();
+      const pathSubmissions: PathSubmission[] = [];
+      const resolvedPathRoots: string[] = [];
+
+      console.error(`Creating ${declaredPaths.length} path tarball(s)...`);
+      for (const pathDef of declaredPaths) {
+        if (!PATH_NAME_RE.test(pathDef.name) || seenNames.has(pathDef.name)) {
+          throw new Error(`Invalid or duplicate workflow path name: ${pathDef.name}`);
+        }
+        seenNames.add(pathDef.name);
+
+        const absolutePath = path.resolve(process.cwd(), pathDef.path);
+        resolvedPathRoots.push(absolutePath);
+        const s3CodeKey = `code-${pathDef.name}.tar.gz`;
+
+        const t1 = Date.now();
+        const tarball = await createTarball(absolutePath);
+        console.error(
+          `  ${pathDef.name}: ${(tarball.length / 1024).toFixed(0)}KB in ${((Date.now() - t1) / 1000).toFixed(1)}s`
+        );
+
+        const t2 = Date.now();
+        const key = scopedCodeKey(prepared.s3Credentials.prefix, s3CodeKey);
+        await s3Client.send(
+          new PutObjectCommand({
+            Bucket: prepared.s3Credentials.bucket,
+            Key: key,
+            Body: tarball,
+            ContentType: 'application/gzip',
+          })
+        );
+        console.error(`  ${pathDef.name}: uploaded in ${((Date.now() - t2) / 1000).toFixed(1)}s`);
+
+        const repo = parseGitHubRemoteForPath(absolutePath);
+        pathSubmissions.push({
+          name: pathDef.name,
+          s3CodeKey,
+          ...(repo ? { repoOwner: repo.repoOwner, repoName: repo.repoName } : {}),
+          ...(pathDef.pushBranch ? { pushBranch: pathDef.pushBranch } : {}),
+          ...(pathDef.pushBase ? { pushBase: pathDef.pushBase } : {}),
+          ...(pathDef.pushPrBody ? { pushPrBody: pathDef.pushPrBody } : {}),
+        });
+      }
+
+      requestBody.paths = pathSubmissions;
+      let workflowPath: string | null = null;
+      for (const root of resolvedPathRoots) {
+        workflowPath = relativizeWorkflowPathFromRoot(workflowArg, root);
+        if (workflowPath) break;
+      }
+      if (workflowPath) {
+        requestBody.workflowPath = workflowPath;
+      }
+    } else {
+      const t1 = Date.now();
+      console.error('Creating tarball...');
+      const tarball = await createTarball(process.cwd());
+      console.error(
+        `  Tarball: ${(tarball.length / 1024).toFixed(0)}KB in ${((Date.now() - t1) / 1000).toFixed(1)}s`
+      );
+
+      const t2 = Date.now();
+      console.error('Uploading to S3...');
+      const key = scopedCodeKey(prepared.s3Credentials.prefix, prepared.s3CodeKey);
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: prepared.s3Credentials.bucket,
+          Key: key,
+          Body: tarball,
+          ContentType: 'application/gzip',
+        })
+      );
+      console.error(`  Uploaded in ${((Date.now() - t2) / 1000).toFixed(1)}s`);
+
+      requestBody.s3CodeKey = prepared.s3CodeKey;
+
+      // Send the workflow's path inside the synced tarball so the cloud
+      // launcher can set WORKFLOW_FILE directly — no $HOME upload dance,
+      // sibling-relative imports (e.g. `../shared/models.ts`) resolve
+      // against the repo layout. The tarball was produced from
+      // process.cwd(), so relativize the user-typed argument against cwd.
+      //
+      // Absolute paths outside cwd OR paths that would escape the tarball
+      // via `..` are dropped silently — the server falls back to the
+      // legacy $HOME upload path in that case.
+      const workflowPath = relativizeWorkflowPath(workflowArg);
+      if (workflowPath) {
+        requestBody.workflowPath = workflowPath;
+      }
     }
   }
 
@@ -452,7 +771,8 @@ export async function syncWorkflowPatch(
   if (
     !payload ||
     typeof payload !== 'object' ||
-    typeof (payload as { hasChanges?: unknown }).hasChanges !== 'boolean'
+    (typeof (payload as { hasChanges?: unknown }).hasChanges !== 'boolean' &&
+      (!('patches' in payload) || typeof (payload as { patches?: unknown }).patches !== 'object'))
   ) {
     throw new Error('Patch response was not valid JSON.');
   }
@@ -538,6 +858,7 @@ async function createTarball(rootDir: string): Promise<Buffer> {
       cwd: absoluteRoot,
       encoding: 'utf-8',
       maxBuffer: 50 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
     });
     const files = gitFiles.split('\0').filter(Boolean);
     if (files.length > 0) {
@@ -611,8 +932,12 @@ function scopedCodeKey(prefix: string, key: string): string {
  * behaviour this field was added to fix).
  */
 export function relativizeWorkflowPath(workflowArg: string): string | null {
+  return relativizeWorkflowPathFromRoot(workflowArg, process.cwd());
+}
+
+function relativizeWorkflowPathFromRoot(workflowArg: string, rootDir: string): string | null {
   const absolute = path.resolve(process.cwd(), workflowArg);
-  let rel = path.relative(process.cwd(), absolute);
+  let rel = path.relative(rootDir, absolute);
   if (rel.length === 0) return null;
   // Normalize to forward slashes so the server-side validator (which
   // runs on Linux Lambda) gets the same shape regardless of the CLI OS.
