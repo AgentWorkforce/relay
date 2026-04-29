@@ -39,7 +39,7 @@
   "dependencies": {
     "@agent-relay/config": "6.0.2",
     "@agent-relay/trajectory": "6.0.2",
-    "@agent-relay/sdk": "6.0.2"
+    "@agent-relay/sdk": "6.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",
