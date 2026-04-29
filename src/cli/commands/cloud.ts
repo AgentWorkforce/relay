@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Command, InvalidArgumentError } from 'commander';
-import { CLI_AUTH_CONFIG } from '@agent-relay/config/cli-auth-config';
 import { track } from '@agent-relay/telemetry';
 
 import {
@@ -18,12 +17,13 @@ import {
   getRunLogs,
   syncWorkflowPatch,
   cancelWorkflow,
+  connectProvider,
+  getProviderHelpText,
+  normalizeProvider,
   type WhoAmIResponse,
-  type AuthSessionResponse,
   type WorkflowFileType,
 } from '@agent-relay/cloud';
 
-import { runInteractiveSession } from '../lib/ssh-interactive.js';
 import { defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 
@@ -39,14 +39,6 @@ export interface CloudDependencies {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-const color = {
-  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
-  green: (s: string) => `\x1b[32m${s}\x1b[0m`,
-  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
-  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
-  dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
-};
-
 function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependencies {
   return {
     log: (...args: unknown[]) => console.log(...args),
@@ -54,25 +46,6 @@ function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependen
     exit: defaultExit,
     ...overrides,
   };
-}
-
-const PROVIDER_ALIASES: Record<string, string> = {
-  claude: 'anthropic',
-  codex: 'openai',
-  gemini: 'google',
-};
-
-const PROVIDER_HELP_TEXT = Object.keys(CLI_AUTH_CONFIG)
-  .sort()
-  .map((id) => {
-    const alias = Object.entries(PROVIDER_ALIASES).find(([, target]) => target === id);
-    return alias ? `${id} (alias: ${alias[0]})` : id;
-  })
-  .join(', ');
-
-function normalizeProvider(providerArg: string): string {
-  const providerInput = providerArg.toLowerCase().trim();
-  return PROVIDER_ALIASES[providerInput] || providerInput;
 }
 
 function parsePositiveInteger(value: string): number {
@@ -100,22 +73,6 @@ function parseWorkflowFileType(value: string): WorkflowFileType {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function getErrorDetails(response: Response): Promise<string> {
-  let body: string;
-  try {
-    body = await response.text();
-  } catch {
-    return response.statusText;
-  }
-  if (!body) return response.statusText;
-  try {
-    const json = JSON.parse(body) as { error?: string; message?: string };
-    return json.error || json.message || response.statusText;
-  } catch {
-    return body;
-  }
 }
 
 // ── Command registration ─────────────────────────────────────────────────────
@@ -269,7 +226,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
   cloudCommand
     .command('connect')
     .description('Connect a provider via interactive SSH session')
-    .argument('<provider>', `Provider to connect (${PROVIDER_HELP_TEXT})`)
+    .argument('<provider>', `Provider to connect (${getProviderHelpText()})`)
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--language <language>', 'Sandbox language/image', 'typescript')
     .option('--timeout <seconds>', 'Connection timeout in seconds', parsePositiveInteger, 300)
@@ -277,136 +234,16 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       const started = Date.now();
       let success = false;
       let errorClass: string | undefined;
-      let trackedProvider: string | undefined;
+      const trackedProvider = normalizeProvider(providerArg);
       try {
-        const timeoutMs = options.timeout * 1000;
-
-        if (!process.stdin.isTTY || !process.stdout.isTTY) {
-          throw new Error('This command requires an interactive terminal (TTY).');
-        }
-
-        const provider = normalizeProvider(providerArg);
-        trackedProvider = provider;
-        const providerConfig = CLI_AUTH_CONFIG[provider];
-        if (!providerConfig) {
-          const known = Object.keys(CLI_AUTH_CONFIG).sort();
-          throw new Error(`Unknown provider: ${providerArg}. Supported providers: ${known.join(', ')}`);
-        }
-
-        const apiUrl = options.apiUrl || defaultApiUrl();
-
-        const io = {
-          log: deps.log,
-          error: deps.error,
-        };
-
-        io.log('');
-        io.log(color.cyan('═══════════════════════════════════════════════════'));
-        io.log(color.cyan('      Provider Authentication (Daytona Connect)'));
-        io.log(color.cyan('═══════════════════════════════════════════════════'));
-        io.log('');
-        io.log(`Provider: ${providerConfig.displayName} (${provider})`);
-        io.log(`Language: ${color.dim(options.language)}`);
-        io.log(color.dim(`Cloud: ${apiUrl}`));
-        io.log('');
-        io.log('Requesting sandbox from cloud...');
-
-        let auth = await ensureAuthenticated(apiUrl);
-
-        const { response: createResponse, auth: refreshedAuth } = await authorizedApiFetch(
-          auth,
-          '/api/v1/cli/auth',
-          {
-            method: 'POST',
-            body: JSON.stringify({ provider, language: options.language }),
-          }
-        );
-        auth = refreshedAuth;
-
-        const start = (await createResponse.json().catch(() => null)) as
-          | (AuthSessionResponse & { error?: string; message?: string })
-          | null;
-
-        if (!createResponse.ok || !start?.sessionId) {
-          const detail =
-            start?.error || start?.message || `${createResponse.status} ${createResponse.statusText}`;
-          throw new Error(detail);
-        }
-
-        const sshPort =
-          typeof start.ssh?.port === 'string'
-            ? Number.parseInt(start.ssh.port as unknown as string, 10)
-            : start.ssh?.port;
-        if (!start.ssh?.host || !sshPort || !start.ssh.user || !start.ssh.password) {
-          throw new Error('Cloud returned invalid SSH session details.');
-        }
-
-        io.log(color.green('✓ Sandbox ready'));
-        io.log(color.dim(`  SSH: ${start.ssh.user}@${start.ssh.host}:${sshPort}`));
-        io.log('');
-        io.log(color.yellow('Connecting via SSH...'));
-        io.log(color.dim(`  Running: ${start.remoteCommand}`));
-        io.log('');
-
-        let sessionResult;
-        try {
-          sessionResult = await runInteractiveSession({
-            ssh: {
-              host: start.ssh.host,
-              port: sshPort,
-              user: start.ssh.user,
-              password: start.ssh.password,
-            },
-            remoteCommand: start.remoteCommand,
-            successPatterns: providerConfig.successPatterns || [],
-            errorPatterns: providerConfig.errorPatterns || [],
-            timeoutMs,
-            io,
-          });
-        } catch (error) {
-          throw new Error(
-            `Failed to connect via SSH: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-
-        io.log('');
-        const authSuccess = sessionResult.authDetected;
-
-        io.log('Finalizing authentication with cloud...');
-        const { response: completeResponse } = await authorizedApiFetch(auth, '/api/v1/cli/auth/complete', {
-          method: 'POST',
-          body: JSON.stringify({ sessionId: start.sessionId, success: authSuccess }),
+        const result = await connectProvider({
+          provider: providerArg,
+          apiUrl: options.apiUrl,
+          language: options.language,
+          timeoutMs: options.timeout * 1000,
+          io: { log: deps.log, error: deps.error },
         });
-
-        if (!completeResponse.ok) {
-          throw new Error(await getErrorDetails(completeResponse));
-        }
-
-        if (!authSuccess) {
-          const exitCode = sessionResult.exitCode;
-          if (typeof exitCode === 'number' && exitCode !== 0) {
-            io.error(color.red(`Remote auth command exited with code ${exitCode}.`));
-          }
-          if (sessionResult.exitCode === 127) {
-            io.log(
-              color.yellow(
-                `The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on the sandbox.`
-              )
-            );
-            io.log(color.dim('Check the sandbox snapshot includes the required CLI tools.'));
-          }
-          throw new Error(`Provider auth for ${provider} did not complete successfully`);
-        }
-
-        io.log('');
-        io.log(color.green('═══════════════════════════════════════════════════'));
-        io.log(color.green('          Authentication Complete!'));
-        io.log(color.green('═══════════════════════════════════════════════════'));
-        io.log('');
-        io.log(`${providerConfig.displayName} credentials are now stored and encrypted.`);
-        io.log(color.dim('Your workflows will automatically use these credentials.'));
-        io.log('');
-        success = true;
+        success = result.success;
       } catch (err) {
         errorClass = errorClassName(err);
         throw err;
@@ -415,7 +252,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           action: 'connect',
           success,
           duration_ms: Date.now() - started,
-          ...(trackedProvider ? { provider: trackedProvider } : {}),
+          provider: trackedProvider,
           ...(errorClass ? { error_class: errorClass } : {}),
         });
       }
