@@ -46,7 +46,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@agent-relay/sdk": "6.0.2",
+    "@agent-relay/sdk": "6.1.0",
     "@agentclientprotocol/sdk": "^0.12.0"
   },
   "devDependencies": {
