@@ -38,6 +38,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
+## [6.0.3] - 2026-04-29
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Expose connectProvider() in @agent-relay/cloud SDK (#798)** (#798)
+- **Expose runScriptWorkflow() in @agent-relay/sdk/workflows (#799)** (#799)
+- **Bundle @agent-relay/github-primitive at /github subpath (#782)** (#782)
+
+#### User-Impacting Fixes
+- Update codegen-models workflow to use new Python output path (#780) (#780)
+
+### Technical Perspective
+#### Releases
+- v6.0.3
+
+---
+
 ## [6.0.2] - 2026-04-25
 
 ### Product Perspective

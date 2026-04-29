@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/broker-win32-x64",
-  "version": "6.0.2",
+  "version": "6.0.3",
   "description": "agent-relay-broker binary for win32 x64. Installed automatically as an optional dependency of @agent-relay/sdk.",
   "files": [
     "bin"
