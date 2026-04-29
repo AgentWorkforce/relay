@@ -56,6 +56,10 @@ class FakeCodexClient {
   }
 
   async request<T = unknown>(method: string, params?: any): Promise<T> {
+    if (this.closed) {
+      throw new Error('client closed');
+    }
+
     this.requests.push({ method, params });
 
     if (method === 'mcpServerStatus/list') {
@@ -212,6 +216,27 @@ test('Codex onRelay fails fast when the app-server version is too old', async ()
   assert.equal(requestsFor(client, 'thread/start').length, 0);
 });
 
+test('Codex onRelay omits threadId when resuming by path only', async () => {
+  const { onRelay } = await loadCodexAdapterModule();
+  const client = new FakeCodexClient(['relaycast']);
+
+  const handle = onRelay(
+    'CodexTester',
+    {
+      framework: 'codex',
+      clientFactory: () => client,
+      resumePath: '/tmp/codex-thread.jsonl',
+    },
+    new FakeRelay()
+  );
+  await handle.ready;
+
+  const resumeRequest = lastRequest(client, 'thread/resume');
+  assert.equal(Object.hasOwn(resumeRequest.params, 'threadId'), false);
+  assert.equal(resumeRequest.params.path, '/tmp/codex-thread.jsonl');
+  assert.equal(handle.threadId, 'thread-resumed');
+});
+
 test('Codex item/completed drains relay inbox and steers the active turn', async () => {
   const { onRelay } = await loadCodexAdapterModule();
   const client = new FakeCodexClient(['relaycast']);
@@ -299,12 +324,51 @@ test('Codex fork creates an ephemeral fork handle on the same app-server client'
   assert.equal(lastRequest(client, 'turn/start').params.threadId, 'thread-fork-2');
 });
 
+test('Codex fork keeps the shared app-server client open until the last handle closes', async () => {
+  const { onRelay } = await loadCodexAdapterModule();
+  const client = new FakeCodexClient(['relaycast']);
+  const handle = onRelay('CodexTester', { framework: 'codex', clientFactory: () => client }, new FakeRelay());
+  await handle.ready;
+
+  const fork = await handle.fork({
+    name: 'CodexFork',
+    relay: new FakeRelay(),
+  });
+
+  await handle.close();
+  assert.equal(client.closed, false);
+
+  await fork.send('Continue on fork.');
+  assert.equal(lastRequest(client, 'turn/start').params.threadId, 'thread-fork-2');
+
+  await fork.close();
+  assert.equal(client.closed, true);
+});
+
 test('communicate onRelay routes framework codex targets to the Codex adapter', async () => {
   const { onRelay } = await loadCommunicateModule();
   const client = new FakeCodexClient(['relaycast']);
   const handle = onRelay(
     'CodexTopLevel',
     {
+      framework: 'codex',
+      clientFactory: () => client,
+    },
+    new FakeRelay()
+  );
+
+  await handle.ready;
+
+  assert.equal(handle.threadId, 'thread-1');
+  assert.equal(requestsFor(client, 'thread/start').length, 1);
+});
+
+test('communicate onRelay routes direct framework codex targets to the Codex adapter', async () => {
+  const { onRelay } = await loadCommunicateModule();
+  const client = new FakeCodexClient(['relaycast']);
+  const handle = onRelay(
+    {
+      name: 'CodexDirect',
       framework: 'codex',
       clientFactory: () => client,
     },

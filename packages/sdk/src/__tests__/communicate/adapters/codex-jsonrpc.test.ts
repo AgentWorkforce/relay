@@ -168,3 +168,43 @@ test('CodexJsonRpcClient rejects JSON-RPC error responses', async () => {
 
   await assert.rejects(requestPromise, CodexJsonRpcError);
 });
+
+test('spawnCodexAppServer merges env overrides with the parent environment', async () => {
+  const { spawnCodexAppServer } = await loadJsonRpcModule();
+  const parentValue = `parent-${Date.now()}`;
+  process.env.CODEX_ADAPTER_PARENT_ENV = parentValue;
+
+  try {
+    const transport = spawnCodexAppServer({
+      command: process.execPath,
+      args: [
+        '-e',
+        [
+          'console.log(JSON.stringify({',
+          'parent: process.env.CODEX_ADAPTER_PARENT_ENV ?? null,',
+          'child: process.env.CODEX_ADAPTER_CHILD_ENV ?? null,',
+          '}));',
+        ].join(' '),
+      ],
+      env: {
+        CODEX_ADAPTER_CHILD_ENV: 'child',
+      },
+    });
+    let output = '';
+    transport.stdout.on('data', (chunk: Buffer | string) => {
+      output += chunk.toString();
+    });
+
+    const [code] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
+      transport.onExit((exitCode, signal) => resolve([exitCode, signal]));
+    });
+
+    assert.equal(code, 0);
+    assert.deepEqual(JSON.parse(output.trim()), {
+      parent: parentValue,
+      child: 'child',
+    });
+  } finally {
+    delete process.env.CODEX_ADAPTER_PARENT_ENV;
+  }
+});

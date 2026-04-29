@@ -25,12 +25,16 @@ export function onRelay(
   maybeRelay?: Relay
 ): CodexHandle;
 export function onRelay(
+  nameOrAgent: CodexAdapterOptions & { framework: 'codex'; name?: string },
+  configOrOptions?: Relay
+): CodexHandle;
+export function onRelay(
   nameOrAgent: string | Record<string, unknown>,
-  configOrOptions?: Record<string, unknown>,
+  configOrOptions?: Record<string, unknown> | Relay,
   maybeRelay?: Relay
 ): Record<string, unknown>;
 export function onRelay(
-  nameOrAgent: string | Record<string, unknown>,
+  nameOrAgent: string | Record<string, unknown> | CodexAdapterOptions,
   configOrOptions?: Record<string, unknown> | CodexAdapterOptions | Relay,
   maybeRelay?: Relay
 ): Record<string, unknown> | CodexHandle {
@@ -46,7 +50,7 @@ export function onRelay(
   if (typeof target !== 'object' || target === null) {
     throw new Error(
       `onRelay() received a non-object target for ${name}. ` +
-        'Pass the framework config/options object, or use onPiRelay / onClaudeRelay directly.'
+        'Pass the framework config/options object, or use onPiRelay, onClaudeRelay, or onCodexRelay directly.'
     );
   }
 

@@ -113,7 +113,7 @@ export class CodexJsonRpcError extends Error {
 export function spawnCodexAppServer(options: SpawnCodexAppServerOptions = {}): CodexJsonRpcTransport {
   const child = spawn(options.command ?? 'codex', options.args ?? DEFAULT_CODEX_APP_SERVER_ARGS, {
     cwd: options.cwd,
-    env: options.env,
+    env: options.env ? { ...process.env, ...options.env } : undefined,
     stdio: 'pipe',
   });
 

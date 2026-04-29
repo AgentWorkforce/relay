@@ -138,11 +138,18 @@ type CodexNotificationParams = {
 };
 
 type CodexHandleState = {
+  sharedClient?: SharedCodexJsonRpcClient;
   client?: CodexJsonRpcClientLike;
   ownsClient?: boolean;
   threadId?: string;
   ready?: Promise<void>;
   autoStart?: boolean;
+};
+
+type SharedCodexJsonRpcClient = {
+  client: CodexJsonRpcClientLike;
+  ownsClient: boolean;
+  references: number;
 };
 
 const DEFAULT_RELAYCAST_MCP_SERVER: CodexMcpServerConfig = {
@@ -192,7 +199,7 @@ function buildThreadStartParams(options: CodexAdapterOptions): Record<string, un
 function buildThreadResumeParams(options: CodexAdapterOptions): Record<string, unknown> {
   return pruneUndefined({
     ...threadOverrides(options),
-    threadId: options.resumeThreadId ?? '',
+    threadId: options.resumeThreadId,
     path: options.resumePath,
     excludeTurns: options.excludeTurns ?? true,
     persistExtendedHistory: options.persistExtendedHistory ?? true,
@@ -274,7 +281,7 @@ export class CodexRelayHandle implements CodexHandle {
   readonly ready: Promise<void>;
 
   private readonly client: CodexJsonRpcClientLike;
-  private readonly ownsClient: boolean;
+  private readonly sharedClient: SharedCodexJsonRpcClient;
   private readonly unsubscribeClientNotifications: () => void;
   private readonly notificationListeners = new Set<
     (notification: CodexJsonRpcNotification) => void | Promise<void>
@@ -292,8 +299,19 @@ export class CodexRelayHandle implements CodexHandle {
     private readonly relay: RelayLike,
     state: CodexHandleState = {}
   ) {
-    this.client = state.client ?? options.clientFactory?.() ?? createDefaultClient(options);
-    this.ownsClient = state.ownsClient ?? !state.client;
+    if (state.sharedClient) {
+      this.sharedClient = state.sharedClient;
+      this.sharedClient.references += 1;
+    } else {
+      const client = state.client ?? options.clientFactory?.() ?? createDefaultClient(options);
+      this.sharedClient = {
+        client,
+        ownsClient: state.ownsClient ?? !state.client,
+        references: 1,
+      };
+    }
+
+    this.client = this.sharedClient.client;
     this.currentThreadId = state.threadId;
     this.unsubscribeClientNotifications = this.client.onNotification((notification) =>
       this.handleNotification(notification)
@@ -374,8 +392,7 @@ export class CodexRelayHandle implements CodexHandle {
       },
       forkRelay,
       {
-        client: this.client,
-        ownsClient: false,
+        sharedClient: this.sharedClient,
         threadId: response.thread.id,
         autoStart: false,
       }
@@ -404,7 +421,8 @@ export class CodexRelayHandle implements CodexHandle {
         .catch(() => undefined);
     }
 
-    if (this.ownsClient) {
+    this.sharedClient.references -= 1;
+    if (this.sharedClient.ownsClient && this.sharedClient.references === 0) {
       await this.client.close();
     }
   }
