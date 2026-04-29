@@ -633,11 +633,15 @@ jobs:
           mkdir -p packages/sdk/bin
           (cd packages/sdk && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           (cd "packages/${{ matrix.broker_pkg }}" && npm pack --ignore-scripts --pack-destination "$TARBALLS")
-          # The build job bumped every workspace to NEW_VERSION. The SDK's
-          # `dependencies` pins `@agent-relay/config` at that version, which
-          # is not on the registry yet at this point in the workflow — so
-          # pack it locally and install it alongside the SDK.
+          # The build job bumped every workspace to NEW_VERSION. The SDK pins
+          # several internal @agent-relay/* packages at that exact version,
+          # none of which are on the registry yet at this point in the
+          # workflow — so pack them locally and install them alongside the
+          # SDK. Keep this list in sync with packages/sdk/package.json's
+          # `dependencies` whenever a new internal dep is added.
           (cd packages/config && npm pack --ignore-scripts --pack-destination "$TARBALLS")
+          (cd packages/github-primitive && npm pack --ignore-scripts --pack-destination "$TARBALLS")
+          (cd packages/workflow-types && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           ls -lh "$TARBALLS"
 
       - name: Install tarballs into scratch project
@@ -652,9 +656,12 @@ jobs:
           SDK_TGZ=$(ls "$TARBALLS"/agent-relay-sdk-*.tgz | head -n1)
           BROKER_TGZ=$(ls "$TARBALLS"/agent-relay-broker-${{ matrix.platform }}-*.tgz | head -n1)
           CONFIG_TGZ=$(ls "$TARBALLS"/agent-relay-config-*.tgz | head -n1)
-          echo "Installing $SDK_TGZ + $BROKER_TGZ + $CONFIG_TGZ"
+          GITHUB_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-github-primitive-*.tgz | head -n1)
+          WORKFLOW_TYPES_TGZ=$(ls "$TARBALLS"/agent-relay-workflow-types-*.tgz | head -n1)
+          echo "Installing $SDK_TGZ + $BROKER_TGZ + $CONFIG_TGZ + $GITHUB_PRIMITIVE_TGZ + $WORKFLOW_TYPES_TGZ"
           npm install --ignore-scripts --no-audit --no-fund \
-            "$SDK_TGZ" "$BROKER_TGZ" "$CONFIG_TGZ"
+            "$SDK_TGZ" "$BROKER_TGZ" "$CONFIG_TGZ" \
+            "$GITHUB_PRIMITIVE_TGZ" "$WORKFLOW_TYPES_TGZ"
           ls node_modules/@agent-relay/
 
       - name: Resolver smoke — getBrokerBinaryPath()
@@ -705,12 +712,14 @@ jobs:
           npm init -y --silent >/dev/null
           SDK_TGZ=$(ls "$TARBALLS"/agent-relay-sdk-*.tgz | head -n1)
           CONFIG_TGZ=$(ls "$TARBALLS"/agent-relay-config-*.tgz | head -n1)
-          # Install SDK + config (an internal required dep whose bumped
-          # version isn't on the registry yet) but skip the broker optional
-          # deps entirely. The resolver should return null and spawn()
-          # should throw the clear error.
+          GITHUB_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-github-primitive-*.tgz | head -n1)
+          WORKFLOW_TYPES_TGZ=$(ls "$TARBALLS"/agent-relay-workflow-types-*.tgz | head -n1)
+          # Install SDK + every internal required dep whose bumped version
+          # isn't on the registry yet, but skip the broker optional deps
+          # entirely. The resolver should return null and spawn() should
+          # throw the clear error.
           npm install --ignore-scripts --no-audit --no-fund --no-optional \
-            "$SDK_TGZ" "$CONFIG_TGZ"
+            "$SDK_TGZ" "$CONFIG_TGZ" "$GITHUB_PRIMITIVE_TGZ" "$WORKFLOW_TYPES_TGZ"
           node --input-type=module -e "
             import { AgentRelayClient } from '@agent-relay/sdk';
             try {
@@ -894,6 +903,7 @@ jobs:
           - credential-proxy
           - github-primitive
           - browser-primitive
+          - workflow-types
 
     steps:
       - name: Checkout code
