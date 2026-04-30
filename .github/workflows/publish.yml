@@ -1073,8 +1073,8 @@ jobs:
           }
 
           publish_if_missing config
-          publish_if_missing github-primitive
           publish_if_missing workflow-types
+          publish_if_missing github-primitive
 
       - name: Publish SDK to NPM
         if: github.event.inputs.dry_run != 'true'
