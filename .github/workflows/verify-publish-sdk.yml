@@ -82,7 +82,10 @@ jobs:
 
       # Registry/CDN propagation can lag the publish by up to a minute. Retry
       # with exponential backoff so the first run after publish doesn't miss.
-      - name: Wait for package on registry
+      # The SDK pins internal runtime deps to the exact same release version;
+      # wait for those too so npm/Bun installs cannot resolve a half-published
+      # SDK that later fails at runtime inside @agent-relay/sdk/workflows.
+      - name: Wait for SDK and internal deps on registry
         shell: bash
         run: |
           set -euo pipefail
@@ -92,16 +95,33 @@ jobs:
             echo "version=latest — no wait needed"
             exit 0
           fi
+
+          PACKAGES=(
+            "$SPEC"
+            "@agent-relay/config@$VERSION"
+            "@agent-relay/github-primitive@$VERSION"
+            "@agent-relay/workflow-types@$VERSION"
+          )
+
           for i in 1 2 3 4 5 6; do
-            if npm view "$SPEC" version >/dev/null 2>&1; then
-              echo "registry has $SPEC"
+            missing=()
+            for pkg in "${PACKAGES[@]}"; do
+              if ! npm view "$pkg" version >/dev/null 2>&1; then
+                missing+=("$pkg")
+              fi
+            done
+
+            if [ "${#missing[@]}" -eq 0 ]; then
+              echo "registry has SDK and internal deps for $VERSION"
               exit 0
             fi
+
             WAIT=$((2 ** i))
-            echo "attempt $i: registry not ready, sleeping ${WAIT}s"
+            echo "attempt $i: registry missing ${missing[*]}, sleeping ${WAIT}s"
             sleep "$WAIT"
           done
-          echo "FAIL: registry never surfaced $SPEC"
+
+          echo "FAIL: registry never surfaced all SDK packages for $VERSION"
           exit 1
 
       - name: Install @agent-relay/sdk into scratch project
@@ -118,6 +138,19 @@ jobs:
           echo ""
           echo "=== installed @agent-relay/ packages ==="
           ls node_modules/@agent-relay/
+
+      - name: Verify workflow module imports
+        shell: bash
+        run: |
+          cd "$SCRATCH"
+          node --input-type=module -e "
+            const workflows = await import('@agent-relay/sdk/workflows');
+            if (!workflows.WorkflowRunner || !workflows.workflow) {
+              console.error('FAIL: @agent-relay/sdk/workflows missing expected exports');
+              process.exit(1);
+            }
+            console.log('OK: @agent-relay/sdk/workflows imports with workflow-types installed');
+          "
 
       - name: Verify only the matching broker package was installed
         shell: bash
