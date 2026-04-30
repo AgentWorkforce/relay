@@ -76,7 +76,7 @@ jobs:
   build-broker:
     name: Build broker (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'sdk' || github.event.inputs.package == 'sdk-py'
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk' || github.event.inputs.package == 'sdk-py'
     strategy:
       fail-fast: false
       matrix:
@@ -532,7 +532,7 @@ jobs:
   smoke-broker-packages:
     name: Smoke ${{ matrix.platform }}
     needs: [build, build-broker]
-    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk'
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -742,13 +742,13 @@ jobs:
   # Publish the SDK's exact-version internal runtime dependencies before the
   # SDK. @agent-relay/sdk imports these packages at runtime and pins them to
   # the release version, so they must exist on the registry before the SDK can
-  # be installed from npm. This also gives us one repair path for a partial
-  # publish: run package=workflow-types with custom_version=<broken-sdk-version>.
+  # be installed from npm. The root CLI depends on @agent-relay/sdk too, so
+  # package=main and package=cli-prerelease also need this chain.
   publish-sdk-internal-deps:
     name: Publish SDK internal dep ${{ matrix.package }}
     needs: [build, smoke-broker-packages]
     runs-on: ubuntu-latest
-    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk'
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk'
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -850,7 +850,7 @@ jobs:
     name: Publish ${{ matrix.broker_pkg }}
     needs: [build, build-broker, smoke-broker-packages]
     runs-on: ubuntu-latest
-    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk'
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk'
     strategy:
       fail-fast: false
       max-parallel: 5
@@ -946,7 +946,15 @@ jobs:
         if: github.event.inputs.dry_run != 'true'
         continue-on-error: true
         working-directory: packages/${{ matrix.broker_pkg }}
-        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
       - name: Wait before retry
         if: github.event.inputs.dry_run != 'true' && steps.publish_1.outcome == 'failure'
@@ -957,7 +965,15 @@ jobs:
         if: github.event.inputs.dry_run != 'true' && steps.publish_1.outcome == 'failure'
         continue-on-error: true
         working-directory: packages/${{ matrix.broker_pkg }}
-        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
       - name: Wait before retry
         if: github.event.inputs.dry_run != 'true' && steps.publish_2.outcome == 'failure'
@@ -967,7 +983,15 @@ jobs:
         id: publish_3
         if: github.event.inputs.dry_run != 'true' && steps.publish_1.outcome == 'failure' && steps.publish_2.outcome == 'failure'
         working-directory: packages/${{ matrix.broker_pkg }}
-        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
       - name: Fail if all publish attempts failed
         if: >-
@@ -1059,7 +1083,90 @@ jobs:
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
         working-directory: packages/${{ matrix.package }}
-        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+  # package=main publishes only the root `agent-relay` tarball, but that
+  # tarball pins several @agent-relay/* runtime dependencies to the freshly
+  # bumped version. Publish those direct deps first so a main-only release
+  # cannot point npm at versions that do not exist.
+  publish-main-runtime-deps:
+    name: Publish main runtime dep ${{ matrix.package }}
+    needs: [build, build-broker, publish-broker-packages, publish-sdk-internal-deps]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease'
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        package:
+          - cloud
+          - config
+          - hooks
+          - sdk
+          - telemetry
+          - trajectory
+          - user-directory
+          - utils
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      # Keep the SDK tarball equivalent to the package=all path.
+      - name: Download broker binaries (SDK only)
+        if: matrix.package == 'sdk'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: agent-relay-broker-*
+          path: packages/sdk/bin/
+          merge-multiple: true
+
+      - name: Make broker binaries executable (SDK only)
+        if: matrix.package == 'sdk'
+        run: |
+          chmod +x packages/sdk/bin/agent-relay-broker-* || true
+          rm -f packages/sdk/bin/agent-relay-broker
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
+      - name: Dry run check
+        if: github.event.inputs.dry_run == 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Publish to NPM
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
   # Publish brand package only (when selected)
   publish-brand-only:
@@ -1490,14 +1597,15 @@ jobs:
   # Publish main package
   publish-main:
     name: Publish Main Package
-    needs: [build, verify-binaries, publish-packages]
+    needs: [build, verify-binaries, publish-packages, publish-main-runtime-deps]
     runs-on: ubuntu-latest
     if: |
       always() &&
       (github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease') &&
       needs.build.result == 'success' &&
       (needs.verify-binaries.result == 'success' || (needs.verify-binaries.result == 'skipped' && github.event.inputs.package == 'cli-prerelease')) &&
-      (needs.publish-packages.result == 'success' || needs.publish-packages.result == 'skipped')
+      (needs.publish-packages.result == 'success' || needs.publish-packages.result == 'skipped') &&
+      (needs.publish-main-runtime-deps.result == 'success' || needs.publish-main-runtime-deps.result == 'skipped')
 
     steps:
       - name: Checkout code
@@ -1517,11 +1625,53 @@ jobs:
 
       # NOTE: the root `agent-relay` CLI no longer bundles broker binaries in
       # its own tarball. Brokers ship as `@agent-relay/broker-<platform>-<arch>`
-      # optional-deps of `@agent-relay/sdk` (which is itself bundled here via
-      # bundledDependencies), so users still get a broker on install.
+      # optional-deps of `@agent-relay/sdk`, which the root package installs as
+      # an exact-version runtime dependency.
 
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
+
+      - name: Wait for root internal dependencies
+        if: github.event.inputs.dry_run != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t INTERNAL_DEPS < <(node --input-type=module -e "
+            import fs from 'node:fs';
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const deps = Object.entries(pkg.dependencies ?? {})
+              .filter(([name]) => name.startsWith('@agent-relay/'))
+              .map(([name, version]) => name + '@' + version);
+            console.log(deps.join('\n'));
+          ")
+
+          if [ "${#INTERNAL_DEPS[@]}" -eq 0 ]; then
+            echo "No @agent-relay/* root dependencies to verify."
+            exit 0
+          fi
+
+          for _ in {1..12}; do
+            missing=()
+            for spec in "${INTERNAL_DEPS[@]}"; do
+              if npm view "$spec" version >/dev/null 2>&1; then
+                echo "✓ $spec is available"
+              else
+                missing+=("$spec")
+              fi
+            done
+
+            if [ "${#missing[@]}" -eq 0 ]; then
+              echo "All root @agent-relay/* dependencies are available on npm."
+              exit 0
+            fi
+
+            echo "Waiting for npm registry propagation: ${missing[*]}"
+            sleep 10
+          done
+
+          echo "Timed out waiting for root @agent-relay/* dependencies:"
+          printf '  - %s\n' "${missing[@]}"
+          exit 1
 
       # bundledDependencies requires workspace packages to exist in
       # node_modules/ at pack time so npm can include them in the tarball.
@@ -1574,7 +1724,14 @@ jobs:
 
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
-        run: npm publish "$NPM_TARBALL" --access public --provenance --tag "${{ github.event.inputs.tag }}"
+        run: |
+          set -euo pipefail
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "agent-relay@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "agent-relay@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish "$NPM_TARBALL" --access public --provenance --tag "${{ github.event.inputs.tag }}"
 
   # Create git tag and release
   create-release:
