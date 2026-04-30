@@ -12,6 +12,7 @@ on:
           - main
           - cli-prerelease
           - sdk
+          - workflow-types
           - sdk-py
           - brand
         default: 'all'
@@ -738,6 +739,108 @@ jobs:
             }
           "
 
+  # Publish the SDK's exact-version internal runtime dependencies before the
+  # SDK. @agent-relay/sdk imports these packages at runtime and pins them to
+  # the release version, so they must exist on the registry before the SDK can
+  # be installed from npm. This also gives us one repair path for a partial
+  # publish: run package=workflow-types with custom_version=<broken-sdk-version>.
+  publish-sdk-internal-deps:
+    name: Publish SDK internal dep ${{ matrix.package }}
+    needs: [build, smoke-broker-packages]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk'
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        package:
+          - config
+          - github-primitive
+          - workflow-types
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
+      - name: Dry run check
+        if: github.event.inputs.dry_run == 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Publish to NPM
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+  # Publish workflow-types only. This is intentionally narrow: it repairs
+  # already-published SDK versions whose exact-version workflow-types package
+  # was missing, without attempting to republish @agent-relay/sdk.
+  publish-workflow-types-only:
+    name: Publish Workflow Types to NPM
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'workflow-types'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
+      - name: Dry run check
+        if: github.event.inputs.dry_run == 'true'
+        working-directory: packages/workflow-types
+        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Publish Workflow Types to NPM
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/workflow-types
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
   # Publish the per-platform broker packages first. @agent-relay/sdk declares
   # these as exact-version optionalDependencies, so they must exist on the
   # registry at the matching version before the SDK is published — otherwise
@@ -874,10 +977,12 @@ jobs:
           steps.publish_3.outcome == 'failure'
         run: exit 1
 
-  # Publish all packages in parallel (npm publish doesn't need deps published first)
+  # Publish remaining packages in parallel. SDK runtime deps that are pinned by
+  # exact version are published by publish-sdk-internal-deps before this matrix
+  # can publish @agent-relay/sdk.
   publish-packages:
     name: Publish ${{ matrix.package }}
-    needs: [build, build-broker, publish-broker-packages]
+    needs: [build, build-broker, publish-broker-packages, publish-sdk-internal-deps]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all'
     strategy:
@@ -892,7 +997,6 @@ jobs:
           - trajectory
           - hooks
           - user-directory
-          - config
           - cloud
           - sdk
           - telemetry
@@ -901,9 +1005,7 @@ jobs:
           - brand
           - gateway
           - credential-proxy
-          - github-primitive
           - browser-primitive
-          - workflow-types
 
     steps:
       - name: Checkout code
@@ -1000,7 +1102,7 @@ jobs:
   # Publish SDK only (when selected)
   publish-sdk-only:
     name: Publish SDK to NPM
-    needs: [build, build-broker, publish-broker-packages]
+    needs: [build, build-broker, publish-broker-packages, publish-sdk-internal-deps]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'sdk'
 
@@ -1945,6 +2047,8 @@ jobs:
         verify-acp-linux,
         verify-acp-macos,
         smoke-broker-packages,
+        publish-sdk-internal-deps,
+        publish-workflow-types-only,
         publish-broker-packages,
         publish-packages,
         publish-brand-only,
@@ -1989,6 +2093,8 @@ jobs:
           echo "| Verify relay-acp (Linux) | ${{ needs.verify-acp-linux.result == 'success' && '✅' || (needs.verify-acp-linux.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-acp-linux.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Verify relay-acp (macOS) | ${{ needs.verify-acp-macos.result == 'success' && '✅' || (needs.verify-acp-macos.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-acp-macos.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Smoke Broker Packages | ${{ needs.smoke-broker-packages.result == 'success' && '✅' || (needs.smoke-broker-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.smoke-broker-packages.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Publish SDK Internal Deps | ${{ needs.publish-sdk-internal-deps.result == 'success' && '✅' || (needs.publish-sdk-internal-deps.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-sdk-internal-deps.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Publish Workflow Types Only | ${{ needs.publish-workflow-types-only.result == 'success' && '✅' || (needs.publish-workflow-types-only.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-workflow-types-only.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Broker Packages | ${{ needs.publish-broker-packages.result == 'success' && '✅' || (needs.publish-broker-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-broker-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Packages | ${{ needs.publish-packages.result == 'success' && '✅' || (needs.publish-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Brand | ${{ needs.publish-brand-only.result == 'success' && '✅' || (needs.publish-brand-only.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-brand-only.result }} |" >> $GITHUB_STEP_SUMMARY
