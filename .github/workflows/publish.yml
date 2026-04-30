@@ -1599,6 +1599,8 @@ jobs:
     name: Publish Main Package
     needs: [build, verify-binaries, publish-packages, publish-main-runtime-deps]
     runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.publish_root.outputs.published }}
     if: |
       always() &&
       (github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease') &&
@@ -1723,15 +1725,18 @@ jobs:
           npm publish "$NPM_TARBALL" --dry-run --access public --tag "${{ github.event.inputs.tag }}"
 
       - name: Publish to NPM
+        id: publish_root
         if: github.event.inputs.dry_run != 'true'
         run: |
           set -euo pipefail
           PKG_VERSION=$(node -p "require('./package.json').version")
           if npm view "agent-relay@${PKG_VERSION}" version >/dev/null 2>&1; then
             echo "agent-relay@${PKG_VERSION} already exists on npm; skipping publish"
+            echo "published=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           npm publish "$NPM_TARBALL" --access public --provenance --tag "${{ github.event.inputs.tag }}"
+          echo "published=true" >> "$GITHUB_OUTPUT"
 
   # Create git tag and release
   create-release:
@@ -1742,7 +1747,8 @@ jobs:
       always() &&
       github.event.inputs.package != 'cli-prerelease' &&
       github.event.inputs.dry_run != 'true' &&
-      needs.publish-main.result == 'success'
+      needs.publish-main.result == 'success' &&
+      needs.publish-main.outputs.published == 'true'
 
     steps:
       - name: Setup Github App
