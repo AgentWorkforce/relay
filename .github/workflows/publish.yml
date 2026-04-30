@@ -1142,10 +1142,41 @@ jobs:
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
 
+      - name: Dry run SDK internal deps
+        if: github.event.inputs.dry_run == 'true'
+        run: |
+          set -euo pipefail
+          for package in config github-primitive workflow-types; do
+            echo "Dry run - would publish @agent-relay/${package}"
+            (cd "packages/${package}" && npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts)
+          done
+
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/sdk
         run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Publish SDK internal deps to NPM
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.build.outputs.new_version }}"
+
+          publish_if_missing() {
+            local package="$1"
+            local name="@agent-relay/${package}"
+            if npm view "${name}@${VERSION}" version >/dev/null 2>&1; then
+              echo "✓ ${name}@${VERSION} is already published"
+              return
+            fi
+
+            echo "Publishing ${name}@${VERSION}"
+            (cd "packages/${package}" && npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts)
+          }
+
+          publish_if_missing config
+          publish_if_missing workflow-types
+          publish_if_missing github-primitive
 
       - name: Publish SDK to NPM
         if: github.event.inputs.dry_run != 'true'
