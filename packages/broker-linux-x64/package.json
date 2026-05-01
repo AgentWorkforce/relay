@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/broker-linux-x64",
-  "version": "6.0.6",
+  "version": "6.0.7",
   "description": "agent-relay-broker binary for linux x64. Installed automatically as an optional dependency of @agent-relay/sdk.",
   "files": [
     "bin"
