@@ -86,13 +86,22 @@ function validateYamlWorkflow(content: string): void {
 }
 
 function stripYamlScalar(raw: string): string {
-  let value = raw.trim();
+  const value = raw.trim();
+  // Quoted scalars: locate the matching closing quote and strip a trailing
+  // comment only after the close. Avoids corrupting values like
+  // `"Fix issue #123"` where `#` is part of the string, not a YAML comment.
+  if (value.startsWith('"') || value.startsWith("'")) {
+    const quote = value[0];
+    const close = value.indexOf(quote, 1);
+    if (close !== -1) {
+      return value.slice(1, close);
+    }
+    // Unterminated quote — fall through and treat as a plain scalar.
+  }
+  // Unquoted scalar: a `#` preceded by whitespace starts a YAML comment.
   const commentIndex = value.search(/\s#/);
   if (commentIndex !== -1) {
-    value = value.slice(0, commentIndex).trim();
-  }
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-    return value.slice(1, -1);
+    return value.slice(0, commentIndex).trim();
   }
   return value;
 }
