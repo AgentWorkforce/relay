@@ -1,4 +1,9 @@
-import { createHash, createPrivateKey, generateKeyPairSync, type KeyObject } from 'node:crypto';
+import {
+  createHash,
+  createPrivateKey,
+  generateKeyPairSync,
+  type KeyObject,
+} from 'node:crypto';
 import { createServer as createHttpServer, type Server } from 'node:http';
 
 export const RELAYAUTH_JWKS_URL_ENV = 'RELAYAUTH_JWKS_URL';

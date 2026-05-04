@@ -41,9 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.7] - 2026-05-01
 
 ### Technical Perspective
-
 #### Releases
-
 - v6.0.7
 
 ---
@@ -51,16 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.6] - 2026-04-30
 
 ### Product Perspective
-
 #### User-Impacting Fixes
-
 - Add repository metadata for workflow types (#809) (#809)
 - Publish SDK internal deps before sdk (#806) (#806)
 
 ### Technical Perspective
-
 #### Releases
-
 - v6.0.6
 
 ---
@@ -68,16 +62,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.4] - 2026-04-30
 
 ### Product Perspective
-
 #### User-Impacting Fixes
-
 - Publish SDK workflow types before SDK (#807) (#807)
 - Pack github-primitive + workflow-types in smoke; publish workflow-types (#804) (#804)
 
 ### Technical Perspective
-
 #### Releases
-
 - v6.0.4
 
 ---
@@ -85,21 +75,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.3] - 2026-04-29
 
 ### Product Perspective
-
 #### User-Facing Features & Improvements
-
 - **Expose connectProvider() in @agent-relay/cloud SDK (#798)** (#798)
 - **Expose runScriptWorkflow() in @agent-relay/sdk/workflows (#799)** (#799)
 - **Bundle @agent-relay/github-primitive at /github subpath (#782)** (#782)
 
 #### User-Impacting Fixes
-
 - Update codegen-models workflow to use new Python output path (#780) (#780)
 
 ### Technical Perspective
-
 #### Releases
-
 - v6.0.3
 
 ---

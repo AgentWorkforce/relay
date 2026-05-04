@@ -93,7 +93,8 @@ function getCachedConfig(): ServiceConfigCache {
     return {
       relayauthRoot: getStringValue('RELAYAUTH_ROOT', 'relayauthRoot'),
       relayfileRoot: getStringValue('RELAYFILE_ROOT', 'relayfileRoot'),
-      logDir: getStringValue('RELAY_LOG_DIR', 'logDir'),
+      logDir:
+        getStringValue('RELAY_LOG_DIR', 'logDir'),
       portAuth: getPortValue('RELAY_AUTH_PORT', 'portAuth'),
       portFile: getPortValue('RELAY_FILE_PORT', 'portFile'),
       secret:
@@ -128,9 +129,7 @@ export function pickFirstString(values: Array<string | undefined>): string {
 }
 
 function resolveExistingPath(candidates: Array<string | undefined>, fallback: string): string {
-  const normalized = candidates.filter(
-    (candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0
-  );
+  const normalized = candidates.filter((candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0);
   return path.resolve(normalized.find((candidate) => existsSync(candidate)) ?? normalized[0] ?? fallback);
 }
 
@@ -161,20 +160,41 @@ export function resolveServiceConfig(overrides: Partial<ServiceConfig> = {}): Se
   );
 
   const logDir = path.resolve(
-    pickFirstString([overrides.logDir, process.env.RELAY_LOG_DIR, cache.logDir, path.join('.relay', 'logs')])
+    pickFirstString([
+      overrides.logDir,
+      process.env.RELAY_LOG_DIR,
+      cache.logDir,
+      path.join('.relay', 'logs'),
+    ])
   );
 
   return {
     relayauthRoot,
     relayfileRoot,
-    secret: pickFirstString([overrides.secret, process.env.SIGNING_KEY, cache.secret]),
-    jwksUrl: pickFirstString([overrides.jwksUrl, process.env.RELAYAUTH_JWKS_URL, cache.jwksUrl]) || undefined,
+    secret: pickFirstString([
+      overrides.secret,
+      process.env.SIGNING_KEY,
+      cache.secret,
+    ]),
+    jwksUrl: pickFirstString([
+      overrides.jwksUrl,
+      process.env.RELAYAUTH_JWKS_URL,
+      cache.jwksUrl,
+    ]) || undefined,
     portAuth: parsePositiveInt(
-      pickFirst<string | number>([process.env.RELAY_AUTH_PORT, overrides.portAuth, cache.portAuth]),
+      pickFirst<string | number>([
+        process.env.RELAY_AUTH_PORT,
+        overrides.portAuth,
+        cache.portAuth,
+      ]),
       DEFAULT_PORT_AUTH
     ),
     portFile: parsePositiveInt(
-      pickFirst<string | number>([process.env.RELAY_FILE_PORT, overrides.portFile, cache.portFile]),
+      pickFirst<string | number>([
+        process.env.RELAY_FILE_PORT,
+        overrides.portFile,
+        cache.portFile,
+      ]),
       DEFAULT_PORT_FILE
     ),
     logDir,
@@ -286,13 +306,7 @@ async function checkHealth(url: string): Promise<boolean> {
   }
 }
 
-function spawnLogged(
-  command: string,
-  args: string[],
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-  logPath: string
-): ChildProcess {
+function spawnLogged(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, logPath: string): ChildProcess {
   const logFile = openSync(logPath, 'a');
   try {
     const child = spawn(command, args, {
@@ -366,9 +380,7 @@ export async function healthCheck(port: number, timeout: number): Promise<boolea
   return false;
 }
 
-export async function startServices(
-  config: Partial<ServiceConfig> = {}
-): Promise<{ authPid: number; filePid: number }> {
+export async function startServices(config: Partial<ServiceConfig> = {}): Promise<{ authPid: number; filePid: number }> {
   const resolved = resolveServiceConfig(config);
   const existing = readPids();
 

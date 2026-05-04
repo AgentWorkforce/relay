@@ -26,7 +26,7 @@ export {
   type RelayDelivery,
   type SdkToBroker,
   type WorkerToBroker,
-} from './protocol.js';
+} from "./protocol.js";
 
 // Consensus types + pure functions (from the Node-free helpers file)
 export {
@@ -45,7 +45,7 @@ export {
   type ConsensusConfig,
   type ConsensusEvents,
   type ParsedProposalCommand,
-} from './consensus-helpers.js';
+} from "./consensus-helpers.js";
 
 // Shadow manager — pure in-memory, no I/O deps
 export {
@@ -54,4 +54,4 @@ export {
   type ShadowRelationship,
   type ShadowCopy,
   type SpeakOnTrigger,
-} from './shadow.js';
+} from "./shadow.js";

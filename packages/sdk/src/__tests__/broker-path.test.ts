@@ -11,7 +11,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'vitest';
 
-import { formatBrokerNotFoundError, getBrokerBinaryPath, getOptionalDepPackageName } from '../broker-path.js';
+import {
+  formatBrokerNotFoundError,
+  getBrokerBinaryPath,
+  getOptionalDepPackageName,
+} from '../broker-path.js';
 
 function stageOptionalDepPackage(root: string): string {
   const pkgName = getOptionalDepPackageName();
@@ -21,7 +25,7 @@ function stageOptionalDepPackage(root: string): string {
   mkdirSync(binDir, { recursive: true });
   writeFileSync(
     join(pkgDir, 'package.json'),
-    JSON.stringify({ name: pkgName, version: '0.0.0-test' }, null, 2)
+    JSON.stringify({ name: pkgName, version: '0.0.0-test' }, null, 2),
   );
   const binaryPath = join(binDir, `agent-relay-broker${ext}`);
   writeFileSync(binaryPath, '#!/bin/sh\nexit 0\n');
@@ -51,7 +55,10 @@ describe('broker-path', () => {
   });
 
   test('getOptionalDepPackageName returns @agent-relay/broker-<platform>-<arch>', () => {
-    assert.equal(getOptionalDepPackageName('darwin', 'arm64'), '@agent-relay/broker-darwin-arm64');
+    assert.equal(
+      getOptionalDepPackageName('darwin', 'arm64'),
+      '@agent-relay/broker-darwin-arm64',
+    );
     assert.equal(getOptionalDepPackageName('linux', 'x64'), '@agent-relay/broker-linux-x64');
     assert.equal(getOptionalDepPackageName('win32', 'x64'), '@agent-relay/broker-win32-x64');
   });

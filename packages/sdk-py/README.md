@@ -26,12 +26,12 @@ The SDK ships per-platform wheels with the broker binary embedded. `pip install`
 - Python 3.10+
 - A supported platform (the wheel ships a prebuilt `agent-relay-broker`):
 
-  | Platform            | Wheel tag                                      |
-  | ------------------- | ---------------------------------------------- |
-  | macOS Apple Silicon | `macosx_11_0_arm64`                            |
-  | macOS Intel         | `macosx_10_12_x86_64`                          |
-  | Linux x86_64        | `manylinux_2_17_x86_64.manylinux2014_x86_64`   |
-  | Linux aarch64       | `manylinux_2_17_aarch64.manylinux2014_aarch64` |
+  | Platform              | Wheel tag                                          |
+  |-----------------------|----------------------------------------------------|
+  | macOS Apple Silicon   | `macosx_11_0_arm64`                                |
+  | macOS Intel           | `macosx_10_12_x86_64`                              |
+  | Linux x86_64          | `manylinux_2_17_x86_64.manylinux2014_x86_64`       |
+  | Linux aarch64         | `manylinux_2_17_aarch64.manylinux2014_aarch64`     |
 
   Linux binaries are built statically against musl, so they install on glibc and musl distros (Debian, Ubuntu, RHEL, Alpine, …). Other platforms (Windows, FreeBSD, linux-armv7) are unsupported — `pip install` will fail with "no matching distribution found".
 

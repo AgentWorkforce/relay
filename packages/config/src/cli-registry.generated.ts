@@ -447,48 +447,13 @@ export const CLAUDE_MODEL_OPTIONS: ModelOption[] = [
  * Codex CLI model options for UI dropdowns.
  */
 export const CODEX_MODEL_OPTIONS: ModelOption[] = [
-  {
-    value: 'gpt-5.4',
-    label: 'GPT-5.4 — Frontier model for complex coding, research, and real-world work.',
-    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-    defaultReasoningEffort: 'xhigh',
-  },
-  {
-    value: 'gpt-5.3-codex',
-    label: 'GPT-5.3 Codex — Frontier agentic coding model',
-    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-    defaultReasoningEffort: 'xhigh',
-  },
-  {
-    value: 'gpt-5.3-codex-spark',
-    label: 'GPT-5.3 Codex Spark — Ultra-fast coding model',
-    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-    defaultReasoningEffort: 'xhigh',
-  },
-  {
-    value: 'gpt-5.2-codex',
-    label: 'GPT-5.2 Codex — Frontier agentic coding model',
-    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-    defaultReasoningEffort: 'xhigh',
-  },
-  {
-    value: 'gpt-5.2',
-    label: 'GPT-5.2 — Frontier model, knowledge & reasoning',
-    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-    defaultReasoningEffort: 'xhigh',
-  },
-  {
-    value: 'gpt-5.1-codex-max',
-    label: 'GPT-5.1 Codex Max — Deep and fast reasoning',
-    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-    defaultReasoningEffort: 'xhigh',
-  },
-  {
-    value: 'gpt-5.1-codex-mini',
-    label: 'GPT-5.1 Codex Mini — Cheaper, faster',
-    reasoningEfforts: ['medium', 'high'],
-    defaultReasoningEffort: 'high',
-  },
+  { value: 'gpt-5.4', label: 'GPT-5.4 — Frontier model for complex coding, research, and real-world work.', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark — Ultra-fast coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  { value: 'gpt-5.2', label: 'GPT-5.2 — Frontier model, knowledge & reasoning', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max — Deep and fast reasoning', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini — Cheaper, faster', reasoningEfforts: ["medium","high"], defaultReasoningEffort: 'high' },
 ];
 
 /**
@@ -670,57 +635,22 @@ export const OPENCODE_MODEL_OPTIONS: ModelOption[] = [
  * Claude Code model metadata keyed by model id.
  */
 export const CLAUDE_MODEL_METADATA: Record<ClaudeModel, ModelOption> = {
-  sonnet: { value: 'sonnet', label: 'Sonnet' },
-  opus: { value: 'opus', label: 'Opus' },
-  haiku: { value: 'haiku', label: 'Haiku' },
+  'sonnet': { value: 'sonnet', label: 'Sonnet' },
+  'opus': { value: 'opus', label: 'Opus' },
+  'haiku': { value: 'haiku', label: 'Haiku' },
 };
 
 /**
  * Codex CLI model metadata keyed by model id.
  */
 export const CODEX_MODEL_METADATA: Record<CodexModel, ModelOption> = {
-  'gpt-5.4': {
-    value: 'gpt-5.4',
-    label: 'GPT-5.4 — Frontier model for complex coding, research, and real-world work.',
-    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-    defaultReasoningEffort: 'xhigh',
-  },
-  'gpt-5.3-codex': {
-    value: 'gpt-5.3-codex',
-    label: 'GPT-5.3 Codex — Frontier agentic coding model',
-    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-    defaultReasoningEffort: 'xhigh',
-  },
-  'gpt-5.3-codex-spark': {
-    value: 'gpt-5.3-codex-spark',
-    label: 'GPT-5.3 Codex Spark — Ultra-fast coding model',
-    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-    defaultReasoningEffort: 'xhigh',
-  },
-  'gpt-5.2-codex': {
-    value: 'gpt-5.2-codex',
-    label: 'GPT-5.2 Codex — Frontier agentic coding model',
-    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-    defaultReasoningEffort: 'xhigh',
-  },
-  'gpt-5.2': {
-    value: 'gpt-5.2',
-    label: 'GPT-5.2 — Frontier model, knowledge & reasoning',
-    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-    defaultReasoningEffort: 'xhigh',
-  },
-  'gpt-5.1-codex-max': {
-    value: 'gpt-5.1-codex-max',
-    label: 'GPT-5.1 Codex Max — Deep and fast reasoning',
-    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-    defaultReasoningEffort: 'xhigh',
-  },
-  'gpt-5.1-codex-mini': {
-    value: 'gpt-5.1-codex-mini',
-    label: 'GPT-5.1 Codex Mini — Cheaper, faster',
-    reasoningEfforts: ['medium', 'high'],
-    defaultReasoningEffort: 'high',
-  },
+  'gpt-5.4': { value: 'gpt-5.4', label: 'GPT-5.4 — Frontier model for complex coding, research, and real-world work.', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  'gpt-5.3-codex': { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  'gpt-5.3-codex-spark': { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark — Ultra-fast coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  'gpt-5.2-codex': { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  'gpt-5.2': { value: 'gpt-5.2', label: 'GPT-5.2 — Frontier model, knowledge & reasoning', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  'gpt-5.1-codex-max': { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max — Deep and fast reasoning', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  'gpt-5.1-codex-mini': { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini — Cheaper, faster', reasoningEfforts: ["medium","high"], defaultReasoningEffort: 'high' },
 };
 
 /**
@@ -750,19 +680,10 @@ export const CURSOR_MODEL_METADATA: Record<CursorModel, ModelOption> = {
   'gpt-5.3-codex-xhigh': { value: 'gpt-5.3-codex-xhigh', label: 'Codex 5.3 Extra High' },
   'gpt-5.3-codex-xhigh-fast': { value: 'gpt-5.3-codex-xhigh-fast', label: 'Codex 5.3 Extra High Fast' },
   'gpt-5.2': { value: 'gpt-5.2', label: 'GPT-5.2' },
-  'gpt-5.3-codex-spark-preview-low': {
-    value: 'gpt-5.3-codex-spark-preview-low',
-    label: 'Codex 5.3 Spark Low',
-  },
+  'gpt-5.3-codex-spark-preview-low': { value: 'gpt-5.3-codex-spark-preview-low', label: 'Codex 5.3 Spark Low' },
   'gpt-5.3-codex-spark-preview': { value: 'gpt-5.3-codex-spark-preview', label: 'Codex 5.3 Spark' },
-  'gpt-5.3-codex-spark-preview-high': {
-    value: 'gpt-5.3-codex-spark-preview-high',
-    label: 'Codex 5.3 Spark High',
-  },
-  'gpt-5.3-codex-spark-preview-xhigh': {
-    value: 'gpt-5.3-codex-spark-preview-xhigh',
-    label: 'Codex 5.3 Spark Extra High',
-  },
+  'gpt-5.3-codex-spark-preview-high': { value: 'gpt-5.3-codex-spark-preview-high', label: 'Codex 5.3 Spark High' },
+  'gpt-5.3-codex-spark-preview-xhigh': { value: 'gpt-5.3-codex-spark-preview-xhigh', label: 'Codex 5.3 Spark Extra High' },
   'gpt-5.2-codex-low': { value: 'gpt-5.2-codex-low', label: 'Codex 5.2 Low' },
   'gpt-5.2-codex-low-fast': { value: 'gpt-5.2-codex-low-fast', label: 'Codex 5.2 Low Fast' },
   'gpt-5.2-codex': { value: 'gpt-5.2-codex', label: 'Codex 5.2' },
@@ -774,54 +695,27 @@ export const CURSOR_MODEL_METADATA: Record<CursorModel, ModelOption> = {
   'gpt-5.1-codex-max-low': { value: 'gpt-5.1-codex-max-low', label: 'Codex 5.1 Max Low' },
   'gpt-5.1-codex-max-low-fast': { value: 'gpt-5.1-codex-max-low-fast', label: 'Codex 5.1 Max Low Fast' },
   'gpt-5.1-codex-max-medium': { value: 'gpt-5.1-codex-max-medium', label: 'Codex 5.1 Max' },
-  'gpt-5.1-codex-max-medium-fast': {
-    value: 'gpt-5.1-codex-max-medium-fast',
-    label: 'Codex 5.1 Max Medium Fast',
-  },
+  'gpt-5.1-codex-max-medium-fast': { value: 'gpt-5.1-codex-max-medium-fast', label: 'Codex 5.1 Max Medium Fast' },
   'gpt-5.1-codex-max-high': { value: 'gpt-5.1-codex-max-high', label: 'Codex 5.1 Max High' },
   'gpt-5.1-codex-max-high-fast': { value: 'gpt-5.1-codex-max-high-fast', label: 'Codex 5.1 Max High Fast' },
   'gpt-5.1-codex-max-xhigh': { value: 'gpt-5.1-codex-max-xhigh', label: 'Codex 5.1 Max Extra High' },
-  'gpt-5.1-codex-max-xhigh-fast': {
-    value: 'gpt-5.1-codex-max-xhigh-fast',
-    label: 'Codex 5.1 Max Extra High Fast',
-  },
-  'claude-opus-4-7-thinking-high': {
-    value: 'claude-opus-4-7-thinking-high',
-    label: 'Opus 4.7 1M High Thinking',
-  },
+  'gpt-5.1-codex-max-xhigh-fast': { value: 'gpt-5.1-codex-max-xhigh-fast', label: 'Codex 5.1 Max Extra High Fast' },
+  'claude-opus-4-7-thinking-high': { value: 'claude-opus-4-7-thinking-high', label: 'Opus 4.7 1M High Thinking' },
   'gpt-5.4-high': { value: 'gpt-5.4-high', label: 'GPT-5.4 1M High' },
   'gpt-5.4-high-fast': { value: 'gpt-5.4-high-fast', label: 'GPT-5.4 High Fast' },
   'gpt-5.4-xhigh-fast': { value: 'gpt-5.4-xhigh-fast', label: 'GPT-5.4 Extra High Fast' },
-  'claude-4.6-opus-high-thinking-fast': {
-    value: 'claude-4.6-opus-high-thinking-fast',
-    label: 'Opus 4.6 1M Thinking Fast',
-  },
+  'claude-4.6-opus-high-thinking-fast': { value: 'claude-4.6-opus-high-thinking-fast', label: 'Opus 4.6 1M Thinking Fast' },
   'claude-4.6-sonnet-medium': { value: 'claude-4.6-sonnet-medium', label: 'Sonnet 4.6 1M' },
-  'claude-4.6-sonnet-medium-thinking': {
-    value: 'claude-4.6-sonnet-medium-thinking',
-    label: 'Sonnet 4.6 1M Thinking',
-  },
+  'claude-4.6-sonnet-medium-thinking': { value: 'claude-4.6-sonnet-medium-thinking', label: 'Sonnet 4.6 1M Thinking' },
   'claude-opus-4-7-low': { value: 'claude-opus-4-7-low', label: 'Opus 4.7 1M Low' },
   'claude-opus-4-7-medium': { value: 'claude-opus-4-7-medium', label: 'Opus 4.7 1M Medium' },
   'claude-opus-4-7-high': { value: 'claude-opus-4-7-high', label: 'Opus 4.7 1M High' },
   'claude-opus-4-7-xhigh': { value: 'claude-opus-4-7-xhigh', label: 'Opus 4.7 1M' },
   'claude-opus-4-7-max': { value: 'claude-opus-4-7-max', label: 'Opus 4.7 1M Max' },
-  'claude-opus-4-7-thinking-low': {
-    value: 'claude-opus-4-7-thinking-low',
-    label: 'Opus 4.7 1M Low Thinking',
-  },
-  'claude-opus-4-7-thinking-medium': {
-    value: 'claude-opus-4-7-thinking-medium',
-    label: 'Opus 4.7 1M Medium Thinking',
-  },
-  'claude-opus-4-7-thinking-xhigh': {
-    value: 'claude-opus-4-7-thinking-xhigh',
-    label: 'Opus 4.7 1M Thinking',
-  },
-  'claude-opus-4-7-thinking-max': {
-    value: 'claude-opus-4-7-thinking-max',
-    label: 'Opus 4.7 1M Max Thinking',
-  },
+  'claude-opus-4-7-thinking-low': { value: 'claude-opus-4-7-thinking-low', label: 'Opus 4.7 1M Low Thinking' },
+  'claude-opus-4-7-thinking-medium': { value: 'claude-opus-4-7-thinking-medium', label: 'Opus 4.7 1M Medium Thinking' },
+  'claude-opus-4-7-thinking-xhigh': { value: 'claude-opus-4-7-thinking-xhigh', label: 'Opus 4.7 1M Thinking' },
+  'claude-opus-4-7-thinking-max': { value: 'claude-opus-4-7-thinking-max', label: 'Opus 4.7 1M Max Thinking' },
   'gpt-5.4-low': { value: 'gpt-5.4-low', label: 'GPT-5.4 1M Low' },
   'gpt-5.4-medium': { value: 'gpt-5.4-medium', label: 'GPT-5.4 1M' },
   'gpt-5.4-medium-fast': { value: 'gpt-5.4-medium-fast', label: 'GPT-5.4 Fast' },
@@ -829,14 +723,8 @@ export const CURSOR_MODEL_METADATA: Record<CursorModel, ModelOption> = {
   'claude-4.6-opus-high': { value: 'claude-4.6-opus-high', label: 'Opus 4.6 1M' },
   'claude-4.6-opus-max': { value: 'claude-4.6-opus-max', label: 'Opus 4.6 1M Max' },
   'claude-4.6-opus-high-thinking': { value: 'claude-4.6-opus-high-thinking', label: 'Opus 4.6 1M Thinking' },
-  'claude-4.6-opus-max-thinking': {
-    value: 'claude-4.6-opus-max-thinking',
-    label: 'Opus 4.6 1M Max Thinking',
-  },
-  'claude-4.6-opus-max-thinking-fast': {
-    value: 'claude-4.6-opus-max-thinking-fast',
-    label: 'Opus 4.6 1M Max Thinking Fast',
-  },
+  'claude-4.6-opus-max-thinking': { value: 'claude-4.6-opus-max-thinking', label: 'Opus 4.6 1M Max Thinking' },
+  'claude-4.6-opus-max-thinking-fast': { value: 'claude-4.6-opus-max-thinking-fast', label: 'Opus 4.6 1M Max Thinking Fast' },
   'claude-4.5-opus-high': { value: 'claude-4.5-opus-high', label: 'Opus 4.5' },
   'claude-4.5-opus-high-thinking': { value: 'claude-4.5-opus-high-thinking', label: 'Opus 4.5 Thinking' },
   'gpt-5.2-low': { value: 'gpt-5.2-low', label: 'GPT-5.2 Low' },
@@ -1014,14 +902,20 @@ export function getModelMetadata(cli: CLI, model: string): ModelOption | undefin
 /**
  * Supported reasoning effort values for a specific CLI/model pair.
  */
-export function getSupportedReasoningEfforts(cli: CLI, model: string): ReasoningEffort[] | undefined {
+export function getSupportedReasoningEfforts(
+  cli: CLI,
+  model: string
+): ReasoningEffort[] | undefined {
   return getModelMetadata(cli, model)?.reasoningEfforts;
 }
 
 /**
  * Default reasoning effort for a specific CLI/model pair.
  */
-export function getDefaultReasoningEffort(cli: CLI, model: string): ReasoningEffort | undefined {
+export function getDefaultReasoningEffort(
+  cli: CLI,
+  model: string
+): ReasoningEffort | undefined {
   return getModelMetadata(cli, model)?.defaultReasoningEffort;
 }
 
