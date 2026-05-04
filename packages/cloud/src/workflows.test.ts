@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import type { RunWorkflowResponse } from './types.js';
 
 const s3SendMock = vi.hoisted(() => vi.fn());
 const ensureAuthenticatedMock = vi.hoisted(() => vi.fn());
@@ -111,6 +112,36 @@ describe('parseWorkflowPaths', () => {
     ]);
   });
 
+  it('extracts push-back options from YAML workflow paths', () => {
+    const paths = parseWorkflowPaths(
+      [
+        'version: "1.0"',
+        'name: multi',
+        'paths:',
+        '  - name: cloud',
+        '    path: .',
+        '    pushBranch: feature/api-keys',
+        '    pushBase: develop',
+        '    pushPrBody: Custom body',
+        'swarm:',
+        '  pattern: dag',
+        'agents: []',
+        'workflows: []',
+      ].join('\n'),
+      'yaml'
+    );
+
+    expect(paths).toEqual([
+      {
+        name: 'cloud',
+        path: '.',
+        pushBranch: 'feature/api-keys',
+        pushBase: 'develop',
+        pushPrBody: 'Custom body',
+      },
+    ]);
+  });
+
   it('extracts paths from TS workflow source', () => {
     const paths = parseWorkflowPaths(
       `
@@ -130,6 +161,36 @@ describe('parseWorkflowPaths', () => {
       { name: 'cloud', path: '.' },
       { name: 'relay', path: '../relay' },
     ]);
+  });
+
+  it('accepts widened run workflow patch push response types', () => {
+    const response = {
+      runId: 'run-1',
+      status: 'completed',
+      patches: {
+        cloud: {
+          s3Key: 'user/run/changes-cloud.patch',
+          pushedTo: {
+            branch: 'agent-relay/run-run-1',
+            prUrl: 'https://github.com/acme/cloud/pull/1',
+            sha: 'abc123',
+            base: { branch: 'main', sha: 'base123' },
+            strategy: 'contents_api',
+          },
+        },
+        relay: {
+          s3Key: 'user/run/changes-relay.patch',
+          pushError: {
+            code: 'base_branch_moved',
+            message: 'Base moved',
+            observedBaseSha: 'base456',
+            base: { branch: 'main', sha: 'base123' },
+          },
+        },
+      },
+    } satisfies RunWorkflowResponse;
+
+    expect(response.patches.cloud.pushedTo.prUrl).toContain('/pull/1');
   });
 
   it('extracts paths from fluent TS workflow source', () => {
@@ -258,6 +319,9 @@ describe('runWorkflow code sync', () => {
         'paths:',
         '  - name: cloud',
         '    path: cloud',
+        '    pushBranch: feature/api-keys',
+        '    pushBase: develop',
+        '    pushPrBody: Custom body',
         '  - name: relay',
         '    path: relay',
         'swarm:',
@@ -282,6 +346,9 @@ describe('runWorkflow code sync', () => {
           s3CodeKey: 'code-cloud.tar.gz',
           repoOwner: 'AgentWorkforce',
           repoName: 'cloud',
+          pushBranch: 'feature/api-keys',
+          pushBase: 'develop',
+          pushPrBody: 'Custom body',
         },
         {
           name: 'relay',
@@ -290,6 +357,45 @@ describe('runWorkflow code sync', () => {
       ],
     });
     expect((runBodies[0] as { s3CodeKey?: unknown }).s3CodeKey).toBeUndefined();
+  });
+
+  it('relativizes workflowPath against the declared path that contains it, not paths[0]', async () => {
+    await mkdir('cloud', { recursive: true });
+    await mkdir('relay/workflows', { recursive: true });
+    await writeFile('cloud/README.md', 'cloud\n');
+    await writeFile('relay/README.md', 'relay\n');
+
+    // Workflow file lives inside the SECOND declared path (relay/), not the first (cloud/).
+    const workflowPath = path.join(tmpRoot, 'relay/workflows/thing.yaml');
+    await writeFile(
+      workflowPath,
+      [
+        'version: "1.0"',
+        'name: multi',
+        'paths:',
+        '  - name: cloud',
+        '    path: ../cloud',
+        '  - name: relay',
+        '    path: ../relay',
+        'swarm:',
+        '  pattern: dag',
+        'agents: []',
+        'workflows: []',
+      ].join('\n')
+    );
+    const runBodies: unknown[] = [];
+    mockPrepareAndRun(runBodies);
+
+    // Run from the relay dir so `../cloud` and `../relay` resolve correctly.
+    const prevCwd = process.cwd();
+    process.chdir(path.join(tmpRoot, 'relay'));
+    try {
+      await runWorkflow(workflowPath);
+    } finally {
+      process.chdir(prevCwd);
+    }
+
+    expect((runBodies[0] as { workflowPath?: string }).workflowPath).toBe('workflows/thing.yaml');
   });
 
   it('falls back to the legacy single tarball when no paths are declared', async () => {

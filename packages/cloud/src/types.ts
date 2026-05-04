@@ -54,6 +54,9 @@ export type PathSubmission = {
   s3CodeKey: string;
   repoOwner?: string;
   repoName?: string;
+  pushBranch?: string;
+  pushBase?: string;
+  pushPrBody?: string;
 };
 
 export type RunWorkflowOptions = {
@@ -69,7 +72,26 @@ export type RunWorkflowResponse = {
   runId: string;
   sandboxId?: string;
   status: string;
-  patches?: Record<string, { s3Key: string; hasChanges?: boolean }>;
+  patches?: Record<
+    string,
+    {
+      s3Key: string;
+      hasChanges?: boolean;
+      pushedTo?: {
+        branch: string;
+        prUrl: string;
+        sha: string;
+        base: { branch: string; sha: string };
+        strategy?: 'contents_api' | 'git_db';
+      };
+      pushError?: {
+        code: string;
+        message: string;
+        observedBaseSha?: string;
+        base?: { branch: string; sha: string };
+      };
+    }
+  >;
   [key: string]: unknown;
 };
 
@@ -82,9 +104,6 @@ export type WorkflowLogsResponse = {
 };
 
 export type SyncPatchResponse = {
-  // Legacy single-tarball shape: top-level patch + hasChanges.
-  // Multi-path shape (Phase B) returns `patches` keyed by path name and may
-  // omit the legacy fields entirely. Consumers must handle both.
   patch?: string;
   hasChanges?: boolean;
   patches?: Record<string, { patch: string; hasChanges: boolean }>;

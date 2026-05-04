@@ -39,6 +39,9 @@ type PrepareWorkflowResponse = {
 type WorkflowPathDefinition = {
   name: string;
   path: string;
+  pushBranch?: string;
+  pushBase?: string;
+  pushPrBody?: string;
 };
 
 type RunWorkflowOptions = {
@@ -86,13 +89,22 @@ function validateYamlWorkflow(content: string): void {
 }
 
 function stripYamlScalar(raw: string): string {
-  let value = raw.trim();
+  const value = raw.trim();
+  // Quoted scalars: locate the matching closing quote and strip a trailing
+  // comment only after the close. Avoids corrupting values like
+  // `"Fix issue #123"` where `#` is part of the string, not a YAML comment.
+  if (value.startsWith('"') || value.startsWith("'")) {
+    const quote = value[0];
+    const close = value.indexOf(quote, 1);
+    if (close !== -1) {
+      return value.slice(1, close);
+    }
+    // Unterminated quote — fall through and treat as a plain scalar.
+  }
+  // Unquoted scalar: a `#` preceded by whitespace starts a YAML comment.
   const commentIndex = value.search(/\s#/);
   if (commentIndex !== -1) {
-    value = value.slice(0, commentIndex).trim();
-  }
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-    return value.slice(1, -1);
+    return value.slice(0, commentIndex).trim();
   }
   return value;
 }
@@ -104,9 +116,25 @@ function assignPathField(target: Partial<WorkflowPathDefinition>, text: string):
   const colonIndex = text.indexOf(':');
   if (colonIndex === -1) return;
   const key = text.slice(0, colonIndex).trimEnd();
-  if (key !== 'name' && key !== 'path') return;
   if (!FIELD_KEY_RE.test(key)) return;
-  target[key] = stripYamlScalar(text.slice(colonIndex + 1));
+  const value = stripYamlScalar(text.slice(colonIndex + 1));
+  switch (key) {
+    case 'name':
+      target.name = value;
+      break;
+    case 'path':
+      target.path = value;
+      break;
+    case 'pushBranch':
+      target.pushBranch = value;
+      break;
+    case 'pushBase':
+      target.pushBase = value;
+      break;
+    case 'pushPrBody':
+      target.pushPrBody = value;
+      break;
+  }
 }
 
 function parseYamlWorkflowPaths(content: string): WorkflowPathDefinition[] {
@@ -118,7 +146,13 @@ function parseYamlWorkflowPaths(content: string): WorkflowPathDefinition[] {
 
   const flush = () => {
     if (current?.name && current.path) {
-      paths.push({ name: current.name, path: current.path });
+      paths.push({
+        name: current.name,
+        path: current.path,
+        ...(current.pushBranch ? { pushBranch: current.pushBranch } : {}),
+        ...(current.pushBase ? { pushBase: current.pushBase } : {}),
+        ...(current.pushPrBody ? { pushPrBody: current.pushPrBody } : {}),
+      });
     }
     current = null;
   };
@@ -244,7 +278,16 @@ function parseTypeScriptWorkflowPaths(content: string): WorkflowPathDefinition[]
       const name = readStringProperty(objectLiteral, 'name');
       const pathValue = readStringProperty(objectLiteral, 'path');
       if (name && pathValue) {
-        paths.push({ name, path: pathValue });
+        const pushBranch = readStringProperty(objectLiteral, 'pushBranch');
+        const pushBase = readStringProperty(objectLiteral, 'pushBase');
+        const pushPrBody = readStringProperty(objectLiteral, 'pushPrBody');
+        paths.push({
+          name,
+          path: pathValue,
+          ...(pushBranch ? { pushBranch } : {}),
+          ...(pushBase ? { pushBase } : {}),
+          ...(pushPrBody ? { pushPrBody } : {}),
+        });
       }
     }
   }
@@ -523,6 +566,9 @@ export async function runWorkflow(
           name: pathDef.name,
           s3CodeKey,
           ...(repo ? { repoOwner: repo.repoOwner, repoName: repo.repoName } : {}),
+          ...(pathDef.pushBranch ? { pushBranch: pathDef.pushBranch } : {}),
+          ...(pathDef.pushBase ? { pushBase: pathDef.pushBase } : {}),
+          ...(pathDef.pushPrBody ? { pushPrBody: pathDef.pushPrBody } : {}),
         });
       }
 

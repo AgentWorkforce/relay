@@ -71,6 +71,46 @@ function parseWorkflowFileType(value: string): WorkflowFileType {
   throw new InvalidArgumentError('Expected workflow type to be one of: yaml, ts, py');
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function renderPatchPushResults(patches: unknown, log: (...args: unknown[]) => void): void {
+  if (!isObject(patches)) {
+    return;
+  }
+
+  const entries = Object.entries(patches);
+  if (entries.length === 0) {
+    return;
+  }
+
+  log('Patches:');
+  for (const [name, rawEntry] of entries) {
+    if (!isObject(rawEntry)) {
+      log(`  ${name}: patch pending - run still active`);
+      continue;
+    }
+
+    const pushedTo = rawEntry.pushedTo;
+    if (isObject(pushedTo) && typeof pushedTo.prUrl === 'string') {
+      const branch = typeof pushedTo.branch === 'string' ? ` (${pushedTo.branch})` : '';
+      log(`  ${name}: ${pushedTo.prUrl}${branch}`);
+      continue;
+    }
+
+    const pushError = rawEntry.pushError;
+    if (isObject(pushError)) {
+      const code = typeof pushError.code === 'string' ? pushError.code : 'unknown';
+      const message = typeof pushError.message === 'string' ? pushError.message : 'push failed';
+      log(`  ${name}: push failed: ${code}: ${message}`);
+      continue;
+    }
+
+    log(`  ${name}: patch pending - run still active`);
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -301,6 +341,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
               deps.log(`Sandbox: ${result.sandboxId}`);
             }
             deps.log(`Status: ${result.status}`);
+            renderPatchPushResults(result.patches, deps.log);
             deps.log(`\nView logs:  agent-relay cloud logs ${result.runId} --follow`);
             deps.log(`Sync code:  agent-relay cloud sync ${result.runId}`);
           }
@@ -344,6 +385,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       if (typeof result.updatedAt === 'string') {
         deps.log(`Updated: ${result.updatedAt}`);
       }
+      renderPatchPushResults(result.patches, deps.log);
     });
 
   // ── logs ───────────────────────────────────────────────────────────────────
