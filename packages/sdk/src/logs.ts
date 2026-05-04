@@ -5,8 +5,8 @@
  * `.agent-relay/worker-logs/{agent}.log`.
  */
 
-import { open, readdir, stat } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { open, readdir, stat } from 'node:fs/promises';
+import { join, resolve, sep } from 'node:path';
 
 export interface GetLogsOptions {
   /** Directory containing worker logs. Defaults to `.agent-relay/worker-logs` in cwd. */
@@ -25,10 +25,10 @@ export interface LogsResult {
 }
 
 export type LogFollowEvent =
-  | { type: "subscribed"; agent: string }
-  | { type: "history"; agent: string; lines: string[] }
-  | { type: "log"; agent: string; content: string }
-  | { type: "error"; agent: string; error: string; availableAgents?: string[] };
+  | { type: 'subscribed'; agent: string }
+  | { type: 'history'; agent: string; lines: string[] }
+  | { type: 'log'; agent: string; content: string }
+  | { type: 'error'; agent: string; error: string; availableAgents?: string[] };
 
 export interface FollowLogsOptions {
   /** Directory containing worker logs. Defaults to `.agent-relay/worker-logs` in cwd. */
@@ -54,13 +54,13 @@ const DEFAULT_LOG_FOLLOW_POLL_MS = 1000;
 const DEFAULT_LOG_HISTORY_LINES = 200;
 
 function getDefaultLogsDir(): string {
-  return join(process.cwd(), ".agent-relay", "team", "worker-logs");
+  return join(process.cwd(), '.agent-relay', 'team', 'worker-logs');
 }
 
 function splitLogLines(content: string): string[] {
   if (!content) return [];
-  const lines = content.split("\n");
-  if (lines.length > 0 && lines[lines.length - 1] === "") {
+  const lines = content.split('\n');
+  if (lines.length > 0 && lines[lines.length - 1] === '') {
     lines.pop();
   }
   return lines;
@@ -76,25 +76,25 @@ async function tailFile(filePath: string, lines: number): Promise<string> {
   const CHUNK_SIZE = 8192;
   let fh;
   try {
-    fh = await open(filePath, "r");
+    fh = await open(filePath, 'r');
     const { size } = await fh.stat();
-    if (size === 0) return "";
+    if (size === 0) return '';
 
     // For small files, just read the whole thing
     if (size <= CHUNK_SIZE) {
       const buf = Buffer.alloc(size);
       await fh.read(buf, 0, size, 0);
-      const content = buf.toString("utf-8");
-      const allLines = content.split("\n");
+      const content = buf.toString('utf-8');
+      const allLines = content.split('\n');
       // Strip trailing empty element from trailing newline
-      if (allLines.length > 0 && allLines[allLines.length - 1] === "") {
+      if (allLines.length > 0 && allLines[allLines.length - 1] === '') {
         allLines.pop();
       }
-      return allLines.slice(-lines).join("\n");
+      return allLines.slice(-lines).join('\n');
     }
 
     // For large files, read backward in chunks
-    let remaining = lines;
+    const remaining = lines;
     let position = size;
     const chunks: Buffer[] = [];
     let foundLines = 0;
@@ -121,15 +121,15 @@ async function tailFile(filePath: string, lines: number): Promise<string> {
       }
     }
 
-    const combined = Buffer.concat(chunks).toString("utf-8");
-    const allLines = combined.split("\n");
+    const combined = Buffer.concat(chunks).toString('utf-8');
+    const allLines = combined.split('\n');
     // Strip trailing empty element from trailing newline
-    if (trailingNewline && allLines.length > 0 && allLines[allLines.length - 1] === "") {
+    if (trailingNewline && allLines.length > 0 && allLines[allLines.length - 1] === '') {
       allLines.pop();
     }
-    return allLines.slice(-lines).join("\n");
+    return allLines.slice(-lines).join('\n');
   } catch {
-    return "";
+    return '';
   } finally {
     await fh?.close();
   }
@@ -137,23 +137,23 @@ async function tailFile(filePath: string, lines: number): Promise<string> {
 
 async function readFileDelta(
   filePath: string,
-  offset: number,
+  offset: number
 ): Promise<{ nextOffset: number; content: string }> {
   let fh;
   try {
-    fh = await open(filePath, "r");
+    fh = await open(filePath, 'r');
     const { size } = await fh.stat();
     const start = size < offset ? 0 : offset;
     if (size <= start) {
-      return { nextOffset: start, content: "" };
+      return { nextOffset: start, content: '' };
     }
 
     const length = size - start;
     const buffer = Buffer.alloc(length);
     await fh.read(buffer, 0, length, start);
-    return { nextOffset: size, content: buffer.toString("utf-8") };
+    return { nextOffset: size, content: buffer.toString('utf-8') };
   } catch {
-    return { nextOffset: offset, content: "" };
+    return { nextOffset: offset, content: '' };
   } finally {
     await fh?.close();
   }
@@ -164,7 +164,7 @@ async function readFileDelta(
  *
  * @example
  * ```ts
- * import { getLogs } from "agent-relay/broker";
+ * import { getLogs } from "@agent-relay/sdk";
  *
  * const result = await getLogs("Worker1", { lines: 100 });
  * if (result.found) {
@@ -172,10 +172,7 @@ async function readFileDelta(
  * }
  * ```
  */
-export async function getLogs(
-  agent: string,
-  options: GetLogsOptions = {},
-): Promise<LogsResult> {
+export async function getLogs(agent: string, options: GetLogsOptions = {}): Promise<LogsResult> {
   const logsDir = options.logsDir ?? getDefaultLogsDir();
   const lines = options.lines ?? 50;
   const logFile = join(logsDir, `${agent}.log`);
@@ -184,19 +181,19 @@ export async function getLogs(
   const resolvedLog = resolve(logFile);
   const resolvedDir = resolve(logsDir);
   if (!resolvedLog.startsWith(resolvedDir + sep)) {
-    return { agent, content: "", found: false, lineCount: 0 };
+    return { agent, content: '', found: false, lineCount: 0 };
   }
 
   try {
     await stat(logFile);
     const content = await tailFile(logFile, lines);
-    const lineCount = content ? content.split("\n").length : 0;
+    const lineCount = content ? content.split('\n').length : 0;
 
     return { agent, content, found: true, lineCount };
   } catch {
     // Agent not found — list available agents to help the caller
     const availableAgents = await listLoggedAgents(logsDir);
-    return { agent, content: "", found: false, lineCount: 0, availableAgents };
+    return { agent, content: '', found: false, lineCount: 0, availableAgents };
   }
 }
 
@@ -211,7 +208,7 @@ export async function getLogs(
  *
  * @example
  * ```ts
- * import { followLogs } from "agent-relay/broker";
+ * import { followLogs } from "@agent-relay/sdk";
  *
  * const handle = followLogs("Worker1", {
  *   historyLines: 100,
@@ -262,7 +259,7 @@ export function followLogs(agent: string, options: FollowLogsOptions): LogFollow
       const delta = await readFileDelta(logFile, offset);
       offset = delta.nextOffset;
       if (delta.content) {
-        emit({ type: "log", agent, content: delta.content });
+        emit({ type: 'log', agent, content: delta.content });
       }
     } finally {
       pollInFlight = false;
@@ -274,9 +271,9 @@ export function followLogs(agent: string, options: FollowLogsOptions): LogFollow
     const resolvedDir = resolve(logsDir);
     if (!resolvedLog.startsWith(resolvedDir + sep)) {
       emit({
-        type: "error",
+        type: 'error',
         agent,
-        error: "Invalid agent name for log path",
+        error: 'Invalid agent name for log path',
       });
       stop();
       return;
@@ -290,7 +287,7 @@ export function followLogs(agent: string, options: FollowLogsOptions): LogFollow
 
       if (!history.found && !allowMissing) {
         emit({
-          type: "error",
+          type: 'error',
           agent,
           error: `No local logs for '${agent}'.`,
           availableAgents: history.availableAgents,
@@ -299,9 +296,9 @@ export function followLogs(agent: string, options: FollowLogsOptions): LogFollow
         return;
       }
 
-      emit({ type: "subscribed", agent });
+      emit({ type: 'subscribed', agent });
       emit({
-        type: "history",
+        type: 'history',
         agent,
         lines: splitLogLines(history.content),
       });
@@ -316,7 +313,7 @@ export function followLogs(agent: string, options: FollowLogsOptions): LogFollow
       startPolling();
     } catch {
       emit({
-        type: "error",
+        type: 'error',
         agent,
         error: `Failed to follow logs for '${agent}'.`,
       });
@@ -334,7 +331,7 @@ export function followLogs(agent: string, options: FollowLogsOptions): LogFollow
  *
  * @example
  * ```ts
- * import { listLoggedAgents } from "agent-relay/broker";
+ * import { listLoggedAgents } from "@agent-relay/sdk";
  *
  * const agents = await listLoggedAgents();
  * console.log("Agents with logs:", agents);
@@ -345,9 +342,7 @@ export async function listLoggedAgents(logsDir?: string): Promise<string[]> {
 
   try {
     const files = await readdir(dir);
-    return files
-      .filter((f) => f.endsWith(".log"))
-      .map((f) => f.slice(0, -4));
+    return files.filter((f) => f.endsWith('.log')).map((f) => f.slice(0, -4));
   } catch {
     return [];
   }

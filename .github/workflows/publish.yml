@@ -12,6 +12,7 @@ on:
           - main
           - cli-prerelease
           - sdk
+          - workflow-types
           - sdk-py
           - brand
         default: 'all'
@@ -75,23 +76,36 @@ jobs:
   build-broker:
     name: Build broker (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'sdk'
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk' || github.event.inputs.package == 'sdk-py'
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
+            broker_pkg: broker-darwin-arm64
             binary_name: agent-relay-broker-darwin-arm64
+            binary_file: agent-relay-broker
           - os: macos-latest
             target: x86_64-apple-darwin
+            broker_pkg: broker-darwin-x64
             binary_name: agent-relay-broker-darwin-x64
+            binary_file: agent-relay-broker
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
+            broker_pkg: broker-linux-x64
             binary_name: agent-relay-broker-linux-x64
+            binary_file: agent-relay-broker
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
+            broker_pkg: broker-linux-arm64
             binary_name: agent-relay-broker-linux-arm64
+            binary_file: agent-relay-broker
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            broker_pkg: broker-win32-x64
+            binary_name: agent-relay-broker-win32-x64.exe
+            binary_file: agent-relay-broker.exe
 
     steps:
       - name: Checkout code
@@ -117,19 +131,41 @@ jobs:
         with:
           key: broker-${{ matrix.target }}
 
-      - name: Build broker binary
+      - name: Build broker binary (unix)
+        if: runner.os != 'Windows'
         run: |
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
             RUSTFLAGS="-C target-feature=+crt-static" cross build --release --bin agent-relay-broker --target ${{ matrix.target }}
           else
             RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --bin agent-relay-broker --target ${{ matrix.target }}
           fi
-          strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || true
+          strip target/${{ matrix.target }}/release/${{ matrix.binary_file }} 2>/dev/null || true
 
-      - name: Copy binary with platform name
+      - name: Build broker binary (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:RUSTFLAGS = "-C target-feature=+crt-static"
+          cargo build --release --bin agent-relay-broker --target ${{ matrix.target }}
+
+      - name: Copy binary with platform name (unix)
+        if: runner.os != 'Windows'
         run: |
           mkdir -p release-binaries
-          cp target/${{ matrix.target }}/release/agent-relay-broker release-binaries/${{ matrix.binary_name }}
+          cp target/${{ matrix.target }}/release/${{ matrix.binary_file }} release-binaries/${{ matrix.binary_name }}
+
+      - name: Copy binary with platform name (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-binaries | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_file }}" "release-binaries/${{ matrix.binary_name }}"
+
+      # Ad-hoc sign macOS binaries at build time so the Python SDK wheel
+      # doesn't have to invoke codesign at install time.
+      - name: Ad-hoc sign macOS broker
+        if: runner.os == 'macOS'
+        run: codesign --force --sign - release-binaries/${{ matrix.binary_name }}
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
@@ -411,10 +447,13 @@ jobs:
             const path = require('path');
             const version = '$NEW_VERSION';
 
-            // Update @agent-relay/* references across dependencies,
-            // devDependencies, and peerDependencies so sibling packages
-            // stay pinned to the same version we're about to publish.
-            const DEP_SECTIONS = ['dependencies', 'devDependencies', 'peerDependencies'];
+            // Update @agent-relay/* references across every dep section so
+            // sibling packages stay pinned to the same version we're about
+            // to publish. optionalDependencies is critical here: @agent-relay/sdk
+            // pins the per-platform broker packages by exact version, and
+            // forgetting this section leaves a freshly-published SDK pointing
+            // at the prior release's broker packages.
+            const DEP_SECTIONS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'];
             const rewriteInternalRefs = (pkg) => {
               for (const depType of DEP_SECTIONS) {
                 for (const dep of Object.keys(pkg[depType] || {})) {
@@ -477,10 +516,497 @@ jobs:
             dist/
           retention-days: 1
 
-  # Publish all packages in parallel (npm publish doesn't need deps published first)
+  # End-to-end smoke test of the optional-dep broker pattern on every target
+  # platform, using locally-packed tarballs — no registry round-trip, no
+  # mocking. Each matrix leg:
+  #   1. Stages the platform's broker binary into its package tree and
+  #      injects os/cpu so the package validates like the published one.
+  #   2. `npm pack`s the SDK (with packages/sdk/bin emptied so the SDK
+  #      tarball cannot fall back to a bundled binary).
+  #   3. `npm pack`s the matching broker package.
+  #   4. Installs both tarballs into a scratch project.
+  #   5. Asserts getBrokerBinaryPath() resolves through the optional-dep
+  #      package and returns an executable file.
+  #   6. Runs AgentRelayClient.spawn() end-to-end and shuts it down.
+  # Gates publish-broker-packages — we do not ship if any platform fails.
+  smoke-broker-packages:
+    name: Smoke ${{ matrix.platform }}
+    needs: [build, build-broker]
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            os: macos-14
+            broker_pkg: broker-darwin-arm64
+            binary_name: agent-relay-broker-darwin-arm64
+            binary_file: agent-relay-broker
+            pkg_os: darwin
+            pkg_cpu: arm64
+          # darwin-x64 smoke is intentionally omitted: GitHub's macos-13
+          # (Intel) runner pool is capacity-constrained and routinely queues
+          # for hours. The x86_64-apple-darwin broker binary is still
+          # cross-compiled and published; we just don't exercise it in CI.
+          - platform: linux-x64
+            os: ubuntu-latest
+            broker_pkg: broker-linux-x64
+            binary_name: agent-relay-broker-linux-x64
+            binary_file: agent-relay-broker
+            pkg_os: linux
+            pkg_cpu: x64
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+            broker_pkg: broker-linux-arm64
+            binary_name: agent-relay-broker-linux-arm64
+            binary_file: agent-relay-broker
+            pkg_os: linux
+            pkg_cpu: arm64
+          - platform: win32-x64
+            os: windows-latest
+            broker_pkg: broker-win32-x64
+            binary_name: agent-relay-broker-win32-x64.exe
+            binary_file: agent-relay-broker.exe
+            pkg_os: win32
+            pkg_cpu: x64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Download broker binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.binary_name }}
+          path: /tmp/broker
+
+      - name: Stage broker binary (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "packages/${{ matrix.broker_pkg }}/bin"
+          cp "/tmp/broker/${{ matrix.binary_name }}" "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+          chmod +x "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+
+      - name: Stage broker binary (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "packages/${{ matrix.broker_pkg }}/bin" | Out-Null
+          Copy-Item "/tmp/broker/${{ matrix.binary_name }}" "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+
+      - name: Inject os/cpu for ${{ matrix.pkg_os }}-${{ matrix.pkg_cpu }}
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const p = 'packages/${{ matrix.broker_pkg }}/package.json';
+            const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+            pkg.os = ['${{ matrix.pkg_os }}'];
+            pkg.cpu = ['${{ matrix.pkg_cpu }}'];
+            fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Pack SDK, broker, and internal deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALLS="$RUNNER_TEMP/tarballs"
+          mkdir -p "$TARBALLS"
+          echo "TARBALLS=$TARBALLS" >> "$GITHUB_ENV"
+          # Empty packages/sdk/bin so the SDK tarball has NO bundled broker
+          # binary. This forces the smoke test to exercise the optional-dep
+          # resolution path instead of the legacy bundled fallback.
+          rm -rf packages/sdk/bin
+          mkdir -p packages/sdk/bin
+          (cd packages/sdk && npm pack --ignore-scripts --pack-destination "$TARBALLS")
+          (cd "packages/${{ matrix.broker_pkg }}" && npm pack --ignore-scripts --pack-destination "$TARBALLS")
+          # The build job bumped every workspace to NEW_VERSION. The SDK pins
+          # several internal @agent-relay/* packages at that exact version,
+          # none of which are on the registry yet at this point in the
+          # workflow — so pack them locally and install them alongside the
+          # SDK. Keep this list in sync with packages/sdk/package.json's
+          # `dependencies` whenever a new internal dep is added.
+          (cd packages/config && npm pack --ignore-scripts --pack-destination "$TARBALLS")
+          (cd packages/github-primitive && npm pack --ignore-scripts --pack-destination "$TARBALLS")
+          (cd packages/workflow-types && npm pack --ignore-scripts --pack-destination "$TARBALLS")
+          ls -lh "$TARBALLS"
+
+      - name: Install tarballs into scratch project
+        shell: bash
+        run: |
+          set -euo pipefail
+          SCRATCH="$RUNNER_TEMP/smoke"
+          mkdir -p "$SCRATCH"
+          echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
+          cd "$SCRATCH"
+          npm init -y --silent >/dev/null
+          SDK_TGZ=$(ls "$TARBALLS"/agent-relay-sdk-*.tgz | head -n1)
+          BROKER_TGZ=$(ls "$TARBALLS"/agent-relay-broker-${{ matrix.platform }}-*.tgz | head -n1)
+          CONFIG_TGZ=$(ls "$TARBALLS"/agent-relay-config-*.tgz | head -n1)
+          GITHUB_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-github-primitive-*.tgz | head -n1)
+          WORKFLOW_TYPES_TGZ=$(ls "$TARBALLS"/agent-relay-workflow-types-*.tgz | head -n1)
+          echo "Installing $SDK_TGZ + $BROKER_TGZ + $CONFIG_TGZ + $GITHUB_PRIMITIVE_TGZ + $WORKFLOW_TYPES_TGZ"
+          npm install --ignore-scripts --no-audit --no-fund \
+            "$SDK_TGZ" "$BROKER_TGZ" "$CONFIG_TGZ" \
+            "$GITHUB_PRIMITIVE_TGZ" "$WORKFLOW_TYPES_TGZ"
+          ls node_modules/@agent-relay/
+
+      - name: Resolver smoke — getBrokerBinaryPath()
+        shell: bash
+        run: |
+          cd "$SCRATCH"
+          node --input-type=module -e "
+            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+            import { accessSync, constants } from 'node:fs';
+            const expectedPkg = getOptionalDepPackageName();
+            const p = getBrokerBinaryPath();
+            console.log('expected pkg:', expectedPkg);
+            console.log('resolved:', p);
+            if (!p) { console.error('FAIL: resolver returned null'); process.exit(1); }
+            if (!p.includes('${{ matrix.broker_pkg }}')) {
+              console.error('FAIL: expected path through ${{ matrix.broker_pkg }}, got', p);
+              process.exit(1);
+            }
+            accessSync(p, constants.X_OK);
+            console.log('OK: resolver returned executable binary from optional-dep package');
+          "
+
+      - name: Spawn smoke — AgentRelayClient.spawn()
+        shell: bash
+        run: |
+          cd "$SCRATCH"
+          node --input-type=module -e "
+            import { AgentRelayClient } from '@agent-relay/sdk';
+            const client = await AgentRelayClient.spawn({
+              cwd: process.cwd(),
+              channels: ['general'],
+              startupTimeoutMs: 45000,
+              onStderr: (line) => console.error('[broker]', line),
+            });
+            console.log('OK: AgentRelayClient.spawn() returned');
+            await client.shutdown();
+            console.log('OK: client.shutdown() completed');
+          " || { echo 'SPAWN_FAILED'; exit 1; }
+
+      - name: Negative smoke — optional dep missing (linux-x64 only)
+        if: matrix.platform == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEGATIVE="$RUNNER_TEMP/smoke-negative"
+          mkdir -p "$NEGATIVE"
+          cd "$NEGATIVE"
+          npm init -y --silent >/dev/null
+          SDK_TGZ=$(ls "$TARBALLS"/agent-relay-sdk-*.tgz | head -n1)
+          CONFIG_TGZ=$(ls "$TARBALLS"/agent-relay-config-*.tgz | head -n1)
+          GITHUB_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-github-primitive-*.tgz | head -n1)
+          WORKFLOW_TYPES_TGZ=$(ls "$TARBALLS"/agent-relay-workflow-types-*.tgz | head -n1)
+          # Install SDK + every internal required dep whose bumped version
+          # isn't on the registry yet, but skip the broker optional deps
+          # entirely. The resolver should return null and spawn() should
+          # throw the clear error.
+          npm install --ignore-scripts --no-audit --no-fund --no-optional \
+            "$SDK_TGZ" "$CONFIG_TGZ" "$GITHUB_PRIMITIVE_TGZ" "$WORKFLOW_TYPES_TGZ"
+          node --input-type=module -e "
+            import { AgentRelayClient } from '@agent-relay/sdk';
+            try {
+              await AgentRelayClient.spawn({ cwd: process.cwd() });
+              console.error('FAIL: spawn() should have thrown');
+              process.exit(1);
+            } catch (err) {
+              const msg = err && err.message ? err.message : String(err);
+              console.log('got error:', msg);
+              const expected = 'couldn\\'t find an agent-relay-broker binary for linux-x64';
+              if (!msg.includes(expected)) {
+                console.error('FAIL: error message does not name platform/package');
+                process.exit(1);
+              }
+              console.log('OK: spawn() threw the expected clear error');
+            }
+          "
+
+  # Publish the SDK's exact-version internal runtime dependencies before the
+  # SDK. @agent-relay/sdk imports these packages at runtime and pins them to
+  # the release version, so they must exist on the registry before the SDK can
+  # be installed from npm. The root CLI depends on @agent-relay/sdk too, so
+  # package=main and package=cli-prerelease also need this chain.
+  publish-sdk-internal-deps:
+    name: Publish SDK internal dep ${{ matrix.package }}
+    needs: [build, smoke-broker-packages]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk'
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        package:
+          - config
+          - github-primitive
+          - workflow-types
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
+      - name: Dry run check
+        if: github.event.inputs.dry_run == 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Publish to NPM
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+  # Publish workflow-types only. This is intentionally narrow: it repairs
+  # already-published SDK versions whose exact-version workflow-types package
+  # was missing, without attempting to republish @agent-relay/sdk.
+  publish-workflow-types-only:
+    name: Publish Workflow Types to NPM
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'workflow-types'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
+      - name: Dry run check
+        if: github.event.inputs.dry_run == 'true'
+        working-directory: packages/workflow-types
+        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Publish Workflow Types to NPM
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/workflow-types
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+  # Publish the per-platform broker packages first. @agent-relay/sdk declares
+  # these as exact-version optionalDependencies, so they must exist on the
+  # registry at the matching version before the SDK is published — otherwise
+  # `npm install @agent-relay/sdk@<v>` races the registry for the broker
+  # package at the same version.
+  publish-broker-packages:
+    name: Publish ${{ matrix.broker_pkg }}
+    needs: [build, build-broker, smoke-broker-packages]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk'
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - broker_pkg: broker-darwin-arm64
+            binary_name: agent-relay-broker-darwin-arm64
+            binary_file: agent-relay-broker
+            os: darwin
+            cpu: arm64
+          - broker_pkg: broker-darwin-x64
+            binary_name: agent-relay-broker-darwin-x64
+            binary_file: agent-relay-broker
+            os: darwin
+            cpu: x64
+          - broker_pkg: broker-linux-arm64
+            binary_name: agent-relay-broker-linux-arm64
+            binary_file: agent-relay-broker
+            os: linux
+            cpu: arm64
+          - broker_pkg: broker-linux-x64
+            binary_name: agent-relay-broker-linux-x64
+            binary_file: agent-relay-broker
+            os: linux
+            cpu: x64
+          - broker_pkg: broker-win32-x64
+            binary_name: agent-relay-broker-win32-x64.exe
+            binary_file: agent-relay-broker.exe
+            os: win32
+            cpu: x64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Download broker binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.binary_name }}
+          path: /tmp/broker
+
+      - name: Stage broker binary into package tree
+        run: |
+          set -euo pipefail
+          mkdir -p packages/${{ matrix.broker_pkg }}/bin
+          cp "/tmp/broker/${{ matrix.binary_name }}" "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+          chmod +x "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+          ls -lh packages/${{ matrix.broker_pkg }}/bin/
+
+      # os/cpu constraints are injected at publish time. Keeping them out of
+      # the committed package.json lets these packages live as plain
+      # workspaces during development — otherwise npm install trips
+      # EBADPLATFORM on the machines that don't match every platform.
+      - name: Inject os/cpu for ${{ matrix.os }}-${{ matrix.cpu }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const p = 'packages/${{ matrix.broker_pkg }}/package.json';
+            const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+            pkg.os = ['${{ matrix.os }}'];
+            pkg.cpu = ['${{ matrix.cpu }}'];
+            fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
+            console.log('Staged', pkg.name, 'for', pkg.os, pkg.cpu);
+          "
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
+      - name: Dry run check
+        if: github.event.inputs.dry_run == 'true'
+        working-directory: packages/${{ matrix.broker_pkg }}
+        run: |
+          echo "Dry run - would publish @agent-relay/${{ matrix.broker_pkg }}"
+          npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      # Retry up to 3 times — npm registry occasionally flakes and we cannot
+      # reuse the version on rerun, so transient failures must be absorbed
+      # here rather than failing the whole release.
+      - name: Publish to NPM (attempt 1)
+        id: publish_1
+        if: github.event.inputs.dry_run != 'true'
+        continue-on-error: true
+        working-directory: packages/${{ matrix.broker_pkg }}
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Wait before retry
+        if: github.event.inputs.dry_run != 'true' && steps.publish_1.outcome == 'failure'
+        run: sleep 30
+
+      - name: Publish to NPM (attempt 2)
+        id: publish_2
+        if: github.event.inputs.dry_run != 'true' && steps.publish_1.outcome == 'failure'
+        continue-on-error: true
+        working-directory: packages/${{ matrix.broker_pkg }}
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Wait before retry
+        if: github.event.inputs.dry_run != 'true' && steps.publish_2.outcome == 'failure'
+        run: sleep 60
+
+      - name: Publish to NPM (attempt 3)
+        id: publish_3
+        if: github.event.inputs.dry_run != 'true' && steps.publish_1.outcome == 'failure' && steps.publish_2.outcome == 'failure'
+        working-directory: packages/${{ matrix.broker_pkg }}
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Fail if all publish attempts failed
+        if: >-
+          github.event.inputs.dry_run != 'true' &&
+          steps.publish_1.outcome == 'failure' &&
+          steps.publish_2.outcome == 'failure' &&
+          steps.publish_3.outcome == 'failure'
+        run: exit 1
+
+  # Publish remaining packages in parallel. SDK runtime deps that are pinned by
+  # exact version are published by publish-sdk-internal-deps before this matrix
+  # can publish @agent-relay/sdk.
   publish-packages:
     name: Publish ${{ matrix.package }}
-    needs: [build, build-broker]
+    needs: [build, build-broker, publish-broker-packages, publish-sdk-internal-deps]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all'
     strategy:
@@ -495,7 +1021,7 @@ jobs:
           - trajectory
           - hooks
           - user-directory
-          - config
+          - cloud
           - sdk
           - telemetry
           - acp-bridge
@@ -503,7 +1029,6 @@ jobs:
           - brand
           - gateway
           - credential-proxy
-          - github-primitive
           - browser-primitive
 
     steps:
@@ -522,6 +1047,10 @@ jobs:
           name: build-output
           path: .
 
+      # Keep bundling all platform broker binaries into the SDK tarball for
+      # one release cycle. The SDK prefers the optional-dep package but falls
+      # back to this bundled copy so mixed-version installs keep working
+      # during the migration. Delete this step in the next major.
       - name: Download broker binaries (SDK only)
         if: matrix.package == 'sdk'
         uses: actions/download-artifact@v4
@@ -533,7 +1062,7 @@ jobs:
       - name: Make broker binaries executable (SDK only)
         if: matrix.package == 'sdk'
         run: |
-          chmod +x packages/sdk/bin/agent-relay-broker-*
+          chmod +x packages/sdk/bin/agent-relay-broker-* || true
           # Remove stale generic binary — SDK resolves platform-specific names at runtime
           rm -f packages/sdk/bin/agent-relay-broker
 
@@ -554,7 +1083,90 @@ jobs:
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
         working-directory: packages/${{ matrix.package }}
-        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+  # package=main publishes only the root `agent-relay` tarball, but that
+  # tarball pins several @agent-relay/* runtime dependencies to the freshly
+  # bumped version. Publish those direct deps first so a main-only release
+  # cannot point npm at versions that do not exist.
+  publish-main-runtime-deps:
+    name: Publish main runtime dep ${{ matrix.package }}
+    needs: [build, build-broker, publish-broker-packages, publish-sdk-internal-deps]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease'
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        package:
+          - cloud
+          - config
+          - hooks
+          - sdk
+          - telemetry
+          - trajectory
+          - user-directory
+          - utils
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      # Keep the SDK tarball equivalent to the package=all path.
+      - name: Download broker binaries (SDK only)
+        if: matrix.package == 'sdk'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: agent-relay-broker-*
+          path: packages/sdk/bin/
+          merge-multiple: true
+
+      - name: Make broker binaries executable (SDK only)
+        if: matrix.package == 'sdk'
+        run: |
+          chmod +x packages/sdk/bin/agent-relay-broker-* || true
+          rm -f packages/sdk/bin/agent-relay-broker
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
+      - name: Dry run check
+        if: github.event.inputs.dry_run == 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Publish to NPM
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
   # Publish brand package only (when selected)
   publish-brand-only:
@@ -597,7 +1209,7 @@ jobs:
   # Publish SDK only (when selected)
   publish-sdk-only:
     name: Publish SDK to NPM
-    needs: [build, build-broker]
+    needs: [build, build-broker, publish-broker-packages, publish-sdk-internal-deps]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'sdk'
 
@@ -617,6 +1229,10 @@ jobs:
           name: build-output
           path: .
 
+      # Bundled broker binaries in packages/sdk/bin/ are kept for one release
+      # cycle as a fallback. New installs resolve the binary via the
+      # per-platform @agent-relay/broker-* optional deps published by the
+      # publish-broker-packages job above.
       - name: Download broker binaries
         uses: actions/download-artifact@v4
         with:
@@ -626,32 +1242,76 @@ jobs:
 
       - name: Make broker binaries executable
         run: |
-          chmod +x packages/sdk/bin/agent-relay-broker-*
+          chmod +x packages/sdk/bin/agent-relay-broker-* || true
           # Remove stale generic binary — SDK resolves platform-specific names at runtime
           rm -f packages/sdk/bin/agent-relay-broker
 
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
 
+      - name: Dry run SDK internal deps
+        if: github.event.inputs.dry_run == 'true'
+        run: |
+          set -euo pipefail
+          for package in config github-primitive workflow-types; do
+            echo "Dry run - would publish @agent-relay/${package}"
+            (cd "packages/${package}" && npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts)
+          done
+
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/sdk
         run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Publish SDK internal deps to NPM
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.build.outputs.new_version }}"
+
+          publish_if_missing() {
+            local package="$1"
+            local name="@agent-relay/${package}"
+            if npm view "${name}@${VERSION}" version >/dev/null 2>&1; then
+              echo "✓ ${name}@${VERSION} is already published"
+              return
+            fi
+
+            echo "Publishing ${name}@${VERSION}"
+            (cd "packages/${package}" && npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts)
+          }
+
+          publish_if_missing config
+          publish_if_missing workflow-types
+          publish_if_missing github-primitive
 
       - name: Publish SDK to NPM
         if: github.event.inputs.dry_run != 'true'
         working-directory: packages/sdk
         run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
-  # Publish Python SDK to PyPI
+  # Publish Python SDK to PyPI as per-platform wheels with the broker binary
+  # embedded. One wheel per (broker_artifact, plat_tag) — see issue #769.
   publish-sdk-py:
-    name: Publish Python SDK to PyPI
-    needs: build
+    name: Publish Python SDK wheel (${{ matrix.plat_tag }})
+    needs: [build, build-broker]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk-py'
     environment:
       name: pypi
       url: https://pypi.org/project/agent-relay-sdk/
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - binary_name: agent-relay-broker-darwin-arm64
+            plat_tag: macosx_11_0_arm64
+          - binary_name: agent-relay-broker-darwin-x64
+            plat_tag: macosx_10_12_x86_64
+          - binary_name: agent-relay-broker-linux-x64
+            plat_tag: manylinux_2_17_x86_64.manylinux2014_x86_64
+          - binary_name: agent-relay-broker-linux-arm64
+            plat_tag: manylinux_2_17_aarch64.manylinux2014_aarch64
 
     steps:
       - name: Checkout code
@@ -669,21 +1329,39 @@ jobs:
           python-version: '3.11'
 
       - name: Install build tools
-        run: pip install hatchling build
+        run: pip install hatchling build wheel
 
-      - name: Dry run check
+      - name: Download broker binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.binary_name }}
+          path: /tmp/broker
+
+      - name: Stage broker binary into wheel tree
+        run: |
+          mkdir -p packages/sdk-py/src/agent_relay/bin
+          cp /tmp/broker/${{ matrix.binary_name }} packages/sdk-py/src/agent_relay/bin/agent-relay-broker
+          chmod +x packages/sdk-py/src/agent_relay/bin/agent-relay-broker
+
+      - name: Build wheel
+        working-directory: packages/sdk-py
+        run: python -m build --wheel
+
+      # `python -m build` produces a `py3-none-any` wheel. Retag it with the
+      # actual platform we just embedded a binary for; --remove drops the old
+      # any-platform wheel atomically.
+      - name: Retag wheel to ${{ matrix.plat_tag }}
+        working-directory: packages/sdk-py
+        run: |
+          python -m wheel tags --platform-tag=${{ matrix.plat_tag }} --remove dist/*.whl
+          ls -lh dist/
+
+      - name: Dry run summary
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/sdk-py
         run: |
-          echo "Dry run - would publish agent-relay==${{ needs.build.outputs.new_version }} to PyPI"
-          python -m build
-          echo "Built distributions:"
+          echo "Dry run - would publish agent-relay-sdk==${{ needs.build.outputs.new_version }} (${{ matrix.plat_tag }}) to PyPI"
           ls -lh dist/
-
-      - name: Build distribution
-        if: github.event.inputs.dry_run != 'true'
-        working-directory: packages/sdk-py
-        run: python -m build
 
       - name: Publish to PyPI (attempt 1)
         id: pypi_publish_1
@@ -692,10 +1370,17 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: packages/sdk-py/dist/
+          skip-existing: true
 
-      - name: Wait before retry
+      - name: Clean up stale attestations before retry
         if: github.event.inputs.dry_run != 'true' && steps.pypi_publish_1.outcome == 'failure'
-        run: sleep 60
+        run: |
+          # pypa/gh-action-pypi-publish writes <wheel>.publish.attestation
+          # next to each wheel on first attempt. If upload then fails, the
+          # attestation file is left behind and the next attempt aborts with
+          # "already have publish attestations". Clear them so we can retry.
+          rm -f packages/sdk-py/dist/*.publish.attestation
+          sleep 60
 
       - name: Publish to PyPI (attempt 2)
         id: pypi_publish_2
@@ -704,10 +1389,13 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: packages/sdk-py/dist/
+          skip-existing: true
 
-      - name: Wait before retry
+      - name: Clean up stale attestations before final retry
         if: github.event.inputs.dry_run != 'true' && steps.pypi_publish_2.outcome == 'failure'
-        run: sleep 120
+        run: |
+          rm -f packages/sdk-py/dist/*.publish.attestation
+          sleep 120
 
       - name: Publish to PyPI (attempt 3)
         id: pypi_publish_3
@@ -715,6 +1403,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: packages/sdk-py/dist/
+          skip-existing: true
 
       - name: Fail if all PyPI publish attempts failed
         if: >-
@@ -939,14 +1628,17 @@ jobs:
   # Publish main package
   publish-main:
     name: Publish Main Package
-    needs: [build, verify-binaries, publish-packages]
+    needs: [build, verify-binaries, publish-packages, publish-main-runtime-deps]
     runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.publish_root.outputs.published }}
     if: |
       always() &&
       (github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease') &&
       needs.build.result == 'success' &&
       (needs.verify-binaries.result == 'success' || (needs.verify-binaries.result == 'skipped' && github.event.inputs.package == 'cli-prerelease')) &&
-      (needs.publish-packages.result == 'success' || needs.publish-packages.result == 'skipped')
+      (needs.publish-packages.result == 'success' || needs.publish-packages.result == 'skipped') &&
+      (needs.publish-main-runtime-deps.result == 'success' || needs.publish-main-runtime-deps.result == 'skipped')
 
     steps:
       - name: Checkout code
@@ -964,20 +1656,55 @@ jobs:
           name: build-output
           path: .
 
-      - name: Download broker binaries
-        if: github.event.inputs.package != 'cli-prerelease'
-        uses: actions/download-artifact@v4
-        with:
-          pattern: agent-relay-broker-*
-          path: bin/
-          merge-multiple: true
-
-      - name: Make binaries executable
-        if: github.event.inputs.package != 'cli-prerelease'
-        run: chmod +x bin/agent-relay-broker-*
+      # NOTE: the root `agent-relay` CLI no longer bundles broker binaries in
+      # its own tarball. Brokers ship as `@agent-relay/broker-<platform>-<arch>`
+      # optional-deps of `@agent-relay/sdk`, which the root package installs as
+      # an exact-version runtime dependency.
 
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
+
+      - name: Wait for root internal dependencies
+        if: github.event.inputs.dry_run != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t INTERNAL_DEPS < <(node --input-type=module -e "
+            import fs from 'node:fs';
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const deps = Object.entries(pkg.dependencies ?? {})
+              .filter(([name]) => name.startsWith('@agent-relay/'))
+              .map(([name, version]) => name + '@' + version);
+            console.log(deps.join('\n'));
+          ")
+
+          if [ "${#INTERNAL_DEPS[@]}" -eq 0 ]; then
+            echo "No @agent-relay/* root dependencies to verify."
+            exit 0
+          fi
+
+          for _ in {1..12}; do
+            missing=()
+            for spec in "${INTERNAL_DEPS[@]}"; do
+              if npm view "$spec" version >/dev/null 2>&1; then
+                echo "✓ $spec is available"
+              else
+                missing+=("$spec")
+              fi
+            done
+
+            if [ "${#missing[@]}" -eq 0 ]; then
+              echo "All root @agent-relay/* dependencies are available on npm."
+              exit 0
+            fi
+
+            echo "Waiting for npm registry propagation: ${missing[*]}"
+            sleep 10
+          done
+
+          echo "Timed out waiting for root @agent-relay/* dependencies:"
+          printf '  - %s\n' "${missing[@]}"
+          exit 1
 
       # bundledDependencies requires workspace packages to exist in
       # node_modules/ at pack time so npm can include them in the tarball.
@@ -1029,8 +1756,18 @@ jobs:
           npm publish "$NPM_TARBALL" --dry-run --access public --tag "${{ github.event.inputs.tag }}"
 
       - name: Publish to NPM
+        id: publish_root
         if: github.event.inputs.dry_run != 'true'
-        run: npm publish "$NPM_TARBALL" --access public --provenance --tag "${{ github.event.inputs.tag }}"
+        run: |
+          set -euo pipefail
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "agent-relay@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "agent-relay@${PKG_VERSION} already exists on npm; skipping publish"
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          npm publish "$NPM_TARBALL" --access public --provenance --tag "${{ github.event.inputs.tag }}"
+          echo "published=true" >> "$GITHUB_OUTPUT"
 
   # Create git tag and release
   create-release:
@@ -1041,7 +1778,8 @@ jobs:
       always() &&
       github.event.inputs.package != 'cli-prerelease' &&
       github.event.inputs.dry_run != 'true' &&
-      needs.publish-main.result == 'success'
+      needs.publish-main.result == 'success' &&
+      needs.publish-main.outputs.published == 'true'
 
     steps:
       - name: Setup Github App
@@ -1395,6 +2133,7 @@ jobs:
             - `agent-relay-broker-linux-arm64` - Linux ARM64
             - `agent-relay-broker-darwin-x64` - macOS Intel
             - `agent-relay-broker-darwin-arm64` - macOS Apple Silicon
+            - `agent-relay-broker-win32-x64.exe` - Windows x86_64
 
             ### relay-acp binaries (Zed editor integration)
             ACP bridge for Zed editor:
@@ -1467,6 +2206,27 @@ jobs:
     with:
       version: ${{ needs.build.outputs.new_version }}
 
+  # Post-publish cross-platform verification of @agent-relay/sdk and its
+  # per-platform broker optional deps. Installs from the registry on every
+  # target (macOS arm64/x64, Linux x64/arm64, Windows x64) and runs spawn
+  # end-to-end. Catches registry-round-trip failures that smoke-broker-packages
+  # can't see (missing/wrong os/cpu on published manifests, CDN propagation).
+  verify-publish-sdk:
+    name: Verify Published SDK (Cross-Platform)
+    # publish-packages and publish-sdk-only are mutually exclusive: the first
+    # runs on package='all', the second on package='sdk'. Depend on both and
+    # accept a success from either so this gate fires for both release flows.
+    needs: [build, publish-broker-packages, publish-packages, publish-sdk-only]
+    if: |
+      always() &&
+      github.event.inputs.dry_run != 'true' &&
+      (github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk') &&
+      needs.publish-broker-packages.result == 'success' &&
+      (needs.publish-packages.result == 'success' || needs.publish-sdk-only.result == 'success')
+    uses: ./.github/workflows/verify-publish-sdk.yml
+    with:
+      version: ${{ needs.build.outputs.new_version }}
+
   summary:
     name: Summary
     needs:
@@ -1480,10 +2240,16 @@ jobs:
         verify-standalone-macos,
         verify-acp-linux,
         verify-acp-macos,
+        smoke-broker-packages,
+        publish-sdk-internal-deps,
+        publish-workflow-types-only,
+        publish-broker-packages,
         publish-packages,
         publish-brand-only,
+        publish-sdk-py,
         publish-main,
         verify-publish,
+        verify-publish-sdk,
       ]
     runs-on: ubuntu-latest
     if: always()
@@ -1520,10 +2286,16 @@ jobs:
           echo "| Verify Standalone (macOS) | ${{ needs.verify-standalone-macos.result == 'success' && '✅' || (needs.verify-standalone-macos.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-standalone-macos.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Verify relay-acp (Linux) | ${{ needs.verify-acp-linux.result == 'success' && '✅' || (needs.verify-acp-linux.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-acp-linux.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Verify relay-acp (macOS) | ${{ needs.verify-acp-macos.result == 'success' && '✅' || (needs.verify-acp-macos.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-acp-macos.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Smoke Broker Packages | ${{ needs.smoke-broker-packages.result == 'success' && '✅' || (needs.smoke-broker-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.smoke-broker-packages.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Publish SDK Internal Deps | ${{ needs.publish-sdk-internal-deps.result == 'success' && '✅' || (needs.publish-sdk-internal-deps.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-sdk-internal-deps.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Publish Workflow Types Only | ${{ needs.publish-workflow-types-only.result == 'success' && '✅' || (needs.publish-workflow-types-only.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-workflow-types-only.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Publish Broker Packages | ${{ needs.publish-broker-packages.result == 'success' && '✅' || (needs.publish-broker-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-broker-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Packages | ${{ needs.publish-packages.result == 'success' && '✅' || (needs.publish-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Brand | ${{ needs.publish-brand-only.result == 'success' && '✅' || (needs.publish-brand-only.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-brand-only.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Publish Python SDK | ${{ needs.publish-sdk-py.result == 'success' && '✅' || (needs.publish-sdk-py.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-sdk-py.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Main | ${{ needs.publish-main.result == 'success' && '✅' || (needs.publish-main.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-main.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Post-Publish Verify | ${{ needs.verify-publish.result == 'success' && '✅' || (needs.verify-publish.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-publish.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Post-Publish Verify SDK (cross-platform) | ${{ needs.verify-publish-sdk.result == 'success' && '✅' || (needs.verify-publish-sdk.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-publish-sdk.result }} |" >> $GITHUB_STEP_SUMMARY
           if [ "$IS_PRERELEASE" = "true" ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Next Steps" >> $GITHUB_STEP_SUMMARY

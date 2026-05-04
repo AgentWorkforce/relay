@@ -6,7 +6,10 @@
     "baseUrl": ".",
     "paths": {
       "@agent-relay/config": ["../config/dist/index.d.ts"],
-      "@agent-relay/config/*": ["../config/dist/*"]
+      "@agent-relay/config/*": ["../config/dist/*"],
+      "@agent-relay/workflow-types": ["../workflow-types/dist/index.d.ts"],
+      "@agent-relay/github-primitive": ["../github-primitive/dist/index.d.ts"],
+      "@agent-relay/github-primitive/workflow-step": ["../github-primitive/dist/workflow-step.d.ts"]
     },
     "strict": true,
     "declaration": true,
@@ -18,7 +21,5 @@
     "skipLibCheck": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": [
-    "src/__tests__/**"
-  ]
+  "exclude": ["src/__tests__/**"]
 }

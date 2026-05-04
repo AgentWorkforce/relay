@@ -48,6 +48,9 @@ type RunWorkflowOptions = {
   apiUrl?: string;
   fileType?: WorkflowFileType;
   syncCode?: boolean;
+  resume?: string;
+  startFrom?: string;
+  previousRunId?: string;
 };
 
 const CODE_SYNC_EXCLUDES = [
@@ -106,12 +109,15 @@ function stripYamlScalar(raw: string): string {
   return value;
 }
 
+const FIELD_KEY_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+
 function assignPathField(target: Partial<WorkflowPathDefinition>, text: string): void {
-  const colonIdx = text.indexOf(':');
-  if (colonIdx === -1) return;
-  const key = text.slice(0, colonIdx).trim();
-  if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(key)) return;
-  const value = stripYamlScalar(text.slice(colonIdx + 1).trim());
+  // Manual split avoids polynomial backtracking on inputs like "A:\t\t\t...".
+  const colonIndex = text.indexOf(':');
+  if (colonIndex === -1) return;
+  const key = text.slice(0, colonIndex).trimEnd();
+  if (!FIELD_KEY_RE.test(key)) return;
+  const value = stripYamlScalar(text.slice(colonIndex + 1));
   switch (key) {
     case 'name':
       target.name = value;
@@ -479,6 +485,15 @@ export async function runWorkflow(
     workflow: input.workflow,
     fileType: input.fileType,
   };
+  if (options.resume) {
+    requestBody.resume = options.resume;
+  }
+  if (options.startFrom) {
+    requestBody.startFrom = options.startFrom;
+  }
+  if (options.previousRunId) {
+    requestBody.previousRunId = options.previousRunId;
+  }
   if (input.sourceFileType) {
     requestBody.sourceFileType = input.sourceFileType;
   }
@@ -558,6 +573,9 @@ export async function runWorkflow(
       }
 
       requestBody.paths = pathSubmissions;
+      // The workflow file may live under any declared path, not just the first.
+      // Pick the root that actually contains it; otherwise drop the hint and
+      // let the server fall back to the legacy $HOME upload path.
       let workflowPath: string | null = null;
       for (const root of resolvedPathRoots) {
         workflowPath = relativizeWorkflowPathFromRoot(workflowArg, root);
@@ -765,12 +783,15 @@ export async function syncWorkflowPatch(
     throw new Error(`Patch download failed: ${describeResponseError(response, payload)}`);
   }
 
-  if (
-    !payload ||
-    typeof payload !== 'object' ||
-    (typeof (payload as { hasChanges?: unknown }).hasChanges !== 'boolean' &&
-      (!('patches' in payload) || typeof (payload as { patches?: unknown }).patches !== 'object'))
-  ) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('Patch response was not valid JSON.');
+  }
+
+  const obj = payload as { hasChanges?: unknown; patches?: unknown };
+  const hasLegacyShape = typeof obj.hasChanges === 'boolean';
+  const hasMultiShape =
+    obj.patches !== null && typeof obj.patches === 'object' && !Array.isArray(obj.patches);
+  if (!hasLegacyShape && !hasMultiShape) {
     throw new Error('Patch response was not valid JSON.');
   }
 

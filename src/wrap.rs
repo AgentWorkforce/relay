@@ -700,10 +700,39 @@ pub(crate) async fn run_wrap(
     let mut reap_tick = tokio::time::interval(Duration::from_secs(5));
     reap_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-    // SIGWINCH (terminal resize)
-    let mut sigwinch =
+    // Terminal resize notifications.
+    //
+    // Unix: SIGWINCH is event-driven, fires exactly when the TTY resizes,
+    // zero CPU when idle.
+    //
+    // Windows: no SIGWINCH, and crossterm's `EventStream` can't be used
+    // alongside our stdin passthrough — reading CONIN$ consumes keypresses
+    // that we need to forward to the child PTY. A dedicated background
+    // thread polls the console size at 100ms and notifies via a channel
+    // only when it actually changes. The main select! loop stays
+    // event-driven; polling happens off the hot path.
+    #[cfg(unix)]
+    let mut resize_signal =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
             .expect("failed to register SIGWINCH handler");
+    #[cfg(windows)]
+    let mut resize_signal = {
+        let (tx, rx) = mpsc::channel::<()>(4);
+        std::thread::spawn(move || {
+            let mut last = crossterm::terminal::size().ok();
+            loop {
+                std::thread::sleep(Duration::from_millis(100));
+                let current = crossterm::terminal::size().ok();
+                if current != last {
+                    last = current;
+                    if tx.blocking_send(()).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        rx
+    };
 
     let mut running = true;
     let mut stdout = tokio::io::stdout();
@@ -1300,8 +1329,8 @@ pub(crate) async fn run_wrap(
                 }
             }
 
-            // SIGWINCH: forward terminal resize to PTY
-            _ = sigwinch.recv() => {
+            // Terminal resize: forward current size to PTY.
+            _ = resize_signal.recv() => {
                 if let Some((rows, cols)) = get_terminal_size() {
                     let _ = pty.resize(rows, cols);
                 }

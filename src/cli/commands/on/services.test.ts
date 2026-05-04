@@ -17,7 +17,6 @@ vi.mock('node:child_process', async () => {
 
 import { healthCheck, resolveServiceConfig, startServices, stopServices } from './services.js';
 
-
 const tempDirs: string[] = [];
 
 function makeTempDir(prefix: string): string {
@@ -94,7 +93,10 @@ describe('resolveServiceConfig', () => {
 
 describe('healthCheck', () => {
   it('returns true when the health endpoint succeeds', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true }))
+    );
     const result = await healthCheck(8787, 1);
     expect(result).toBe(true);
   });
@@ -114,7 +116,10 @@ describe('startServices/stopServices', () => {
     const pidFilePath = path.join(os.homedir(), '.relay', 'pids.json');
     rmSync(pidFilePath, { force: true });
     const livePids = new Set([1111, 2222]);
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: NodeJS.Signals | number
+    ) => {
       if (signal === 0) {
         if (!livePids.has(pid)) {
           throw new Error('not running');
@@ -125,16 +130,26 @@ describe('startServices/stopServices', () => {
       return true;
     }) as typeof process.kill);
 
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true })));
-    spawnMock
-      .mockReturnValueOnce({ pid: 1111 })
-      .mockReturnValueOnce({ pid: 2222 });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true }))
+    );
+    spawnMock.mockReturnValueOnce({ pid: 1111 }).mockReturnValueOnce({ pid: 2222 });
     spawnSyncMock.mockReturnValue({ status: 1, stdout: '' });
 
-    const started = await startServices({ relayauthRoot: relayauth, relayfileRoot: relayfile, logDir, secret: 'secret' });
+    const jwksUrl = 'http://127.0.0.1:49152/.well-known/jwks.json';
+    const started = await startServices({
+      relayauthRoot: relayauth,
+      relayfileRoot: relayfile,
+      logDir,
+      secret: 'secret',
+      jwksUrl,
+    });
 
     expect(started).toEqual({ authPid: 1111, filePid: 2222 });
     expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(spawnMock.mock.calls[0]?.[2]?.env).toMatchObject({ RELAYAUTH_JWKS_URL: jwksUrl });
+    expect(spawnMock.mock.calls[1]?.[2]?.env).toMatchObject({ RELAYAUTH_JWKS_URL: jwksUrl });
     const pidFile = JSON.parse(readFileSync(pidFilePath, 'utf8'));
     expect(pidFile).toEqual({ relayauthPid: 1111, relayfilePid: 2222 });
 

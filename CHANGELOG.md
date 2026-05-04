@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`@agent-relay/cloud` provider connect SDK** (6.1.0): Exposes `connectProvider()`, `runInteractiveSession()`, and SSH runtime helpers (`loadSSH2`, `createAskpassScript`, `buildSystemSshArgs`) so other CLIs can drive the same Daytona-brokered provider auth flow that powers `agent-relay cloud connect`. `ssh2` is now an `optionalDependency` of the cloud package.
+- **`@agent-relay/sdk/workflows` script runner** (6.1.0): Exposes `runScriptWorkflow()`, `parseTsxStderr`, `formatWorkflowParseError`, `findLocalSdkWorkspace`, `ensureLocalSdkWorkflowRuntime`, plus `RunScriptWorkflowOptions` / `ParsedWorkflowError` types. The body of `agent-relay run <script>` now lives in the SDK, so other CLIs (ricky, future tools) can drive the same `.ts` / `.tsx` / `.py` execution flow in-process instead of shelling out. The relay CLI's `run` command is unchanged externally — it now delegates to the SDK function.
 - **CLI SSH Authentication**: New SSH-based authentication for CLI local auth workflows, enabling secure agent spawning and communication (#648e7782).
 - **Multi-Repository Spawning**: Agents can now be spawned across multiple repositories in a single operation, improving orchestration flexibility (#2d2bf610).
 - **Model Hotswap**: Runtime model switching for agents, allowing dynamic provider and model changes without restart (#5a80bdc0).
@@ -35,6 +37,197 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
+
+## [6.0.7] - 2026-05-01
+
+### Technical Perspective
+
+#### Releases
+
+- v6.0.7
+
+---
+
+## [6.0.6] - 2026-04-30
+
+### Product Perspective
+
+#### User-Impacting Fixes
+
+- Add repository metadata for workflow types (#809) (#809)
+- Publish SDK internal deps before sdk (#806) (#806)
+
+### Technical Perspective
+
+#### Releases
+
+- v6.0.6
+
+---
+
+## [6.0.4] - 2026-04-30
+
+### Product Perspective
+
+#### User-Impacting Fixes
+
+- Publish SDK workflow types before SDK (#807) (#807)
+- Pack github-primitive + workflow-types in smoke; publish workflow-types (#804) (#804)
+
+### Technical Perspective
+
+#### Releases
+
+- v6.0.4
+
+---
+
+## [6.0.3] - 2026-04-29
+
+### Product Perspective
+
+#### User-Facing Features & Improvements
+
+- **Expose connectProvider() in @agent-relay/cloud SDK (#798)** (#798)
+- **Expose runScriptWorkflow() in @agent-relay/sdk/workflows (#799)** (#799)
+- **Bundle @agent-relay/github-primitive at /github subpath (#782)** (#782)
+
+#### User-Impacting Fixes
+
+- Update codegen-models workflow to use new Python output path (#780) (#780)
+
+### Technical Perspective
+
+#### Releases
+
+- v6.0.3
+
+---
+
+## [6.0.2] - 2026-04-25
+
+### Product Perspective
+
+#### User-Impacting Fixes
+
+- Drop darwin-x64 verify leg (macos-13 queue stuck again)
+- Re-add @agent-relay/cloud to publish-packages matrix (#788)
+
+### Technical Perspective
+
+#### Releases
+
+- v6.0.2
+
+---
+
+## [6.0.1] - 2026-04-25
+
+### Product Perspective
+
+#### Breaking Changes
+
+- **Drop legacy agent-relay/broker\* exports and shipped workspace dirs**
+
+#### User-Facing Features & Improvements
+
+- **Restore agent-relay/\* subpath exports via shim re-exports**
+
+#### User-Impacting Fixes
+
+- Drop dead linkResult reference
+- Allow shipped workspace packages declared as regular deps
+- Unbundle @agent-relay/\* to restore optional-dep broker resolution
+- Walk ancestor node_modules for shadowed broker packages
+- Install broker optional-deps for CLI users
+
+### Technical Perspective
+
+#### Performance & Reliability
+
+- Fix stale broker checks and PyPI retry
+
+#### Releases
+
+- v6.0.1
+
+---
+
+## [6.0.0] - 2026-04-24
+
+### Product Perspective
+
+#### User-Facing Features & Improvements
+
+- **ApplySiblingLinks — link sibling-repo packages during workflow setup (#776)** (#776)
+- **Split broker binaries into per-platform optional-dep packages** (#770)
+
+#### User-Impacting Fixes
+
+- Keep SIGWINCH on unix, background-thread poll on Windows
+- Unbreak Windows build
+- Convert rewrites to direct redirects
+- Verify-publish-sdk must accept publish-sdk-only too
+- Pack @agent-relay/config alongside SDK for smoke test
+- Address PR review feedback on broker optional-deps
+- Keep broker packages as workspaces so npm ci passes
+
+### Technical Perspective
+
+#### Performance & Reliability
+
+- Drop darwin-x64 smoke test
+- Cross-platform post-publish verification of @agent-relay/sdk
+- Skip dist check for broker-\* packages in package-validation
+- Add cross-platform smoke test for broker optional-deps
+
+#### Dependencies & Tooling
+
+- Update Cursor models to latest (#777) (#777)
+
+#### Releases
+
+- v6.0.0
+
+---
+
+## [5.0.0] - 2026-04-22
+
+### Product Perspective
+
+#### User-Impacting Fixes
+
+- Repair pre-existing test failures on main
+- Address Copilot review on broker resolution (#769)
+- Ship per-platform wheels with embedded broker (drop runtime download) (#769)
+
+### Technical Perspective
+
+#### Performance & Reliability
+
+- Include publish-sdk-py in summary job
+
+#### Releases
+
+- v5.0.0
+
+---
+
+## [4.0.40] - 2026-04-22
+
+### Product Perspective
+
+#### User-Facing Features & Improvements
+
+- **Add browser and github workflow primitives (#718)** (#718)
+
+### Technical Perspective
+
+#### Releases
+
+- v4.0.40
+
+---
 
 ## [4.0.38] - 2026-04-22
 

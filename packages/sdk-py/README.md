@@ -19,11 +19,34 @@ pip install agent-relay-sdk
 pip install "agent-relay-sdk[communicate]"
 ```
 
-The SDK automatically downloads the broker binary on first use. Communicate mode also needs the framework package you want to wrap, such as `claude-agent-sdk`, `google-adk`, `agno`, `swarms`, or `crewai`.
+The SDK ships per-platform wheels with the broker binary embedded. `pip install` is the network boundary — no downloads happen at import or first use. Communicate mode also needs the framework package you want to wrap, such as `claude-agent-sdk`, `google-adk`, `agno`, `swarms`, or `crewai`.
 
 ## Requirements
 
 - Python 3.10+
+- A supported platform (the wheel ships a prebuilt `agent-relay-broker`):
+
+  | Platform            | Wheel tag                                      |
+  | ------------------- | ---------------------------------------------- |
+  | macOS Apple Silicon | `macosx_11_0_arm64`                            |
+  | macOS Intel         | `macosx_10_12_x86_64`                          |
+  | Linux x86_64        | `manylinux_2_17_x86_64.manylinux2014_x86_64`   |
+  | Linux aarch64       | `manylinux_2_17_aarch64.manylinux2014_aarch64` |
+
+  Linux binaries are built statically against musl, so they install on glibc and musl distros (Debian, Ubuntu, RHEL, Alpine, …). Other platforms (Windows, FreeBSD, linux-armv7) are unsupported — `pip install` will fail with "no matching distribution found".
+
+  To override the bundled binary (e.g. for local development against a custom broker build), set `BROKER_BINARY_PATH` or `AGENT_RELAY_BIN` to an absolute path.
+
+## Development
+
+For an editable install (`pip install -e packages/sdk-py`), build the broker locally and copy it into the wheel tree:
+
+```bash
+cargo build --release --bin agent-relay-broker
+packages/sdk-py/scripts/sync-broker-dev.sh
+```
+
+The destination (`src/agent_relay/bin/`) is gitignored. Alternatively, set `BROKER_BINARY_PATH=$(pwd)/target/release/agent-relay-broker` in your shell.
 
 ## Choose a Mode
 

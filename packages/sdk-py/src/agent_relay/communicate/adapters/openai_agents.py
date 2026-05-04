@@ -13,7 +13,9 @@ def _format_instructions_with_inbox(messages: list[Any], base_instructions: str)
     content = "New messages from other agents:\n"
     for message in messages:
         content += f"  {message.sender}: {message.text}\n"
-    return f"{base_instructions}\n\n{content}" if base_instructions else content
+    if base_instructions:
+        return f"\n\n{content}\n{base_instructions}"
+    return content
 
 
 def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
@@ -72,7 +74,9 @@ def on_relay(agent: Any, relay: "Relay | None" = None) -> Any:
             base = orig_instructions
 
         base = base or ""
-        messages = await relay.inbox()
+        # peek() so the relay_inbox tool isn't starved — messages appear in
+        # the system prompt AND remain available to drain via the tool.
+        messages = await relay.peek()
         if not messages:
             return base
 

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { provisionWorkflowAgents } from '../index.js';
+import { createLocalJwksKeyPair, provisionWorkflowAgents } from '../index.js';
 
 async function createWorkspace(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(tmpdir(), 'relay-provisioner-audit-'));
@@ -22,7 +22,7 @@ test('provisionWorkflowAgents writes a permission audit without token values', a
 
   try {
     const result = await provisionWorkflowAgents({
-      secret: 'test-secret',
+      tokenSigningKey: createLocalJwksKeyPair(),
       workspace: 'audit-workspace',
       projectDir: workspace.dir,
       relayfileBaseUrl: 'http://127.0.0.1:8080',

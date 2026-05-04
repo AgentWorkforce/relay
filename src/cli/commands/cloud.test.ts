@@ -13,8 +13,11 @@ vi.mock('@agent-relay/cloud', () => ({
   authorizedApiFetch: vi.fn(),
   cancelWorkflow: vi.fn(),
   clearStoredAuth: vi.fn(),
+  connectProvider: vi.fn(),
   defaultApiUrl: () => 'https://cloud.test',
   ensureAuthenticated: vi.fn(),
+  getProviderHelpText: () =>
+    'anthropic (alias: claude), openai (alias: codex), google (alias: gemini), cursor, opencode, droid',
   getRunLogs: vi.fn(),
   getRunStatus: (...args: unknown[]) => cloudMocks.getRunStatus(...args),
   readStoredAuth: vi.fn(),
@@ -89,6 +92,10 @@ describe('registerCloudCommands', () => {
 
     expect(run).toBeDefined();
     expect(run?.description()).toContain('workflow run');
+    const optionNames = run?.options.map((option) => option.long);
+    expect(optionNames).toContain('--resume');
+    expect(optionNames).toContain('--start-from');
+    expect(optionNames).toContain('--previous-run-id');
   });
 
   it('status requires a runId argument', () => {

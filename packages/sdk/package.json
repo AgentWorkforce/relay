@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/sdk",
-  "version": "4.0.39",
+  "version": "6.0.7",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -101,6 +101,11 @@
       "types": "./dist/broker-path.d.ts",
       "import": "./dist/broker-path.js",
       "default": "./dist/broker-path.js"
+    },
+    "./github": {
+      "types": "./dist/github.d.ts",
+      "import": "./dist/github.js",
+      "default": "./dist/github.js"
     }
   },
   "files": [
@@ -115,7 +120,7 @@
     "directory": "packages/sdk"
   },
   "scripts": {
-    "prebuild": "npm --prefix ../config run build",
+    "prebuild": "npm --prefix ../workflow-types run build && npm --prefix ../github-primitive run build && npm --prefix ../config run build",
     "build": "npx tsc -p tsconfig.build.json",
     "build:full": "tsc -p tsconfig.json && npm run bundle:binary",
     "bundle:binary": "node ./scripts/bundle-agent-relay.mjs",
@@ -134,7 +139,9 @@
     "@types/ws": "^8.5.10"
   },
   "dependencies": {
-    "@agent-relay/config": "4.0.39",
+    "@agent-relay/config": "6.0.7",
+    "@agent-relay/github-primitive": "6.0.7",
+    "@agent-relay/workflow-types": "6.0.7",
     "@relaycast/sdk": "^1.1.0",
     "@relayfile/sdk": ">=0.1.2 <1",
     "@sinclair/typebox": "^0.34.48",
@@ -146,8 +153,15 @@
     "tar": "^7.5.10",
     "yaml": "^2.7.0"
   },
+  "optionalDependencies": {
+    "@agent-relay/broker-darwin-arm64": "6.0.7",
+    "@agent-relay/broker-darwin-x64": "6.0.7",
+    "@agent-relay/broker-linux-arm64": "6.0.7",
+    "@agent-relay/broker-linux-x64": "6.0.7",
+    "@agent-relay/broker-win32-x64": "6.0.7"
+  },
   "peerDependencies": {
-    "@agent-relay/credential-proxy": "4.0.39",
+    "@agent-relay/credential-proxy": "6.0.7",
     "@anthropic-ai/claude-agent-sdk": ">=0.1.0",
     "@google/adk": ">=0.5.0",
     "@langchain/langgraph": ">=1.2.0",

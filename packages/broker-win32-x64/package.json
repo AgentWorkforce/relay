@@ -1,0 +1,17 @@
+{
+  "name": "@agent-relay/broker-win32-x64",
+  "version": "6.0.7",
+  "description": "agent-relay-broker binary for win32 x64. Installed automatically as an optional dependency of @agent-relay/sdk.",
+  "files": [
+    "bin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/broker-win32-x64"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -3,10 +3,14 @@
  * Postinstall Script for agent-relay
  *
  * This script runs after npm install to:
- * 1. Install agent-relay-broker binary for current platform
- * 2. Install dashboard dependencies
+ * 1. Install dashboard-server and relay-acp binaries (parity with curl installer)
+ * 2. Rebuild better-sqlite3 / confirm SQLite driver
  * 3. Patch agent-trajectories CLI
- * 4. Check for tmux availability (fallback)
+ * 4. Patch @relayauth/core exports for CommonJS require()
+ *
+ * The agent-relay-broker binary is no longer installed here — it ships as a
+ * platform-specific optional dependency of @agent-relay/sdk
+ * (`@agent-relay/broker-<platform>-<arch>`), resolved at runtime by the SDK.
  */
 
 import { execSync } from 'node:child_process';
@@ -326,132 +330,6 @@ function resignBinaryForMacOS(binaryPath) {
 }
 
 /**
- * Get the platform-specific binary name for the broker binary.
- * The broker binary is the Rust-compiled broker (not the Bun-compiled CLI).
- * It is needed by the SDK (packages/sdk) for programmatic
- * agent orchestration via `new AgentRelay()`.
- * Returns null if platform is not supported.
- */
-function getBrokerBinaryName() {
-  const platform = os.platform();
-  const arch = os.arch();
-
-  const archMap = { 'arm64': 'arm64', 'x64': 'x64' };
-  const platformMap = { 'darwin': 'darwin', 'linux': 'linux' };
-
-  const targetPlatform = platformMap[platform];
-  const targetArch = archMap[arch];
-
-  if (!targetPlatform || !targetArch) {
-    return null;
-  }
-
-  // Use the broker-specific release asset name (Rust binary, not Bun CLI)
-  return `agent-relay-broker-${targetPlatform}-${targetArch}`;
-}
-
-/**
- * Install the broker binary into packages/sdk/bin/.
- *
- * The SDK's AgentRelayClient spawns this binary as a subprocess
- * (`agent-relay-broker init --name broker --channels general`). Without it,
- * `new AgentRelay()` will fail with "broker exited (code=1)".
- *
- * Resolution order:
- *   1. Already bundled at packages/sdk/bin/agent-relay-broker (e.g. from prepack)
- *   2. Platform-specific binary bundled in root bin/ (e.g. bin/agent-relay-broker-linux-x64)
- *   3. Download platform-specific standalone binary from GitHub releases
- *   4. Fall back to the local Rust debug binary at target/debug/agent-relay-broker (dev only)
- */
-async function installBrokerBinary() {
-  const pkgRoot = getPackageRoot();
-  const sdkBinDir = path.join(pkgRoot, 'packages', 'sdk', 'bin');
-  const isWindows = process.platform === 'win32';
-  const binaryFilename = isWindows ? 'agent-relay-broker.exe' : 'agent-relay-broker';
-  const targetPath = path.join(sdkBinDir, binaryFilename);
-
-  // 1. Already installed? Verify it's the Rust broker (supports --name flag)
-  if (fs.existsSync(targetPath)) {
-    try {
-      const helpOutput = execSync(`"${targetPath}" init --help`, { stdio: 'pipe' }).toString();
-      // The Rust broker shows "--name <NAME>" in init --help
-      // The Bun-compiled Node.js CLI shows "First-time setup wizard"
-      if (helpOutput.includes('--name')) {
-        info('Broker binary already installed in SDK (Rust broker verified)');
-        return true;
-      }
-      // Wrong binary (Bun CLI instead of Rust broker) — reinstall
-      warn('Broker binary exists but is the CLI, not the Rust broker — reinstalling');
-    } catch {
-      // Binary exists but doesn't work — reinstall
-    }
-  }
-
-  fs.mkdirSync(sdkBinDir, { recursive: true });
-
-  const binaryName = getBrokerBinaryName();
-
-  // 2. Check for bundled platform-specific binary in root bin/
-  if (binaryName) {
-    const bundledBinary = path.join(pkgRoot, 'bin', binaryName);
-    if (fs.existsSync(bundledBinary)) {
-      try {
-        fs.copyFileSync(bundledBinary, targetPath);
-        fs.chmodSync(targetPath, 0o755);
-        resignBinaryForMacOS(targetPath);
-        success(`Installed broker binary from bundled package (${binaryName})`);
-        return true;
-      } catch (err) {
-        warn(`Failed to copy bundled broker binary: ${err.message}`);
-      }
-    }
-  }
-
-  // 3. Try downloading from GitHub releases
-  if (binaryName) {
-    const version = getPackageVersion(pkgRoot);
-    if (version) {
-      const downloadUrl = `https://github.com/AgentWorkforce/relay/releases/download/v${version}/${binaryName}`;
-      info(`Downloading broker binary from ${downloadUrl} ...`);
-
-      try {
-        await downloadBinary(downloadUrl, targetPath);
-        await verifyChecksum(targetPath, downloadUrl);
-        fs.chmodSync(targetPath, 0o755);
-        resignBinaryForMacOS(targetPath);
-        success(`Downloaded broker binary for ${os.platform()}-${os.arch()}`);
-        return true;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        warn(`Failed to download broker binary: ${message}`);
-        // Clean up partial/untrusted download
-        try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
-      }
-    }
-  }
-
-  // 4. Dev fallback — check for local Rust build (release first, then debug)
-  for (const profile of ['release', 'debug']) {
-    const localBinary = path.join(pkgRoot, 'target', profile, binaryFilename);
-    if (fs.existsSync(localBinary)) {
-      try {
-        fs.copyFileSync(localBinary, targetPath);
-        fs.chmodSync(targetPath, 0o755);
-        resignBinaryForMacOS(targetPath);
-        success(`Installed broker binary from local Rust ${profile} build`);
-        return true;
-      } catch (err) {
-        warn(`Failed to copy ${profile} broker binary: ${err.message}`);
-      }
-    }
-  }
-
-  warn('Broker binary not available — SDK programmatic usage (AgentRelay) will not work');
-  info('To fix: cargo build --release --bin agent-relay-broker (requires Rust toolchain)');
-  return false;
-}
-
-/**
  * Install the standalone dashboard-server binary.
  *
  * The curl-based installer downloads this binary, but npm install does not.
@@ -558,132 +436,6 @@ async function installRelayAcpBinary() {
     info(`relay-acp binary not available (${message}) — Zed integration requires manual install`);
     try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
     return false;
-  }
-}
-
-/**
- * Setup workspace package symlinks for global/bundled installs.
- *
- * When agent-relay is installed globally (npm install -g), the workspace packages
- * are included in the tarball at packages/* but Node.js module resolution expects
- * them at node_modules/@agent-relay/*. This function creates symlinks to bridge
- * the gap.
- *
- * This is needed because npm's bundledDependencies doesn't properly handle
- * workspace packages (which are symlinks during development).
- */
-function setupWorkspacePackageLinks() {
-  const pkgRoot = getPackageRoot();
-  const packagesDir = path.join(pkgRoot, 'packages');
-  const nodeModulesDir = path.join(pkgRoot, 'node_modules');
-  const scopeDir = path.join(nodeModulesDir, '@agent-relay');
-
-  // Check if packages/ exists (we're in a bundled/global install)
-  if (!fs.existsSync(packagesDir)) {
-    // Not a bundled install, workspace packages should be in node_modules already
-    return { needed: false };
-  }
-
-  // Check if node_modules/@agent-relay/config exists
-  const testPackage = path.join(scopeDir, 'config');
-  if (fs.existsSync(testPackage)) {
-    // Already set up (either normal npm install or previously linked)
-    info('Workspace packages already available in node_modules');
-    return { needed: false, alreadySetup: true };
-  }
-
-  // We need to create symlinks
-  info('Setting up workspace package links for global install...');
-
-  // Create node_modules/@agent-relay/ directory
-  try {
-    fs.mkdirSync(scopeDir, { recursive: true });
-  } catch (err) {
-    warn(`Failed to create @agent-relay scope directory: ${err.message}`);
-    return { needed: true, success: false, error: err.message };
-  }
-
-  // Map from package directory name to npm package name
-  const packageDirs = fs.readdirSync(packagesDir).filter(dir => {
-    const pkgJsonPath = path.join(packagesDir, dir, 'package.json');
-    return fs.existsSync(pkgJsonPath);
-  });
-
-  let linked = 0;
-  let failed = 0;
-  const errors = [];
-
-  for (const dir of packageDirs) {
-    const sourcePath = path.join(packagesDir, dir);
-    const targetPath = path.join(scopeDir, dir);
-
-    // Skip if already exists
-    if (fs.existsSync(targetPath)) {
-      continue;
-    }
-
-    try {
-      // Use relative symlink for portability
-      const relativeSource = path.relative(scopeDir, sourcePath);
-      fs.symlinkSync(relativeSource, targetPath, 'dir');
-      linked++;
-    } catch (err) {
-      // If symlink fails (e.g., on Windows without admin), try copying
-      try {
-        // Copy the package directory
-        copyDirSync(sourcePath, targetPath);
-        linked++;
-      } catch (copyErr) {
-        failed++;
-        errors.push(`${dir}: ${copyErr.message}`);
-      }
-    }
-  }
-
-  if (linked > 0) {
-    success(`Linked ${linked} workspace packages to node_modules/@agent-relay/`);
-  }
-
-  if (failed > 0) {
-    warn(`Failed to link ${failed} packages: ${errors.join(', ')}`);
-    return { needed: true, success: false, linked, failed, errors };
-  }
-
-  return { needed: true, success: true, linked };
-}
-
-/**
- * Recursively copy a directory
- */
-function copyDirSync(src, dest) {
-  fs.mkdirSync(dest, { recursive: true });
-  const entries = fs.readdirSync(src, { withFileTypes: true });
-
-  for (const entry of entries) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-
-    // Skip node_modules in package copies
-    if (entry.name === 'node_modules') {
-      continue;
-    }
-
-    if (entry.isDirectory()) {
-      copyDirSync(srcPath, destPath);
-    } else if (entry.isSymbolicLink()) {
-      // Resolve symlink and copy the target
-      const linkTarget = fs.readlinkSync(srcPath);
-      const resolvedTarget = path.resolve(path.dirname(srcPath), linkTarget);
-      if (fs.existsSync(resolvedTarget)) {
-        if (fs.statSync(resolvedTarget).isDirectory()) {
-          copyDirSync(resolvedTarget, destPath);
-        } else {
-          fs.copyFileSync(resolvedTarget, destPath);
-        }
-      }
-    } else {
-      fs.copyFileSync(srcPath, destPath);
-    }
   }
 }
 
@@ -811,22 +563,7 @@ function patchRelayauthCoreExports() {
   }
 }
 
-function logPostinstallDiagnostics(hasBrokerBinary, sqliteStatus, linkResult) {
-  // Workspace packages status (for global installs)
-  if (linkResult && linkResult.needed) {
-    if (linkResult.success) {
-      console.log(`✓ Workspace packages linked (${linkResult.linked} packages)`);
-    } else {
-      console.log('⚠ Workspace package linking failed - CLI may not work');
-    }
-  }
-
-  if (hasBrokerBinary) {
-    console.log('✓ agent-relay-broker binary installed');
-  } else {
-    console.log('⚠ agent-relay-broker binary not installed - AgentRelay will not work');
-  }
-
+function logPostinstallDiagnostics(sqliteStatus) {
   if (sqliteStatus.ok && sqliteStatus.driver === 'better-sqlite3') {
     console.log('✓ SQLite ready (better-sqlite3)');
   } else if (sqliteStatus.ok && sqliteStatus.driver === 'node:sqlite') {
@@ -846,19 +583,6 @@ function logPostinstallDiagnostics(hasBrokerBinary, sqliteStatus, linkResult) {
  * Main postinstall routine
  */
 async function main() {
-  // Setup workspace package links for global installs
-  // This MUST run first so that other postinstall steps can find the packages
-  const linkResult = setupWorkspacePackageLinks();
-  if (linkResult.needed && !linkResult.success) {
-    warn('Workspace package linking failed - CLI may not work correctly');
-    if (linkResult.errors) {
-      linkResult.errors.forEach(e => warn(`  ${e}`));
-    }
-  }
-
-  // Install broker binary for agent spawning and SDK programmatic usage
-  const hasBrokerBinary = await installBrokerBinary();
-
   // Ensure SQLite driver is available (better-sqlite3 or node:sqlite)
   const sqliteStatus = ensureSqliteDriver();
 
@@ -876,19 +600,13 @@ async function main() {
   const hasAcpBinary = await installRelayAcpBinary();
 
   // Always print diagnostics (even in CI)
-  logPostinstallDiagnostics(hasBrokerBinary, sqliteStatus, linkResult);
+  logPostinstallDiagnostics(sqliteStatus);
 
   if (hasDashboardBinary) {
     console.log('✓ dashboard-server binary installed');
   }
   if (hasAcpBinary) {
     console.log('✓ relay-acp binary installed (Zed editor integration)');
-  }
-
-  if (!hasBrokerBinary) {
-    warn('agent-relay-broker binary not available');
-    info('Agent spawning will not work without the broker binary.');
-    info('To fix: cargo build --release --bin agent-relay-broker (requires Rust toolchain)');
   }
 }
 

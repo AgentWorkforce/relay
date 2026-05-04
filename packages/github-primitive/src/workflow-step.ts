@@ -1,4 +1,4 @@
-import type { RunnerStepExecutor, WorkflowStep } from '@agent-relay/sdk/workflows';
+import type { RunnerStepExecutor, WorkflowStep } from '@agent-relay/workflow-types';
 
 import { GitHubClient } from './client.js';
 import type {

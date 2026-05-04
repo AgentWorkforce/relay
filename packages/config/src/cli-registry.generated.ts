@@ -14,10 +14,10 @@
 export const CLIVersions = {
   /** Claude Code v2.1.72 */
   CLAUDE: '2.1.72',
-  /** Codex CLI v0.114.0 */
-  CODEX: '0.114.0',
-  /** Gemini CLI v0.33.0 */
-  GEMINI: '0.33.0',
+  /** Codex CLI v0.124.0 */
+  CODEX: '0.124.0',
+  /** Gemini CLI v0.39.1 */
+  GEMINI: '0.39.1',
   /** Cursor v2026.02.27-e7d2ef6 */
   CURSOR: '2026.02.27-e7d2ef6',
   /** Droid v0.1.0 */
@@ -64,7 +64,7 @@ export type ClaudeModel = (typeof ClaudeModels)[keyof typeof ClaudeModels];
  * Codex CLI model identifiers.
  */
 export const CodexModels = {
-  /** GPT-5.4 — Latest frontier agentic coding model (default) */
+  /** GPT-5.4 — Frontier model for complex coding, research, and real-world work. (default) */
   GPT_5_4: 'gpt-5.4',
   /** GPT-5.3 Codex — Frontier agentic coding model */
   GPT_5_3_CODEX: 'gpt-5.3-codex',
@@ -104,94 +104,192 @@ export type GeminiModel = (typeof GeminiModels)[keyof typeof GeminiModels];
  * Cursor model identifiers.
  */
 export const CursorModels = {
-  /** Claude 4.6 Opus (Thinking) (default) */
-  OPUS_4_6_THINKING: 'opus-4.6-thinking',
-  /** Claude 4.6 Opus */
-  OPUS_4_6: 'opus-4.6',
-  /** Claude 4.5 Opus */
-  OPUS_4_5: 'opus-4.5',
-  /** Claude 4.5 Opus (Thinking) */
-  OPUS_4_5_THINKING: 'opus-4.5-thinking',
-  /** Claude 4.6 Sonnet */
-  SONNET_4_6: 'sonnet-4.6',
-  /** Claude 4.6 Sonnet (Thinking) */
-  SONNET_4_6_THINKING: 'sonnet-4.6-thinking',
-  /** Claude 4.5 Sonnet */
-  SONNET_4_5: 'sonnet-4.5',
-  /** Claude 4.5 Sonnet (Thinking) */
-  SONNET_4_5_THINKING: 'sonnet-4.5-thinking',
+  /** Composer 2 Fast (default) */
+  COMPOSER_2_FAST: 'composer-2-fast',
+  /** Composer 2 */
+  COMPOSER_2: 'composer-2',
   /** Composer 1.5 */
   COMPOSER_1_5: 'composer-1.5',
-  /** Composer 1 */
-  COMPOSER_1: 'composer-1',
-  /** GPT-5.4 Extra High */
-  GPT_5_4_XHIGH: 'gpt-5.4-xhigh',
-  /** GPT-5.4 Extra High Fast */
-  GPT_5_4_XHIGH_FAST: 'gpt-5.4-xhigh-fast',
-  /** GPT-5.4 High */
+  /** Codex 5.3 Low */
+  GPT_5_3_CODEX_LOW: 'gpt-5.3-codex-low',
+  /** Codex 5.3 Low Fast */
+  GPT_5_3_CODEX_LOW_FAST: 'gpt-5.3-codex-low-fast',
+  /** Codex 5.3 */
+  GPT_5_3_CODEX: 'gpt-5.3-codex',
+  /** Codex 5.3 Fast */
+  GPT_5_3_CODEX_FAST: 'gpt-5.3-codex-fast',
+  /** Codex 5.3 High */
+  GPT_5_3_CODEX_HIGH: 'gpt-5.3-codex-high',
+  /** Codex 5.3 High Fast */
+  GPT_5_3_CODEX_HIGH_FAST: 'gpt-5.3-codex-high-fast',
+  /** Codex 5.3 Extra High */
+  GPT_5_3_CODEX_XHIGH: 'gpt-5.3-codex-xhigh',
+  /** Codex 5.3 Extra High Fast */
+  GPT_5_3_CODEX_XHIGH_FAST: 'gpt-5.3-codex-xhigh-fast',
+  /** GPT-5.2 */
+  GPT_5_2: 'gpt-5.2',
+  /** Codex 5.3 Spark Low */
+  GPT_5_3_CODEX_SPARK_PREVIEW_LOW: 'gpt-5.3-codex-spark-preview-low',
+  /** Codex 5.3 Spark */
+  GPT_5_3_CODEX_SPARK_PREVIEW: 'gpt-5.3-codex-spark-preview',
+  /** Codex 5.3 Spark High */
+  GPT_5_3_CODEX_SPARK_PREVIEW_HIGH: 'gpt-5.3-codex-spark-preview-high',
+  /** Codex 5.3 Spark Extra High */
+  GPT_5_3_CODEX_SPARK_PREVIEW_XHIGH: 'gpt-5.3-codex-spark-preview-xhigh',
+  /** Codex 5.2 Low */
+  GPT_5_2_CODEX_LOW: 'gpt-5.2-codex-low',
+  /** Codex 5.2 Low Fast */
+  GPT_5_2_CODEX_LOW_FAST: 'gpt-5.2-codex-low-fast',
+  /** Codex 5.2 */
+  GPT_5_2_CODEX: 'gpt-5.2-codex',
+  /** Codex 5.2 Fast */
+  GPT_5_2_CODEX_FAST: 'gpt-5.2-codex-fast',
+  /** Codex 5.2 High */
+  GPT_5_2_CODEX_HIGH: 'gpt-5.2-codex-high',
+  /** Codex 5.2 High Fast */
+  GPT_5_2_CODEX_HIGH_FAST: 'gpt-5.2-codex-high-fast',
+  /** Codex 5.2 Extra High */
+  GPT_5_2_CODEX_XHIGH: 'gpt-5.2-codex-xhigh',
+  /** Codex 5.2 Extra High Fast */
+  GPT_5_2_CODEX_XHIGH_FAST: 'gpt-5.2-codex-xhigh-fast',
+  /** Codex 5.1 Max Low */
+  GPT_5_1_CODEX_MAX_LOW: 'gpt-5.1-codex-max-low',
+  /** Codex 5.1 Max Low Fast */
+  GPT_5_1_CODEX_MAX_LOW_FAST: 'gpt-5.1-codex-max-low-fast',
+  /** Codex 5.1 Max */
+  GPT_5_1_CODEX_MAX_MEDIUM: 'gpt-5.1-codex-max-medium',
+  /** Codex 5.1 Max Medium Fast */
+  GPT_5_1_CODEX_MAX_MEDIUM_FAST: 'gpt-5.1-codex-max-medium-fast',
+  /** Codex 5.1 Max High */
+  GPT_5_1_CODEX_MAX_HIGH: 'gpt-5.1-codex-max-high',
+  /** Codex 5.1 Max High Fast */
+  GPT_5_1_CODEX_MAX_HIGH_FAST: 'gpt-5.1-codex-max-high-fast',
+  /** Codex 5.1 Max Extra High */
+  GPT_5_1_CODEX_MAX_XHIGH: 'gpt-5.1-codex-max-xhigh',
+  /** Codex 5.1 Max Extra High Fast */
+  GPT_5_1_CODEX_MAX_XHIGH_FAST: 'gpt-5.1-codex-max-xhigh-fast',
+  /** Opus 4.7 1M High Thinking */
+  CLAUDE_OPUS_4_7_THINKING_HIGH: 'claude-opus-4-7-thinking-high',
+  /** GPT-5.4 1M High */
   GPT_5_4_HIGH: 'gpt-5.4-high',
   /** GPT-5.4 High Fast */
   GPT_5_4_HIGH_FAST: 'gpt-5.4-high-fast',
-  /** GPT-5.4 */
+  /** GPT-5.4 Extra High Fast */
+  GPT_5_4_XHIGH_FAST: 'gpt-5.4-xhigh-fast',
+  /** Opus 4.6 1M Thinking Fast */
+  CLAUDE_4_6_OPUS_HIGH_THINKING_FAST: 'claude-4.6-opus-high-thinking-fast',
+  /** Sonnet 4.6 1M */
+  CLAUDE_4_6_SONNET_MEDIUM: 'claude-4.6-sonnet-medium',
+  /** Sonnet 4.6 1M Thinking */
+  CLAUDE_4_6_SONNET_MEDIUM_THINKING: 'claude-4.6-sonnet-medium-thinking',
+  /** Opus 4.7 1M Low */
+  CLAUDE_OPUS_4_7_LOW: 'claude-opus-4-7-low',
+  /** Opus 4.7 1M Medium */
+  CLAUDE_OPUS_4_7_MEDIUM: 'claude-opus-4-7-medium',
+  /** Opus 4.7 1M High */
+  CLAUDE_OPUS_4_7_HIGH: 'claude-opus-4-7-high',
+  /** Opus 4.7 1M */
+  CLAUDE_OPUS_4_7_XHIGH: 'claude-opus-4-7-xhigh',
+  /** Opus 4.7 1M Max */
+  CLAUDE_OPUS_4_7_MAX: 'claude-opus-4-7-max',
+  /** Opus 4.7 1M Low Thinking */
+  CLAUDE_OPUS_4_7_THINKING_LOW: 'claude-opus-4-7-thinking-low',
+  /** Opus 4.7 1M Medium Thinking */
+  CLAUDE_OPUS_4_7_THINKING_MEDIUM: 'claude-opus-4-7-thinking-medium',
+  /** Opus 4.7 1M Thinking */
+  CLAUDE_OPUS_4_7_THINKING_XHIGH: 'claude-opus-4-7-thinking-xhigh',
+  /** Opus 4.7 1M Max Thinking */
+  CLAUDE_OPUS_4_7_THINKING_MAX: 'claude-opus-4-7-thinking-max',
+  /** GPT-5.4 1M Low */
+  GPT_5_4_LOW: 'gpt-5.4-low',
+  /** GPT-5.4 1M */
   GPT_5_4_MEDIUM: 'gpt-5.4-medium',
   /** GPT-5.4 Fast */
   GPT_5_4_MEDIUM_FAST: 'gpt-5.4-medium-fast',
-  /** GPT-5.4 Low */
-  GPT_5_4_LOW: 'gpt-5.4-low',
-  /** GPT-5.3 Codex Extra High */
-  GPT_5_3_CODEX_XHIGH: 'gpt-5.3-codex-xhigh',
-  /** GPT-5.3 Codex Extra High Fast */
-  GPT_5_3_CODEX_XHIGH_FAST: 'gpt-5.3-codex-xhigh-fast',
-  /** GPT-5.3 Codex High */
-  GPT_5_3_CODEX_HIGH: 'gpt-5.3-codex-high',
-  /** GPT-5.3 Codex High Fast */
-  GPT_5_3_CODEX_HIGH_FAST: 'gpt-5.3-codex-high-fast',
-  /** GPT-5.3 Codex */
-  GPT_5_3_CODEX: 'gpt-5.3-codex',
-  /** GPT-5.3 Codex Fast */
-  GPT_5_3_CODEX_FAST: 'gpt-5.3-codex-fast',
-  /** GPT-5.3 Codex Low */
-  GPT_5_3_CODEX_LOW: 'gpt-5.3-codex-low',
-  /** GPT-5.3 Codex Low Fast */
-  GPT_5_3_CODEX_LOW_FAST: 'gpt-5.3-codex-low-fast',
-  /** GPT-5.3 Codex Spark */
-  GPT_5_3_CODEX_SPARK_PREVIEW: 'gpt-5.3-codex-spark-preview',
-  /** GPT-5.2 Codex Extra High */
-  GPT_5_2_CODEX_XHIGH: 'gpt-5.2-codex-xhigh',
-  /** GPT-5.2 Codex Extra High Fast */
-  GPT_5_2_CODEX_XHIGH_FAST: 'gpt-5.2-codex-xhigh-fast',
-  /** GPT-5.2 Codex High */
-  GPT_5_2_CODEX_HIGH: 'gpt-5.2-codex-high',
-  /** GPT-5.2 Codex High Fast */
-  GPT_5_2_CODEX_HIGH_FAST: 'gpt-5.2-codex-high-fast',
-  /** GPT-5.2 Codex */
-  GPT_5_2_CODEX: 'gpt-5.2-codex',
-  /** GPT-5.2 Codex Fast */
-  GPT_5_2_CODEX_FAST: 'gpt-5.2-codex-fast',
-  /** GPT-5.2 Codex Low */
-  GPT_5_2_CODEX_LOW: 'gpt-5.2-codex-low',
-  /** GPT-5.2 Codex Low Fast */
-  GPT_5_2_CODEX_LOW_FAST: 'gpt-5.2-codex-low-fast',
-  /** GPT-5.2 */
-  GPT_5_2: 'gpt-5.2',
+  /** GPT-5.4 1M Extra High */
+  GPT_5_4_XHIGH: 'gpt-5.4-xhigh',
+  /** Opus 4.6 1M */
+  CLAUDE_4_6_OPUS_HIGH: 'claude-4.6-opus-high',
+  /** Opus 4.6 1M Max */
+  CLAUDE_4_6_OPUS_MAX: 'claude-4.6-opus-max',
+  /** Opus 4.6 1M Thinking */
+  CLAUDE_4_6_OPUS_HIGH_THINKING: 'claude-4.6-opus-high-thinking',
+  /** Opus 4.6 1M Max Thinking */
+  CLAUDE_4_6_OPUS_MAX_THINKING: 'claude-4.6-opus-max-thinking',
+  /** Opus 4.6 1M Max Thinking Fast */
+  CLAUDE_4_6_OPUS_MAX_THINKING_FAST: 'claude-4.6-opus-max-thinking-fast',
+  /** Opus 4.5 */
+  CLAUDE_4_5_OPUS_HIGH: 'claude-4.5-opus-high',
+  /** Opus 4.5 Thinking */
+  CLAUDE_4_5_OPUS_HIGH_THINKING: 'claude-4.5-opus-high-thinking',
+  /** GPT-5.2 Low */
+  GPT_5_2_LOW: 'gpt-5.2-low',
+  /** GPT-5.2 Low Fast */
+  GPT_5_2_LOW_FAST: 'gpt-5.2-low-fast',
+  /** GPT-5.2 Fast */
+  GPT_5_2_FAST: 'gpt-5.2-fast',
   /** GPT-5.2 High */
   GPT_5_2_HIGH: 'gpt-5.2-high',
-  /** GPT-5.1 Codex Max */
-  GPT_5_1_CODEX_MAX: 'gpt-5.1-codex-max',
-  /** GPT-5.1 Codex Max High */
-  GPT_5_1_CODEX_MAX_HIGH: 'gpt-5.1-codex-max-high',
-  /** GPT-5.1 Codex Mini */
-  GPT_5_1_CODEX_MINI: 'gpt-5.1-codex-mini',
-  /** GPT-5.1 High */
-  GPT_5_1_HIGH: 'gpt-5.1-high',
+  /** GPT-5.2 High Fast */
+  GPT_5_2_HIGH_FAST: 'gpt-5.2-high-fast',
+  /** GPT-5.2 Extra High */
+  GPT_5_2_XHIGH: 'gpt-5.2-xhigh',
+  /** GPT-5.2 Extra High Fast */
+  GPT_5_2_XHIGH_FAST: 'gpt-5.2-xhigh-fast',
   /** Gemini 3.1 Pro */
   GEMINI_3_1_PRO: 'gemini-3.1-pro',
-  /** Gemini 3 Pro */
-  GEMINI_3_PRO: 'gemini-3-pro',
+  /** GPT-5.4 Mini None */
+  GPT_5_4_MINI_NONE: 'gpt-5.4-mini-none',
+  /** GPT-5.4 Mini Low */
+  GPT_5_4_MINI_LOW: 'gpt-5.4-mini-low',
+  /** GPT-5.4 Mini */
+  GPT_5_4_MINI_MEDIUM: 'gpt-5.4-mini-medium',
+  /** GPT-5.4 Mini High */
+  GPT_5_4_MINI_HIGH: 'gpt-5.4-mini-high',
+  /** GPT-5.4 Mini Extra High */
+  GPT_5_4_MINI_XHIGH: 'gpt-5.4-mini-xhigh',
+  /** GPT-5.4 Nano None */
+  GPT_5_4_NANO_NONE: 'gpt-5.4-nano-none',
+  /** GPT-5.4 Nano Low */
+  GPT_5_4_NANO_LOW: 'gpt-5.4-nano-low',
+  /** GPT-5.4 Nano */
+  GPT_5_4_NANO_MEDIUM: 'gpt-5.4-nano-medium',
+  /** GPT-5.4 Nano High */
+  GPT_5_4_NANO_HIGH: 'gpt-5.4-nano-high',
+  /** GPT-5.4 Nano Extra High */
+  GPT_5_4_NANO_XHIGH: 'gpt-5.4-nano-xhigh',
+  /** Grok 4.20 */
+  GROK_4_20: 'grok-4-20',
+  /** Grok 4.20 Thinking */
+  GROK_4_20_THINKING: 'grok-4-20-thinking',
+  /** Sonnet 4.5 1M */
+  CLAUDE_4_5_SONNET: 'claude-4.5-sonnet',
+  /** Sonnet 4.5 1M Thinking */
+  CLAUDE_4_5_SONNET_THINKING: 'claude-4.5-sonnet-thinking',
+  /** GPT-5.1 Low */
+  GPT_5_1_LOW: 'gpt-5.1-low',
+  /** GPT-5.1 */
+  GPT_5_1: 'gpt-5.1',
+  /** GPT-5.1 High */
+  GPT_5_1_HIGH: 'gpt-5.1-high',
   /** Gemini 3 Flash */
   GEMINI_3_FLASH: 'gemini-3-flash',
-  /** Grok */
-  GROK: 'grok',
+  /** Codex 5.1 Mini Low */
+  GPT_5_1_CODEX_MINI_LOW: 'gpt-5.1-codex-mini-low',
+  /** Codex 5.1 Mini */
+  GPT_5_1_CODEX_MINI: 'gpt-5.1-codex-mini',
+  /** Codex 5.1 Mini High */
+  GPT_5_1_CODEX_MINI_HIGH: 'gpt-5.1-codex-mini-high',
+  /** Sonnet 4 */
+  CLAUDE_4_SONNET: 'claude-4-sonnet',
+  /** Sonnet 4 1M */
+  CLAUDE_4_SONNET_1M: 'claude-4-sonnet-1m',
+  /** Sonnet 4 Thinking */
+  CLAUDE_4_SONNET_THINKING: 'claude-4-sonnet-thinking',
+  /** Sonnet 4 1M Thinking */
+  CLAUDE_4_SONNET_1M_THINKING: 'claude-4-sonnet-1m-thinking',
+  /** GPT-5 Mini */
+  GPT_5_MINI: 'gpt-5-mini',
   /** Kimi K2.5 */
   KIMI_K2_5: 'kimi-k2.5',
 } as const;
@@ -349,13 +447,48 @@ export const CLAUDE_MODEL_OPTIONS: ModelOption[] = [
  * Codex CLI model options for UI dropdowns.
  */
 export const CODEX_MODEL_OPTIONS: ModelOption[] = [
-  { value: 'gpt-5.4', label: 'GPT-5.4 — Latest frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
-  { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
-  { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark — Ultra-fast coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
-  { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
-  { value: 'gpt-5.2', label: 'GPT-5.2 — Frontier model, knowledge & reasoning', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
-  { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max — Deep and fast reasoning', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
-  { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini — Cheaper, faster', reasoningEfforts: ["medium","high"], defaultReasoningEffort: 'high' },
+  {
+    value: 'gpt-5.4',
+    label: 'GPT-5.4 — Frontier model for complex coding, research, and real-world work.',
+    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'xhigh',
+  },
+  {
+    value: 'gpt-5.3-codex',
+    label: 'GPT-5.3 Codex — Frontier agentic coding model',
+    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'xhigh',
+  },
+  {
+    value: 'gpt-5.3-codex-spark',
+    label: 'GPT-5.3 Codex Spark — Ultra-fast coding model',
+    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'xhigh',
+  },
+  {
+    value: 'gpt-5.2-codex',
+    label: 'GPT-5.2 Codex — Frontier agentic coding model',
+    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'xhigh',
+  },
+  {
+    value: 'gpt-5.2',
+    label: 'GPT-5.2 — Frontier model, knowledge & reasoning',
+    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'xhigh',
+  },
+  {
+    value: 'gpt-5.1-codex-max',
+    label: 'GPT-5.1 Codex Max — Deep and fast reasoning',
+    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'xhigh',
+  },
+  {
+    value: 'gpt-5.1-codex-mini',
+    label: 'GPT-5.1 Codex Mini — Cheaper, faster',
+    reasoningEfforts: ['medium', 'high'],
+    defaultReasoningEffort: 'high',
+  },
 ];
 
 /**
@@ -373,50 +506,99 @@ export const GEMINI_MODEL_OPTIONS: ModelOption[] = [
  * Cursor model options for UI dropdowns.
  */
 export const CURSOR_MODEL_OPTIONS: ModelOption[] = [
-  { value: 'opus-4.6-thinking', label: 'Claude 4.6 Opus (Thinking)' },
-  { value: 'opus-4.6', label: 'Claude 4.6 Opus' },
-  { value: 'opus-4.5', label: 'Claude 4.5 Opus' },
-  { value: 'opus-4.5-thinking', label: 'Claude 4.5 Opus (Thinking)' },
-  { value: 'sonnet-4.6', label: 'Claude 4.6 Sonnet' },
-  { value: 'sonnet-4.6-thinking', label: 'Claude 4.6 Sonnet (Thinking)' },
-  { value: 'sonnet-4.5', label: 'Claude 4.5 Sonnet' },
-  { value: 'sonnet-4.5-thinking', label: 'Claude 4.5 Sonnet (Thinking)' },
+  { value: 'composer-2-fast', label: 'Composer 2 Fast' },
+  { value: 'composer-2', label: 'Composer 2' },
   { value: 'composer-1.5', label: 'Composer 1.5' },
-  { value: 'composer-1', label: 'Composer 1' },
-  { value: 'gpt-5.4-xhigh', label: 'GPT-5.4 Extra High' },
-  { value: 'gpt-5.4-xhigh-fast', label: 'GPT-5.4 Extra High Fast' },
-  { value: 'gpt-5.4-high', label: 'GPT-5.4 High' },
-  { value: 'gpt-5.4-high-fast', label: 'GPT-5.4 High Fast' },
-  { value: 'gpt-5.4-medium', label: 'GPT-5.4' },
-  { value: 'gpt-5.4-medium-fast', label: 'GPT-5.4 Fast' },
-  { value: 'gpt-5.4-low', label: 'GPT-5.4 Low' },
-  { value: 'gpt-5.3-codex-xhigh', label: 'GPT-5.3 Codex Extra High' },
-  { value: 'gpt-5.3-codex-xhigh-fast', label: 'GPT-5.3 Codex Extra High Fast' },
-  { value: 'gpt-5.3-codex-high', label: 'GPT-5.3 Codex High' },
-  { value: 'gpt-5.3-codex-high-fast', label: 'GPT-5.3 Codex High Fast' },
-  { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
-  { value: 'gpt-5.3-codex-fast', label: 'GPT-5.3 Codex Fast' },
-  { value: 'gpt-5.3-codex-low', label: 'GPT-5.3 Codex Low' },
-  { value: 'gpt-5.3-codex-low-fast', label: 'GPT-5.3 Codex Low Fast' },
-  { value: 'gpt-5.3-codex-spark-preview', label: 'GPT-5.3 Codex Spark' },
-  { value: 'gpt-5.2-codex-xhigh', label: 'GPT-5.2 Codex Extra High' },
-  { value: 'gpt-5.2-codex-xhigh-fast', label: 'GPT-5.2 Codex Extra High Fast' },
-  { value: 'gpt-5.2-codex-high', label: 'GPT-5.2 Codex High' },
-  { value: 'gpt-5.2-codex-high-fast', label: 'GPT-5.2 Codex High Fast' },
-  { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
-  { value: 'gpt-5.2-codex-fast', label: 'GPT-5.2 Codex Fast' },
-  { value: 'gpt-5.2-codex-low', label: 'GPT-5.2 Codex Low' },
-  { value: 'gpt-5.2-codex-low-fast', label: 'GPT-5.2 Codex Low Fast' },
+  { value: 'gpt-5.3-codex-low', label: 'Codex 5.3 Low' },
+  { value: 'gpt-5.3-codex-low-fast', label: 'Codex 5.3 Low Fast' },
+  { value: 'gpt-5.3-codex', label: 'Codex 5.3' },
+  { value: 'gpt-5.3-codex-fast', label: 'Codex 5.3 Fast' },
+  { value: 'gpt-5.3-codex-high', label: 'Codex 5.3 High' },
+  { value: 'gpt-5.3-codex-high-fast', label: 'Codex 5.3 High Fast' },
+  { value: 'gpt-5.3-codex-xhigh', label: 'Codex 5.3 Extra High' },
+  { value: 'gpt-5.3-codex-xhigh-fast', label: 'Codex 5.3 Extra High Fast' },
   { value: 'gpt-5.2', label: 'GPT-5.2' },
+  { value: 'gpt-5.3-codex-spark-preview-low', label: 'Codex 5.3 Spark Low' },
+  { value: 'gpt-5.3-codex-spark-preview', label: 'Codex 5.3 Spark' },
+  { value: 'gpt-5.3-codex-spark-preview-high', label: 'Codex 5.3 Spark High' },
+  { value: 'gpt-5.3-codex-spark-preview-xhigh', label: 'Codex 5.3 Spark Extra High' },
+  { value: 'gpt-5.2-codex-low', label: 'Codex 5.2 Low' },
+  { value: 'gpt-5.2-codex-low-fast', label: 'Codex 5.2 Low Fast' },
+  { value: 'gpt-5.2-codex', label: 'Codex 5.2' },
+  { value: 'gpt-5.2-codex-fast', label: 'Codex 5.2 Fast' },
+  { value: 'gpt-5.2-codex-high', label: 'Codex 5.2 High' },
+  { value: 'gpt-5.2-codex-high-fast', label: 'Codex 5.2 High Fast' },
+  { value: 'gpt-5.2-codex-xhigh', label: 'Codex 5.2 Extra High' },
+  { value: 'gpt-5.2-codex-xhigh-fast', label: 'Codex 5.2 Extra High Fast' },
+  { value: 'gpt-5.1-codex-max-low', label: 'Codex 5.1 Max Low' },
+  { value: 'gpt-5.1-codex-max-low-fast', label: 'Codex 5.1 Max Low Fast' },
+  { value: 'gpt-5.1-codex-max-medium', label: 'Codex 5.1 Max' },
+  { value: 'gpt-5.1-codex-max-medium-fast', label: 'Codex 5.1 Max Medium Fast' },
+  { value: 'gpt-5.1-codex-max-high', label: 'Codex 5.1 Max High' },
+  { value: 'gpt-5.1-codex-max-high-fast', label: 'Codex 5.1 Max High Fast' },
+  { value: 'gpt-5.1-codex-max-xhigh', label: 'Codex 5.1 Max Extra High' },
+  { value: 'gpt-5.1-codex-max-xhigh-fast', label: 'Codex 5.1 Max Extra High Fast' },
+  { value: 'claude-opus-4-7-thinking-high', label: 'Opus 4.7 1M High Thinking' },
+  { value: 'gpt-5.4-high', label: 'GPT-5.4 1M High' },
+  { value: 'gpt-5.4-high-fast', label: 'GPT-5.4 High Fast' },
+  { value: 'gpt-5.4-xhigh-fast', label: 'GPT-5.4 Extra High Fast' },
+  { value: 'claude-4.6-opus-high-thinking-fast', label: 'Opus 4.6 1M Thinking Fast' },
+  { value: 'claude-4.6-sonnet-medium', label: 'Sonnet 4.6 1M' },
+  { value: 'claude-4.6-sonnet-medium-thinking', label: 'Sonnet 4.6 1M Thinking' },
+  { value: 'claude-opus-4-7-low', label: 'Opus 4.7 1M Low' },
+  { value: 'claude-opus-4-7-medium', label: 'Opus 4.7 1M Medium' },
+  { value: 'claude-opus-4-7-high', label: 'Opus 4.7 1M High' },
+  { value: 'claude-opus-4-7-xhigh', label: 'Opus 4.7 1M' },
+  { value: 'claude-opus-4-7-max', label: 'Opus 4.7 1M Max' },
+  { value: 'claude-opus-4-7-thinking-low', label: 'Opus 4.7 1M Low Thinking' },
+  { value: 'claude-opus-4-7-thinking-medium', label: 'Opus 4.7 1M Medium Thinking' },
+  { value: 'claude-opus-4-7-thinking-xhigh', label: 'Opus 4.7 1M Thinking' },
+  { value: 'claude-opus-4-7-thinking-max', label: 'Opus 4.7 1M Max Thinking' },
+  { value: 'gpt-5.4-low', label: 'GPT-5.4 1M Low' },
+  { value: 'gpt-5.4-medium', label: 'GPT-5.4 1M' },
+  { value: 'gpt-5.4-medium-fast', label: 'GPT-5.4 Fast' },
+  { value: 'gpt-5.4-xhigh', label: 'GPT-5.4 1M Extra High' },
+  { value: 'claude-4.6-opus-high', label: 'Opus 4.6 1M' },
+  { value: 'claude-4.6-opus-max', label: 'Opus 4.6 1M Max' },
+  { value: 'claude-4.6-opus-high-thinking', label: 'Opus 4.6 1M Thinking' },
+  { value: 'claude-4.6-opus-max-thinking', label: 'Opus 4.6 1M Max Thinking' },
+  { value: 'claude-4.6-opus-max-thinking-fast', label: 'Opus 4.6 1M Max Thinking Fast' },
+  { value: 'claude-4.5-opus-high', label: 'Opus 4.5' },
+  { value: 'claude-4.5-opus-high-thinking', label: 'Opus 4.5 Thinking' },
+  { value: 'gpt-5.2-low', label: 'GPT-5.2 Low' },
+  { value: 'gpt-5.2-low-fast', label: 'GPT-5.2 Low Fast' },
+  { value: 'gpt-5.2-fast', label: 'GPT-5.2 Fast' },
   { value: 'gpt-5.2-high', label: 'GPT-5.2 High' },
-  { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
-  { value: 'gpt-5.1-codex-max-high', label: 'GPT-5.1 Codex Max High' },
-  { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini' },
-  { value: 'gpt-5.1-high', label: 'GPT-5.1 High' },
+  { value: 'gpt-5.2-high-fast', label: 'GPT-5.2 High Fast' },
+  { value: 'gpt-5.2-xhigh', label: 'GPT-5.2 Extra High' },
+  { value: 'gpt-5.2-xhigh-fast', label: 'GPT-5.2 Extra High Fast' },
   { value: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
-  { value: 'gemini-3-pro', label: 'Gemini 3 Pro' },
+  { value: 'gpt-5.4-mini-none', label: 'GPT-5.4 Mini None' },
+  { value: 'gpt-5.4-mini-low', label: 'GPT-5.4 Mini Low' },
+  { value: 'gpt-5.4-mini-medium', label: 'GPT-5.4 Mini' },
+  { value: 'gpt-5.4-mini-high', label: 'GPT-5.4 Mini High' },
+  { value: 'gpt-5.4-mini-xhigh', label: 'GPT-5.4 Mini Extra High' },
+  { value: 'gpt-5.4-nano-none', label: 'GPT-5.4 Nano None' },
+  { value: 'gpt-5.4-nano-low', label: 'GPT-5.4 Nano Low' },
+  { value: 'gpt-5.4-nano-medium', label: 'GPT-5.4 Nano' },
+  { value: 'gpt-5.4-nano-high', label: 'GPT-5.4 Nano High' },
+  { value: 'gpt-5.4-nano-xhigh', label: 'GPT-5.4 Nano Extra High' },
+  { value: 'grok-4-20', label: 'Grok 4.20' },
+  { value: 'grok-4-20-thinking', label: 'Grok 4.20 Thinking' },
+  { value: 'claude-4.5-sonnet', label: 'Sonnet 4.5 1M' },
+  { value: 'claude-4.5-sonnet-thinking', label: 'Sonnet 4.5 1M Thinking' },
+  { value: 'gpt-5.1-low', label: 'GPT-5.1 Low' },
+  { value: 'gpt-5.1', label: 'GPT-5.1' },
+  { value: 'gpt-5.1-high', label: 'GPT-5.1 High' },
   { value: 'gemini-3-flash', label: 'Gemini 3 Flash' },
-  { value: 'grok', label: 'Grok' },
+  { value: 'gpt-5.1-codex-mini-low', label: 'Codex 5.1 Mini Low' },
+  { value: 'gpt-5.1-codex-mini', label: 'Codex 5.1 Mini' },
+  { value: 'gpt-5.1-codex-mini-high', label: 'Codex 5.1 Mini High' },
+  { value: 'claude-4-sonnet', label: 'Sonnet 4' },
+  { value: 'claude-4-sonnet-1m', label: 'Sonnet 4 1M' },
+  { value: 'claude-4-sonnet-thinking', label: 'Sonnet 4 Thinking' },
+  { value: 'claude-4-sonnet-1m-thinking', label: 'Sonnet 4 1M Thinking' },
+  { value: 'gpt-5-mini', label: 'GPT-5 Mini' },
   { value: 'kimi-k2.5', label: 'Kimi K2.5' },
 ];
 
@@ -488,22 +670,57 @@ export const OPENCODE_MODEL_OPTIONS: ModelOption[] = [
  * Claude Code model metadata keyed by model id.
  */
 export const CLAUDE_MODEL_METADATA: Record<ClaudeModel, ModelOption> = {
-  'sonnet': { value: 'sonnet', label: 'Sonnet' },
-  'opus': { value: 'opus', label: 'Opus' },
-  'haiku': { value: 'haiku', label: 'Haiku' },
+  sonnet: { value: 'sonnet', label: 'Sonnet' },
+  opus: { value: 'opus', label: 'Opus' },
+  haiku: { value: 'haiku', label: 'Haiku' },
 };
 
 /**
  * Codex CLI model metadata keyed by model id.
  */
 export const CODEX_MODEL_METADATA: Record<CodexModel, ModelOption> = {
-  'gpt-5.4': { value: 'gpt-5.4', label: 'GPT-5.4 — Latest frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
-  'gpt-5.3-codex': { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
-  'gpt-5.3-codex-spark': { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark — Ultra-fast coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
-  'gpt-5.2-codex': { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
-  'gpt-5.2': { value: 'gpt-5.2', label: 'GPT-5.2 — Frontier model, knowledge & reasoning', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
-  'gpt-5.1-codex-max': { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max — Deep and fast reasoning', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
-  'gpt-5.1-codex-mini': { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini — Cheaper, faster', reasoningEfforts: ["medium","high"], defaultReasoningEffort: 'high' },
+  'gpt-5.4': {
+    value: 'gpt-5.4',
+    label: 'GPT-5.4 — Frontier model for complex coding, research, and real-world work.',
+    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'xhigh',
+  },
+  'gpt-5.3-codex': {
+    value: 'gpt-5.3-codex',
+    label: 'GPT-5.3 Codex — Frontier agentic coding model',
+    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'xhigh',
+  },
+  'gpt-5.3-codex-spark': {
+    value: 'gpt-5.3-codex-spark',
+    label: 'GPT-5.3 Codex Spark — Ultra-fast coding model',
+    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'xhigh',
+  },
+  'gpt-5.2-codex': {
+    value: 'gpt-5.2-codex',
+    label: 'GPT-5.2 Codex — Frontier agentic coding model',
+    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'xhigh',
+  },
+  'gpt-5.2': {
+    value: 'gpt-5.2',
+    label: 'GPT-5.2 — Frontier model, knowledge & reasoning',
+    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'xhigh',
+  },
+  'gpt-5.1-codex-max': {
+    value: 'gpt-5.1-codex-max',
+    label: 'GPT-5.1 Codex Max — Deep and fast reasoning',
+    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'xhigh',
+  },
+  'gpt-5.1-codex-mini': {
+    value: 'gpt-5.1-codex-mini',
+    label: 'GPT-5.1 Codex Mini — Cheaper, faster',
+    reasoningEfforts: ['medium', 'high'],
+    defaultReasoningEffort: 'high',
+  },
 };
 
 /**
@@ -521,50 +738,141 @@ export const GEMINI_MODEL_METADATA: Record<GeminiModel, ModelOption> = {
  * Cursor model metadata keyed by model id.
  */
 export const CURSOR_MODEL_METADATA: Record<CursorModel, ModelOption> = {
-  'opus-4.6-thinking': { value: 'opus-4.6-thinking', label: 'Claude 4.6 Opus (Thinking)' },
-  'opus-4.6': { value: 'opus-4.6', label: 'Claude 4.6 Opus' },
-  'opus-4.5': { value: 'opus-4.5', label: 'Claude 4.5 Opus' },
-  'opus-4.5-thinking': { value: 'opus-4.5-thinking', label: 'Claude 4.5 Opus (Thinking)' },
-  'sonnet-4.6': { value: 'sonnet-4.6', label: 'Claude 4.6 Sonnet' },
-  'sonnet-4.6-thinking': { value: 'sonnet-4.6-thinking', label: 'Claude 4.6 Sonnet (Thinking)' },
-  'sonnet-4.5': { value: 'sonnet-4.5', label: 'Claude 4.5 Sonnet' },
-  'sonnet-4.5-thinking': { value: 'sonnet-4.5-thinking', label: 'Claude 4.5 Sonnet (Thinking)' },
+  'composer-2-fast': { value: 'composer-2-fast', label: 'Composer 2 Fast' },
+  'composer-2': { value: 'composer-2', label: 'Composer 2' },
   'composer-1.5': { value: 'composer-1.5', label: 'Composer 1.5' },
-  'composer-1': { value: 'composer-1', label: 'Composer 1' },
-  'gpt-5.4-xhigh': { value: 'gpt-5.4-xhigh', label: 'GPT-5.4 Extra High' },
-  'gpt-5.4-xhigh-fast': { value: 'gpt-5.4-xhigh-fast', label: 'GPT-5.4 Extra High Fast' },
-  'gpt-5.4-high': { value: 'gpt-5.4-high', label: 'GPT-5.4 High' },
-  'gpt-5.4-high-fast': { value: 'gpt-5.4-high-fast', label: 'GPT-5.4 High Fast' },
-  'gpt-5.4-medium': { value: 'gpt-5.4-medium', label: 'GPT-5.4' },
-  'gpt-5.4-medium-fast': { value: 'gpt-5.4-medium-fast', label: 'GPT-5.4 Fast' },
-  'gpt-5.4-low': { value: 'gpt-5.4-low', label: 'GPT-5.4 Low' },
-  'gpt-5.3-codex-xhigh': { value: 'gpt-5.3-codex-xhigh', label: 'GPT-5.3 Codex Extra High' },
-  'gpt-5.3-codex-xhigh-fast': { value: 'gpt-5.3-codex-xhigh-fast', label: 'GPT-5.3 Codex Extra High Fast' },
-  'gpt-5.3-codex-high': { value: 'gpt-5.3-codex-high', label: 'GPT-5.3 Codex High' },
-  'gpt-5.3-codex-high-fast': { value: 'gpt-5.3-codex-high-fast', label: 'GPT-5.3 Codex High Fast' },
-  'gpt-5.3-codex': { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
-  'gpt-5.3-codex-fast': { value: 'gpt-5.3-codex-fast', label: 'GPT-5.3 Codex Fast' },
-  'gpt-5.3-codex-low': { value: 'gpt-5.3-codex-low', label: 'GPT-5.3 Codex Low' },
-  'gpt-5.3-codex-low-fast': { value: 'gpt-5.3-codex-low-fast', label: 'GPT-5.3 Codex Low Fast' },
-  'gpt-5.3-codex-spark-preview': { value: 'gpt-5.3-codex-spark-preview', label: 'GPT-5.3 Codex Spark' },
-  'gpt-5.2-codex-xhigh': { value: 'gpt-5.2-codex-xhigh', label: 'GPT-5.2 Codex Extra High' },
-  'gpt-5.2-codex-xhigh-fast': { value: 'gpt-5.2-codex-xhigh-fast', label: 'GPT-5.2 Codex Extra High Fast' },
-  'gpt-5.2-codex-high': { value: 'gpt-5.2-codex-high', label: 'GPT-5.2 Codex High' },
-  'gpt-5.2-codex-high-fast': { value: 'gpt-5.2-codex-high-fast', label: 'GPT-5.2 Codex High Fast' },
-  'gpt-5.2-codex': { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
-  'gpt-5.2-codex-fast': { value: 'gpt-5.2-codex-fast', label: 'GPT-5.2 Codex Fast' },
-  'gpt-5.2-codex-low': { value: 'gpt-5.2-codex-low', label: 'GPT-5.2 Codex Low' },
-  'gpt-5.2-codex-low-fast': { value: 'gpt-5.2-codex-low-fast', label: 'GPT-5.2 Codex Low Fast' },
+  'gpt-5.3-codex-low': { value: 'gpt-5.3-codex-low', label: 'Codex 5.3 Low' },
+  'gpt-5.3-codex-low-fast': { value: 'gpt-5.3-codex-low-fast', label: 'Codex 5.3 Low Fast' },
+  'gpt-5.3-codex': { value: 'gpt-5.3-codex', label: 'Codex 5.3' },
+  'gpt-5.3-codex-fast': { value: 'gpt-5.3-codex-fast', label: 'Codex 5.3 Fast' },
+  'gpt-5.3-codex-high': { value: 'gpt-5.3-codex-high', label: 'Codex 5.3 High' },
+  'gpt-5.3-codex-high-fast': { value: 'gpt-5.3-codex-high-fast', label: 'Codex 5.3 High Fast' },
+  'gpt-5.3-codex-xhigh': { value: 'gpt-5.3-codex-xhigh', label: 'Codex 5.3 Extra High' },
+  'gpt-5.3-codex-xhigh-fast': { value: 'gpt-5.3-codex-xhigh-fast', label: 'Codex 5.3 Extra High Fast' },
   'gpt-5.2': { value: 'gpt-5.2', label: 'GPT-5.2' },
+  'gpt-5.3-codex-spark-preview-low': {
+    value: 'gpt-5.3-codex-spark-preview-low',
+    label: 'Codex 5.3 Spark Low',
+  },
+  'gpt-5.3-codex-spark-preview': { value: 'gpt-5.3-codex-spark-preview', label: 'Codex 5.3 Spark' },
+  'gpt-5.3-codex-spark-preview-high': {
+    value: 'gpt-5.3-codex-spark-preview-high',
+    label: 'Codex 5.3 Spark High',
+  },
+  'gpt-5.3-codex-spark-preview-xhigh': {
+    value: 'gpt-5.3-codex-spark-preview-xhigh',
+    label: 'Codex 5.3 Spark Extra High',
+  },
+  'gpt-5.2-codex-low': { value: 'gpt-5.2-codex-low', label: 'Codex 5.2 Low' },
+  'gpt-5.2-codex-low-fast': { value: 'gpt-5.2-codex-low-fast', label: 'Codex 5.2 Low Fast' },
+  'gpt-5.2-codex': { value: 'gpt-5.2-codex', label: 'Codex 5.2' },
+  'gpt-5.2-codex-fast': { value: 'gpt-5.2-codex-fast', label: 'Codex 5.2 Fast' },
+  'gpt-5.2-codex-high': { value: 'gpt-5.2-codex-high', label: 'Codex 5.2 High' },
+  'gpt-5.2-codex-high-fast': { value: 'gpt-5.2-codex-high-fast', label: 'Codex 5.2 High Fast' },
+  'gpt-5.2-codex-xhigh': { value: 'gpt-5.2-codex-xhigh', label: 'Codex 5.2 Extra High' },
+  'gpt-5.2-codex-xhigh-fast': { value: 'gpt-5.2-codex-xhigh-fast', label: 'Codex 5.2 Extra High Fast' },
+  'gpt-5.1-codex-max-low': { value: 'gpt-5.1-codex-max-low', label: 'Codex 5.1 Max Low' },
+  'gpt-5.1-codex-max-low-fast': { value: 'gpt-5.1-codex-max-low-fast', label: 'Codex 5.1 Max Low Fast' },
+  'gpt-5.1-codex-max-medium': { value: 'gpt-5.1-codex-max-medium', label: 'Codex 5.1 Max' },
+  'gpt-5.1-codex-max-medium-fast': {
+    value: 'gpt-5.1-codex-max-medium-fast',
+    label: 'Codex 5.1 Max Medium Fast',
+  },
+  'gpt-5.1-codex-max-high': { value: 'gpt-5.1-codex-max-high', label: 'Codex 5.1 Max High' },
+  'gpt-5.1-codex-max-high-fast': { value: 'gpt-5.1-codex-max-high-fast', label: 'Codex 5.1 Max High Fast' },
+  'gpt-5.1-codex-max-xhigh': { value: 'gpt-5.1-codex-max-xhigh', label: 'Codex 5.1 Max Extra High' },
+  'gpt-5.1-codex-max-xhigh-fast': {
+    value: 'gpt-5.1-codex-max-xhigh-fast',
+    label: 'Codex 5.1 Max Extra High Fast',
+  },
+  'claude-opus-4-7-thinking-high': {
+    value: 'claude-opus-4-7-thinking-high',
+    label: 'Opus 4.7 1M High Thinking',
+  },
+  'gpt-5.4-high': { value: 'gpt-5.4-high', label: 'GPT-5.4 1M High' },
+  'gpt-5.4-high-fast': { value: 'gpt-5.4-high-fast', label: 'GPT-5.4 High Fast' },
+  'gpt-5.4-xhigh-fast': { value: 'gpt-5.4-xhigh-fast', label: 'GPT-5.4 Extra High Fast' },
+  'claude-4.6-opus-high-thinking-fast': {
+    value: 'claude-4.6-opus-high-thinking-fast',
+    label: 'Opus 4.6 1M Thinking Fast',
+  },
+  'claude-4.6-sonnet-medium': { value: 'claude-4.6-sonnet-medium', label: 'Sonnet 4.6 1M' },
+  'claude-4.6-sonnet-medium-thinking': {
+    value: 'claude-4.6-sonnet-medium-thinking',
+    label: 'Sonnet 4.6 1M Thinking',
+  },
+  'claude-opus-4-7-low': { value: 'claude-opus-4-7-low', label: 'Opus 4.7 1M Low' },
+  'claude-opus-4-7-medium': { value: 'claude-opus-4-7-medium', label: 'Opus 4.7 1M Medium' },
+  'claude-opus-4-7-high': { value: 'claude-opus-4-7-high', label: 'Opus 4.7 1M High' },
+  'claude-opus-4-7-xhigh': { value: 'claude-opus-4-7-xhigh', label: 'Opus 4.7 1M' },
+  'claude-opus-4-7-max': { value: 'claude-opus-4-7-max', label: 'Opus 4.7 1M Max' },
+  'claude-opus-4-7-thinking-low': {
+    value: 'claude-opus-4-7-thinking-low',
+    label: 'Opus 4.7 1M Low Thinking',
+  },
+  'claude-opus-4-7-thinking-medium': {
+    value: 'claude-opus-4-7-thinking-medium',
+    label: 'Opus 4.7 1M Medium Thinking',
+  },
+  'claude-opus-4-7-thinking-xhigh': {
+    value: 'claude-opus-4-7-thinking-xhigh',
+    label: 'Opus 4.7 1M Thinking',
+  },
+  'claude-opus-4-7-thinking-max': {
+    value: 'claude-opus-4-7-thinking-max',
+    label: 'Opus 4.7 1M Max Thinking',
+  },
+  'gpt-5.4-low': { value: 'gpt-5.4-low', label: 'GPT-5.4 1M Low' },
+  'gpt-5.4-medium': { value: 'gpt-5.4-medium', label: 'GPT-5.4 1M' },
+  'gpt-5.4-medium-fast': { value: 'gpt-5.4-medium-fast', label: 'GPT-5.4 Fast' },
+  'gpt-5.4-xhigh': { value: 'gpt-5.4-xhigh', label: 'GPT-5.4 1M Extra High' },
+  'claude-4.6-opus-high': { value: 'claude-4.6-opus-high', label: 'Opus 4.6 1M' },
+  'claude-4.6-opus-max': { value: 'claude-4.6-opus-max', label: 'Opus 4.6 1M Max' },
+  'claude-4.6-opus-high-thinking': { value: 'claude-4.6-opus-high-thinking', label: 'Opus 4.6 1M Thinking' },
+  'claude-4.6-opus-max-thinking': {
+    value: 'claude-4.6-opus-max-thinking',
+    label: 'Opus 4.6 1M Max Thinking',
+  },
+  'claude-4.6-opus-max-thinking-fast': {
+    value: 'claude-4.6-opus-max-thinking-fast',
+    label: 'Opus 4.6 1M Max Thinking Fast',
+  },
+  'claude-4.5-opus-high': { value: 'claude-4.5-opus-high', label: 'Opus 4.5' },
+  'claude-4.5-opus-high-thinking': { value: 'claude-4.5-opus-high-thinking', label: 'Opus 4.5 Thinking' },
+  'gpt-5.2-low': { value: 'gpt-5.2-low', label: 'GPT-5.2 Low' },
+  'gpt-5.2-low-fast': { value: 'gpt-5.2-low-fast', label: 'GPT-5.2 Low Fast' },
+  'gpt-5.2-fast': { value: 'gpt-5.2-fast', label: 'GPT-5.2 Fast' },
   'gpt-5.2-high': { value: 'gpt-5.2-high', label: 'GPT-5.2 High' },
-  'gpt-5.1-codex-max': { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
-  'gpt-5.1-codex-max-high': { value: 'gpt-5.1-codex-max-high', label: 'GPT-5.1 Codex Max High' },
-  'gpt-5.1-codex-mini': { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini' },
-  'gpt-5.1-high': { value: 'gpt-5.1-high', label: 'GPT-5.1 High' },
+  'gpt-5.2-high-fast': { value: 'gpt-5.2-high-fast', label: 'GPT-5.2 High Fast' },
+  'gpt-5.2-xhigh': { value: 'gpt-5.2-xhigh', label: 'GPT-5.2 Extra High' },
+  'gpt-5.2-xhigh-fast': { value: 'gpt-5.2-xhigh-fast', label: 'GPT-5.2 Extra High Fast' },
   'gemini-3.1-pro': { value: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
-  'gemini-3-pro': { value: 'gemini-3-pro', label: 'Gemini 3 Pro' },
+  'gpt-5.4-mini-none': { value: 'gpt-5.4-mini-none', label: 'GPT-5.4 Mini None' },
+  'gpt-5.4-mini-low': { value: 'gpt-5.4-mini-low', label: 'GPT-5.4 Mini Low' },
+  'gpt-5.4-mini-medium': { value: 'gpt-5.4-mini-medium', label: 'GPT-5.4 Mini' },
+  'gpt-5.4-mini-high': { value: 'gpt-5.4-mini-high', label: 'GPT-5.4 Mini High' },
+  'gpt-5.4-mini-xhigh': { value: 'gpt-5.4-mini-xhigh', label: 'GPT-5.4 Mini Extra High' },
+  'gpt-5.4-nano-none': { value: 'gpt-5.4-nano-none', label: 'GPT-5.4 Nano None' },
+  'gpt-5.4-nano-low': { value: 'gpt-5.4-nano-low', label: 'GPT-5.4 Nano Low' },
+  'gpt-5.4-nano-medium': { value: 'gpt-5.4-nano-medium', label: 'GPT-5.4 Nano' },
+  'gpt-5.4-nano-high': { value: 'gpt-5.4-nano-high', label: 'GPT-5.4 Nano High' },
+  'gpt-5.4-nano-xhigh': { value: 'gpt-5.4-nano-xhigh', label: 'GPT-5.4 Nano Extra High' },
+  'grok-4-20': { value: 'grok-4-20', label: 'Grok 4.20' },
+  'grok-4-20-thinking': { value: 'grok-4-20-thinking', label: 'Grok 4.20 Thinking' },
+  'claude-4.5-sonnet': { value: 'claude-4.5-sonnet', label: 'Sonnet 4.5 1M' },
+  'claude-4.5-sonnet-thinking': { value: 'claude-4.5-sonnet-thinking', label: 'Sonnet 4.5 1M Thinking' },
+  'gpt-5.1-low': { value: 'gpt-5.1-low', label: 'GPT-5.1 Low' },
+  'gpt-5.1': { value: 'gpt-5.1', label: 'GPT-5.1' },
+  'gpt-5.1-high': { value: 'gpt-5.1-high', label: 'GPT-5.1 High' },
   'gemini-3-flash': { value: 'gemini-3-flash', label: 'Gemini 3 Flash' },
-  'grok': { value: 'grok', label: 'Grok' },
+  'gpt-5.1-codex-mini-low': { value: 'gpt-5.1-codex-mini-low', label: 'Codex 5.1 Mini Low' },
+  'gpt-5.1-codex-mini': { value: 'gpt-5.1-codex-mini', label: 'Codex 5.1 Mini' },
+  'gpt-5.1-codex-mini-high': { value: 'gpt-5.1-codex-mini-high', label: 'Codex 5.1 Mini High' },
+  'claude-4-sonnet': { value: 'claude-4-sonnet', label: 'Sonnet 4' },
+  'claude-4-sonnet-1m': { value: 'claude-4-sonnet-1m', label: 'Sonnet 4 1M' },
+  'claude-4-sonnet-thinking': { value: 'claude-4-sonnet-thinking', label: 'Sonnet 4 Thinking' },
+  'claude-4-sonnet-1m-thinking': { value: 'claude-4-sonnet-1m-thinking', label: 'Sonnet 4 1M Thinking' },
+  'gpt-5-mini': { value: 'gpt-5-mini', label: 'GPT-5 Mini' },
   'kimi-k2.5': { value: 'kimi-k2.5', label: 'Kimi K2.5' },
 };
 
@@ -706,20 +1014,14 @@ export function getModelMetadata(cli: CLI, model: string): ModelOption | undefin
 /**
  * Supported reasoning effort values for a specific CLI/model pair.
  */
-export function getSupportedReasoningEfforts(
-  cli: CLI,
-  model: string
-): ReasoningEffort[] | undefined {
+export function getSupportedReasoningEfforts(cli: CLI, model: string): ReasoningEffort[] | undefined {
   return getModelMetadata(cli, model)?.reasoningEfforts;
 }
 
 /**
  * Default reasoning effort for a specific CLI/model pair.
  */
-export function getDefaultReasoningEffort(
-  cli: CLI,
-  model: string
-): ReasoningEffort | undefined {
+export function getDefaultReasoningEffort(cli: CLI, model: string): ReasoningEffort | undefined {
   return getModelMetadata(cli, model)?.defaultReasoningEffort;
 }
 
@@ -765,14 +1067,14 @@ export const CLIRegistry = {
   codex: {
     name: 'Codex CLI',
     package: '@openai/codex',
-    version: '0.114.0',
+    version: '0.124.0',
     install: 'npm install -g @openai/codex',
     npmLink: 'https://www.npmjs.com/package/@openai/codex',
   },
   gemini: {
     name: 'Gemini CLI',
     package: '@google/gemini-cli',
-    version: '0.33.0',
+    version: '0.39.1',
     install: 'npm install -g @google/gemini-cli',
     npmLink: 'https://www.npmjs.com/package/@google/gemini-cli',
   },
@@ -820,7 +1122,7 @@ export const DefaultModels = {
   claude: 'sonnet',
   codex: 'gpt-5.4',
   gemini: 'gemini-3.1-pro-preview',
-  cursor: 'opus-4.6-thinking',
+  cursor: 'composer-2-fast',
   droid: 'opus-4.6-fast',
   opencode: 'openai/gpt-5.2',
 } as const;

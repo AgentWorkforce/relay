@@ -17,6 +17,7 @@ import type {
 } from './types.js';
 
 export * from './compiler.js';
+export * from './local-jwks.js';
 export * from './mount.js';
 export * from './seeder.js';
 export * from './token.js';
@@ -147,7 +148,8 @@ export async function provisionWorkflowAgents(config: WorkflowProvisionConfig): 
         permissions: agent.permissions,
       });
       const token = mintAgentToken({
-        secret: config.secret,
+        privateKey: config.tokenSigningKey.privateKey,
+        kid: config.tokenSigningKey.kid,
         agentName: agent.name,
         workspace: config.workspace,
         scopes: compiled.scopes,
@@ -174,7 +176,8 @@ export async function provisionWorkflowAgents(config: WorkflowProvisionConfig): 
 
     const adminScopes = [...(config.adminScopes ?? DEFAULT_ADMIN_SCOPES)];
     const adminToken = mintAgentToken({
-      secret: config.secret,
+      privateKey: config.tokenSigningKey.privateKey,
+      kid: config.tokenSigningKey.kid,
       agentName: DEFAULT_ADMIN_AGENT_NAME,
       workspace: config.workspace,
       scopes: adminScopes,

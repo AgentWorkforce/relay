@@ -3,7 +3,7 @@
  * Generate Python models from cli-registry.yaml
  *
  * Usage: node codegen-py.mjs
- * Output: ../sdk-py/agent_relay/models.py
+ * Output: ../sdk-py/src/agent_relay/models.py
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const registryPath = join(__dirname, 'cli-registry.yaml');
-const outputDir = join(__dirname, '../sdk-py/agent_relay');
+const outputDir = join(__dirname, '../sdk-py/src/agent_relay');
 const outputPath = join(outputDir, 'models.py');
 
 // Create output directory if it doesn't exist
@@ -184,32 +184,3 @@ output += `}
 
 writeFileSync(outputPath, output);
 console.log(`Generated ${outputPath}`);
-
-// Update __init__.py with new exports
-const initPath = join(outputDir, '__init__.py');
-writeFileSync(
-  initPath,
-  `"""Agent Relay Python SDK."""
-
-from .models import (
-    CLIs,
-    CLIVersions,
-    CLI_REGISTRY,
-    DEFAULT_MODELS,
-    Models,
-    ModelOptions,
-    SwarmPatterns,
-)
-
-__all__ = [
-    "CLIs",
-    "CLIVersions",
-    "CLI_REGISTRY",
-    "DEFAULT_MODELS",
-    "Models",
-    "ModelOptions",
-    "SwarmPatterns",
-]
-`
-);
-console.log(`Generated ${initPath}`);

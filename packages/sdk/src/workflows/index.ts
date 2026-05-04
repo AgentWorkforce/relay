@@ -46,3 +46,18 @@ export { executeApiStep, type ApiExecutorOptions } from './api-executor.js';
 export type { CloudRunOptions } from './cloud-runner.js';
 export * from './proxy-env.js';
 export * from './budget-tracker.js';
+export { applySiblingLinks, buildSiblingLinkScript } from './sibling-links.js';
+export type { SiblingLink, SiblingLinkOptions } from './sibling-links.js';
+export {
+  runScriptWorkflow,
+  parseTsxStderr,
+  formatWorkflowParseError,
+  findLocalSdkWorkspace,
+  ensureLocalSdkWorkflowRuntime,
+} from './run-script.js';
+export type {
+  RunScriptWorkflowOptions,
+  ParsedWorkflowError,
+  LocalSdkWorkspace,
+  ExecFileSyncLike,
+} from './run-script.js';
