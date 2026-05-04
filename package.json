@@ -147,7 +147,7 @@
     "@relayfile/local-mount": "^0.2.2",
     "@relayfile/sdk": "^0.6.0",
     "@sinclair/typebox": "^0.34.14",
-    "agent-trajectories": "^0.5.4",
+    "agent-trajectories": "^0.5.7",
     "chalk": "^4.1.2",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",

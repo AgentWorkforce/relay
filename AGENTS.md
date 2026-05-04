@@ -32,7 +32,8 @@ This ensures the user maintains control over what goes into the main branch.
 
 The `.trajectories/` directory must remain tracked in git. It contains trajectory records from the `trail` tool that provide valuable context for future agents and humans about past decisions, reasoning, and work history.
 
-<!-- prpm:snippet:start @agent-workforce/trail-snippet@1.1.0 -->
+<!-- prpm:snippet:start @agent-workforce/trail-snippet@1.1.2 -->
+
 # Trail
 
 Record your work as a trajectory for future agents and humans to follow.
@@ -40,11 +41,13 @@ Record your work as a trajectory for future agents and humans to follow.
 ## Usage
 
 If `trail` is installed globally, run commands directly:
+
 ```bash
 trail start "Task description"
 ```
 
 If not globally installed, use npx to run from local installation:
+
 ```bash
 npx trail start "Task description"
 ```
@@ -58,6 +61,7 @@ trail start "Implement user authentication"
 ```
 
 With external task reference:
+
 ```bash
 trail start "Fix login bug" --task "ENG-123"
 ```
@@ -72,11 +76,13 @@ trail decision "Chose JWT over sessions" \
 ```
 
 For minor decisions, reasoning is optional:
+
 ```bash
 trail decision "Used existing auth middleware"
 ```
 
 **Record decisions when you:**
+
 - Choose between alternatives
 - Make architectural trade-offs
 - Decide on an approach after investigation
@@ -91,6 +97,7 @@ trail reflect "Workers aligned on auth approach, API layer progressing well" \
 ```
 
 With focal points and adjustments:
+
 ```bash
 trail reflect "Frontend and backend duplicating validation logic" \
   --focal-points "duplication,ownership" \
@@ -99,6 +106,7 @@ trail reflect "Frontend and backend duplicating validation logic" \
 ```
 
 **Record reflections when you:**
+
 - Have received several updates and need to synthesize the big picture
 - Notice workers or tasks diverging from the plan
 - Want to course-correct before continuing
@@ -116,7 +124,22 @@ When done, complete with a retrospective:
 trail complete --summary "Added JWT auth with refresh tokens" --confidence 0.85
 ```
 
+After completing work, compact the finished trajectory or merged PR into a
+durable summary. When the compacted summary is sufficient, discard the raw
+source trajectories so `.trajectories/index.json` and list output stay focused:
+
+```bash
+trail compact --discard-sources
+# or after a PR merge:
+trail compact --pr 42 --discard-sources
+```
+
+`--discard-sources` removes the source trajectory JSON/Markdown/trace files and
+updates the index. Use it after confirming the compacted artifact is the record
+you want to keep.
+
 **Confidence levels:**
+
 - 0.9+ : High confidence, well-tested
 - 0.7-0.9 : Good confidence, standard implementation
 - 0.5-0.7 : Some uncertainty, edge cases possible
@@ -133,6 +156,7 @@ trail abandon --reason "Blocked by missing API credentials"
 ## Checking Status
 
 View current trajectory:
+
 ```bash
 trail status
 ```
@@ -140,47 +164,57 @@ trail status
 ## Listing and Viewing Trajectories
 
 List all trajectories:
+
 ```bash
 trail list
 ```
 
 View a specific trajectory:
+
 ```bash
 trail show <trajectory-id>
 ```
 
-Export a trajectory (markdown, json, timeline, html, pr-summary):
+Export a trajectory (markdown, json, timeline, html):
+
 ```bash
 trail export <trajectory-id> --format markdown
 ```
 
 ## Compacting Trajectories
 
-After a PR merge, compact related trajectories into a single summary:
+After a PR merge, compact related trajectories into a single summary and prune
+raw source trajectories when the summary should replace them:
 
 ```bash
-trail compact --pr 42
+trail compact --pr 42 --discard-sources
 ```
 
-Compact by branch:
+Compact by branch (finds trajectories with commits not in the specified base branch):
+
 ```bash
-trail compact --branch feature/auth
+trail compact --branch main --discard-sources
 ```
 
-Compact by commit range:
+Compact by specific commits:
+
 ```bash
-trail compact --commits abc123..def456
+trail compact --commits abc123,def456 --discard-sources
 ```
 
-Compaction consolidates decisions and creates a grouped summary, reducing noise while preserving key decisions.
+Compaction consolidates decisions and creates a grouped summary. Adding
+`--discard-sources` makes the compacted artifact the durable record by removing
+the raw trajectories and their index entries.
 
 ## Why Trail?
 
 Your trajectory helps others understand:
+
 - **What** you built (commits show this)
 - **Why** you built it this way (trajectory shows this)
 - **What alternatives** you considered
 - **What challenges** you faced
 
 Future agents can query past trajectories to learn from your decisions.
-<!-- prpm:snippet:end @agent-workforce/trail-snippet@1.1.0 -->
+
+<!-- prpm:snippet:end @agent-workforce/trail-snippet@1.1.2 -->

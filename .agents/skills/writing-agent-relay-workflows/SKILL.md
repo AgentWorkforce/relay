@@ -21,7 +21,7 @@ The relay broker-sdk workflow system orchestrates multiple AI agents (Claude, Co
 
 ### Quick Reference
 
-#### ```typescript
+#### > **Note:** this Quick Reference assumes an **ESM** workflow file (the host `package.json` has `"type": "module"`). For CJS repos, see rule #1 in **Critical TypeScript rules** below — convert `import { workflow } from '@agent-relay/sdk/workflows'` to `const { workflow } = require('@agent-relay/sdk/workflows')` and wrap the workflow in `async function main() { ... } main().catch(console.error)` since CJS does not support top-level `await`. **Always check `package.json` before copy-pasting the snippet.**
 
 ```typescript
 import { workflow } from '@agent-relay/sdk/workflows';
@@ -124,6 +124,45 @@ runWorkflow().catch((error) => {
 });
 ```
 
+#### 2b. Standard preflight template for resumable workflows
+
+```ts
+.step('preflight', {
+  type: 'deterministic',
+  command: [
+    'set -e',
+    'BRANCH=$(git rev-parse --abbrev-ref HEAD)',
+    'echo "branch: $BRANCH"',
+    'if [ "$BRANCH" != "fix/your-branch-name" ]; then echo "ERROR: wrong branch"; exit 1; fi',
+    // Files the workflow is allowed to find dirty on entry:
+    //   - package-lock.json: npm install is idempotent and often touches it
+    //   - every file the workflow's edit steps will rewrite: a prior partial
+    //     run may have left them dirty, and the edit step will rewrite
+    //     them cleanly before commit
+    // Everything else is unexpected drift and must fail preflight.
+    'ALLOWED_DIRTY="package-lock.json|path/to/file1\\\\.ts|path/to/file2\\\\.ts"',
+    'DIRTY=$(git diff --name-only | grep -vE "^(${ALLOWED_DIRTY})$" || true)',
+    'if [ -n "$DIRTY" ]; then echo "ERROR: unexpected tracked drift:"; echo "$DIRTY"; exit 1; fi',
+    'if ! git diff --cached --quiet; then echo "ERROR: staging area is dirty"; git diff --cached --stat; exit 1; fi',
+    'gh auth status >/dev/null 2>&1 || (echo "ERROR: gh CLI not authenticated"; exit 1)',
+    'echo PREFLIGHT_OK',
+  ].join(' && '),
+  captureOutput: true,
+  failOnError: true,
+}),
+```
+
+#### 2c. Picking the right `.join()` for multi-line shell commands
+
+```ts
+command: [
+  'set -e',
+  'HITS=$(grep -c diag src/cli/commands/setup.ts || true)',
+  'if [ "$HITS" -lt 6 ]; then echo "FAIL"; exit 1; fi',
+  'echo OK',
+].join(' && '),
+```
+
 #### 3. Keep final verification boring and deterministic
 
 ```bash
@@ -134,6 +173,24 @@ grep -Eq "foo|bar|baz" file.ts
 
 ```bash
 /opt/homebrew/bin/bash workflows/your-workflow/execute.sh --wave 2
+```
+
+#### 9. Factor repo-specific setup into a shared helper
+
+```ts
+// workflows/lib/cloud-repo-setup.ts
+export interface CloudRepoSetupOptions {
+  branch: string;
+  committerName?: string;
+  extraSetupCommands?: string[];
+  skipWorkspaceBuild?: boolean;
+}
+
+export function applyCloudRepoSetup<T>(wf: T, opts: CloudRepoSetupOptions): T {
+  // adds two steps: setup-branch, install-deps
+  // install-deps runs: npm install + workspace prebuilds (build:platform, build:core, etc.)
+  // ...
+}
 ```
 
 ### End-to-End Bug Fix Workflows
