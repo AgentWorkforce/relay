@@ -38,6 +38,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
+## [6.0.8] - 2026-05-04
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Surface phase C multi-repo push results in cloud CLI (#775)** (#775)
+- **Phase B multi-path tarball upload for cloud workflows (#774)** (#774)
+
+#### User-Impacting Fixes
+- Exclude volatile workflow files when applying sync patches (#811) (#811)
+
+### Technical Perspective
+#### Releases
+- v6.0.8
+
+---
+
 ## [6.0.7] - 2026-05-01
 
 ### Technical Perspective
