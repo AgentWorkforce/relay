@@ -46,7 +46,7 @@ async def test_register_agent_and_unregister_agent_manage_identity(relay_server)
     assert transport.token == relay_server.registered_agents[transport.agent_id]["token"]
     assert relay_server.requests["register_agent"][-1]["json"] == {
         "name": "TransportTester",
-        "workspace": relay_server.workspace,
+        "type": "agent",
     }
 
     agent_id = transport.agent_id
@@ -84,19 +84,19 @@ async def test_connect_and_disconnect_manage_registration_and_websocket(relay_se
             "send_dm",
             ("Review-Core", "hello"),
             "send_dm",
-            {"to": "Review-Core", "text": "hello", "from": "TransportTester"},
+            {"to": "Review-Core", "text": "hello"},
         ),
         (
             "post_message",
             ("core-py", "status update"),
             "post_message",
-            {"channel": "core-py", "text": "status update", "from": "TransportTester"},
+            {"channel": "core-py", "text": "status update"},
         ),
         (
             "reply",
             ("message-123", "thread reply"),
             "reply",
-            {"message_id": "message-123", "text": "thread reply", "from": "TransportTester"},
+            {"message_id": "message-123", "text": "thread reply"},
         ),
     ],
 )
@@ -121,38 +121,30 @@ async def test_send_methods_use_expected_http_payload(
 
 
 @pytest.mark.asyncio
-async def test_check_inbox_returns_message_objects_and_drains_server_inbox(relay_server):
+async def test_check_inbox_returns_empty_against_metadata_only_endpoint(relay_server):
+    """The hosted ``/v1/inbox`` returns unread metadata, not message bodies.
+
+    The SDK keeps ``check_inbox()`` for backwards compatibility but always
+    returns an empty list — real delivery flows through the WebSocket.
+    """
     RelayTransport = _transport_class()
     transport = RelayTransport("TransportTester", relay_server.make_config())
     await transport.connect()
 
     try:
-        queued = relay_server.queue_inbox_message(
+        relay_server.queue_inbox_message(
             transport.agent_id,
             sender="Impl-Core",
             text="transport ready",
             channel="core-py",
-            thread_id="thread-1",
             message_id="message-inbox-1",
-            timestamp=1710300000.5,
         )
 
         messages = await transport.check_inbox()
-        empty = await transport.check_inbox()
     finally:
         await transport.disconnect()
 
-    assert messages == [
-        Message(
-            sender=queued["sender"],
-            text=queued["text"],
-            channel=queued["channel"],
-            thread_id=queued["thread_id"],
-            timestamp=queued["timestamp"],
-            message_id=queued["message_id"],
-        )
-    ]
-    assert empty == []
+    assert messages == []
 
 
 @pytest.mark.asyncio

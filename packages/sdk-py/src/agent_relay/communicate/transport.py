@@ -7,6 +7,7 @@ import json
 from contextlib import suppress
 from inspect import isawaitable
 from typing import Any
+from urllib.parse import quote
 
 try:
     import aiohttp
@@ -32,7 +33,12 @@ WS_RECONNECT_MAX_DELAY = 30
 
 
 class RelayTransport:
-    """Minimal Relaycast transport backed by aiohttp."""
+    """Minimal Relaycast transport backed by aiohttp.
+
+    Auth model: the workspace API key is used for admin operations (registering
+    agents, listing agents); the per-agent token is used for everything an
+    agent does (post, reply, dm, websocket).
+    """
 
     def __init__(self, agent_name: str, config: RelayConfig) -> None:
         self.agent_name = agent_name
@@ -88,13 +94,30 @@ class RelayTransport:
         path: str,
         *,
         payload: dict[str, Any] | None = None,
+        as_agent: bool = False,
+        retry: bool = True,
     ) -> Any:
+        """Send a request and return the unwrapped ``data`` field on success.
+
+        Set ``as_agent=True`` to authenticate with the per-agent token
+        (required for any operation that posts as the agent). Set
+        ``retry=False`` for best-effort calls (cleanup paths) where waiting
+        out the exponential backoff would block shutdown.
+        """
         self._require_config()
         session = await self._ensure_session()
         url = f"{self._base_url()}{path}"
-        headers = {"Authorization": f"Bearer {self.config.api_key}"}
 
-        for attempt in range(1, HTTP_RETRY_ATTEMPTS + 1):
+        if as_agent:
+            if not self.token:
+                raise RelayConnectionError(401, "Agent not registered; no token available.")
+            bearer = self.token
+        else:
+            bearer = self.config.api_key
+        headers = {"Authorization": f"Bearer {bearer}"}
+
+        max_attempts = HTTP_RETRY_ATTEMPTS if retry else 1
+        for attempt in range(1, max_attempts + 1):
             try:
                 async with session.request(method, url, json=payload, headers=headers) as response:
                     if response.status == 401:
@@ -102,7 +125,7 @@ class RelayTransport:
 
                     if 500 <= response.status <= 599:
                         message = await self._error_message(response)
-                        if attempt < HTTP_RETRY_ATTEMPTS:
+                        if attempt < max_attempts:
                             await asyncio.sleep(min(2 ** (attempt - 1), WS_RECONNECT_MAX_DELAY))
                             continue
                         raise RelayConnectionError(response.status, message)
@@ -117,7 +140,8 @@ class RelayTransport:
                         return None
 
                     if response.content_type == "application/json":
-                        return await response.json()
+                        body = await response.json()
+                        return self._unwrap(body)
 
                     return await response.text()
             except RelayAuthError:
@@ -125,7 +149,7 @@ class RelayTransport:
             except RelayConnectionError:
                 raise
             except aiohttp.ClientError as exc:
-                if attempt < HTTP_RETRY_ATTEMPTS:
+                if attempt < max_attempts:
                     await asyncio.sleep(min(2 ** (attempt - 1), WS_RECONNECT_MAX_DELAY))
                     continue
                 raise RelayConnectionError(0, str(exc)) from exc
@@ -141,13 +165,13 @@ class RelayTransport:
         if self.agent_id is not None and self.token is not None:
             return self.agent_id
 
-        payload = await self.send_http(
+        data = await self.send_http(
             "POST",
-            "/v1/agents/register",
-            payload={"name": self.agent_name, "workspace": self.config.workspace},
+            "/v1/agents",
+            payload={"name": self.agent_name, "type": "agent"},
         )
-        self.agent_id = payload["agent_id"]
-        self.token = payload["token"]
+        self.agent_id = data["id"]
+        self.token = data["token"]
         return self.agent_id
 
     async def unregister_agent(self) -> None:
@@ -155,47 +179,69 @@ class RelayTransport:
             await self._close_session_if_idle()
             return
 
-        agent_id = self.agent_id
-        await self.send_http("DELETE", f"/v1/agents/{agent_id}")
+        await self.send_http(
+            "DELETE",
+            f"/v1/agents/{quote(self.agent_name, safe='')}",
+            retry=False,
+        )
         self.agent_id = None
         self.token = None
         await self._close_session_if_idle()
 
     async def send_dm(self, recipient: str, text: str) -> str:
         await self._ensure_registered()
-        payload = await self.send_http(
+        data = await self.send_http(
             "POST",
-            "/v1/messages/dm",
-            payload={"to": recipient, "text": text, "from": self.agent_name},
+            "/v1/dm",
+            payload={"to": recipient, "text": text},
+            as_agent=True,
         )
-        return payload["message_id"]
+        # The hosted API returns the DM envelope; the message id is on the
+        # top-level ``id`` and also on ``message.id``.
+        if isinstance(data, dict):
+            if "id" in data:
+                return data["id"]
+            inner = data.get("message")
+            if isinstance(inner, dict) and "id" in inner:
+                return inner["id"]
+        raise RelayConnectionError(500, "DM response missing message id")
 
     async def post_message(self, channel: str, text: str) -> str:
         await self._ensure_registered()
-        payload = await self.send_http(
+        data = await self.send_http(
             "POST",
-            "/v1/messages/channel",
-            payload={"channel": channel, "text": text, "from": self.agent_name},
+            f"/v1/channels/{quote(channel, safe='')}/messages",
+            payload={"text": text},
+            as_agent=True,
         )
-        return payload["message_id"]
+        return data["id"]
 
     async def reply(self, message_id: str, text: str) -> str:
         await self._ensure_registered()
-        payload = await self.send_http(
+        data = await self.send_http(
             "POST",
-            "/v1/messages/reply",
-            payload={"message_id": message_id, "text": text, "from": self.agent_name},
+            f"/v1/messages/{quote(message_id, safe='')}/replies",
+            payload={"text": text},
+            as_agent=True,
         )
-        return payload["message_id"]
+        return data["id"]
 
     async def check_inbox(self) -> list[Message]:
+        """Polling fallback for environments where the WebSocket cannot connect.
+
+        The hosted ``/v1/inbox`` endpoint returns unread metadata, not message
+        bodies, so this method intentionally returns an empty list. Callers
+        that need real message delivery should rely on the WebSocket path
+        wired up by :meth:`connect`.
+        """
         await self._ensure_registered()
-        payload = await self.send_http("GET", f"/v1/inbox/{self.agent_id}")
-        return [self._message_from_payload(item) for item in payload.get("messages", [])]
+        return []
 
     async def list_agents(self) -> list[str]:
-        payload = await self.send_http("GET", "/v1/agents")
-        return list(payload.get("agents", []))
+        data = await self.send_http("GET", "/v1/agents")
+        if isinstance(data, list):
+            return [item["name"] for item in data if isinstance(item, dict) and "name" in item]
+        return []
 
     async def _ensure_registered(self) -> None:
         if self.agent_id is None or self.token is None:
@@ -213,6 +259,20 @@ class RelayTransport:
 
     def _base_url(self) -> str:
         return (self.config.base_url or DEFAULT_RELAY_BASE_URL).rstrip("/")
+
+    @staticmethod
+    def _unwrap(body: Any) -> Any:
+        """Unwrap the ``{ok, data, error}`` envelope used by the hosted API.
+
+        Mock servers that return a plain payload pass through unchanged.
+        """
+        if isinstance(body, dict) and "ok" in body:
+            if not body.get("ok", False):
+                error = body.get("error") or {}
+                message = error.get("message") if isinstance(error, dict) else str(error)
+                raise RelayConnectionError(400, message or "Request failed")
+            return body.get("data")
+        return body
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -234,11 +294,15 @@ class RelayTransport:
         if self._ws is not None and not self._ws.closed:
             return
 
-        from urllib.parse import quote
-
         session = await self._ensure_session()
-        ws_url = f"{self._ws_base_url()}/v1/ws/{self.agent_id}?token={quote(self.token, safe='')}"
+        ws_url = f"{self._ws_base_url()}/v1/ws?token={quote(self.token, safe='')}"
         self._ws = await session.ws_connect(ws_url)
+
+        # Subscribe to channels declared on the config so message.created
+        # events for those channels are delivered to this socket.
+        channels = list(self.config.channels or [])
+        if channels:
+            await self._ws.send_json({"type": "subscribe", "channels": channels})
 
     def _ws_base_url(self) -> str:
         base_url = self._base_url()
@@ -286,31 +350,67 @@ class RelayTransport:
 
     async def _dispatch_ws_payload(self, raw_payload: str) -> None:
         payload = json.loads(raw_payload)
-        if payload.get("type") == "ping":
+        if not isinstance(payload, dict):
+            return
+
+        event_type = payload.get("type")
+        if event_type == "ping":
             if self._ws is not None and not self._ws.closed:
                 await self._ws.send_json({"type": "pong"})
             return
-        if payload.get("type") != "message":
+
+        message = self._message_from_event(payload)
+        if message is None:
             return
 
         callback = self._message_callback
         if callback is None:
             return
 
-        result = callback(self._message_from_payload(payload))
+        result = callback(message)
         if isawaitable(result):
             await result
 
     @staticmethod
-    def _message_from_payload(payload: dict[str, Any]) -> Message:
-        return Message(
-            sender=payload["sender"],
-            text=payload["text"],
-            channel=payload.get("channel"),
-            thread_id=payload.get("thread_id"),
-            timestamp=payload.get("timestamp"),
-            message_id=payload.get("message_id"),
-        )
+    def _message_from_event(payload: dict[str, Any]) -> Message | None:
+        """Translate a hosted WebSocket event into the SDK's flat ``Message``.
+
+        Recognises ``message.created``, ``thread.reply``, ``dm.received``,
+        and ``group_dm.received``. Falls back to the flat
+        ``{type:"message", sender, text}`` shape the mock server emits.
+        """
+        event_type = payload.get("type")
+
+        if event_type in {"message.created", "thread.reply", "dm.received", "group_dm.received"}:
+            inner = payload.get("message")
+            if not isinstance(inner, dict):
+                return None
+            sender = inner.get("agent_name") or inner.get("agent_id") or ""
+            text = inner.get("text", "")
+            channel = payload.get("channel")
+            thread_id = payload.get("parent_id") or inner.get("thread_id")
+            message_id = inner.get("id")
+            timestamp = inner.get("created_at") or inner.get("timestamp")
+            return Message(
+                sender=sender,
+                text=text,
+                channel=channel,
+                thread_id=thread_id,
+                timestamp=timestamp,
+                message_id=message_id,
+            )
+
+        if event_type == "message" and "sender" in payload:
+            return Message(
+                sender=payload["sender"],
+                text=payload.get("text", ""),
+                channel=payload.get("channel"),
+                thread_id=payload.get("thread_id"),
+                timestamp=payload.get("timestamp"),
+                message_id=payload.get("message_id"),
+            )
+
+        return None
 
     @staticmethod
     async def _error_message(response: aiohttp.ClientResponse) -> str:
@@ -319,7 +419,13 @@ class RelayTransport:
         except Exception:
             text = await response.text()
             return text or response.reason or "Request failed"
-        return str(payload.get("message") or response.reason or "Request failed")
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict) and error.get("message"):
+                return str(error["message"])
+            if payload.get("message"):
+                return str(payload["message"])
+        return str(response.reason or "Request failed")
 
 
 __all__ = ["RelayTransport"]
