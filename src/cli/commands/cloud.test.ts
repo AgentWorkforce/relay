@@ -29,7 +29,7 @@ vi.mock('@agent-relay/telemetry', () => ({
   track: vi.fn(),
 }));
 
-import { registerCloudCommands, type CloudDependencies } from './cloud.js';
+import { buildCloudSyncPatchExcludeArgs, registerCloudCommands, type CloudDependencies } from './cloud.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -128,6 +128,17 @@ describe('registerCloudCommands', () => {
     expect(sync).toBeDefined();
     const optionNames = sync?.options.map((option) => option.long);
     expect(optionNames).toContain('--dry-run');
+  });
+
+  it('sync excludes volatile workflow bookkeeping files when applying patches', () => {
+    const args = buildCloudSyncPatchExcludeArgs();
+
+    expect(args).toContain('--exclude=".agent-bin/**"');
+    expect(args).toContain('--exclude=".relayfile.acl"');
+    expect(args).toContain('--exclude=".relayfile-mount-state.json"');
+    expect(args).toContain('--exclude=".relayfile-mount-state.json.tmp-*"');
+    expect(args).toContain('--exclude=".trajectories/**"');
+    expect(args).toContain('--exclude=".workflow-context/**"');
   });
 
   it('registers cloud cancel subcommand', () => {

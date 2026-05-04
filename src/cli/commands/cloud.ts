@@ -27,6 +27,19 @@ import {
 import { defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 
+const CLOUD_SYNC_PATCH_EXCLUDES = [
+  '.agent-bin/**',
+  '.relayfile.acl',
+  '.relayfile-mount-state.json',
+  '.relayfile-mount-state.json.tmp-*',
+  '.trajectories/**',
+  '.workflow-context/**',
+] as const;
+
+export function buildCloudSyncPatchExcludeArgs(): string {
+  return CLOUD_SYNC_PATCH_EXCLUDES.map((pattern) => `--exclude=${JSON.stringify(pattern)}`).join(' ');
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type ExitFn = (code: number) => never;
@@ -504,7 +517,8 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       fs.writeFileSync(tmpPatch, result.patch, { mode: 0o600 });
 
       try {
-        const stat = execSync(`git apply --stat "${tmpPatch}"`, {
+        const excludeArgs = buildCloudSyncPatchExcludeArgs();
+        const stat = execSync(`git apply ${excludeArgs} --stat "${tmpPatch}"`, {
           cwd: targetDir,
           encoding: 'utf-8',
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -514,7 +528,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           deps.log(stat);
         }
 
-        execSync(`git apply "${tmpPatch}"`, {
+        execSync(`git apply ${excludeArgs} "${tmpPatch}"`, {
           cwd: targetDir,
           encoding: 'utf-8',
           stdio: ['pipe', 'pipe', 'pipe'],
