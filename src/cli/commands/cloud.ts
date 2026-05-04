@@ -562,7 +562,34 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
 
       const result = await syncWorkflowPatch(runId, { apiUrl: options.apiUrl });
 
-      if (!result.hasChanges) {
+      // Multi-path responses target different repos and can't be applied to a
+      // single --dir. Surface them in dry-run, otherwise direct the user to
+      // apply manually. Single-patch runs continue to apply automatically.
+      if (result.patches) {
+        const entries = Object.entries(result.patches);
+        const withChanges = entries.filter(([, p]) => p.hasChanges);
+        if (withChanges.length === 0) {
+          deps.log('No changes to sync — the workflow did not modify any files.');
+          return;
+        }
+        if (options.dryRun) {
+          for (const [name, p] of withChanges) {
+            deps.log(`\n--- Patch for "${name}" (dry run) ---`);
+            process.stdout.write(p.patch);
+            deps.log(`\n--- End patch for "${name}" ---`);
+          }
+          return;
+        }
+        deps.error(
+          `This run produced ${withChanges.length} per-path patch${withChanges.length === 1 ? '' : 'es'} ` +
+            `(${withChanges.map(([n]) => n).join(', ')}). "cloud sync" only applies single-patch runs. ` +
+            `Use --dry-run to inspect each patch, then apply manually in the correct repo.`
+        );
+        deps.exit(1);
+        return;
+      }
+
+      if (!result.hasChanges || !result.patch) {
         deps.log('No changes to sync — the workflow did not modify any files.');
         return;
       }

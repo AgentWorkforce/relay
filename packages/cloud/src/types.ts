@@ -79,8 +79,11 @@ export type WorkflowLogsResponse = {
 };
 
 export type SyncPatchResponse = {
-  patch: string;
-  hasChanges: boolean;
+  // Legacy single-tarball shape: top-level patch + hasChanges.
+  // Multi-path shape (Phase B) returns `patches` keyed by path name and may
+  // omit the legacy fields entirely. Consumers must handle both.
+  patch?: string;
+  hasChanges?: boolean;
   patches?: Record<string, { patch: string; hasChanges: boolean }>;
   [key: string]: unknown;
 };
