@@ -23,6 +23,8 @@ The relay broker-sdk workflow system orchestrates multiple AI agents (Claude, Co
 
 ## Quick Reference
 
+> **Note:** this Quick Reference assumes an **ESM** workflow file (the host `package.json` has `"type": "module"`). For CJS repos, see rule #1 in **Critical TypeScript rules** below — convert `import { workflow } from '@agent-relay/sdk/workflows'` to `const { workflow } = require('@agent-relay/sdk/workflows')` and wrap the workflow in `async function main() { ... } main().catch(console.error)` since CJS does not support top-level `await`. **Always check `package.json` before copy-pasting the snippet.**
+
 ```typescript
 import { workflow } from '@agent-relay/sdk/workflows';
 
@@ -182,6 +184,125 @@ Preferred options, in order:
 3. Use plain indented examples instead of fenced blocks
 4. If fenced blocks must exist inside generated inner code, escape them consistently and syntax-check the outer workflow file afterward
 
+### 2b. Standard preflight template for resumable workflows
+
+Every non-trivial workflow should start with a deterministic `preflight` step that validates the environment before any agent runs. A workflow that fails mid-DAG and gets re-run (or resumed via `--start-from`) will re-execute preflight, so preflight must tolerate the partial state left behind by the previous run — specifically, dirty files that the workflow itself is expected to edit.
+
+The battle-tested template:
+
+```ts
+.step('preflight', {
+  type: 'deterministic',
+  command: [
+    'set -e',
+    'BRANCH=$(git rev-parse --abbrev-ref HEAD)',
+    'echo "branch: $BRANCH"',
+    'if [ "$BRANCH" != "fix/your-branch-name" ]; then echo "ERROR: wrong branch"; exit 1; fi',
+    // Files the workflow is allowed to find dirty on entry:
+    //   - package-lock.json: npm install is idempotent and often touches it
+    //   - every file the workflow's edit steps will rewrite: a prior partial
+    //     run may have left them dirty, and the edit step will rewrite
+    //     them cleanly before commit
+    // Everything else is unexpected drift and must fail preflight.
+    'ALLOWED_DIRTY="package-lock.json|path/to/file1\\\\.ts|path/to/file2\\\\.ts"',
+    'DIRTY=$(git diff --name-only | grep -vE "^(${ALLOWED_DIRTY})$" || true)',
+    'if [ -n "$DIRTY" ]; then echo "ERROR: unexpected tracked drift:"; echo "$DIRTY"; exit 1; fi',
+    'if ! git diff --cached --quiet; then echo "ERROR: staging area is dirty"; git diff --cached --stat; exit 1; fi',
+    'gh auth status >/dev/null 2>&1 || (echo "ERROR: gh CLI not authenticated"; exit 1)',
+    'echo PREFLIGHT_OK',
+  ].join(' && '),
+  captureOutput: true,
+  failOnError: true,
+}),
+```
+
+**Rules baked into this template:**
+
+- **Always include `package-lock.json`** in `ALLOWED_DIRTY`. Both `npm install` and `npm ci` can touch it idempotently.
+- **Include every file the workflow's edit steps will rewrite.** The commit step uses explicit `git add <path>` (never `git add -A`), so allowing these files to be dirty on entry is safe — unrelated drift in other files still fails preflight.
+- **Escape dots in regex paths:** `setup\.ts` not `setup.ts`. In a JS template literal this means four backslashes: `"setup\\\\.ts"`.
+- **Use `grep -vE "^(...)$"` for full-line match.** Substring matches bleed across unrelated files (e.g., `setup.ts` would also match `packages/core/src/bootstrap/setup.ts`).
+- **Append `|| true` to the grep.** Without it, an empty result triggers `set -e` and the whole preflight fails before the `if` can even run.
+- **Check the staging area separately.** A dirty index is different from a dirty working tree and both must be clean (modulo allow-list).
+- **Check `gh auth status` early** if any downstream step uses `gh pr create` or similar. Failing on auth at the end of a long DAG is painful.
+
+**Never use `git diff --quiet` alone as your "clean tree" check.** It fails on any dirty file, including the ones the workflow is expected to rewrite, which causes false failures on every resume / re-run.
+
+### 2c. Picking the right `.join()` for multi-line shell commands
+
+When a `command:` field is a JS array that gets joined into a shell command string, the join delimiter determines what kinds of content the array can contain.
+
+**`.join(' && ')`** — use when every element is a self-contained shell statement. Each element becomes independent and the next one runs only if the previous succeeded. Works for linear scripts with `set -e`.
+
+```ts
+command: [
+  'set -e',
+  'HITS=$(grep -c diag src/cli/commands/setup.ts || true)',
+  'if [ "$HITS" -lt 6 ]; then echo "FAIL"; exit 1; fi',
+  'echo OK',
+].join(' && '),
+```
+
+**`.join('\n')`** — use when array elements must be part of a larger compound statement that spans multiple physical lines:
+
+- heredocs (`cat <<EOF ... EOF`)
+- multi-line `if` / `while` / `for` bodies
+- shell functions defined inline
+
+`&&` is a command separator. It cannot appear between a heredoc's opening line and its body, between a `for` and its body, or inside an `if`'s consequent block. Joining such content with `&&` produces a shell syntax error.
+
+**Never mix heredocs with `&&` joining.** The most common failure mode:
+
+```ts
+// ❌ BROKEN — heredoc body gets && inserted between each line
+command: [
+  'set -e',
+  'cat > /tmp/f <<EOF',
+  'line 1',
+  'line 2',
+  'EOF',
+  'next-command',
+].join(' && '),
+```
+
+Results in `set -e && cat > /tmp/f <<EOF && line 1 && line 2 && EOF && next-command` — a shell syntax error because `&&` cannot appear inside a heredoc body. Use `.join('\n')` or (better) sidestep the heredoc entirely.
+
+**The `printf` + `mktemp` alternative — use this for commit messages, PR bodies, and any other multi-line file content.** It avoids heredocs altogether and composes with `.join(' && ')`:
+
+```ts
+command: [
+  'set -e',
+  'BODY=$(mktemp)',
+  // Each line of the file is a separate printf argument. No heredoc,
+  // no shell metacharacter hazards, no command-substitution nesting.
+  'printf "%s\\n" "## Summary" "" "body line 1" "body line 2" > "$BODY"',
+  'gh pr create --title "..." --body-file "$BODY"',
+  'rm -f "$BODY"',
+].join(' && '),
+```
+
+This pattern is specifically recommended over `git commit -m "$(cat <<'EOF' ... EOF)"` and `gh pr create --body "$(cat <<'BODY' ... BODY)"`. Nesting a heredoc inside `$(...)` forces the shell to match a closing paren across many lines of unparsed body text, and any stray parenthesis in the body text can silently break the match. `--body-file` + `mktemp` + `printf` is immune to that entire class of bug.
+
+### 2d. Template-literal escape sequences are processed once before the string is rendered
+
+If your file generates code as a giant template literal (the pattern used by `packages/core/src/bootstrap/script-generator.ts` in cloud), every backslash in that template gets processed by JavaScript before the string is returned. This silently breaks regexes and escape sequences that are meant to appear in the _generated_ output.
+
+Specifically:
+
+- `\s` is not a recognized string escape → the backslash is stripped → `\s` renders as a literal `s`
+- `\b` _is_ a recognized string escape (backspace, U+0008) → `\b` renders as a backspace character in the output
+- `\n`, `\t`, `\r`, `\\`, `\0`, `\uXXXX`, `\xXX` all get resolved at template time
+
+The footgun: the outer TypeScript compiles cleanly, the rendered code parses and runs, and the regex/escape just never matches what the author intended. See AgentWorkforce/cloud#113 for the exact incident (`hasConfigExport = /^export\s+.../m` silently became `/^exports+.../m` in the generated bootstrap, making every TS workflow fall through to the standalone-script fallback).
+
+Guidelines:
+
+1. If you want a regex pattern that survives the template-literal pass unchanged, double every backslash in the source: `\\s`, `\\b`, `\\n` (the `\\` renders to `\` in the output, producing a correct regex at runtime).
+2. If you want to write a long string-literal newline into the output, `'\\n'` in the template renders to `'\n'` in the output, which the runtime JS interprets as a newline. Using a literal `'\n'` would render an actual newline into the JS source — visually messy and sometimes surprising.
+3. If you add anything non-trivial to a generator file that returns a big template literal, add a unit test that calls the generator with canonical inputs and asserts something about the rendered output — either exact string matches or, for regexes, `eval`/construct the regex and test it against known samples. See `tests/orchestrator/script-generator.test.ts` in cloud for prior art.
+
+Task-prompt workaround: for agent-relay workflow _task prompts_ (where the contents go into a template literal but the inner content is plain text for an LLM), it's often cleaner to build the string as an array and `.join('\n')` at the boundary. That sidesteps the "does this backslash survive?" question entirely — no backslashes in the source, no processing to reason about. Several workflows in `cloud/workflows/` use this pattern (see the sage migration PRs).
+
 ### 3. Keep final verification boring and deterministic
 
 Final verification should validate real outputs with simple, portable shell commands. If checking for multiple symbols, use extended regex explicitly:
@@ -243,6 +364,26 @@ Document clearly whether the executor supports:
 
 Do not assume users will infer the behavior. In particular, `--wave N` should be understood as "run only this wave" unless the executor explicitly chains onward.
 
+### 7a. `--resume` vs `--start-from` when fixing a buggy step
+
+When a workflow fails at step X and you want to re-run it after editing the workflow file, the flag choice matters:
+
+| Flag                                         | Reads workflow file fresh?           | Uses cached step outputs?                |
+| -------------------------------------------- | ------------------------------------ | ---------------------------------------- |
+| `--resume <id>`                              | ❌ replays **stored config from DB** | ✅ from same run id                      |
+| `--start-from <step> --previous-run-id <id>` | ✅ reads fresh file                  | ✅ from previous run id's cached outputs |
+
+**Rule:** if you edited the workflow file to fix the failing step, use `--start-from <failing-step> --previous-run-id <id>`, **not** `--resume <id>`. `--resume` pulls the entire workflow config from the run's DB record and replays it — your edits to the workflow file are ignored, and the step re-runs with its original (broken) definition.
+
+This is counterintuitive because "resume" sounds like "pick up where you left off with whatever I just changed." It does not. It picks up where you left off with the **stored** config from when the run first started.
+
+**When to use each:**
+
+- Transient failure (network hiccup, rate limit, flaky agent), no code edits: `--resume <id>` is fine, fast, and correct.
+- You edited the workflow file (any step definition, any prompt, any verify gate): **always** `--start-from <failing-step> --previous-run-id <id>`. Everything upstream of the failing step loads from cache, the fresh file supplies the fixed definition, and downstream steps run as normal.
+
+If the runner complains that `--start-from` can't find cached outputs for the previous run id, fall back to a clean from-scratch run. The workflow's preflight should be forgiving enough (see §2b "Standard preflight template") that a from-scratch re-run succeeds even when a prior partial run left files dirty.
+
 ### 8. Syntax-check workflow files after editing
 
 After editing workflow `.ts` files, run a lightweight syntax check before launching a large batch run. This is especially important if the workflow contains:
@@ -251,6 +392,57 @@ After editing workflow `.ts` files, run a lightweight syntax check before launch
 - embedded code examples
 - escaped backticks
 - wrapper changes around workflow execution
+
+### 9. Factor repo-specific setup into a shared helper
+
+If multiple workflows in the same repo need the same boilerplate before any agent touches code (branch checkout, `npm install`, workspace-package prebuild, language toolchain init, etc.), do **not** copy-paste those steps into every workflow. Put them in `workflows/lib/<repo>-setup.ts` and import from there.
+
+**Why it matters:** without a shared helper, the first workflow that needs a new prerequisite step (e.g. `npm run build:platform` because a workspace package's `package.json` points `types` at `dist/`) adds it locally, and every other workflow silently misses it. In a fresh cloud sandbox that means agents hit `Cannot find module '@cloud/platform'` during typecheck and paper over it with ad-hoc `external-modules.d.ts` shims or `as GetObjectCommandOutput` casts scattered across unrelated files. Those workarounds sync back down with the patch and pollute the PR.
+
+**Pattern:**
+
+```ts
+// workflows/lib/cloud-repo-setup.ts
+export interface CloudRepoSetupOptions {
+  branch: string;
+  committerName?: string;
+  extraSetupCommands?: string[];
+  skipWorkspaceBuild?: boolean;
+}
+
+export function applyCloudRepoSetup<T>(wf: T, opts: CloudRepoSetupOptions): T {
+  // adds two steps: setup-branch, install-deps
+  // install-deps runs: npm install + workspace prebuilds (build:platform, build:core, etc.)
+  // ...
+}
+```
+
+Consumer workflows break the builder chain once and call through:
+
+```ts
+const baseWf = workflow(NAME)
+  .description(...)
+  .pattern('dag')
+  .agent(...)
+  .agent(...);
+
+const wf = applyCloudRepoSetup(baseWf, {
+  branch: BRANCH,
+  committerName: 'My Workflow Bot',
+});
+
+await wf
+  .step('read-spec', { dependsOn: ['install-deps'], ... })
+  ...
+  .run(...);
+```
+
+**Rules:**
+
+- The helper lives in the **consumer repo**, not in the SDK. Different customer repos have different languages, package managers, and build graphs — `@agent-relay/sdk` should stay agnostic.
+- Pre-build any workspace package whose `package.json` `main`/`types` point at a generated `dist/`. Fresh sandboxes don't have that `dist/` yet, and agents will invent workarounds rather than run the build. See the `@cloud/platform` case above.
+- Every install step includes `--legacy-peer-deps --no-audit --no-fund 2>&1 | tail -10` (or equivalent noise-trimming) because full install output blows past `captureOutput` size limits.
+- Document the helper in the repo's `CLAUDE.md` / `AGENTS.md` so new workflow authors (and agents writing workflows) discover it.
 
 ---
 
