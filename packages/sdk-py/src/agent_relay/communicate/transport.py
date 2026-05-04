@@ -229,13 +229,36 @@ class RelayTransport:
     async def check_inbox(self) -> list[Message]:
         """Polling fallback for environments where the WebSocket cannot connect.
 
-        The hosted ``/v1/inbox`` endpoint returns unread metadata, not message
-        bodies, so this method intentionally returns an empty list. Callers
-        that need real message delivery should rely on the WebSocket path
-        wired up by :meth:`connect`.
+        Prefer surfacing any deliverable messages returned by ``/v1/inbox``.
+        Some deployments may only expose unread metadata; in that case this
+        method returns an empty list instead of raising.
         """
         await self._ensure_registered()
-        return []
+        data = await self.send_http("GET", "/v1/inbox", as_agent=True)
+
+        if not isinstance(data, dict):
+            return []
+
+        raw_messages = data.get("messages")
+        if not isinstance(raw_messages, list):
+            return []
+
+        messages: list[Message] = []
+        for item in raw_messages:
+            if not isinstance(item, dict):
+                continue
+            messages.append(
+                Message(
+                    sender=item.get("sender") or item.get("agent_name") or item.get("from") or "unknown",
+                    text=item.get("text") or "",
+                    channel=item.get("channel"),
+                    thread_id=item.get("thread_id"),
+                    timestamp=item.get("timestamp"),
+                    message_id=item.get("message_id") or item.get("id"),
+                )
+            )
+
+        return messages
 
     async def list_agents(self) -> list[str]:
         data = await self.send_http("GET", "/v1/agents")

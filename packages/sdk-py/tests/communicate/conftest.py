@@ -363,11 +363,22 @@ class MockRelayServer:
         if isinstance(sender, web.StreamResponse):
             return sender
 
-        # Hosted API returns unread metadata, not message bodies.
+        agent_id = next(
+            (
+                agent_id
+                for agent_id, registration in self.registered_agents.items()
+                if registration["name"] == sender["name"]
+            ),
+            None,
+        )
+        messages = self.inboxes.get(agent_id or "", [])
+        if agent_id is not None:
+            self.inboxes[agent_id] = []
         return web.json_response(
             {
                 "ok": True,
                 "data": {
+                    "messages": messages,
                     "unread_channels": [],
                     "mentions": [],
                     "unread_dms": [],

@@ -121,12 +121,7 @@ async def test_send_methods_use_expected_http_payload(
 
 
 @pytest.mark.asyncio
-async def test_check_inbox_returns_empty_against_metadata_only_endpoint(relay_server):
-    """The hosted ``/v1/inbox`` returns unread metadata, not message bodies.
-
-    The SDK keeps ``check_inbox()`` for backwards compatibility but always
-    returns an empty list — real delivery flows through the WebSocket.
-    """
+async def test_check_inbox_returns_deliverable_messages_when_available(relay_server):
     RelayTransport = _transport_class()
     transport = RelayTransport("TransportTester", relay_server.make_config())
     await transport.connect()
@@ -144,7 +139,16 @@ async def test_check_inbox_returns_empty_against_metadata_only_endpoint(relay_se
     finally:
         await transport.disconnect()
 
-    assert messages == []
+    assert messages == [
+        Message(
+            sender="Impl-Core",
+            text="transport ready",
+            channel="core-py",
+            thread_id=None,
+            timestamp=None,
+            message_id="message-inbox-1",
+        )
+    ]
 
 
 @pytest.mark.asyncio
