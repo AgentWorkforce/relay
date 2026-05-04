@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
-import { registerCloudCommands, type CloudDependencies } from './cloud.js';
+import { buildCloudSyncPatchExcludeArgs, registerCloudCommands, type CloudDependencies } from './cloud.js';
 
 function createHarness() {
   const exit = vi.fn((code: number) => {
@@ -96,6 +96,17 @@ describe('registerCloudCommands', () => {
     expect(sync).toBeDefined();
     const optionNames = sync?.options.map((option) => option.long);
     expect(optionNames).toContain('--dry-run');
+  });
+
+  it('sync excludes volatile workflow bookkeeping files when applying patches', () => {
+    const args = buildCloudSyncPatchExcludeArgs();
+
+    expect(args).toContain('--exclude=".agent-bin/**"');
+    expect(args).toContain('--exclude=".relayfile.acl"');
+    expect(args).toContain('--exclude=".relayfile-mount-state.json"');
+    expect(args).toContain('--exclude=".relayfile-mount-state.json.tmp-*"');
+    expect(args).toContain('--exclude=".trajectories/**"');
+    expect(args).toContain('--exclude=".workflow-context/**"');
   });
 
   it('registers cloud cancel subcommand', () => {
