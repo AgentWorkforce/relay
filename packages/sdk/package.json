@@ -87,6 +87,11 @@
       "import": "./dist/communicate/adapters/claude-sdk.js",
       "default": "./dist/communicate/adapters/claude-sdk.js"
     },
+    "./communicate/adapters/codex": {
+      "types": "./dist/communicate/adapters/codex.d.ts",
+      "import": "./dist/communicate/adapters/codex.js",
+      "default": "./dist/communicate/adapters/codex.js"
+    },
     "./communicate/adapters/ai-sdk": {
       "types": "./dist/communicate/adapters/ai-sdk.d.ts",
       "import": "./dist/communicate/adapters/ai-sdk.js",
