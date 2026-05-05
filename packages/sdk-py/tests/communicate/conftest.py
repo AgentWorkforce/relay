@@ -16,7 +16,18 @@ from agent_relay.communicate.types import RelayConfig
 
 
 class MockRelayServer:
-    """Minimal in-process Relaycast mock for transport and integration tests."""
+    """Minimal in-process Relaycast mock for transport and integration tests.
+
+    Mirrors the production REST surface that the SDK targets:
+        POST   /v1/agents                              (workspace key)
+        DELETE /v1/agents/{name}                       (workspace key)
+        GET    /v1/agents                              (workspace key)
+        POST   /v1/channels/{name}/messages            (agent token)
+        POST   /v1/messages/{id}/replies               (agent token)
+        POST   /v1/dm                                  (agent token)
+        GET    /v1/inbox                               (agent token)
+        WS     /v1/ws?token=...                        (agent token)
+    """
 
     def __init__(self, *, api_key: str = "test-key", workspace: str = "test-workspace") -> None:
         self.api_key = api_key
@@ -26,6 +37,8 @@ class MockRelayServer:
         self.messages: list[dict[str, Any]] = []
         self.requests: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.inboxes: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        # registered_agents is keyed by internal agent_id; each entry carries
+        # {"name": ..., "token": ...} so tests can look up by either dimension.
         self.registered_agents: dict[str, dict[str, str]] = {}
         self.extra_agents: set[str] = set()
         self.received_ws_messages: list[dict[str, Any]] = []
@@ -37,14 +50,14 @@ class MockRelayServer:
         self._message_ids = count(1)
 
         self._app = web.Application()
-        self._app.router.add_post("/v1/agents/register", self._handle_register)
-        self._app.router.add_delete("/v1/agents/{agent_id}", self._handle_unregister)
-        self._app.router.add_post("/v1/messages/dm", self._handle_dm)
-        self._app.router.add_post("/v1/messages/channel", self._handle_channel)
-        self._app.router.add_post("/v1/messages/reply", self._handle_reply)
-        self._app.router.add_get("/v1/inbox/{agent_id}", self._handle_inbox)
+        self._app.router.add_post("/v1/agents", self._handle_register)
+        self._app.router.add_delete("/v1/agents/{name}", self._handle_unregister)
         self._app.router.add_get("/v1/agents", self._handle_agents)
-        self._app.router.add_get("/v1/ws/{agent_id}", self._handle_ws)
+        self._app.router.add_post("/v1/channels/{channel}/messages", self._handle_channel)
+        self._app.router.add_post("/v1/messages/{message_id}/replies", self._handle_reply)
+        self._app.router.add_post("/v1/dm", self._handle_dm)
+        self._app.router.add_get("/v1/inbox", self._handle_inbox)
+        self._app.router.add_get("/v1/ws", self._handle_ws)
 
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
@@ -69,7 +82,7 @@ class MockRelayServer:
         message: str,
         repeat: int = 1,
     ) -> None:
-        body = {"message": message}
+        body = {"ok": False, "error": {"code": "queued", "message": message}}
         for _ in range(repeat):
             self._queued_errors[operation].append((status, body))
 
@@ -189,28 +202,46 @@ class MockRelayServer:
         if self._runner is not None:
             await self._runner.cleanup()
 
+    # -- Handlers ----------------------------------------------------------
+
     async def _handle_register(self, request: web.Request) -> web.StreamResponse:
         payload = await request.json()
         self._record_request("register_agent", request, payload)
 
         if error := self._pop_error("register_agent"):
             return error
-        if error := self._require_auth(request):
+        if error := self._require_workspace_auth(request):
             return error
 
         agent_id = f"agent-{next(self._agent_ids)}"
         token = f"token-{agent_id}"
         self.registered_agents[agent_id] = {"name": payload["name"], "token": token}
-        return web.json_response({"agent_id": agent_id, "token": token})
+        return web.json_response(
+            {
+                "ok": True,
+                "data": {
+                    "id": agent_id,
+                    "name": payload["name"],
+                    "token": token,
+                    "type": payload.get("type", "agent"),
+                    "status": "online",
+                },
+            },
+            status=201,
+        )
 
     async def _handle_unregister(self, request: web.Request) -> web.StreamResponse:
-        agent_id = request.match_info["agent_id"]
-        self._record_request("unregister_agent", request, {"agent_id": agent_id})
+        name = request.match_info["name"]
+        self._record_request("unregister_agent", request, {"name": name})
 
         if error := self._pop_error("unregister_agent"):
             return error
-        if error := self._require_auth(request):
+        if error := self._require_workspace_auth(request):
             return error
+
+        agent_id = self.find_agent_id(name)
+        if agent_id is None:
+            return web.Response(status=204)
 
         self.registered_agents.pop(agent_id, None)
         self.inboxes.pop(agent_id, None)
@@ -225,94 +256,165 @@ class MockRelayServer:
 
         if error := self._pop_error("send_dm"):
             return error
-        if error := self._require_auth(request):
-            return error
+        sender = self._authenticated_agent(request)
+        if isinstance(sender, web.StreamResponse):
+            return sender
 
         message_id = f"message-{next(self._message_ids)}"
-        self.messages.append({"kind": "dm", "message_id": message_id, **payload})
+        self.messages.append({"kind": "dm", "message_id": message_id, "from": sender["name"], **payload})
         await self._deliver_to_agents(
             self.find_agent_ids(payload["to"]),
-            sender=payload["from"],
+            sender=sender["name"],
             text=payload["text"],
             message_id=message_id,
         )
-        return web.json_response({"message_id": message_id})
+        return web.json_response(
+            {
+                "ok": True,
+                "data": {
+                    "id": message_id,
+                    "to": payload["to"],
+                    "text": payload["text"],
+                    "message": {"id": message_id, "agent_name": sender["name"], "text": payload["text"]},
+                },
+            },
+            status=201,
+        )
 
     async def _handle_channel(self, request: web.Request) -> web.StreamResponse:
+        channel = request.match_info["channel"]
         payload = await request.json()
-        self._record_request("post_message", request, payload)
+        self._record_request("post_message", request, {"channel": channel, **payload})
 
         if error := self._pop_error("post_message"):
             return error
-        if error := self._require_auth(request):
-            return error
+        sender = self._authenticated_agent(request)
+        if isinstance(sender, web.StreamResponse):
+            return sender
 
         message_id = f"message-{next(self._message_ids)}"
-        self.messages.append({"kind": "channel", "message_id": message_id, **payload})
+        self.messages.append(
+            {"kind": "channel", "message_id": message_id, "channel": channel, "from": sender["name"], **payload}
+        )
         await self._deliver_to_agents(
             [
                 agent_id
                 for agent_id, registration in self.registered_agents.items()
-                if registration["name"] != payload["from"]
+                if registration["name"] != sender["name"]
             ],
-            sender=payload["from"],
+            sender=sender["name"],
             text=payload["text"],
-            channel=payload["channel"],
+            channel=channel,
             message_id=message_id,
         )
-        return web.json_response({"message_id": message_id})
+        return web.json_response(
+            {
+                "ok": True,
+                "data": {
+                    "id": message_id,
+                    "channel": channel,
+                    "agent_name": sender["name"],
+                    "text": payload["text"],
+                },
+            },
+            status=201,
+        )
 
     async def _handle_reply(self, request: web.Request) -> web.StreamResponse:
+        thread_id = request.match_info["message_id"]
         payload = await request.json()
-        self._record_request("reply", request, payload)
+        self._record_request("reply", request, {"message_id": thread_id, **payload})
 
         if error := self._pop_error("reply"):
             return error
-        if error := self._require_auth(request):
-            return error
+        sender = self._authenticated_agent(request)
+        if isinstance(sender, web.StreamResponse):
+            return sender
 
         reply_id = f"message-{next(self._message_ids)}"
         self.messages.append(
             {
                 "kind": "reply",
                 "reply_id": reply_id,
-                "thread_id": payload.get("thread_id") or payload.get("message_id"),
+                "thread_id": thread_id,
+                "from": sender["name"],
                 **payload,
             }
         )
-        return web.json_response({"message_id": reply_id})
+        return web.json_response(
+            {
+                "ok": True,
+                "data": {
+                    "id": reply_id,
+                    "thread_id": thread_id,
+                    "agent_name": sender["name"],
+                    "text": payload["text"],
+                },
+            },
+            status=201,
+        )
 
     async def _handle_inbox(self, request: web.Request) -> web.StreamResponse:
-        agent_id = request.match_info["agent_id"]
-        self._record_request("check_inbox", request, {"agent_id": agent_id})
+        self._record_request("check_inbox", request, None)
 
         if error := self._pop_error("check_inbox"):
             return error
-        if error := self._require_auth(request):
-            return error
+        sender = self._authenticated_agent(request)
+        if isinstance(sender, web.StreamResponse):
+            return sender
 
-        messages = list(self.inboxes[agent_id])
-        self.inboxes[agent_id].clear()
-        return web.json_response({"messages": messages})
+        agent_id = next(
+            (
+                agent_id
+                for agent_id, registration in self.registered_agents.items()
+                if registration["name"] == sender["name"]
+            ),
+            None,
+        )
+        messages = self.inboxes.get(agent_id or "", [])
+        if agent_id is not None:
+            self.inboxes[agent_id] = []
+        return web.json_response(
+            {
+                "ok": True,
+                "data": {
+                    "messages": messages,
+                    "unread_channels": [],
+                    "mentions": [],
+                    "unread_dms": [],
+                    "recent_reactions": [],
+                },
+            }
+        )
 
     async def _handle_agents(self, request: web.Request) -> web.StreamResponse:
         self._record_request("list_agents", request, None)
 
         if error := self._pop_error("list_agents"):
             return error
-        if error := self._require_auth(request):
+        if error := self._require_workspace_auth(request):
             return error
 
-        agents = sorted(
+        names = sorted(
             {agent["name"] for agent in self.registered_agents.values()} | self.extra_agents
         )
-        return web.json_response({"agents": agents})
+        agents = [
+            {"id": f"agent-mock-{i}", "name": name, "type": "agent", "status": "online"}
+            for i, name in enumerate(names, start=1)
+        ]
+        return web.json_response({"ok": True, "data": agents})
 
     async def _handle_ws(self, request: web.Request) -> web.StreamResponse:
-        agent_id = request.match_info["agent_id"]
         token = request.query.get("token")
-        registration = self.registered_agents.get(agent_id)
-        if registration is None or token != registration["token"]:
+        agent_id = next(
+            (
+                agent_id
+                for agent_id, registration in self.registered_agents.items()
+                if registration["token"] == token
+            ),
+            None,
+        )
+        if agent_id is None:
             raise web.HTTPUnauthorized(text="Invalid websocket token")
 
         ws = web.WebSocketResponse()
@@ -332,6 +434,8 @@ class MockRelayServer:
                 self._active_websockets.pop(agent_id, None)
 
         return ws
+
+    # -- Helpers -----------------------------------------------------------
 
     def _record_request(
         self,
@@ -354,11 +458,32 @@ class MockRelayServer:
         status, body = self._queued_errors[operation].popleft()
         return web.json_response(body, status=status)
 
-    def _require_auth(self, request: web.Request) -> web.StreamResponse | None:
+    def _require_workspace_auth(self, request: web.Request) -> web.StreamResponse | None:
         auth_header = request.headers.get("Authorization")
         if auth_header == f"Bearer {self.api_key}":
             return None
-        return web.json_response({"message": "Unauthorized"}, status=401)
+        return web.json_response(
+            {"ok": False, "error": {"code": "unauthorized", "message": "Unauthorized"}},
+            status=401,
+        )
+
+    def _authenticated_agent(
+        self, request: web.Request
+    ) -> dict[str, str] | web.StreamResponse:
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return web.json_response(
+                {"ok": False, "error": {"code": "unauthorized", "message": "Missing bearer token"}},
+                status=401,
+            )
+        token = auth_header[len("Bearer ") :]
+        for registration in self.registered_agents.values():
+            if registration["token"] == token:
+                return registration
+        return web.json_response(
+            {"ok": False, "error": {"code": "unauthorized", "message": "Unknown agent token"}},
+            status=401,
+        )
 
     async def _deliver_to_agents(
         self,
