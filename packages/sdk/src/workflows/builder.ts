@@ -11,6 +11,7 @@ import type {
   DryRunReport,
   ErrorHandlingConfig,
   IdleNudgeConfig,
+  PathDefinition,
   RelayYamlConfig,
   StateConfig,
   SwarmPattern,
@@ -157,6 +158,7 @@ export class WorkflowBuilder {
   private _timeoutMs?: number;
   private _channel?: string;
   private _idleNudge?: IdleNudgeConfig;
+  private _paths?: PathDefinition[];
   private _agents: AgentDefinition[] = [];
   private _steps: WorkflowStep[] = [];
   private _errorHandling?: ErrorHandlingConfig;
@@ -240,6 +242,38 @@ export class WorkflowBuilder {
   /** Set the previous run ID whose cached step outputs should be used with startFrom. */
   previousRunId(id: string): this {
     this._previousRunId = id;
+    return this;
+  }
+
+  /**
+   * Declare named paths to additional directories the workflow needs.
+   *
+   * For multi-repo cloud workflows (relay#774, cloud#302), each entry is
+   * tarballed by the CLI at submit time and mounted at
+   * `/home/daytona/workspace/{name}/` in the sandbox. Locally, the runner
+   * resolves `path` relative to the workflow file's parent directory and
+   * agents reference each entry by its declared `name`.
+   *
+   * Calling this is a no-op for the runtime — the runner doesn't need
+   * `paths` to execute steps. The CLI and the cloud bootstrap consume
+   * it. Declaring via the builder keeps single-source-of-truth for tools
+   * that walk the built config (e.g. dashboards, dry-run reports).
+   */
+  paths(paths: PathDefinition[]): this {
+    if (!Array.isArray(paths)) {
+      throw new Error('.paths() expects an array of PathDefinition objects');
+    }
+    const seen = new Set<string>();
+    for (const p of paths) {
+      if (!p || typeof p.name !== 'string' || typeof p.path !== 'string') {
+        throw new Error('.paths() entries must each have string `name` and `path` fields');
+      }
+      if (seen.has(p.name)) {
+        throw new Error(`.paths() got duplicate entry name "${p.name}"`);
+      }
+      seen.add(p.name);
+    }
+    this._paths = paths.map((p) => ({ ...p }));
     return this;
   }
 
@@ -381,6 +415,9 @@ export class WorkflowBuilder {
     };
 
     if (this._description !== undefined) config.description = this._description;
+    if (this._paths !== undefined && this._paths.length > 0) {
+      config.paths = this._paths.map((p) => ({ ...p }));
+    }
     if (this._maxConcurrency !== undefined) config.swarm.maxConcurrency = this._maxConcurrency;
     if (this._timeoutMs !== undefined) config.swarm.timeoutMs = this._timeoutMs;
     if (this._channel !== undefined) config.swarm.channel = this._channel;
