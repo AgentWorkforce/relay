@@ -1,605 +1,615 @@
-# CLI Registry
-# Single source of truth for CLI tools, versions, and models.
-# Used by: TS SDK, Python SDK, relay-cloud, relay-dashboard
-#
-# To update: Edit this file, then run `npm run codegen:models`
-
-version: '1.0'
-
-# CLI tools with their versions and model configurations
+version: "1.0"
 clis:
   claude:
-    name: 'Claude Code'
-    package: '@anthropic-ai/claude-code'
-    npm_link: 'https://www.npmjs.com/package/@anthropic-ai'
-    version: '2.1.72'
-    install: 'npm install -g @anthropic-ai/claude-code'
+    name: Claude Code
+    package: "@anthropic-ai/claude-code"
+    npm_link: https://www.npmjs.com/package/@anthropic-ai
+    version: 2.1.131
+    install: npm install -g @anthropic-ai/claude-code
     models:
       sonnet:
-        id: 'sonnet'
-        label: 'Sonnet'
+        id: sonnet
+        label: Sonnet
         default: true
       opus:
-        id: 'opus'
-        label: 'Opus'
+        id: opus
+        label: Opus
       haiku:
-        id: 'haiku'
-        label: 'Haiku'
-
+        id: haiku
+        label: Haiku
   codex:
-    name: 'Codex CLI'
-    package: '@openai/codex'
-    npm_link: 'https://www.npmjs.com/package/@openai/codex'
-    version: '0.124.0'
-    install: 'npm install -g @openai/codex'
+    name: Codex CLI
+    package: "@openai/codex"
+    npm_link: https://www.npmjs.com/package/@openai/codex
+    version: 0.128.0
+    install: npm install -g @openai/codex
     models:
       gpt_5_4:
-        id: 'gpt-5.4'
-        label: 'GPT-5.4 — Frontier model for complex coding, research, and real-world work.'
+        id: gpt-5.4
+        label: GPT-5.4 — Frontier model for complex coding, research, and real-world
+          work.
         default: true
-        reasoning_efforts: ['low', 'medium', 'high', 'xhigh']
-        default_reasoning_effort: 'xhigh'
+        reasoning_efforts:
+          - low
+          - medium
+          - high
+          - xhigh
+        default_reasoning_effort: xhigh
       gpt_5_3_codex:
-        id: 'gpt-5.3-codex'
-        label: 'GPT-5.3 Codex — Frontier agentic coding model'
-        reasoning_efforts: ['low', 'medium', 'high', 'xhigh']
-        default_reasoning_effort: 'xhigh'
+        id: gpt-5.3-codex
+        label: GPT-5.3 Codex — Frontier agentic coding model
+        reasoning_efforts:
+          - low
+          - medium
+          - high
+          - xhigh
+        default_reasoning_effort: xhigh
       gpt_5_3_codex_spark:
-        id: 'gpt-5.3-codex-spark'
-        label: 'GPT-5.3 Codex Spark — Ultra-fast coding model'
-        reasoning_efforts: ['low', 'medium', 'high', 'xhigh']
-        default_reasoning_effort: 'xhigh'
+        id: gpt-5.3-codex-spark
+        label: GPT-5.3 Codex Spark — Ultra-fast coding model
+        reasoning_efforts:
+          - low
+          - medium
+          - high
+          - xhigh
+        default_reasoning_effort: xhigh
       gpt_5_2_codex:
-        id: 'gpt-5.2-codex'
-        label: 'GPT-5.2 Codex — Frontier agentic coding model'
-        reasoning_efforts: ['low', 'medium', 'high', 'xhigh']
-        default_reasoning_effort: 'xhigh'
+        id: gpt-5.2-codex
+        label: GPT-5.2 Codex — Frontier agentic coding model
+        reasoning_efforts:
+          - low
+          - medium
+          - high
+          - xhigh
+        default_reasoning_effort: xhigh
       gpt_5_2:
-        id: 'gpt-5.2'
-        label: 'GPT-5.2 — Frontier model, knowledge & reasoning'
-        reasoning_efforts: ['low', 'medium', 'high', 'xhigh']
-        default_reasoning_effort: 'xhigh'
+        id: gpt-5.2
+        label: GPT-5.2 — Frontier model, knowledge & reasoning
+        reasoning_efforts:
+          - low
+          - medium
+          - high
+          - xhigh
+        default_reasoning_effort: xhigh
       gpt_5_1_codex_max:
-        id: 'gpt-5.1-codex-max'
-        label: 'GPT-5.1 Codex Max — Deep and fast reasoning'
-        reasoning_efforts: ['low', 'medium', 'high', 'xhigh']
-        default_reasoning_effort: 'xhigh'
+        id: gpt-5.1-codex-max
+        label: GPT-5.1 Codex Max — Deep and fast reasoning
+        reasoning_efforts:
+          - low
+          - medium
+          - high
+          - xhigh
+        default_reasoning_effort: xhigh
       gpt_5_1_codex_mini:
-        id: 'gpt-5.1-codex-mini'
-        label: 'GPT-5.1 Codex Mini — Cheaper, faster'
-        reasoning_efforts: ['medium', 'high']
-        default_reasoning_effort: 'high'
-
+        id: gpt-5.1-codex-mini
+        label: GPT-5.1 Codex Mini — Cheaper, faster
+        reasoning_efforts:
+          - medium
+          - high
+        default_reasoning_effort: high
   gemini:
-    name: 'Gemini CLI'
-    package: '@google/gemini-cli'
-    npm_link: 'https://www.npmjs.com/package/@google/gemini-cli'
-    version: '0.39.1'
-    install: 'npm install -g @google/gemini-cli'
+    name: Gemini CLI
+    package: "@google/gemini-cli"
+    npm_link: https://www.npmjs.com/package/@google/gemini-cli
+    version: 0.41.1
+    install: npm install -g @google/gemini-cli
     models:
       gemini_3_1_pro_preview:
-        id: 'gemini-3.1-pro-preview'
-        label: 'Gemini 3.1 Pro Preview'
+        id: gemini-3.1-pro-preview
+        label: Gemini 3.1 Pro Preview
         default: true
       gemini_3_flash_preview:
-        id: 'gemini-3-flash-preview'
-        label: 'Gemini 3 Flash Preview'
+        id: gemini-3-flash-preview
+        label: Gemini 3 Flash Preview
       gemini_2_5_pro:
-        id: 'gemini-2.5-pro'
-        label: 'Gemini 2.5 Pro'
+        id: gemini-2.5-pro
+        label: Gemini 2.5 Pro
       gemini_2_5_flash:
-        id: 'gemini-2.5-flash'
-        label: 'Gemini 2.5 Flash'
+        id: gemini-2.5-flash
+        label: Gemini 2.5 Flash
       gemini_2_5_flash_lite:
-        id: 'gemini-2.5-flash-lite'
-        label: 'Gemini 2.5 Flash Lite'
-
+        id: gemini-2.5-flash-lite
+        label: Gemini 2.5 Flash Lite
   cursor:
-    name: 'Cursor'
-    package: 'cursor'
-    version: '2026.02.27-e7d2ef6'
-    install: 'Download from cursor.com'
+    name: Cursor
+    package: cursor
+    version: 2026.02.27-e7d2ef6
+    install: Download from cursor.com
     models:
       composer_2_fast:
-        id: 'composer-2-fast'
-        label: 'Composer 2 Fast'
+        id: composer-2-fast
+        label: Composer 2 Fast
         default: true
       composer_2:
-        id: 'composer-2'
-        label: 'Composer 2'
+        id: composer-2
+        label: Composer 2
       composer_1_5:
-        id: 'composer-1.5'
-        label: 'Composer 1.5'
+        id: composer-1.5
+        label: Composer 1.5
       gpt_5_3_codex_low:
-        id: 'gpt-5.3-codex-low'
-        label: 'Codex 5.3 Low'
+        id: gpt-5.3-codex-low
+        label: Codex 5.3 Low
       gpt_5_3_codex_low_fast:
-        id: 'gpt-5.3-codex-low-fast'
-        label: 'Codex 5.3 Low Fast'
+        id: gpt-5.3-codex-low-fast
+        label: Codex 5.3 Low Fast
       gpt_5_3_codex:
-        id: 'gpt-5.3-codex'
-        label: 'Codex 5.3'
+        id: gpt-5.3-codex
+        label: Codex 5.3
       gpt_5_3_codex_fast:
-        id: 'gpt-5.3-codex-fast'
-        label: 'Codex 5.3 Fast'
+        id: gpt-5.3-codex-fast
+        label: Codex 5.3 Fast
       gpt_5_3_codex_high:
-        id: 'gpt-5.3-codex-high'
-        label: 'Codex 5.3 High'
+        id: gpt-5.3-codex-high
+        label: Codex 5.3 High
       gpt_5_3_codex_high_fast:
-        id: 'gpt-5.3-codex-high-fast'
-        label: 'Codex 5.3 High Fast'
+        id: gpt-5.3-codex-high-fast
+        label: Codex 5.3 High Fast
       gpt_5_3_codex_xhigh:
-        id: 'gpt-5.3-codex-xhigh'
-        label: 'Codex 5.3 Extra High'
+        id: gpt-5.3-codex-xhigh
+        label: Codex 5.3 Extra High
       gpt_5_3_codex_xhigh_fast:
-        id: 'gpt-5.3-codex-xhigh-fast'
-        label: 'Codex 5.3 Extra High Fast'
+        id: gpt-5.3-codex-xhigh-fast
+        label: Codex 5.3 Extra High Fast
       gpt_5_2:
-        id: 'gpt-5.2'
-        label: 'GPT-5.2'
+        id: gpt-5.2
+        label: GPT-5.2
       gpt_5_3_codex_spark_preview_low:
-        id: 'gpt-5.3-codex-spark-preview-low'
-        label: 'Codex 5.3 Spark Low'
+        id: gpt-5.3-codex-spark-preview-low
+        label: Codex 5.3 Spark Low
       gpt_5_3_codex_spark_preview:
-        id: 'gpt-5.3-codex-spark-preview'
-        label: 'Codex 5.3 Spark'
+        id: gpt-5.3-codex-spark-preview
+        label: Codex 5.3 Spark
       gpt_5_3_codex_spark_preview_high:
-        id: 'gpt-5.3-codex-spark-preview-high'
-        label: 'Codex 5.3 Spark High'
+        id: gpt-5.3-codex-spark-preview-high
+        label: Codex 5.3 Spark High
       gpt_5_3_codex_spark_preview_xhigh:
-        id: 'gpt-5.3-codex-spark-preview-xhigh'
-        label: 'Codex 5.3 Spark Extra High'
+        id: gpt-5.3-codex-spark-preview-xhigh
+        label: Codex 5.3 Spark Extra High
       gpt_5_2_codex_low:
-        id: 'gpt-5.2-codex-low'
-        label: 'Codex 5.2 Low'
+        id: gpt-5.2-codex-low
+        label: Codex 5.2 Low
       gpt_5_2_codex_low_fast:
-        id: 'gpt-5.2-codex-low-fast'
-        label: 'Codex 5.2 Low Fast'
+        id: gpt-5.2-codex-low-fast
+        label: Codex 5.2 Low Fast
       gpt_5_2_codex:
-        id: 'gpt-5.2-codex'
-        label: 'Codex 5.2'
+        id: gpt-5.2-codex
+        label: Codex 5.2
       gpt_5_2_codex_fast:
-        id: 'gpt-5.2-codex-fast'
-        label: 'Codex 5.2 Fast'
+        id: gpt-5.2-codex-fast
+        label: Codex 5.2 Fast
       gpt_5_2_codex_high:
-        id: 'gpt-5.2-codex-high'
-        label: 'Codex 5.2 High'
+        id: gpt-5.2-codex-high
+        label: Codex 5.2 High
       gpt_5_2_codex_high_fast:
-        id: 'gpt-5.2-codex-high-fast'
-        label: 'Codex 5.2 High Fast'
+        id: gpt-5.2-codex-high-fast
+        label: Codex 5.2 High Fast
       gpt_5_2_codex_xhigh:
-        id: 'gpt-5.2-codex-xhigh'
-        label: 'Codex 5.2 Extra High'
+        id: gpt-5.2-codex-xhigh
+        label: Codex 5.2 Extra High
       gpt_5_2_codex_xhigh_fast:
-        id: 'gpt-5.2-codex-xhigh-fast'
-        label: 'Codex 5.2 Extra High Fast'
+        id: gpt-5.2-codex-xhigh-fast
+        label: Codex 5.2 Extra High Fast
       gpt_5_1_codex_max_low:
-        id: 'gpt-5.1-codex-max-low'
-        label: 'Codex 5.1 Max Low'
+        id: gpt-5.1-codex-max-low
+        label: Codex 5.1 Max Low
       gpt_5_1_codex_max_low_fast:
-        id: 'gpt-5.1-codex-max-low-fast'
-        label: 'Codex 5.1 Max Low Fast'
+        id: gpt-5.1-codex-max-low-fast
+        label: Codex 5.1 Max Low Fast
       gpt_5_1_codex_max_medium:
-        id: 'gpt-5.1-codex-max-medium'
-        label: 'Codex 5.1 Max'
+        id: gpt-5.1-codex-max-medium
+        label: Codex 5.1 Max
       gpt_5_1_codex_max_medium_fast:
-        id: 'gpt-5.1-codex-max-medium-fast'
-        label: 'Codex 5.1 Max Medium Fast'
+        id: gpt-5.1-codex-max-medium-fast
+        label: Codex 5.1 Max Medium Fast
       gpt_5_1_codex_max_high:
-        id: 'gpt-5.1-codex-max-high'
-        label: 'Codex 5.1 Max High'
+        id: gpt-5.1-codex-max-high
+        label: Codex 5.1 Max High
       gpt_5_1_codex_max_high_fast:
-        id: 'gpt-5.1-codex-max-high-fast'
-        label: 'Codex 5.1 Max High Fast'
+        id: gpt-5.1-codex-max-high-fast
+        label: Codex 5.1 Max High Fast
       gpt_5_1_codex_max_xhigh:
-        id: 'gpt-5.1-codex-max-xhigh'
-        label: 'Codex 5.1 Max Extra High'
+        id: gpt-5.1-codex-max-xhigh
+        label: Codex 5.1 Max Extra High
       gpt_5_1_codex_max_xhigh_fast:
-        id: 'gpt-5.1-codex-max-xhigh-fast'
-        label: 'Codex 5.1 Max Extra High Fast'
+        id: gpt-5.1-codex-max-xhigh-fast
+        label: Codex 5.1 Max Extra High Fast
       claude_opus_4_7_thinking_high:
-        id: 'claude-opus-4-7-thinking-high'
-        label: 'Opus 4.7 1M High Thinking'
+        id: claude-opus-4-7-thinking-high
+        label: Opus 4.7 1M High Thinking
       gpt_5_4_high:
-        id: 'gpt-5.4-high'
-        label: 'GPT-5.4 1M High'
+        id: gpt-5.4-high
+        label: GPT-5.4 1M High
       gpt_5_4_high_fast:
-        id: 'gpt-5.4-high-fast'
-        label: 'GPT-5.4 High Fast'
+        id: gpt-5.4-high-fast
+        label: GPT-5.4 High Fast
       gpt_5_4_xhigh_fast:
-        id: 'gpt-5.4-xhigh-fast'
-        label: 'GPT-5.4 Extra High Fast'
+        id: gpt-5.4-xhigh-fast
+        label: GPT-5.4 Extra High Fast
       claude_4_6_opus_high_thinking_fast:
-        id: 'claude-4.6-opus-high-thinking-fast'
-        label: 'Opus 4.6 1M Thinking Fast'
+        id: claude-4.6-opus-high-thinking-fast
+        label: Opus 4.6 1M Thinking Fast
       claude_4_6_sonnet_medium:
-        id: 'claude-4.6-sonnet-medium'
-        label: 'Sonnet 4.6 1M'
+        id: claude-4.6-sonnet-medium
+        label: Sonnet 4.6 1M
       claude_4_6_sonnet_medium_thinking:
-        id: 'claude-4.6-sonnet-medium-thinking'
-        label: 'Sonnet 4.6 1M Thinking'
+        id: claude-4.6-sonnet-medium-thinking
+        label: Sonnet 4.6 1M Thinking
       claude_opus_4_7_low:
-        id: 'claude-opus-4-7-low'
-        label: 'Opus 4.7 1M Low'
+        id: claude-opus-4-7-low
+        label: Opus 4.7 1M Low
       claude_opus_4_7_medium:
-        id: 'claude-opus-4-7-medium'
-        label: 'Opus 4.7 1M Medium'
+        id: claude-opus-4-7-medium
+        label: Opus 4.7 1M Medium
       claude_opus_4_7_high:
-        id: 'claude-opus-4-7-high'
-        label: 'Opus 4.7 1M High'
+        id: claude-opus-4-7-high
+        label: Opus 4.7 1M High
       claude_opus_4_7_xhigh:
-        id: 'claude-opus-4-7-xhigh'
-        label: 'Opus 4.7 1M'
+        id: claude-opus-4-7-xhigh
+        label: Opus 4.7 1M
       claude_opus_4_7_max:
-        id: 'claude-opus-4-7-max'
-        label: 'Opus 4.7 1M Max'
+        id: claude-opus-4-7-max
+        label: Opus 4.7 1M Max
       claude_opus_4_7_thinking_low:
-        id: 'claude-opus-4-7-thinking-low'
-        label: 'Opus 4.7 1M Low Thinking'
+        id: claude-opus-4-7-thinking-low
+        label: Opus 4.7 1M Low Thinking
       claude_opus_4_7_thinking_medium:
-        id: 'claude-opus-4-7-thinking-medium'
-        label: 'Opus 4.7 1M Medium Thinking'
+        id: claude-opus-4-7-thinking-medium
+        label: Opus 4.7 1M Medium Thinking
       claude_opus_4_7_thinking_xhigh:
-        id: 'claude-opus-4-7-thinking-xhigh'
-        label: 'Opus 4.7 1M Thinking'
+        id: claude-opus-4-7-thinking-xhigh
+        label: Opus 4.7 1M Thinking
       claude_opus_4_7_thinking_max:
-        id: 'claude-opus-4-7-thinking-max'
-        label: 'Opus 4.7 1M Max Thinking'
+        id: claude-opus-4-7-thinking-max
+        label: Opus 4.7 1M Max Thinking
       gpt_5_4_low:
-        id: 'gpt-5.4-low'
-        label: 'GPT-5.4 1M Low'
+        id: gpt-5.4-low
+        label: GPT-5.4 1M Low
       gpt_5_4_medium:
-        id: 'gpt-5.4-medium'
-        label: 'GPT-5.4 1M'
+        id: gpt-5.4-medium
+        label: GPT-5.4 1M
       gpt_5_4_medium_fast:
-        id: 'gpt-5.4-medium-fast'
-        label: 'GPT-5.4 Fast'
+        id: gpt-5.4-medium-fast
+        label: GPT-5.4 Fast
       gpt_5_4_xhigh:
-        id: 'gpt-5.4-xhigh'
-        label: 'GPT-5.4 1M Extra High'
+        id: gpt-5.4-xhigh
+        label: GPT-5.4 1M Extra High
       claude_4_6_opus_high:
-        id: 'claude-4.6-opus-high'
-        label: 'Opus 4.6 1M'
+        id: claude-4.6-opus-high
+        label: Opus 4.6 1M
       claude_4_6_opus_max:
-        id: 'claude-4.6-opus-max'
-        label: 'Opus 4.6 1M Max'
+        id: claude-4.6-opus-max
+        label: Opus 4.6 1M Max
       claude_4_6_opus_high_thinking:
-        id: 'claude-4.6-opus-high-thinking'
-        label: 'Opus 4.6 1M Thinking'
+        id: claude-4.6-opus-high-thinking
+        label: Opus 4.6 1M Thinking
       claude_4_6_opus_max_thinking:
-        id: 'claude-4.6-opus-max-thinking'
-        label: 'Opus 4.6 1M Max Thinking'
+        id: claude-4.6-opus-max-thinking
+        label: Opus 4.6 1M Max Thinking
       claude_4_6_opus_max_thinking_fast:
-        id: 'claude-4.6-opus-max-thinking-fast'
-        label: 'Opus 4.6 1M Max Thinking Fast'
+        id: claude-4.6-opus-max-thinking-fast
+        label: Opus 4.6 1M Max Thinking Fast
       claude_4_5_opus_high:
-        id: 'claude-4.5-opus-high'
-        label: 'Opus 4.5'
+        id: claude-4.5-opus-high
+        label: Opus 4.5
       claude_4_5_opus_high_thinking:
-        id: 'claude-4.5-opus-high-thinking'
-        label: 'Opus 4.5 Thinking'
+        id: claude-4.5-opus-high-thinking
+        label: Opus 4.5 Thinking
       gpt_5_2_low:
-        id: 'gpt-5.2-low'
-        label: 'GPT-5.2 Low'
+        id: gpt-5.2-low
+        label: GPT-5.2 Low
       gpt_5_2_low_fast:
-        id: 'gpt-5.2-low-fast'
-        label: 'GPT-5.2 Low Fast'
+        id: gpt-5.2-low-fast
+        label: GPT-5.2 Low Fast
       gpt_5_2_fast:
-        id: 'gpt-5.2-fast'
-        label: 'GPT-5.2 Fast'
+        id: gpt-5.2-fast
+        label: GPT-5.2 Fast
       gpt_5_2_high:
-        id: 'gpt-5.2-high'
-        label: 'GPT-5.2 High'
+        id: gpt-5.2-high
+        label: GPT-5.2 High
       gpt_5_2_high_fast:
-        id: 'gpt-5.2-high-fast'
-        label: 'GPT-5.2 High Fast'
+        id: gpt-5.2-high-fast
+        label: GPT-5.2 High Fast
       gpt_5_2_xhigh:
-        id: 'gpt-5.2-xhigh'
-        label: 'GPT-5.2 Extra High'
+        id: gpt-5.2-xhigh
+        label: GPT-5.2 Extra High
       gpt_5_2_xhigh_fast:
-        id: 'gpt-5.2-xhigh-fast'
-        label: 'GPT-5.2 Extra High Fast'
+        id: gpt-5.2-xhigh-fast
+        label: GPT-5.2 Extra High Fast
       gemini_3_1_pro:
-        id: 'gemini-3.1-pro'
-        label: 'Gemini 3.1 Pro'
+        id: gemini-3.1-pro
+        label: Gemini 3.1 Pro
       gpt_5_4_mini_none:
-        id: 'gpt-5.4-mini-none'
-        label: 'GPT-5.4 Mini None'
+        id: gpt-5.4-mini-none
+        label: GPT-5.4 Mini None
       gpt_5_4_mini_low:
-        id: 'gpt-5.4-mini-low'
-        label: 'GPT-5.4 Mini Low'
+        id: gpt-5.4-mini-low
+        label: GPT-5.4 Mini Low
       gpt_5_4_mini_medium:
-        id: 'gpt-5.4-mini-medium'
-        label: 'GPT-5.4 Mini'
+        id: gpt-5.4-mini-medium
+        label: GPT-5.4 Mini
       gpt_5_4_mini_high:
-        id: 'gpt-5.4-mini-high'
-        label: 'GPT-5.4 Mini High'
+        id: gpt-5.4-mini-high
+        label: GPT-5.4 Mini High
       gpt_5_4_mini_xhigh:
-        id: 'gpt-5.4-mini-xhigh'
-        label: 'GPT-5.4 Mini Extra High'
+        id: gpt-5.4-mini-xhigh
+        label: GPT-5.4 Mini Extra High
       gpt_5_4_nano_none:
-        id: 'gpt-5.4-nano-none'
-        label: 'GPT-5.4 Nano None'
+        id: gpt-5.4-nano-none
+        label: GPT-5.4 Nano None
       gpt_5_4_nano_low:
-        id: 'gpt-5.4-nano-low'
-        label: 'GPT-5.4 Nano Low'
+        id: gpt-5.4-nano-low
+        label: GPT-5.4 Nano Low
       gpt_5_4_nano_medium:
-        id: 'gpt-5.4-nano-medium'
-        label: 'GPT-5.4 Nano'
+        id: gpt-5.4-nano-medium
+        label: GPT-5.4 Nano
       gpt_5_4_nano_high:
-        id: 'gpt-5.4-nano-high'
-        label: 'GPT-5.4 Nano High'
+        id: gpt-5.4-nano-high
+        label: GPT-5.4 Nano High
       gpt_5_4_nano_xhigh:
-        id: 'gpt-5.4-nano-xhigh'
-        label: 'GPT-5.4 Nano Extra High'
+        id: gpt-5.4-nano-xhigh
+        label: GPT-5.4 Nano Extra High
       grok_4_20:
-        id: 'grok-4-20'
-        label: 'Grok 4.20'
+        id: grok-4-20
+        label: Grok 4.20
       grok_4_20_thinking:
-        id: 'grok-4-20-thinking'
-        label: 'Grok 4.20 Thinking'
+        id: grok-4-20-thinking
+        label: Grok 4.20 Thinking
       claude_4_5_sonnet:
-        id: 'claude-4.5-sonnet'
-        label: 'Sonnet 4.5 1M'
+        id: claude-4.5-sonnet
+        label: Sonnet 4.5 1M
       claude_4_5_sonnet_thinking:
-        id: 'claude-4.5-sonnet-thinking'
-        label: 'Sonnet 4.5 1M Thinking'
+        id: claude-4.5-sonnet-thinking
+        label: Sonnet 4.5 1M Thinking
       gpt_5_1_low:
-        id: 'gpt-5.1-low'
-        label: 'GPT-5.1 Low'
+        id: gpt-5.1-low
+        label: GPT-5.1 Low
       gpt_5_1:
-        id: 'gpt-5.1'
-        label: 'GPT-5.1'
+        id: gpt-5.1
+        label: GPT-5.1
       gpt_5_1_high:
-        id: 'gpt-5.1-high'
-        label: 'GPT-5.1 High'
+        id: gpt-5.1-high
+        label: GPT-5.1 High
       gemini_3_flash:
-        id: 'gemini-3-flash'
-        label: 'Gemini 3 Flash'
+        id: gemini-3-flash
+        label: Gemini 3 Flash
       gpt_5_1_codex_mini_low:
-        id: 'gpt-5.1-codex-mini-low'
-        label: 'Codex 5.1 Mini Low'
+        id: gpt-5.1-codex-mini-low
+        label: Codex 5.1 Mini Low
       gpt_5_1_codex_mini:
-        id: 'gpt-5.1-codex-mini'
-        label: 'Codex 5.1 Mini'
+        id: gpt-5.1-codex-mini
+        label: Codex 5.1 Mini
       gpt_5_1_codex_mini_high:
-        id: 'gpt-5.1-codex-mini-high'
-        label: 'Codex 5.1 Mini High'
+        id: gpt-5.1-codex-mini-high
+        label: Codex 5.1 Mini High
       claude_4_sonnet:
-        id: 'claude-4-sonnet'
-        label: 'Sonnet 4'
+        id: claude-4-sonnet
+        label: Sonnet 4
       claude_4_sonnet_1m:
-        id: 'claude-4-sonnet-1m'
-        label: 'Sonnet 4 1M'
+        id: claude-4-sonnet-1m
+        label: Sonnet 4 1M
       claude_4_sonnet_thinking:
-        id: 'claude-4-sonnet-thinking'
-        label: 'Sonnet 4 Thinking'
+        id: claude-4-sonnet-thinking
+        label: Sonnet 4 Thinking
       claude_4_sonnet_1m_thinking:
-        id: 'claude-4-sonnet-1m-thinking'
-        label: 'Sonnet 4 1M Thinking'
+        id: claude-4-sonnet-1m-thinking
+        label: Sonnet 4 1M Thinking
       gpt_5_mini:
-        id: 'gpt-5-mini'
-        label: 'GPT-5 Mini'
+        id: gpt-5-mini
+        label: GPT-5 Mini
       kimi_k2_5:
-        id: 'kimi-k2.5'
-        label: 'Kimi K2.5'
-
+        id: kimi-k2.5
+        label: Kimi K2.5
   droid:
-    name: 'Droid'
-    package: 'droid'
-    version: '0.1.0'
-    install: 'Download from droid.dev'
+    name: Droid
+    package: droid
+    version: 0.1.0
+    install: Download from droid.dev
     models:
       opus_4_6_fast:
-        id: 'opus-4.6-fast'
-        label: 'Opus 4.6 Fast Mode (12x)'
+        id: opus-4.6-fast
+        label: Opus 4.6 Fast Mode (12x)
         default: true
       opus_4_5:
-        id: 'opus-4.5'
-        label: 'Opus 4.5 (2x)'
+        id: opus-4.5
+        label: Opus 4.5 (2x)
       sonnet_4_5:
-        id: 'sonnet-4.5'
-        label: 'Sonnet 4.5 (1.2x)'
+        id: sonnet-4.5
+        label: Sonnet 4.5 (1.2x)
       haiku_4_5:
-        id: 'haiku-4.5'
-        label: 'Haiku 4.5 (0.4x)'
+        id: haiku-4.5
+        label: Haiku 4.5 (0.4x)
       gpt_5_2:
-        id: 'gpt-5.2'
-        label: 'GPT-5.2 (0.7x)'
+        id: gpt-5.2
+        label: GPT-5.2 (0.7x)
       gpt_5_2_codex:
-        id: 'gpt-5.2-codex'
-        label: 'GPT-5.2 Codex (0.7x)'
+        id: gpt-5.2-codex
+        label: GPT-5.2 Codex (0.7x)
       gemini_3_flash:
-        id: 'gemini-3-flash'
-        label: 'Gemini 3 Flash (0.2x)'
+        id: gemini-3-flash
+        label: Gemini 3 Flash (0.2x)
       droid_core:
-        id: 'droid-core-glm-4.7'
-        label: 'Droid Core (GLM-4.7) (0.25x)'
-
+        id: droid-core-glm-4.7
+        label: Droid Core (GLM-4.7) (0.25x)
   opencode:
-    name: 'OpenCode'
-    package: 'opencode-ai'
-    npm_link: 'https://www.npmjs.com/package/opencode-ai'
-    version: '1.2.24'
-    install: 'npm install -g opencode-ai'
+    name: OpenCode
+    package: opencode-ai
+    npm_link: https://www.npmjs.com/package/opencode-ai
+    version: 1.2.24
+    install: npm install -g opencode-ai
     models:
       opencode_big_pickle:
-        id: 'opencode/big-pickle'
-        label: 'Big Pickle'
+        id: opencode/big-pickle
+        label: Big Pickle
       opencode_gpt_5_nano:
-        id: 'opencode/gpt-5-nano'
-        label: 'GPT-5 Nano (OpenCode)'
+        id: opencode/gpt-5-nano
+        label: GPT-5 Nano (OpenCode)
       opencode_mimo_v2_flash_free:
-        id: 'opencode/mimo-v2-flash-free'
-        label: 'Mimo V2 Flash Free'
+        id: opencode/mimo-v2-flash-free
+        label: Mimo V2 Flash Free
       opencode_minimax_m2_5_free:
-        id: 'opencode/minimax-m2.5-free'
-        label: 'MiniMax M2.5 Free'
+        id: opencode/minimax-m2.5-free
+        label: MiniMax M2.5 Free
       openai_codex_mini_latest:
-        id: 'openai/codex-mini-latest'
-        label: 'Codex Mini Latest'
+        id: openai/codex-mini-latest
+        label: Codex Mini Latest
       openai_gpt_3_5_turbo:
-        id: 'openai/gpt-3.5-turbo'
-        label: 'GPT-3.5 Turbo'
+        id: openai/gpt-3.5-turbo
+        label: GPT-3.5 Turbo
       openai_gpt_4:
-        id: 'openai/gpt-4'
-        label: 'GPT-4'
+        id: openai/gpt-4
+        label: GPT-4
       openai_gpt_4_turbo:
-        id: 'openai/gpt-4-turbo'
-        label: 'GPT-4 Turbo'
+        id: openai/gpt-4-turbo
+        label: GPT-4 Turbo
       openai_gpt_4_1:
-        id: 'openai/gpt-4.1'
-        label: 'GPT-4.1'
+        id: openai/gpt-4.1
+        label: GPT-4.1
       openai_gpt_4_1_mini:
-        id: 'openai/gpt-4.1-mini'
-        label: 'GPT-4.1 Mini'
+        id: openai/gpt-4.1-mini
+        label: GPT-4.1 Mini
       openai_gpt_4_1_nano:
-        id: 'openai/gpt-4.1-nano'
-        label: 'GPT-4.1 Nano'
+        id: openai/gpt-4.1-nano
+        label: GPT-4.1 Nano
       openai_gpt_4o:
-        id: 'openai/gpt-4o'
-        label: 'GPT-4o'
+        id: openai/gpt-4o
+        label: GPT-4o
       openai_gpt_4o_2024_05_13:
-        id: 'openai/gpt-4o-2024-05-13'
-        label: 'GPT-4o (2024-05-13)'
+        id: openai/gpt-4o-2024-05-13
+        label: GPT-4o (2024-05-13)
       openai_gpt_4o_2024_08_06:
-        id: 'openai/gpt-4o-2024-08-06'
-        label: 'GPT-4o (2024-08-06)'
+        id: openai/gpt-4o-2024-08-06
+        label: GPT-4o (2024-08-06)
       openai_gpt_4o_2024_11_20:
-        id: 'openai/gpt-4o-2024-11-20'
-        label: 'GPT-4o (2024-11-20)'
+        id: openai/gpt-4o-2024-11-20
+        label: GPT-4o (2024-11-20)
       openai_gpt_4o_mini:
-        id: 'openai/gpt-4o-mini'
-        label: 'GPT-4o Mini'
+        id: openai/gpt-4o-mini
+        label: GPT-4o Mini
       openai_gpt_5:
-        id: 'openai/gpt-5'
-        label: 'GPT-5'
+        id: openai/gpt-5
+        label: GPT-5
       openai_gpt_5_codex:
-        id: 'openai/gpt-5-codex'
-        label: 'GPT-5 Codex'
+        id: openai/gpt-5-codex
+        label: GPT-5 Codex
       openai_gpt_5_mini:
-        id: 'openai/gpt-5-mini'
-        label: 'GPT-5 Mini'
+        id: openai/gpt-5-mini
+        label: GPT-5 Mini
       openai_gpt_5_nano:
-        id: 'openai/gpt-5-nano'
-        label: 'GPT-5 Nano'
+        id: openai/gpt-5-nano
+        label: GPT-5 Nano
       openai_gpt_5_pro:
-        id: 'openai/gpt-5-pro'
-        label: 'GPT-5 Pro'
+        id: openai/gpt-5-pro
+        label: GPT-5 Pro
       openai_gpt_5_1:
-        id: 'openai/gpt-5.1'
-        label: 'GPT-5.1'
+        id: openai/gpt-5.1
+        label: GPT-5.1
       openai_gpt_5_1_chat_latest:
-        id: 'openai/gpt-5.1-chat-latest'
-        label: 'GPT-5.1 Chat Latest'
+        id: openai/gpt-5.1-chat-latest
+        label: GPT-5.1 Chat Latest
       openai_gpt_5_1_codex:
-        id: 'openai/gpt-5.1-codex'
-        label: 'GPT-5.1 Codex'
+        id: openai/gpt-5.1-codex
+        label: GPT-5.1 Codex
       openai_gpt_5_1_codex_max:
-        id: 'openai/gpt-5.1-codex-max'
-        label: 'GPT-5.1 Codex Max'
+        id: openai/gpt-5.1-codex-max
+        label: GPT-5.1 Codex Max
       openai_gpt_5_1_codex_mini:
-        id: 'openai/gpt-5.1-codex-mini'
-        label: 'GPT-5.1 Codex Mini'
+        id: openai/gpt-5.1-codex-mini
+        label: GPT-5.1 Codex Mini
       openai_gpt_5_2:
-        id: 'openai/gpt-5.2'
-        label: 'GPT-5.2'
+        id: openai/gpt-5.2
+        label: GPT-5.2
         default: true
       openai_gpt_5_2_chat_latest:
-        id: 'openai/gpt-5.2-chat-latest'
-        label: 'GPT-5.2 Chat Latest'
+        id: openai/gpt-5.2-chat-latest
+        label: GPT-5.2 Chat Latest
       openai_gpt_5_2_codex:
-        id: 'openai/gpt-5.2-codex'
-        label: 'GPT-5.2 Codex'
+        id: openai/gpt-5.2-codex
+        label: GPT-5.2 Codex
       openai_gpt_5_2_pro:
-        id: 'openai/gpt-5.2-pro'
-        label: 'GPT-5.2 Pro'
+        id: openai/gpt-5.2-pro
+        label: GPT-5.2 Pro
       openai_gpt_5_3_codex:
-        id: 'openai/gpt-5.3-codex'
-        label: 'GPT-5.3 Codex'
+        id: openai/gpt-5.3-codex
+        label: GPT-5.3 Codex
       openai_gpt_5_3_codex_spark:
-        id: 'openai/gpt-5.3-codex-spark'
-        label: 'GPT-5.3 Codex Spark'
+        id: openai/gpt-5.3-codex-spark
+        label: GPT-5.3 Codex Spark
       openai_gpt_5_4:
-        id: 'openai/gpt-5.4'
-        label: 'GPT-5.4'
+        id: openai/gpt-5.4
+        label: GPT-5.4
       openai_gpt_5_4_pro:
-        id: 'openai/gpt-5.4-pro'
-        label: 'GPT-5.4 Pro'
+        id: openai/gpt-5.4-pro
+        label: GPT-5.4 Pro
       openai_o1:
-        id: 'openai/o1'
-        label: 'O1'
+        id: openai/o1
+        label: O1
       openai_o1_mini:
-        id: 'openai/o1-mini'
-        label: 'O1 Mini'
+        id: openai/o1-mini
+        label: O1 Mini
       openai_o1_preview:
-        id: 'openai/o1-preview'
-        label: 'O1 Preview'
+        id: openai/o1-preview
+        label: O1 Preview
       openai_o1_pro:
-        id: 'openai/o1-pro'
-        label: 'O1 Pro'
+        id: openai/o1-pro
+        label: O1 Pro
       openai_o3:
-        id: 'openai/o3'
-        label: 'O3'
+        id: openai/o3
+        label: O3
       openai_o3_deep_research:
-        id: 'openai/o3-deep-research'
-        label: 'O3 Deep Research'
+        id: openai/o3-deep-research
+        label: O3 Deep Research
       openai_o3_mini:
-        id: 'openai/o3-mini'
-        label: 'O3 Mini'
+        id: openai/o3-mini
+        label: O3 Mini
       openai_o3_pro:
-        id: 'openai/o3-pro'
-        label: 'O3 Pro'
+        id: openai/o3-pro
+        label: O3 Pro
       openai_o4_mini:
-        id: 'openai/o4-mini'
-        label: 'O4 Mini'
+        id: openai/o4-mini
+        label: O4 Mini
       openai_o4_mini_deep_research:
-        id: 'openai/o4-mini-deep-research'
-        label: 'O4 Mini Deep Research'
-
+        id: openai/o4-mini-deep-research
+        label: O4 Mini Deep Research
   aider:
-    name: 'Aider'
-    package: 'aider-chat'
-    version: '0.72.1'
-    install: 'pip install aider-chat'
+    name: Aider
+    package: aider-chat
+    version: 0.86.2
+    install: pip install aider-chat
     models: {}
-
   goose:
-    name: 'Goose'
-    package: 'goose-ai'
-    version: '1.0.16'
-    install: 'pip install goose-ai'
+    name: Goose
+    package: goose-ai
+    version: 1.0.16
+    install: pip install goose-ai
     models: {}
-
-# Swarm patterns for multi-agent workflows
 swarm_patterns:
   hub_spoke:
-    id: 'hub-spoke'
-    description: 'Central coordinator distributes tasks to workers'
+    id: hub-spoke
+    description: Central coordinator distributes tasks to workers
   dag:
-    id: 'dag'
-    description: 'Directed acyclic graph with dependencies'
+    id: dag
+    description: Directed acyclic graph with dependencies
   fan_out:
-    id: 'fan-out'
-    description: 'Parallel execution across multiple agents'
+    id: fan-out
+    description: Parallel execution across multiple agents
   pipeline:
-    id: 'pipeline'
-    description: 'Sequential processing through stages'
+    id: pipeline
+    description: Sequential processing through stages
   consensus:
-    id: 'consensus'
-    description: 'Agents reach agreement before proceeding'
+    id: consensus
+    description: Agents reach agreement before proceeding
   mesh:
-    id: 'mesh'
-    description: 'Fully connected peer-to-peer communication'
+    id: mesh
+    description: Fully connected peer-to-peer communication
   handoff:
-    id: 'handoff'
-    description: 'Sequential handoff between agents'
+    id: handoff
+    description: Sequential handoff between agents
   cascade:
-    id: 'cascade'
-    description: 'Cascading delegation'
+    id: cascade
+    description: Cascading delegation
   debate:
-    id: 'debate'
-    description: 'Agents debate to reach conclusion'
+    id: debate
+    description: Agents debate to reach conclusion
   hierarchical:
-    id: 'hierarchical'
-    description: 'Tree-structured coordination'
+    id: hierarchical
+    description: Tree-structured coordination
