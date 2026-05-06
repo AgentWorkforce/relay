@@ -1,0 +1,196 @@
+version: '1.0'
+name: acp-dag-example
+description: >
+  DAG workflow demonstrating ACP runtime as the default for interactive agents.
+  A claude lead coordinates two ACP-mode workers (claude + goose) and one
+  headless codex worker. The lead runs via ACP with structured tool call
+  visibility and clean permission handling — no PTY auto-approval hacks.
+
+  What this showcases:
+    - ACP as default runtime for interactive agents (lead + claude-worker)
+    - Goose with native ACP support (no adapter needed)
+    - Headless codex worker (unchanged — non-interactive subprocess)
+    - Turn-boundary delivery: lead receives worker DONE signals between turns
+    - Structured tool call visibility in broker events (acp_turn_update)
+    - Relaycast MCP server auto-injected into ACP sessions
+    - relay_checkpoint for state persistence (replaces KIND: continuity)
+
+swarm:
+  pattern: dag
+  maxConcurrency: 4
+  timeoutMs: 3600000 # 1 hour
+  channel: wf-acp-dag
+  idleNudge:
+    nudgeAfterMs: 180000
+    escalateAfterMs: 120000
+    maxNudges: 1
+
+agents:
+  # ── Lead: ACP mode (auto-selected — default for interactive agents) ────────
+
+  - name: lead
+    cli: claude
+    channels: [wf-acp-dag, planning]
+    role: 'Architect. Decomposes task, assigns to workers, reviews output.'
+    # runtime: acp  ← omitted, auto-selected because pattern=dag (not mesh/consensus/debate)
+    constraints:
+      model: sonnet
+
+  # ── Interactive ACP worker: structured output via ACP adapter ──────────────
+
+  - name: claude-worker
+    cli: claude
+    channels: [wf-acp-dag]
+    role: 'Implements backend changes as directed by lead.'
+    runtime: acp  # Explicit — same as default, shown for clarity
+    constraints:
+      model: sonnet
+
+  # ── Goose worker: native ACP support ───────────────────────────────────────
+
+  - name: goose-reviewer
+    cli: goose
+    channels: [wf-acp-dag]
+    role: 'Reviews implementation for security and correctness.'
+    runtime: acp
+    constraints:
+      model: gpt-4o
+
+  # ── Headless codex worker: non-interactive subprocess (unchanged) ──────────
+
+  - name: codex-worker
+    cli: codex
+    preset: worker
+    role: 'Implements frontend changes.'
+    # runtime: headless  ← auto-selected from preset: worker
+    constraints:
+      model: o4-mini
+
+workflows:
+  - name: default
+    steps:
+      # ── Phase 1: Context gathering ─────────────────────────────────────────
+
+      - name: gather-context
+        type: deterministic
+        command: |
+          echo "=== Project structure ==="
+          find src -name '*.ts' -type f | head -50
+          echo ""
+          echo "=== Package info ==="
+          cat package.json | head -30
+        captureOutput: true
+
+      # ── Phase 2: Planning ──────────────────────────────────────────────────
+
+      - name: plan
+        agent: lead
+        dependsOn: [gather-context]
+        task: |
+          You are the lead architect for this task: {{task}}
+
+          Here is the project context:
+          {{steps.gather-context.output}}
+
+          Produce a plan with exactly two implementation tracks:
+          1. Backend changes (for claude-worker)
+          2. Frontend changes (for codex-worker)
+
+          For each track, specify exact file paths and what to implement.
+          Save your plan using relay_checkpoint for crash recovery.
+
+          End with: PLAN_COMPLETE
+        verification:
+          type: output_contains
+          value: PLAN_COMPLETE
+
+      # ── Phase 3: Parallel implementation ───────────────────────────────────
+      # claude-worker and codex-worker start simultaneously after plan completes.
+      # Lead monitors via channel — receives DONE signals at turn boundaries.
+
+      - name: backend-impl
+        agent: claude-worker
+        dependsOn: [plan]
+        task: |
+          Join #wf-acp-dag. The lead has posted a plan.
+
+          Implement the backend track from the plan:
+          {{steps.plan.output}}
+
+          Write all files to disk. When complete, post to #wf-acp-dag:
+          "BACKEND_DONE: <summary of changes>"
+
+          End with: BACKEND_DONE
+        verification:
+          type: output_contains
+          value: BACKEND_DONE
+
+      - name: frontend-impl
+        agent: codex-worker
+        dependsOn: [plan]
+        task: |
+          Implement the frontend track from this plan:
+          {{steps.plan.output}}
+
+          IMPORTANT: Write files to disk using your file-writing tools.
+          Do NOT just output code to stdout.
+        verification:
+          type: exit_code
+
+      # ── Phase 3b: File verification gate ───────────────────────────────────
+
+      - name: verify-files
+        type: deterministic
+        dependsOn: [backend-impl, frontend-impl]
+        command: |
+          echo "=== Files modified ==="
+          git diff --name-only HEAD 2>/dev/null || echo "(not a git repo)"
+          echo ""
+          echo "=== TypeScript check ==="
+          npx tsc --noEmit 2>&1 | tail -20 || true
+          echo "VERIFY_DONE"
+        captureOutput: true
+        failOnError: false
+
+      # ── Phase 4: Security review (ACP goose) ──────────────────────────────
+
+      - name: security-review
+        agent: goose-reviewer
+        dependsOn: [verify-files]
+        task: |
+          Review the implementation for security issues.
+
+          Files changed:
+          {{steps.verify-files.output}}
+
+          Plan context:
+          {{steps.plan.output}}
+
+          Check for:
+          - Input validation issues
+          - SQL injection / XSS vulnerabilities
+          - Secrets in source code
+          - Insecure defaults
+
+          Produce a verdict: PASS, WARN, or FAIL with details.
+          End with: REVIEW_COMPLETE
+        verification:
+          type: output_contains
+          value: REVIEW_COMPLETE
+
+      # ── Phase 5: Lead synthesizes and commits ──────────────────────────────
+
+      - name: finalize
+        agent: lead
+        dependsOn: [security-review]
+        task: |
+          Review the security review results:
+          {{steps.security-review.output}}
+
+          If PASS or WARN: commit the changes with a descriptive message.
+          If FAIL: fix the issues identified, then commit.
+
+          End with: WORKFLOW_COMPLETE
+        verification:
+          type: output_contains
+          value: WORKFLOW_COMPLETE
