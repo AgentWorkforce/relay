@@ -1094,10 +1094,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
         ),
     ];
     if let Some(default_workspace_id) = default_workspace_id.clone() {
-        worker_env.push((
-            "RELAYFILE_WORKSPACE".to_string(),
-            default_workspace_id.clone(),
-        ));
+        // Do NOT stamp RELAYFILE_WORKSPACE from default_workspace_id. The
+        // relaycast workspace id and the relayfile workspace id are
+        // independent — a relayfile JWT scoped to a different workspace will
+        // 403 with "workspace mismatch" when the relayfile MCP sends the
+        // wrong id. Callers that share an id across both services (e.g. the
+        // canonical `relay on start` flow) set RELAYFILE_WORKSPACE
+        // themselves through per-spawn env_vars.
         worker_env.push((
             "RELAY_DEFAULT_WORKSPACE".to_string(),
             default_workspace_id.clone(),
