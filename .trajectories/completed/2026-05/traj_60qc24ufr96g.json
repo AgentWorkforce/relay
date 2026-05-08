@@ -1,0 +1,53 @@
+{
+  "id": "traj_60qc24ufr96g",
+  "version": 1,
+  "task": {
+    "title": "Expand workflow reliability contract matrix"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-08T15:40:11.699Z",
+  "completedAt": "2026-05-08T15:40:22.521Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-08T15:40:16.882Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_gbj9xhxig05o",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-08T15:40:16.882Z",
+      "endedAt": "2026-05-08T15:40:22.521Z",
+      "events": [
+        {
+          "ts": 1778254816883,
+          "type": "decision",
+          "content": "Cover repair fallback, final validation, sibling isolation, and resume reliability: Cover repair fallback, final validation, sibling isolation, and resume reliability",
+          "raw": {
+            "question": "Cover repair fallback, final validation, sibling isolation, and resume reliability",
+            "chosen": "Cover repair fallback, final validation, sibling isolation, and resume reliability",
+            "alternatives": [],
+            "reasoning": "These are the failure modes that let repairable workflow errors leak into terminal failures: final validation gates, fan-out sibling state, invalid/missing repair agent configuration, and start-from recovery context."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Expanded the SDK workflow reliability contract suite from basic deterministic repair coverage to a 10-test matrix covering final hard validation repair, fan-out sibling isolation, repair-agent fallback behavior, invalid repairAgent fallback, and start-from resume context for cached step outputs. Validated with the named Vitest suite and SDK typecheck.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay-repairable-workflows",
+  "tags": [],
+  "_trace": {
+    "startRef": "10f1bfb80e177fba0ca80c6be4cb4e5320344306",
+    "endRef": "10f1bfb80e177fba0ca80c6be4cb4e5320344306"
+  }
+}

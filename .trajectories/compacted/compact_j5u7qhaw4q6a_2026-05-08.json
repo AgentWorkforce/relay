@@ -1,0 +1,482 @@
+{
+  "id": "compact_j5u7qhaw4q6a",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-05-08T13:33:56.731Z",
+  "sourceTrajectories": [
+    "traj_ui5omrgz819d",
+    "traj_o9cx33xn5u39",
+    "traj_3b3p1z4y7qlo",
+    "traj_222ha5671idc",
+    "traj_1776113772922_bc92f121",
+    "traj_qb54w47qwod6",
+    "traj_tjadoebpscps",
+    "traj_1776105988184_29f1270c",
+    "traj_1776105620545_9dcebb3d",
+    "traj_e5i62wdjx0jd",
+    "traj_1776073106646_1839be2d",
+    "traj_w0xpsaoxuiyw",
+    "traj_9tt55is74dq5",
+    "traj_1775914296101_a4397efe",
+    "traj_1775914133873_35667beb",
+    "traj_rs2bt3x0fqba",
+    "traj_4zqhfqw7g28l",
+    "traj_703m7sqyq89t",
+    "traj_0t92gxaz6igh",
+    "traj_g3muawdq6bsb",
+    "traj_d48czxmgx4ac",
+    "traj_abjovknvcijv",
+    "traj_o8kgzhfu6jth",
+    "traj_tv1x9pamkqad",
+    "traj_8oh4r5km5eic",
+    "traj_530xmbfeljyb",
+    "traj_mk0t0cgn4ytq",
+    "traj_05xg7j388bc4",
+    "traj_avmkyoo2s3rt"
+  ],
+  "dateRange": {
+    "start": "2026-04-10T14:42:17.242Z",
+    "end": "2026-05-08T13:33:48.161Z"
+  },
+  "summary": {
+    "totalDecisions": 31,
+    "totalEvents": 213,
+    "uniqueAgents": [
+      "orchestrator",
+      "impl-codex",
+      "review-claude",
+      "planner",
+      "implementer",
+      "reviewer",
+      "impl",
+      "tester",
+      "fixer",
+      "fix-worker-1",
+      "verifier",
+      "default",
+      "lead",
+      "fix-worker-2",
+      "fix-worker-3",
+      "impl-1",
+      "impl-2",
+      "impl-3",
+      "impl-4"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Muted Commander output in messaging CLI tests",
+          "chosen": "Muted Commander output in messaging CLI tests",
+          "reasoning": "The missing-argument coverage test should assert exit behavior without polluting stderr; configuring the test Command output keeps the suite clean while preserving runtime CLI behavior.",
+          "fromTrajectory": "traj_1776105988184_29f1270c"
+        },
+        {
+          "question": "Whether to skip read-tests",
+          "chosen": "skip",
+          "reasoning": "Upstream dependency \"verify-impl\" failed",
+          "fromTrajectory": "traj_1776105620545_9dcebb3d"
+        },
+        {
+          "question": "Whether to skip update-tests",
+          "chosen": "skip",
+          "reasoning": "Upstream dependency \"read-tests\" failed",
+          "fromTrajectory": "traj_1776105620545_9dcebb3d"
+        },
+        {
+          "question": "Whether to skip verify-tests",
+          "chosen": "skip",
+          "reasoning": "Upstream dependency \"update-tests\" failed",
+          "fromTrajectory": "traj_1776105620545_9dcebb3d"
+        },
+        {
+          "question": "Whether to skip build",
+          "chosen": "skip",
+          "reasoning": "Upstream dependency \"verify-tests\" failed",
+          "fromTrajectory": "traj_1776105620545_9dcebb3d"
+        },
+        {
+          "question": "Whether to skip run-unit-tests",
+          "chosen": "skip",
+          "reasoning": "Upstream dependency \"fix-build\" failed",
+          "fromTrajectory": "traj_1776105620545_9dcebb3d"
+        },
+        {
+          "question": "Whether to skip fix-unit-tests",
+          "chosen": "skip",
+          "reasoning": "Upstream dependency \"run-unit-tests\" failed",
+          "fromTrajectory": "traj_1776105620545_9dcebb3d"
+        },
+        {
+          "question": "Whether to skip run-unit-tests-gate",
+          "chosen": "skip",
+          "reasoning": "Upstream dependency \"fix-unit-tests\" failed",
+          "fromTrajectory": "traj_1776105620545_9dcebb3d"
+        },
+        {
+          "question": "Whether to skip e2e-validate",
+          "chosen": "skip",
+          "reasoning": "Upstream dependency \"run-unit-tests-gate\" failed",
+          "fromTrajectory": "traj_1776105620545_9dcebb3d"
+        },
+        {
+          "question": "Whether to skip regression-tests",
+          "chosen": "skip",
+          "reasoning": "Upstream dependency \"e2e-validate\" failed",
+          "fromTrajectory": "traj_1776105620545_9dcebb3d"
+        },
+        {
+          "question": "Whether to skip fix-regressions",
+          "chosen": "skip",
+          "reasoning": "Upstream dependency \"regression-tests\" failed",
+          "fromTrajectory": "traj_1776105620545_9dcebb3d"
+        },
+        {
+          "question": "Preserved both sides of the trajectory merge by combining events and keeping the completed-file form",
+          "chosen": "Preserved both sides of the trajectory merge by combining events and keeping the completed-file form",
+          "reasoning": "Your branch still contained recent UI and preview-routing decisions on the old active trajectory, while main had already abandoned that trajectory and added new CI hardening notes. The safe resolution was to keep all recorded events, move the entry to the completed path, and advance its completion time to the latest preserved event.",
+          "fromTrajectory": "traj_mk0t0cgn4ytq"
+        }
+      ]
+    },
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Handled PR 747 feedback in tracked parent worktree",
+          "chosen": "Handled PR 747 feedback in tracked parent worktree",
+          "reasoning": "The cwd copy under .relay/workspace is not the git worktree; fixes must be applied to the parent git worktree so the feature branch and PR contain them.",
+          "fromTrajectory": "traj_1776113772922_bc92f121"
+        },
+        {
+          "question": "Whether to skip commit",
+          "chosen": "skip",
+          "reasoning": "Upstream dependency \"fix-regressions\" failed",
+          "fromTrajectory": "traj_1776105620545_9dcebb3d"
+        },
+        {
+          "question": "Grouped findings by file ownership into two conflict-free buckets",
+          "chosen": "Grouped findings by file ownership into two conflict-free buckets",
+          "reasoning": "All findings on messaging.ts must stay together, all findings on fix-history-inbox-v2.ts must stay together, and both groups remain under the six-finding limit for parallel assignment.",
+          "fromTrajectory": "traj_e5i62wdjx0jd"
+        },
+        {
+          "question": "Switch production SST alias to origin.agentrelay.net to avoid the existing apex alias conflict",
+          "chosen": "Switch production SST alias to origin.agentrelay.net to avoid the existing apex alias conflict",
+          "reasoning": "The current production deployment path in the new AWS account cannot claim agentrelay.net because the live site is still attached elsewhere. Moving the new stack to origin.agentrelay.net allows a no-downtime deploy while the main domain remains untouched.",
+          "fromTrajectory": "traj_rs2bt3x0fqba"
+        },
+        {
+          "question": "Collapsed the mobile docs sidebar into the hamburger menu instead of rendering it above the content rail",
+          "chosen": "Collapsed the mobile docs sidebar into the hamburger menu instead of rendering it above the content rail",
+          "reasoning": "On small screens the left rail consumes vertical space and duplicates navigation. Passing a mobile-only DocsNav into SiteNav keeps the docs tree available from the existing hamburger while preserving the desktop sidebar unchanged.",
+          "fromTrajectory": "traj_0t92gxaz6igh"
+        },
+        {
+          "question": "Added /cloud to the footer company links",
+          "chosen": "Added /cloud to the footer company links",
+          "reasoning": "Cloud is a first-class site destination and fits the footer's secondary navigation without adding new layout complexity.",
+          "fromTrajectory": "traj_o8kgzhfu6jth"
+        },
+        {
+          "question": "Implemented Browser primitive as SDK integration step",
+          "chosen": "Implemented Browser primitive as SDK integration step",
+          "reasoning": "The SDK runner already delegates type: integration steps through executeIntegrationStep, so the Browser primitive can plug in without changing DAG scheduling or runner internals.",
+          "fromTrajectory": "traj_05xg7j388bc4"
+        }
+      ]
+    },
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Aligned publish-resolution CI check with publish build command",
+          "chosen": "Aligned publish-resolution CI check with publish build command",
+          "reasoning": "Codex review noted the new job used build:packages while publish runs npm run build. The CI guard now runs the full root build so root CLI/TypeScript failures are caught before merge.",
+          "fromTrajectory": "traj_1776113772922_bc92f121"
+        },
+        {
+          "question": "Whether to skip fix-build",
+          "chosen": "skip",
+          "reasoning": "Upstream dependency \"build\" failed",
+          "fromTrajectory": "traj_1776105620545_9dcebb3d"
+        },
+        {
+          "question": "Pinned package build resolution to TypeScript 5.7.3 via exact devDependency and npx-based build script",
+          "chosen": "Pinned package build resolution to TypeScript 5.7.3 via exact devDependency and npx-based build script",
+          "reasoning": "These packages were using a ranged TypeScript version and bare tsc, which allows resolution drift across environments. Pinning both the dependency and the build invocation makes package builds deterministic.",
+          "fromTrajectory": "traj_9tt55is74dq5"
+        },
+        {
+          "question": "Identified deploy failure as CloudFront CNAME conflict on production web domain",
+          "chosen": "Identified deploy failure as CloudFront CNAME conflict on production web domain",
+          "reasoning": "GitHub Actions logs show sst deploy failed in WebCdnDistribution creation with AWS CloudFront 409 CNAMEAlreadyExists after the Next.js build completed successfully.",
+          "fromTrajectory": "traj_4zqhfqw7g28l"
+        },
+        {
+          "question": "Stopped docs and blog content loaders from binding to build-machine absolute paths, and explicitly traced MDX content into the Next server bundle",
+          "chosen": "Stopped docs and blog content loaders from binding to build-machine absolute paths, and explicitly traced MDX content into the Next server bundle",
+          "reasoning": "The production stack showed a read against /home/runner/work/.../web/content/docs/introduction.mdx, which means the docs loader baked the GitHub runner path into the server chunk via import.meta.url. Resolving content from runtime cwd candidates fixes the path, and tracing content/docs plus content/blog ensures those source files are present in the deployed artifact.",
+          "fromTrajectory": "traj_703m7sqyq89t"
+        }
+      ]
+    },
+    {
+      "category": "architecture",
+      "decisions": [
+        {
+          "question": "Mirrored browser primitive workflow-step pattern for GitHub",
+          "chosen": "Mirrored browser primitive workflow-step pattern for GitHub",
+          "reasoning": "The SDK already routes integration steps through RunnerStepExecutor; serializing params/config/output preserves workflow template interpolation and keeps GitHub primitive behavior local to the primitive package.",
+          "fromTrajectory": "traj_tv1x9pamkqad"
+        },
+        {
+          "question": "Implemented GitHub actions as adapter-driven REST helpers",
+          "chosen": "Implemented GitHub actions as adapter-driven REST helpers",
+          "reasoning": "The existing local and cloud runtimes already share a request(method,path,options) abstraction, so action modules can work across gh CLI and Nango without runtime-specific branches.",
+          "fromTrajectory": "traj_8oh4r5km5eic"
+        },
+        {
+          "question": "Implemented GitHub primitive as base adapter layer with action stubs",
+          "chosen": "Implemented GitHub primitive as base adapter layer with action stubs",
+          "reasoning": "The requested step creates client/runtime infrastructure only; action-specific methods should exist on the contract but throw until the next implementation phase.",
+          "fromTrajectory": "traj_530xmbfeljyb"
+        },
+        {
+          "question": "Implemented browser primitive as a nested workspace package",
+          "chosen": "Implemented browser primitive as a nested workspace package",
+          "reasoning": "The design document defines packages/primitives/browser as an independent primitive, so the implementation needs package metadata, a workspace entry, and package build coverage in addition to source files.",
+          "fromTrajectory": "traj_avmkyoo2s3rt"
+        }
+      ]
+    },
+    {
+      "category": "database",
+      "decisions": [
+        {
+          "question": "Localized workflow trajectory compatibility casts",
+          "chosen": "Localized workflow trajectory compatibility casts",
+          "reasoning": "Publish removes package-lock and resolves agent-trajectories@0.5.5, whose exported type aliases are narrower than its runtime schema. Keeping workflow metadata and casting only at the agent-trajectories adapter boundary preserves persisted trajectory shape while compiling against both 0.5.4 and 0.5.5.",
+          "fromTrajectory": "traj_1776113772922_bc92f121"
+        }
+      ]
+    },
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Reversed the dark footer gradient so the brighter Relay blue sits on the top edge",
+          "chosen": "Reversed the dark footer gradient so the brighter Relay blue sits on the top edge",
+          "reasoning": "The footer background is driven by a single dark-mode token, so flipping the gradient stop order achieves the requested visual change without affecting the footer layout or light theme.",
+          "fromTrajectory": "traj_g3muawdq6bsb"
+        }
+      ]
+    },
+    {
+      "category": "security",
+      "decisions": [
+        {
+          "question": "Shifted dark footer styling to the existing Relay blue gradient",
+          "chosen": "Shifted dark footer styling to the existing Relay blue gradient",
+          "reasoning": "The footer tokens lived in brand.css, so the cleanest change was to swap the dark footer background from near-black to the same blue range already used elsewhere in the dark theme and tint the divider line to match.",
+          "fromTrajectory": "traj_d48czxmgx4ac"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [
+    "\"implement-cloud-api-bootstrap\" completed → >7u›Write tests for @filename  gpt-5.5 high · Context 100% left · ~/Projects/AgentWorkforce/relay · gpt-5.5 …\r\n╭────────",
+    "\"implement-relay-cli-client\" completed → >7u›Write tests for @filename  gpt-5.5 high · Context 100% left · ~/Projects/AgentWorkforce/relay · gpt-5.5 …\r\n╭────────",
+    "\"fix-loop\" completed → >7u\r\n╭──────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.124.0)                   │\r\n│              ",
+    "\"final-review\" completed → Full review written to `.workflow-artifacts/cloud-run-start-from/final-review.md`.",
+    "\"plan\" completed → ✻ Crunched fo  1m 4s                                         \r❯",
+    "\"implement\" completed → >7u\r\n╭─────────────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.121.0)                          │\r\n│",
+    "\"fix-cargo-check\" completed → >7u\r\n╭─────────────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.121.0)                          │\r\n│",
+    "\"fix-mcp-args-tests\" completed → >7u\r\n╭─────────────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.121.0)                          │\r\n│",
+    "\"fix-regressions\" completed → >7u\r\n╭─────────────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.121.0)                          │\r\n│",
+    "\"review\" completed → ✽",
+    "\"plan\" completed → ✻ Baked for 1m 58s                                                \r❯",
+    "\"implement\" completed → >7u\r\n╭─────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.121.0)                  │\r\n│                ",
+    "\"fix-compile-errors\" completed → >7u\r\n╭─────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.121.0)                  │\r\n│                ",
+    "\"fix-test-failures\" completed → >7u\r\n╭─────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.121.0)                  │\r\n│                ",
+    "\"review\" completed → ✢",
+    "\"edit-build-bun\" completed → EDIT_DONE",
+    "\"write-live-integration-test\" completed → LIVE_TEST_WRITTEN",
+    "\"fix-live-test\" completed → LIVE_GREEN",
+    "\"fix-typecheck\" completed → TYPECHECK_OK",
+    "\"fix-unit-regressions\" completed → UNIT_GREEN",
+    "\"review-diff\" completed → **REVIEW_OK**",
+    "\"fix-worker-1-step\" completed → Both fixes look correct. Here's the summary:\n\n---\n\n## Fix Summary\n\n### Finding 1: Duplicate `bundledDependencies`/`bundl",
+    "\"update-tests\" completed → - Modified `src/cli/commands/messaging.test.ts` with the three requested test cases.",
+    "\"implement-fix\" completed → Artifact produced: updated `src/cli/commands/messaging.ts`.",
+    "\"fix-build\" completed → Build confirmed clean. Task required no action.",
+    "\"fix-unit-tests\" completed → Updated [src/cli/commands/messaging.test.ts](/Users/khaliqgant/Projects/AgentWorkforce/relay/src/cli/commands/messaging.",
+    "\"fix-regressions\" completed → No action taken. The provided full `vitest` run already passes: `50/50` test files and `711/711` tests. No regressions d",
+    "\"update-tests\" completed → - No other files were edited.",
+    "\"fix-build\" completed → Status: no action taken.\n\nThe provided build output ends with `BUILD_EXIT:0`, which indicates the TypeScript build succe",
+    "\"fix-unit-tests\" completed → - Recorded and completed the active `trail` trajectory for this fix",
+    "\"implement-fixes\" completed → Completed the two requested fixes in [src/cli/commands/messaging.ts](/Users/khaliqgant/Projects/AgentWorkforce/relay/src",
+    "\"plan\" completed → >7u╭─────────────────────────────────────────────────────╮│ >_ OpenAI Codex (v0.116.0)                          ││      ",
+    "\"fix-worker-3-step\" completed → - Artifacts produced: none.",
+    "\"fix-worker-2-step\" completed → - No files outside the assigned group were modified.",
+    "\"fix-worker-1-step\" completed → **Completed**\n- Fixed [src/cli/commands/messaging.ts](/Users/khaliqgant/Projects/AgentWorkforce/.msd-autofix-16b32ead/sr",
+    "\"plan\" completed → -- INSERT -- ⏵⏵ bypass permissions on (shift+tab to cycle) · PR #708",
+    "\"fix-config\" completed → CHANGES_COMPLETE",
+    "\"fix-sdk\" completed → CHANGES_COMPLETE",
+    "\"fix-remaining-a\" completed → CHANGES_COMPLETE",
+    "\"fix-remaining-b\" completed → CHANGES_COMPLETE",
+    "\"review-results\" completed → REVIEW_COMPLETE"
+  ],
+  "filesAffected": [],
+  "commits": [],
+  "narrative": "This batch of trajectories covers a high-volume period (Apr 10 – May 8, 2026) of mixed work on the relay monorepo: CLI/broker feature additions (cloud run --resume/--start-from/--previous-run-id, mcp-args subcommand with --register flag, history/inbox --from/--agent fixes), build infrastructure hardening (TypeScript 5.7.3 pinning across 10+ packages, web-only CI gating, SDK build-resolution casts for agent-trajectories@0.5.5), web/docs frontend polish (mobile docs sidebar into hamburger, dark footer gradient, /cloud footer link, MDX path resolution fix), and primitive package construction (Browser and GitHub primitives with shared adapter pattern across gh CLI / Nango runtimes). A staging deploy regression was diagnosed as a CloudFront 409 CNAMEAlreadyExists conflict and worked around by switching the production SST alias to origin.agentrelay.net. Most work ran through DAG-based workflow orchestrators (planner → implementer → verify gates → fix-loop → reviewer → PR), with codex as the implementer and claude as planner/reviewer. Two autofix-swarm sessions ran lead-architect plans that grouped findings by file ownership (messaging.ts vs fix-history-inbox-v2.ts) into non-overlapping parallel buckets — fix-worker-3 correctly no-op'd when its assigned group index didn't exist. One fix-inbox-agent-flag run was abandoned at verify-impl after implement-fixes succeeded, cascading 12 skipped downstream steps; a re-run with the tester-first ordering succeeded. Key reusable artifacts: PLAN.md / IMPL_SUMMARY.md / REVIEW.md repo-root convention per workflow, .workflow-artifacts/<name>/ for per-run outputs, .msd/autofix-plan.json for swarm group assignment, and a verification-passed exit=0 signal as the canonical step-completion marker.",
+  "decisions": [
+    {
+      "question": "How to forward cloud run resume/start-from flags through the stack?",
+      "chosen": "Forward --resume/--start-from/--previous-run-id from agent-relay CLI through the Cloud API into sandbox SDK env vars",
+      "reasoning": "Keeps the resume contract a thin pass-through — CLI parses, Cloud API bootstraps, sandbox SDK reads env. Avoids a new schema and matches existing launcher env propagation.",
+      "impact": "Implemented in src/cli/commands/cloud.ts and packages/cloud/src/types.ts; route + worker payloads + OpenAPI schema all updated; unblocks cloud-side resume."
+    },
+    {
+      "question": "How should the broker mcp-args subcommand obtain its agent token?",
+      "chosen": "Add --register flag that mints its own at_live_* token via register_agent_token; agentToken becomes nullable",
+      "reasoning": "Lets cloud cleanup PR call mcp-args without pre-provisioning a token, while leaving the existing explicit-token path intact.",
+      "impact": "src/cli_mcp_args.rs + src/main.rs + docs/reference-cli.md changes; review verdict APPROVE — diff scoped only to flag wiring, no authority functions touched."
+    },
+    {
+      "question": "Where should TypeScript build resolution be pinned to avoid drift?",
+      "chosen": "Pin TypeScript 5.7.3 exact in devDependencies and route every package build through `npx -p typescript@5.7.3 tsc`",
+      "reasoning": "Ranged tsc + bare invocation allowed resolution drift across clean checkouts (npm publish strips lockfile). Pinning both dep version and invocation makes builds deterministic.",
+      "impact": "Updated package.json across acp-bridge, memory, trajectory, cloud, config, sdk, gateway, hooks, openclaw, policy, telemetry, user-directory."
+    },
+    {
+      "question": "How to handle agent-trajectories@0.5.5 narrower exported types breaking SDK build during publish?",
+      "chosen": "Localize compatibility casts at the agent-trajectories adapter boundary; keep workflow metadata shape intact",
+      "reasoning": "The 0.5.5 export aliases are narrower than the runtime schema. Casting only at the adapter boundary preserves persisted trajectory shape and compiles against both 0.5.4 and 0.5.5.",
+      "impact": "SDK builds clean under publish-style fresh npm install; package-validation CI now runs full root build to match `npm run build` used at publish."
+    },
+    {
+      "question": "How to recover from CloudFront 409 CNAMEAlreadyExists on production deploy?",
+      "chosen": "Switch production SST alias from agentrelay.net to origin.agentrelay.net",
+      "reasoning": "Live apex site is still attached to the prior AWS account, so the new account cannot claim the CNAME. Moving to a sibling hostname allows zero-downtime cutover.",
+      "impact": "sst diff confirmed certificate + CloudFront issued for origin.agentrelay.net; stale agentrelay.net validation resources removed; live apex untouched."
+    },
+    {
+      "question": "How to fix production docs loader reading /home/runner/... paths?",
+      "chosen": "Resolve docs/blog content from runtime cwd candidates instead of import.meta.url; explicitly trace content/docs and content/blog into Next server bundle",
+      "reasoning": "import.meta.url baked the GitHub-runner build path into the server chunk. Runtime resolution + outputFileTracing ensures MDX is loaded from the deployed filesystem.",
+      "impact": "Production stops 404'ing on docs; build still hits unrelated intermittent prerender flake."
+    },
+    {
+      "question": "How to structure the Browser and GitHub primitives?",
+      "chosen": "Independent nested workspace packages under packages/primitives/<name>/ with shared adapter base (gh CLI / Nango / relay-cloud runtimes) and integration-step entry",
+      "reasoning": "SDK runner already routes type:integration steps through executeIntegrationStep, so primitives plug in without changing DAG scheduling. Adapter pattern lets actions share request(method,path,options) across runtimes.",
+      "impact": "Browser primitive (Playwright-backed) and GitHub primitive (REST helpers) both shipped with workflow-step examples and package build coverage."
+    },
+    {
+      "question": "How to group autofix findings for parallel workers?",
+      "chosen": "Group by file ownership: all messaging.ts findings in one bucket, all fix-history-inbox-v2.ts in another, both under 6-finding limit",
+      "reasoning": "Same-file findings would race on edits; ownership grouping makes parallel buckets conflict-free.",
+      "impact": "Two swarm sessions completed cleanly; fix-worker-3 correctly returned no-op when assigned a non-existent group index."
+    }
+  ],
+  "conventions": [
+    {
+      "pattern": "Workflow lifecycle: planner writes PLAN.md → codex implementer writes IMPL_SUMMARY.md → verify gates + test-fix-rerun loop → reviewer writes REVIEW.md at repo root → PR",
+      "rationale": "Three named artifacts let each role read prior context without re-deriving; reviewer compares diff against PLAN.md + IMPL_SUMMARY.md as ground truth.",
+      "scope": "All multi-step DAG workflows in this repo (mcp-args, cloud-run-start-from, sdk-build-resolution)."
+    },
+    {
+      "pattern": "Per-run outputs land in .workflow-artifacts/<workflow-name>/<step>.md (e.g. .workflow-artifacts/cloud-run-start-from/final-review.md)",
+      "rationale": "Keeps repo root clean of per-run debris while preserving completion evidence for the orchestrator to detect.",
+      "scope": "Workflow runner steps that produce review or fix-loop summaries."
+    },
+    {
+      "pattern": "Step completion signaled by `Verification passed` + exit=0; legacy `STEP_COMPLETE` marker still observed",
+      "rationale": "Orchestrator's completion-marker detector accepts either; verification-based is preferred because it ties to actual command exit.",
+      "scope": "All workflow steps run by orchestrator (workflow-runner)."
+    },
+    {
+      "pattern": "Tests-first ordering inside DAG: write/update test step must precede or run parallel to implement step before verify-impl",
+      "rationale": "The abandoned fix-inbox-agent-flag run failed at verify-impl because tests weren't yet aligned with the implementation; reordering to update-tests + implement-fix in parallel succeeded.",
+      "scope": "All DAG workflows that gate on verify-impl."
+    },
+    {
+      "pattern": "Pin TypeScript exactly (`5.7.3`) and invoke via `npx -p typescript@5.7.3 tsc` in package build scripts",
+      "rationale": "Publish strips package-lock; ranged versions and bare tsc cause clean-checkout drift. Both pinning the dep and the invocation are required.",
+      "scope": "Every workspace package's package.json under packages/."
+    },
+    {
+      "pattern": "Web-only changes gate the heavy core test, package validation, rust CI, and node compatibility workflows",
+      "rationale": "Web-only PRs were running unrelated relay/SDK/Rust suites and burning CI minutes.",
+      "scope": ".github/workflows/*.yml top-level path filters."
+    },
+    {
+      "pattern": "Autofix swarm: lead writes .msd/autofix-plan.json with up-to-N file-ownership-disjoint groups; workers dispatched by index",
+      "rationale": "Conflict-free parallel application; workers with no assigned group cleanly no-op.",
+      "scope": "autofix-swarm-* workflows triggered by pr_review or review_comment sources."
+    },
+    {
+      "pattern": "Apply autofix-swarm fixes in the parent git worktree (repo root), not the .relay/workspace cwd copy",
+      "rationale": "The cwd copy under .relay/workspace is not the git worktree; fixes there never reach the feature branch / PR.",
+      "scope": "Verifier step in autofix-swarm sessions."
+    },
+    {
+      "pattern": "In CLI test harnesses using Commander, call `configureOutput({ writeOut, writeErr })` to suppress built-in stderr/stdout",
+      "rationale": "Missing-argument coverage tests should assert exit behavior without polluting test stderr.",
+      "scope": "src/cli/commands/messaging.test.ts and other Commander-driven CLI test harnesses."
+    },
+    {
+      "pattern": "Resolve runtime content paths via cwd candidate list, never via `import.meta.url`, in the Next.js web app; add MDX dirs to outputFileTracing",
+      "rationale": "import.meta.url bakes build-machine absolute paths into deployed chunks.",
+      "scope": "web/ docs and blog content loaders."
+    }
+  ],
+  "lessons": [
+    {
+      "lesson": "Trajectory completion-evidence detector is noisy — it treats ANSI banners and TUI redraws as signals",
+      "context": "Many `findings` entries are garbled Codex TUI banners (`>7u╭──╮`) rather than substantive completion summaries.",
+      "recommendation": "Have specialist agents emit a structured COMPLETION_SUMMARY block (one-line verdict + files changed) so the trajectory captures meaning, not terminal escape sequences."
+    },
+    {
+      "lesson": "DAG verify-impl failure cascades aggressively — one failed gate skipped 12 downstream steps",
+      "context": "The abandoned fix-inbox-agent-flag run completed implement-fixes successfully, then verify-impl failed and skipped read-tests, update-tests, build, fix-build, run-unit-tests, e2e-validate, regression-tests, commit, etc.",
+      "recommendation": "Either order tests-update before/parallel with verify-impl, or make verify-impl a soft gate that records failure but lets test-update run so the next attempt has a clean baseline."
+    },
+    {
+      "lesson": "npm publish builds resolve types differently than dev installs",
+      "context": "agent-trajectories@0.5.5 narrower exported types broke the SDK build under publish but not under workspace npm install with the lockfile.",
+      "recommendation": "Run package-validation CI with `npm run build` (the publish command) and a fresh install, not `build:packages`, so root CLI/TS failures are caught before merge."
+    },
+    {
+      "lesson": "CloudFront CNAMEs are AWS-account-global — moving infra between accounts cannot reuse the same hostname while the old account still owns it",
+      "context": "Production deploy run 24255758219 failed with 409 CNAMEAlreadyExists for agentrelay.net even though the AWS account had changed.",
+      "recommendation": "For multi-account migrations, plan a sibling hostname (origin.agentrelay.net pattern) for cutover, then DNS-flip the apex once the old distribution is detached."
+    },
+    {
+      "lesson": "Autofix swarm worktree confusion silently drops fixes",
+      "context": "Workers were editing files under .relay/workspace/<copy>/ instead of the parent git worktree, so changes never landed on the feature branch.",
+      "recommendation": "Verifier step must explicitly cd into the tracked parent worktree before re-applying or validating; document the cwd contract in the swarm worker prompt."
+    },
+    {
+      "lesson": "`import.meta.url` is unsafe for content path resolution in serverless Next deployments",
+      "context": "Production docs loader was reading /home/runner/work/.../web/content/docs/introduction.mdx — the GitHub Actions runner path baked into the server chunk.",
+      "recommendation": "Always resolve content from runtime cwd candidates and add the content directories to Next outputFileTracing so the files ship in the deployed bundle."
+    },
+    {
+      "lesson": "Long workflow `completed` durations (430h+) reflect orchestrator session bookkeeping, not real work",
+      "context": "Multiple sessions show 432h or 648h durations while the actual review step finished in minutes; the long tail is the workflow-runner waiting for trajectory finalization.",
+      "recommendation": "Use real wall-clock from first-step → last-step completion-evidence to gauge work effort; treat the orchestrator-level `completed` timestamp as session-close, not work-end."
+    }
+  ],
+  "openQuestions": [
+    "Should the workflow runner finalize the trajectory immediately after the last verification rather than holding the session open for hours/days, or is the long tail intentional?",
+    "Verifier sessions in two autofix-swarm trajectories appear to have run for ~600 hours before completion — was the verifier blocked, or is this a session-close-on-merge artifact?",
+    "The mcp-args --register flag mints at_live_* tokens via register_agent_token; is there a documented rotation/cleanup story when the cloud cleanup PR retires the temporary token?",
+    "Web build still hits intermittent prerender failures after compile and type-check (noted in three sessions); is there a tracking issue, and should the workflow gate treat it as soft-fail?",
+    "After the origin.agentrelay.net cutover, is there a plan and date to reclaim the apex agentrelay.net CNAME from the prior AWS account?"
+  ]
+}

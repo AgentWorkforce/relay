@@ -1,0 +1,53 @@
+{
+  "id": "traj_itgr2w8qs3xn",
+  "version": 1,
+  "task": {
+    "title": "Make workflow deterministic failures repairable by agents"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-08T14:44:45.732Z",
+  "completedAt": "2026-05-08T14:44:45.984Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-08T14:44:45.873Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_9imnmk5zvi5c",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-08T14:44:45.873Z",
+      "endedAt": "2026-05-08T14:44:45.984Z",
+      "events": [
+        {
+          "ts": 1778251485874,
+          "type": "decision",
+          "content": "Repair deterministic gates inside the workflow runner: Repair deterministic gates inside the workflow runner",
+          "raw": {
+            "question": "Repair deterministic gates inside the workflow runner",
+            "chosen": "Repair deterministic gates inside the workflow runner",
+            "alternatives": [],
+            "reasoning": "Deterministic check failures should be treated as work for an existing workflow agent before becoming terminal workflow failures; this keeps workflows closer to a multi-agent prompt loop."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added bounded deterministic gate repair: failed shell or verification gates select a repair agent, pass command/error/output context, run a repair task, and retry the gate. Added config fields, schema/docs, and a workflow-runner regression test.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay-repairable-workflows",
+  "tags": [],
+  "_trace": {
+    "startRef": "b2f4cbb8d1117cf0be5ff50d47bfb1d6471c68a0",
+    "endRef": "b2f4cbb8d1117cf0be5ff50d47bfb1d6471c68a0"
+  }
+}
