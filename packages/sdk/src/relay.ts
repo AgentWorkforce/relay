@@ -384,8 +384,13 @@ export interface AgentRelayOptions {
   env?: NodeJS.ProcessEnv;
   requestTimeoutMs?: number;
   /**
-   * Unified workspace ID shared across relayfile, relayauth claims, and
-   * relaycast key lookup.
+   * Relaycast workspace ID. Auto-generated when omitted. This is the id used
+   * for relaycast key lookup and surfaced via `RELAY_WORKSPACE_ID` /
+   * `RELAY_DEFAULT_WORKSPACE` to spawned agents.
+   *
+   * NOTE: this is a relaycast id, not a relayfile workspace id. They are
+   * independent. If the caller wants spawned agents to talk to a specific
+   * relayfile workspace, set `env.RELAYFILE_WORKSPACE` on the constructor.
    */
   workspaceId?: string;
   /**
@@ -607,10 +612,16 @@ export class AgentRelay {
   }
 
   private applyWorkspaceEnv(workspaceId: string, apiKey: string): void {
+    // `workspaceId` here is the **relaycast** workspace id resolved by this
+    // SDK (auto-created or caller-supplied via `new AgentRelay({ workspaceId })`).
+    // Do NOT write it into `RELAYFILE_WORKSPACE` — relayfile and relaycast
+    // workspaces are independent ids and a relayfile JWT scoped to a
+    // different workspace will 403 with "workspace mismatch". Callers that
+    // share an id across both services (e.g. the canonical `relay on start`
+    // flow) set `RELAYFILE_WORKSPACE` themselves.
     const env: NodeJS.ProcessEnv = {
       ...(this.clientOptions.env ?? process.env),
       RELAY_API_KEY: apiKey,
-      RELAYFILE_WORKSPACE: workspaceId,
       RELAY_DEFAULT_WORKSPACE: workspaceId,
       RELAY_WORKSPACE_ID: workspaceId,
       RELAY_WORKSPACES_JSON: JSON.stringify([{ workspace_id: workspaceId, api_key: apiKey }]),
