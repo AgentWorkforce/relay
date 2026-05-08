@@ -19,6 +19,7 @@ import {
   type SlackRuntimeAvailability,
   type SlackRuntimeConfig,
   type SlackRuntimeDetectionResult,
+  type SlackRuntimePreference,
   type SlackWebApiLike,
 } from './types.js';
 
@@ -27,14 +28,24 @@ const DEFAULT_TIMEOUT = 30_000;
 export function normalizeSlackRuntimeConfig(config: SlackRuntimeConfig = {}): RequiredSlackRuntimeConfig {
   const env = config.env ?? process.env;
   const token = nonEmpty(config.token) ?? nonEmpty(env.SLACK_BOT_TOKEN) ?? '';
+  const cloudApiToken = nonEmpty(config.cloudApiToken) ?? nonEmpty(env.CLOUD_API_TOKEN) ?? '';
+  const cloudApiUrl = nonEmpty(config.cloudApiUrl) ?? nonEmpty(env.CLOUD_API_URL) ?? '';
 
   return {
     ...config,
-    runtime: 'local',
+    runtime: config.runtime && config.runtime !== 'auto' ? config.runtime : selectRuntime({ token, cloudApiToken, cloudApiUrl }),
     env,
     token,
+    cloudApiToken,
+    cloudApiUrl,
     timeout: config.timeout ?? DEFAULT_TIMEOUT,
   };
+}
+
+function selectRuntime(input: { token: string; cloudApiToken: string; cloudApiUrl: string }): SlackRuntime {
+  if (input.cloudApiToken && input.cloudApiUrl) return 'cloud-relay';
+  if (input.token) return 'local';
+  return 'noop';
 }
 
 export abstract class BaseSlackAdapter extends SlackClientInterface {
@@ -119,27 +130,55 @@ export abstract class BaseSlackAdapter extends SlackClientInterface {
 
 export class SlackAdapterFactory {
   static async create(config: SlackRuntimeConfig = {}): Promise<SlackClientInterface> {
-    const { SlackWebApiClient } = await import('./local-runtime.js');
-    return new SlackWebApiClient(config);
+    const normalized = normalizeSlackRuntimeConfig(config);
+    switch (normalized.runtime) {
+      case 'cloud-relay': {
+        const { SlackCloudRelayClient } = await import('./cloud-relay-runtime.js');
+        return new SlackCloudRelayClient(normalized);
+      }
+      case 'noop': {
+        const { SlackNoopClient } = await import('./noop-runtime.js');
+        return new SlackNoopClient(normalized);
+      }
+      case 'local':
+      default: {
+        const { SlackWebApiClient } = await import('./local-runtime.js');
+        return new SlackWebApiClient(normalized);
+      }
+    }
   }
 
   static async detect(config: SlackRuntimeConfig = {}): Promise<SlackRuntimeDetectionResult> {
     const normalized = normalizeSlackRuntimeConfig(config);
     const local = await this.testRuntime('local', normalized);
+    const cloudRelay = await this.testRuntime('cloud-relay', normalized);
+    const noop = await this.testRuntime('noop', normalized);
+
+    const requested: SlackRuntimePreference = config.runtime ?? 'auto';
+    const selected = normalized.runtime;
+    const summary =
+      selected === 'cloud-relay'
+        ? cloudRelay
+        : selected === 'noop'
+        ? noop
+        : local;
 
     return {
-      runtime: 'local',
-      requestedRuntime: 'local',
-      source: normalized.token ? 'config' : 'environment',
-      available: local.available,
-      reason: local.reason,
+      runtime: selected,
+      requestedRuntime: requested,
+      source:
+        normalized.token || normalized.cloudApiToken || normalized.cloudApiUrl ? 'config' : 'environment',
+      available: summary.available,
+      reason: summary.reason,
       checkedAt: new Date().toISOString(),
       local,
+      cloudRelay,
+      noop,
     };
   }
 
-  static detectRuntime(_config: SlackRuntimeConfig = {}): Promise<SlackRuntime> {
-    return Promise.resolve('local');
+  static async detectRuntime(config: SlackRuntimeConfig = {}): Promise<SlackRuntime> {
+    return normalizeSlackRuntimeConfig(config).runtime;
   }
 
   static testRuntime(
@@ -147,12 +186,37 @@ export class SlackAdapterFactory {
     config: SlackRuntimeConfig = {}
   ): Promise<SlackRuntimeAvailability> {
     const normalized = normalizeSlackRuntimeConfig(config);
-    return Promise.resolve({
-      runtime,
-      available: Boolean(normalized.token),
-      authenticated: Boolean(normalized.token),
-      reason: normalized.token ? 'SLACK_BOT_TOKEN is configured.' : 'SLACK_BOT_TOKEN is not configured.',
-    });
+    switch (runtime) {
+      case 'cloud-relay': {
+        const ready = Boolean(normalized.cloudApiToken && normalized.cloudApiUrl);
+        return Promise.resolve({
+          runtime,
+          available: ready,
+          authenticated: ready,
+          reason: ready
+            ? 'CLOUD_API_TOKEN and CLOUD_API_URL are configured.'
+            : 'CLOUD_API_TOKEN or CLOUD_API_URL is not configured.',
+        });
+      }
+      case 'noop': {
+        return Promise.resolve({
+          runtime,
+          available: true,
+          authenticated: false,
+          reason: 'noop runtime is always available.',
+        });
+      }
+      case 'local':
+      default: {
+        const ready = Boolean(normalized.token);
+        return Promise.resolve({
+          runtime,
+          available: ready,
+          authenticated: ready,
+          reason: ready ? 'SLACK_BOT_TOKEN is configured.' : 'SLACK_BOT_TOKEN is not configured.',
+        });
+      }
+    }
   }
 }
 

@@ -1,6 +1,6 @@
-export type SlackRuntime = 'local';
+export type SlackRuntime = 'local' | 'cloud-relay' | 'noop';
 
-export type SlackRuntimePreference = SlackRuntime;
+export type SlackRuntimePreference = SlackRuntime | 'auto';
 
 export enum SlackAction {
   PostMessage = 'postMessage',
@@ -13,13 +13,17 @@ export type SlackActionName = `${SlackAction}`;
 export const SLACK_ACTIONS = Object.values(SlackAction);
 
 export interface SlackRuntimeConfig {
-  /** Runtime mode. Phase A supports only the local Web API runtime. */
+  /** Runtime mode. Defaults to 'auto' (cloud-relay → local → noop priority). */
   runtime?: SlackRuntimePreference;
   /** Slack bot token. Defaults to SLACK_BOT_TOKEN. */
   token?: string;
+  /** Cloud API bearer token used by the cloud-relay runtime. Defaults to CLOUD_API_TOKEN. */
+  cloudApiToken?: string;
+  /** Cloud API base URL used by the cloud-relay runtime. Defaults to CLOUD_API_URL. */
+  cloudApiUrl?: string;
   /** Environment used for token lookup. Defaults to process.env. */
   env?: Record<string, string | undefined>;
-  /** Request timeout in milliseconds passed to the Slack WebClient. */
+  /** Request timeout in milliseconds passed to the Slack WebClient or cloud-relay fetch. */
   timeout?: number;
 }
 
@@ -27,6 +31,8 @@ export interface RequiredSlackRuntimeConfig extends SlackRuntimeConfig {
   runtime: SlackRuntime;
   env: Record<string, string | undefined>;
   token: string;
+  cloudApiToken: string;
+  cloudApiUrl: string;
   timeout: number;
 }
 
@@ -46,9 +52,19 @@ export interface SlackRuntimeDetectionResult {
   reason: string;
   checkedAt: string;
   local: SlackRuntimeAvailability;
+  cloudRelay: SlackRuntimeAvailability;
+  noop: SlackRuntimeAvailability;
 }
 
-export type SlackPostBackErrorCode = 'auth_token_missing' | 'channel_not_found' | 'slack_api_error';
+export type SlackPostBackErrorCode =
+  | 'auth_token_missing'
+  | 'channel_not_found'
+  | 'slack_api_error'
+  | 'not_connected'
+  | 'rate_limited'
+  | 'upstream_error'
+  | 'unauthorized'
+  | 'unsupported_in_cloud_relay';
 
 export class SlackPostBackError extends Error {
   readonly code: SlackPostBackErrorCode;

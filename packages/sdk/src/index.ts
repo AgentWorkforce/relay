@@ -24,3 +24,5 @@ export * from './cli-resolver.js';
 export * from './personas.js';
 export * as github from './github.js';
 export { createGitHubStep, GitHubClient } from './github.js';
+export * as slack from './slack.js';
+export { createSlackStep, SlackClient } from './slack.js';
