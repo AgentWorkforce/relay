@@ -38,6 +38,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
+## [6.0.10] - 2026-05-08
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Spawn agents from named AgentWorkforce personas**
+- **Add @agentrelay/personas pack (#816)** (#816)
+
+#### User-Impacting Fixes
+- Stop stamping default_workspace_id into RELAYFILE_WORKSPACE (#821) (#821)
+- Stop stamping relaycast workspace id into RELAYFILE_WORKSPACE (#820) (#820)
+- Trust at_live_* agent tokens, drop probe-then-rotate (#819) (#819)
+- Address PR review (Windows paths, TOCTOU, harness validation)
+- Tighten validator robustness
+- Regenerate lockfile and address review nits
+
+### Technical Perspective
+#### Performance & Reliability
+- Skip personas package in dist-files check
+
+#### Dependencies & Tooling
+- Align with @agent-relay scope and lockstep versioning
+
+#### Releases
+- v6.0.10
+
+---
+
 ## [6.0.9] - 2026-05-05
 
 ### Product Perspective
