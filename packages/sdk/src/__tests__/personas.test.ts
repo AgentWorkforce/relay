@@ -326,3 +326,57 @@ test('materializePersonaConfigFiles rejects paths that escape cwd', () => {
     fix.cleanup();
   }
 });
+
+test('materializePersonaConfigFiles allows nested paths inside cwd', () => {
+  const fix = makeFixture();
+  try {
+    const writes = materializePersonaConfigFiles(fix.cwd, [
+      { path: 'sub/dir/opencode.json', contents: '{"nested":true}\n' },
+    ]);
+    assert.equal(writes.length, 1);
+    assert.equal(readFileSync(writes[0]!.path, 'utf8'), '{"nested":true}\n');
+    restorePersonaConfigFiles(writes);
+    assert.equal(existsSync(writes[0]!.path), false);
+  } finally {
+    fix.cleanup();
+  }
+});
+
+test('parsePersonaFile rejects an invalid top-level harness at load time', () => {
+  const fix = makeFixture();
+  try {
+    const dir = join(fix.cwd, 'agentworkforce', 'personas');
+    writeFileSync(
+      join(dir, 'bad.json'),
+      JSON.stringify({ id: 'bad', harness: 'not-a-real-harness', model: 'x', systemPrompt: 'y' }),
+    );
+    assert.throws(
+      () => loadPersona('bad', { cwd: fix.cwd }),
+      /persona\.harness must be one of/,
+    );
+  } finally {
+    fix.cleanup();
+  }
+});
+
+test('parsePersonaFile rejects an invalid harness inside a tier at load time', () => {
+  const fix = makeFixture();
+  try {
+    const dir = join(fix.cwd, 'agentworkforce', 'personas');
+    writeFileSync(
+      join(dir, 'bad-tier.json'),
+      JSON.stringify({
+        id: 'bad-tier',
+        tiers: {
+          best: { harness: 'gpt-5', model: 'gpt-5', systemPrompt: 'x' },
+        },
+      }),
+    );
+    assert.throws(
+      () => loadPersona('bad-tier', { cwd: fix.cwd }),
+      /persona\.tiers\.best\.harness must be one of/,
+    );
+  } finally {
+    fix.cleanup();
+  }
+});

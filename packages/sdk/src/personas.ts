@@ -18,9 +18,9 @@
  * the `agentworkforce` CLI directly.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
 
 import {
   buildInteractiveSpec,
@@ -205,13 +205,10 @@ export function listPersonas(options: PersonaLoadOptions = {}): DiscoveredPerson
     for (const file of entries) {
       if (!file.endsWith('.json')) continue;
       const path = join(dir, file);
-      try {
-        if (!statSync(path).isFile()) continue;
-      } catch {
-        continue;
-      }
       let spec: PersonaFile;
       try {
+        // Single read avoids a TOCTOU between stat and readFileSync — if the
+        // entry is a directory, vanished, or unreadable we skip it.
         spec = parsePersonaFile(JSON.parse(readFileSync(path, 'utf8')), path);
       } catch {
         continue;
@@ -236,13 +233,20 @@ export function findPersona(
   for (const dir of dirs) {
     if (!existsSync(dir)) continue;
     const candidate = join(dir, `${id}.json`);
-    if (existsSync(candidate)) {
-      try {
-        const spec = parsePersonaFile(JSON.parse(readFileSync(candidate, 'utf8')), candidate);
-        if (spec.id === id) return { id, path: candidate, spec };
-      } catch {
-        // fall through to scan dir for files with mismatched filenames
-      }
+    let candidateBytes: string | undefined;
+    try {
+      // Single read avoids a stat/read TOCTOU. ENOENT (file missing) falls
+      // through to a directory scan for personas with mismatched filenames;
+      // any other read failure or parse failure on a convention-named file
+      // surfaces directly so a typo in the JSON isn't silently treated as
+      // "persona not found".
+      candidateBytes = readFileSync(candidate, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+    if (candidateBytes !== undefined) {
+      const spec = parsePersonaFile(JSON.parse(candidateBytes), candidate);
+      if (spec.id === id) return { id, path: candidate, spec };
     }
     let entries: string[];
     try {
@@ -387,7 +391,36 @@ function parsePersonaFile(value: unknown, source: string): PersonaFile {
   if (typeof value.id !== 'string' || !value.id.trim()) {
     throw new Error(`${source}: persona.id must be a non-empty string`);
   }
+  // Validate harness values up front so a typo in the file fails at load time
+  // rather than at spawn — the runtime check in loadPersona stays as a
+  // defense-in-depth guard for callers that bypass parsing.
+  const topHarness = (value as { harness?: unknown }).harness;
+  if (topHarness !== undefined && !isValidHarness(topHarness)) {
+    throw new Error(
+      `${source}: persona.harness must be one of: ${HARNESS_VALUES.join(', ')} (got ${JSON.stringify(topHarness)})`,
+    );
+  }
+  const tiers = (value as { tiers?: unknown }).tiers;
+  if (tiers !== undefined) {
+    if (!isPlainObject(tiers)) {
+      throw new Error(`${source}: persona.tiers must be an object if provided`);
+    }
+    for (const [tierName, tierSpec] of Object.entries(tiers)) {
+      if (!PERSONA_TIERS.includes(tierName as PersonaTier)) continue; // unknown tier names are ignored
+      if (!isPlainObject(tierSpec)) continue;
+      const harness = (tierSpec as { harness?: unknown }).harness;
+      if (harness !== undefined && !isValidHarness(harness)) {
+        throw new Error(
+          `${source}: persona.tiers.${tierName}.harness must be one of: ${HARNESS_VALUES.join(', ')} (got ${JSON.stringify(harness)})`,
+        );
+      }
+    }
+  }
   return value as unknown as PersonaFile;
+}
+
+function isValidHarness(value: unknown): value is Harness {
+  return typeof value === 'string' && (HARNESS_VALUES as readonly string[]).includes(value);
 }
 
 // ── Translation: persona → spawn args ──────────────────────────────────────
@@ -460,14 +493,33 @@ export function materializePersonaConfigFiles(
       throw new Error(`persona config file path must be relative: ${file.path}`);
     }
     const target = resolvePath(cwd, file.path);
-    if (target !== cwdAbs && !target.startsWith(cwdAbs + '/')) {
+    // Use path.relative for separator-agnostic containment so Windows paths
+    // (`C:\proj\opencode.json`) aren't falsely rejected by a hardcoded '/' check.
+    const rel = relative(cwdAbs, target);
+    if (rel.startsWith('..') || (isAbsolute(rel) && rel !== '')) {
       throw new Error(`persona config file path escapes cwd: ${file.path}`);
     }
-    const existed = existsSync(target);
-    const previous = existed ? readFileSync(target, 'utf8') : undefined;
+    if (rel.split(sep).some((segment) => segment === '..')) {
+      throw new Error(`persona config file path escapes cwd: ${file.path}`);
+    }
+
+    // Single read with ENOENT detection avoids a TOCTOU between `existsSync`
+    // and `readFileSync`. Any other read error (permissions, EISDIR) bubbles up
+    // — the caller can decide whether to retry or surface to the user.
+    let existed = true;
+    let previous: string | undefined;
+    try {
+      previous = readFileSync(target, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        existed = false;
+      } else {
+        throw err;
+      }
+    }
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, file.contents, 'utf8');
-    out.push({ path: target, existed, previous });
+    out.push({ path: target, existed, ...(previous !== undefined ? { previous } : {}) });
   }
   return out;
 }
@@ -486,8 +538,11 @@ export function restorePersonaConfigFiles(writes: readonly MaterializedConfigFil
       } else {
         rmSync(write.path, { force: true });
       }
-    } catch {
-      // best-effort
+    } catch (err) {
+      // Best-effort: a failed restore shouldn't break the spawn lifecycle, but
+      // it can leave a stale opencode.json behind, so surface the failure.
+      const msg = (err as Error)?.message ?? String(err);
+      console.warn(`[personas] failed to restore ${write.path}: ${msg}`);
     }
   }
 }
