@@ -6,8 +6,7 @@
   "private": false,
   "files": [
     "personas",
-    "README.md",
-    "package.json"
+    "README.md"
   ],
   "keywords": [
     "agentworkforce-personas",

@@ -51,6 +51,12 @@ function validatePersona(filename, persona) {
         if (typeof skill.id !== 'string' || skill.id.length === 0) {
           errors.push(`skills[${idx}].id must be a non-empty string`);
         }
+        if (typeof skill.source !== 'string' || skill.source.length === 0) {
+          errors.push(`skills[${idx}].source must be a non-empty string`);
+        }
+        if (typeof skill.description !== 'string' || skill.description.length === 0) {
+          errors.push(`skills[${idx}].description must be a non-empty string`);
+        }
       });
     }
   }
