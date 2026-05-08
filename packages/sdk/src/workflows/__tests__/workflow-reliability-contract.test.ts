@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { WorkflowRunner, type WorkflowDb } from '../runner.js';
 import type { RelayYamlConfig, WorkflowRunRow, WorkflowStepRow } from '../types.js';
@@ -170,6 +173,209 @@ describe('workflow reliability contract', () => {
     expect(run.status, run.error).toBe('completed');
     expect(executeAgentStep).toHaveBeenCalledTimes(1);
     expect((executeAgentStep as any).mock.calls[0][2]).toContain('typecheck failed');
+  });
+
+  it('treats final hard validation as repairable before terminal failure', async () => {
+    const executeDeterministicStep = vi
+      .fn()
+      .mockResolvedValueOnce({ output: 'final typecheck failed', exitCode: 1 })
+      .mockResolvedValueOnce({ output: 'final validation passed', exitCode: 0 });
+    const executeAgentStep = vi.fn(async () => 'fixed final validation');
+    const runner = new WorkflowRunner({
+      db: makeDb(),
+      workspaceId: 'ws-test',
+      cwd: process.cwd(),
+      executor: { executeDeterministicStep, executeAgentStep },
+    });
+
+    const run = await runner.execute(
+      baseConfig({
+        errorHandling: { strategy: 'retry', repairRetries: 1, retryDelayMs: 1, repairAgent: 'fixer' },
+        workflows: [
+          {
+            name: 'default',
+            steps: [
+              {
+                name: 'final-hard-validation',
+                type: 'deterministic',
+                command: 'npm run typecheck && npm test',
+                captureOutput: true,
+                failOnError: true,
+              },
+            ],
+          },
+        ],
+      }),
+      'default'
+    );
+
+    expect(run.status, run.error).toBe('completed');
+    expect(executeAgentStep).toHaveBeenCalledTimes(1);
+    expect((executeAgentStep as any).mock.calls[0][2]).toContain('final-hard-validation');
+    expect(executeDeterministicStep).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps sibling branches independent when one branch captures a soft failure for repair', async () => {
+    const executeDeterministicStep = vi.fn(async (_step, command: string) => {
+      if (command === 'branch-a-soft-check') return { output: 'branch A needs repair', exitCode: 1 };
+      return { output: `${command} ok`, exitCode: 0 };
+    });
+    const executeAgentStep = vi.fn(async () => 'merged branch evidence and fixed branch A');
+    const runner = new WorkflowRunner({
+      db: makeDb(),
+      workspaceId: 'ws-test',
+      cwd: process.cwd(),
+      executor: { executeDeterministicStep, executeAgentStep },
+    });
+
+    const run = await runner.execute(
+      baseConfig({
+        swarm: { pattern: 'fan-out' },
+        workflows: [
+          {
+            name: 'default',
+            steps: [
+              {
+                name: 'branch-a-validation',
+                type: 'deterministic',
+                command: 'branch-a-soft-check',
+                captureOutput: true,
+                failOnError: false,
+              },
+              {
+                name: 'branch-b-validation',
+                type: 'deterministic',
+                command: 'branch-b-check',
+                captureOutput: true,
+                failOnError: true,
+              },
+              {
+                name: 'merge-and-fix',
+                agent: 'fixer',
+                task: 'Use {{steps.branch-a-validation.output}} and {{steps.branch-b-validation.output}}.',
+                dependsOn: ['branch-a-validation', 'branch-b-validation'],
+              },
+            ],
+          },
+        ],
+      }),
+      'default'
+    );
+
+    expect(run.status, run.error).toBe('completed');
+    expect(executeDeterministicStep).toHaveBeenCalledTimes(2);
+    expect(executeAgentStep).toHaveBeenCalledTimes(1);
+    expect((executeAgentStep as any).mock.calls[0][2]).toContain('branch A needs repair');
+    expect((executeAgentStep as any).mock.calls[0][2]).toContain('branch-b-check ok');
+  });
+
+  it('uses the best available workflow agent when no explicit repairAgent is configured', async () => {
+    const executeDeterministicStep = vi
+      .fn()
+      .mockResolvedValueOnce({ output: 'needs repair', exitCode: 1 })
+      .mockResolvedValueOnce({ output: 'fixed', exitCode: 0 });
+    const executeAgentStep = vi.fn(async () => 'fixed by fallback agent');
+    const runner = new WorkflowRunner({
+      db: makeDb(),
+      workspaceId: 'ws-test',
+      cwd: process.cwd(),
+      executor: { executeDeterministicStep, executeAgentStep },
+    });
+
+    const run = await runner.execute(
+      baseConfig({
+        errorHandling: { strategy: 'retry', repairRetries: 1, retryDelayMs: 1 },
+        agents: [
+          { name: 'reviewer', cli: 'claude', role: 'reviewer' },
+          { name: 'implementer', cli: 'claude', role: 'implementation engineer', interactive: false },
+        ],
+      }),
+      'default'
+    );
+
+    expect(run.status, run.error).toBe('completed');
+    expect((executeAgentStep as any).mock.calls[0][1]).toMatchObject({ name: 'implementer' });
+  });
+
+  it('falls back to a suitable workflow agent when the configured repairAgent is invalid', async () => {
+    const executeDeterministicStep = vi
+      .fn()
+      .mockResolvedValueOnce({ output: 'needs repair', exitCode: 1 })
+      .mockResolvedValueOnce({ output: 'fixed', exitCode: 0 });
+    const executeAgentStep = vi.fn(async () => 'fixed by fallback agent');
+    const runner = new WorkflowRunner({
+      db: makeDb(),
+      workspaceId: 'ws-test',
+      cwd: process.cwd(),
+      executor: { executeDeterministicStep, executeAgentStep },
+    });
+
+    const run = await runner.execute(
+      baseConfig({
+        errorHandling: {
+          strategy: 'retry',
+          repairRetries: 1,
+          retryDelayMs: 1,
+          repairAgent: 'missing-repair-agent',
+        },
+      }),
+      'default'
+    );
+
+    expect(run.status, run.error).toBe('completed');
+    expect((executeAgentStep as any).mock.calls[0][1]).toMatchObject({ name: 'fixer' });
+  });
+
+  it('preserves cached step output when resuming from a later repair step', async () => {
+    const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'relay-reliability-start-from-'));
+    const previousRunId = 'previous-run-with-soft-validation';
+    const outputDir = path.join(tmpDir, '.agent-relay', 'step-outputs', previousRunId);
+    mkdirSync(outputDir, { recursive: true });
+    writeFileSync(path.join(outputDir, 'soft-validation.md'), 'cached typecheck failure');
+
+    const executeAgentStep = vi.fn(async () => 'fixed cached validation failure');
+    const runner = new WorkflowRunner({
+      db: makeDb(),
+      workspaceId: 'ws-test',
+      cwd: tmpDir,
+      executor: { executeAgentStep },
+    });
+
+    try {
+      const run = await runner.execute(
+        baseConfig({
+          workflows: [
+            {
+              name: 'default',
+              steps: [
+                {
+                  name: 'soft-validation',
+                  type: 'deterministic',
+                  command: 'npm run typecheck',
+                  captureOutput: true,
+                  failOnError: false,
+                },
+                {
+                  name: 'fix-validation',
+                  agent: 'fixer',
+                  task: 'Fix this prior output: {{steps.soft-validation.output}}',
+                  dependsOn: ['soft-validation'],
+                },
+              ],
+            },
+          ],
+        }),
+        'default',
+        undefined,
+        { startFrom: 'fix-validation', previousRunId }
+      );
+
+      expect(run.status, run.error).toBe('completed');
+      expect(executeAgentStep).toHaveBeenCalledTimes(1);
+      expect((executeAgentStep as any).mock.calls[0][2]).toContain('cached typecheck failure');
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('does not run repair agents for fail-fast workflows even when agents are present', async () => {
