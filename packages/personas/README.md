@@ -1,4 +1,4 @@
-# @agentrelay/personas
+# @agent-relay/personas
 
 Relay-maintained [AgentWorkforce](https://github.com/AgentWorkforce/workforce) personas.
 
@@ -13,19 +13,19 @@ Relay source they describe.
 Install all personas from this pack:
 
 ```sh
-agentworkforce install @agentrelay/personas
+agentworkforce install @agent-relay/personas
 ```
 
 Install a single persona by id:
 
 ```sh
-agentworkforce install @agentrelay/personas --persona relay-orchestrator
+agentworkforce install @agent-relay/personas --persona relay-orchestrator
 ```
 
 Pin a specific version:
 
 ```sh
-agentworkforce install @agentrelay/personas@0.1.0
+agentworkforce install @agent-relay/personas@6.0.9
 ```
 
 You can also install directly from a local checkout of this repo:
@@ -54,7 +54,7 @@ Personas are surfaced to AgentWorkforce via the standard pack contract:
 
 ```json
 {
-  "name": "@agentrelay/personas",
+  "name": "@agent-relay/personas",
   "agentworkforce": {
     "personas": "personas"
   }
@@ -109,9 +109,10 @@ The validator checks every JSON file under `personas/`:
 
 ## Versioning and publishing
 
-This package versions independently from the Relay root. The first published
-version is `0.1.0`. Bump the version in `packages/personas/package.json` when
-persona content materially changes.
+This package versions in lockstep with the Relay monorepo and is published
+alongside the rest of the `@agent-relay/*` packages by the root publish
+workflow. Version bumps happen at the monorepo level — do not bump
+`packages/personas/package.json` independently.
 
 ## Migration notes
 
