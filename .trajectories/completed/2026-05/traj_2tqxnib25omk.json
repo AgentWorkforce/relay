@@ -1,0 +1,53 @@
+{
+  "id": "traj_2tqxnib25omk",
+  "version": 1,
+  "task": {
+    "title": "Add workflow reliability contract coverage"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-08T15:27:50.875Z",
+  "completedAt": "2026-05-08T15:28:02.639Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-08T15:27:57.210Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ps3bziyb9szg",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-08T15:27:57.210Z",
+      "endedAt": "2026-05-08T15:28:02.639Z",
+      "events": [
+        {
+          "ts": 1778254077211,
+          "type": "decision",
+          "content": "Add a dedicated SDK workflow reliability contract suite: Add a dedicated SDK workflow reliability contract suite",
+          "raw": {
+            "question": "Add a dedicated SDK workflow reliability contract suite",
+            "chosen": "Add a dedicated SDK workflow reliability contract suite",
+            "alternatives": [],
+            "reasoning": "Workflow repair semantics should be enforced as product behavior with fast fake executors, not only incidental coverage in the broad runner test file."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added workflow-reliability-contract tests covering repair-agent retry, repair-agent throw resilience, budget exhaustion, soft deterministic validation flowing into fixer agents, and fail-fast opt-out.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "<repo-root>",
+  "tags": [],
+  "_trace": {
+    "startRef": "65ce978ce0fb0b306b11df66c534dc167a3630be",
+    "endRef": "65ce978ce0fb0b306b11df66c534dc167a3630be"
+  }
+}

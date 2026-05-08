@@ -924,6 +924,15 @@
         "notifyChannel": {
           "type": "string",
           "description": "Relay channel to notify on errors"
+        },
+        "repairAgent": {
+          "type": "string",
+          "description": "Agent to use when a deterministic gate fails and needs code/workflow repair"
+        },
+        "repairRetries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Retry budget for deterministic gate repair when maxRetries is not set. Defaults to 0, so deterministic repair is opt-in."
         }
       }
     }

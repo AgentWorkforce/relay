@@ -403,7 +403,7 @@
     }
   ],
   "retrospective": {
-    "summary": "merged",
+    "summary": "Successfully added the --register flag to the agent-relay-broker mcp-args subcommand, enabling token self-registration and unblocking the cloud cleanup PR.",
     "approach": "Standard approach",
     "confidence": 0.8
   },

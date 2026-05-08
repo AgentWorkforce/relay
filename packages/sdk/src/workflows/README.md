@@ -180,6 +180,8 @@ errorHandling:
   strategy: retry
   maxRetries: 2
   retryDelayMs: 5000
+  repairAgent: tester
+  repairRetries: 2
   notifyChannel: my-channel
 ```
 
@@ -355,7 +357,7 @@ The `onError` field on a workflow controls what happens when a step fails:
 |-------|----------|
 | `fail` / `fail-fast` | Stop immediately, skip downstream steps |
 | `skip` / `continue` | Skip downstream dependents, continue independent steps |
-| `retry` | Retry the step (falls back to fail-fast after retries exhausted) |
+| `retry` | Retry the step; deterministic gates ask a workflow agent to repair before each retry when an agent is available |
 
 ### Global
 
@@ -364,8 +366,12 @@ errorHandling:
   strategy: retry
   maxRetries: 2
   retryDelayMs: 5000
+  repairAgent: tester
+  repairRetries: 2
   notifyChannel: alerts
 ```
+
+When `errorHandling.strategy: retry` includes an explicit `repairRetries` budget, deterministic step or verification gate failures are treated as repairable work before terminal failure. The runner chooses `errorHandling.repairAgent` when set, otherwise it uses the step's owning/upstream agent when possible, then falls back to the best available workflow agent. The selected agent gets the failed command, working directory, exit information, and captured output, then the deterministic gate is retried.
 
 ## Built-in Templates
 

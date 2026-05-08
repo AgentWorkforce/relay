@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-08T14:44:45.859Z",
+  "lastUpdated": "2026-05-08T15:51:38.996Z",
   "trajectories": {
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -248,12 +248,40 @@
       "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_ui5omrgz819d.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
-    "traj_tavtex0db4b0": {
-      "title": "Make workflow failures repairable by agents",
+    "traj_itgr2w8qs3xn": {
+      "title": "Make workflow deterministic failures repairable by agents",
       "status": "completed",
-      "startedAt": "2026-05-08T14:34:19.969Z",
-      "completedAt": "2026-05-08T14:44:45.719Z",
-      "path": ".trajectories/completed/2026-05/traj_tavtex0db4b0.json"
+      "startedAt": "2026-05-08T14:44:45.732Z",
+      "completedAt": "2026-05-08T14:44:45.984Z",
+      "path": ".trajectories/completed/2026-05/traj_itgr2w8qs3xn.json"
+    },
+    "traj_m7mpv7j8n78h": {
+      "title": "Address Relay PR 826 review feedback",
+      "status": "completed",
+      "startedAt": "2026-05-08T15:17:53.113Z",
+      "completedAt": "2026-05-08T15:24:32.409Z",
+      "path": ".trajectories/completed/2026-05/traj_m7mpv7j8n78h.json"
+    },
+    "traj_2tqxnib25omk": {
+      "title": "Add workflow reliability contract coverage",
+      "status": "completed",
+      "startedAt": "2026-05-08T15:27:50.875Z",
+      "completedAt": "2026-05-08T15:28:02.639Z",
+      "path": ".trajectories/completed/2026-05/traj_2tqxnib25omk.json"
+    },
+    "traj_60qc24ufr96g": {
+      "title": "Expand workflow reliability contract matrix",
+      "status": "completed",
+      "startedAt": "2026-05-08T15:40:11.699Z",
+      "completedAt": "2026-05-08T15:40:22.521Z",
+      "path": ".trajectories/completed/2026-05/traj_60qc24ufr96g.json"
+    },
+    "traj_vkozdglobkyg": {
+      "title": "Address Relay PR 826 review comments",
+      "status": "completed",
+      "startedAt": "2026-05-08T15:50:35.978Z",
+      "completedAt": "2026-05-08T15:51:38.854Z",
+      "path": ".trajectories/completed/2026-05/traj_vkozdglobkyg.json"
     }
   }
 }

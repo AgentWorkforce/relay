@@ -147,7 +147,7 @@
         {
           "question": "Handled PR 747 feedback in tracked parent worktree",
           "chosen": "Handled PR 747 feedback in tracked parent worktree",
-          "reasoning": "The cwd copy under .relay/workspace is not the git worktree; fixes must be applied to <repo-root> so the feature branch and PR contain them.",
+          "reasoning": "The cwd copy under .relay/workspace is not the git worktree; fixes must be applied to the parent git worktree so the feature branch and PR contain them.",
           "fromTrajectory": "traj_1776113772922_bc92f121"
         },
         {
@@ -163,9 +163,9 @@
           "fromTrajectory": "traj_e5i62wdjx0jd"
         },
         {
-          "question": "Switch production SST alias to orgin.agentrelay.net to avoid the existing apex alias conflict",
-          "chosen": "Switch production SST alias to orgin.agentrelay.net to avoid the existing apex alias conflict",
-          "reasoning": "The current production deployment path in the new AWS account cannot claim agentrelay.net because the live site is still attached elsewhere. Moving the new stack to orgin.agentrelay.net allows a no-downtime deploy while the main domain remains untouched.",
+          "question": "Switch production SST alias to origin.agentrelay.net to avoid the existing apex alias conflict",
+          "chosen": "Switch production SST alias to origin.agentrelay.net to avoid the existing apex alias conflict",
+          "reasoning": "The current production deployment path in the new AWS account cannot claim agentrelay.net because the live site is still attached elsewhere. Moving the new stack to origin.agentrelay.net allows a no-downtime deploy while the main domain remains untouched.",
           "fromTrajectory": "traj_rs2bt3x0fqba"
         },
         {
@@ -332,7 +332,7 @@
   ],
   "filesAffected": [],
   "commits": [],
-  "narrative": "This batch of trajectories covers a high-volume period (Apr 10 – May 8, 2026) of mixed work on the relay monorepo: CLI/broker feature additions (cloud run --resume/--start-from/--previous-run-id, mcp-args subcommand with --register flag, history/inbox --from/--agent fixes), build infrastructure hardening (TypeScript 5.7.3 pinning across 10+ packages, web-only CI gating, SDK build-resolution casts for agent-trajectories@0.5.5), web/docs frontend polish (mobile docs sidebar into hamburger, dark footer gradient, /cloud footer link, MDX path resolution fix), and primitive package construction (Browser and GitHub primitives with shared adapter pattern across gh CLI / Nango runtimes). A staging deploy regression was diagnosed as a CloudFront 409 CNAMEAlreadyExists conflict and worked around by switching the production SST alias to orgin.agentrelay.net. Most work ran through DAG-based workflow orchestrators (planner → implementer → verify gates → fix-loop → reviewer → PR), with codex as the implementer and claude as planner/reviewer. Two autofix-swarm sessions ran lead-architect plans that grouped findings by file ownership (messaging.ts vs fix-history-inbox-v2.ts) into non-overlapping parallel buckets — fix-worker-3 correctly no-op'd when its assigned group index didn't exist. One fix-inbox-agent-flag run was abandoned at verify-impl after implement-fixes succeeded, cascading 12 skipped downstream steps; a re-run with the tester-first ordering succeeded. Key reusable artifacts: PLAN.md / IMPL_SUMMARY.md / REVIEW.md repo-root convention per workflow, .workflow-artifacts/<name>/ for per-run outputs, .msd/autofix-plan.json for swarm group assignment, and a verification-passed exit=0 signal as the canonical step-completion marker.",
+  "narrative": "This batch of trajectories covers a high-volume period (Apr 10 – May 8, 2026) of mixed work on the relay monorepo: CLI/broker feature additions (cloud run --resume/--start-from/--previous-run-id, mcp-args subcommand with --register flag, history/inbox --from/--agent fixes), build infrastructure hardening (TypeScript 5.7.3 pinning across 10+ packages, web-only CI gating, SDK build-resolution casts for agent-trajectories@0.5.5), web/docs frontend polish (mobile docs sidebar into hamburger, dark footer gradient, /cloud footer link, MDX path resolution fix), and primitive package construction (Browser and GitHub primitives with shared adapter pattern across gh CLI / Nango runtimes). A staging deploy regression was diagnosed as a CloudFront 409 CNAMEAlreadyExists conflict and worked around by switching the production SST alias to origin.agentrelay.net. Most work ran through DAG-based workflow orchestrators (planner → implementer → verify gates → fix-loop → reviewer → PR), with codex as the implementer and claude as planner/reviewer. Two autofix-swarm sessions ran lead-architect plans that grouped findings by file ownership (messaging.ts vs fix-history-inbox-v2.ts) into non-overlapping parallel buckets — fix-worker-3 correctly no-op'd when its assigned group index didn't exist. One fix-inbox-agent-flag run was abandoned at verify-impl after implement-fixes succeeded, cascading 12 skipped downstream steps; a re-run with the tester-first ordering succeeded. Key reusable artifacts: PLAN.md / IMPL_SUMMARY.md / REVIEW.md repo-root convention per workflow, .workflow-artifacts/<name>/ for per-run outputs, .msd/autofix-plan.json for swarm group assignment, and a verification-passed exit=0 signal as the canonical step-completion marker.",
   "decisions": [
     {
       "question": "How to forward cloud run resume/start-from flags through the stack?",
@@ -360,9 +360,9 @@
     },
     {
       "question": "How to recover from CloudFront 409 CNAMEAlreadyExists on production deploy?",
-      "chosen": "Switch production SST alias from agentrelay.net to orgin.agentrelay.net",
+      "chosen": "Switch production SST alias from agentrelay.net to origin.agentrelay.net",
       "reasoning": "Live apex site is still attached to the prior AWS account, so the new account cannot claim the CNAME. Moving to a sibling hostname allows zero-downtime cutover.",
-      "impact": "sst diff confirmed certificate + CloudFront issued for orgin.agentrelay.net; stale agentrelay.net validation resources removed; live apex untouched."
+      "impact": "sst diff confirmed certificate + CloudFront issued for origin.agentrelay.net; stale agentrelay.net validation resources removed; live apex untouched."
     },
     {
       "question": "How to fix production docs loader reading /home/runner/... paths?",
@@ -420,7 +420,7 @@
       "scope": "autofix-swarm-* workflows triggered by pr_review or review_comment sources."
     },
     {
-      "pattern": "Apply autofix-swarm fixes in the parent worktree at <repo-root>, not the .relay/workspace cwd copy",
+      "pattern": "Apply autofix-swarm fixes in the parent git worktree (repo root), not the .relay/workspace cwd copy",
       "rationale": "The cwd copy under .relay/workspace is not the git worktree; fixes there never reach the feature branch / PR.",
       "scope": "Verifier step in autofix-swarm sessions."
     },
@@ -454,11 +454,11 @@
     {
       "lesson": "CloudFront CNAMEs are AWS-account-global — moving infra between accounts cannot reuse the same hostname while the old account still owns it",
       "context": "Production deploy run 24255758219 failed with 409 CNAMEAlreadyExists for agentrelay.net even though the AWS account had changed.",
-      "recommendation": "For multi-account migrations, plan a sibling hostname (orgin.agentrelay.net pattern) for cutover, then DNS-flip the apex once the old distribution is detached."
+      "recommendation": "For multi-account migrations, plan a sibling hostname (origin.agentrelay.net pattern) for cutover, then DNS-flip the apex once the old distribution is detached."
     },
     {
       "lesson": "Autofix swarm worktree confusion silently drops fixes",
-      "context": "Workers were editing files under .relay/workspace/<copy>/ instead of <repo-root>/, so changes never landed on the feature branch.",
+      "context": "Workers were editing files under .relay/workspace/<copy>/ instead of the parent git worktree, so changes never landed on the feature branch.",
       "recommendation": "Verifier step must explicitly cd into the tracked parent worktree before re-applying or validating; document the cwd contract in the swarm worker prompt."
     },
     {
@@ -477,6 +477,6 @@
     "Verifier sessions in two autofix-swarm trajectories appear to have run for ~600 hours before completion — was the verifier blocked, or is this a session-close-on-merge artifact?",
     "The mcp-args --register flag mints at_live_* tokens via register_agent_token; is there a documented rotation/cleanup story when the cloud cleanup PR retires the temporary token?",
     "Web build still hits intermittent prerender failures after compile and type-check (noted in three sessions); is there a tracking issue, and should the workflow gate treat it as soft-fail?",
-    "After the orgin.agentrelay.net cutover, is there a plan and date to reclaim the apex agentrelay.net CNAME from the prior AWS account?"
+    "After the origin.agentrelay.net cutover, is there a plan and date to reclaim the apex agentrelay.net CNAME from the prior AWS account?"
   ]
 }

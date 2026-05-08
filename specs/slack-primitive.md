@@ -107,7 +107,7 @@ createSlackStep({
     text: 'I found two AWS accounts that match `prod-*`. Which one should I deploy to?\n  • acct-1234 (us-east-1, last modified 2 weeks ago)\n  • acct-5678 (us-west-2, last modified yesterday)\nReply with `1` or `2`.',
 
     // How long to wait before failing the step
-    timeoutSeconds: 1800,           // 30 min default; required to set explicitly
+    timeoutSeconds: 1800,           // required: caller must set explicitly (1800 = 30 min)
 
     // Who is allowed to answer. Default: anyone in the channel.
     allowedReplyFrom?: string[],    // ['@khaliq']
