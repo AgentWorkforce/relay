@@ -78,7 +78,7 @@ createSlackStep({
   name: 'announce-pr',
   action: 'postMessage',
   params: {
-    channel: '#wf-feature',           // or channel id
+    channel?: '#wf-feature',          // or channel id; optional — see "Default channel resolution" below
     text: 'PR opened: {{steps.open-pr.output.html_url}}',
     threadTs?: string,                 // reply into a thread
     mentions?: string[],               // ['@khaliq', 'U02ABC123', 'khaliq@agent-relay.com']
@@ -94,6 +94,7 @@ Notes:
 - **Mentions are resolved before send.** `@khaliq` is looked up via `users.lookupByEmail` or the user-cache; if not found, the message still posts but a typed `SlackPostBackError(unknown_mention)` is logged on the step output. This is the same "fail soft on cosmetic errors, fail hard on real errors" pattern as github-primitive.
 - **Templating uses the existing `{{steps.X.output.path}}` chain.** No special Slack-specific templating syntax.
 - **Channel may be a name (`#wf-feature`) or ID.** Names are resolved at step time.
+- **Channel is optional for `postMessage`.** If omitted, cloud-runtime calls sage's existing notify-channel resolver (`/api/internal/proactive/notify-channel`), which falls back: configured workspace default → `#general` → first joined channel (alphabetical). Local-runtime falls back to the `SLACK_DEFAULT_CHANNEL` env var; if that's also unset, validation fails. Reusing sage's resolver keeps "where do agent messages go" configured in one place per workspace. (Follow-up: factor the resolver into a shared cloud package once slack-primitive is the second consumer — tracked separately.)
 
 ### 4.3 `askQuestion` — the load-bearing verb
 
@@ -102,7 +103,7 @@ createSlackStep({
   name: 'confirm-account',
   action: 'askQuestion',
   params: {
-    channel: '#wf-feature',
+    channel: '#wf-feature',           // required for askQuestion (no default fallback — be deliberate about where you block on humans)
     text: 'I found two AWS accounts that match `prod-*`. Which one should I deploy to?\n  • acct-1234 (us-east-1, last modified 2 weeks ago)\n  • acct-5678 (us-west-2, last modified yesterday)\nReply with `1` or `2`.',
 
     // How long to wait before failing the step
@@ -140,14 +141,17 @@ Semantics:
    - Step succeeds with the parsed reply as output.
 4. On timeout: step fails with a typed `SlackPostBackError(human_no_response, timeoutSeconds)` so the workflow's `onError` handler can decide whether to retry, escalate again, or hard-fail.
 5. The primitive **never** falls back to a default answer. Silence is failure.
+6. The primitive emits the full question/answer pair on the step's output record. **Durable persistence (for post-mortems) is the workflow runner's responsibility**, not the primitive's — see issue #825.
 
 #### Why `askQuestion` is the hard part
 
 Posting is trivial. Waiting on a human is the load-bearing piece. It introduces three constraints the rest of the SDK doesn't have:
 
 - **Workflows must be allowed to block on external input.** The runner already supports long-running steps (verification gates, sandbox bootstraps), so this is reusing existing plumbing — not inventing new lifecycle.
-- **The step must be resumable.** If the workflow crashes between posting the question and receiving the answer, the resumed run must find the existing question (by run-id-tagged metadata in the message) and continue waiting from there, not re-ask. Implementation: stash `(questionTs, runId, stepName)` in the workflow run record before the polling loop starts; on resume, look up the row and rejoin the poll.
+- **The step must be resumable, and idempotent across retries.** If the workflow crashes between posting the question and receiving the answer — or if the step retries via `retries: N` — the resumed/retried attempt must find the existing question and rejoin the poll, not re-ask. Implementation: stash `(questionTs, runId, stepName)` in the workflow run record before the polling loop starts, and embed `(runId, stepName)` in the posted message's metadata. The dedup key is `(runId, stepName)` — retries within the same run reuse the same question; different runs are independent even if they share a step name; attempt number is **not** part of the key.
 - **The channel's history must include the question.** This means cloud-runtime cannot use private DMs (the bot can't read DM history without `im:history` scope and that scope is rarely granted). `askQuestion` against a DM throws at validation time.
+
+> **v1 limitation:** `askQuestion` only supports public/private channels, not DMs. To ask a single person privately, create a private channel containing just that person and the bot. DM support may land in v2 if real demand appears.
 
 ### 4.4 `replyToThread`, `updateMessage`, `addReaction`
 
@@ -271,15 +275,7 @@ const token = config.token ?? process.env.SLACK_BOT_TOKEN;
 
 If neither is set and we're in `auto` mode, `local` is _not_ selected; `auto` falls through to `cloud`. The detection chain is the same as github-primitive's.
 
-## 8. Open questions
-
-- **DM support.** Should `askQuestion` to a DM be supported when `im:history` is granted? Probably yes, gated on scope check. Defer to v2.
-- **Slack Connect / shared channels.** The primitive should treat shared channels exactly like internal ones — the bot just needs to be invited. Need to verify Nango's Slack provider exposes them correctly.
-- **Audit trail.** Cloud should write every `askQuestion` exchange to the workflow run record so post-mortems can see what the agent asked and how the human answered. This is straightforward but needs schema work; out of scope for the primitive itself.
-- **Default channel resolution.** If the workflow doesn't specify a channel, should the primitive default to the workspace's "wf-default" channel? I think no — the workflow author should be explicit. But cloud could surface the default as `Resource.SlackDefaultChannel.value` for convenience.
-- **Question idempotency on retry.** When a step retries (e.g. `retries: 2`), the second attempt should _not_ re-ask. The primitive should check the channel for an existing question with the same `(runId, stepName)` tag and resume waiting. Mentioned above under resumability — calling out here as the same mechanism.
-
-## 9. Acceptance criteria for v1
+## 8. Acceptance criteria for v1
 
 The primitive ships when:
 
@@ -290,7 +286,7 @@ The primitive ships when:
 5. Cloud-runtime auth uses the workspace's existing Slack Nango connection — no new SST resource bindings, no new env vars beyond what github-primitive already added.
 6. The `writing-agent-relay-workflows` skill has two new recipes: **Announce + Done** and **Ask Before You Guess**.
 
-## 10. Phasing
+## 9. Phasing
 
 | Phase | Scope                                                                                                                                                                                   |
 | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
