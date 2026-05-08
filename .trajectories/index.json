@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-08T13:35:35.850Z",
+  "lastUpdated": "2026-05-08T14:44:46.108Z",
   "trajectories": {
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -247,6 +247,13 @@
       "completedAt": "2026-04-27T20:08:46.379Z",
       "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_ui5omrgz819d.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
+    },
+    "traj_itgr2w8qs3xn": {
+      "title": "Make workflow deterministic failures repairable by agents",
+      "status": "completed",
+      "startedAt": "2026-05-08T14:44:45.732Z",
+      "completedAt": "2026-05-08T14:44:45.984Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay-repairable-workflows/.trajectories/completed/2026-05/traj_itgr2w8qs3xn.json"
     }
   }
 }

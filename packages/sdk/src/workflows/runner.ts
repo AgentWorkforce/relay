@@ -384,6 +384,19 @@ interface DiagnosticResult {
   };
 }
 
+interface DeterministicRepairContext {
+  step: WorkflowStep;
+  agentDef: AgentDefinition;
+  attempt: number;
+  maxRetries: number;
+  command: string;
+  cwd: string;
+  error: string;
+  output: string;
+  exitCode?: number;
+  exitSignal?: string;
+}
+
 type DiagnosticVerificationCheck = VerificationCheck & {
   diagnosticAgent?: string;
   diagnosticTimeout?: number;
@@ -3626,7 +3639,15 @@ export class WorkflowRunner {
   ): Promise<void> {
     // Branch: deterministic steps execute shell commands
     if (this.isDeterministicStep(step)) {
-      return this.executeDeterministicStep(step, state, stepStates, runId, errorHandling, lifecycle);
+      return this.executeDeterministicStep(
+        step,
+        state,
+        stepStates,
+        agentMap,
+        runId,
+        errorHandling,
+        lifecycle
+      );
     }
 
     // Branch: worktree steps set up git worktrees
@@ -3651,16 +3672,25 @@ export class WorkflowRunner {
     step: WorkflowStep,
     state: StepState,
     stepStates: Map<string, StepState>,
+    agentMap: Map<string, AgentDefinition>,
     runId: string,
     errorHandling: ErrorHandlingConfig | undefined,
     lifecycle: WorkflowStepLifecycleExecutor<StepState>
   ): Promise<void> {
-    const maxRetries = step.retries ?? errorHandling?.maxRetries ?? 0;
+    const repairRetries = errorHandling?.repairRetries ?? 2;
+    const repairAgent =
+      repairRetries > 0
+        ? this.resolveDeterministicRepairAgent(step, stepStates, agentMap, errorHandling)
+        : undefined;
+    const maxRetries = step.retries ?? errorHandling?.maxRetries ?? (repairAgent ? repairRetries : 0);
     const retryDelay = errorHandling?.retryDelayMs ?? 1000;
     let lastError = 'Unknown error';
     let lastCompletionReason: WorkflowStepCompletionReason | undefined;
     let lastExitCode: number | undefined;
     let lastExitSignal: string | undefined;
+    let lastResolvedCommand = step.command ?? '';
+    let lastStepCwd = this.cwd;
+    let lastCommandOutput = '';
 
     const result = await lifecycle.monitorStep(step, state, {
       maxRetries,
@@ -3674,6 +3704,20 @@ export class WorkflowRunner {
           detail: `Retrying attempt ${attempt + 1}/${total + 1}`,
           raw: { attempt, maxRetries: total },
         });
+        if (repairAgent) {
+          await this.runDeterministicRepairAgent({
+            step,
+            agentDef: repairAgent,
+            attempt,
+            maxRetries: total,
+            command: lastResolvedCommand,
+            cwd: lastStepCwd,
+            error: lastError,
+            output: lastCommandOutput,
+            exitCode: lastExitCode,
+            exitSignal: lastExitSignal,
+          });
+        }
       },
       execute: async () => {
         const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
@@ -3686,6 +3730,8 @@ export class WorkflowRunner {
         });
 
         const stepCwd = this.resolveEffectiveCwd(step);
+        lastResolvedCommand = resolvedCommand;
+        lastStepCwd = stepCwd;
         this.beginStepEvidence(step.name, [stepCwd], state.row.startedAt);
         this.log(
           `[${step.name}] Running: ${resolvedCommand.slice(0, 200)}${resolvedCommand.length > 200 ? '...' : ''}`
@@ -3695,6 +3741,7 @@ export class WorkflowRunner {
           const executorResult = await this.executor.executeDeterministicStep(step, resolvedCommand, stepCwd);
           lastExitCode = executorResult.exitCode;
           lastExitSignal = undefined;
+          lastCommandOutput = executorResult.output;
           const failOnError = step.failOnError !== false;
           if (failOnError && executorResult.exitCode !== 0) {
             this.log(`[${step.name}] Command failed (exit code ${executorResult.exitCode})`);
@@ -3786,6 +3833,7 @@ export class WorkflowRunner {
             commandStderr = stderr;
             lastExitCode = code ?? undefined;
             lastExitSignal = signal ?? undefined;
+            lastCommandOutput = [stdout, stderr].filter(Boolean).join('\n');
 
             const failOnError = step.failOnError !== false;
             if (failOnError && code !== 0 && code !== null) {
@@ -3827,6 +3875,7 @@ export class WorkflowRunner {
         const verificationResult = step.verification
           ? this.runVerification(step.verification, output, step.name)
           : undefined;
+        lastCommandOutput = [commandStdout || output, commandStderr].filter(Boolean).join('\n');
 
         return {
           output,
@@ -3860,6 +3909,153 @@ export class WorkflowRunner {
       this.postToChannel(`**[${step.name}]** Failed: ${result.error ?? 'Unknown error'}`);
       throw new Error(`Step "${step.name}" failed: ${result.error ?? 'Unknown error'}`);
     }
+  }
+
+  private resolveDeterministicRepairAgent(
+    step: WorkflowStep,
+    stepStates: Map<string, StepState>,
+    agentMap: Map<string, AgentDefinition>,
+    errorHandling: ErrorHandlingConfig | undefined
+  ): AgentDefinition | undefined {
+    const explicitName = errorHandling?.repairAgent?.trim();
+    if (explicitName) {
+      const explicitAgent = agentMap.get(explicitName);
+      if (explicitAgent) return WorkflowRunner.resolveAgentDef(explicitAgent);
+      this.log(`[${step.name}] repairAgent "${explicitName}" not found; falling back to workflow agents`);
+    }
+
+    if (step.agent) {
+      const stepAgent = agentMap.get(step.agent);
+      if (stepAgent) return WorkflowRunner.resolveAgentDef(stepAgent);
+    }
+
+    for (const dependency of [...(step.dependsOn ?? [])].reverse()) {
+      const dependencyAgent = stepStates.get(dependency)?.row.agentName;
+      if (!dependencyAgent) continue;
+      const agent = agentMap.get(dependencyAgent);
+      if (agent) return WorkflowRunner.resolveAgentDef(agent);
+    }
+
+    const candidates = [...agentMap.values()].map((agent) => WorkflowRunner.resolveAgentDef(agent));
+    candidates.sort((a, b) => this.scoreRepairAgent(b) - this.scoreRepairAgent(a));
+    return candidates[0];
+  }
+
+  private scoreRepairAgent(agent: AgentDefinition): number {
+    const text = `${agent.name} ${agent.role ?? ''} ${agent.preset ?? ''}`.toLowerCase();
+    let score = 0;
+    if (
+      /\b(repair|fix|implement|implementation|engineer|developer|coder|worker|owner|lead|coordinator)\b/.test(
+        text
+      )
+    ) {
+      score += 10;
+    }
+    if (agent.interactive === false || ['worker', 'analyst'].includes(agent.preset ?? '')) {
+      score += 2;
+    }
+    if (/\b(review|reviewer|audit|security|analyst)\b/.test(text)) {
+      score -= 4;
+    }
+    if (agent.permissions?.access === 'readonly') {
+      score -= 20;
+    }
+    return score;
+  }
+
+  private async runDeterministicRepairAgent(context: DeterministicRepairContext): Promise<void> {
+    const repairAgent: AgentDefinition = {
+      ...context.agentDef,
+      interactive: false,
+    };
+    const repairPrompt = this.buildDeterministicRepairPrompt(context);
+    const repairStep: WorkflowStep = {
+      name: `${context.step.name}-repair-${context.attempt}`,
+      type: 'agent',
+      agent: repairAgent.name,
+      task: repairPrompt,
+      cwd: context.step.cwd,
+      workdir: context.step.workdir,
+      retries: 0,
+    };
+    const timeoutMs =
+      repairAgent.constraints?.timeoutMs ?? context.step.timeoutMs ?? this.currentConfig?.swarm?.timeoutMs;
+
+    this.log(
+      `[${context.step.name}] Deterministic gate failed; asking "${repairAgent.name}" to repair before retry ${context.attempt + 1}/${context.maxRetries + 1}`
+    );
+    this.postToChannel(
+      `**[${context.step.name}]** Deterministic gate failed; assigning repair to \`${repairAgent.name}\``
+    );
+    this.recordStepToolSideEffect(context.step.name, {
+      type: 'custom',
+      detail: `Assigned deterministic gate repair to ${repairAgent.name}`,
+      raw: {
+        repairAgent: repairAgent.name,
+        attempt: context.attempt,
+        maxRetries: context.maxRetries,
+        exitCode: context.exitCode,
+        exitSignal: context.exitSignal,
+      },
+    });
+
+    try {
+      this.ensureBudgetAllowsSpawn(context.step.name, repairAgent.name);
+      let repairOutput: string;
+      if (this.executor) {
+        repairOutput = await this.executor.executeAgentStep(repairStep, repairAgent, repairPrompt, timeoutMs);
+      } else if (repairAgent.cli === 'api') {
+        repairOutput = await executeApiStep(
+          repairAgent.constraints?.model ?? 'claude-sonnet-4-20250514',
+          repairPrompt,
+          {
+            envSecrets: this.envSecrets,
+            skills: repairAgent.skills,
+            defaultMaxTokens: repairAgent.constraints?.maxTokens,
+          }
+        );
+      } else {
+        const result = await this.execNonInteractive(repairAgent, repairStep, timeoutMs);
+        repairOutput = result.output;
+      }
+
+      this.recordStepToolSideEffect(context.step.name, {
+        type: 'custom',
+        detail: `Repair agent ${repairAgent.name} completed before deterministic retry`,
+        raw: { repairAgent: repairAgent.name, output: repairOutput.slice(0, 1000) },
+      });
+    } catch (error) {
+      if (error instanceof BudgetExceededError || this.abortController?.signal.aborted) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.log(`[${context.step.name}] Repair agent "${repairAgent.name}" failed: ${message}`);
+      this.postToChannel(
+        `**[${context.step.name}]** Repair agent \`${repairAgent.name}\` failed; retrying gate anyway`
+      );
+      this.recordStepToolSideEffect(context.step.name, {
+        type: 'custom',
+        detail: `Repair agent ${repairAgent.name} failed before deterministic retry: ${message}`,
+        raw: { repairAgent: repairAgent.name, error: message },
+      });
+    }
+  }
+
+  private buildDeterministicRepairPrompt(context: DeterministicRepairContext): string {
+    const output = context.output.trim();
+    const clippedOutput = output.length > 4000 ? output.slice(-4000) : output;
+    return (
+      `A deterministic workflow gate failed after an agent/team step. Fix the repository or workflow state so the same gate passes on the next retry.\n\n` +
+      `Step: ${context.step.name}\n` +
+      `Working directory: ${context.cwd}\n` +
+      `Command:\n${context.command}\n\n` +
+      `Failure:\n${context.error}\n` +
+      `Exit code: ${context.exitCode ?? 'unknown'}\n` +
+      `Exit signal: ${context.exitSignal ?? 'none'}\n\n` +
+      `Command output:\n${clippedOutput || '(no output captured)'}\n\n` +
+      `Repair only what is needed for this gate to pass. Preserve unrelated user changes. ` +
+      `After making the fix, report the files changed and the reason the gate should pass.`
+    );
   }
 
   /**

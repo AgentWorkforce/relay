@@ -487,6 +487,10 @@ export interface ErrorHandlingConfig {
   maxRetries?: number;
   retryDelayMs?: number;
   notifyChannel?: string;
+  /** Agent to use when a deterministic gate fails and needs code/workflow repair. */
+  repairAgent?: string;
+  /** Retry budget for deterministic gate repair when maxRetries is not set. Default: 2. */
+  repairRetries?: number;
 }
 
 // ── Dry-run report types ────────────────────────────────────────────────

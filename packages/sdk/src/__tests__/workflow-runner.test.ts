@@ -541,6 +541,52 @@ agents:
       expect(run.status, run.error).toBe('completed');
     });
 
+    it('repairs a failed deterministic gate with a workflow agent before retrying', async () => {
+      const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'relay-deterministic-repair-'));
+      const artifactPath = path.join(tmpDir, 'repaired.txt');
+      const repairAgent = vi.fn(async () => {
+        writeFileSync(artifactPath, 'fixed\n', 'utf-8');
+        return 'wrote repaired.txt';
+      });
+      runner = new WorkflowRunner({
+        db,
+        workspaceId: 'ws-test',
+        cwd: tmpDir,
+        executor: {
+          executeAgentStep: repairAgent,
+        },
+      });
+
+      try {
+        const run = await runner.execute(
+          makeConfig({
+            agents: [{ name: 'fixer', cli: 'claude', role: 'implementation engineer' }],
+            workflows: [
+              {
+                name: 'default',
+                steps: [
+                  {
+                    name: 'verify-artifact',
+                    type: 'deterministic',
+                    command: `node -e "require('node:fs').accessSync('repaired.txt')"`,
+                  },
+                ],
+              },
+            ],
+          }),
+          'default'
+        );
+
+        expect(run.status, run.error).toBe('completed');
+        expect(repairAgent).toHaveBeenCalledTimes(1);
+        expect(repairAgent.mock.calls[0][2]).toContain('A deterministic workflow gate failed');
+        expect(repairAgent.mock.calls[0][2]).toContain('verify-artifact');
+        expect(readFileSync(artifactPath, 'utf-8')).toBe('fixed\n');
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
     it('should fail when owner response provides no decision, marker, or evidence', async () => {
       mockSpawnOutputs = ['Owner completed work but forgot sentinel\n'];
       const run = await runner.execute(makeConfig(), 'default');

@@ -94,6 +94,8 @@ export interface ErrorOptions {
   maxRetries?: number;
   retryDelayMs?: number;
   notifyChannel?: string;
+  repairAgent?: string;
+  repairRetries?: number;
 }
 
 export interface WorkflowRunOptions {
@@ -366,6 +368,8 @@ export class WorkflowBuilder {
     if (options?.maxRetries !== undefined) this._errorHandling.maxRetries = options.maxRetries;
     if (options?.retryDelayMs !== undefined) this._errorHandling.retryDelayMs = options.retryDelayMs;
     if (options?.notifyChannel !== undefined) this._errorHandling.notifyChannel = options.notifyChannel;
+    if (options?.repairAgent !== undefined) this._errorHandling.repairAgent = options.repairAgent;
+    if (options?.repairRetries !== undefined) this._errorHandling.repairRetries = options.repairRetries;
     return this;
   }
 
