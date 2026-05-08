@@ -1030,6 +1030,7 @@ jobs:
           - gateway
           - credential-proxy
           - browser-primitive
+          - personas
 
     steps:
       - name: Checkout code
