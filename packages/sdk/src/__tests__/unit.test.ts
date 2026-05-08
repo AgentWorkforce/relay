@@ -456,13 +456,15 @@ test('ensureRelaycastApiKey: workspaceId reuses stored mapping and injects unifi
     const opts = (relay as unknown as { clientOptions: { env?: Record<string, string> } }).clientOptions;
     assert.equal(relay.workspaceKey, 'rk_live_cached');
     assert.equal(opts.env?.RELAY_API_KEY, 'rk_live_cached');
-    assert.equal(opts.env?.RELAYFILE_WORKSPACE, 'rw_cached123');
     assert.equal(opts.env?.RELAY_DEFAULT_WORKSPACE, 'rw_cached123');
     assert.equal(opts.env?.RELAY_WORKSPACE_ID, 'rw_cached123');
     assert.equal(
       opts.env?.RELAY_WORKSPACES_JSON,
       JSON.stringify([{ workspace_id: 'rw_cached123', api_key: 'rk_live_cached' }])
     );
+    // applyWorkspaceEnv must not override RELAYFILE_WORKSPACE — relaycast
+    // and relayfile workspace ids are independent.
+    assert.equal(opts.env?.RELAYFILE_WORKSPACE, undefined);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -515,14 +517,62 @@ test('ensureRelaycastApiKey: auto-generates a unified workspaceId for env-provid
     await (relay as unknown as { ensureRelaycastApiKey: () => Promise<void> }).ensureRelaycastApiKey();
 
     const opts = (relay as unknown as { clientOptions: { env?: Record<string, string> } }).clientOptions;
-    const workspaceId = opts.env?.RELAYFILE_WORKSPACE;
+    const workspaceId = opts.env?.RELAY_WORKSPACE_ID;
     assert.match(workspaceId ?? '', /^rw_[a-z0-9]{8}$/);
+    // Auto-generated relaycast id must not leak into RELAYFILE_WORKSPACE.
+    assert.equal(opts.env?.RELAYFILE_WORKSPACE, undefined);
 
     const registry = JSON.parse(await readFile(join(cwd, '.relay', 'workspaces.json'), 'utf8')) as Record<
       string,
       any
     >;
     assert.equal(registry[workspaceId!].relaycastApiKey, 'rk_live_env');
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('ensureRelaycastApiKey: preserves caller-provided RELAYFILE_WORKSPACE', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'agent-relay-sdk-'));
+  try {
+    await mkdir(join(cwd, '.relay'), { recursive: true });
+    await writeFile(
+      join(cwd, '.relay', 'workspaces.json'),
+      `${JSON.stringify(
+        {
+          rw_relaycast: {
+            relaycastApiKey: 'rk_live_cached',
+            relayfileUrl: 'http://127.0.0.1:8080',
+            createdAt: '2026-03-27T00:00:00Z',
+            agents: ['codex'],
+          },
+        },
+        null,
+        2
+      )}\n`,
+      'utf8'
+    );
+
+    const relay = new AgentRelay({
+      channels: ['general'],
+      cwd,
+      workspaceId: 'rw_relaycast',
+      env: {
+        RELAYFILE_WORKSPACE: 'rw_relayfile_caller_set',
+        RELAYFILE_TOKEN: 'eyJ.caller.jwt',
+        PATH: '/usr/bin',
+      },
+    });
+    await (relay as unknown as { ensureRelaycastApiKey: () => Promise<void> }).ensureRelaycastApiKey();
+
+    const opts = (relay as unknown as { clientOptions: { env?: Record<string, string> } }).clientOptions;
+    // Caller's RELAYFILE_WORKSPACE survives — relaycast and relayfile
+    // workspaces are independent ids.
+    assert.equal(opts.env?.RELAYFILE_WORKSPACE, 'rw_relayfile_caller_set');
+    assert.equal(opts.env?.RELAYFILE_TOKEN, 'eyJ.caller.jwt');
+    // Relaycast routing vars still reflect the relaycast workspace.
+    assert.equal(opts.env?.RELAY_WORKSPACE_ID, 'rw_relaycast');
+    assert.equal(opts.env?.RELAY_DEFAULT_WORKSPACE, 'rw_relaycast');
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
