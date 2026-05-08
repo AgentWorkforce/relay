@@ -23,4 +23,4 @@ export * from './cli-registry.js';
 export * from './cli-resolver.js';
 export * from './personas.js';
 export * as github from './github.js';
-export { createGitHubStep, GitHubClient } from '@agent-relay/github-primitive';
+export { createGitHubStep, GitHubClient } from './github.js';

@@ -234,7 +234,7 @@ These match the github-primitive's error-code shape so workflow `onError` handle
 
 ## 7. Implementation outline
 
-```
+```text
 packages/slack-primitive/
   src/
     index.ts            // public exports

@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { WorkflowDb } from '../workflows/runner.js';
@@ -543,11 +543,58 @@ agents:
 
     it('repairs a failed deterministic gate with a workflow agent before retrying', async () => {
       const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'relay-deterministic-repair-'));
-      const artifactPath = path.join(tmpDir, 'repaired.txt');
-      const repairAgent = vi.fn(async () => {
-        writeFileSync(artifactPath, 'fixed\n', 'utf-8');
+      const stepDir = path.join(tmpDir, 'step-cwd');
+      mkdirSync(stepDir);
+      const artifactPath = path.join(stepDir, 'repaired.txt');
+      const repairAgent = vi.fn(async (step) => {
+        writeFileSync(path.join(step.cwd!, 'repaired.txt'), 'fixed\n', 'utf-8');
         return 'wrote repaired.txt';
       });
+      runner = new WorkflowRunner({
+        db,
+        workspaceId: 'ws-test',
+        cwd: tmpDir,
+        executor: {
+          executeAgentStep: repairAgent,
+        },
+      });
+
+      try {
+        const run = await runner.execute(
+          makeConfig({
+            errorHandling: { strategy: 'retry', repairRetries: 1, retryDelayMs: 1 },
+            agents: [{ name: 'fixer', cli: 'claude', role: 'implementation engineer' }],
+            workflows: [
+              {
+                name: 'default',
+                steps: [
+                  {
+                    name: 'verify-artifact',
+                    type: 'deterministic',
+                    cwd: 'step-cwd',
+                    command: `node -e "require('node:fs').accessSync('repaired.txt')"`,
+                  },
+                ],
+              },
+            ],
+          }),
+          'default'
+        );
+
+        expect(run.status, run.error).toBe('completed');
+        expect(repairAgent).toHaveBeenCalledTimes(1);
+        expect(repairAgent.mock.calls[0][0]).toMatchObject({ cwd: stepDir, workdir: undefined });
+        expect(repairAgent.mock.calls[0][2]).toContain('A deterministic workflow gate failed');
+        expect(repairAgent.mock.calls[0][2]).toContain('verify-artifact');
+        expect(readFileSync(artifactPath, 'utf-8')).toBe('fixed\n');
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not spawn deterministic repair agents unless repair retries are explicitly enabled', async () => {
+      const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'relay-deterministic-no-implicit-repair-'));
+      const repairAgent = vi.fn(async () => 'unexpected repair');
       runner = new WorkflowRunner({
         db,
         workspaceId: 'ws-test',
@@ -568,7 +615,7 @@ agents:
                   {
                     name: 'verify-artifact',
                     type: 'deterministic',
-                    command: `node -e "require('node:fs').accessSync('repaired.txt')"`,
+                    command: `node -e "require('node:fs').accessSync('missing.txt')"`,
                   },
                 ],
               },
@@ -577,11 +624,8 @@ agents:
           'default'
         );
 
-        expect(run.status, run.error).toBe('completed');
-        expect(repairAgent).toHaveBeenCalledTimes(1);
-        expect(repairAgent.mock.calls[0][2]).toContain('A deterministic workflow gate failed');
-        expect(repairAgent.mock.calls[0][2]).toContain('verify-artifact');
-        expect(readFileSync(artifactPath, 'utf-8')).toBe('fixed\n');
+        expect(run.status).toBe('failed');
+        expect(repairAgent).not.toHaveBeenCalled();
       } finally {
         rmSync(tmpDir, { recursive: true, force: true });
       }

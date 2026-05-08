@@ -3677,7 +3677,7 @@ export class WorkflowRunner {
     errorHandling: ErrorHandlingConfig | undefined,
     lifecycle: WorkflowStepLifecycleExecutor<StepState>
   ): Promise<void> {
-    const repairRetries = errorHandling?.repairRetries ?? 2;
+    const repairRetries = errorHandling?.strategy === 'retry' ? errorHandling.repairRetries ?? 0 : 0;
     const repairAgent =
       repairRetries > 0
         ? this.resolveDeterministicRepairAgent(step, stepStates, agentMap, errorHandling)
@@ -3974,8 +3974,8 @@ export class WorkflowRunner {
       type: 'agent',
       agent: repairAgent.name,
       task: repairPrompt,
-      cwd: context.step.cwd,
-      workdir: context.step.workdir,
+      cwd: context.cwd,
+      workdir: undefined,
       retries: 0,
     };
     const timeoutMs =

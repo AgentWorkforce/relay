@@ -147,7 +147,7 @@
         {
           "question": "Handled PR 747 feedback in tracked parent worktree",
           "chosen": "Handled PR 747 feedback in tracked parent worktree",
-          "reasoning": "The cwd copy under .relay/workspace is not the git worktree; fixes must be applied to /Users/khaliqgant/Projects/AgentWorkforce/relay so the feature branch and PR contain them.",
+          "reasoning": "The cwd copy under .relay/workspace is not the git worktree; fixes must be applied to the parent git worktree so the feature branch and PR contain them.",
           "fromTrajectory": "traj_1776113772922_bc92f121"
         },
         {
@@ -420,7 +420,7 @@
       "scope": "autofix-swarm-* workflows triggered by pr_review or review_comment sources."
     },
     {
-      "pattern": "Apply autofix-swarm fixes in the parent worktree at /Users/khaliqgant/Projects/AgentWorkforce/relay, not the .relay/workspace cwd copy",
+      "pattern": "Apply autofix-swarm fixes in the parent git worktree (repo root), not the .relay/workspace cwd copy",
       "rationale": "The cwd copy under .relay/workspace is not the git worktree; fixes there never reach the feature branch / PR.",
       "scope": "Verifier step in autofix-swarm sessions."
     },
@@ -458,7 +458,7 @@
     },
     {
       "lesson": "Autofix swarm worktree confusion silently drops fixes",
-      "context": "Workers were editing files under .relay/workspace/<copy>/ instead of /Users/khaliqgant/Projects/AgentWorkforce/relay/, so changes never landed on the feature branch.",
+      "context": "Workers were editing files under .relay/workspace/<copy>/ instead of the parent git worktree, so changes never landed on the feature branch.",
       "recommendation": "Verifier step must explicitly cd into the tracked parent worktree before re-applying or validating; document the cwd contract in the swarm worker prompt."
     },
     {

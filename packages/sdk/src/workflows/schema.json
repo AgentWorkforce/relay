@@ -932,7 +932,7 @@
         "repairRetries": {
           "type": "integer",
           "minimum": 0,
-          "description": "Retry budget for deterministic gate repair when maxRetries is not set"
+          "description": "Retry budget for deterministic gate repair when maxRetries is not set. Defaults to 0, so deterministic repair is opt-in."
         }
       }
     }

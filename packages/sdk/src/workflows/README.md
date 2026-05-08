@@ -371,7 +371,7 @@ errorHandling:
   notifyChannel: alerts
 ```
 
-When a deterministic step or verification gate fails, the runner now treats that as repairable work before it treats it as a terminal workflow failure. It chooses `errorHandling.repairAgent` when set, otherwise it uses the step's owning/upstream agent when possible, then falls back to the best available workflow agent. The selected agent gets the failed command, working directory, exit information, and captured output, then the deterministic gate is retried.
+When `errorHandling.strategy: retry` includes an explicit `repairRetries` budget, deterministic step or verification gate failures are treated as repairable work before terminal failure. The runner chooses `errorHandling.repairAgent` when set, otherwise it uses the step's owning/upstream agent when possible, then falls back to the best available workflow agent. The selected agent gets the failed command, working directory, exit information, and captured output, then the deterministic gate is retried.
 
 ## Built-in Templates
 
