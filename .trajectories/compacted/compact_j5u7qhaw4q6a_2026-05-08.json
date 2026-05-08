@@ -147,7 +147,7 @@
         {
           "question": "Handled PR 747 feedback in tracked parent worktree",
           "chosen": "Handled PR 747 feedback in tracked parent worktree",
-          "reasoning": "The cwd copy under .relay/workspace is not the git worktree; fixes must be applied to /Users/khaliqgant/Projects/AgentWorkforce/relay so the feature branch and PR contain them.",
+          "reasoning": "The cwd copy under .relay/workspace is not the git worktree; fixes must be applied to <repo-root> so the feature branch and PR contain them.",
           "fromTrajectory": "traj_1776113772922_bc92f121"
         },
         {
@@ -313,16 +313,16 @@
     "\"update-tests\" completed → - Modified `src/cli/commands/messaging.test.ts` with the three requested test cases.",
     "\"implement-fix\" completed → Artifact produced: updated `src/cli/commands/messaging.ts`.",
     "\"fix-build\" completed → Build confirmed clean. Task required no action.",
-    "\"fix-unit-tests\" completed → Updated [src/cli/commands/messaging.test.ts](/Users/khaliqgant/Projects/AgentWorkforce/relay/src/cli/commands/messaging.",
+    "\"fix-unit-tests\" completed → Updated [src/cli/commands/messaging.test.ts](<repo-root>/src/cli/commands/messaging.",
     "\"fix-regressions\" completed → No action taken. The provided full `vitest` run already passes: `50/50` test files and `711/711` tests. No regressions d",
     "\"update-tests\" completed → - No other files were edited.",
     "\"fix-build\" completed → Status: no action taken.\n\nThe provided build output ends with `BUILD_EXIT:0`, which indicates the TypeScript build succe",
     "\"fix-unit-tests\" completed → - Recorded and completed the active `trail` trajectory for this fix",
-    "\"implement-fixes\" completed → Completed the two requested fixes in [src/cli/commands/messaging.ts](/Users/khaliqgant/Projects/AgentWorkforce/relay/src",
+    "\"implement-fixes\" completed → Completed the two requested fixes in [src/cli/commands/messaging.ts](<repo-root>/src",
     "\"plan\" completed → >7u╭─────────────────────────────────────────────────────╮│ >_ OpenAI Codex (v0.116.0)                          ││      ",
     "\"fix-worker-3-step\" completed → - Artifacts produced: none.",
     "\"fix-worker-2-step\" completed → - No files outside the assigned group were modified.",
-    "\"fix-worker-1-step\" completed → **Completed**\n- Fixed [src/cli/commands/messaging.ts](/Users/khaliqgant/Projects/AgentWorkforce/.msd-autofix-16b32ead/sr",
+    "\"fix-worker-1-step\" completed → **Completed**\n- Fixed [src/cli/commands/messaging.ts](<repo-root>/.msd-autofix-16b32ead/sr",
     "\"plan\" completed → -- INSERT -- ⏵⏵ bypass permissions on (shift+tab to cycle) · PR #708",
     "\"fix-config\" completed → CHANGES_COMPLETE",
     "\"fix-sdk\" completed → CHANGES_COMPLETE",
@@ -420,7 +420,7 @@
       "scope": "autofix-swarm-* workflows triggered by pr_review or review_comment sources."
     },
     {
-      "pattern": "Apply autofix-swarm fixes in the parent worktree at /Users/khaliqgant/Projects/AgentWorkforce/relay, not the .relay/workspace cwd copy",
+      "pattern": "Apply autofix-swarm fixes in the parent worktree at <repo-root>, not the .relay/workspace cwd copy",
       "rationale": "The cwd copy under .relay/workspace is not the git worktree; fixes there never reach the feature branch / PR.",
       "scope": "Verifier step in autofix-swarm sessions."
     },
@@ -458,7 +458,7 @@
     },
     {
       "lesson": "Autofix swarm worktree confusion silently drops fixes",
-      "context": "Workers were editing files under .relay/workspace/<copy>/ instead of /Users/khaliqgant/Projects/AgentWorkforce/relay/, so changes never landed on the feature branch.",
+      "context": "Workers were editing files under .relay/workspace/<copy>/ instead of <repo-root>/, so changes never landed on the feature branch.",
       "recommendation": "Verifier step must explicitly cd into the tracked parent worktree before re-applying or validating; document the cwd contract in the swarm worker prompt."
     },
     {
