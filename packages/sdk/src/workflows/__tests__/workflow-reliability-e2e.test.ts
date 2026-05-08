@@ -72,7 +72,7 @@ async function runReliabilityWorkflow(config: RelayYamlConfig, cwd = makeWorkspa
 
   try {
     const run = await runner.execute(config, 'default');
-    return { run, callsByStep, cwd };
+    return { run, callsByStep };
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

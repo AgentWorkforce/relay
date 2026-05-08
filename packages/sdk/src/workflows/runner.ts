@@ -2558,7 +2558,7 @@ export class WorkflowRunner {
           throw new Error(`${source}: deterministic step "${s.name}" must have a "command" field`);
         }
       } else if (s.type === 'worktree') {
-        if (typeof s.branch !== 'string') {
+        if (typeof s.branch !== 'string' || s.branch.trim().length === 0) {
           throw new Error(`${source}: worktree step "${s.name}" must have a "branch" string field`);
         }
       } else if (s.type === 'integration') {
@@ -5415,23 +5415,38 @@ export class WorkflowRunner {
     const ownerStartTime = Date.now();
 
     try {
-      const ownerResultObj = await this.spawnAndWait(supervised.owner, ownerStep, timeoutMs, {
-        agentNameSuffix: 'owner',
-        retryAttempt,
-        evidenceStepName: step.name,
-        evidenceRole: 'owner',
-        logicalName: supervised.owner.name,
-        onSpawned: ({ actualName }) => {
-          this.supervisedRuntimeAgents.set(actualName, {
-            stepName: step.name,
-            role: 'owner',
-            logicalName: supervised.owner.name,
-          });
-        },
-        onChunk: ({ chunk }) => {
-          void this.recordOwnerMonitoringChunk(step, supervised.owner, chunk);
-        },
-      });
+      const ownerResultObj =
+        supervised.owner.cli === 'api'
+          ? {
+              output: await executeApiStep(
+                supervised.owner.constraints?.model ?? 'claude-sonnet-4-20250514',
+                supervisorTask,
+                {
+                  envSecrets: this.envSecrets,
+                  skills: supervised.owner.skills,
+                  defaultMaxTokens: supervised.owner.constraints?.maxTokens,
+                }
+              ),
+              exitCode: 0,
+              promptTaskText: supervisorTask,
+            }
+          : await this.spawnAndWait(supervised.owner, ownerStep, timeoutMs, {
+              agentNameSuffix: 'owner',
+              retryAttempt,
+              evidenceStepName: step.name,
+              evidenceRole: 'owner',
+              logicalName: supervised.owner.name,
+              onSpawned: ({ actualName }) => {
+                this.supervisedRuntimeAgents.set(actualName, {
+                  stepName: step.name,
+                  role: 'owner',
+                  logicalName: supervised.owner.name,
+                });
+              },
+              onChunk: ({ chunk }) => {
+                void this.recordOwnerMonitoringChunk(step, supervised.owner, chunk);
+              },
+            });
       const ownerElapsed = Date.now() - ownerStartTime;
       const ownerOutput = ownerResultObj.output;
       this.log(`[${step.name}] Owner "${supervised.owner.name}" exited`);

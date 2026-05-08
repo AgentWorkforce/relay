@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,6 +6,10 @@ import path from 'node:path';
 import { workflow } from '../builder.js';
 import { WorkflowRunner, type WorkflowDb } from '../runner.js';
 import type { RelayYamlConfig, WorkflowRunRow, WorkflowStepRow } from '../types.js';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function makeDb(): WorkflowDb {
   const runs = new Map<string, WorkflowRunRow>();
@@ -561,6 +565,55 @@ describe('workflow reliability contract', () => {
     expect(run.status, run.error).toBe('completed');
     expect(executeAgentStep).toHaveBeenCalledTimes(2);
     expect(executeDeterministicStep).toHaveBeenCalledTimes(3);
+  });
+
+  it('runs supervised api owners without spawning an interactive owner process', async () => {
+    const fetch = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          content: [{ type: 'text', text: 'OWNER_DECISION: COMPLETE\nReason: worker output verified' }],
+          model: 'claude-sonnet-4-20250514',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    const runner = new WorkflowRunner({
+      db: makeDb(),
+      workspaceId: 'ws-test',
+      cwd: process.cwd(),
+      envSecrets: { ANTHROPIC_API_KEY: 'test-api-key' },
+    });
+    const spawnAndWait = vi.fn(async (agent: any, _step: any, _timeoutMs: any, options: any) => {
+      options?.onSpawned?.({ actualName: agent.name, agent: { release: async () => undefined } });
+      if (agent.name === 'worker') {
+        return { output: 'DONE', exitCode: 0, promptTaskText: 'worker task' };
+      }
+      throw new Error('api owner should not use spawnAndWait');
+    });
+    (runner as any).spawnAndWait = spawnAndWait;
+
+    const result = await (runner as any).executeSupervisedAgentStep(
+      {
+        name: 'supervised-api-owner',
+        agent: 'worker',
+        task: 'produce done',
+        verification: { type: 'output_contains', value: 'DONE' },
+      },
+      {
+        specialist: { name: 'worker', cli: 'claude', role: 'worker' },
+        owner: { name: 'owner', cli: 'api', role: 'owner' },
+      },
+      'produce done'
+    );
+
+    expect(result).toMatchObject({
+      specialistOutput: 'DONE',
+      completionReason: 'completed_by_owner_decision',
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(spawnAndWait).toHaveBeenCalledTimes(1);
   });
 
   it('does not run repair agents for fail-fast workflows even when agents are present', async () => {

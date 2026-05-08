@@ -98,7 +98,7 @@ export interface ErrorOptions {
   repairRetries?: number;
 }
 
-export interface ReliabilityOptions extends ErrorOptions {}
+export type ReliabilityOptions = ErrorOptions;
 
 export interface WorkflowRunOptions {
   /** Run a specific workflow by name (default: first). */

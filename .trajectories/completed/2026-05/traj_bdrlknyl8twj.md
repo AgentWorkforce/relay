@@ -28,4 +28,4 @@ Added Relay workflow reliability defaults, repairable builder presets, agent-ste
 ### 1. Work
 *Agent: default*
 
-- Made retry-mode workflows repair-aware by default: Made retry-mode workflows repair-aware by default
+- Made retry-mode workflows repair-aware by default

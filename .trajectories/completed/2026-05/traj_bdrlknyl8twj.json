@@ -25,7 +25,7 @@
         {
           "ts": 1778263322077,
           "type": "decision",
-          "content": "Made retry-mode workflows repair-aware by default: Made retry-mode workflows repair-aware by default",
+          "content": "Made retry-mode workflows repair-aware by default",
           "raw": {
             "question": "Made retry-mode workflows repair-aware by default",
             "chosen": "Made retry-mode workflows repair-aware by default",

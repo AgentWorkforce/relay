@@ -6,7 +6,6 @@ on:
     paths:
       - '.github/workflows/workflow-reliability.yml'
       - 'packages/sdk/src/workflows/**'
-      - 'packages/sdk/src/__tests__/**'
       - 'packages/sdk/package.json'
       - 'packages/workflow-types/**'
       - 'package-lock.json'
@@ -16,7 +15,6 @@ on:
     paths:
       - '.github/workflows/workflow-reliability.yml'
       - 'packages/sdk/src/workflows/**'
-      - 'packages/sdk/src/__tests__/**'
       - 'packages/sdk/package.json'
       - 'packages/workflow-types/**'
       - 'package-lock.json'
