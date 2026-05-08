@@ -30,6 +30,16 @@ import path from 'node:path';
 import { RelayCast } from '@relaycast/sdk';
 
 import { AgentRelayClient, type AgentRelayBrokerInitArgs, type AgentRelaySpawnOptions } from './client.js';
+import {
+  buildPersonaSpawnSpec,
+  composePersonaTask,
+  loadPersona,
+  materializePersonaConfigFiles,
+  restorePersonaConfigFiles,
+  type PersonaLoadOptions,
+  type PersonaTier,
+  type ResolvedPersona,
+} from './personas.js';
 import { AgentRelayProtocolError } from './transport.js';
 import type { SendMessageInput, SpawnPtyInput } from './types.js';
 import type {
@@ -248,6 +258,34 @@ export interface SpawnAndWaitOptions extends SpawnOptions {
   waitForMessage?: boolean;
 }
 
+export interface SpawnPersonaOptions extends SpawnOptions {
+  /** Override the spawned agent's name. Defaults to the persona id. */
+  name?: string;
+  /** Initial task / user prompt for the agent. */
+  task?: string;
+  /** Persona tier to resolve. Defaults to 'best'. */
+  tier?: PersonaTier;
+  /**
+   * Override the persona search-dir cascade. When set, the default
+   * directories (cwd/agentworkforce/personas, ~/.agentworkforce/...) are
+   * skipped and only `searchDirs` is consulted.
+   */
+  searchDirs?: string[];
+  /** Extra dirs appended after the default cascade (unioned with searchDirs override). */
+  extraDirs?: string[];
+  /**
+   * cwd to use when resolving relative search dirs. Defaults to the spawn
+   * cwd (`options.cwd`) when set, else `process.cwd()`. Independent of
+   * the spawn working directory passed to the broker.
+   */
+  personaCwd?: string;
+  /**
+   * Override the resolved persona before translation. Useful for callers
+   * that want to load+adjust+spawn in one step (e.g. tweak permissions).
+   */
+  persona?: ResolvedPersona;
+}
+
 type AgentOutputPayload = { stream: string; chunk: string };
 type AgentOutputCallback = ((chunk: string) => void) | ((data: AgentOutputPayload) => void);
 
@@ -354,6 +392,13 @@ export interface AgentRelayOptions {
    * Defaults to RELAYCAST_BASE_URL env var or https://api.relaycast.dev.
    */
   relaycastBaseUrl?: string;
+  /**
+   * Default persona search-dir cascade for {@link AgentRelay.spawnPersona}.
+   * When set, replaces the built-in cascade
+   * (`<cwd>/agentworkforce/personas`, `~/.agentworkforce/...`). Per-call
+   * `searchDirs` on `spawnPersona` still overrides this.
+   */
+  personaDirs?: string[];
 }
 
 type OutputListener = {
@@ -413,6 +458,7 @@ export class AgentRelay {
   private readonly requestedWorkspaceId?: string;
   private readonly workspaceName?: string;
   private readonly relaycastBaseUrl?: string;
+  private readonly defaultPersonaDirs?: string[];
   private relayApiKey?: string;
   private resolvedWorkspaceId?: string;
   private client?: AgentRelayClient;
@@ -450,6 +496,7 @@ export class AgentRelay {
       );
     }
     this.relaycastBaseUrl = options.relaycastBaseUrl;
+    if (options.personaDirs) this.defaultPersonaDirs = [...options.personaDirs];
     this.clientOptions = {
       binaryPath: options.binaryPath,
       binaryArgs: options.binaryArgs,
@@ -680,6 +727,85 @@ export class AgentRelay {
       return this.waitForAgentMessage(name, timeoutMs ?? 60_000);
     }
     return this.waitForAgentReady(name, timeoutMs ?? 60_000);
+  }
+
+  /**
+   * Spawn an agent from a named AgentWorkforce persona.
+   *
+   * Looks up the persona JSON in the search-dir cascade
+   * (`<cwd>/agentworkforce/personas`, `<cwd>/.agentworkforce/workforce/personas`,
+   * `~/.agentworkforce/workforce/personas`, plus `AGENT_WORKFORCE_HOME`),
+   * resolves the requested tier, and translates it to spawnPty args via
+   * `@agentworkforce/harness-kit#buildInteractiveSpec`.
+   *
+   * For opencode, an `opencode.json` is materialized in the spawn cwd and
+   * automatically restored when the agent exits. For codex, the persona's
+   * systemPrompt is folded into the initial task (codex has no
+   * system-prompt flag). Translation warnings are surfaced via console.warn.
+   *
+   * @param personaId — id of the persona to load
+   * @param options — overrides for tier, search dirs, name, task, and the
+   *   underlying spawn options
+   */
+  async spawnPersona(personaId: string, options: SpawnPersonaOptions = {}): Promise<Agent> {
+    const personaCwd = options.personaCwd ?? options.cwd ?? process.cwd();
+    const searchDirs = options.searchDirs ?? this.defaultPersonaDirs;
+    const loadOpts: PersonaLoadOptions = {
+      cwd: personaCwd,
+      ...(searchDirs ? { searchDirs } : {}),
+      ...(options.extraDirs ? { extraDirs: options.extraDirs } : {}),
+      ...(options.tier ? { tier: options.tier } : {}),
+    };
+    const persona = options.persona ?? loadPersona(personaId, loadOpts);
+    const spec = buildPersonaSpawnSpec(persona);
+
+    for (const warning of spec.warnings) {
+      console.warn(`[AgentRelay] ${warning}`);
+    }
+
+    const spawnCwd = options.cwd ?? process.cwd();
+    const writes = spec.configFiles.length > 0
+      ? materializePersonaConfigFiles(spawnCwd, spec.configFiles)
+      : [];
+
+    const baseArgs = options.args ?? [];
+    const mergedArgs = [...spec.args, ...baseArgs];
+    const task = composePersonaTask(spec, options.task);
+    const spawnName = options.name ?? persona.id;
+
+    let agent: Agent;
+    try {
+      agent = await this.spawnPty({
+        name: spawnName,
+        cli: spec.cli,
+        args: mergedArgs,
+        ...(task !== undefined ? { task } : {}),
+        channels: options.channels,
+        model: spec.model,
+        cwd: spawnCwd,
+        team: options.team,
+        agentToken: options.agentToken,
+        shadowOf: options.shadowOf,
+        shadowMode: options.shadowMode,
+        idleThresholdSecs: options.idleThresholdSecs,
+        restartPolicy: options.restartPolicy,
+        skipRelayPrompt: options.skipRelayPrompt,
+        onStart: options.onStart,
+        onSuccess: options.onSuccess,
+        onError: options.onError,
+      });
+    } catch (err) {
+      restorePersonaConfigFiles(writes);
+      throw err;
+    }
+
+    if (writes.length > 0) {
+      void agent.waitForExit().finally(() => {
+        restorePersonaConfigFiles(writes);
+      });
+    }
+
+    return agent;
   }
 
   // ── Human source ────────────────────────────────────────────────────────

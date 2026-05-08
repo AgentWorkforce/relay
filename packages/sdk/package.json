@@ -27,6 +27,11 @@
       "import": "./dist/relay.js",
       "default": "./dist/relay.js"
     },
+    "./personas": {
+      "types": "./dist/personas.d.ts",
+      "import": "./dist/personas.js",
+      "default": "./dist/personas.js"
+    },
     "./logs": {
       "types": "./dist/logs.d.ts",
       "import": "./dist/logs.js",
@@ -142,6 +147,8 @@
     "@agent-relay/config": "6.0.9",
     "@agent-relay/github-primitive": "6.0.9",
     "@agent-relay/workflow-types": "6.0.9",
+    "@agentworkforce/harness-kit": "^0.11.0",
+    "@agentworkforce/workload-router": "^0.11.0",
     "@relaycast/sdk": "^1.1.0",
     "@relayfile/sdk": ">=0.1.2 <1",
     "@sinclair/typebox": "^0.34.48",
@@ -149,8 +156,8 @@
     "chalk": "^4.1.2",
     "ignore": "^7.0.5",
     "listr2": "^10.2.1",
-    "ws": "^8.18.3",
     "tar": "^7.5.10",
+    "ws": "^8.18.3",
     "yaml": "^2.7.0"
   },
   "optionalDependencies": {
