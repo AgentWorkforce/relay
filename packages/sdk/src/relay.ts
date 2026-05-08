@@ -245,8 +245,13 @@ export interface SpawnOptions extends SpawnLifecycleHooks {
   shadowMode?: string;
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
-  /** JWT token for relayauth/relayfile permissions. When set, the broker
-   *  injects RELAY_AGENT_TOKEN into the agent's environment. */
+  /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
+   *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
+   *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
+   *  authenticates with. When omitted, the relaycast MCP auto-mints a token
+   *  using `RELAY_API_KEY` + the spawn name; that is the recommended path.
+   *  Note: this is a relaycast credential, NOT a relayfile/relayauth token —
+   *  override `env.RELAYFILE_TOKEN` on the constructor for relayfile auth. */
   agentToken?: string;
   /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
    *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
@@ -355,8 +360,13 @@ export interface SpawnerSpawnOptions extends SpawnLifecycleHooks {
   model?: string;
   cwd?: string;
   idleThresholdSecs?: number;
-  /** JWT token for relayauth/relayfile permissions. When set, the broker
-   *  injects RELAY_AGENT_TOKEN into the agent's environment. */
+  /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
+   *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
+   *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
+   *  authenticates with. When omitted, the relaycast MCP auto-mints a token
+   *  using `RELAY_API_KEY` + the spawn name; that is the recommended path.
+   *  Note: this is a relaycast credential, NOT a relayfile/relayauth token —
+   *  override `env.RELAYFILE_TOKEN` on the constructor for relayfile auth. */
   agentToken?: string;
   /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
    *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
@@ -764,9 +774,8 @@ export class AgentRelay {
     }
 
     const spawnCwd = options.cwd ?? process.cwd();
-    const writes = spec.configFiles.length > 0
-      ? materializePersonaConfigFiles(spawnCwd, spec.configFiles)
-      : [];
+    const writes =
+      spec.configFiles.length > 0 ? materializePersonaConfigFiles(spawnCwd, spec.configFiles) : [];
 
     const baseArgs = options.args ?? [];
     const mergedArgs = [...spec.args, ...baseArgs];
