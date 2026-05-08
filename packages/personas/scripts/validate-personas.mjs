@@ -7,10 +7,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(here);
 const personasDir = join(root, 'personas');
 const KNOWN_TIERS = ['best', 'best-value', 'minimum'];
+const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
 
 async function loadPersonaFiles() {
-  const entries = await readdir(personasDir);
-  return entries.filter((name) => name.endsWith('.json')).sort();
+  const entries = await readdir(personasDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+    .map((entry) => entry.name)
+    .sort();
 }
 
 function validatePersona(filename, persona) {
@@ -22,16 +26,16 @@ function validatePersona(filename, persona) {
     return errors;
   }
 
-  if (typeof persona.id !== 'string' || persona.id.length === 0) {
+  if (!isNonEmptyString(persona.id)) {
     errors.push('missing required string field: id');
   } else if (persona.id !== expectedId) {
     errors.push(`id "${persona.id}" does not match filename "${expectedId}"`);
   }
 
-  if (typeof persona.intent !== 'string' || persona.intent.length === 0) {
+  if (!isNonEmptyString(persona.intent)) {
     errors.push('missing required string field: intent');
   }
-  if (typeof persona.description !== 'string' || persona.description.length === 0) {
+  if (!isNonEmptyString(persona.description)) {
     errors.push('missing required string field: description');
   }
 
@@ -48,13 +52,13 @@ function validatePersona(filename, persona) {
           errors.push(`skills[${idx}] must be an object`);
           return;
         }
-        if (typeof skill.id !== 'string' || skill.id.length === 0) {
+        if (!isNonEmptyString(skill.id)) {
           errors.push(`skills[${idx}].id must be a non-empty string`);
         }
-        if (typeof skill.source !== 'string' || skill.source.length === 0) {
+        if (!isNonEmptyString(skill.source)) {
           errors.push(`skills[${idx}].source must be a non-empty string`);
         }
-        if (typeof skill.description !== 'string' || skill.description.length === 0) {
+        if (!isNonEmptyString(skill.description)) {
           errors.push(`skills[${idx}].description must be a non-empty string`);
         }
       });
@@ -77,17 +81,17 @@ function validatePersona(filename, persona) {
       errors.push(`unknown tier "${tierName}" (expected one of: ${KNOWN_TIERS.join(', ')})`);
       continue;
     }
-    if (typeof tier !== 'object' || tier === null) {
+    if (typeof tier !== 'object' || tier === null || Array.isArray(tier)) {
       errors.push(`tiers.${tierName} must be an object`);
       continue;
     }
-    if (typeof tier.harness !== 'string' || tier.harness.length === 0) {
+    if (!isNonEmptyString(tier.harness)) {
       errors.push(`tiers.${tierName}.harness must be a non-empty string`);
     }
-    if (typeof tier.model !== 'string' || tier.model.length === 0) {
+    if (!isNonEmptyString(tier.model)) {
       errors.push(`tiers.${tierName}.model must be a non-empty string`);
     }
-    if (typeof tier.systemPrompt !== 'string' || tier.systemPrompt.length === 0) {
+    if (!isNonEmptyString(tier.systemPrompt)) {
       errors.push(`tiers.${tierName}.systemPrompt must be a non-empty string`);
     }
     if (
