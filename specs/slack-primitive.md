@@ -49,7 +49,7 @@ Same as github-primitive: **the workflow author writes one file**. `runtime: 'au
 
 Cloud's lambda already wires `Resource.NangoSecretKey.value` and resolves `(workspaceId, provider) → connectionId`. The Slack primitive's `cloud-runtime` reuses that resolver — no new resource binding.
 
-For Slack, we expect the connection to be a **bot user OAuth token** (xoxb-_), not user-token (xoxp-_). Posting and reading replies both work with `chat:write`, `channels:history`, and `groups:history` scopes. The primitive validates scopes on first call and throws a typed error early if they're missing.
+For Slack, we expect the connection to be a **bot user OAuth token** (`xoxb-*`), not user-token (`xoxp-*`). Posting and reading replies both work with `chat:write`, `channels:history`, and `groups:history` scopes. The primitive validates scopes on first call and throws a typed error early if they're missing.
 
 ## 4. Public API
 
@@ -106,7 +106,7 @@ createSlackStep({
     text: 'I found two AWS accounts that match `prod-*`. Which one should I deploy to?\n  • acct-1234 (us-east-1, last modified 2 weeks ago)\n  • acct-5678 (us-west-2, last modified yesterday)\nReply with `1` or `2`.',
 
     // How long to wait before failing the step
-    timeoutSeconds: 1800,           // 30 min default; required to set explicitly
+    timeoutSeconds: 1800,           // required: caller must set explicitly
 
     // Who is allowed to answer. Default: anyone in the channel.
     allowedReplyFrom?: string[],    // ['@khaliq']

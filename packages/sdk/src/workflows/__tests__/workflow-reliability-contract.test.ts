@@ -29,7 +29,9 @@ function makeDb(): WorkflowDb {
       const existing = steps.get(id);
       if (existing) steps.set(id, { ...existing, ...patch });
     }),
-    getStepsByRunId: vi.fn(async (runId: string) => [...steps.values()].filter((step) => step.runId === runId)),
+    getStepsByRunId: vi.fn(async (runId: string) =>
+      [...steps.values()].filter((step) => step.runId === runId).map((step) => ({ ...step }))
+    ),
   };
 }
 
