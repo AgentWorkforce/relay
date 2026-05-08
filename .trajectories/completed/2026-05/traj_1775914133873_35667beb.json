@@ -8,8 +8,9 @@
       "id": "9915b02beabe8e11e3101c6c"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-04-11T13:28:53.873Z",
+  "completedAt": "2026-05-08T13:33:48.161Z",
   "agents": [
     {
       "name": "orchestrator",
@@ -23,6 +24,7 @@
       "title": "Planning",
       "agentName": "orchestrator",
       "startedAt": "2026-04-11T13:28:53.873Z",
+      "endedAt": "2026-05-08T13:33:48.161Z",
       "events": [
         {
           "ts": 1775914133873,
@@ -36,5 +38,13 @@
         }
       ]
     }
-  ]
+  ],
+  "retrospective": {
+    "summary": "merged",
+    "approach": "Standard approach",
+    "confidence": 0.8
+  },
+  "commits": [],
+  "filesChanged": [],
+  "tags": []
 }

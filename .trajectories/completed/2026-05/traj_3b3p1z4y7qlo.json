@@ -9,8 +9,9 @@
       "id": "7b3cd6bed0179c78ce57fa38"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-04-20T13:16:22.009Z",
+  "completedAt": "2026-05-08T13:33:40.636Z",
   "agents": [
     {
       "name": "orchestrator",
@@ -233,6 +234,7 @@
       "title": "Execution: review",
       "agentName": "reviewer",
       "startedAt": "2026-04-20T13:30:02.551Z",
+      "endedAt": "2026-05-08T13:33:40.636Z",
       "events": [
         {
           "ts": 1776691802551,
@@ -274,6 +276,11 @@
       ]
     }
   ],
+  "retrospective": {
+    "summary": "merged",
+    "approach": "Standard approach",
+    "confidence": 0.8
+  },
   "commits": [],
   "filesChanged": [],
   "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay",
