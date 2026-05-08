@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { workflow } from '../builder.js';
 import { WorkflowRunner, type WorkflowDb } from '../runner.js';
 import type { RelayYamlConfig, WorkflowRunRow, WorkflowStepRow } from '../types.js';
 
@@ -60,6 +61,65 @@ function baseConfig(overrides: Partial<RelayYamlConfig> = {}): RelayYamlConfig {
 }
 
 describe('workflow reliability contract', () => {
+  it('makes SDK builder workflows repairable by default', () => {
+    const config = workflow('default-reliable')
+      .agent('fixer', { cli: 'claude', role: 'implementation engineer' })
+      .step('verify', { type: 'deterministic', command: 'npm test' })
+      .toConfig();
+
+    expect(config.errorHandling).toMatchObject({
+      strategy: 'retry',
+      maxRetries: 2,
+      retryDelayMs: 1000,
+      repairRetries: 2,
+    });
+  });
+
+  it('offers reliable and repairable presets for workflow authors', () => {
+    const reliable = workflow('reliable')
+      .agent('fixer', { cli: 'claude', role: 'implementation engineer' })
+      .step('verify', { type: 'deterministic', command: 'npm test' })
+      .reliable({ repairAgent: 'fixer', repairRetries: 3 })
+      .toConfig();
+    const repairable = workflow('repairable')
+      .agent('fixer', { cli: 'claude', role: 'implementation engineer' })
+      .step('verify', { type: 'deterministic', command: 'npm test' })
+      .repairable({ maxRetries: 4 })
+      .toConfig();
+
+    expect(reliable.errorHandling).toMatchObject({
+      strategy: 'retry',
+      maxRetries: 3,
+      repairAgent: 'fixer',
+      repairRetries: 3,
+    });
+    expect(repairable.errorHandling).toMatchObject({
+      strategy: 'retry',
+      maxRetries: 4,
+      repairRetries: 4,
+    });
+  });
+
+  it('applies repair-aware defaults to raw runner configs with agents', async () => {
+    const executeDeterministicStep = vi
+      .fn()
+      .mockResolvedValueOnce({ output: 'missing artifact', exitCode: 1 })
+      .mockResolvedValueOnce({ output: 'artifact exists', exitCode: 0 });
+    const executeAgentStep = vi.fn(async () => 'created artifact');
+    const runner = new WorkflowRunner({
+      db: makeDb(),
+      workspaceId: 'ws-test',
+      cwd: process.cwd(),
+      executor: { executeDeterministicStep, executeAgentStep },
+    });
+
+    const run = await runner.execute(baseConfig(), 'default');
+
+    expect(run.status, run.error).toBe('completed');
+    expect(executeAgentStep).toHaveBeenCalledTimes(1);
+    expect(executeDeterministicStep).toHaveBeenCalledTimes(2);
+  });
+
   it('routes repairable deterministic failures through a repair agent before retrying', async () => {
     const executeDeterministicStep = vi
       .fn()
@@ -378,6 +438,129 @@ describe('workflow reliability contract', () => {
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it('repairs malformed agent artifacts before retrying the agent step', async () => {
+    const executeAgentStep = vi.fn(async (step) => {
+      if (step.name.includes('-repair-')) return 'patched artifact instructions';
+      if ((executeAgentStep as any).mock.calls.filter(([s]: any[]) => s.name === 'write-artifact').length === 1) {
+        return 'plain prose without required metadata';
+      }
+      return 'artifact complete\nRICKY_MASTER_CHILD_RUN_VERIFIED';
+    });
+    const runner = new WorkflowRunner({
+      db: makeDb(),
+      workspaceId: 'ws-test',
+      cwd: process.cwd(),
+      executor: { executeAgentStep },
+    });
+
+    const run = await runner.execute(
+      baseConfig({
+        workflows: [
+          {
+            name: 'default',
+            steps: [
+              {
+                name: 'write-artifact',
+                agent: 'fixer',
+                task: 'Write a structured workflow artifact.',
+                verification: {
+                  type: 'output_contains',
+                  value: 'RICKY_MASTER_CHILD_RUN_VERIFIED',
+                },
+              },
+            ],
+          },
+        ],
+      }),
+      'default'
+    );
+
+    expect(run.status, run.error).toBe('completed');
+    expect(executeAgentStep).toHaveBeenCalledTimes(3);
+    expect((executeAgentStep as any).mock.calls[1][0]).toMatchObject({ name: 'write-artifact-repair-1' });
+    expect((executeAgentStep as any).mock.calls[1][2]).toContain('invalid artifact');
+  });
+
+  it('repairs child INVALID_ARTIFACT failures instead of stopping the master at attempt one', async () => {
+    const executeAgentStep = vi.fn(async (step) => {
+      if (step.name.includes('-repair-')) return 'repaired child workflow artifact';
+      const childAttempts = (executeAgentStep as any).mock.calls.filter(
+        ([s]: any[]) => s.name === 'run-update-config-2'
+      ).length;
+      if (childAttempts === 1) {
+        return 'Execution: blocked — INVALID_ARTIFACT at final-hard-validation';
+      }
+      return 'Execution: success — run child-fixed\nRICKY_MASTER_CHILD_RUN_VERIFIED';
+    });
+    const runner = new WorkflowRunner({
+      db: makeDb(),
+      workspaceId: 'ws-test',
+      cwd: process.cwd(),
+      executor: { executeAgentStep },
+    });
+
+    const run = await runner.execute(
+      baseConfig({
+        workflows: [
+          {
+            name: 'default',
+            steps: [
+              {
+                name: 'run-update-config-2',
+                agent: 'fixer',
+                task: 'Run the child workflow and return structured evidence.',
+                verification: {
+                  type: 'output_contains',
+                  value: 'RICKY_MASTER_CHILD_RUN_VERIFIED',
+                },
+              },
+              {
+                name: 'final-signoff',
+                type: 'deterministic',
+                command: 'true',
+                dependsOn: ['run-update-config-2'],
+              },
+            ],
+          },
+        ],
+      }),
+      'default'
+    );
+
+    expect(run.status, run.error).toBe('completed');
+    expect(executeAgentStep).toHaveBeenCalledTimes(3);
+    expect((executeAgentStep as any).mock.calls[1][2]).toContain('INVALID_ARTIFACT');
+  });
+
+  it('keeps retrying the failed gate when a repair agent returns an unusable fix', async () => {
+    const executeDeterministicStep = vi
+      .fn()
+      .mockResolvedValueOnce({ output: 'INVALID_ARTIFACT', exitCode: 1 })
+      .mockResolvedValueOnce({ output: 'still INVALID_ARTIFACT', exitCode: 1 })
+      .mockResolvedValueOnce({ output: 'artifact valid', exitCode: 0 });
+    const executeAgentStep = vi
+      .fn()
+      .mockResolvedValueOnce('malformed repair response without fenced artifact')
+      .mockResolvedValueOnce('valid repair response with metadata');
+    const runner = new WorkflowRunner({
+      db: makeDb(),
+      workspaceId: 'ws-test',
+      cwd: process.cwd(),
+      executor: { executeDeterministicStep, executeAgentStep },
+    });
+
+    const run = await runner.execute(
+      baseConfig({
+        errorHandling: { strategy: 'retry', repairRetries: 2, retryDelayMs: 1, repairAgent: 'fixer' },
+      }),
+      'default'
+    );
+
+    expect(run.status, run.error).toBe('completed');
+    expect(executeAgentStep).toHaveBeenCalledTimes(2);
+    expect(executeDeterministicStep).toHaveBeenCalledTimes(3);
   });
 
   it('does not run repair agents for fail-fast workflows even when agents are present', async () => {

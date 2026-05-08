@@ -1,0 +1,53 @@
+{
+  "id": "traj_bdrlknyl8twj",
+  "version": 1,
+  "task": {
+    "title": "Add workflow reliability defaults and E2E matrix"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-08T17:54:45.069Z",
+  "completedAt": "2026-05-08T18:05:37.305Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-08T18:02:02.075Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_sqrkpwofov15",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-08T18:02:02.075Z",
+      "endedAt": "2026-05-08T18:05:37.305Z",
+      "events": [
+        {
+          "ts": 1778263322077,
+          "type": "decision",
+          "content": "Made retry-mode workflows repair-aware by default: Made retry-mode workflows repair-aware by default",
+          "raw": {
+            "question": "Made retry-mode workflows repair-aware by default",
+            "chosen": "Made retry-mode workflows repair-aware by default",
+            "alternatives": [],
+            "reasoning": "Workflow reliability is now a product contract: SDK builder workflows and raw runner configs with agents get bounded repair retries unless callers explicitly choose fail-fast, continue, or repairRetries: 0. Agent/artifact failures now invoke repair before retrying, not only deterministic gates."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added Relay workflow reliability defaults, repairable builder presets, agent-step repair before retry, API-agent verification through the normal agent loop, worktree-step validation, a dedicated reliability CI job, and contract/E2E coverage for malformed artifacts, child INVALID_ARTIFACT recovery, deterministic gate repair, fan-out isolation, master-child, worktree-backed, deterministic-only, and agent-plus-gate workflow shapes.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay-workflow-reliability-defaults",
+  "tags": [],
+  "_trace": {
+    "startRef": "0e536f46028fb008342efc0908342408984b37d0",
+    "endRef": "0e536f46028fb008342efc0908342408984b37d0"
+  }
+}

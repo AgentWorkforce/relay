@@ -1,0 +1,56 @@
+name: Workflow Reliability
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/workflow-reliability.yml'
+      - 'packages/sdk/src/workflows/**'
+      - 'packages/sdk/src/__tests__/**'
+      - 'packages/sdk/package.json'
+      - 'packages/workflow-types/**'
+      - 'package-lock.json'
+      - 'package.json'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/workflow-reliability.yml'
+      - 'packages/sdk/src/workflows/**'
+      - 'packages/sdk/src/__tests__/**'
+      - 'packages/sdk/package.json'
+      - 'packages/workflow-types/**'
+      - 'package-lock.json'
+      - 'package.json'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflow-reliability:
+    name: SDK Workflow Reliability
+    runs-on: ubuntu-latest
+    env:
+      NPM_CONFIG_FUND: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck SDK workflows
+        run: npm --prefix packages/sdk run check
+
+      - name: Run workflow reliability contract matrix
+        run: |
+          npx vitest run --root packages/sdk --config vitest.config.ts \
+            src/workflows/__tests__/workflow-reliability-contract.test.ts \
+            src/workflows/__tests__/workflow-reliability-e2e.test.ts
