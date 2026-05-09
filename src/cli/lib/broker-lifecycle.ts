@@ -2,9 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AgentRelayClient } from '@agent-relay/sdk';
+import { track } from '@agent-relay/telemetry';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
 import { buildBundledRelaycastMcpCommand } from './relaycast-mcp-command.js';
+import { errorClassName } from './telemetry-helpers.js';
 
 type UpOptions = {
   dashboard?: boolean;
@@ -84,6 +86,84 @@ export function readBrokerConnection(dataDir: string): BrokerConnection | null {
 
 function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+type ErrorWithCode = { code?: unknown };
+
+function errorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const code = (err as ErrorWithCode).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+/**
+ * Extract a human-meaningful detail string from an error, walking `err.cause`.
+ *
+ * Node's native `fetch()` throws `TypeError: fetch failed` for any network
+ * problem and stuffs the real reason (ECONNREFUSED, ENOTFOUND, AbortError,
+ * UND_ERR_CONNECT_TIMEOUT, …) into `err.cause`. Without unwrapping, every
+ * outbound HTTP failure looks identical to the user.
+ *
+ * Exported for testing.
+ */
+export function describeError(err: unknown): string {
+  const top = toErrorMessage(err);
+  if (!(err instanceof Error) || !err.cause) return top;
+
+  // Walk the cause chain and collect the deepest message + any error codes.
+  const codes: string[] = [];
+  let detail: string | undefined;
+  let cursor: unknown = err.cause;
+  let depth = 0;
+  while (cursor && depth < 5) {
+    const code = errorCode(cursor);
+    if (code && !codes.includes(code)) codes.push(code);
+    if (cursor instanceof Error && cursor.message) {
+      detail = cursor.message;
+    }
+    cursor = cursor instanceof Error ? cursor.cause : undefined;
+    depth += 1;
+  }
+
+  const parts = [top];
+  if (detail && detail !== top) parts.push(detail);
+  if (codes.length > 0) parts.push(`[${codes.join(', ')}]`);
+  return parts.join(' — ');
+}
+
+/**
+ * Pick the best `error_class` for telemetry. Prefer a network-style code from
+ * `err.cause` (ECONNREFUSED etc.) over the generic constructor name (TypeError)
+ * — a code is more actionable in PostHog and matches the schema's example
+ * values for `BrokerStartFailedEvent.error_class`.
+ *
+ * Exported for testing.
+ */
+export function classifyBrokerStartError(err: unknown): string {
+  let cursor: unknown = err;
+  let depth = 0;
+  while (cursor && depth < 5) {
+    const code = errorCode(cursor);
+    if (code) return code;
+    cursor = cursor instanceof Error ? cursor.cause : undefined;
+    depth += 1;
+  }
+  return errorClassName(err) ?? 'Error';
+}
+
+/** Exported for testing. */
+export function classifyBrokerStartStage(
+  err: unknown,
+  message: string,
+  wantsDashboard: boolean
+): string {
+  if (errorCode(err) === 'EADDRINUSE' && wantsDashboard) return 'dashboard_port';
+  if (isBrokerAlreadyRunningError(message)) return 'already_running';
+  if (/fetch failed/i.test(message)) return 'connect';
+  if (/Broker did not report API port/i.test(message)) return 'spawn';
+  if (/Broker process exited with code/i.test(message)) return 'spawn';
+  if (/ENOENT/i.test(message) && /broker/i.test(message)) return 'resolve_binary';
+  return 'startup';
 }
 
 async function resolveApiPortWithFallback(
@@ -1126,14 +1206,18 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     await deps.holdOpen();
   } catch (err: unknown) {
     await shutdownOnce();
-    const withCode = err as { code?: string };
     const message = toErrorMessage(err);
-    if (withCode.code === 'EADDRINUSE' && wantsDashboard) {
+    const stage = classifyBrokerStartStage(err, message, wantsDashboard);
+    track('broker_start_failed', {
+      stage,
+      error_class: classifyBrokerStartError(err),
+    });
+    if (errorCode(err) === 'EADDRINUSE' && wantsDashboard) {
       deps.error(`Dashboard port ${dashboardPort} is already in use.`);
     } else if (isBrokerAlreadyRunningError(message)) {
       reportAlreadyRunningError(message, paths.dataDir, deps);
     } else {
-      deps.error(`Failed to start broker: ${message}`);
+      deps.error(`Failed to start broker: ${describeError(err)}`);
     }
     deps.exit(1);
   }

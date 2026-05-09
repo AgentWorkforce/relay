@@ -269,17 +269,45 @@ export class AgentRelayClient {
     });
     client.child = child;
 
-    // Broker may still be connecting to Relaycast. Retry getSession
-    // with backoff if we get 503 (broker warming up).
+    // The broker prints "API listening on …" the moment its TCP listener is
+    // bound, but it still needs to complete a Relaycast handshake before
+    // `getSession()` will return. Two failure modes to handle:
+    //
+    //   1. Broker is alive and warming up — the startup-only API responds
+    //      503 until the handshake completes. Poll until it succeeds.
+    //   2. Broker died during the handshake (e.g. Relaycast unreachable) —
+    //      the in-flight fetch sees the socket drop as `TypeError: fetch
+    //      failed`, which is uninformative on its own.
+    //
+    // We race each `getSession()` against `brokerExited` so case (2) reports
+    // as the actual broker exit (with its stderr tail and exit code), not as
+    // a mystery network error. No backoff for the death case — we know it
+    // immediately. 503 polling stays simple at 1s intervals.
+    const brokerExited = new Promise<never>((_, reject) => {
+      child.once('exit', (code) => {
+        reject(
+          new Error(
+            formatBrokerStartupError(
+              `Broker process exited with code ${code} during initial handshake`,
+              child,
+              { binaryPath, args, cwd, stdoutLines, stderrLines }
+            )
+          )
+        );
+      });
+    });
+    // Suppress unhandledRejection if the race is won by getSession before
+    // the broker exits later (e.g. on normal shutdown).
+    brokerExited.catch(() => {});
+
     let session: SessionInfo | undefined;
     for (let attempt = 0; attempt < 10; attempt++) {
       try {
-        session = await client.getSession();
+        session = await Promise.race([client.getSession(), brokerExited]);
         break;
       } catch (err) {
-        const is503 =
-          err instanceof Error &&
-          (err.message.includes('503') || err.message.includes('Service Unavailable'));
+        const message = err instanceof Error ? err.message : String(err);
+        const is503 = message.includes('503') || message.includes('Service Unavailable');
         if (!is503 || attempt >= 9) throw err;
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
