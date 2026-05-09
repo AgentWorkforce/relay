@@ -129,7 +129,8 @@ jobs:
               if [ -z "$TARBALL_URL" ]; then
                 missing+=("${EXPECTED_BROKER}@$VERSION (no tarball url)")
               else
-                STATUS=$(curl -s -o /dev/null -w "%{http_code}" -I "$TARBALL_URL" || echo "000")
+                STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -I \
+                  --connect-timeout 5 --max-time 15 "$TARBALL_URL" || echo "000")
                 if [ "$STATUS" != "200" ]; then
                   missing+=("${EXPECTED_BROKER}@$VERSION (tarball HTTP $STATUS)")
                 fi
