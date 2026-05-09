@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/github-primitive",
-  "version": "6.0.12",
+  "version": "6.0.13",
   "description": "GitHub workflow primitive for Agent Relay",
   "type": "module",
   "main": "dist/index.js",
@@ -32,7 +32,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/workflow-types": "6.0.12"
+    "@agent-relay/workflow-types": "6.0.13"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

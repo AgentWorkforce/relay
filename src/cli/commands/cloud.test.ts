@@ -149,6 +149,41 @@ describe('registerCloudCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Schedule created: sched-1');
   });
 
+  it('schedule creates one-time workflow schedules', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.scheduleWorkflow.mockResolvedValueOnce({
+      id: 'sched-at-1',
+      name: 'One-off eval',
+      scheduleType: 'once',
+      scheduledAt: '2026-05-10T09:00:00.000Z',
+      timezone: 'UTC',
+      status: 'active',
+      lastTriggeredRunId: null,
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'schedule',
+      'workflow.yaml',
+      '--at',
+      '2026-05-10T09:00:00Z',
+      '--name',
+      'One-off eval',
+    ]);
+
+    expect(cloudMocks.scheduleWorkflow).toHaveBeenCalledWith(
+      'workflow.yaml',
+      expect.objectContaining({
+        at: '2026-05-10T09:00:00Z',
+        name: 'One-off eval',
+      })
+    );
+    expect(cloudMocks.scheduleWorkflow.mock.calls[0][1]).not.toHaveProperty('cron');
+    expect(deps.log).toHaveBeenCalledWith('Schedule created: sched-at-1');
+  });
+
   it('schedules lists repeatable workflow schedules', async () => {
     const { program, deps } = createHarness();
     cloudMocks.listWorkflowSchedules.mockResolvedValueOnce([

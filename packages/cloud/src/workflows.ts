@@ -693,7 +693,11 @@ export async function scheduleWorkflow(
   if (hasCron) {
     requestBody.cron_expression = options.cron?.trim();
   } else {
-    requestBody.scheduled_at = new Date(String(options.at)).toISOString();
+    const scheduledAt = new Date(String(options.at));
+    if (Number.isNaN(scheduledAt.getTime())) {
+      throw new Error(`Invalid date for --at: ${options.at}`);
+    }
+    requestBody.scheduled_at = scheduledAt.toISOString();
   }
 
   const { response } = await authorizedApiFetch(auth, '/api/v1/workflows/schedules', {
@@ -929,11 +933,25 @@ function isWorkflowSchedule(value: unknown): value is WorkflowSchedule {
     return false;
   }
   const record = value as Record<string, unknown>;
+  const hasNullableString = (field: string): boolean =>
+    record[field] === null || typeof record[field] === 'string';
   return (
     typeof record.id === 'string' &&
+    typeof record.relaycronScheduleId === 'string' &&
+    typeof record.userId === 'string' &&
+    typeof record.workspaceId === 'string' &&
+    typeof record.organizationId === 'string' &&
     typeof record.name === 'string' &&
+    hasNullableString('description') &&
     (record.scheduleType === 'once' || record.scheduleType === 'cron') &&
-    typeof record.status === 'string'
+    hasNullableString('cronExpression') &&
+    hasNullableString('scheduledAt') &&
+    typeof record.timezone === 'string' &&
+    typeof record.status === 'string' &&
+    hasNullableString('lastTriggeredRunId') &&
+    hasNullableString('lastTriggeredAt') &&
+    typeof record.createdAt === 'string' &&
+    typeof record.updatedAt === 'string'
   );
 }
 

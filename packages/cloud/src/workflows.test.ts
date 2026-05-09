@@ -444,12 +444,39 @@ describe('workflow schedules', () => {
     vi.clearAllMocks();
   });
 
-  it('creates a cron schedule without one-time code sync fields', async () => {
+  async function writeScheduleWorkflow(): Promise<string> {
     const workflowPath = path.join(tmpRoot, 'workflow.yaml');
     await writeFile(
       workflowPath,
       ['version: "1.0"', 'name: eval', 'swarm:', '  pattern: dag', 'agents: []', 'workflows: []'].join('\n')
     );
+    return workflowPath;
+  }
+
+  function scheduleRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: 'sched-1',
+      relaycronScheduleId: 'relaycron-sched-1',
+      userId: 'user-1',
+      workspaceId: 'workspace-1',
+      organizationId: 'org-1',
+      name: 'Hourly eval',
+      description: null,
+      scheduleType: 'cron',
+      cronExpression: '0 * * * *',
+      scheduledAt: null,
+      timezone: 'UTC',
+      status: 'active',
+      lastTriggeredRunId: null,
+      lastTriggeredAt: null,
+      createdAt: '2026-05-09T00:00:00.000Z',
+      updatedAt: '2026-05-09T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('creates a cron schedule without one-time code sync fields', async () => {
+    const workflowPath = await writeScheduleWorkflow();
     const scheduleBodies: unknown[] = [];
     authorizedApiFetchMock.mockImplementation(async (_auth, requestPath, init) => {
       expect(requestPath).toBe('/api/v1/workflows/schedules');
@@ -458,14 +485,7 @@ describe('workflow schedules', () => {
         auth: { accessToken: 'token' },
         response: new Response(
           JSON.stringify({
-            schedule: {
-              id: 'sched-1',
-              name: 'Hourly eval',
-              scheduleType: 'cron',
-              cronExpression: '0 * * * *',
-              timezone: 'UTC',
-              status: 'active',
-            },
+            schedule: scheduleRecord(),
           }),
           { status: 201, headers: { 'Content-Type': 'application/json' } }
         ),
@@ -495,21 +515,75 @@ describe('workflow schedules', () => {
     ).toBeUndefined();
   });
 
+  it('creates a one-time schedule without one-time code sync fields', async () => {
+    const workflowPath = await writeScheduleWorkflow();
+    const scheduleBodies: unknown[] = [];
+    authorizedApiFetchMock.mockImplementation(async (_auth, requestPath, init) => {
+      expect(requestPath).toBe('/api/v1/workflows/schedules');
+      scheduleBodies.push(JSON.parse(String(init?.body)));
+      return {
+        auth: { accessToken: 'token' },
+        response: new Response(
+          JSON.stringify({
+            schedule: scheduleRecord({
+              name: 'One-off eval',
+              scheduleType: 'once',
+              cronExpression: null,
+              scheduledAt: '2026-05-10T09:00:00.000Z',
+            }),
+          }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        ),
+      };
+    });
+
+    const result = await scheduleWorkflow(workflowPath, {
+      at: '2026-05-10T09:00:00Z',
+      name: 'One-off eval',
+    });
+
+    expect(result.id).toBe('sched-1');
+    expect(scheduleBodies[0]).toMatchObject({
+      name: 'One-off eval',
+      schedule_type: 'once',
+      scheduled_at: '2026-05-10T09:00:00.000Z',
+      timezone: 'UTC',
+      workflowRequest: {
+        fileType: 'yaml',
+      },
+    });
+    expect((scheduleBodies[0] as { cron_expression?: unknown }).cron_expression).toBeUndefined();
+    expect(
+      (scheduleBodies[0] as { workflowRequest: Record<string, unknown> }).workflowRequest.runId
+    ).toBeUndefined();
+    expect(
+      (scheduleBodies[0] as { workflowRequest: Record<string, unknown> }).workflowRequest.s3CodeKey
+    ).toBeUndefined();
+  });
+
+  it('rejects invalid schedule option combinations', async () => {
+    await expect(
+      scheduleWorkflow('workflow.yaml', { cron: '0 * * * *', at: '2026-05-10T09:00:00Z' })
+    ).rejects.toThrow('Provide exactly one of --cron or --at.');
+    await expect(scheduleWorkflow('workflow.yaml', {})).rejects.toThrow(
+      'Provide exactly one of --cron or --at.'
+    );
+  });
+
+  it('rejects invalid one-time schedule timestamps with a clear error', async () => {
+    const workflowPath = await writeScheduleWorkflow();
+
+    await expect(scheduleWorkflow(workflowPath, { at: 'next tuesday' })).rejects.toThrow(
+      'Invalid date for --at: next tuesday'
+    );
+  });
+
   it('lists workflow schedules', async () => {
     authorizedApiFetchMock.mockResolvedValueOnce({
       auth: { accessToken: 'token' },
       response: new Response(
         JSON.stringify({
-          schedules: [
-            {
-              id: 'sched-1',
-              name: 'Hourly eval',
-              scheduleType: 'cron',
-              cronExpression: '0 * * * *',
-              timezone: 'UTC',
-              status: 'active',
-            },
-          ],
+          schedules: [scheduleRecord(), scheduleRecord({ id: 123 })],
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       ),

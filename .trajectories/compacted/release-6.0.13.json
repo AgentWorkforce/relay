@@ -1,0 +1,114 @@
+{
+  "id": "compact_iueavxbs31gn",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-05-09T10:02:49.903Z",
+  "sourceTrajectories": [
+    "traj_lieyyspidhfj"
+  ],
+  "dateRange": {
+    "start": "2026-05-09T08:37:17.563Z",
+    "end": "2026-05-09T08:47:54.686Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Break SDK and Slack primitive package cycle",
+          "chosen": "Break SDK and Slack primitive package cycle",
+          "reasoning": "CI failed because turbo detected @agent-relay/sdk and @agent-relay/slack-primitive as cyclic build dependencies; the SDK can depend on Slack primitive, but Slack primitive examples can resolve SDK from the workspace without declaring it as a devDependency.",
+          "fromTrajectory": "traj_lieyyspidhfj"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    ".github/workflows/publish.yml",
+    ".github/workflows/workflow-reliability.yml",
+    ".trajectories/active/traj_lieyyspidhfj.json",
+    ".trajectories/compacted/compact_j5u7qhaw4q6a_2026-05-08.md",
+    ".trajectories/completed/2026-05/traj_34b1u84b19gz.json",
+    ".trajectories/completed/2026-05/traj_34b1u84b19gz.md",
+    ".trajectories/completed/2026-05/traj_6ujzpx82gqs9.json",
+    ".trajectories/completed/2026-05/traj_6ujzpx82gqs9.md",
+    ".trajectories/completed/2026-05/traj_bdrlknyl8twj.json",
+    ".trajectories/completed/2026-05/traj_bdrlknyl8twj.md",
+    ".trajectories/completed/2026-05/traj_k7njijv51iq4.json",
+    ".trajectories/completed/2026-05/traj_k7njijv51iq4.md",
+    ".trajectories/completed/2026-05/traj_tavtex0db4b0.json",
+    ".trajectories/completed/2026-05/traj_tavtex0db4b0.md",
+    ".trajectories/index.json",
+    "CHANGELOG.md",
+    "package-lock.json",
+    "package.json",
+    "packages/acp-bridge/package.json",
+    "packages/brand/package.json",
+    "packages/broker-darwin-arm64/package.json",
+    "packages/broker-darwin-x64/package.json",
+    "packages/broker-linux-arm64/package.json",
+    "packages/broker-linux-x64/package.json",
+    "packages/broker-win32-x64/package.json",
+    "packages/browser-primitive/package.json",
+    "packages/cloud/package.json",
+    "packages/config/package.json",
+    "packages/credential-proxy/package.json",
+    "packages/gateway/package.json",
+    "packages/github-primitive/package.json",
+    "packages/hooks/package.json",
+    "packages/memory/package.json",
+    "packages/openclaw/package.json",
+    "packages/personas/package.json",
+    "packages/policy/package.json",
+    "packages/sdk-py/pyproject.toml",
+    "packages/sdk/package.json",
+    "packages/sdk/src/client.ts",
+    "packages/sdk/src/workflows/README.md",
+    "packages/sdk/src/workflows/__tests__/workflow-reliability-contract.test.ts",
+    "packages/sdk/src/workflows/__tests__/workflow-reliability-e2e.test.ts",
+    "packages/sdk/src/workflows/builder.ts",
+    "packages/sdk/src/workflows/runner.ts",
+    "packages/sdk/src/workflows/schema.json",
+    "packages/sdk/src/workflows/types.ts",
+    "packages/sdk/tsconfig.build.json",
+    "packages/sdk/tsconfig.json",
+    "packages/slack-primitive/examples/README.md",
+    "packages/slack-primitive/package.json",
+    "packages/slack-primitive/src/__tests__/cloud-relay-runtime.test.ts",
+    "packages/slack-primitive/src/__tests__/post-message.test.ts",
+    "packages/slack-primitive/src/__tests__/runtime-selection.test.ts",
+    "packages/slack-primitive/src/__tests__/workflow-step.test.ts",
+    "packages/slack-primitive/src/actions/post-message.ts",
+    "packages/slack-primitive/src/actions/resolve-user.ts",
+    "packages/slack-primitive/src/adapter.ts",
+    "packages/slack-primitive/src/cloud-relay-runtime.ts",
+    "packages/slack-primitive/src/noop-runtime.ts",
+    "packages/slack-primitive/src/types.ts",
+    "packages/slack-primitive/src/workflow-step.ts",
+    "packages/telemetry/package.json",
+    "packages/trajectory/package.json",
+    "packages/user-directory/package.json",
+    "packages/utils/package.json",
+    "packages/workflow-types/package.json",
+    "src/cli/lib/broker-lifecycle.test.ts",
+    "src/cli/lib/broker-lifecycle.ts"
+  ],
+  "commits": [
+    "6fd439f1",
+    "bdd8bab7",
+    "2e3d8e9f",
+    "557fca0d",
+    "622ec7c7",
+    "03c174e5",
+    "4814ee3d"
+  ]
+}

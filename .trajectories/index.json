@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-09T19:44:00.209Z",
+  "lastUpdated": "2026-05-09T19:59:24.500Z",
   "trajectories": {
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -323,21 +323,29 @@
       "status": "completed",
       "startedAt": "2026-05-09T08:37:17.563Z",
       "completedAt": "2026-05-09T08:47:54.686Z",
-      "path": ".trajectories/completed/2026-05/traj_lieyyspidhfj.json"
+      "path": ".trajectories/completed/2026-05/traj_lieyyspidhfj.json",
+      "compactedInto": "compact_iueavxbs31gn"
     },
     "traj_u4ixmbqqm2y1": {
       "title": "Add cloud workflow schedule CLI",
       "status": "completed",
       "startedAt": "2026-05-09T19:26:42.106Z",
       "completedAt": "2026-05-09T19:29:18.024Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_u4ixmbqqm2y1.json"
+      "path": ".trajectories/completed/2026-05/traj_u4ixmbqqm2y1.json"
     },
     "traj_oyc528j7suvo": {
       "title": "Expose cloud workflow scheduling through Relay SDK",
       "status": "completed",
       "startedAt": "2026-05-09T19:43:34.805Z",
       "completedAt": "2026-05-09T19:44:00.107Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_oyc528j7suvo.json"
+      "path": ".trajectories/completed/2026-05/traj_oyc528j7suvo.json"
+    },
+    "traj_uf8y40ewrfh0": {
+      "title": "Address PR 831 review feedback and conflicts",
+      "status": "completed",
+      "startedAt": "2026-05-09T19:59:24.197Z",
+      "completedAt": "2026-05-09T19:59:24.403Z",
+      "path": ".trajectories/completed/2026-05/traj_uf8y40ewrfh0.json"
     }
   }
 }
