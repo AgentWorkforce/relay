@@ -932,7 +932,7 @@
         "repairRetries": {
           "type": "integer",
           "minimum": 0,
-          "description": "Retry budget for deterministic gate repair when maxRetries is not set. Defaults to 0, so deterministic repair is opt-in."
+          "description": "Retry budget for repair agents before terminal failure. Defaults to the retry budget when repair-capable agents are available; set 0 to disable repair agents."
         }
       }
     }

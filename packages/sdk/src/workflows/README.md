@@ -371,7 +371,7 @@ errorHandling:
   notifyChannel: alerts
 ```
 
-When `errorHandling.strategy: retry` includes an explicit `repairRetries` budget, deterministic step or verification gate failures are treated as repairable work before terminal failure. The runner chooses `errorHandling.repairAgent` when set, otherwise it uses the step's owning/upstream agent when possible, then falls back to the best available workflow agent. The selected agent gets the failed command, working directory, exit information, and captured output, then the deterministic gate is retried.
+Retry-mode workflows are repair-aware by default. Deterministic step failures, verification gate failures, and malformed agent artifacts are treated as repairable work before terminal failure. The runner chooses `errorHandling.repairAgent` when set, otherwise it uses the step's owning/upstream agent when possible, then falls back to the best available workflow agent. The selected agent gets the failed command or agent output, working directory, exit information, and captured evidence, then the failed gate or step is retried. Use `repairRetries: 0`, `strategy: fail-fast`, or `strategy: continue` when a workflow intentionally should not invoke repair agents.
 
 ## Built-in Templates
 
