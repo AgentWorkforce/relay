@@ -16,6 +16,8 @@ export {
 
 export {
   runWorkflow,
+  scheduleWorkflow,
+  listWorkflowSchedules,
   getRunStatus,
   getRunLogs,
   cancelWorkflow,
@@ -57,6 +59,8 @@ export {
   type AuthSessionResponse,
   type WorkflowFileType,
   type RunWorkflowResponse,
+  type WorkflowSchedule,
+  type ScheduleWorkflowOptions,
   type WorkflowLogsResponse,
   type SyncPatchResponse,
   SUPPORTED_PROVIDERS,

@@ -1,0 +1,25 @@
+{
+  "id": "traj_u4ixmbqqm2y1",
+  "version": 1,
+  "task": {
+    "title": "Add cloud workflow schedule CLI"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-09T19:26:42.106Z",
+  "completedAt": "2026-05-09T19:29:18.024Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Added agent-relay cloud schedule/schedules commands backed by the Cloud workflow schedule API.",
+    "approach": "Standard approach",
+    "confidence": 0.84
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "f341463e0e66cf70566eff2dbb05e977e410a016",
+    "endRef": "f341463e0e66cf70566eff2dbb05e977e410a016"
+  }
+}

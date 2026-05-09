@@ -29,7 +29,14 @@ vi.mock('./auth.js', () => ({
   authorizedApiFetch: (...args: unknown[]) => authorizedApiFetchMock(...args),
 }));
 
-import { parseGitHubRemote, parseWorkflowPaths, relativizeWorkflowPath, runWorkflow } from './workflows.js';
+import {
+  listWorkflowSchedules,
+  parseGitHubRemote,
+  parseWorkflowPaths,
+  relativizeWorkflowPath,
+  runWorkflow,
+  scheduleWorkflow,
+} from './workflows.js';
 
 describe('relativizeWorkflowPath', () => {
   let tmpRoot: string;
@@ -417,5 +424,105 @@ describe('runWorkflow code sync', () => {
       s3CodeKey: 'code.tar.gz',
     });
     expect((runBodies[0] as { paths?: unknown }).paths).toBeUndefined();
+  });
+});
+
+describe('workflow schedules', () => {
+  let tmpRoot: string;
+  let originalCwd: string;
+
+  beforeEach(async () => {
+    originalCwd = process.cwd();
+    tmpRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'cloud-schedule-workflow-')));
+    process.chdir(tmpRoot);
+    ensureAuthenticatedMock.mockResolvedValue({ accessToken: 'token' });
+  });
+
+  afterEach(async () => {
+    process.chdir(originalCwd);
+    await rm(tmpRoot, { recursive: true, force: true });
+    vi.clearAllMocks();
+  });
+
+  it('creates a cron schedule without one-time code sync fields', async () => {
+    const workflowPath = path.join(tmpRoot, 'workflow.yaml');
+    await writeFile(
+      workflowPath,
+      ['version: "1.0"', 'name: eval', 'swarm:', '  pattern: dag', 'agents: []', 'workflows: []'].join('\n')
+    );
+    const scheduleBodies: unknown[] = [];
+    authorizedApiFetchMock.mockImplementation(async (_auth, requestPath, init) => {
+      expect(requestPath).toBe('/api/v1/workflows/schedules');
+      scheduleBodies.push(JSON.parse(String(init?.body)));
+      return {
+        auth: { accessToken: 'token' },
+        response: new Response(
+          JSON.stringify({
+            schedule: {
+              id: 'sched-1',
+              name: 'Hourly eval',
+              scheduleType: 'cron',
+              cronExpression: '0 * * * *',
+              timezone: 'UTC',
+              status: 'active',
+            },
+          }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        ),
+      };
+    });
+
+    const result = await scheduleWorkflow(workflowPath, {
+      cron: '0 * * * *',
+      name: 'Hourly eval',
+    });
+
+    expect(result.id).toBe('sched-1');
+    expect(scheduleBodies[0]).toMatchObject({
+      name: 'Hourly eval',
+      schedule_type: 'cron',
+      cron_expression: '0 * * * *',
+      timezone: 'UTC',
+      workflowRequest: {
+        fileType: 'yaml',
+      },
+    });
+    expect(
+      (scheduleBodies[0] as { workflowRequest: Record<string, unknown> }).workflowRequest.runId
+    ).toBeUndefined();
+    expect(
+      (scheduleBodies[0] as { workflowRequest: Record<string, unknown> }).workflowRequest.s3CodeKey
+    ).toBeUndefined();
+  });
+
+  it('lists workflow schedules', async () => {
+    authorizedApiFetchMock.mockResolvedValueOnce({
+      auth: { accessToken: 'token' },
+      response: new Response(
+        JSON.stringify({
+          schedules: [
+            {
+              id: 'sched-1',
+              name: 'Hourly eval',
+              scheduleType: 'cron',
+              cronExpression: '0 * * * *',
+              timezone: 'UTC',
+              status: 'active',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      ),
+    });
+
+    const schedules = await listWorkflowSchedules();
+
+    expect(authorizedApiFetchMock).toHaveBeenCalledWith(
+      { accessToken: 'token' },
+      '/api/v1/workflows/schedules',
+      expect.objectContaining({ headers: { Accept: 'application/json' } })
+    );
+    expect(schedules).toHaveLength(1);
+    expect(schedules[0].id).toBe('sched-1');
   });
 });

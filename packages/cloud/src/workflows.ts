@@ -11,7 +11,9 @@ import {
   defaultApiUrl,
   type WorkflowFileType,
   type RunWorkflowResponse,
+  type ScheduleWorkflowOptions,
   type WorkflowLogsResponse,
+  type WorkflowSchedule,
   type SyncPatchResponse,
   type PathSubmission,
 } from './types.js';
@@ -654,6 +656,90 @@ export async function runWorkflow(
   return payload as RunWorkflowResponse;
 }
 
+export async function scheduleWorkflow(
+  workflowArg: string,
+  options: ScheduleWorkflowOptions = {}
+): Promise<WorkflowSchedule> {
+  const hasCron = typeof options.cron === 'string' && options.cron.trim().length > 0;
+  const hasAt = typeof options.at === 'string' && options.at.trim().length > 0;
+  if (hasCron === hasAt) {
+    throw new Error('Provide exactly one of --cron or --at.');
+  }
+
+  const apiUrl = options.apiUrl ?? defaultApiUrl();
+  const auth = await ensureAuthenticated(apiUrl);
+  const input = await resolveWorkflowInput(workflowArg, options.fileType);
+
+  if (input.fileType === 'ts') {
+    await validateTypeScriptWorkflow(input.workflow);
+  } else if (input.fileType === 'yaml') {
+    console.error('Validating workflow...');
+    validateYamlWorkflow(input.workflow);
+  }
+
+  const requestBody: Record<string, unknown> = {
+    name: options.name?.trim() || path.basename(workflowArg),
+    schedule_type: hasCron ? 'cron' : 'once',
+    timezone: options.timezone?.trim() || 'UTC',
+    workflowRequest: {
+      workflow: input.workflow,
+      fileType: input.fileType,
+      ...(input.sourceFileType ? { sourceFileType: input.sourceFileType } : {}),
+    },
+  };
+  if (options.description?.trim()) {
+    requestBody.description = options.description.trim();
+  }
+  if (hasCron) {
+    requestBody.cron_expression = options.cron?.trim();
+  } else {
+    requestBody.scheduled_at = new Date(String(options.at)).toISOString();
+  }
+
+  const { response } = await authorizedApiFetch(auth, '/api/v1/workflows/schedules', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  const payload = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(`Workflow schedule failed: ${describeResponseError(response, payload)}`);
+  }
+
+  if (!isWorkflowScheduleEnvelope(payload)) {
+    throw new Error('Workflow schedule response was not valid JSON.');
+  }
+
+  return payload.schedule;
+}
+
+export async function listWorkflowSchedules(options: { apiUrl?: string } = {}): Promise<WorkflowSchedule[]> {
+  const apiUrl = options.apiUrl ?? defaultApiUrl();
+  const auth = await ensureAuthenticated(apiUrl);
+  const { response } = await authorizedApiFetch(auth, '/api/v1/workflows/schedules', {
+    headers: { Accept: 'application/json' },
+  });
+
+  const payload = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(`Schedule list failed: ${describeResponseError(response, payload)}`);
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('Schedule list response was not valid JSON.');
+  }
+
+  const schedules = (payload as { schedules?: unknown }).schedules;
+  if (!Array.isArray(schedules)) {
+    throw new Error('Schedule list response was not valid JSON.');
+  }
+
+  return schedules.filter(isWorkflowSchedule);
+}
+
 export async function getRunStatus(
   runId: string,
   options: { apiUrl?: string } = {}
@@ -827,6 +913,28 @@ function describeResponseError(response: Response, payload: unknown): string {
   }
 
   return `${response.status} ${response.statusText}`;
+}
+
+function isWorkflowScheduleEnvelope(payload: unknown): payload is { schedule: WorkflowSchedule } {
+  return (
+    Boolean(payload) &&
+    typeof payload === 'object' &&
+    !Array.isArray(payload) &&
+    isWorkflowSchedule((payload as { schedule?: unknown }).schedule)
+  );
+}
+
+function isWorkflowSchedule(value: unknown): value is WorkflowSchedule {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.id === 'string' &&
+    typeof record.name === 'string' &&
+    (record.scheduleType === 'once' || record.scheduleType === 'cron') &&
+    typeof record.status === 'string'
+  );
 }
 
 function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
