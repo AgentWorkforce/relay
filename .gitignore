@@ -87,6 +87,7 @@ web/waitlist.json
 web/.open-next
 .msd/
 /workflows/*
+.workflow-artifacts/*
 !/workflows/ci/
 !/workflows/refactor/
 !/workflows/relayauth-integration/
