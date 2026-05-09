@@ -186,7 +186,7 @@
             "question": "Handled PR 747 feedback in tracked parent worktree",
             "chosen": "Handled PR 747 feedback in tracked parent worktree",
             "alternatives": [],
-            "reasoning": "The cwd copy under .relay/workspace is not the git worktree; fixes must be applied to /Users/khaliqgant/Projects/AgentWorkforce/relay so the feature branch and PR contain them."
+            "reasoning": "The cwd copy under .relay/workspace is not the git worktree; fixes must be applied to <repo-root> so the feature branch and PR contain them."
           },
           "significance": "high"
         },

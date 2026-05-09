@@ -642,6 +642,7 @@ jobs:
           # `dependencies` whenever a new internal dep is added.
           (cd packages/config && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           (cd packages/github-primitive && npm pack --ignore-scripts --pack-destination "$TARBALLS")
+          (cd packages/slack-primitive && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           (cd packages/workflow-types && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           ls -lh "$TARBALLS"
 
@@ -658,11 +659,12 @@ jobs:
           BROKER_TGZ=$(ls "$TARBALLS"/agent-relay-broker-${{ matrix.platform }}-*.tgz | head -n1)
           CONFIG_TGZ=$(ls "$TARBALLS"/agent-relay-config-*.tgz | head -n1)
           GITHUB_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-github-primitive-*.tgz | head -n1)
+          SLACK_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-slack-primitive-*.tgz | head -n1)
           WORKFLOW_TYPES_TGZ=$(ls "$TARBALLS"/agent-relay-workflow-types-*.tgz | head -n1)
-          echo "Installing $SDK_TGZ + $BROKER_TGZ + $CONFIG_TGZ + $GITHUB_PRIMITIVE_TGZ + $WORKFLOW_TYPES_TGZ"
+          echo "Installing $SDK_TGZ + $BROKER_TGZ + $CONFIG_TGZ + $GITHUB_PRIMITIVE_TGZ + $SLACK_PRIMITIVE_TGZ + $WORKFLOW_TYPES_TGZ"
           npm install --ignore-scripts --no-audit --no-fund \
             "$SDK_TGZ" "$BROKER_TGZ" "$CONFIG_TGZ" \
-            "$GITHUB_PRIMITIVE_TGZ" "$WORKFLOW_TYPES_TGZ"
+            "$GITHUB_PRIMITIVE_TGZ" "$SLACK_PRIMITIVE_TGZ" "$WORKFLOW_TYPES_TGZ"
           ls node_modules/@agent-relay/
 
       - name: Resolver smoke — getBrokerBinaryPath()
@@ -714,13 +716,14 @@ jobs:
           SDK_TGZ=$(ls "$TARBALLS"/agent-relay-sdk-*.tgz | head -n1)
           CONFIG_TGZ=$(ls "$TARBALLS"/agent-relay-config-*.tgz | head -n1)
           GITHUB_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-github-primitive-*.tgz | head -n1)
+          SLACK_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-slack-primitive-*.tgz | head -n1)
           WORKFLOW_TYPES_TGZ=$(ls "$TARBALLS"/agent-relay-workflow-types-*.tgz | head -n1)
           # Install SDK + every internal required dep whose bumped version
           # isn't on the registry yet, but skip the broker optional deps
           # entirely. The resolver should return null and spawn() should
           # throw the clear error.
           npm install --ignore-scripts --no-audit --no-fund --no-optional \
-            "$SDK_TGZ" "$CONFIG_TGZ" "$GITHUB_PRIMITIVE_TGZ" "$WORKFLOW_TYPES_TGZ"
+            "$SDK_TGZ" "$CONFIG_TGZ" "$GITHUB_PRIMITIVE_TGZ" "$SLACK_PRIMITIVE_TGZ" "$WORKFLOW_TYPES_TGZ"
           node --input-type=module -e "
             import { AgentRelayClient } from '@agent-relay/sdk';
             try {
@@ -756,6 +759,7 @@ jobs:
         package:
           - config
           - github-primitive
+          - slack-primitive
           - workflow-types
 
     steps:
@@ -1250,41 +1254,10 @@ jobs:
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
 
-      - name: Dry run SDK internal deps
-        if: github.event.inputs.dry_run == 'true'
-        run: |
-          set -euo pipefail
-          for package in config github-primitive workflow-types; do
-            echo "Dry run - would publish @agent-relay/${package}"
-            (cd "packages/${package}" && npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts)
-          done
-
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/sdk
         run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
-
-      - name: Publish SDK internal deps to NPM
-        if: github.event.inputs.dry_run != 'true'
-        run: |
-          set -euo pipefail
-          VERSION="${{ needs.build.outputs.new_version }}"
-
-          publish_if_missing() {
-            local package="$1"
-            local name="@agent-relay/${package}"
-            if npm view "${name}@${VERSION}" version >/dev/null 2>&1; then
-              echo "✓ ${name}@${VERSION} is already published"
-              return
-            fi
-
-            echo "Publishing ${name}@${VERSION}"
-            (cd "packages/${package}" && npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts)
-          }
-
-          publish_if_missing config
-          publish_if_missing workflow-types
-          publish_if_missing github-primitive
 
       - name: Publish SDK to NPM
         if: github.event.inputs.dry_run != 'true'

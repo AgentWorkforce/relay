@@ -7,12 +7,12 @@
       "@agent-relay/config": ["../config/src/index.ts"],
       "@agent-relay/workflow-types": ["../workflow-types/src/index.ts"],
       "@agent-relay/github-primitive": ["../github-primitive/src/index.ts"],
-      "@agent-relay/github-primitive/workflow-step": ["../github-primitive/src/workflow-step.ts"]
+      "@agent-relay/github-primitive/workflow-step": ["../github-primitive/src/workflow-step.ts"],
+      "@agent-relay/slack-primitive": ["../slack-primitive/src/index.ts"],
+      "@agent-relay/slack-primitive/workflow-step": ["../slack-primitive/src/workflow-step.ts"]
     },
     "noEmit": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": [
-    "src/__tests__/**"
-  ]
+  "exclude": ["src/__tests__/**"]
 }
