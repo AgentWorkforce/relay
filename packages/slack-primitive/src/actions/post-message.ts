@@ -19,7 +19,12 @@ export async function postMessage(
   slack: SlackWebApiLike,
   params: PostMessageParams
 ): Promise<PostMessageOutput> {
-  const channel = await resolveChannel(slack, params.channel);
+  const channelInput = params.channel ?? process.env.SLACK_DEFAULT_CHANNEL;
+  if (!channelInput) {
+    throw new Error('Slack postMessage channel is missing; provide channel or set SLACK_DEFAULT_CHANNEL.');
+  }
+
+  const channel = await resolveChannel(slack, channelInput);
   const userCache = new Map<string, SlackUserSummary>();
   const resolvedMentions: SlackResolvedMention[] = [];
   const warnings: SlackResolutionWarning[] = [];

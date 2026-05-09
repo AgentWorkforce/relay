@@ -4,11 +4,11 @@
 
 `SlackClient` / `SlackStepExecutor` picks one of three runtimes automatically based on what's in the environment:
 
-| Priority | Runtime | Activated by | Transport |
-| --- | --- | --- | --- |
-| 1 | `cloud-relay` | `CLOUD_API_TOKEN` + `CLOUD_API_URL` | `POST /api/v1/slack/post-message` on relay-cloud, which uses the workspace's Nango Slack connection (the ricky app). The caller never holds a Slack bot token. |
-| 2 | `local` | `SLACK_BOT_TOKEN` | `@slack/web-api` direct to Slack. |
-| 3 | `noop` | _(neither)_ | Calls succeed, log a warning, and return a placeholder `ts`. Useful for CI / smoke runs where Slack delivery isn't required. |
+| Priority | Runtime       | Activated by                        | Transport                                                                                                                                                      |
+| -------- | ------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1        | `cloud-relay` | `CLOUD_API_TOKEN` + `CLOUD_API_URL` | `POST /api/v1/slack/post-message` on relay-cloud, which uses the workspace's Nango Slack connection (the ricky app). The caller never holds a Slack bot token. |
+| 2        | `local`       | `SLACK_BOT_TOKEN`                   | `@slack/web-api` direct to Slack.                                                                                                                              |
+| 3        | `noop`        | _(neither)_                         | Calls succeed, log a warning, and return a placeholder `ts`. Useful for CI / smoke runs where Slack delivery isn't required.                                   |
 
 Override with `runtime: 'local' | 'cloud-relay' | 'noop' | 'auto'` in the config.
 

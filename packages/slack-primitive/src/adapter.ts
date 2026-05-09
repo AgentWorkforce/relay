@@ -33,7 +33,10 @@ export function normalizeSlackRuntimeConfig(config: SlackRuntimeConfig = {}): Re
 
   return {
     ...config,
-    runtime: config.runtime && config.runtime !== 'auto' ? config.runtime : selectRuntime({ token, cloudApiToken, cloudApiUrl }),
+    runtime:
+      config.runtime && config.runtime !== 'auto'
+        ? config.runtime
+        : selectRuntime({ token, cloudApiToken, cloudApiUrl }),
     env,
     token,
     cloudApiToken,
@@ -60,8 +63,12 @@ export abstract class BaseSlackAdapter extends SlackClientInterface {
     if (!this.slack.auth) {
       return Boolean(this.config.token);
     }
-    const response = await this.slack.auth.test();
-    return response.ok !== false;
+    try {
+      const response = await this.slack.auth.test();
+      return response.ok !== false;
+    } catch {
+      return false;
+    }
   }
 
   executeAction<Name extends SlackAction>(
@@ -103,7 +110,10 @@ export abstract class BaseSlackAdapter extends SlackClientInterface {
   }
 
   async postMessage(params: PostMessageParams): Promise<PostMessageOutput> {
-    return postMessageAction(this.slack, params);
+    return postMessageAction(this.slack, {
+      ...params,
+      channel: params.channel ?? this.config.env.SLACK_DEFAULT_CHANNEL,
+    });
   }
 
   async resolveUser(params: ResolveUserParams): Promise<SlackResolvedMention> {
@@ -156,12 +166,7 @@ export class SlackAdapterFactory {
 
     const requested: SlackRuntimePreference = config.runtime ?? 'auto';
     const selected = normalized.runtime;
-    const summary =
-      selected === 'cloud-relay'
-        ? cloudRelay
-        : selected === 'noop'
-        ? noop
-        : local;
+    const summary = selected === 'cloud-relay' ? cloudRelay : selected === 'noop' ? noop : local;
 
     return {
       runtime: selected,

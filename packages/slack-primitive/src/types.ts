@@ -110,7 +110,7 @@ export interface SlackResolvedMention {
 }
 
 export interface PostMessageParams {
-  channel: string;
+  channel?: string;
   text: string;
   threadTs?: string;
   mentions?: string[];
@@ -208,7 +208,11 @@ export interface SlackWebApiLike {
     list(params?: { cursor?: string; limit?: number }): Promise<SlackUsersListResponse>;
   };
   conversations: {
-    list(params?: { cursor?: string; limit?: number; types?: string }): Promise<SlackConversationsListResponse>;
+    list(params?: {
+      cursor?: string;
+      limit?: number;
+      types?: string;
+    }): Promise<SlackConversationsListResponse>;
   };
   auth?: {
     test(): Promise<{ ok?: boolean; error?: string }>;

@@ -152,7 +152,8 @@ export class SlackCloudRelayClient extends BaseSlackAdapter {
         warnings.push({
           type: 'mention_unresolved',
           input: mention,
-          message: 'mention resolution is not supported in cloud-relay runtime; pass user IDs in text directly.',
+          message:
+            'mention resolution is not supported in cloud-relay runtime; pass user IDs in text directly.',
         });
       }
     }

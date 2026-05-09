@@ -32,8 +32,8 @@ export interface SlackStepConfig {
   dependsOn?: string[];
   /** Slack action to execute. Phase A supports postMessage. */
   action: 'postMessage';
-  /** Slack channel id or #channel-name reference. */
-  channel: string;
+  /** Slack channel id or #channel-name reference. Falls back to SLACK_DEFAULT_CHANNEL when omitted. */
+  channel?: string;
   /** Message text. Values may include workflow templates such as {{steps.plan.output.title}}. */
   text: string;
   /** Optional parent message timestamp for threaded delivery. */
@@ -84,10 +84,10 @@ export function createSlackStep(config: SlackStepConfig): WorkflowStep {
   validateSlackStepConfig(config);
 
   const params: Record<string, string> = {
-    channel: config.channel,
     text: config.text,
   };
 
+  if (config.channel !== undefined) params.channel = config.channel;
   if (config.threadTs !== undefined) params.threadTs = config.threadTs;
   if (config.mentions !== undefined) params.mentions = JSON.stringify(config.mentions);
   if (config.unfurl !== undefined) params.unfurl = String(config.unfurl);
@@ -190,11 +190,11 @@ export function slackStepConfigFromWorkflowStep(
     name: step.name,
     dependsOn: step.dependsOn,
     action: SlackAction.PostMessage,
-    channel: readRequiredString(actionParams.channel, 'channel'),
+    channel: readOptionalString(actionParams.channel),
     text: readRequiredString(actionParams.text, 'text'),
     threadTs: readOptionalString(actionParams.threadTs),
     mentions: readStringArray(actionParams.mentions),
-    unfurl: typeof actionParams.unfurl === 'boolean' ? actionParams.unfurl : undefined,
+    unfurl: readOptionalBoolean(actionParams.unfurl, 'unfurl'),
     config,
     output,
     timeoutMs: step.timeoutMs,
@@ -223,9 +223,6 @@ function validateSlackStepConfig(config: SlackStepConfig): void {
   }
   if (config.action !== SlackAction.PostMessage) {
     throw new Error(`Slack step "${config.name}" requires action "postMessage"`);
-  }
-  if (!config.channel) {
-    throw new Error(`Slack step "${config.name}" requires a channel`);
   }
   if (typeof config.text !== 'string' || config.text.length === 0) {
     throw new Error(`Slack step "${config.name}" requires message text`);
@@ -321,7 +318,11 @@ function buildOutputProjection<TOutput>(
     return withOptionalMetadata(projected, result, outputConfig);
   }
 
-  return withOptionalMetadata(result.data ?? (result.output ? result.output : null), result, outputConfig);
+  return withOptionalMetadata(
+    result.data ?? (result.output ? result.output : result.error ?? null),
+    result,
+    outputConfig
+  );
 }
 
 function summarizeResult<TOutput>(result: SlackActionResult<TOutput>): Record<string, unknown> {
@@ -409,10 +410,6 @@ function coerceScalar(value: unknown): unknown {
   }
 
   const trimmed = value.trim();
-  if (trimmed === 'true') return true;
-  if (trimmed === 'false') return false;
-  if (trimmed === 'null') return null;
-  if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(trimmed)) return Number(trimmed);
   if (
     (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
     (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
@@ -454,6 +451,14 @@ function readStringArray(value: unknown): string[] | undefined {
   if (value === undefined) return undefined;
   if (Array.isArray(value) && value.every((item) => typeof item === 'string')) return value;
   throw new Error('Slack step mentions must be a string array');
+}
+
+function readOptionalBoolean(value: unknown, name: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'boolean') return value;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error(`Slack step ${name} must be a boolean`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

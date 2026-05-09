@@ -49,21 +49,22 @@ export class SlackNoopClient extends BaseSlackAdapter {
   }
 
   async postMessage(params: PostMessageParams): Promise<PostMessageOutput> {
+    const channel = params.channel ?? this.config.env.SLACK_DEFAULT_CHANNEL ?? '#noop';
     this.logger('postMessage dropped: no SLACK_BOT_TOKEN and no CLOUD_API_TOKEN configured.', {
-      channel: params.channel,
+      channel,
       preview: params.text.slice(0, 80),
     });
 
     const warnings: SlackResolutionWarning[] = [
       {
         type: 'mention_unresolved',
-        input: params.channel,
+        input: channel,
         message: 'Slack runtime is noop; configure SLACK_BOT_TOKEN or CLOUD_API_TOKEN to deliver messages.',
       },
     ];
 
     return {
-      channel: params.channel,
+      channel,
       ts: NOOP_TS,
       text: params.text,
       resolvedMentions: [],

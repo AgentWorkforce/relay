@@ -8,8 +8,15 @@ interface FakeResponseBody {
   body: unknown;
 }
 
-function fakeFetch(responses: FakeResponseBody[]): CloudRelayFetch & { calls: Array<{ url: string; init?: { method?: string; headers?: Record<string, string>; body?: string } }> } {
-  const calls: Array<{ url: string; init?: { method?: string; headers?: Record<string, string>; body?: string } }> = [];
+function fakeFetch(
+  responses: FakeResponseBody[]
+): CloudRelayFetch & {
+  calls: Array<{ url: string; init?: { method?: string; headers?: Record<string, string>; body?: string } }>;
+} {
+  const calls: Array<{
+    url: string;
+    init?: { method?: string; headers?: Record<string, string>; body?: string };
+  }> = [];
   let i = 0;
   const fn = (async (url, init) => {
     calls.push({ url: String(url), init });
@@ -35,15 +42,15 @@ const baseConfig = {
 
 describe('SlackCloudRelayClient', () => {
   it('throws auth_token_missing when CLOUD_API_TOKEN is absent', () => {
-    expect(() =>
-      new SlackCloudRelayClient({ env: {}, cloudApiUrl: 'https://api.example.com' }, fakeFetch([]))
+    expect(
+      () => new SlackCloudRelayClient({ env: {}, cloudApiUrl: 'https://api.example.com' }, fakeFetch([]))
     ).toThrow('CLOUD_API_TOKEN');
   });
 
   it('throws auth_token_missing when CLOUD_API_URL is absent', () => {
-    expect(() =>
-      new SlackCloudRelayClient({ env: {}, cloudApiToken: 'rk_test' }, fakeFetch([]))
-    ).toThrow('CLOUD_API_URL');
+    expect(() => new SlackCloudRelayClient({ env: {}, cloudApiToken: 'rk_test' }, fakeFetch([]))).toThrow(
+      'CLOUD_API_URL'
+    );
   });
 
   it('posts via cloud-relay endpoint with bearer auth', async () => {
@@ -84,9 +91,7 @@ describe('SlackCloudRelayClient', () => {
   });
 
   it('records mentions as unresolved with a warning', async () => {
-    const fetch = fakeFetch([
-      { body: { ok: true, ts: '1.0', channel: 'C0123', workspaceId: 'ws_test' } },
-    ]);
+    const fetch = fakeFetch([{ body: { ok: true, ts: '1.0', channel: 'C0123', workspaceId: 'ws_test' } }]);
     const client = new SlackCloudRelayClient(baseConfig, fetch);
 
     const result = await client.postMessage({
@@ -126,9 +131,7 @@ describe('SlackCloudRelayClient', () => {
   });
 
   it('maps cloud slack_error to SlackPostBackError(slack_api_error)', async () => {
-    const fetch = fakeFetch([
-      { body: { ok: false, code: 'slack_error', error: 'channel_not_found' } },
-    ]);
+    const fetch = fakeFetch([{ body: { ok: false, code: 'slack_error', error: 'channel_not_found' } }]);
     const client = new SlackCloudRelayClient(baseConfig, fetch);
 
     await expect(client.postMessage({ channel: '#bogus', text: 'hi' })).rejects.toMatchObject({

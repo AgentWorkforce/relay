@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { postMessage } from '../actions/post-message.js';
 import { resolveChannel } from '../actions/resolve-channel.js';
@@ -7,6 +7,10 @@ import { SlackPostBackError, type SlackWebApiLike } from '../types.js';
 import { renderSlackTemplates } from '../workflow-step.js';
 
 describe('Slack primitive', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('throws auth_token_missing when SLACK_BOT_TOKEN is absent', () => {
     expect(() => new SlackWebApiClient({ env: {} })).toThrow(SlackPostBackError);
     expect(() => new SlackWebApiClient({ env: {} })).toThrow('auth_token_missing');
@@ -58,6 +62,27 @@ describe('Slack primitive', () => {
     ]);
     expect(slack.lastPost?.channel).toBe('CENGINEERING');
     expect(slack.lastPost?.text).toBe('PR opened');
+  });
+
+  it('uses SLACK_DEFAULT_CHANNEL when channel is omitted', async () => {
+    vi.stubEnv('SLACK_DEFAULT_CHANNEL', '#engineering');
+    const slack = createRecordingSlack();
+
+    await postMessage(slack, {
+      text: 'PR opened',
+    });
+
+    expect(slack.lastPost?.channel).toBe('CENGINEERING');
+  });
+
+  it('throws a clear error when channel is omitted and no default exists', async () => {
+    const slack = createRecordingSlack();
+
+    await expect(
+      postMessage(slack, {
+        text: 'PR opened',
+      })
+    ).rejects.toThrow('provide channel or set SLACK_DEFAULT_CHANNEL');
   });
 
   it('substitutes {{steps.X.output}} templates by nested path', () => {

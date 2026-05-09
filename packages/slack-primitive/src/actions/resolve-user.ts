@@ -1,8 +1,5 @@
 import type { SlackResolvedMention, SlackUserSummary, SlackWebApiLike } from '../types.js';
 
-const USER_ID_PATTERN = /^[UW][A-Z0-9]{2,}$/;
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
 export interface ResolveUserOptions {
   cache?: Map<string, SlackUserSummary>;
 }
@@ -21,11 +18,11 @@ export async function resolveUser(
 ): Promise<SlackResolvedMention> {
   const normalized = mention.startsWith('@') ? mention.slice(1) : mention;
 
-  if (USER_ID_PATTERN.test(normalized)) {
+  if (isSlackUserId(normalized)) {
     return { input: mention, userId: normalized };
   }
 
-  if (EMAIL_PATTERN.test(normalized)) {
+  if (isEmailCandidate(normalized)) {
     const response = await slack.users.lookupByEmail({ email: normalized });
     const userId = response.user?.id;
     if (!userId) {
@@ -48,6 +45,40 @@ export async function resolveUser(
   }
 
   throw new Error(`Slack user not found for handle: ${mention}`);
+}
+
+function isSlackUserId(value: string): boolean {
+  if (value.length < 3) return false;
+  if (value[0] !== 'U' && value[0] !== 'W') return false;
+
+  for (let i = 1; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    const isDigit = code >= 48 && code <= 57;
+    const isUppercase = code >= 65 && code <= 90;
+    if (!isDigit && !isUppercase) return false;
+  }
+
+  return true;
+}
+
+function isEmailCandidate(value: string): boolean {
+  const at = value.indexOf('@');
+  if (at <= 0 || at !== value.lastIndexOf('@') || at === value.length - 1) return false;
+
+  const domain = value.slice(at + 1);
+  const dot = domain.indexOf('.');
+  return dot > 0 && dot < domain.length - 1 && !hasAsciiWhitespace(value);
+}
+
+function hasAsciiWhitespace(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code === 9 || code === 10 || code === 11 || code === 12 || code === 13 || code === 32) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 async function populateUserCache(

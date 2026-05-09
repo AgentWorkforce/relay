@@ -1,0 +1,162 @@
+{
+  "id": "traj_k7njijv51iq4",
+  "version": 1,
+  "task": {
+    "title": "ricky-slack-primitive-implementation-workflow-status-r-workflow",
+    "description": "# Slack Primitive — Implementation Workflow\n\n**Status**: Ready\n**Date**: 2026-05-08\n**Design spec**: [`specs/slack-primitive.md`](./slack-primitive.md)\n**Runtime**: local\n\nThis is the implementation prompt for ricky. The full design lives in `specs/slack-primitive.md`. This file exists so ricky has an unambiguous, local-only generation target without having to disambiguate the design doc's runtime-selection discussion.\n\n## Goal\n\nImplement the `packages/slack-primitive` package as described in the design spec. Mirror the layout of `packages/github-primitive` 1:1.\n\n## Scope (Phase A of the design spec)\n\nPhase A only — postMessage + resolveUser + resolveChannel, with the local Web API runtime. Do not implement askQuestion, the Nango proxy transport, or interactive Block Kit forms in this pass.\n\nConcretely:\n\n1. Create `packages/slack-primitive/` with `src/index.ts`, `src/types.ts`, `src/client.ts`, `src/workflow-step.ts`, `src/local-runtime.ts`, `src/adapter.ts`, and `src/actions/{post-message,resolve-user,resolve-channel}.ts`.\n2. Wire `SLACK_BOT_TOKEN` env-var auth in `local-runtime.ts`. Throw `SlackPostBackError('auth_token_missing')` if absent.\n3. Implement `createSlackStep` with `action: 'postMessage'`, supporting `channel`, `text`, `threadTs`, `mentions`, `unfurl`, and `{{steps.X.output.path}}` templating.\n4. Mention resolution: `@email@example.com` → `users.lookupByEmail`; bare handle `@khaliq` → user-cache lookup; raw user IDs pass through. Unresolved mentions are a soft error (logged on step output, message still posts).\n5. Channel resolution: `#name` → `conversations.list` + match; channel IDs pass through.\n6. Add an example workflow at `packages/slack-primitive/examples/notify-on-pr.ts` that posts a one-line PR-opened announcement (paired with `github-primitive`'s `createPR` step).\n7. Add unit tests in `packages/slack-primitive/src/__tests__/` covering: token-missing error, channel name resolution, mention resolution success and soft-fail, `{{steps.plan.output}}` templating substitution.\n\n## Constraints\n\n- Runtime: local only. Do not generate the alternate-runtime adapter, the Nango proxy code, or the fallback-transport code in this pass — those land in later phases described in the design spec.\n- Use `@slack/web-api` as the underlying SDK.\n- TypeScript ES modules, follow the conventions in `.claude/rules/typescript.md`.\n- Match the public-API shape of `packages/github-primitive` so a developer who learned one can read the other in five minutes.\n- Do not modify `packages/github-primitive`. Do not modify the design spec.\n\n## Acceptance gates\n\n1. `pnpm -F slack-primitive build` passes.\n2. `pnpm -F slack-primitive test` passes with the unit tests above green.\n3. `examples/notify-on-pr.ts` type-checks against the rest of the SDK.\n4. A workflow that imports `createSlackStep` and posts to a real channel succeeds when `SLACK_BOT_TOKEN` is set and the bot is invited to the channel. (Manual smoke test — document the steps in `examples/README.md`.)\n\n## Out of scope\n\n- askQuestion (Phase B in the design spec).\n- The alternate-runtime adapter and its transports (Phase A's second half + Phase C in the design spec).\n- Interactive Block Kit, addReaction, updateMessage, replyToThread (Phase C).\n- Workflow runner schema changes for askQuestion audit trail (tracked in issue #825).",
+    "source": {
+      "system": "workflow-runner",
+      "id": "eb1b5c00e46de5823ea2438a"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-08T16:18:55.300Z",
+  "completedAt": "2026-05-08T16:26:03.266Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-05-08T16:18:55.300Z"
+    },
+    {
+      "name": "lead-claude",
+      "role": "specialist",
+      "joinedAt": "2026-05-08T16:19:01.725Z"
+    },
+    {
+      "name": "impl-primary-codex",
+      "role": "specialist",
+      "joinedAt": "2026-05-08T16:20:57.219Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_smpieai8c7vl",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-05-08T16:18:55.300Z",
+      "endedAt": "2026-05-08T16:19:01.726Z",
+      "events": [
+        {
+          "ts": 1778257135300,
+          "type": "note",
+          "content": "Purpose: # Slack Primitive — Implementation Workflow\n\n**Status**: Ready\n**Date**: 2026-05-08\n**Design spec**: [`specs/slack-primitive.md`](./slack-primitive.md)\n**Runtime**: local\n\nThis is the implementation prompt for ricky. The full design lives in `specs/slack-primitive.md`. This file exists so ricky has an unambiguous, local-only generation target without having to disambiguate the design doc's runtime-selection discussion.\n\n## Goal\n\nImplement the `packages/slack-primitive` package as described in the design spec. Mirror the layout of `packages/github-primitive` 1:1.\n\n## Scope (Phase A of the design spec)\n\nPhase A only — postMessage + resolveUser + resolveChannel, with the local Web API runtime. Do not implement askQuestion, the Nango proxy transport, or interactive Block Kit forms in this pass.\n\nConcretely:\n\n1. Create `packages/slack-primitive/` with `src/index.ts`, `src/types.ts`, `src/client.ts`, `src/workflow-step.ts`, `src/local-runtime.ts`, `src/adapter.ts`, and `src/actions/{post-message,resolve-user,resolve-channel}.ts`.\n2. Wire `SLACK_BOT_TOKEN` env-var auth in `local-runtime.ts`. Throw `SlackPostBackError('auth_token_missing')` if absent.\n3. Implement `createSlackStep` with `action: 'postMessage'`, supporting `channel`, `text`, `threadTs`, `mentions`, `unfurl`, and `{{steps.X.output.path}}` templating.\n4. Mention resolution: `@email@example.com` → `users.lookupByEmail`; bare handle `@khaliq` → user-cache lookup; raw user IDs pass through. Unresolved mentions are a soft error (logged on step output, message still posts).\n5. Channel resolution: `#name` → `conversations.list` + match; channel IDs pass through.\n6. Add an example workflow at `packages/slack-primitive/examples/notify-on-pr.ts` that posts a one-line PR-opened announcement (paired with `github-primitive`'s `createPR` step).\n7. Add unit tests in `packages/slack-primitive/src/__tests__/` covering: token-missing error, channel name resolution, mention resolution success and soft-fail, `{{steps.plan.output}}` templating substitution.\n\n## Constraints\n\n- Runtime: local only. Do not generate the alternate-runtime adapter, the Nango proxy code, or the fallback-transport code in this pass — those land in later phases described in the design spec.\n- Use `@slack/web-api` as the underlying SDK.\n- TypeScript ES modules, follow the conventions in `.claude/rules/typescript.md`.\n- Match the public-API shape of `packages/github-primitive` so a developer who learned one can read the other in five minutes.\n- Do not modify `packages/github-primitive`. Do not modify the design spec.\n\n## Acceptance gates\n\n1. `pnpm -F slack-primitive build` passes.\n2. `pnpm -F slack-primitive test` passes with the unit tests above green.\n3. `examples/notify-on-pr.ts` type-checks against the rest of the SDK.\n4. A workflow that imports `createSlackStep` and posts to a real channel succeeds when `SLACK_BOT_TOKEN` is set and the bot is invited to the channel. (Manual smoke test — document the steps in `examples/README.md`.)\n\n## Out of scope\n\n- askQuestion (Phase B in the design spec).\n- The alternate-runtime adapter and its transports (Phase A's second half + Phase C in the design spec).\n- Interactive Block Kit, addReaction, updateMessage, replyToThread (Phase C).\n- Workflow runner schema changes for askQuestion audit trail (tracked in issue #825)."
+        },
+        {
+          "ts": 1778257135300,
+          "type": "note",
+          "content": "Approach: 23-step dag workflow — Parsed 23 steps, 22 dependent steps, DAG validated, no cycles"
+        }
+      ]
+    },
+    {
+      "id": "chap_7cdfm6x2dydd",
+      "title": "Execution: lead-plan",
+      "agentName": "lead-claude",
+      "startedAt": "2026-05-08T16:19:01.726Z",
+      "endedAt": "2026-05-08T16:20:57.222Z",
+      "events": [
+        {
+          "ts": 1778257141726,
+          "type": "note",
+          "content": "\"lead-plan\": Plan the workflow execution from the packaged context files",
+          "raw": {
+            "agent": "lead-claude"
+          }
+        },
+        {
+          "ts": 1778257255707,
+          "type": "completion-evidence",
+          "content": "\"lead-plan\" verification-based completion — Verification passed (4 signal(s), 1 relevant channel post(s), 1 file change(s), exit=0; signals=0, The lead plan file already exists with content matching all required sections (Non-goals, Routing contract, Implementation contract, Deliverables, Verification gates) and ends with `GENERATION_LEAD_PLAN_READY`. The content is well-aligned with the packaged context: it correctly c, GENERATION_LEAD_PLAN_READY, **[lead-plan] Output:**; channel=**[lead-plan] Output:**\n```\ne content is well-aligned with the packaged context: it correctly cites the acceptance contract, non-goals, deliverables, verificati; files=modified:.claude/settings.json; exit=0)",
+          "raw": {
+            "stepName": "lead-plan",
+            "completionMode": "verification",
+            "reason": "Verification passed",
+            "evidence": {
+              "summary": "4 signal(s), 1 relevant channel post(s), 1 file change(s), exit=0",
+              "signals": [
+                "0",
+                "The lead plan file already exists with content matching all required sections (Non-goals, Routing contract, Implementation contract, Deliverables, Verification gates) and ends with `GENERATION_LEAD_PLAN_READY`. The content is well-aligned with the packaged context: it correctly c",
+                "GENERATION_LEAD_PLAN_READY",
+                "**[lead-plan] Output:**"
+              ],
+              "channelPosts": [
+                "**[lead-plan] Output:**\n```\ne content is well-aligned with the packaged context: it correctly cites the acceptance contract, non-goals, deliverables, verificati"
+              ],
+              "files": [
+                "modified:.claude/settings.json"
+              ],
+              "exitCode": 0
+            }
+          },
+          "significance": "medium"
+        },
+        {
+          "ts": 1778257255707,
+          "type": "finding",
+          "content": "\"lead-plan\" completed → The lead plan file already exists with content matching all required sections (Non-goals, Routing contract, Implementati",
+          "significance": "medium"
+        }
+      ]
+    },
+    {
+      "id": "chap_iif0hj0i7lfs",
+      "title": "Execution: implement-artifact",
+      "agentName": "impl-primary-codex",
+      "startedAt": "2026-05-08T16:20:57.222Z",
+      "endedAt": "2026-05-08T16:26:03.266Z",
+      "events": [
+        {
+          "ts": 1778257257222,
+          "type": "note",
+          "content": "\"implement-artifact\": Implement the requested code-writing workflow slice",
+          "raw": {
+            "agent": "impl-primary-codex"
+          }
+        },
+        {
+          "ts": 1778257399777,
+          "type": "decision",
+          "content": "Kept Slack primitive local-only and fixed the example by routing Slack and GitHub integration steps explicitly through a composite executor: Kept Slack primitive local-only and fixed the example by routing Slack and GitHub integration steps explicitly through a composite executor",
+          "raw": {
+            "question": "Kept Slack primitive local-only and fixed the example by routing Slack and GitHub integration steps explicitly through a composite executor",
+            "chosen": "Kept Slack primitive local-only and fixed the example by routing Slack and GitHub integration steps explicitly through a composite executor",
+            "alternatives": [],
+            "reasoning": "The Phase A contract forbids alternate Slack runtimes, while the example includes both createPR and postMessage steps and needs deterministic local execution routing for each integration."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1778257563193,
+          "type": "reflection",
+          "content": "Slack primitive package implemented and gates passed with npm workspace equivalents; pnpm command is blocked by repository packageManager enforcement.",
+          "raw": {
+            "focalPoints": [
+              "implementation",
+              "verification",
+              "routing"
+            ],
+            "adjustments": "Example now uses an explicit composite executor for GitHub and Slack integrations.",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:implementation",
+            "focal:verification",
+            "focal:routing",
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Implemented Phase A packages/slack-primitive with local Slack Web API runtime, postMessage/resolveUser/resolveChannel actions, workflow step helper, tests, example workflow, smoke docs, and output manifest.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay",
+  "tags": []
+}

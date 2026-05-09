@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-08T15:51:38.996Z",
+  "lastUpdated": "2026-05-09T08:41:56.120Z",
   "trajectories": {
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -47,7 +47,7 @@
       "status": "completed",
       "startedAt": "2026-04-10T16:29:40.674Z",
       "completedAt": "2026-04-10T16:32:14.544Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_0t92gxaz6igh.json",
+      "path": ".trajectories/completed/2026-04/traj_0t92gxaz6igh.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_1776105620545_9dcebb3d": {
@@ -55,7 +55,7 @@
       "status": "completed",
       "startedAt": "2026-04-13T18:40:20.545Z",
       "completedAt": "2026-04-13T18:41:52.831Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_1776105620545_9dcebb3d.json",
+      "path": ".trajectories/completed/2026-04/traj_1776105620545_9dcebb3d.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_1776105988184_29f1270c": {
@@ -63,7 +63,7 @@
       "status": "completed",
       "startedAt": "2026-04-13T18:46:28.184Z",
       "completedAt": "2026-04-13T20:23:54.308Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_1776105988184_29f1270c.json",
+      "path": ".trajectories/completed/2026-04/traj_1776105988184_29f1270c.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_222ha5671idc": {
@@ -71,7 +71,7 @@
       "status": "completed",
       "startedAt": "2026-04-15T21:32:51.980Z",
       "completedAt": "2026-04-15T21:45:41.024Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_222ha5671idc.json",
+      "path": ".trajectories/completed/2026-04/traj_222ha5671idc.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_4zqhfqw7g28l": {
@@ -79,7 +79,7 @@
       "status": "completed",
       "startedAt": "2026-04-10T17:48:33.502Z",
       "completedAt": "2026-04-10T17:49:14.485Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_4zqhfqw7g28l.json",
+      "path": ".trajectories/completed/2026-04/traj_4zqhfqw7g28l.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_703m7sqyq89t": {
@@ -87,7 +87,7 @@
       "status": "completed",
       "startedAt": "2026-04-10T16:33:10.601Z",
       "completedAt": "2026-04-10T16:35:33.660Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_703m7sqyq89t.json",
+      "path": ".trajectories/completed/2026-04/traj_703m7sqyq89t.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_9tt55is74dq5": {
@@ -95,7 +95,7 @@
       "status": "completed",
       "startedAt": "2026-04-11T13:34:46.304Z",
       "completedAt": "2026-04-11T13:35:22.677Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_9tt55is74dq5.json",
+      "path": ".trajectories/completed/2026-04/traj_9tt55is74dq5.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_abjovknvcijv": {
@@ -103,7 +103,7 @@
       "status": "completed",
       "startedAt": "2026-04-10T16:08:30.070Z",
       "completedAt": "2026-04-10T16:11:08.673Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_abjovknvcijv.json",
+      "path": ".trajectories/completed/2026-04/traj_abjovknvcijv.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_d48czxmgx4ac": {
@@ -111,7 +111,7 @@
       "status": "completed",
       "startedAt": "2026-04-10T16:12:27.477Z",
       "completedAt": "2026-04-10T16:13:14.348Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_d48czxmgx4ac.json",
+      "path": ".trajectories/completed/2026-04/traj_d48czxmgx4ac.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_dw8ihhdb8ip7": {
@@ -119,14 +119,14 @@
       "status": "abandoned",
       "startedAt": "2026-04-13T19:51:57.984Z",
       "completedAt": "2026-04-13T19:57:27.195Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_dw8ihhdb8ip7.json"
+      "path": ".trajectories/completed/2026-04/traj_dw8ihhdb8ip7.json"
     },
     "traj_e5i62wdjx0jd": {
       "title": "Plan autofix finding groups",
       "status": "completed",
       "startedAt": "2026-04-13T09:40:42.044Z",
       "completedAt": "2026-04-13T09:41:07.789Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_e5i62wdjx0jd.json",
+      "path": ".trajectories/completed/2026-04/traj_e5i62wdjx0jd.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_g3muawdq6bsb": {
@@ -134,7 +134,7 @@
       "status": "completed",
       "startedAt": "2026-04-10T16:13:19.744Z",
       "completedAt": "2026-04-10T16:13:43.289Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_g3muawdq6bsb.json",
+      "path": ".trajectories/completed/2026-04/traj_g3muawdq6bsb.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_mk0t0cgn4ytq": {
@@ -142,7 +142,7 @@
       "status": "completed",
       "startedAt": "2026-04-10T15:10:03.877Z",
       "completedAt": "2026-04-10T15:10:29.410Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_mk0t0cgn4ytq.json",
+      "path": ".trajectories/completed/2026-04/traj_mk0t0cgn4ytq.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_o8kgzhfu6jth": {
@@ -150,7 +150,7 @@
       "status": "completed",
       "startedAt": "2026-04-10T16:07:15.131Z",
       "completedAt": "2026-04-10T16:07:42.930Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_o8kgzhfu6jth.json",
+      "path": ".trajectories/completed/2026-04/traj_o8kgzhfu6jth.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_qb54w47qwod6": {
@@ -158,7 +158,7 @@
       "status": "completed",
       "startedAt": "2026-04-13T20:16:10.459Z",
       "completedAt": "2026-04-13T20:25:09.219Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_qb54w47qwod6.json",
+      "path": ".trajectories/completed/2026-04/traj_qb54w47qwod6.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_rs2bt3x0fqba": {
@@ -166,7 +166,7 @@
       "status": "completed",
       "startedAt": "2026-04-10T17:50:43.088Z",
       "completedAt": "2026-04-10T18:00:44.095Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_rs2bt3x0fqba.json",
+      "path": ".trajectories/completed/2026-04/traj_rs2bt3x0fqba.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_tjadoebpscps": {
@@ -174,7 +174,7 @@
       "status": "completed",
       "startedAt": "2026-04-13T20:02:27.719Z",
       "completedAt": "2026-04-13T20:02:35.662Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_tjadoebpscps.json",
+      "path": ".trajectories/completed/2026-04/traj_tjadoebpscps.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_w0xpsaoxuiyw": {
@@ -182,7 +182,7 @@
       "status": "completed",
       "startedAt": "2026-04-11T13:35:52.600Z",
       "completedAt": "2026-04-11T13:36:48.341Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_w0xpsaoxuiyw.json",
+      "path": ".trajectories/completed/2026-04/traj_w0xpsaoxuiyw.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_1775914296101_a4397efe": {
@@ -190,7 +190,7 @@
       "status": "completed",
       "startedAt": "2026-04-11T13:31:36.101Z",
       "completedAt": "2026-04-11T13:39:53.105Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/traj_1775914296101_a4397efe.json",
+      "path": ".trajectories/completed/traj_1775914296101_a4397efe.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_1776024661304_cfc829b9": {
@@ -198,14 +198,14 @@
       "status": "abandoned",
       "startedAt": "2026-04-12T20:11:01.304Z",
       "completedAt": "2026-04-12T20:11:16.381Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/traj_1776024661304_cfc829b9.json"
+      "path": ".trajectories/completed/traj_1776024661304_cfc829b9.json"
     },
     "traj_05xg7j388bc4": {
       "title": "Add browser workflow step integration",
       "status": "completed",
       "startedAt": "2026-04-10T14:56:33.229Z",
       "completedAt": "2026-04-10T15:05:14.660Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_05xg7j388bc4.json",
+      "path": ".trajectories/completed/2026-04/traj_05xg7j388bc4.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_530xmbfeljyb": {
@@ -213,7 +213,7 @@
       "status": "completed",
       "startedAt": "2026-04-10T15:16:25.682Z",
       "completedAt": "2026-04-10T15:25:16.937Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_530xmbfeljyb.json",
+      "path": ".trajectories/completed/2026-04/traj_530xmbfeljyb.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_8oh4r5km5eic": {
@@ -221,7 +221,7 @@
       "status": "completed",
       "startedAt": "2026-04-10T15:26:11.355Z",
       "completedAt": "2026-04-10T15:33:35.150Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_8oh4r5km5eic.json",
+      "path": ".trajectories/completed/2026-04/traj_8oh4r5km5eic.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_avmkyoo2s3rt": {
@@ -229,7 +229,7 @@
       "status": "completed",
       "startedAt": "2026-04-10T14:42:17.242Z",
       "completedAt": "2026-04-10T14:55:45.196Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_avmkyoo2s3rt.json",
+      "path": ".trajectories/completed/2026-04/traj_avmkyoo2s3rt.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_tv1x9pamkqad": {
@@ -237,7 +237,7 @@
       "status": "completed",
       "startedAt": "2026-04-10T15:34:36.611Z",
       "completedAt": "2026-04-10T15:42:17.590Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_tv1x9pamkqad.json",
+      "path": ".trajectories/completed/2026-04/traj_tv1x9pamkqad.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_ui5omrgz819d": {
@@ -245,7 +245,7 @@
       "status": "completed",
       "startedAt": "2026-04-27T20:00:33.269Z",
       "completedAt": "2026-04-27T20:08:46.379Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-04/traj_ui5omrgz819d.json",
+      "path": ".trajectories/completed/2026-04/traj_ui5omrgz819d.json",
       "compactedInto": "compact_j5u7qhaw4q6a"
     },
     "traj_itgr2w8qs3xn": {
@@ -282,6 +282,47 @@
       "startedAt": "2026-05-08T15:50:35.978Z",
       "completedAt": "2026-05-08T15:51:38.854Z",
       "path": ".trajectories/completed/2026-05/traj_vkozdglobkyg.json"
+    },
+    "traj_6ujzpx82gqs9": {
+      "title": "ricky-slack-primitive-implementation-workflow-status-r-workflow",
+      "status": "completed",
+      "startedAt": "2026-05-08T16:06:54.844Z",
+      "completedAt": "2026-05-08T16:18:16.119Z",
+      "path": ".trajectories/completed/2026-05/traj_6ujzpx82gqs9.json"
+    },
+    "traj_k7njijv51iq4": {
+      "title": "ricky-slack-primitive-implementation-workflow-status-r-workflow",
+      "status": "completed",
+      "startedAt": "2026-05-08T16:18:55.300Z",
+      "completedAt": "2026-05-08T16:26:03.266Z",
+      "path": ".trajectories/completed/2026-05/traj_k7njijv51iq4.json"
+    },
+    "traj_tavtex0db4b0": {
+      "title": "Make workflow failures repairable by agents",
+      "status": "completed",
+      "startedAt": "2026-05-08T14:34:19.969Z",
+      "completedAt": "2026-05-08T14:44:45.719Z",
+      "path": ".trajectories/completed/2026-05/traj_tavtex0db4b0.json"
+    },
+    "traj_lieyyspidhfj": {
+      "title": "Fix PR 823 conflicts checks and comments",
+      "status": "active",
+      "startedAt": "2026-05-09T08:37:17.563Z",
+      "path": ".trajectories/active/traj_lieyyspidhfj.json"
+    },
+    "traj_bdrlknyl8twj": {
+      "title": "Add workflow reliability defaults and E2E matrix",
+      "status": "completed",
+      "startedAt": "2026-05-08T17:54:45.069Z",
+      "completedAt": "2026-05-08T18:05:37.305Z",
+      "path": ".trajectories/completed/2026-05/traj_bdrlknyl8twj.json"
+    },
+    "traj_34b1u84b19gz": {
+      "title": "Address PR 827 review feedback",
+      "status": "completed",
+      "startedAt": "2026-05-08T18:29:34.717Z",
+      "completedAt": "2026-05-08T18:33:55.607Z",
+      "path": ".trajectories/completed/2026-05/traj_34b1u84b19gz.json"
     }
   }
 }

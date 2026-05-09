@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { SlackAdapterFactory, normalizeSlackRuntimeConfig } from '../adapter.js';
+import { SlackWebApiClient } from '../local-runtime.js';
+import type { SlackWebApiLike } from '../types.js';
 
 describe('SlackAdapterFactory runtime selection', () => {
   it("picks 'cloud-relay' when CLOUD_API_TOKEN and CLOUD_API_URL are set, even if SLACK_BOT_TOKEN is also set", () => {
@@ -53,7 +55,7 @@ describe('SlackAdapterFactory runtime selection', () => {
     expect(normalized.runtime).toBe('local');
   });
 
-  it("detect() reports availability for all three runtimes", async () => {
+  it('detect() reports availability for all three runtimes', async () => {
     const detection = await SlackAdapterFactory.detect({
       env: {
         SLACK_BOT_TOKEN: 'xoxb-local',
@@ -68,8 +70,28 @@ describe('SlackAdapterFactory runtime selection', () => {
     expect(detection.noop.available).toBe(true);
   });
 
-  it("create() returns a noop adapter when no tokens are configured", async () => {
+  it('create() returns a noop adapter when no tokens are configured', async () => {
     const adapter = await SlackAdapterFactory.create({ env: {} });
     expect(adapter.getRuntime()).toBe('noop');
+  });
+
+  it('isAuthenticated() returns false when Slack auth probing rejects', async () => {
+    const slack = {
+      auth: {
+        test: async () => {
+          throw new Error('invalid_auth');
+        },
+      },
+      chat: { postMessage: async () => ({ ok: true }) },
+      conversations: { list: async () => ({ ok: true }) },
+      users: {
+        lookupByEmail: async () => ({ ok: false }),
+        list: async () => ({ ok: true }),
+      },
+    } as unknown as SlackWebApiLike;
+
+    const client = new SlackWebApiClient({ token: 'xoxb-local', env: {} }, slack);
+
+    await expect(client.isAuthenticated()).resolves.toBe(false);
   });
 });
