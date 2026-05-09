@@ -85,12 +85,20 @@ jobs:
       # The SDK pins internal runtime deps to the exact same release version;
       # wait for those too so npm/Bun installs cannot resolve a half-published
       # SDK that later fails at runtime inside @agent-relay/sdk/workflows.
-      - name: Wait for SDK and internal deps on registry
+      #
+      # The matching broker package is included because npm silently skips
+      # optionalDependencies that 404 — if the broker tarball hasn't reached
+      # the CDN edge serving this runner yet, install would "succeed" with
+      # no broker installed and the next step would fail confusingly.
+      # `npm view <pkg> version` and the actual tarball fetch can hit
+      # different caches, so additionally probe the tarball URL directly.
+      - name: Wait for SDK, internal deps, and matching broker on registry
         shell: bash
         run: |
           set -euo pipefail
           SPEC="${{ steps.spec.outputs.spec }}"
           VERSION="${{ steps.spec.outputs.version }}"
+          EXPECTED_BROKER="${{ matrix.expected_pkg }}"
           if [ "$VERSION" = "latest" ]; then
             echo "version=latest — no wait needed"
             exit 0
@@ -102,9 +110,10 @@ jobs:
             "@agent-relay/github-primitive@$VERSION"
             "@agent-relay/slack-primitive@$VERSION"
             "@agent-relay/workflow-types@$VERSION"
+            "${EXPECTED_BROKER}@$VERSION"
           )
 
-          for i in 1 2 3 4 5 6; do
+          for i in 1 2 3 4 5 6 7; do
             missing=()
             for pkg in "${PACKAGES[@]}"; do
               if ! npm view "$pkg" version >/dev/null 2>&1; then
@@ -112,8 +121,24 @@ jobs:
               fi
             done
 
+            # Even when `npm view` succeeds, the tarball may still 404 from
+            # the CDN edge that npm install hits. Probe the tarball URL of
+            # the matching broker directly.
             if [ "${#missing[@]}" -eq 0 ]; then
-              echo "registry has SDK and internal deps for $VERSION"
+              TARBALL_URL=$(npm view "${EXPECTED_BROKER}@$VERSION" dist.tarball 2>/dev/null || true)
+              if [ -z "$TARBALL_URL" ]; then
+                missing+=("${EXPECTED_BROKER}@$VERSION (no tarball url)")
+              else
+                STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -I \
+                  --connect-timeout 5 --max-time 15 "$TARBALL_URL" || echo "000")
+                if [ "$STATUS" != "200" ]; then
+                  missing+=("${EXPECTED_BROKER}@$VERSION (tarball HTTP $STATUS)")
+                fi
+              fi
+            fi
+
+            if [ "${#missing[@]}" -eq 0 ]; then
+              echo "registry has SDK, internal deps, and ${EXPECTED_BROKER} for $VERSION"
               exit 0
             fi
 
