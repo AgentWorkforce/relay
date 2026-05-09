@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-09T08:46:32.497Z",
+  "lastUpdated": "2026-05-09T08:47:54.843Z",
   "trajectories": {
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -320,9 +320,10 @@
     },
     "traj_lieyyspidhfj": {
       "title": "Fix PR 823 conflicts checks and comments",
-      "status": "active",
+      "status": "completed",
       "startedAt": "2026-05-09T08:37:17.563Z",
-      "path": ".trajectories/active/traj_lieyyspidhfj.json"
+      "completedAt": "2026-05-09T08:47:54.686Z",
+      "path": ".trajectories/completed/2026-05/traj_lieyyspidhfj.json"
     }
   }
 }
