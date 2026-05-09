@@ -21,12 +21,12 @@ The relay broker-sdk workflow system orchestrates multiple AI agents (Claude, Co
 
 ### Choose Your Coordination Style — Conversation vs Pipeline
 
-Before writing the workflow, decide *how the agents will coordinate*. The relay primitive supports two very different shapes, and picking the wrong one wastes the most valuable thing the SDK gives you.
+Before writing the workflow, decide _how the agents will coordinate_. The relay primitive supports two very different shapes, and picking the wrong one wastes the most valuable thing the SDK gives you.
 
-| Shape | What it is | Use when |
-|---|---|---|
+| Shape                          | What it is                                                                                                                                                                                                           | Use when                                                                                                                                                                                          |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | ----------- |
 | **Conversation** (chat-native) | Interactive agents share a channel; messages, `@-mentions`, and ambient awareness drive coordination. Lead and workers spawn in parallel and self-organize. The relay is the coordination layer, not just transport. | Multi-file work, peer review loops, cross-agent feedback, dynamic re-planning, multi-PR coordination, anything with a human-in-the-loop escape, swarms where workers pick up each other's output. |
-| **Pipeline** (one-shot DAG) | Each step runs as a one-shot subprocess (`claude -p`, `codex exec`); steps hand off via `{{steps.X.output}}` text injection. No agents are alive at the same time; no chat happens. | Linear, well-specified transformations; deterministic data passing; no review loop expected; the work could be expressed as a `bash | bash | bash` pipe. |
+| **Pipeline** (one-shot DAG)    | Each step runs as a one-shot subprocess (`claude -p`, `codex exec`); steps hand off via `{{steps.X.output}}` text injection. No agents are alive at the same time; no chat happens.                                  | Linear, well-specified transformations; deterministic data passing; no review loop expected; the work could be expressed as a `bash                                                               | bash | bash` pipe. |
 
 **Default to Conversation for any non-trivial work.** Pipeline DAGs are simpler to reason about but they do not exercise the relay primitive — they are a Unix pipe with extra steps. If you would happily write the same task as a single shell pipeline, pipeline-shape is fine. Otherwise, you almost certainly want a Conversation shape.
 
@@ -67,9 +67,8 @@ const result = await workflow('my-workflow')
   .onError('retry', { maxRetries: 2, retryDelayMs: 10_000 })
   .run({ cwd: process.cwd() });
 
-  console.log('Result:', result.status);
+console.log('Result:', result.status);
 ```
-
 
 ### Quick Reference (Conversation shape)
 
@@ -82,7 +81,7 @@ import { ClaudeModels, CodexModels } from '@agent-relay/config';
 const result = await workflow('my-workflow')
   .description('Multi-file change with peer review')
   .pattern('dag')
-  .channel('wf-my-feature')          // dedicated channel — agents share it
+  .channel('wf-my-feature') // dedicated channel — agents share it
   .maxConcurrency(4)
   .timeout(3_600_000)
 
@@ -124,13 +123,13 @@ Workers iterate based on your feedback. Exit when both files pass review.`,
   })
   .step('impl-a-work', {
     agent: 'impl-a',
-    dependsOn: ['context'],   // SAME dep as lead → starts in parallel, no deadlock
+    dependsOn: ['context'], // SAME dep as lead → starts in parallel, no deadlock
     task: `You are impl-a on #wf-my-feature. Wait for the lead's plan.
 Implement your assigned file. Post a completion message. Address feedback.`,
   })
   .step('impl-b-work', {
     agent: 'impl-b',
-    dependsOn: ['context'],   // SAME dep as lead
+    dependsOn: ['context'], // SAME dep as lead
     task: `You are impl-b on #wf-my-feature. Wait for the lead's plan.
 Implement your assigned file. Post a completion message. Address feedback.`,
   })
@@ -146,7 +145,6 @@ Implement your assigned file. Post a completion message. Address feedback.`,
   .onError('retry', { maxRetries: 2, retryDelayMs: 10_000 })
   .run({ cwd: process.cwd() });
 ```
-
 
 ### ⚡ Parallelism — Design for Speed
 
@@ -180,9 +178,9 @@ git add -A && git commit -m "Wave 2"
 
 ```typescript
 workflow('48-comparison-mode')
-  .packages(['web', 'core'])                // monorepo packages touched
-  .isolatedFrom(['49-feedback-system'])      // explicitly safe to parallelize
-  .requiresBefore(['46-admin-dashboard'])    // explicit ordering constraint
+  .packages(['web', 'core']) // monorepo packages touched
+  .isolatedFrom(['49-feedback-system']) // explicitly safe to parallelize
+  .requiresBefore(['46-admin-dashboard']); // explicit ordering constraint
 ```
 
 #### Within-Workflow Parallelism
@@ -197,7 +195,6 @@ workflow('48-comparison-mode')
 .step('fix-component-b', { agent: 'impl-2', dependsOn: ['review'] })  // same dep = parallel
 .step('verify-all', { agent: 'reviewer', dependsOn: ['fix-component-a', 'fix-component-b'] })
 ```
-
 
 ### Failure Prevention
 
@@ -287,7 +284,6 @@ export function applyCloudRepoSetup<T>(wf: T, opts: CloudRepoSetupOptions): T {
 }
 ```
 
-
 ### End-to-End Bug Fix Workflows
 
 - **Capture the original failure**
@@ -340,44 +336,52 @@ await workflow('feature-x')
   })
 
   // Branch off main on the remote.
-  .step('create-branch', createGitHubStep({
-    dependsOn: ['write-marker'],
-    action: 'createBranch',
-    repo: REPO,
-    params: { branch: BRANCH, source: 'main' },
-  }))
+  .step(
+    'create-branch',
+    createGitHubStep({
+      dependsOn: ['write-marker'],
+      action: 'createBranch',
+      repo: REPO,
+      params: { branch: BRANCH, source: 'main' },
+    })
+  )
 
   // Commit the change to the branch via Contents API.
-  .step('commit-change', createGitHubStep({
-    dependsOn: ['create-branch'],
-    action: 'createFile',
-    repo: REPO,
-    params: {
-      path: 'CHANGELOG.md',
-      branch: BRANCH,
-      content: '<file body here>',
-      message: 'chore: changelog entry',
-    },
-  }))
+  .step(
+    'commit-change',
+    createGitHubStep({
+      dependsOn: ['create-branch'],
+      action: 'createFile',
+      repo: REPO,
+      params: {
+        path: 'CHANGELOG.md',
+        branch: BRANCH,
+        content: '<file body here>',
+        message: 'chore: changelog entry',
+      },
+    })
+  )
 
   // Open the PR. This is the load-bearing step.
-  .step('open-pr', createGitHubStep({
-    dependsOn: ['commit-change'],
-    action: 'createPR',
-    repo: REPO,
-    params: {
-      title: 'feat: ship feature X',
-      head: BRANCH,
-      base: 'main',
-      body: '## Summary\n\n- ...\n\n## Test plan\n\n- [x] ...',
-      draft: false,
-    },
-    output: { mode: 'data', format: 'json', path: 'html_url' },
-  }))
+  .step(
+    'open-pr',
+    createGitHubStep({
+      dependsOn: ['commit-change'],
+      action: 'createPR',
+      repo: REPO,
+      params: {
+        title: 'feat: ship feature X',
+        head: BRANCH,
+        base: 'main',
+        body: '## Summary\n\n- ...\n\n## Test plan\n\n- [x] ...',
+        draft: false,
+      },
+      output: { mode: 'data', format: 'json', path: 'html_url' },
+    })
+  )
 
   .run({ cwd: process.cwd() });
 ```
-
 
 ### Key Concepts
 
@@ -416,12 +420,19 @@ relay.unmute({ agent: 'security-auditor', channel: 'review-pr-123' });
 #### Events
 
 ```typescript
-relay.onChannelSubscribed = (agent, channels) => { /* ... */ };
-relay.onChannelUnsubscribed = (agent, channels) => { /* ... */ };
-relay.onChannelMuted = (agent, channel) => { /* ... */ };
-relay.onChannelUnmuted = (agent, channel) => { /* ... */ };
+relay.onChannelSubscribed = (agent, channels) => {
+  /* ... */
+};
+relay.onChannelUnsubscribed = (agent, channels) => {
+  /* ... */
+};
+relay.onChannelMuted = (agent, channel) => {
+  /* ... */
+};
+relay.onChannelUnmuted = (agent, channel) => {
+  /* ... */
+};
 ```
-
 
 ### Agent Definition
 
@@ -448,7 +459,6 @@ import { ClaudeModels, CodexModels, GeminiModels } from '@agent-relay/config';
 .agent('coder',   { cli: 'codex',  model: CodexModels.GPT_5_4 })  // not 'gpt-5.4'
 ```
 
-
 ### Step Definition
 
 #### Agent Steps
@@ -474,7 +484,6 @@ import { ClaudeModels, CodexModels, GeminiModels } from '@agent-relay/config';
   failOnError: true,
 })
 ```
-
 
 ### Common Patterns
 
@@ -617,7 +626,6 @@ Tests: <pass/fail summary>. Commit: <sha>."`,
 .onError('retry', { maxRetries: 3, retryDelayMs: 5000 })
 ```
 
-
 ### Multi-File Edit Pattern
 
 #### When a workflow needs to modify multiple existing files, **use one agent step per file** with a deterministic verify gate after each. Agents reliably edit 1-2 files per step but fail on 4+.
@@ -677,7 +685,6 @@ steps:
     failOnError: true
 ```
 
-
 ### File Materialization: Verify Before Proceeding
 
 #### After any step that creates files, add a deterministic `file_exists` check before proceeding. Non-interactive agents may exit 0 without writing anything (wrong cwd, stdout instead of disk).
@@ -695,7 +702,6 @@ steps:
     echo "All files present"
   failOnError: true
 ```
-
 
 ### DAG Deadlock Anti-Pattern
 
@@ -721,7 +727,6 @@ steps:
     dependsOn: [work-a, coordinate]
 ```
 
-
 ### Step Sizing
 
 #### **One agent, one deliverable.** A step's task prompt should be 10-20 lines max.
@@ -738,7 +743,7 @@ steps:
 
   - name: track-worker-1-impl
     agent: track-worker-1
-    dependsOn: [prior-step]  # same dep as lead — starts concurrently
+    dependsOn: [prior-step] # same dep as lead — starts concurrently
     task: |
       Join #my-track. track-lead will post your assignment.
       Implement the file as directed.
@@ -746,9 +751,8 @@ steps:
       type: exit_code
 
   - name: next-step
-    dependsOn: [track-lead-coord]  # downstream depends on lead, not workers
+    dependsOn: [track-lead-coord] # downstream depends on lead, not workers
 ```
-
 
 ### Supervisor Pattern
 
@@ -756,69 +760,69 @@ When you set `.pattern('supervisor')` (or `hub-spoke`, `fan-out`), the runner au
 
 **Auto-hardening only activates for hub patterns** — not `pipeline` or `dag`.
 
-| Use case | Pattern | Why |
-|----------|---------|-----|
-| Sequential, no monitoring | `pipeline` | Simple, no overhead |
-| Workers need oversight | `supervisor` | Auto-owner monitors |
-| Local/small models | `supervisor` | Supervisor catches stuck workers |
-| All non-interactive | `pipeline` or `dag` | No PTY = no supervision needed |
+| Use case                  | Pattern             | Why                              |
+| ------------------------- | ------------------- | -------------------------------- |
+| Sequential, no monitoring | `pipeline`          | Simple, no overhead              |
+| Workers need oversight    | `supervisor`        | Auto-owner monitors              |
+| Local/small models        | `supervisor`        | Supervisor catches stuck workers |
+| All non-interactive       | `pipeline` or `dag` | No PTY = no supervision needed   |
 
 ### Concurrency
 
 **Cap `maxConcurrency` at 4-6.** Spawning 10+ agents simultaneously causes broker timeouts.
 
 | Parallel agents | `maxConcurrency` |
-|-----------------|-------------------|
-| 2-4             | 4 (default safe)  |
-| 5-10            | 5                 |
-| 10+             | 6-8 max           |
+| --------------- | ---------------- |
+| 2-4             | 4 (default safe) |
+| 5-10            | 5                |
+| 10+             | 6-8 max          |
 
 ### Common Mistakes
 
-| Mistake | Fix |
-|---------|-----|
-| Treating relay as transport, not as a coordination layer (every step is `preset: 'worker'`, every handoff is `{{steps.X.output}}`) | Default to **Conversation shape** for non-trivial work — interactive agents on a shared channel. Pipeline-shape is only correct when the work could be expressed as a `bash | bash | bash` pipe. |
-| Interactive agents on a channel whose task strings don't tell them to talk to each other | Pick a [Chat-Native Coordination Recipe](#chat-native-coordination-recipes) (Q/A, Broadcast/Ack, Peer Review, Standup, Hand-Off) and bake it into the task prompt — otherwise you're paying for a chat substrate you're not using |
-| All workflows run sequentially | Group independent workflows into parallel waves (4-7x speedup) |
-| Every step depends on the previous one | Only add `dependsOn` when there's a real data dependency |
-| Self-review step with no timeout | Set `timeout: 300_000` (5 min) — Codex hangs in non-interactive review |
-| One giant workflow per feature | Split into smaller workflows that can run in parallel waves |
-| Adding exit instructions to tasks | Runner handles self-termination automatically |
-| Setting `timeoutMs` on agents/steps | Use global `.timeout()` only |
-| Using `general` channel | Set `.channel('wf-name')` for isolation |
-| `{{steps.X.output}}` without `dependsOn: ['X']` | Output won't be available yet |
-| Requiring exact sentinel as only completion gate | Use `exit_code` or `file_exists` verification |
-| Writing 100-line task prompts | Split into lead + workers on a channel |
-| `maxConcurrency: 16` with many parallel steps | Cap at 5-6 |
-| Non-interactive agent reading large files via tools | Pre-read in deterministic step, inject via `{{steps.X.output}}` |
-| Workers depending on lead step (deadlock) | Both depend on shared context step |
-| `fan-out`/`hub-spoke` for simple parallel workers | Use `dag` instead |
-| `pipeline` but expecting auto-supervisor | Only hub patterns auto-harden. Use `.pattern('supervisor')` |
-| Workers without `preset: 'worker'` in one-shot DAG lead+worker flows | Add preset for clean stdout when chaining `{{steps.X.output}}` (not needed for interactive team patterns) |
-| Using `_` in YAML numbers (`timeoutMs: 1_200_000`) | YAML doesn't support `_` separators |
-| Workflow timeout under 30 min for complex workflows | Use `3600000` (1 hour) as default |
-| Using `require()` in ESM projects | Check `package.json` for `"type": "module"` — use `import` if ESM |
-| Wrapping in `async function main()` in ESM | ESM supports top-level `await` — no wrapper needed |
-| Using `createWorkflowRenderer` | Does not exist. Use `.run({ cwd: process.cwd() })` |
-| `export default workflow(...)...build()` | No `.build()`. Chain ends with `.run()` — the file must call `.run()`, not just export config |
-| Relative import `'../workflows/builder.js'` | Use `import { workflow } from '@agent-relay/sdk/workflows'` |
-| Hardcoded model strings (`model: 'opus'`) | Use constants: `import { ClaudeModels } from '@agent-relay/config'` → `model: ClaudeModels.OPUS` |
-| Thinking `agent-relay run` inspects exports | It executes the file as a subprocess. Only `.run()` invocations trigger steps |
-| `pattern('single')` on cloud runner | Not supported — use `dag` |
-| `pattern('supervisor')` with one agent | Same agent is owner + specialist. Use `dag` |
-| Invalid verification type (`type: 'deterministic'`) | Only `exit_code`, `output_contains`, `file_exists`, `custom` are valid |
-| Chaining `{{steps.X.output}}` from interactive agents | PTY output is garbled. Use deterministic steps or `preset: 'worker'` |
-| Single step editing 4+ files | Agents modify 1-2 then exit. Split to one file per step with verify gates |
-| Relying on agents to `git commit` | Agents emit markers without running git. Use deterministic commit step |
-| File-writing steps without `file_exists` verification | `exit_code` auto-passes even if no file written |
-| Manual peer fanout in `handleChannelMessage()` | Use broker-managed channel subscriptions — broker fans out to all subscribers automatically |
-| Client-side `personaNames.has(from)` filtering | Use `relay.subscribe()`/`relay.unsubscribe()` — only subscribed agents receive messages |
-| Agents receiving noisy cross-channel messages during focused work | Use `relay.mute({ agent, channel })` to silence non-primary channels without leaving them |
-| Hardcoding all channels at spawn time | Use `agent.subscribe()` / `agent.unsubscribe()` for dynamic channel membership post-spawn |
-| Using `preset: 'worker'` for Codex in *interactive team* patterns when coordination is needed | Codex interactive mode works fine with PTY channel injection. Drop the preset for interactive team patterns (keep it for one-shot DAG workers where clean stdout matters) |
-| Separate reviewer agent from lead in interactive team | Merge lead + reviewer into one interactive Claude agent — reviews between rounds, fewer agents |
-| Not printing PR URL after `createGitHubStep({ action: 'createPR' })` | Capture `html_url` with `output: { mode: 'data', format: 'json', path: 'html_url' }` and echo or write it in a final deterministic step |
-| Workflow ending without worktree + PR for cross-repo changes | Add `setup-worktree` at start and `push-and-pr` + `cleanup-worktree` at end |
+| Mistake                                                                                                                            | Fix                                                                                                                                                                                                                               |
+| ---------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | ----------- |
+| Treating relay as transport, not as a coordination layer (every step is `preset: 'worker'`, every handoff is `{{steps.X.output}}`) | Default to **Conversation shape** for non-trivial work — interactive agents on a shared channel. Pipeline-shape is only correct when the work could be expressed as a `bash                                                       | bash | bash` pipe. |
+| Interactive agents on a channel whose task strings don't tell them to talk to each other                                           | Pick a [Chat-Native Coordination Recipe](#chat-native-coordination-recipes) (Q/A, Broadcast/Ack, Peer Review, Standup, Hand-Off) and bake it into the task prompt — otherwise you're paying for a chat substrate you're not using |
+| All workflows run sequentially                                                                                                     | Group independent workflows into parallel waves (4-7x speedup)                                                                                                                                                                    |
+| Every step depends on the previous one                                                                                             | Only add `dependsOn` when there's a real data dependency                                                                                                                                                                          |
+| Self-review step with no timeout                                                                                                   | Set `timeout: 300_000` (5 min) — Codex hangs in non-interactive review                                                                                                                                                            |
+| One giant workflow per feature                                                                                                     | Split into smaller workflows that can run in parallel waves                                                                                                                                                                       |
+| Adding exit instructions to tasks                                                                                                  | Runner handles self-termination automatically                                                                                                                                                                                     |
+| Setting `timeoutMs` on agents/steps                                                                                                | Use global `.timeout()` only                                                                                                                                                                                                      |
+| Using `general` channel                                                                                                            | Set `.channel('wf-name')` for isolation                                                                                                                                                                                           |
+| `{{steps.X.output}}` without `dependsOn: ['X']`                                                                                    | Output won't be available yet                                                                                                                                                                                                     |
+| Requiring exact sentinel as only completion gate                                                                                   | Use `exit_code` or `file_exists` verification                                                                                                                                                                                     |
+| Writing 100-line task prompts                                                                                                      | Split into lead + workers on a channel                                                                                                                                                                                            |
+| `maxConcurrency: 16` with many parallel steps                                                                                      | Cap at 5-6                                                                                                                                                                                                                        |
+| Non-interactive agent reading large files via tools                                                                                | Pre-read in deterministic step, inject via `{{steps.X.output}}`                                                                                                                                                                   |
+| Workers depending on lead step (deadlock)                                                                                          | Both depend on shared context step                                                                                                                                                                                                |
+| `fan-out`/`hub-spoke` for simple parallel workers                                                                                  | Use `dag` instead                                                                                                                                                                                                                 |
+| `pipeline` but expecting auto-supervisor                                                                                           | Only hub patterns auto-harden. Use `.pattern('supervisor')`                                                                                                                                                                       |
+| Workers without `preset: 'worker'` in one-shot DAG lead+worker flows                                                               | Add preset for clean stdout when chaining `{{steps.X.output}}` (not needed for interactive team patterns)                                                                                                                         |
+| Using `_` in YAML numbers (`timeoutMs: 1_200_000`)                                                                                 | YAML doesn't support `_` separators                                                                                                                                                                                               |
+| Workflow timeout under 30 min for complex workflows                                                                                | Use `3600000` (1 hour) as default                                                                                                                                                                                                 |
+| Using `require()` in ESM projects                                                                                                  | Check `package.json` for `"type": "module"` — use `import` if ESM                                                                                                                                                                 |
+| Wrapping in `async function main()` in ESM                                                                                         | ESM supports top-level `await` — no wrapper needed                                                                                                                                                                                |
+| Using `createWorkflowRenderer`                                                                                                     | Does not exist. Use `.run({ cwd: process.cwd() })`                                                                                                                                                                                |
+| `export default workflow(...)...build()`                                                                                           | No `.build()`. Chain ends with `.run()` — the file must call `.run()`, not just export config                                                                                                                                     |
+| Relative import `'../workflows/builder.js'`                                                                                        | Use `import { workflow } from '@agent-relay/sdk/workflows'`                                                                                                                                                                       |
+| Hardcoded model strings (`model: 'opus'`)                                                                                          | Use constants: `import { ClaudeModels } from '@agent-relay/config'` → `model: ClaudeModels.OPUS`                                                                                                                                  |
+| Thinking `agent-relay run` inspects exports                                                                                        | It executes the file as a subprocess. Only `.run()` invocations trigger steps                                                                                                                                                     |
+| `pattern('single')` on cloud runner                                                                                                | Not supported — use `dag`                                                                                                                                                                                                         |
+| `pattern('supervisor')` with one agent                                                                                             | Same agent is owner + specialist. Use `dag`                                                                                                                                                                                       |
+| Invalid verification type (`type: 'deterministic'`)                                                                                | Only `exit_code`, `output_contains`, `file_exists`, `custom` are valid                                                                                                                                                            |
+| Chaining `{{steps.X.output}}` from interactive agents                                                                              | PTY output is garbled. Use deterministic steps or `preset: 'worker'`                                                                                                                                                              |
+| Single step editing 4+ files                                                                                                       | Agents modify 1-2 then exit. Split to one file per step with verify gates                                                                                                                                                         |
+| Relying on agents to `git commit`                                                                                                  | Agents emit markers without running git. Use deterministic commit step                                                                                                                                                            |
+| File-writing steps without `file_exists` verification                                                                              | `exit_code` auto-passes even if no file written                                                                                                                                                                                   |
+| Manual peer fanout in `handleChannelMessage()`                                                                                     | Use broker-managed channel subscriptions — broker fans out to all subscribers automatically                                                                                                                                       |
+| Client-side `personaNames.has(from)` filtering                                                                                     | Use `relay.subscribe()`/`relay.unsubscribe()` — only subscribed agents receive messages                                                                                                                                           |
+| Agents receiving noisy cross-channel messages during focused work                                                                  | Use `relay.mute({ agent, channel })` to silence non-primary channels without leaving them                                                                                                                                         |
+| Hardcoding all channels at spawn time                                                                                              | Use `agent.subscribe()` / `agent.unsubscribe()` for dynamic channel membership post-spawn                                                                                                                                         |
+| Using `preset: 'worker'` for Codex in _interactive team_ patterns when coordination is needed                                      | Codex interactive mode works fine with PTY channel injection. Drop the preset for interactive team patterns (keep it for one-shot DAG workers where clean stdout matters)                                                         |
+| Separate reviewer agent from lead in interactive team                                                                              | Merge lead + reviewer into one interactive Claude agent — reviews between rounds, fewer agents                                                                                                                                    |
+| Not printing PR URL after `createGitHubStep({ action: 'createPR' })`                                                               | Capture `html_url` with `output: { mode: 'data', format: 'json', path: 'html_url' }` and echo or write it in a final deterministic step                                                                                           |
+| Workflow ending without worktree + PR for cross-repo changes                                                                       | Add `setup-worktree` at start and `push-and-pr` + `cleanup-worktree` at end                                                                                                                                                       |
 
 ### YAML Alternative
 
@@ -850,7 +854,6 @@ workflows:
         verification:
           type: exit_code
 ```
-
 
 ### Available Swarm Patterns
 
