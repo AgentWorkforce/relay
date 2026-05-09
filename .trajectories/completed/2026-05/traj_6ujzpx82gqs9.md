@@ -19,6 +19,7 @@ Implemented Phase A slack-primitive package with local Slack Web API runtime, po
 ## Key Decisions
 
 ### Implement Slack primitive as a local-only package with a thin WebClient adapter
+
 - **Chose:** Implement Slack primitive as a local-only package with a thin WebClient adapter
 - **Reasoning:** The Phase A contract excludes alternate runtimes and Nango, so mirroring github-primitive shape should stop at package/API conventions while keeping routing local via SLACK_BOT_TOKEN.
 
@@ -27,12 +28,15 @@ Implemented Phase A slack-primitive package with local Slack Web API runtime, po
 ## Chapters
 
 ### 1. Planning
-*Agent: orchestrator*
+
+_Agent: orchestrator_
 
 ### 2. Execution: lead-plan
-*Agent: lead-claude*
+
+_Agent: lead-claude_
 
 ### 3. Execution: implement-artifact
-*Agent: impl-primary-codex*
+
+_Agent: impl-primary-codex_
 
 - Implement Slack primitive as a local-only package with a thin WebClient adapter: Implement Slack primitive as a local-only package with a thin WebClient adapter

@@ -18,6 +18,7 @@ Moved implementation into worktree codex/repairable-workflow-failures. Added bou
 ## Key Decisions
 
 ### Use a separate git worktree for the workflow repair runtime change
+
 - **Chose:** Use a separate git worktree for the workflow repair runtime change
 - **Reasoning:** The user explicitly requested worktree isolation after the branch was created; keeping the dirty base checkout untouched avoids mixing this implementation with existing local edits.
 
@@ -26,6 +27,7 @@ Moved implementation into worktree codex/repairable-workflow-failures. Added bou
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Use a separate git worktree for the workflow repair runtime change: Use a separate git worktree for the workflow repair runtime change

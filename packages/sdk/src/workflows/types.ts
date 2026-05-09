@@ -489,7 +489,7 @@ export interface ErrorHandlingConfig {
   notifyChannel?: string;
   /** Agent to use when a deterministic gate fails and needs code/workflow repair. */
   repairAgent?: string;
-  /** Retry budget for deterministic gate repair when maxRetries is not set. Default: 0. */
+  /** Retry budget for repair agents before terminal failure. Set 0 to disable repair agents. */
   repairRetries?: number;
 }
 

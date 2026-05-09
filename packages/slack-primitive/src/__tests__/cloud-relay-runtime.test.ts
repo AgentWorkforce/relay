@@ -8,9 +8,7 @@ interface FakeResponseBody {
   body: unknown;
 }
 
-function fakeFetch(
-  responses: FakeResponseBody[]
-): CloudRelayFetch & {
+function fakeFetch(responses: FakeResponseBody[]): CloudRelayFetch & {
   calls: Array<{ url: string; init?: { method?: string; headers?: Record<string, string>; body?: string } }>;
 } {
   const calls: Array<{

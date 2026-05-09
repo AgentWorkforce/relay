@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-09T08:41:56.120Z",
+  "lastUpdated": "2026-05-09T08:46:32.497Z",
   "trajectories": {
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -283,6 +283,20 @@
       "completedAt": "2026-05-08T15:51:38.854Z",
       "path": ".trajectories/completed/2026-05/traj_vkozdglobkyg.json"
     },
+    "traj_bdrlknyl8twj": {
+      "title": "Add workflow reliability defaults and E2E matrix",
+      "status": "completed",
+      "startedAt": "2026-05-08T17:54:45.069Z",
+      "completedAt": "2026-05-08T18:05:37.305Z",
+      "path": ".trajectories/completed/2026-05/traj_bdrlknyl8twj.json"
+    },
+    "traj_34b1u84b19gz": {
+      "title": "Address PR 827 review feedback",
+      "status": "completed",
+      "startedAt": "2026-05-08T18:29:34.717Z",
+      "completedAt": "2026-05-08T18:33:55.607Z",
+      "path": ".trajectories/completed/2026-05/traj_34b1u84b19gz.json"
+    },
     "traj_6ujzpx82gqs9": {
       "title": "ricky-slack-primitive-implementation-workflow-status-r-workflow",
       "status": "completed",
@@ -309,20 +323,6 @@
       "status": "active",
       "startedAt": "2026-05-09T08:37:17.563Z",
       "path": ".trajectories/active/traj_lieyyspidhfj.json"
-    },
-    "traj_bdrlknyl8twj": {
-      "title": "Add workflow reliability defaults and E2E matrix",
-      "status": "completed",
-      "startedAt": "2026-05-08T17:54:45.069Z",
-      "completedAt": "2026-05-08T18:05:37.305Z",
-      "path": ".trajectories/completed/2026-05/traj_bdrlknyl8twj.json"
-    },
-    "traj_34b1u84b19gz": {
-      "title": "Address PR 827 review feedback",
-      "status": "completed",
-      "startedAt": "2026-05-08T18:29:34.717Z",
-      "completedAt": "2026-05-08T18:33:55.607Z",
-      "path": ".trajectories/completed/2026-05/traj_34b1u84b19gz.json"
     }
   }
 }

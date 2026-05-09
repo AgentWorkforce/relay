@@ -19,6 +19,7 @@ Implemented Phase A packages/slack-primitive with local Slack Web API runtime, p
 ## Key Decisions
 
 ### Kept Slack primitive local-only and fixed the example by routing Slack and GitHub integration steps explicitly through a composite executor
+
 - **Chose:** Kept Slack primitive local-only and fixed the example by routing Slack and GitHub integration steps explicitly through a composite executor
 - **Reasoning:** The Phase A contract forbids alternate Slack runtimes, while the example includes both createPR and postMessage steps and needs deterministic local execution routing for each integration.
 
@@ -27,13 +28,16 @@ Implemented Phase A packages/slack-primitive with local Slack Web API runtime, p
 ## Chapters
 
 ### 1. Planning
-*Agent: orchestrator*
+
+_Agent: orchestrator_
 
 ### 2. Execution: lead-plan
-*Agent: lead-claude*
+
+_Agent: lead-claude_
 
 ### 3. Execution: implement-artifact
-*Agent: impl-primary-codex*
+
+_Agent: impl-primary-codex_
 
 - Kept Slack primitive local-only and fixed the example by routing Slack and GitHub integration steps explicitly through a composite executor: Kept Slack primitive local-only and fixed the example by routing Slack and GitHub integration steps explicitly through a composite executor
 - Slack primitive package implemented and gates passed with npm workspace equivalents; pnpm command is blocked by repository packageManager enforcement.

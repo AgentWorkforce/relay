@@ -203,15 +203,18 @@ export function slackStepConfigFromWorkflowStep(
 }
 
 export function renderSlackTemplates(value: string, data: Record<string, unknown>): string {
-  return value.replace(/\{\{\s*steps\.([A-Za-z0-9_-]+)\.output(?:\.([A-Za-z0-9_.-]+))?\s*\}\}/g, (_match, step, path) => {
-    const stepData = data.steps;
-    if (!isRecord(stepData)) return '';
-    const entry = stepData[String(step)];
-    if (!isRecord(entry)) return '';
-    const output = entry.output;
-    const resolved = typeof path === 'string' && path.length > 0 ? resolvePath(output, path) : output;
-    return projectionToText(resolved);
-  });
+  return value.replace(
+    /\{\{\s*steps\.([A-Za-z0-9_-]+)\.output(?:\.([A-Za-z0-9_.-]+))?\s*\}\}/g,
+    (_match, step, path) => {
+      const stepData = data.steps;
+      if (!isRecord(stepData)) return '';
+      const entry = stepData[String(step)];
+      if (!isRecord(entry)) return '';
+      const output = entry.output;
+      const resolved = typeof path === 'string' && path.length > 0 ? resolvePath(output, path) : output;
+      return projectionToText(resolved);
+    }
+  );
 }
 
 function validateSlackStepConfig(config: SlackStepConfig): void {
@@ -319,7 +322,7 @@ function buildOutputProjection<TOutput>(
   }
 
   return withOptionalMetadata(
-    result.data ?? (result.output ? result.output : result.error ?? null),
+    result.data ?? (result.output ? result.output : (result.error ?? null)),
     result,
     outputConfig
   );

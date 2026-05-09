@@ -83,9 +83,7 @@
               "channelPosts": [
                 "**[lead-plan] Output:**\n```\ne content is well-aligned with the packaged context: it correctly cites the acceptance contract, non-goals, deliverables, verificati"
               ],
-              "files": [
-                "modified:.claude/settings.json"
-              ],
+              "files": ["modified:.claude/settings.json"],
               "exitCode": 0
             }
           },
@@ -131,21 +129,12 @@
           "type": "reflection",
           "content": "Slack primitive package implemented and gates passed with npm workspace equivalents; pnpm command is blocked by repository packageManager enforcement.",
           "raw": {
-            "focalPoints": [
-              "implementation",
-              "verification",
-              "routing"
-            ],
+            "focalPoints": ["implementation", "verification", "routing"],
             "adjustments": "Example now uses an explicit composite executor for GitHub and Slack integrations.",
             "confidence": 0.9
           },
           "significance": "high",
-          "tags": [
-            "focal:implementation",
-            "focal:verification",
-            "focal:routing",
-            "confidence:0.9"
-          ]
+          "tags": ["focal:implementation", "focal:verification", "focal:routing", "confidence:0.9"]
         }
       ]
     }

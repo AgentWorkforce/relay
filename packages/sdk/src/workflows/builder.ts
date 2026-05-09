@@ -98,6 +98,8 @@ export interface ErrorOptions {
   repairRetries?: number;
 }
 
+export type ReliabilityOptions = ErrorOptions;
+
 export interface WorkflowRunOptions {
   /** Run a specific workflow by name (default: first). */
   workflow?: string;
@@ -373,6 +375,25 @@ export class WorkflowBuilder {
     return this;
   }
 
+  /**
+   * Opt into the product reliability contract: repairable workflow failures get
+   * routed through an agent and retried before the workflow is allowed to fail.
+   */
+  repairable(options: ReliabilityOptions = {}): this {
+    return this.onError('retry', {
+      maxRetries: options.maxRetries ?? options.repairRetries ?? 2,
+      retryDelayMs: options.retryDelayMs ?? 1000,
+      notifyChannel: options.notifyChannel,
+      repairAgent: options.repairAgent,
+      repairRetries: options.repairRetries ?? options.maxRetries ?? 2,
+    });
+  }
+
+  /** Alias for `.repairable()` for workflow authors who think in product terms. */
+  reliable(options: ReliabilityOptions = {}): this {
+    return this.repairable(options);
+  }
+
   private validateBuilderState(): void {
     const hasAgentSteps = this._steps.some((s) => s.type !== 'deterministic' && s.type !== 'worktree');
     if (hasAgentSteps && this._agents.length === 0) {
@@ -429,7 +450,8 @@ export class WorkflowBuilder {
     config.errorHandling = this._errorHandling ?? {
       strategy: 'retry',
       maxRetries: 2,
-      retryDelayMs: 10_000,
+      retryDelayMs: 1000,
+      repairRetries: 2,
     };
     if (this._coordination !== undefined) config.coordination = this._coordination;
     if (this._state !== undefined) config.state = this._state;
