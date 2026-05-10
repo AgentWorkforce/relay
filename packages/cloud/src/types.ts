@@ -95,6 +95,35 @@ export type RunWorkflowResponse = {
   [key: string]: unknown;
 };
 
+export type WorkflowSchedule = {
+  id: string;
+  relaycronScheduleId: string;
+  userId: string;
+  workspaceId: string;
+  organizationId: string;
+  name: string;
+  description: string | null;
+  scheduleType: 'once' | 'cron';
+  cronExpression: string | null;
+  scheduledAt: string | null;
+  timezone: string;
+  status: string;
+  lastTriggeredRunId: string | null;
+  lastTriggeredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ScheduleWorkflowOptions = {
+  apiUrl?: string;
+  fileType?: WorkflowFileType;
+  name?: string;
+  description?: string;
+  cron?: string;
+  at?: string;
+  timezone?: string;
+};
+
 export type WorkflowLogsResponse = {
   content: string;
   offset: number;

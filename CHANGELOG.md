@@ -41,11 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.14] - 2026-05-10
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Reclaim agent on 409 instead of crashing the broker (#797) (#830) (#797)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.14
 
 ---
@@ -53,15 +57,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.13] - 2026-05-09
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Re-export github primitive from root entry (#823)** (#823)
 - **Make reliability repair-aware by default (#827)** (#827)
 
 #### User-Impacting Fixes
+
 - Wait for matching broker tarball before install (#829) (#829)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.13
 
 ---
@@ -69,11 +78,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.12] - 2026-05-09
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Finish agentToken doc cleanup in types.ts (#822) (#822)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.12
 
 ---
@@ -81,26 +94,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.10] - 2026-05-08
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Spawn agents from named AgentWorkforce personas**
 - **Add @agentrelay/personas pack (#816)** (#816)
 
 #### User-Impacting Fixes
+
 - Stop stamping default_workspace_id into RELAYFILE_WORKSPACE (#821) (#821)
 - Stop stamping relaycast workspace id into RELAYFILE_WORKSPACE (#820) (#820)
-- Trust at_live_* agent tokens, drop probe-then-rotate (#819) (#819)
+- Trust at*live*\* agent tokens, drop probe-then-rotate (#819) (#819)
 - Address PR review (Windows paths, TOCTOU, harness validation)
 - Tighten validator robustness
 - Regenerate lockfile and address review nits
 
 ### Technical Perspective
+
 #### Performance & Reliability
+
 - Skip personas package in dist-files check
 
 #### Dependencies & Tooling
+
 - Align with @agent-relay scope and lockstep versioning
 
 #### Releases
+
 - v6.0.10
 
 ---
@@ -108,14 +128,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.9] - 2026-05-05
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Add WorkflowBuilder.paths() for multi-repo cloud workflows (#814)** (#814)
 
 #### User-Impacting Fixes
+
 - Align communicate transport with current Relaycast API (#813) (#813)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.9
 
 ---
@@ -123,15 +148,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.8] - 2026-05-04
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Surface phase C multi-repo push results in cloud CLI (#775)** (#775)
 - **Phase B multi-path tarball upload for cloud workflows (#774)** (#774)
 
 #### User-Impacting Fixes
+
 - Exclude volatile workflow files when applying sync patches (#811) (#811)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.8
 
 ---
@@ -139,7 +169,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.7] - 2026-05-01
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.7
 
 ---
@@ -147,12 +179,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.6] - 2026-04-30
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Add repository metadata for workflow types (#809) (#809)
 - Publish SDK internal deps before sdk (#806) (#806)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.6
 
 ---
@@ -160,12 +196,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.4] - 2026-04-30
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Publish SDK workflow types before SDK (#807) (#807)
 - Pack github-primitive + workflow-types in smoke; publish workflow-types (#804) (#804)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.4
 
 ---
@@ -173,16 +213,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.3] - 2026-04-29
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Expose connectProvider() in @agent-relay/cloud SDK (#798)** (#798)
 - **Expose runScriptWorkflow() in @agent-relay/sdk/workflows (#799)** (#799)
 - **Bundle @agent-relay/github-primitive at /github subpath (#782)** (#782)
 
 #### User-Impacting Fixes
+
 - Update codegen-models workflow to use new Python output path (#780) (#780)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.3
 
 ---

@@ -13,6 +13,8 @@ import {
   AUTH_FILE_PATH,
   REFRESH_WINDOW_MS,
   runWorkflow,
+  scheduleWorkflow,
+  listWorkflowSchedules,
   getRunStatus,
   getRunLogs,
   syncWorkflowPatch,
@@ -22,6 +24,7 @@ import {
   normalizeProvider,
   type WhoAmIResponse,
   type WorkflowFileType,
+  type WorkflowSchedule,
 } from '@agent-relay/cloud';
 
 import { defaultExit } from '../lib/exit.js';
@@ -126,6 +129,36 @@ function renderPatchPushResults(patches: unknown, log: (...args: unknown[]) => v
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatScheduleCadence(schedule: WorkflowSchedule): string {
+  if (schedule.scheduleType === 'cron') {
+    return `${schedule.cronExpression ?? 'cron'} (${schedule.timezone})`;
+  }
+  return schedule.scheduledAt
+    ? `${schedule.scheduledAt} (${schedule.timezone})`
+    : `once (${schedule.timezone})`;
+}
+
+function renderSchedule(schedule: WorkflowSchedule, log: (...args: unknown[]) => void): void {
+  log(`Schedule created: ${schedule.id}`);
+  log(`Name: ${schedule.name}`);
+  log(`Status: ${schedule.status}`);
+  log(`Cadence: ${formatScheduleCadence(schedule)}`);
+}
+
+function renderScheduleList(schedules: WorkflowSchedule[], log: (...args: unknown[]) => void): void {
+  if (schedules.length === 0) {
+    log('No workflow schedules found.');
+    return;
+  }
+
+  for (const schedule of schedules) {
+    const lastRun = schedule.lastTriggeredRunId ? ` last run ${schedule.lastTriggeredRunId}` : ' no runs yet';
+    log(
+      `${schedule.id}  ${schedule.status}  ${formatScheduleCadence(schedule)}  ${schedule.name} (${lastRun})`
+    );
+  }
 }
 
 // ── Command registration ─────────────────────────────────────────────────────
@@ -374,6 +407,76 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         }
       }
     );
+
+  // ── schedule ───────────────────────────────────────────────────────────────
+
+  cloudCommand
+    .command('schedule')
+    .description('Schedule a repeatable workflow run')
+    .argument('<workflow>', 'Workflow file path or inline workflow content')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
+    .option('--cron <expression>', 'Cron expression, for example "0 * * * *"')
+    .option('--at <isoTimestamp>', 'One-time ISO timestamp, for example 2026-05-10T09:00:00Z')
+    .option('--timezone <timezone>', 'IANA timezone for cron schedules', 'UTC')
+    .option('--name <name>', 'Schedule name')
+    .option('--description <description>', 'Schedule description')
+    .option('--json', 'Print raw JSON response', false)
+    .action(
+      async (
+        workflow: string,
+        options: {
+          apiUrl?: string;
+          fileType?: WorkflowFileType;
+          cron?: string;
+          at?: string;
+          timezone?: string;
+          name?: string;
+          description?: string;
+          json?: boolean;
+        }
+      ) => {
+        const started = Date.now();
+        let success = false;
+        let errorClass: string | undefined;
+        try {
+          const result = await scheduleWorkflow(workflow, options);
+          if (options.json) {
+            deps.log(JSON.stringify(result, null, 2));
+          } else {
+            renderSchedule(result, deps.log);
+            deps.log('\nList schedules:  agent-relay cloud schedules');
+          }
+          success = true;
+        } catch (err) {
+          errorClass = errorClassName(err);
+          throw err;
+        } finally {
+          track('cloud_workflow_schedule', {
+            schedule_type: options.cron ? 'cron' : 'once',
+            has_explicit_file_type: Boolean(options.fileType),
+            json_output: Boolean(options.json),
+            success,
+            duration_ms: Date.now() - started,
+            ...(errorClass ? { error_class: errorClass } : {}),
+          });
+        }
+      }
+    );
+
+  cloudCommand
+    .command('schedules')
+    .description('List scheduled workflow runs')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--json', 'Print raw JSON response', false)
+    .action(async (options: { apiUrl?: string; json?: boolean }) => {
+      const schedules = await listWorkflowSchedules(options);
+      if (options.json) {
+        deps.log(JSON.stringify({ schedules }, null, 2));
+        return;
+      }
+      renderScheduleList(schedules, deps.log);
+    });
 
   // ── status ─────────────────────────────────────────────────────────────────
 

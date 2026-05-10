@@ -1,0 +1,53 @@
+{
+  "id": "traj_oyc528j7suvo",
+  "version": 1,
+  "task": {
+    "title": "Expose cloud workflow scheduling through Relay SDK"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-09T19:43:34.805Z",
+  "completedAt": "2026-05-09T19:44:00.107Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-09T19:43:56.286Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_iwcqe1x74aoc",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-09T19:43:56.286Z",
+      "endedAt": "2026-05-09T19:44:00.107Z",
+      "events": [
+        {
+          "ts": 1778355836288,
+          "type": "decision",
+          "content": "Expose workflow schedule helpers from @agent-relay/sdk/workflows: Expose workflow schedule helpers from @agent-relay/sdk/workflows",
+          "raw": {
+            "question": "Expose workflow schedule helpers from @agent-relay/sdk/workflows",
+            "chosen": "Expose workflow schedule helpers from @agent-relay/sdk/workflows",
+            "alternatives": [],
+            "reasoning": "Ricky and similar products should consume scheduling from Relay SDK instead of duplicating Cloud endpoint calls. The SDK re-exports the existing @agent-relay/cloud scheduling implementation."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Re-exported Cloud workflow schedule helpers from @agent-relay/sdk/workflows and verified SDK build plus cloud CLI schedule tests.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "repo:relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "729a7ec321ba0860b2ff1463af159cdd0e8917cf",
+    "endRef": "729a7ec321ba0860b2ff1463af159cdd0e8917cf"
+  }
+}

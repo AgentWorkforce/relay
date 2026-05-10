@@ -33,6 +33,7 @@ export {
 export * from './memory-db.js';
 export * from './file-db.js';
 export * from './run.js';
+export * from './cloud-schedules.js';
 export * from './builder.js';
 export * from './coordinator.js';
 export * from './barrier.js';

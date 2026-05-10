@@ -42,6 +42,8 @@ const expectedLeafCommands = [
   'cloud whoami',
   'cloud connect',
   'cloud run',
+  'cloud schedule',
+  'cloud schedules',
   'cloud status',
   'cloud logs',
   'cloud sync',
