@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use relaycast::{CreateAgentRequest, RelayCast, RelayCastOptions, RelayError};
+use relaycast::{
+    ClientOptions, CreateAgentRequest, HttpClient, RelayCast, RelayCastOptions, RelayError,
+};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -627,8 +629,22 @@ impl AuthClient {
                 Err(RelayError::Api { code, status, .. })
                     if is_conflict_code(&code) || status == 409 =>
                 {
+                    // strict_name = "I want exactly this name". On 409 we
+                    // reclaim the existing agent via rotate-token so a restart
+                    // — same broker, same workspace key, same cwd-derived
+                    // name — can rejoin instead of fataling (issue #797).
+                    // Without this, sharing a workspace key across machines or
+                    // restarting after a crash kills the broker as soon as the
+                    // cloud still has the prior offline record. When
+                    // strict_name is false the caller is willing to take a
+                    // suffixed name, so we keep the legacy retry.
                     if strict_name {
-                        anyhow::bail!("agent name '{}' already exists", name);
+                        return reclaim_agent_via_rotate_token(
+                            workspace_key,
+                            &self.base_url,
+                            &name,
+                        )
+                        .await;
                     }
                     if !attempted_retry {
                         attempted_retry = true;
@@ -636,7 +652,6 @@ impl AuthClient {
                         name = format!("{}-{}", name, &suffix[..8]);
                         continue;
                     }
-                    // Second conflict — give up
                     return Err(relay_error_to_anyhow(RelayError::Api {
                         code: "agent_already_exists".to_string(),
                         message: format!("agent name '{}' already exists after retry", name),
@@ -751,6 +766,48 @@ fn is_conflict_code(code: &str) -> bool {
         code,
         "agent_already_exists" | "name_taken" | "conflict" | "duplicate"
     )
+}
+
+/// Reclaim an existing agent on a 409 by rotating its token, returning the
+/// fresh `(agent_id, agent_name, token, workspace_id)` tuple.
+///
+/// We can't use `relaycast::RelayCast::register_or_get_agent` here because its
+/// internal `get_agent` call deserializes into a strict `Agent` struct that
+/// doesn't match the live cloud's `GET /v1/agents/{name}` payload (missing
+/// `workspace_id`, `token_hash`, `created_at` in the response). Instead we
+/// fetch the agent record as `serde_json::Value` and pluck the `id` field —
+/// every other field is non-essential for startup.
+async fn reclaim_agent_via_rotate_token(
+    workspace_key: &str,
+    base_url: &str,
+    name: &str,
+) -> Result<(String, String, String, Option<String>)> {
+    let relay = build_relay_client(workspace_key, base_url)?;
+    let token_response = relay
+        .rotate_agent_token(name)
+        .await
+        .map_err(relay_error_to_anyhow)
+        .with_context(|| format!("failed to rotate token for existing agent '{}'", name))?;
+
+    let http = HttpClient::new(ClientOptions::new(workspace_key).with_base_url(base_url))
+        .map_err(|e| anyhow::anyhow!("failed to build http client: {e}"))?;
+    let agent_record = http
+        .get::<Value>(
+            &format!("/v1/agents/{}", urlencoding::encode(name)),
+            None,
+            None,
+        )
+        .await
+        .map_err(relay_error_to_anyhow)
+        .with_context(|| format!("failed to fetch existing agent '{}'", name))?;
+
+    let agent_id = agent_record
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .with_context(|| format!("agent '{}' record missing 'id' field", name))?;
+
+    Ok((agent_id, token_response.name, token_response.token, None))
 }
 
 fn is_workspace_name_conflict(error: &RelayError) -> bool {
@@ -900,19 +957,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn strict_name_returns_conflict_error() {
+    async fn strict_name_conflict_reclaims_via_rotate_token() {
+        // Regression test for issue #797: when a broker is restarted (or a
+        // second broker joins via shared workspace key) with a name that's
+        // already registered, registration must reclaim the existing agent
+        // via rotate-token instead of failing the broker startup.
         let _env_guard = clear_relay_env();
         let server = MockServer::start();
-        let workspace = server.mock(|when, then| {
-            when.method(POST).path("/v1/workspaces");
-            then.status(200)
-                .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_cached","created_at":"2025-01-01T00:00:00Z"}}"#);
-        });
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_shared");
+        }
         let conflict = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents")
-                .header("authorization", "Bearer rk_live_cached")
+                .header("authorization", "Bearer rk_live_shared")
                 .json_body(json!({
                     "name": "lead",
                     "type": "agent"
@@ -921,17 +979,44 @@ mod tests {
                 .header("content-type", "application/json")
                 .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
         });
+        let get_existing = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/lead")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(200)
+                .header("content-type", "application/json")
+                // Mirrors the live cloud's GET /v1/agents/{name} payload —
+                // notably missing workspace_id, token_hash, created_at that
+                // the relaycast 1.0.0 `Agent` struct expects. Our fix uses
+                // serde_json::Value to tolerate the shape mismatch.
+                .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
+        });
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"name":"lead","token":"at_live_rotated"}}"#);
+        });
 
         let client = AuthClient::new(server.base_url());
-        let err = client
+        let session = client
             .startup_session_with_options(Some("lead"), true, None)
             .await
-            .unwrap_err();
+            .expect("strict-name conflict should reclaim via rotate-token");
 
-        let rendered = format!("{err:#}");
-        assert!(rendered.contains("agent name 'lead' already exists"));
-        workspace.assert_hits(1);
+        assert_eq!(session.token, "at_live_rotated");
+        assert_eq!(session.credentials.agent_id, "a_existing");
+        assert_eq!(session.credentials.api_key, "rk_live_shared");
+        assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
         conflict.assert_hits(1);
+        get_existing.assert_hits(1);
+        rotate.assert_hits(1);
+
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
+        }
     }
 
     #[tokio::test]

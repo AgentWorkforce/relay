@@ -5,6 +5,8 @@
     "baseUrl": ".",
     "paths": {
       "@agent-relay/config": ["../config/src/index.ts"],
+      "@agent-relay/config/*": ["../config/src/*"],
+      "@agent-relay/cloud": ["../cloud/src/index.ts"],
       "@agent-relay/workflow-types": ["../workflow-types/src/index.ts"],
       "@agent-relay/github-primitive": ["../github-primitive/src/index.ts"],
       "@agent-relay/github-primitive/workflow-step": ["../github-primitive/src/workflow-step.ts"],
