@@ -14,6 +14,8 @@ use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::mpsc;
+use alacritty_terminal::term::{SizeInfo, Term};
+use vte::Parser;
 
 pub struct PtySession {
     master: Box<dyn portable_pty::MasterPty>,
@@ -25,6 +27,8 @@ pub struct PtySession {
     /// AND we had no PID to verify with kill(0). After a threshold, we
     /// assume the child is gone (macOS PTY quirk).
     no_pid_alive_checks: std::sync::atomic::AtomicU32,
+    term: Arc<Mutex<Term>>,
+    parser: Arc<Mutex<Parser>>,
 }
 
 fn needs_sane_term_override() -> bool {
@@ -118,13 +122,26 @@ impl PtySession {
             .take_writer()
             .context("failed to take pty writer")?;
 
+        let size_info = SizeInfo::new(cols.into(), rows.into(), 0.0, 0.0, 0.0, 0.0, false);
+        let term = Arc::new(Mutex::new(Term::new(Default::default(), size_info)));
+        let parser = Arc::new(Mutex::new(Parser::new()));
+
         let (tx, rx) = mpsc::channel(256);
+        let term_clone = term.clone();
+        let parser_clone = parser.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        {
+                            let mut parser_guard = parser_clone.lock();
+                            let mut term_guard = term_clone.lock();
+                            for byte in &buf[..n] {
+                                parser_guard.advance(&mut *term_guard, *byte);
+                            }
+                        }
                         if tx.blocking_send(buf[..n].to_vec()).is_err() {
                             break;
                         }
@@ -142,6 +159,8 @@ impl PtySession {
                 child_pid,
                 reaped: Arc::new(AtomicBool::new(false)),
                 no_pid_alive_checks: std::sync::atomic::AtomicU32::new(0),
+                term,
+                parser,
             },
             rx,
         ))
@@ -162,7 +181,10 @@ impl PtySession {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .context("failed to resize pty")
+            .context("failed to resize pty")?;
+        let size_info = SizeInfo::new(cols.into(), rows.into(), 0.0, 0.0, 0.0, 0.0, false);
+        self.term.lock().resize(size_info);
+        Ok(())
     }
 
     /// Check if the child process has exited without blocking.
