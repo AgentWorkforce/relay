@@ -359,7 +359,7 @@
       "status": "completed",
       "startedAt": "2026-05-10T20:24:43.831Z",
       "completedAt": "2026-05-10T20:35:47.359Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay-broker-stdout-drain/.trajectories/completed/2026-05/traj_mz5m5ysjj31e.json"
+      "path": ".trajectories/completed/2026-05/traj_mz5m5ysjj31e.json"
     }
   }
 }

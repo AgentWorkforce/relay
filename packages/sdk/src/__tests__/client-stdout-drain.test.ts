@@ -7,6 +7,8 @@ import { test } from 'vitest';
 
 import { AgentRelayClient } from '../client.js';
 
+const BROKER_STDOUT_DRAIN_TIMEOUT_MS = 5_000;
+
 test('spawn drains broker stdout after startup so event floods cannot wedge the broker', async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'agent-relay-sdk-stdout-drain-'));
 
@@ -68,7 +70,7 @@ test('spawn drains broker stdout after startup so event floods cannot wedge the 
         ? 'exited'
         : await Promise.race([
             new Promise<'exited'>((resolve) => child.once('exit', () => resolve('exited'))),
-            sleep(1_500).then(() => 'blocked' as const),
+            sleep(BROKER_STDOUT_DRAIN_TIMEOUT_MS).then(() => 'blocked' as const),
           ]);
 
     client.disconnect();
