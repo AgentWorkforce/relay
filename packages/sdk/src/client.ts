@@ -261,7 +261,7 @@ export class AgentRelayClient {
       stdoutLines,
       stderrLines,
     });
-    drainBrokerStdoutAfterStartup(child);
+    drainBrokerStdioAfterStartup(child);
 
     const client = new AgentRelayClient({
       baseUrl,
@@ -681,14 +681,17 @@ async function waitForApiUrl(
   });
 }
 
-function drainBrokerStdoutAfterStartup(child: ChildProcess): void {
-  if (!child.stdout) return;
-
-  child.stdout.on('data', () => {
-    // Drain broker stdout after startup so high-volume broker diagnostics/events
-    // cannot fill the pipe and block the broker process.
-  });
-  child.stdout.resume();
+function drainBrokerStdioAfterStartup(child: ChildProcess): void {
+  // Drain both stdout AND stderr after startup so high-volume broker
+  // diagnostics/events cannot fill either pipe and block the broker process.
+  // The Rust broker routes `tracing` output to stderr (rule: rust.md); under
+  // heavy fanout stderr fills its kernel pipe (~64KB on macOS) and wedges the
+  // broker exactly like stdout did before this drain existed.
+  for (const stream of [child.stdout, child.stderr]) {
+    if (!stream) continue;
+    stream.on('data', () => {});
+    stream.resume();
+  }
 }
 
 function pushBufferedLine(lines: string[], line: string): void {
