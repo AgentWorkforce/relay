@@ -716,6 +716,7 @@ jobs:
           cd "$NEGATIVE"
           npm init -y --silent >/dev/null
           SDK_TGZ=$(ls "$TARBALLS"/agent-relay-sdk-*.tgz | head -n1)
+          CLOUD_TGZ=$(ls "$TARBALLS"/agent-relay-cloud-*.tgz | head -n1)
           CONFIG_TGZ=$(ls "$TARBALLS"/agent-relay-config-*.tgz | head -n1)
           GITHUB_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-github-primitive-*.tgz | head -n1)
           SLACK_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-slack-primitive-*.tgz | head -n1)
@@ -725,7 +726,7 @@ jobs:
           # entirely. The resolver should return null and spawn() should
           # throw the clear error.
           npm install --ignore-scripts --no-audit --no-fund --no-optional \
-            "$SDK_TGZ" "$CONFIG_TGZ" "$GITHUB_PRIMITIVE_TGZ" "$SLACK_PRIMITIVE_TGZ" "$WORKFLOW_TYPES_TGZ"
+            "$SDK_TGZ" "$CLOUD_TGZ" "$CONFIG_TGZ" "$GITHUB_PRIMITIVE_TGZ" "$SLACK_PRIMITIVE_TGZ" "$WORKFLOW_TYPES_TGZ"
           node --input-type=module -e "
             import { AgentRelayClient } from '@agent-relay/sdk';
             try {
@@ -759,6 +760,7 @@ jobs:
       max-parallel: 3
       matrix:
         package:
+          - cloud
           - config
           - github-primitive
           - slack-primitive

@@ -9,7 +9,7 @@
 
 ## Summary
 
-Updated publish.yml smoke packaging to pack packages/cloud, locate agent-relay-cloud-_.tgz, and include it in the scratch npm install. Verified YAML parses and added a static Node check that the smoke workflow covers all @agent-relay/_ SDK dependencies.
+Updated publish.yml smoke packaging to pack packages/cloud, locate `agent-relay-cloud-*.tgz`, and include it in the scratch npm install. Verified YAML parses and added a static Node check that the smoke workflow covers all `@agent-relay/*` SDK dependencies.
 
 **Approach:** Standard approach
 
