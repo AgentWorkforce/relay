@@ -640,6 +640,7 @@ jobs:
           # workflow — so pack them locally and install them alongside the
           # SDK. Keep this list in sync with packages/sdk/package.json's
           # `dependencies` whenever a new internal dep is added.
+          (cd packages/cloud && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           (cd packages/config && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           (cd packages/github-primitive && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           (cd packages/slack-primitive && npm pack --ignore-scripts --pack-destination "$TARBALLS")
@@ -657,13 +658,14 @@ jobs:
           npm init -y --silent >/dev/null
           SDK_TGZ=$(ls "$TARBALLS"/agent-relay-sdk-*.tgz | head -n1)
           BROKER_TGZ=$(ls "$TARBALLS"/agent-relay-broker-${{ matrix.platform }}-*.tgz | head -n1)
+          CLOUD_TGZ=$(ls "$TARBALLS"/agent-relay-cloud-*.tgz | head -n1)
           CONFIG_TGZ=$(ls "$TARBALLS"/agent-relay-config-*.tgz | head -n1)
           GITHUB_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-github-primitive-*.tgz | head -n1)
           SLACK_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-slack-primitive-*.tgz | head -n1)
           WORKFLOW_TYPES_TGZ=$(ls "$TARBALLS"/agent-relay-workflow-types-*.tgz | head -n1)
-          echo "Installing $SDK_TGZ + $BROKER_TGZ + $CONFIG_TGZ + $GITHUB_PRIMITIVE_TGZ + $SLACK_PRIMITIVE_TGZ + $WORKFLOW_TYPES_TGZ"
+          echo "Installing $SDK_TGZ + $BROKER_TGZ + $CLOUD_TGZ + $CONFIG_TGZ + $GITHUB_PRIMITIVE_TGZ + $SLACK_PRIMITIVE_TGZ + $WORKFLOW_TYPES_TGZ"
           npm install --ignore-scripts --no-audit --no-fund \
-            "$SDK_TGZ" "$BROKER_TGZ" "$CONFIG_TGZ" \
+            "$SDK_TGZ" "$BROKER_TGZ" "$CLOUD_TGZ" "$CONFIG_TGZ" \
             "$GITHUB_PRIMITIVE_TGZ" "$SLACK_PRIMITIVE_TGZ" "$WORKFLOW_TYPES_TGZ"
           ls node_modules/@agent-relay/
 
@@ -714,6 +716,7 @@ jobs:
           cd "$NEGATIVE"
           npm init -y --silent >/dev/null
           SDK_TGZ=$(ls "$TARBALLS"/agent-relay-sdk-*.tgz | head -n1)
+          CLOUD_TGZ=$(ls "$TARBALLS"/agent-relay-cloud-*.tgz | head -n1)
           CONFIG_TGZ=$(ls "$TARBALLS"/agent-relay-config-*.tgz | head -n1)
           GITHUB_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-github-primitive-*.tgz | head -n1)
           SLACK_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-slack-primitive-*.tgz | head -n1)
@@ -723,7 +726,7 @@ jobs:
           # entirely. The resolver should return null and spawn() should
           # throw the clear error.
           npm install --ignore-scripts --no-audit --no-fund --no-optional \
-            "$SDK_TGZ" "$CONFIG_TGZ" "$GITHUB_PRIMITIVE_TGZ" "$SLACK_PRIMITIVE_TGZ" "$WORKFLOW_TYPES_TGZ"
+            "$SDK_TGZ" "$CLOUD_TGZ" "$CONFIG_TGZ" "$GITHUB_PRIMITIVE_TGZ" "$SLACK_PRIMITIVE_TGZ" "$WORKFLOW_TYPES_TGZ"
           node --input-type=module -e "
             import { AgentRelayClient } from '@agent-relay/sdk';
             try {
@@ -757,6 +760,7 @@ jobs:
       max-parallel: 3
       matrix:
         package:
+          - cloud
           - config
           - github-primitive
           - slack-primitive
