@@ -47,6 +47,30 @@ export type AuthSessionResponse = {
   expiresAt: string;
 };
 
+export type WorkspaceCreateResponse = {
+  workspaceId: string;
+  name?: string;
+  relayfileUrl?: string;
+  relayauthUrl?: string;
+  joinCommand?: string;
+  createdAt?: string;
+};
+
+export type WorkspaceTokenRecord = {
+  workspaceId: string;
+  kind: string;
+  prefix?: string;
+  id?: string;
+  name?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type WorkspaceTokenIssueResponse = {
+  key: string;
+  workspaceToken?: WorkspaceTokenRecord;
+};
+
 export type WorkflowFileType = 'yaml' | 'ts' | 'py';
 
 export type PathSubmission = {

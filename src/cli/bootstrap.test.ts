@@ -24,6 +24,7 @@ const expectedLeafCommands = [
   'read',
   'history',
   'inbox',
+  'login',
   'metrics',
   'health',
   'profile',
@@ -37,6 +38,8 @@ const expectedLeafCommands = [
   'run',
   'connect',
   'workflows list',
+  'workspaces create',
+  'tokens issue',
   'cloud login',
   'cloud logout',
   'cloud whoami',
@@ -100,6 +103,7 @@ describe('bootstrap CLI', () => {
         'read',
         'history',
         'inbox',
+        'login',
         'cloud',
         'metrics',
         'health',
@@ -112,7 +116,9 @@ describe('bootstrap CLI', () => {
         'on',
         'off',
         'run',
+        'workspaces',
         'workflows',
+        'tokens',
       ])
     );
     expect(topLevelCommands).not.toContain('create-agent');

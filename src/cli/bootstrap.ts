@@ -16,6 +16,7 @@ import { errorClassName } from './lib/telemetry-helpers.js';
 import { registerAgentManagementCommands } from './commands/agent-management.js';
 import { registerMessagingCommands } from './commands/messaging.js';
 import { registerCloudCommands } from './commands/cloud.js';
+import { registerProactiveBootstrapCommands } from './commands/proactive-bootstrap.js';
 import { registerMonitoringCommands } from './commands/monitoring.js';
 import { registerAuthCommands } from './commands/auth.js';
 import { registerSetupCommands } from './commands/setup.js';
@@ -259,6 +260,7 @@ export function createProgram(): Command {
   registerAgentManagementCommands(program);
   registerMessagingCommands(program);
   registerCloudCommands(program);
+  registerProactiveBootstrapCommands(program);
   registerMonitoringCommands(program);
   registerAuthCommands(program);
   registerSetupCommands(program);
