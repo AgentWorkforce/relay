@@ -2,64 +2,78 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { test } from 'vitest';
 
-import { AgentRelayClient } from '../client.js';
+import { AgentRelayClient, __clientTestInternals } from '../client.js';
 
-const BROKER_STDOUT_DRAIN_TIMEOUT_MS = 5_000;
+const BROKER_STDIO_DRAIN_TIMEOUT_MS = 5_000;
+// Spawning Node + binding an HTTP server inside a Vitest worker can take
+// several seconds on cold machines; give startup generous headroom so the
+// drain assertion (not startup latency) is what's being measured.
+const BROKER_STARTUP_TIMEOUT_MS = 30_000;
+// Test timeout must cover startup + drain wait + cleanup with margin.
+const TEST_TIMEOUT_MS = 60_000;
 
-test('spawn drains broker stdout after startup so event floods cannot wedge the broker', async () => {
-  const cwd = await mkdtemp(join(tmpdir(), 'agent-relay-sdk-stdout-drain-'));
+function fakeBrokerSource(stream: 'stdout' | 'stderr'): string {
+  return [
+    "const http = require('node:http');",
+    'const server = http.createServer((req, res) => {',
+    "  if (req.url === '/api/session') {",
+    "    res.writeHead(200, { 'content-type': 'application/json' });",
+    "    res.end(JSON.stringify({ workspace_key: 'wk_fake', mode: 'test', uptime_secs: 0 }));",
+    '    return;',
+    '  }',
+    "  if (req.url === '/api/session/renew' || req.url === '/api/shutdown') {",
+    "    res.writeHead(200, { 'content-type': 'application/json' });",
+    '    res.end(JSON.stringify({ ok: true }));',
+    '    return;',
+    '  }',
+    "  res.writeHead(404, { 'content-type': 'application/json' });",
+    "  res.end(JSON.stringify({ error: 'not found' }));",
+    '});',
+    "server.listen(0, '127.0.0.1', () => {",
+    '  const address = server.address();',
+    // Startup URL always goes to stdout so the SDK can parse it.
+    '  console.log(`[agent-relay] API listening on http://127.0.0.1:${address.port}`);',
+    `  const sink = process.${stream};`,
+    '  let index = 0;',
+    "  const chunk = 'x'.repeat(1024);",
+    // 5000 * ~1KB = ~5 MB total; macOS pipe buffer is ~64 KB, so this still
+    // forces ~80 backpressure cycles — plenty to wedge an undrained broker —
+    // while keeping the drained case fast enough that line-by-line readline
+    // parsing of stderr never races the drain timeout.
+    '  const totalChunks = 5000;',
+    '  const writeMore = () => {',
+    '    let ok = true;',
+    '    while (index < totalChunks && ok) {',
+    '      ok = sink.write(`event-${index}:${chunk}\\n`);',
+    '      index += 1;',
+    '    }',
+    '    if (index >= totalChunks) {',
+    '      setTimeout(() => process.exit(0), 25);',
+    '      return;',
+    '    }',
+    "    sink.once('drain', writeMore);",
+    '  };',
+    '  writeMore();',
+    '});',
+    '',
+  ].join('\n');
+}
+
+async function runFakeBrokerAndAssertDrains(stream: 'stdout' | 'stderr'): Promise<void> {
+  const cwd = await mkdtemp(join(tmpdir(), `agent-relay-sdk-${stream}-drain-`));
 
   try {
     await mkdir(cwd, { recursive: true });
-    await writeFile(
-      join(cwd, 'init'),
-      [
-        "const http = require('node:http');",
-        'const server = http.createServer((req, res) => {',
-        "  if (req.url === '/api/session') {",
-        "    res.writeHead(200, { 'content-type': 'application/json' });",
-        "    res.end(JSON.stringify({ workspace_key: 'wk_fake', mode: 'test', uptime_secs: 0 }));",
-        '    return;',
-        '  }',
-        "  if (req.url === '/api/session/renew' || req.url === '/api/shutdown') {",
-        "    res.writeHead(200, { 'content-type': 'application/json' });",
-        '    res.end(JSON.stringify({ ok: true }));',
-        '    return;',
-        '  }',
-        "  res.writeHead(404, { 'content-type': 'application/json' });",
-        "  res.end(JSON.stringify({ error: 'not found' }));",
-        '});',
-        "server.listen(0, '127.0.0.1', () => {",
-        '  const address = server.address();',
-        '  console.log(`[agent-relay] API listening on http://127.0.0.1:${address.port}`);',
-        '  let index = 0;',
-        "  const chunk = 'x'.repeat(1024);",
-        '  const writeMore = () => {',
-        '    let ok = true;',
-        '    while (index < 20000 && ok) {',
-        '      ok = process.stdout.write(`event-${index}:${chunk}\\n`);',
-        '      index += 1;',
-        '    }',
-        '    if (index >= 20000) {',
-        '      setTimeout(() => process.exit(0), 25);',
-        '      return;',
-        '    }',
-        "    process.stdout.once('drain', writeMore);",
-        '  };',
-        '  writeMore();',
-        '});',
-        '',
-      ].join('\n'),
-      'utf8'
-    );
+    await writeFile(join(cwd, 'init'), fakeBrokerSource(stream), 'utf8');
 
     const client = await AgentRelayClient.spawn({
       binaryPath: process.execPath,
       cwd,
-      startupTimeoutMs: 3_000,
+      startupTimeoutMs: BROKER_STARTUP_TIMEOUT_MS,
       requestTimeoutMs: 3_000,
     });
 
@@ -70,7 +84,7 @@ test('spawn drains broker stdout after startup so event floods cannot wedge the 
         ? 'exited'
         : await Promise.race([
             new Promise<'exited'>((resolve) => child.once('exit', () => resolve('exited'))),
-            sleep(BROKER_STDOUT_DRAIN_TIMEOUT_MS).then(() => 'blocked' as const),
+            sleep(BROKER_STDIO_DRAIN_TIMEOUT_MS).then(() => 'blocked' as const),
           ]);
 
     client.disconnect();
@@ -82,4 +96,39 @@ test('spawn drains broker stdout after startup so event floods cannot wedge the 
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
+}
+
+test('post-startup drain attaches directly to stdout and stderr streams', () => {
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  stdout.pause();
+  stderr.pause();
+
+  const child = {
+    stdout,
+    stderr,
+  } as unknown as Parameters<typeof __clientTestInternals.drainBrokerStdioAfterStartup>[0];
+
+  __clientTestInternals.drainBrokerStdioAfterStartup(child);
+
+  assert.equal(stdout.listenerCount('data'), 1);
+  assert.equal(stderr.listenerCount('data'), 1);
+  assert.equal(stdout.isPaused(), false);
+  assert.equal(stderr.isPaused(), false);
 });
+
+test(
+  'spawn drains broker stdout after startup so event floods cannot wedge the broker',
+  async () => {
+    await runFakeBrokerAndAssertDrains('stdout');
+  },
+  TEST_TIMEOUT_MS
+);
+
+test(
+  'spawn drains broker stderr after startup so tracing/log floods cannot wedge the broker',
+  async () => {
+    await runFakeBrokerAndAssertDrains('stderr');
+  },
+  TEST_TIMEOUT_MS
+);
