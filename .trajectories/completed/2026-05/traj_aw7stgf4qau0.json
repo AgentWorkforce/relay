@@ -1,0 +1,53 @@
+{
+  "id": "traj_aw7stgf4qau0",
+  "version": 1,
+  "task": {
+    "title": "Fix publish smoke cloud tarball dependency"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-11T07:49:42.778Z",
+  "completedAt": "2026-05-11T07:50:37.848Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-11T07:50:37.764Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_a8gmxh7ko84g",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-11T07:50:37.764Z",
+      "endedAt": "2026-05-11T07:50:37.848Z",
+      "events": [
+        {
+          "ts": 1778485837765,
+          "type": "decision",
+          "content": "Added cloud to publish smoke local tarballs: Added cloud to publish smoke local tarballs",
+          "raw": {
+            "question": "Added cloud to publish smoke local tarballs",
+            "chosen": "Added cloud to publish smoke local tarballs",
+            "alternatives": [],
+            "reasoning": "@agent-relay/cloud is an exact-version SDK dependency after release version bump, so the pre-publish scratch install must use the locally packed cloud tarball just like config/github/slack/workflow-types."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Updated publish.yml smoke packaging to pack packages/cloud, locate agent-relay-cloud-*.tgz, and include it in the scratch npm install. Verified YAML parses and added a static Node check that the smoke workflow covers all @agent-relay/* SDK dependencies.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay-fix-publish-cloud-tarball",
+  "tags": [],
+  "_trace": {
+    "startRef": "b57a1114d23903af4a1fc7d76e70d045cc2e78b0",
+    "endRef": "b57a1114d23903af4a1fc7d76e70d045cc2e78b0"
+  }
+}
