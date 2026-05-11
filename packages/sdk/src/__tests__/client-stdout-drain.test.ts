@@ -39,13 +39,18 @@ function fakeBrokerSource(stream: 'stdout' | 'stderr'): string {
     `  const sink = process.${stream};`,
     '  let index = 0;',
     "  const chunk = 'x'.repeat(1024);",
+    // 5000 * ~1KB = ~5 MB total; macOS pipe buffer is ~64 KB, so this still
+    // forces ~80 backpressure cycles — plenty to wedge an undrained broker —
+    // while keeping the drained case fast enough that line-by-line readline
+    // parsing of stderr never races the drain timeout.
+    '  const totalChunks = 5000;',
     '  const writeMore = () => {',
     '    let ok = true;',
-    '    while (index < 20000 && ok) {',
+    '    while (index < totalChunks && ok) {',
     '      ok = sink.write(`event-${index}:${chunk}\\n`);',
     '      index += 1;',
     '    }',
-    '    if (index >= 20000) {',
+    '    if (index >= totalChunks) {',
     '      setTimeout(() => process.exit(0), 25);',
     '      return;',
     '    }',
