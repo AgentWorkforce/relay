@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, PropertyMock
 
 import pytest
 
-from agent_relay.client import AgentRelayProcessError, _wait_for_api_url
+from agent_relay.client import AgentRelayProcessError, _drain_stdout, _wait_for_api_url
 
 
 def _make_process(lines: list[str], returncode: int | None = 0):
@@ -90,3 +90,21 @@ class TestWaitForApiUrl:
         ])
         url = await _wait_for_api_url(process, 5000)
         assert url == "http://127.0.0.1:9999"
+
+
+class TestDrainStdout:
+    async def test_reads_until_eof(self):
+        chunks = [b"x" * 1024, b"y" * 1024, b""]
+        reads: list[int] = []
+
+        async def read(size: int) -> bytes:
+            reads.append(size)
+            return chunks.pop(0)
+
+        process = AsyncMock()
+        process.stdout = AsyncMock()
+        process.stdout.read = read
+
+        await _drain_stdout(process)
+
+        assert reads == [65536, 65536, 65536]

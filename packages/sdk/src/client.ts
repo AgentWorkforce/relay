@@ -261,6 +261,7 @@ export class AgentRelayClient {
       stdoutLines,
       stderrLines,
     });
+    drainBrokerStdoutAfterStartup(child);
 
     const client = new AgentRelayClient({
       baseUrl,
@@ -678,6 +679,16 @@ async function waitForApiUrl(
       }
     });
   });
+}
+
+function drainBrokerStdoutAfterStartup(child: ChildProcess): void {
+  if (!child.stdout) return;
+
+  child.stdout.on('data', () => {
+    // Drain broker stdout after startup so high-volume broker diagnostics/events
+    // cannot fill the pipe and block the broker process.
+  });
+  child.stdout.resume();
 }
 
 function pushBufferedLine(lines: string[], line: string): void {
