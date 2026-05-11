@@ -181,21 +181,17 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(1024);
     let writer_task = tokio::spawn(async move {
-        // Use tokio's async stdout so pipe backpressure surfaces as `Pending`
-        // and never parks the OS thread inside a blocking write() syscall.
-        // The previous implementation used `std::io::stdout().lock().write_all`
-        // from inside `tokio::spawn`; when the parent SDK reader stalled, the
-        // 64 KB macOS pipe buffer filled and the syscall blocked, taking the
-        // tokio worker thread with it. On resumption, the select-loop wakeup
-        // for `pty_rx` was lost — the broker stayed parked in
-        // `_pthread_cond_wait` and the workflow deadlocked at fanout.
+        // Keep one async stdout handle for this process. Tokio's `write_all`
+        // is not cancel-safe if the task is aborted mid-write, but this task is
+        // normally shut down by dropping `out_tx` and awaiting it below, so the
+        // frame stream is drained instead of cancelled.
         use tokio::io::AsyncWriteExt;
         let mut stdout = tokio::io::stdout();
         while let Some(frame) = out_rx.recv().await {
             if let Ok(mut line) = serde_json::to_string(&frame) {
                 line.push('\n');
-                if stdout.write_all(line.as_bytes()).await.is_err() {
-                    // Parent closed the pipe; nothing further to do.
+                if stdout.write_all(line.as_bytes()).await.is_err() || stdout.flush().await.is_err()
+                {
                     break;
                 }
             }

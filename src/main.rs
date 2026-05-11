@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -72,6 +72,7 @@ const THREAD_HISTORY_LIMIT: usize = 1_000;
 const DEFAULT_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS: u64 = 3_000;
 const DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS: u64 = 20_000;
 const DEFAULT_HTTP_API_EVENT_EMIT_TIMEOUT_MS: u64 = 200;
+static TRACING_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
 
 fn startup_debug_enabled() -> bool {
     std::env::var("AGENT_RELAY_STARTUP_DEBUG")
@@ -3815,17 +3816,16 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
     let provider_args = cmd.args.clone();
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(512);
-    tokio::spawn(async move {
-        // Mirror the cooperative-stdout fix in pty_worker.rs:
-        // `std::io::stdout().lock().write_all` from inside `tokio::spawn`
-        // blocks the OS thread when the parent stalls reading, which costs
-        // a tokio worker and loses the select-loop wakeup. Use the async
-        // sink so backpressure becomes a `Pending` future.
+    let writer_task = tokio::spawn(async move {
+        // Keep one async stdout handle for this process. Tokio's `write_all`
+        // is not cancel-safe if the task is aborted mid-write, so shutdown
+        // below drops `out_tx` and awaits this task before returning.
         let mut stdout = tokio::io::stdout();
         while let Some(frame) = out_rx.recv().await {
             if let Ok(mut line) = serde_json::to_string(&frame) {
                 line.push('\n');
-                if stdout.write_all(line.as_bytes()).await.is_err() {
+                if stdout.write_all(line.as_bytes()).await.is_err() || stdout.flush().await.is_err()
+                {
                     break;
                 }
             }
@@ -4151,6 +4151,8 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
         json!({"code": final_exit_code, "signal": final_exit_signal}),
     )
     .await;
+    drop(out_tx);
+    let _ = writer_task.await;
 
     Ok(())
 }
@@ -4222,14 +4224,18 @@ async fn send_frame(
 }
 
 fn init_tracing() {
+    let (writer, guard) = tracing_appender::non_blocking(std::io::stderr());
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_target(true)
+        .with_writer(writer)
         .finish();
-    let _ = tracing::subscriber::set_global_default(subscriber);
+    if tracing::subscriber::set_global_default(subscriber).is_ok() {
+        let _ = TRACING_GUARD.set(guard);
+    }
 }
 
 fn channels_from_csv(raw: &str) -> Vec<String> {
