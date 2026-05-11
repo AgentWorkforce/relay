@@ -3816,13 +3816,18 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(512);
     tokio::spawn(async move {
+        // Mirror the cooperative-stdout fix in pty_worker.rs:
+        // `std::io::stdout().lock().write_all` from inside `tokio::spawn`
+        // blocks the OS thread when the parent stalls reading, which costs
+        // a tokio worker and loses the select-loop wakeup. Use the async
+        // sink so backpressure becomes a `Pending` future.
+        let mut stdout = tokio::io::stdout();
         while let Some(frame) = out_rx.recv().await {
-            if let Ok(line) = serde_json::to_string(&frame) {
-                use std::io::Write;
-                let mut stdout = std::io::stdout().lock();
-                let _ = stdout.write_all(line.as_bytes());
-                let _ = stdout.write_all(b"\n");
-                let _ = stdout.flush();
+            if let Ok(mut line) = serde_json::to_string(&frame) {
+                line.push('\n');
+                if stdout.write_all(line.as_bytes()).await.is_err() {
+                    break;
+                }
             }
         }
     });
