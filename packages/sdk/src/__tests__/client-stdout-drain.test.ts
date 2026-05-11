@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { test } from 'vitest';
 
-import { AgentRelayClient } from '../client.js';
+import { AgentRelayClient, __clientTestInternals } from '../client.js';
 
 const BROKER_STDIO_DRAIN_TIMEOUT_MS = 5_000;
 // Spawning Node + binding an HTTP server inside a Vitest worker can take
@@ -97,6 +98,25 @@ async function runFakeBrokerAndAssertDrains(stream: 'stdout' | 'stderr'): Promis
   }
 }
 
+test('post-startup drain attaches directly to stdout and stderr streams', () => {
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  stdout.pause();
+  stderr.pause();
+
+  const child = {
+    stdout,
+    stderr,
+  } as unknown as Parameters<typeof __clientTestInternals.drainBrokerStdioAfterStartup>[0];
+
+  __clientTestInternals.drainBrokerStdioAfterStartup(child);
+
+  assert.equal(stdout.listenerCount('data'), 1);
+  assert.equal(stderr.listenerCount('data'), 1);
+  assert.equal(stdout.isPaused(), false);
+  assert.equal(stderr.isPaused(), false);
+});
+
 test(
   'spawn drains broker stdout after startup so event floods cannot wedge the broker',
   async () => {
@@ -108,9 +128,6 @@ test(
 test(
   'spawn drains broker stderr after startup so tracing/log floods cannot wedge the broker',
   async () => {
-    // The Rust broker routes `tracing` output to stderr (rule: rust.md). Under
-    // heavy fanout stderr fills its kernel pipe (~64KB on macOS) and blocks
-    // the broker process exactly like stdout did before the existing drain.
     await runFakeBrokerAndAssertDrains('stderr');
   },
   TEST_TIMEOUT_MS
