@@ -58,6 +58,7 @@ function normalizeWorkspaceCreateResponse(payload: unknown): WorkspaceCreateResp
     workspaceId,
     ...(readString(payload, 'name') ? { name: readString(payload, 'name') } : {}),
     ...(readString(payload, 'relayfileUrl') ? { relayfileUrl: readString(payload, 'relayfileUrl') } : {}),
+    ...(readString(payload, 'relaycronUrl') ? { relaycronUrl: readString(payload, 'relaycronUrl') } : {}),
     ...(readString(payload, 'relayauthUrl') ? { relayauthUrl: readString(payload, 'relayauthUrl') } : {}),
     ...(readString(payload, 'joinCommand') ? { joinCommand: readString(payload, 'joinCommand') } : {}),
     ...(readString(payload, 'createdAt') ? { createdAt: readString(payload, 'createdAt') } : {}),
