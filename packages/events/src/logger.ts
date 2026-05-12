@@ -45,34 +45,60 @@ export function createLogger(options: CreateLoggerOptions): Logger {
       return;
     }
 
-    const entry = toStructuredLogEntry(
-      {
+    // Logging must never throw into caller flow. Serialization (circular
+    // refs, BigInt, etc.) and user-provided sinks are the two failure
+    // surfaces; both are swallowed so a structured-log call site cannot
+    // become a handler-crashing failure mode.
+    let payload: string;
+    try {
+      const entry = toStructuredLogEntry(
+        {
+          workspace: options.workspace,
+          agentId: options.agentId,
+        },
+        level,
+        message,
+        fields
+      );
+      payload = JSON.stringify(entry);
+
+      try {
+        options.sink?.(entry);
+      } catch {
+        // Sink errors are not recoverable here; continue to console.
+      }
+    } catch {
+      // Falling back to a minimal serialization-safe payload.
+      payload = JSON.stringify({
+        ts: new Date().toISOString(),
+        level,
         workspace: options.workspace,
         agentId: options.agentId,
-      },
-      level,
-      message,
-      fields
-    );
-    const payload = JSON.stringify(entry);
+        msg: message,
+        _logger: 'fields-unserializable',
+      });
+    }
 
-    options.sink?.(entry);
-
-    switch (level) {
-      case 'debug':
-        consoleTarget.debug(payload);
-        return;
-      case 'info':
-        consoleTarget.info(payload);
-        return;
-      case 'warn':
-        consoleTarget.warn(payload);
-        return;
-      case 'error':
-        consoleTarget.error(payload);
-        return;
-      default:
-        consoleTarget.log(payload);
+    try {
+      switch (level) {
+        case 'debug':
+          consoleTarget.debug(payload);
+          return;
+        case 'info':
+          consoleTarget.info(payload);
+          return;
+        case 'warn':
+          consoleTarget.warn(payload);
+          return;
+        case 'error':
+          consoleTarget.error(payload);
+          return;
+        default:
+          consoleTarget.log(payload);
+      }
+    } catch {
+      // Console target may be a user-supplied stub that throws. Drop the
+      // log rather than propagating.
     }
   };
 

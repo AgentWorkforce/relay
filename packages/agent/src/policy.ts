@@ -57,8 +57,13 @@ export function createPolicyGate(options: PolicyGateOptions) {
           action,
         });
 
-        const verdict = normalizeApprovalVerdict(id, await options.awaitApproval(id));
+        // Pending approval file MUST be cleaned up even if verdict
+        // normalization throws (malformed approval payload). The outer
+        // try/finally ensures the cleanup runs regardless of where the
+        // exception originates between `awaitApproval` and audit-log write.
+        let verdict: ReturnType<typeof normalizeApprovalVerdict>;
         try {
+          verdict = normalizeApprovalVerdict(id, await options.awaitApproval(id));
           await writeAuditLog(options, id, {
             id,
             decision: verdict.verdict === 'approved' ? 'approved' : 'rejected',

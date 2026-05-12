@@ -141,18 +141,23 @@ export function createContextFactory(options: CreateContextFactoryOptions): Cont
           createRelaycronClientProxy(options.getRelaycronClient, options.trackSchedule).cancel(id)
         ) as Promise<void>,
     },
-    once: async <T>(key: string, fn: () => Promise<T>): Promise<T> => {
-      const existing = onceCache.get(key) as Promise<T> | undefined;
+    // Returns `T` on the first caller that wins the dedup lock and `undefined`
+    // on any caller that loses it (another agent or replicated instance has
+    // already executed `fn` for this key). Callers must handle the
+    // `undefined` branch — typically by treating it as "someone else did it,
+    // skip this work".
+    once: async <T>(key: string, fn: () => Promise<T>): Promise<T | undefined> => {
+      const existing = onceCache.get(key) as Promise<T | undefined> | undefined;
       if (existing) {
         return existing;
       }
 
       const onceCoordinator = options.getOnceCoordinator?.();
-      const pending = (async () => {
+      const pending = (async (): Promise<T | undefined> => {
         if (onceCoordinator) {
           const acquired = await onceCoordinator.acquireOnce(key);
           if (!acquired) {
-            return undefined as T;
+            return undefined;
           }
         }
         try {

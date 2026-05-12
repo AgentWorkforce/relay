@@ -295,8 +295,14 @@ export interface Context {
     relaycron: RelaycronClient;
     relaycast: RelaycastClient;
   };
-  /** Application-level idempotency helper for non-event side effects. */
-  once<T>(key: string, fn: () => Promise<T>): Promise<T>;
+  /**
+   * Application-level idempotency helper for non-event side effects.
+   * Resolves to `T` on the caller that wins the dedup lock and `undefined`
+   * on any caller that loses it (e.g. a peer replica already executed `fn`
+   * for this key). Callers must handle the `undefined` branch — typically
+   * by treating it as "someone else did the work; skip".
+   */
+  once<T>(key: string, fn: () => Promise<T>): Promise<T | undefined>;
 }
 
 /**

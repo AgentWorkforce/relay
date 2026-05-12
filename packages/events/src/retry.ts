@@ -14,11 +14,14 @@ export async function delay(ms: number, signal?: AbortSignal): Promise<void> {
   }
 
   await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(resolve, ms);
     const onAbort = () => {
       clearTimeout(timeout);
       reject(signal?.reason instanceof Error ? signal.reason : new Error('Retry delay aborted'));
     };
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
 
     signal?.addEventListener('abort', onAbort, { once: true });
   });

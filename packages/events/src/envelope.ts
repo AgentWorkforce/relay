@@ -171,9 +171,16 @@ export function createCronTickEvent(input: {
   occurredAt?: string;
   digest?: string;
   resourceId?: string;
+  /**
+   * Compatibility alias for `resourceId` — callers that compute their
+   * own schedule identity (e.g. relaycron client) commonly use
+   * `scheduleId`. Both spellings map to the same synthetic resource
+   * identity; `resourceId` wins when both are set.
+   */
+  scheduleId?: string;
   summary?: EventSummary;
 }): CronTickEvent {
-  const resourceId = input.resourceId ?? sanitizeScheduleId(input.schedule);
+  const resourceId = input.resourceId ?? input.scheduleId ?? sanitizeScheduleId(input.schedule);
   return createAgentEvent({
     workspace: input.workspace,
     type: 'cron.tick',
