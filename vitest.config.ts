@@ -3,6 +3,8 @@ import path from 'node:path';
 
 const workspacePackages = [
   'acp-bridge',
+  'events',
+  'agent',
   'cloud',
   'config',
   'gateway',
