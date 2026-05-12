@@ -1,0 +1,20 @@
+{
+  "id": "traj_mi9eqd4rjfea",
+  "version": 1,
+  "task": {
+    "title": "Address stdio fresh review findings"
+  },
+  "status": "abandoned",
+  "startedAt": "2026-05-11T18:25:24.626Z",
+  "completedAt": "2026-05-11T18:37:05.318Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "agent-workforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "49800f05e523320a1597c951698288834ce53f49",
+    "endRef": "49800f05e523320a1597c951698288834ce53f49"
+  }
+}

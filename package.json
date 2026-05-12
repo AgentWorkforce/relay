@@ -24,7 +24,8 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "agent-relay": "dist/src/cli/index.js"
+    "agent-relay": "dist/src/cli/index.js",
+    "relay": "dist/src/cli/index.js"
   },
   "workspaces": [
     "packages/*",

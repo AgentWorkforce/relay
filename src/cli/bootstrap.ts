@@ -16,13 +16,16 @@ import { errorClassName } from './lib/telemetry-helpers.js';
 import { registerAgentManagementCommands } from './commands/agent-management.js';
 import { registerMessagingCommands } from './commands/messaging.js';
 import { registerCloudCommands } from './commands/cloud.js';
+import { registerProactiveBootstrapCommands } from './commands/proactive-bootstrap.js';
 import { registerMonitoringCommands } from './commands/monitoring.js';
 import { registerAuthCommands } from './commands/auth.js';
 import { registerSetupCommands } from './commands/setup.js';
 import { registerCoreCommands } from './commands/core.js';
+import { registerRelayRuntimeCommands } from './commands/relay-runtime.js';
 import { registerSwarmCommands } from './commands/swarm.js';
 import { registerConnectCommands } from './commands/connect.js';
 import { registerOnCommands } from './commands/on.js';
+import { registerDlqCommands } from './commands/dlq.js';
 
 dotenvConfig({ quiet: true });
 
@@ -78,6 +81,16 @@ function resolveSdkVersion(): string | undefined {
 }
 
 export const SDK_VERSION = resolveSdkVersion();
+
+function resolveProgramName(argv: string[] = process.argv): string {
+  const invocationPath = String(argv[1] ?? '').trim();
+  if (!invocationPath) {
+    return 'agent-relay';
+  }
+
+  const commandName = path.basename(invocationPath).trim().toLowerCase();
+  return commandName === 'relay' ? 'relay' : 'agent-relay';
+}
 
 /**
  * Export the resolved CLI + SDK versions on the current process env so that
@@ -247,11 +260,11 @@ function installExitHooks(): void {
   });
 }
 
-export function createProgram(): Command {
+export function createProgram(options: { name?: string } = {}): Command {
   const program = new Command();
 
   program
-    .name('agent-relay')
+    .name(options.name ?? 'agent-relay')
     .description('Agent-to-agent messaging')
     .version(VERSION, '-V, --version', 'Output the version number');
 
@@ -259,12 +272,15 @@ export function createProgram(): Command {
   registerAgentManagementCommands(program);
   registerMessagingCommands(program);
   registerCloudCommands(program);
+  registerProactiveBootstrapCommands(program);
   registerMonitoringCommands(program);
   registerAuthCommands(program);
+  registerRelayRuntimeCommands(program);
   registerSetupCommands(program);
   registerSwarmCommands(program);
   registerOnCommands(program);
   registerConnectCommands(program);
+  registerDlqCommands(program);
 
   return program;
 }
@@ -292,7 +308,7 @@ export async function runCli(argv: string[] = process.argv): Promise<Command> {
     });
   }
 
-  const program = createProgram();
+  const program = createProgram({ name: resolveProgramName(argv) });
   installTelemetryHooks(program);
   installExitHooks();
 

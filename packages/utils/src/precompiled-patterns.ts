@@ -99,16 +99,16 @@ export function getCompiledPatterns(
  */
 const INSTRUCTIONAL_COMBINED = new RegExp(
   [
-    String.raw`\bSEND:\s*$`,           // "SEND:" at end (instruction prefix)
+    String.raw`\bSEND:\s*$`, // "SEND:" at end (instruction prefix)
     String.raw`\bPROTOCOL:\s*\(\d+\)`, // "PROTOCOL: (1)" - numbered instructions
-    String.raw`\bExample:`,             // "Example:" marker
-    String.raw`\\->relay:`,             // Escaped relay prefix (documentation)
-    String.raw`\\->thinking:`,          // Escaped thinking prefix (documentation)
-    String.raw`^AgentName\s+`,          // Body starting with "AgentName"
-    String.raw`^Target\s+`,             // Body starting with "Target"
-    String.raw`\[Agent Relay\]`,        // Injected instruction header
-    String.raw`MULTI-LINE:`,            // Multi-line format instruction
-    String.raw`RECEIVE:`,               // Receive instruction marker
+    String.raw`\bExample:`, // "Example:" marker
+    String.raw`\\->relay:`, // Escaped relay prefix (documentation)
+    String.raw`\\->thinking:`, // Escaped thinking prefix (documentation)
+    String.raw`^AgentName\s+`, // Body starting with "AgentName"
+    String.raw`^Target\s+`, // Body starting with "Target"
+    String.raw`\[Agent Relay\]`, // Injected instruction header
+    String.raw`MULTI-LINE:`, // Multi-line format instruction
+    String.raw`RECEIVE:`, // Receive instruction marker
   ].join('|'),
   'i' // Case insensitive
 );
@@ -197,6 +197,16 @@ function replaceOrphanedCsiPrefix(match: string): string {
  * Uses precompiled patterns for better performance.
  */
 export function stripAnsiFast(str: string): string {
+  if (str.length === 0) {
+    return str;
+  }
+
+  const hasEscape = str.indexOf('\x1b') !== -1;
+  const hasCarriageReturn = str.indexOf('\r') !== -1;
+  if (!hasEscape && !hasCarriageReturn && str.indexOf('[') === -1) {
+    return str;
+  }
+
   // Reset lastIndex for global patterns
   CURSOR_FORWARD_CSI_COMPILED.lastIndex = 0;
   ORPHANED_CURSOR_FORWARD_CSI_COMPILED.lastIndex = 0;
@@ -274,16 +284,16 @@ export const StaticPatterns = {
  * Check if line is a spawn or release command.
  */
 export function isSpawnOrReleaseCommandFast(line: string): boolean {
-  return StaticPatterns.SPAWN_COMMAND.test(line) ||
-         StaticPatterns.RELEASE_COMMAND.test(line);
+  return StaticPatterns.SPAWN_COMMAND.test(line) || StaticPatterns.RELEASE_COMMAND.test(line);
 }
 
 /**
  * Check if a line contains an escaped fence end.
  */
 export function isEscapedFenceEndFast(line: string): boolean {
-  return StaticPatterns.ESCAPED_FENCE_END_CHECK.test(line) ||
-         StaticPatterns.ESCAPED_FENCE_START_CHECK.test(line);
+  return (
+    StaticPatterns.ESCAPED_FENCE_END_CHECK.test(line) || StaticPatterns.ESCAPED_FENCE_START_CHECK.test(line)
+  );
 }
 
 /**
@@ -374,13 +384,16 @@ export function benchmarkPatterns(
   // Benchmark combined instructional check
   {
     let maxNs = 0;
+    for (const str of testStrings) {
+      const sampleStart = process.hrtime.bigint();
+      isInstructionalTextFast(str);
+      const elapsed = Number(process.hrtime.bigint() - sampleStart);
+      if (elapsed > maxNs) maxNs = elapsed;
+    }
     const start = process.hrtime.bigint();
     for (let i = 0; i < iterations; i++) {
       for (const str of testStrings) {
-        const s = process.hrtime.bigint();
         isInstructionalTextFast(str);
-        const elapsed = Number(process.hrtime.bigint() - s);
-        if (elapsed > maxNs) maxNs = elapsed;
       }
     }
     const totalNs = Number(process.hrtime.bigint() - start);
@@ -393,13 +406,16 @@ export function benchmarkPatterns(
   // Benchmark ANSI stripping
   {
     let maxNs = 0;
+    for (const str of testStrings) {
+      const sampleStart = process.hrtime.bigint();
+      stripAnsiFast(str);
+      const elapsed = Number(process.hrtime.bigint() - sampleStart);
+      if (elapsed > maxNs) maxNs = elapsed;
+    }
     const start = process.hrtime.bigint();
     for (let i = 0; i < iterations; i++) {
       for (const str of testStrings) {
-        const s = process.hrtime.bigint();
         stripAnsiFast(str);
-        const elapsed = Number(process.hrtime.bigint() - s);
-        if (elapsed > maxNs) maxNs = elapsed;
       }
     }
     const totalNs = Number(process.hrtime.bigint() - start);
@@ -413,13 +429,16 @@ export function benchmarkPatterns(
   {
     const targets = ['AgentName', 'Lead', 'Worker', 'target', 'Developer'];
     let maxNs = 0;
+    for (const target of targets) {
+      const sampleStart = process.hrtime.bigint();
+      isPlaceholderTargetFast(target);
+      const elapsed = Number(process.hrtime.bigint() - sampleStart);
+      if (elapsed > maxNs) maxNs = elapsed;
+    }
     const start = process.hrtime.bigint();
     for (let i = 0; i < iterations; i++) {
-      for (const t of targets) {
-        const s = process.hrtime.bigint();
-        isPlaceholderTargetFast(t);
-        const elapsed = Number(process.hrtime.bigint() - s);
-        if (elapsed > maxNs) maxNs = elapsed;
+      for (const target of targets) {
+        isPlaceholderTargetFast(target);
       }
     }
     const totalNs = Number(process.hrtime.bigint() - start);

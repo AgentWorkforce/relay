@@ -41,11 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.17] - 2026-05-12
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Host @agent-relay/events + @agent-relay/agent in relay (#844)** (#844)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.17
 
 ---
@@ -53,12 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.16] - 2026-05-11
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Drain broker stderr alongside stdout after startup (#842) (#842)
 - Replace blocking stdout writer task with tokio::io (#841) (#841)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.16
 
 ---
@@ -66,7 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.15] - 2026-05-11
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.15
 
 ---
