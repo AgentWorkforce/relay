@@ -1,0 +1,64 @@
+{
+  "name": "@agent-relay/events",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/context-async-hooks": "^2.2.0",
+    "@opentelemetry/core": "^2.2.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.207.0",
+    "@opentelemetry/resources": "^2.2.0",
+    "@opentelemetry/sdk-trace-base": "^2.2.0",
+    "@opentelemetry/sdk-trace-node": "^2.2.0",
+    "@opentelemetry/semantic-conventions": "^1.37.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.7.0",
+    "@relayfile/adapter-github": "^0.2.5",
+    "@relayfile/adapter-jira": "^0.2.8",
+    "@relayfile/adapter-linear": "^0.2.5",
+    "@relayfile/adapter-notion": "^0.2.7",
+    "@relayfile/adapter-slack": "^0.2.7"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/agent-relay-events"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@relayfile/adapter-github": "^0.2.5",
+    "@relayfile/adapter-jira": "^0.2.8",
+    "@relayfile/adapter-linear": "^0.2.5",
+    "@relayfile/adapter-notion": "^0.2.7",
+    "@relayfile/adapter-slack": "^0.2.7"
+  },
+  "peerDependenciesMeta": {
+    "@relayfile/adapter-github": {
+      "optional": true
+    },
+    "@relayfile/adapter-jira": {
+      "optional": true
+    },
+    "@relayfile/adapter-linear": {
+      "optional": true
+    },
+    "@relayfile/adapter-notion": {
+      "optional": true
+    },
+    "@relayfile/adapter-slack": {
+      "optional": true
+    }
+  }
+}

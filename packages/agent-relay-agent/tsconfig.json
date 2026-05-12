@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "paths": {
+      "@agent-relay/events": ["../agent-relay-events/src/index.ts"]
+    },
+    "types": ["node"],
+    "noEmit": true,
+    "moduleResolution": "bundler",
+    "module": "esnext",
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}
