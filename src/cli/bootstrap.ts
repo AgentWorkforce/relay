@@ -24,6 +24,7 @@ import { registerCoreCommands } from './commands/core.js';
 import { registerSwarmCommands } from './commands/swarm.js';
 import { registerConnectCommands } from './commands/connect.js';
 import { registerOnCommands } from './commands/on.js';
+import { registerDlqCommands } from './commands/dlq.js';
 
 dotenvConfig({ quiet: true });
 
@@ -277,6 +278,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerSwarmCommands(program);
   registerOnCommands(program);
   registerConnectCommands(program);
+  registerDlqCommands(program);
 
   return program;
 }
