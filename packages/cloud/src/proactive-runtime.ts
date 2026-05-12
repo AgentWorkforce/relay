@@ -83,13 +83,13 @@ function normalizeDeploymentResponse(payload: unknown): ProactiveDeploymentRespo
   }
 
   return {
+    ...payload,
     ...(readString(payload, 'deploymentId') ? { deploymentId: readString(payload, 'deploymentId') } : {}),
     ...(readString(payload, 'agentId') ? { agentId: readString(payload, 'agentId') } : {}),
     ...(readString(payload, 'workspaceId') ? { workspaceId: readString(payload, 'workspaceId') } : {}),
     ...(readString(payload, 'status') ? { status: readString(payload, 'status') } : {}),
     ...(readString(payload, 'dashboardUrl') ? { dashboardUrl: readString(payload, 'dashboardUrl') } : {}),
     ...(readString(payload, 'logsUrl') ? { logsUrl: readString(payload, 'logsUrl') } : {}),
-    ...payload,
   };
 }
 
@@ -108,6 +108,7 @@ function normalizeAgentRecord(payload: unknown): ProactiveAgentRecord {
   }
 
   return {
+    ...payload,
     id,
     ...(readString(payload, 'name') ? { name: readString(payload, 'name') } : {}),
     ...(readString(payload, 'displayName') ? { displayName: readString(payload, 'displayName') } : {}),
@@ -128,7 +129,6 @@ function normalizeAgentRecord(payload: unknown): ProactiveAgentRecord {
       : {}),
     ...(readString(payload, 'createdAt') ? { createdAt: readString(payload, 'createdAt') } : {}),
     ...(readString(payload, 'updatedAt') ? { updatedAt: readString(payload, 'updatedAt') } : {}),
-    ...payload,
   };
 }
 
@@ -159,12 +159,12 @@ function normalizeSecretRecord(payload: unknown, fallbackName?: string): Workspa
   }
 
   return {
+    ...payload,
     name,
     ...(readString(payload, 'value') ? { value: readString(payload, 'value') } : {}),
     ...(readString(payload, 'maskedValue') ? { maskedValue: readString(payload, 'maskedValue') } : {}),
     ...(readString(payload, 'createdAt') ? { createdAt: readString(payload, 'createdAt') } : {}),
     ...(readString(payload, 'updatedAt') ? { updatedAt: readString(payload, 'updatedAt') } : {}),
-    ...payload,
   };
 }
 
@@ -242,12 +242,12 @@ export async function inspectProactiveAgent(
 
   for (const endpoint of endpoints) {
     const { response, payload } = await tryRequest('GET', endpoint, options);
+    if (response.status === 404) {
+      continue;
+    }
     if (isUnsupported(response)) {
       lastUnsupported = buildEndpointError('Agent inspect', endpoint, response, payload);
       continue;
-    }
-    if (response.status === 404) {
-      break;
     }
     if (!response.ok) {
       throw buildEndpointError('Agent inspect', endpoint, response, payload);

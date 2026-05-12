@@ -113,7 +113,6 @@ export function registerProactiveBootstrapCommands(
         }
 
         await ensureAuthenticated(apiUrl, { force: options.force });
-        deps.log(`Logged in to ${apiUrl}`);
         success = true;
       } catch (err) {
         errorClass = errorClassName(err);

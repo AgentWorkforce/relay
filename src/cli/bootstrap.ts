@@ -83,7 +83,7 @@ function resolveSdkVersion(): string | undefined {
 export const SDK_VERSION = resolveSdkVersion();
 
 function resolveProgramName(argv: string[] = process.argv): string {
-  const invocationPath = argv[1];
+  const invocationPath = String(argv[1] ?? '').trim();
   if (!invocationPath) {
     return 'agent-relay';
   }

@@ -13,8 +13,11 @@ class ExitSignal extends Error {
   }
 }
 
+const createdTmpRoots: string[] = [];
+
 function createHarness(overrides: Partial<RelayRuntimeDependencies> = {}) {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-runtime-cli-'));
+  createdTmpRoots.push(tmpRoot);
   const logs: string[] = [];
   const errors: string[] = [];
 
@@ -81,6 +84,13 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  for (const tmpRoot of createdTmpRoots.splice(0)) {
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+  }
 });
 
 describe('registerRelayRuntimeCommands', () => {

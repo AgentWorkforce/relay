@@ -442,12 +442,17 @@ export class ContextCompactor {
 
     // Strategy 1: Deduplicate similar messages
     if (this.config.enableDeduplication) {
+      const protectedRecentIds = new Set(
+        this.config.keepRecentCount > 0 ? result.slice(-this.config.keepRecentCount).map((m) => m.id) : []
+      );
       const duplicates = findDuplicates(result, this.config.deduplicationThreshold);
       if (duplicates.size > 0) {
         const toRemove = new Set<string>();
         for (const [, dups] of duplicates) {
           for (const id of dups) {
-            toRemove.add(id);
+            if (!protectedRecentIds.has(id)) {
+              toRemove.add(id);
+            }
           }
         }
         result = result.filter((m) => !toRemove.has(m.id));
@@ -618,19 +623,19 @@ export function benchmarkTokenEstimation(iterations: number = 10000): {
     'A'.repeat(10000), // 10k chars
   ];
 
-  let maxNs = 0;
-  let totalTokens = 0;
   for (const text of testTexts) {
-    const sampleStart = process.hrtime.bigint();
-    totalTokens += estimateTokens(text);
-    const elapsed = Number(process.hrtime.bigint() - sampleStart);
-    if (elapsed > maxNs) maxNs = elapsed;
+    estimateTokens(text);
   }
 
+  let maxNs = 0;
+  let totalTokens = 0;
   const start = process.hrtime.bigint();
   for (let i = 0; i < iterations; i++) {
     for (const text of testTexts) {
+      const sampleStart = process.hrtime.bigint();
       totalTokens += estimateTokens(text);
+      const elapsed = Number(process.hrtime.bigint() - sampleStart);
+      if (elapsed > maxNs) maxNs = elapsed;
     }
   }
 

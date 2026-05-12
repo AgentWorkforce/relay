@@ -326,12 +326,21 @@ async function replayRemoteRecord(
   apiUrl?: string
 ): Promise<boolean> {
   const encodedWorkspace = encodeURIComponent(assertWorkspaceName(workspace));
-  const response = await requestCloudDlq(
-    deps,
-    `/api/v1/workspaces/${encodedWorkspace}/dlq/${encodeURIComponent(eventId)}/replay`,
-    { apiUrl, method: 'POST' }
-  ).catch(() => null);
-  if (!response || isUnsupported(response.response)) {
+  let response;
+  try {
+    response = await requestCloudDlq(
+      deps,
+      `/api/v1/workspaces/${encodedWorkspace}/dlq/${encodeURIComponent(eventId)}/replay`,
+      { apiUrl, method: 'POST' }
+    );
+  } catch (error) {
+    const candidate = error as { response?: Response };
+    if (candidate.response && isUnsupported(candidate.response)) {
+      return false;
+    }
+    throw error;
+  }
+  if (isUnsupported(response.response)) {
     return false;
   }
   if (!response.response.ok) {
@@ -346,11 +355,20 @@ async function purgeRemoteWorkspace(
   apiUrl?: string
 ): Promise<boolean> {
   const encodedWorkspace = encodeURIComponent(assertWorkspaceName(workspace));
-  const response = await requestCloudDlq(deps, `/api/v1/workspaces/${encodedWorkspace}/dlq`, {
-    apiUrl,
-    method: 'DELETE',
-  }).catch(() => null);
-  if (!response || isUnsupported(response.response)) {
+  let response;
+  try {
+    response = await requestCloudDlq(deps, `/api/v1/workspaces/${encodedWorkspace}/dlq`, {
+      apiUrl,
+      method: 'DELETE',
+    });
+  } catch (error) {
+    const candidate = error as { response?: Response };
+    if (candidate.response && isUnsupported(candidate.response)) {
+      return false;
+    }
+    throw error;
+  }
+  if (isUnsupported(response.response)) {
     return false;
   }
   if (!response.response.ok) {
@@ -433,16 +451,30 @@ async function replayRecord(
     {
       workspace,
       ...entry.record,
-      event: isObject(entry.record.event) ? entry.record.event : entry.record.event,
+      event: entry.record.event,
     },
     deps.env
   );
 
-  const response = await deps.fetch(request.url, {
-    method: request.method,
-    headers: request.headers,
-    body: request.body,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+
+  let response: Response;
+  try {
+    response = await deps.fetch(request.url, {
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`Replay timed out for ${entry.summary.eventId} after 30000ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     const detail = await response.text().catch(() => response.statusText);

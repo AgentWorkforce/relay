@@ -197,7 +197,6 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         }
 
         await ensureAuthenticated(apiUrl, { force: options.force });
-        deps.log(`Logged in to ${apiUrl}`);
         success = true;
       } catch (err) {
         errorClass = errorClassName(err);

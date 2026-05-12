@@ -203,14 +203,8 @@ export function stripAnsiFast(str: string): string {
 
   const hasEscape = str.indexOf('\x1b') !== -1;
   const hasCarriageReturn = str.indexOf('\r') !== -1;
-  if (!hasEscape && !hasCarriageReturn) {
-    let index = 0;
-    while (index < str.length && str.charCodeAt(index) <= 32) {
-      index++;
-    }
-    if (index >= str.length || str.charCodeAt(index) !== 91) {
-      return str;
-    }
+  if (!hasEscape && !hasCarriageReturn && str.indexOf('[') === -1) {
+    return str;
   }
 
   // Reset lastIndex for global patterns

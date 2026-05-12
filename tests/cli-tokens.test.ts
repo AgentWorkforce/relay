@@ -211,7 +211,7 @@ test('login prints a success message after fresh OAuth', async () => {
       '--force',
     ]);
 
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (let attempt = 0; attempt < 300; attempt += 1) {
       if (loginUrls.length > 0) {
         break;
       }

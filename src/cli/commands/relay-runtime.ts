@@ -228,40 +228,51 @@ async function streamEventSource(
   let buffer = '';
   let printed = false;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    const chunks = buffer.split('\n\n');
-    buffer = chunks.pop() ?? '';
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split('\n\n');
+      buffer = chunks.pop() ?? '';
 
-    for (const chunk of chunks) {
-      const lines = chunk
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice('data:'.length).trim())
-        .filter(Boolean);
+      for (const chunk of chunks) {
+        const lines = chunk
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice('data:'.length).trim())
+          .filter(Boolean);
 
-      for (const line of lines) {
-        try {
-          const parsed = JSON.parse(line);
-          const rendered = extractLogLine(parsed);
-          if (rendered) deps.log(rendered);
-        } catch {
-          deps.log(line);
-        }
-        printed = true;
-        if (!follow) {
-          return;
+        for (const line of lines) {
+          try {
+            const parsed = JSON.parse(line);
+            const rendered = extractLogLine(parsed);
+            if (rendered) deps.log(rendered);
+          } catch {
+            deps.log(line);
+          }
+          printed = true;
+          if (!follow) {
+            return;
+          }
         }
       }
     }
-  }
 
-  if (!printed && buffer.trim()) {
-    deps.log(buffer.trim());
+    if (!printed && buffer.trim()) {
+      deps.log(buffer.trim());
+    }
+  } catch (error) {
+    deps.error(error instanceof Error ? error.message : String(error));
+    deps.exit(1);
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // ignore cleanup errors
+    }
   }
 }
 
@@ -454,7 +465,7 @@ export function registerRelayRuntimeCommands(
         return;
       }
 
-      const source = deps.readFile(resolvedPath, 'utf-8');
+      const source = await Promise.resolve(deps.readFile(resolvedPath, 'utf-8'));
       const result = await deps.deploy(
         { entrypoint: filePath, source },
         { apiUrl: options.apiUrl, name: options.name, watch: options.watch }
