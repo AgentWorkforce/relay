@@ -76,7 +76,7 @@ describe('proactive bootstrap commands', () => {
     assert.deepEqual(issueWorkspaceTokenMock.mock.calls, [['support', { apiUrl: undefined }]]);
   });
 
-  it('prints a success line after fresh login', async () => {
+  it('does not print an extra success line after fresh login', async () => {
     readStoredAuthMock.mockResolvedValue(null);
     ensureAuthenticatedMock.mockResolvedValue({
       apiUrl: 'https://cloud.test',
@@ -89,7 +89,7 @@ describe('proactive bootstrap commands', () => {
     await program.parseAsync(['node', 'agent-relay', 'login', '--api-url', 'https://cloud.test', '--force']);
 
     assert.deepEqual(errors, []);
-    assert.deepEqual(lines, ['Logged in to https://cloud.test']);
+    assert.deepEqual(lines, []);
     assert.deepEqual(ensureAuthenticatedMock.mock.calls, [['https://cloud.test', { force: true }]]);
   });
 
