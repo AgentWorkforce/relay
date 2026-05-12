@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "npx -p typescript@5.7.3 tsc",
+    "build": "tsc",
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:watch": "vitest",
