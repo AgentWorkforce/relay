@@ -21,6 +21,7 @@ import { registerMonitoringCommands } from './commands/monitoring.js';
 import { registerAuthCommands } from './commands/auth.js';
 import { registerSetupCommands } from './commands/setup.js';
 import { registerCoreCommands } from './commands/core.js';
+import { registerRelayRuntimeCommands } from './commands/relay-runtime.js';
 import { registerSwarmCommands } from './commands/swarm.js';
 import { registerConnectCommands } from './commands/connect.js';
 import { registerOnCommands } from './commands/on.js';
@@ -274,6 +275,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerProactiveBootstrapCommands(program);
   registerMonitoringCommands(program);
   registerAuthCommands(program);
+  registerRelayRuntimeCommands(program);
   registerSetupCommands(program);
   registerSwarmCommands(program);
   registerOnCommands(program);

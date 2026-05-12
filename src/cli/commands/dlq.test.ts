@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { Command } from 'commander';
+import { type StoredAuth } from '@agent-relay/cloud';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { registerDlqCommands, type DlqDependencies } from './dlq.js';
@@ -27,7 +28,12 @@ function writeDlqRecord(root: string, workspace: string, fileName: string, recor
   fs.writeFileSync(path.join(dir, fileName), `${JSON.stringify(record, null, 2)}\n`, 'utf-8');
 }
 
-function createHarness(options?: { projectRoot?: string; fetchImpl?: typeof fetch; now?: number }) {
+function createHarness(options?: {
+  projectRoot?: string;
+  fetchImpl?: typeof fetch;
+  authorizedApiFetchImpl?: DlqDependencies['authorizedApiFetch'];
+  now?: number;
+}) {
   const projectRoot = options?.projectRoot ?? makeTempRoot();
   const fetchImpl =
     options?.fetchImpl ??
@@ -42,7 +48,20 @@ function createHarness(options?: { projectRoot?: string; fetchImpl?: typeof fetc
     getProjectRoot: vi.fn(() => projectRoot),
     fs,
     fetch: fetchImpl,
+    ensureAuthenticated: vi.fn(
+      async () => ({ accessToken: 'access', refreshToken: 'refresh' }) as StoredAuth
+    ),
+    authorizedApiFetch:
+      options?.authorizedApiFetchImpl ??
+      vi.fn(async () => ({
+        auth: { accessToken: 'access', refreshToken: 'refresh' } as StoredAuth,
+        response: new Response(JSON.stringify({ error: 'unsupported' }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        }),
+      })),
     env: {},
+    defaultCloudUrl: 'https://cloud.test',
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     exit,
@@ -188,5 +207,103 @@ describe('registerDlqCommands', () => {
     expect(fs.existsSync(path.join(projectRoot, '_dlq', 'eng', 'evt_old.json'))).toBe(false);
     expect(fs.existsSync(path.join(projectRoot, '_dlq', 'eng', 'evt_new.json'))).toBe(true);
     expect(deps.log).toHaveBeenCalledWith('Purged 1 DLQ record(s) from workspace "eng".');
+  });
+
+  it('prefers the cloud workspace DLQ APIs when they are available', async () => {
+    const authorizedApiFetchImpl = vi.fn(async (_auth, requestPath, init) => {
+      if (requestPath === '/api/v1/workspaces/support/dlq' && init?.method === 'DELETE') {
+        return {
+          auth: { accessToken: 'access', refreshToken: 'refresh' } as StoredAuth,
+          response: new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        };
+      }
+      if (requestPath === '/api/v1/workspaces/support/dlq/evt_remote/replay') {
+        return {
+          auth: { accessToken: 'access', refreshToken: 'refresh' } as StoredAuth,
+          response: new Response(JSON.stringify({ ok: true }), {
+            status: 202,
+            headers: { 'content-type': 'application/json' },
+          }),
+        };
+      }
+      if (requestPath === '/api/v1/workspaces/support/dlq/evt_remote') {
+        return {
+          auth: { accessToken: 'access', refreshToken: 'refresh' } as StoredAuth,
+          response: new Response(
+            JSON.stringify({
+              ok: true,
+              data: {
+                event: { id: 'evt_remote', type: 'message.created' },
+                error: { message: 'remote_timeout' },
+                attemptCount: 2,
+                firstSeenAt: '2026-05-10T10:00:00.000Z',
+                lastSeenAt: '2026-05-11T11:00:00.000Z',
+              },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          ),
+        };
+      }
+      return {
+        auth: { accessToken: 'access', refreshToken: 'refresh' } as StoredAuth,
+        response: new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              items: [{ eventId: 'evt_remote' }],
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        ),
+      };
+    }) as DlqDependencies['authorizedApiFetch'];
+    const { program, deps } = createHarness({ authorizedApiFetchImpl });
+
+    const listExitCode = await runCommand(program, ['dlq', 'list', '--workspace', 'support']);
+    expect(listExitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith(
+      'evt_remote | message.created | attempts=2 | first=2026-05-10T10:00:00.000Z | last=2026-05-11T11:00:00.000Z | error=remote_timeout'
+    );
+
+    const inspectExitCode = await runCommand(program, [
+      'dlq',
+      'inspect',
+      '--workspace',
+      'support',
+      'evt_remote',
+    ]);
+    expect(inspectExitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith(
+      JSON.stringify(
+        {
+          event: { id: 'evt_remote', type: 'message.created' },
+          error: { message: 'remote_timeout' },
+          attemptCount: 2,
+          firstSeenAt: '2026-05-10T10:00:00.000Z',
+          lastSeenAt: '2026-05-11T11:00:00.000Z',
+        },
+        null,
+        2
+      )
+    );
+
+    const replayExitCode = await runCommand(program, [
+      'dlq',
+      'replay',
+      '--workspace',
+      'support',
+      'evt_remote',
+    ]);
+    expect(replayExitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('Replayed evt_remote via cloud workspace API.');
+
+    const purgeExitCode = await runCommand(program, ['dlq', 'purge', '--workspace', 'support']);
+    expect(purgeExitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith(
+      'Purged DLQ records from workspace "support" via cloud workspace API.'
+    );
   });
 });

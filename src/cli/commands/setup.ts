@@ -277,7 +277,7 @@ function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
 }
 export function registerSetupCommands(program: Command, overrides: Partial<SetupDependencies> = {}): void {
   const deps = withDefaults(overrides);
-  if (!program.commands.some((command) => command.name() === 'init')) {
+  if (program.name() !== 'relay' && !program.commands.some((command) => command.name() === 'init')) {
     program
       .command('init', { hidden: true })
       .description('First-time setup wizard - start broker')

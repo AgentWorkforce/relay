@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { Command, InvalidArgumentError } from 'commander';
 
+import { authorizedApiFetch, defaultApiUrl, ensureAuthenticated } from '@agent-relay/cloud';
 import { getProjectPaths } from '@agent-relay/config';
 
 import { defaultExit } from '../lib/exit.js';
@@ -31,7 +32,10 @@ export interface DlqDependencies {
   getProjectRoot: () => string;
   fs: Pick<typeof fs, 'existsSync' | 'mkdirSync' | 'readdirSync' | 'readFileSync' | 'unlinkSync'>;
   fetch: typeof fetch;
+  ensureAuthenticated: typeof ensureAuthenticated;
+  authorizedApiFetch: typeof authorizedApiFetch;
   env: NodeJS.ProcessEnv;
+  defaultCloudUrl: string;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
@@ -43,7 +47,10 @@ function withDefaults(overrides: Partial<DlqDependencies> = {}): DlqDependencies
     getProjectRoot: () => getProjectPaths().projectRoot,
     fs,
     fetch,
+    ensureAuthenticated,
+    authorizedApiFetch,
     env: process.env,
+    defaultCloudUrl: defaultApiUrl(),
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
@@ -235,6 +242,123 @@ function findMatchingRecords(records: DlqRecordEntry[], eventId: string): DlqRec
   );
 }
 
+function isUnsupported(response: Response): boolean {
+  return response.status === 404 || response.status === 405 || response.status === 501;
+}
+
+async function requestCloudDlq(
+  deps: DlqDependencies,
+  path: string,
+  options?: { apiUrl?: string; method?: 'GET' | 'POST' | 'DELETE' }
+): Promise<{ response: Response; payload: unknown }> {
+  const auth = await deps.ensureAuthenticated(options?.apiUrl || deps.defaultCloudUrl);
+  const result = await deps.authorizedApiFetch(auth, path, { method: options?.method ?? 'GET' });
+  let payload: unknown = null;
+  try {
+    payload = await result.response.json();
+  } catch {
+    payload = null;
+  }
+  return { response: result.response, payload };
+}
+
+async function loadRemoteWorkspaceRecords(
+  deps: DlqDependencies,
+  workspace: string,
+  apiUrl?: string
+): Promise<DlqRecordEntry[] | null> {
+  const encodedWorkspace = encodeURIComponent(assertWorkspaceName(workspace));
+  const listing = await requestCloudDlq(deps, `/api/v1/workspaces/${encodedWorkspace}/dlq`, { apiUrl }).catch(
+    () => null
+  );
+  if (!listing || isUnsupported(listing.response)) {
+    return null;
+  }
+  if (!listing.response.ok) {
+    throw new Error(`Cloud DLQ list failed with HTTP ${listing.response.status}`);
+  }
+
+  const items = readObject((listing.payload as JsonObject | null)?.data)?.items;
+  if (!Array.isArray(items)) {
+    return null;
+  }
+
+  const records = await Promise.all(
+    items.map(async (entry, index) => {
+      const eventId = isObject(entry) ? readString(entry.eventId, entry.event_id) : undefined;
+      if (!eventId) {
+        throw new Error(`Cloud DLQ item ${index} is missing eventId`);
+      }
+      const detail = await requestCloudDlq(
+        deps,
+        `/api/v1/workspaces/${encodedWorkspace}/dlq/${encodeURIComponent(eventId)}`,
+        { apiUrl }
+      );
+      const record = readObject((detail.payload as JsonObject | null)?.data);
+      if (!detail.response.ok || !record) {
+        throw new Error(`Cloud DLQ inspect failed for ${eventId}`);
+      }
+      return {
+        fileName: `${eventId}.json`,
+        filePath: '',
+        record,
+        summary: summarizeDlqRecord(`${eventId}.json`, record),
+      } satisfies DlqRecordEntry;
+    })
+  );
+
+  records.sort((left, right) => {
+    const leftTs = Date.parse(left.summary.lastSeen);
+    const rightTs = Date.parse(right.summary.lastSeen);
+    if (!Number.isNaN(leftTs) && !Number.isNaN(rightTs) && leftTs !== rightTs) {
+      return rightTs - leftTs;
+    }
+    return left.summary.eventId.localeCompare(right.summary.eventId);
+  });
+
+  return records;
+}
+
+async function replayRemoteRecord(
+  deps: DlqDependencies,
+  workspace: string,
+  eventId: string,
+  apiUrl?: string
+): Promise<boolean> {
+  const encodedWorkspace = encodeURIComponent(assertWorkspaceName(workspace));
+  const response = await requestCloudDlq(
+    deps,
+    `/api/v1/workspaces/${encodedWorkspace}/dlq/${encodeURIComponent(eventId)}/replay`,
+    { apiUrl, method: 'POST' }
+  ).catch(() => null);
+  if (!response || isUnsupported(response.response)) {
+    return false;
+  }
+  if (!response.response.ok) {
+    throw new Error(`Cloud DLQ replay failed with HTTP ${response.response.status}`);
+  }
+  return true;
+}
+
+async function purgeRemoteWorkspace(
+  deps: DlqDependencies,
+  workspace: string,
+  apiUrl?: string
+): Promise<boolean> {
+  const encodedWorkspace = encodeURIComponent(assertWorkspaceName(workspace));
+  const response = await requestCloudDlq(deps, `/api/v1/workspaces/${encodedWorkspace}/dlq`, {
+    apiUrl,
+    method: 'DELETE',
+  }).catch(() => null);
+  if (!response || isUnsupported(response.response)) {
+    return false;
+  }
+  if (!response.response.ok) {
+    throw new Error(`Cloud DLQ purge failed with HTTP ${response.response.status}`);
+  }
+  return true;
+}
+
 function resolveReplayRequest(
   record: JsonObject,
   env: NodeJS.ProcessEnv
@@ -338,9 +462,12 @@ export function registerDlqCommands(program: Command, overrides: Partial<DlqDepe
     .command('list')
     .description('List DLQ records for a workspace')
     .requiredOption('--workspace <name>', 'Workspace name')
-    .action(async (options: { workspace: string }) => {
+    .option('--api-url <url>', 'Cloud API base URL')
+    .action(async (options: { workspace: string; apiUrl?: string }) => {
       try {
-        const { records } = loadWorkspaceRecords(deps, options.workspace);
+        const records =
+          (await loadRemoteWorkspaceRecords(deps, options.workspace, options.apiUrl).catch(() => null)) ??
+          loadWorkspaceRecords(deps, options.workspace).records;
         if (records.length === 0) {
           deps.log(`No DLQ records found for workspace "${options.workspace}".`);
           return;
@@ -361,10 +488,13 @@ export function registerDlqCommands(program: Command, overrides: Partial<DlqDepe
     .command('inspect')
     .description('Print the full DLQ record for an event')
     .requiredOption('--workspace <name>', 'Workspace name')
+    .option('--api-url <url>', 'Cloud API base URL')
     .argument('<event-id>', 'Event id to inspect')
-    .action(async (eventId: string, options: { workspace: string }) => {
+    .action(async (eventId: string, options: { workspace: string; apiUrl?: string }) => {
       try {
-        const { records } = loadWorkspaceRecords(deps, options.workspace);
+        const records =
+          (await loadRemoteWorkspaceRecords(deps, options.workspace, options.apiUrl).catch(() => null)) ??
+          loadWorkspaceRecords(deps, options.workspace).records;
         const matches = findMatchingRecords(records, eventId);
         if (matches.length === 0) {
           throw new Error(`No DLQ record found for event ${eventId}.`);
@@ -386,46 +516,72 @@ export function registerDlqCommands(program: Command, overrides: Partial<DlqDepe
     .command('replay')
     .description('Replay one or more DLQ records into the gateway')
     .requiredOption('--workspace <name>', 'Workspace name')
+    .option('--api-url <url>', 'Cloud API base URL')
     .option('--all', 'Replay every DLQ record in the workspace')
     .argument('[event-id]', 'Event id to replay')
-    .action(async (eventId: string | undefined, options: { workspace: string; all?: boolean }) => {
-      try {
-        const { records } = loadWorkspaceRecords(deps, options.workspace);
-        if (records.length === 0) {
-          deps.log(`No DLQ records found for workspace "${options.workspace}".`);
-          return;
-        }
+    .action(
+      async (eventId: string | undefined, options: { workspace: string; all?: boolean; apiUrl?: string }) => {
+        try {
+          const remoteRecords = await loadRemoteWorkspaceRecords(
+            deps,
+            options.workspace,
+            options.apiUrl
+          ).catch(() => null);
+          const records = remoteRecords ?? loadWorkspaceRecords(deps, options.workspace).records;
+          if (records.length === 0) {
+            deps.log(`No DLQ records found for workspace "${options.workspace}".`);
+            return;
+          }
 
-        let targets: DlqRecordEntry[];
-        if (options.all) {
-          targets = records;
-        } else if (eventId) {
-          targets = findMatchingRecords(records, eventId);
-        } else {
-          throw new InvalidArgumentError('Provide <event-id> or pass --all.');
-        }
+          let targets: DlqRecordEntry[];
+          if (options.all) {
+            targets = records;
+          } else if (eventId) {
+            targets = findMatchingRecords(records, eventId);
+          } else {
+            throw new InvalidArgumentError('Provide <event-id> or pass --all.');
+          }
 
-        if (targets.length === 0) {
-          throw new Error(`No DLQ record found for event ${eventId}.`);
-        }
+          if (targets.length === 0) {
+            throw new Error(`No DLQ record found for event ${eventId}.`);
+          }
 
-        for (const entry of targets) {
-          const result = await replayRecord(deps, entry, options.workspace);
-          deps.log(`Replayed ${entry.summary.eventId} -> ${result.url} (${result.status})`);
+          for (const entry of targets) {
+            if (
+              remoteRecords &&
+              (await replayRemoteRecord(deps, options.workspace, entry.summary.eventId, options.apiUrl))
+            ) {
+              deps.log(`Replayed ${entry.summary.eventId} via cloud workspace API.`);
+              continue;
+            }
+            const result = await replayRecord(deps, entry, options.workspace);
+            deps.log(`Replayed ${entry.summary.eventId} -> ${result.url} (${result.status})`);
+          }
+        } catch (err: any) {
+          deps.error(`Failed to replay DLQ record: ${err?.message || String(err)}`);
+          deps.exit(1);
         }
-      } catch (err: any) {
-        deps.error(`Failed to replay DLQ record: ${err?.message || String(err)}`);
-        deps.exit(1);
       }
-    });
+    );
 
   dlq
     .command('purge')
     .description('Delete DLQ records for a workspace')
     .requiredOption('--workspace <name>', 'Workspace name')
+    .option('--api-url <url>', 'Cloud API base URL')
     .option('--older-than <duration>', 'Only purge records older than a duration', parseDurationToMs)
-    .action(async (options: { workspace: string; olderThan?: number }) => {
+    .action(async (options: { workspace: string; olderThan?: number; apiUrl?: string }) => {
       try {
+        if (options.olderThan === undefined) {
+          const purgedRemotely = await purgeRemoteWorkspace(deps, options.workspace, options.apiUrl).catch(
+            () => false
+          );
+          if (purgedRemotely) {
+            deps.log(`Purged DLQ records from workspace "${options.workspace}" via cloud workspace API.`);
+            return;
+          }
+        }
+
         const { records } = loadWorkspaceRecords(deps, options.workspace);
         if (records.length === 0) {
           deps.log(`No DLQ records found for workspace "${options.workspace}".`);
