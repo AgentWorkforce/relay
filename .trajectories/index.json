@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-11T08:07:48.291Z",
+  "lastUpdated": "2026-05-12T21:46:30.219Z",
   "trajectories": {
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -374,6 +374,20 @@
       "startedAt": "2026-05-11T08:06:37.977Z",
       "completedAt": "2026-05-11T08:07:48.097Z",
       "path": ".trajectories/completed/2026-05/traj_z171lng2fbbi.json"
+    },
+    "traj_dpgn0am1jq1c": {
+      "title": "Implement M1 relay CLI bootstrap commands",
+      "status": "completed",
+      "startedAt": "2026-05-11T18:43:20.429Z",
+      "completedAt": "2026-05-11T18:43:20.733Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-05/traj_dpgn0am1jq1c.json"
+    },
+    "traj_mi9eqd4rjfea": {
+      "title": "Address stdio fresh review findings",
+      "status": "abandoned",
+      "startedAt": "2026-05-11T18:25:24.626Z",
+      "completedAt": "2026-05-11T18:37:05.318Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-05/traj_mi9eqd4rjfea.json"
     }
   }
 }
