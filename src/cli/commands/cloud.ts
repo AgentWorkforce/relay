@@ -174,7 +174,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
 
   cloudCommand
     .command('login')
-    .description('Authenticate with Agent Relay Cloud via browser')
+    .description('Authenticate with Agent Relay Cloud via browser (alias of `relay login`)')
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--force', 'Force re-authentication even if already logged in')
     .action(async (options: { apiUrl?: string; force?: boolean }) => {
@@ -197,6 +197,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         }
 
         await ensureAuthenticated(apiUrl, { force: options.force });
+        deps.log(`Logged in to ${apiUrl}`);
         success = true;
       } catch (err) {
         errorClass = errorClassName(err);

@@ -277,15 +277,17 @@ function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
 }
 export function registerSetupCommands(program: Command, overrides: Partial<SetupDependencies> = {}): void {
   const deps = withDefaults(overrides);
-  program
-    .command('init', { hidden: true })
-    .description('First-time setup wizard - start broker')
-    .option('-y, --yes', 'Accept all defaults (non-interactive)')
-    .option('--skip-broker', 'Skip broker startup prompt')
-    .addHelpText('after', '\nBREAKING CHANGE: daemon options were removed. Use broker terminology only.')
-    .action(async (options: RunInitOptions) => {
-      await deps.runInit(options);
-    });
+  if (!program.commands.some((command) => command.name() === 'init')) {
+    program
+      .command('init', { hidden: true })
+      .description('First-time setup wizard - start broker')
+      .option('-y, --yes', 'Accept all defaults (non-interactive)')
+      .option('--skip-broker', 'Skip broker startup prompt')
+      .addHelpText('after', '\nBREAKING CHANGE: daemon options were removed. Use broker terminology only.')
+      .action(async (options: RunInitOptions) => {
+        await deps.runInit(options);
+      });
+  }
   program
     .command('setup', { hidden: true })
     .description('Alias for "init" - first-time setup wizard')

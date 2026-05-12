@@ -80,6 +80,16 @@ function resolveSdkVersion(): string | undefined {
 
 export const SDK_VERSION = resolveSdkVersion();
 
+function resolveProgramName(argv: string[] = process.argv): string {
+  const invocationPath = argv[1];
+  if (!invocationPath) {
+    return 'agent-relay';
+  }
+
+  const commandName = path.basename(invocationPath).trim().toLowerCase();
+  return commandName === 'relay' ? 'relay' : 'agent-relay';
+}
+
 /**
  * Export the resolved CLI + SDK versions on the current process env so that
  * any child process we spawn (the Rust broker, the dashboard server, etc.)
@@ -248,11 +258,11 @@ function installExitHooks(): void {
   });
 }
 
-export function createProgram(): Command {
+export function createProgram(options: { name?: string } = {}): Command {
   const program = new Command();
 
   program
-    .name('agent-relay')
+    .name(options.name ?? 'agent-relay')
     .description('Agent-to-agent messaging')
     .version(VERSION, '-V, --version', 'Output the version number');
 
@@ -294,7 +304,7 @@ export async function runCli(argv: string[] = process.argv): Promise<Command> {
     });
   }
 
-  const program = createProgram();
+  const program = createProgram({ name: resolveProgramName(argv) });
   installTelemetryHooks(program);
   installExitHooks();
 

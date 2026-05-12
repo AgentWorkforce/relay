@@ -57,12 +57,12 @@ export interface CompactionResult {
 }
 
 export type CompactionStrategy =
-  | 'none'           // No compaction needed
-  | 'trim_old'       // Remove oldest messages
+  | 'none' // No compaction needed
+  | 'trim_old' // Remove oldest messages
   | 'trim_low_importance' // Remove low-importance messages
-  | 'summarize'      // Summarize and replace old messages
-  | 'deduplicate'    // Remove semantically similar messages
-  | 'aggressive';    // Combination of all strategies
+  | 'summarize' // Summarize and replace old messages
+  | 'deduplicate' // Remove semantically similar messages
+  | 'aggressive'; // Combination of all strategies
 
 export interface CompactionConfig {
   /** Maximum tokens for context window */
@@ -88,11 +88,11 @@ export interface CompactionConfig {
 // =============================================================================
 
 const DEFAULT_CONFIG: CompactionConfig = {
-  maxTokens: 100000,       // 100k tokens (Claude's typical limit)
-  targetUsage: 0.7,        // Target 70% after compaction
+  maxTokens: 100000, // 100k tokens (Claude's typical limit)
+  targetUsage: 0.7, // Target 70% after compaction
   compactionThreshold: 0.85, // Trigger at 85% usage
   minImportanceRetain: 30, // Keep messages with importance >= 30
-  keepRecentCount: 10,     // Always keep last 10 messages
+  keepRecentCount: 10, // Always keep last 10 messages
   enableSummarization: true,
   enableDeduplication: true,
   deduplicationThreshold: 0.85,
@@ -122,19 +122,47 @@ export function estimateTokens(text: string): number {
   // Sample-based estimation for longer texts
   // Count different character types in sample
   const sampleSize = Math.min(1000, length);
-  const sample = text.substring(0, sampleSize);
-
   let codeChars = 0;
   let whitespaceChars = 0;
-  let _punctuationChars = 0;
-
-  for (let i = 0; i < sample.length; i++) {
-    const char = sample[i];
-    if (/\s/.test(char)) {
+  for (let i = 0; i < sampleSize; i++) {
+    const code = text.charCodeAt(i);
+    if (code <= 32 || code === 127) {
       whitespaceChars++;
-    } else if (/[{}[\]();:,.<>!=+\-*/&|^~`@#$%]/.test(char)) {
-      _punctuationChars++;
-      codeChars++;
+      continue;
+    }
+
+    switch (code) {
+      case 33: // !
+      case 35: // #
+      case 36: // $
+      case 37: // %
+      case 38: // &
+      case 40: // (
+      case 41: // )
+      case 42: // *
+      case 43: // +
+      case 44: // ,
+      case 45: // -
+      case 46: // .
+      case 47: // /
+      case 58: // :
+      case 59: // ;
+      case 60: // <
+      case 61: // =
+      case 62: // >
+      case 64: // @
+      case 91: // [
+      case 93: // ]
+      case 94: // ^
+      case 96: // `
+      case 123: // {
+      case 124: // |
+      case 125: // }
+      case 126: // ~
+        codeChars++;
+        break;
+      default:
+        break;
     }
   }
 
@@ -255,8 +283,18 @@ export function calculateImportance(message: Message, index: number, total: numb
  * Returns 0-1 where 1 = identical.
  */
 export function calculateSimilarity(a: string, b: string): number {
-  const wordsA = new Set(a.toLowerCase().split(/\s+/).filter(w => w.length > 2));
-  const wordsB = new Set(b.toLowerCase().split(/\s+/).filter(w => w.length > 2));
+  const wordsA = new Set(
+    a
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length > 2)
+  );
+  const wordsB = new Set(
+    b
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length > 2)
+  );
 
   if (wordsA.size === 0 || wordsB.size === 0) {
     return 0;
@@ -276,18 +314,12 @@ export function calculateSimilarity(a: string, b: string): number {
 /**
  * Find duplicate/similar messages.
  */
-export function findDuplicates(
-  messages: Message[],
-  threshold: number = 0.85
-): Map<string, string[]> {
+export function findDuplicates(messages: Message[], threshold: number = 0.85): Map<string, string[]> {
   const duplicates = new Map<string, string[]>();
 
   for (let i = 0; i < messages.length; i++) {
     for (let j = i + 1; j < messages.length; j++) {
-      const similarity = calculateSimilarity(
-        messages[i].content,
-        messages[j].content
-      );
+      const similarity = calculateSimilarity(messages[i].content, messages[j].content);
 
       if (similarity >= threshold) {
         const key = messages[i].id;
@@ -311,12 +343,13 @@ export function findDuplicates(
  */
 export function createSummary(messages: Message[]): Message {
   const messageCount = messages.length;
-  const roles = new Set(messages.map(m => m.role));
-  const threads = new Set(messages.filter(m => m.thread).map(m => m.thread));
+  const roles = new Set(messages.map((m) => m.role));
+  const threads = new Set(messages.filter((m) => m.thread).map((m) => m.thread));
 
   // Extract key sentences (first sentence of each message, or first 100 chars)
   const keyPoints: string[] = [];
-  for (const msg of messages.slice(0, 5)) { // Take up to 5 key points
+  for (const msg of messages.slice(0, 5)) {
+    // Take up to 5 key points
     const firstSentence = msg.content.split(/[.!?]\s/)[0];
     if (firstSentence && firstSentence.length < 200) {
       keyPoints.push(`- ${firstSentence}`);
@@ -330,7 +363,9 @@ export function createSummary(messages: Message[]): Message {
     'Key points:',
     ...keyPoints,
     `[End summary]`,
-  ].filter(Boolean).join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   return {
     id: `summary_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
@@ -339,7 +374,7 @@ export function createSummary(messages: Message[]): Message {
     timestamp: Date.now(),
     importance: 70,
     isSummary: true,
-    summarizes: messages.map(m => m.id),
+    summarizes: messages.map((m) => m.id),
   };
 }
 
@@ -415,7 +450,7 @@ export class ContextCompactor {
             toRemove.add(id);
           }
         }
-        result = result.filter(m => !toRemove.has(m.id));
+        result = result.filter((m) => !toRemove.has(m.id));
         if (toRemove.size > 0) {
           strategy = 'deduplicate';
         }
@@ -433,11 +468,9 @@ export class ContextCompactor {
     }
 
     // Strategy 2: Remove low-importance messages (keep recent)
-    const recentIds = new Set(
-      result.slice(-this.config.keepRecentCount).map(m => m.id)
-    );
+    const recentIds = new Set(result.slice(-this.config.keepRecentCount).map((m) => m.id));
 
-    result = result.filter(m => {
+    result = result.filter((m) => {
       if (recentIds.has(m.id)) return true;
       if (m.isSummary) return true;
       if (m.role === 'system') return true;
@@ -461,17 +494,15 @@ export class ContextCompactor {
 
     // Strategy 3: Summarize old messages
     if (this.config.enableSummarization) {
-      const messagesToSummarize = result.slice(0, -this.config.keepRecentCount)
-        .filter(m => !m.isSummary && m.role !== 'system');
+      const messagesToSummarize = result
+        .slice(0, -this.config.keepRecentCount)
+        .filter((m) => !m.isSummary && m.role !== 'system');
 
       if (messagesToSummarize.length >= 3) {
         const summary = createSummary(messagesToSummarize);
-        const summaryIds = new Set(messagesToSummarize.map(m => m.id));
+        const summaryIds = new Set(messagesToSummarize.map((m) => m.id));
 
-        result = [
-          summary,
-          ...result.filter(m => !summaryIds.has(m.id)),
-        ];
+        result = [summary, ...result.filter((m) => !summaryIds.has(m.id))];
 
         strategy = 'summarize';
 
@@ -488,7 +519,7 @@ export class ContextCompactor {
     // Strategy 4: Aggressive trim (last resort)
     while (estimateContextTokens(result) > targetTokens && result.length > this.config.keepRecentCount + 1) {
       // Remove oldest non-system, non-summary message
-      const removeIndex = result.findIndex(m => !m.isSummary && m.role !== 'system');
+      const removeIndex = result.findIndex((m) => !m.isSummary && m.role !== 'system');
       if (removeIndex === -1) break;
       result.splice(removeIndex, 1);
     }
@@ -589,15 +620,17 @@ export function benchmarkTokenEstimation(iterations: number = 10000): {
 
   let maxNs = 0;
   let totalTokens = 0;
-  const start = process.hrtime.bigint();
+  for (const text of testTexts) {
+    const sampleStart = process.hrtime.bigint();
+    totalTokens += estimateTokens(text);
+    const elapsed = Number(process.hrtime.bigint() - sampleStart);
+    if (elapsed > maxNs) maxNs = elapsed;
+  }
 
+  const start = process.hrtime.bigint();
   for (let i = 0; i < iterations; i++) {
     for (const text of testTexts) {
-      const s = process.hrtime.bigint();
-      const tokens = estimateTokens(text);
-      totalTokens += tokens;
-      const elapsed = Number(process.hrtime.bigint() - s);
-      if (elapsed > maxNs) maxNs = elapsed;
+      totalTokens += estimateTokens(text);
     }
   }
 

@@ -44,6 +44,12 @@ function printWorkspaceCreateResult(
   if (result.relayfileUrl) {
     log(`Relayfile URL: ${result.relayfileUrl}`);
   }
+  if (result.relaycronUrl) {
+    log(`Relaycron URL: ${result.relaycronUrl}`);
+  }
+  if (result.relaycastUrl) {
+    log(`Relaycast URL: ${result.relaycastUrl}`);
+  }
   if (result.relayauthUrl) {
     log(`Relayauth URL: ${result.relayauthUrl}`);
   }
@@ -56,7 +62,8 @@ function printWorkspaceTokenResult(
   result: WorkspaceTokenIssueResponse,
   log: (...args: unknown[]) => void
 ): void {
-  log(result.key);
+  log(`RELAY_API_KEY=${result.key}`);
+  log('Export this value before starting SDK-backed proactive runtime commands.');
 }
 
 export function registerProactiveBootstrapCommands(
@@ -64,6 +71,22 @@ export function registerProactiveBootstrapCommands(
   overrides: Partial<ProactiveBootstrapDependencies> = {}
 ): void {
   const deps = withDefaults(overrides);
+  const runWorkspaceCreate = async (
+    name: string,
+    options: { apiUrl?: string; json?: boolean }
+  ): Promise<void> => {
+    try {
+      const result = await createWorkspace(name, { apiUrl: options.apiUrl });
+      if (options.json) {
+        deps.log(JSON.stringify(result, null, 2));
+      } else {
+        printWorkspaceCreateResult(result, deps.log);
+      }
+    } catch (err) {
+      deps.error(err instanceof Error ? err.message : String(err));
+      deps.exit(1);
+    }
+  };
 
   program
     .command('login')
@@ -90,6 +113,7 @@ export function registerProactiveBootstrapCommands(
         }
 
         await ensureAuthenticated(apiUrl, { force: options.force });
+        deps.log(`Logged in to ${apiUrl}`);
         success = true;
       } catch (err) {
         errorClass = errorClassName(err);
@@ -104,6 +128,15 @@ export function registerProactiveBootstrapCommands(
       }
     });
 
+  program
+    .command('init <name>')
+    .description('Create a proactive-runtime workspace through the canonical bootstrap path')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--json', 'Print raw JSON response', false)
+    .action(async (name: string, options: { apiUrl?: string; json?: boolean }) => {
+      await runWorkspaceCreate(name, options);
+    });
+
   const workspaces = program.command('workspaces').description('Manage proactive-runtime workspaces');
 
   workspaces
@@ -112,12 +145,7 @@ export function registerProactiveBootstrapCommands(
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--json', 'Print raw JSON response', false)
     .action(async (name: string, options: { apiUrl?: string; json?: boolean }) => {
-      const result = await createWorkspace(name, { apiUrl: options.apiUrl });
-      if (options.json) {
-        deps.log(JSON.stringify(result, null, 2));
-      } else {
-        printWorkspaceCreateResult(result, deps.log);
-      }
+      await runWorkspaceCreate(name, options);
     });
 
   const tokens = program.command('tokens').description('Issue proactive-runtime workspace tokens');
@@ -129,11 +157,16 @@ export function registerProactiveBootstrapCommands(
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--json', 'Print raw JSON response', false)
     .action(async (options: { workspace: string; apiUrl?: string; json?: boolean }) => {
-      const result = await issueWorkspaceToken(options.workspace, { apiUrl: options.apiUrl });
-      if (options.json) {
-        deps.log(JSON.stringify(result, null, 2));
-      } else {
-        printWorkspaceTokenResult(result, deps.log);
+      try {
+        const result = await issueWorkspaceToken(options.workspace, { apiUrl: options.apiUrl });
+        if (options.json) {
+          deps.log(JSON.stringify(result, null, 2));
+        } else {
+          printWorkspaceTokenResult(result, deps.log);
+        }
+      } catch (err) {
+        deps.error(err instanceof Error ? err.message : String(err));
+        deps.exit(1);
       }
     });
 }

@@ -52,6 +52,7 @@ export type WorkspaceCreateResponse = {
   name?: string;
   relayfileUrl?: string;
   relaycronUrl?: string;
+  relaycastUrl?: string;
   relayauthUrl?: string;
   joinCommand?: string;
   createdAt?: string;
