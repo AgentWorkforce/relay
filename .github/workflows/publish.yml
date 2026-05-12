@@ -762,6 +762,7 @@ jobs:
         package:
           - cloud
           - config
+          - events
           - github-primitive
           - slack-primitive
           - workflow-types
@@ -1039,6 +1040,7 @@ jobs:
           - credential-proxy
           - browser-primitive
           - personas
+          - agent
 
     steps:
       - name: Checkout code

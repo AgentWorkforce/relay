@@ -1,7 +1,6 @@
 {
-  "name": "@agent-relay/telemetry",
+  "name": "@agent-relay/agent",
   "version": "6.0.17",
-  "description": "Anonymous telemetry for Agent Relay usage analytics",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,29 +11,32 @@
       "default": "./dist/index.js"
     }
   },
-  "files": [
-    "dist",
-    "README.md"
-  ],
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "posthog-node": "^5.29.2"
+    "@agent-relay/events": "6.0.17",
+    "@relaycast/sdk": "1.1.2",
+    "@relayfile/sdk": "^0.7.2"
   },
   "devDependencies": {
-    "@types/node": "^22.19.3",
-    "vitest": "^3.2.4"
-  },
-  "publishConfig": {
-    "access": "public"
+    "@types/node": "^25.5.0",
+    "typescript": "^5.7.0"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AgentWorkforce/relay.git",
-    "directory": "packages/telemetry"
-  }
+    "directory": "packages/agent"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
 }

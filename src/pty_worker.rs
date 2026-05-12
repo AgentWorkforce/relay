@@ -181,13 +181,19 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(1024);
     let writer_task = tokio::spawn(async move {
+        // Keep one async stdout handle for this process. Tokio's `write_all`
+        // is not cancel-safe if the task is aborted mid-write, but this task is
+        // normally shut down by dropping `out_tx` and awaiting it below, so the
+        // frame stream is drained instead of cancelled.
+        use tokio::io::AsyncWriteExt;
+        let mut stdout = tokio::io::stdout();
         while let Some(frame) = out_rx.recv().await {
-            if let Ok(line) = serde_json::to_string(&frame) {
-                use std::io::Write;
-                let mut stdout = std::io::stdout().lock();
-                let _ = stdout.write_all(line.as_bytes());
-                let _ = stdout.write_all(b"\n");
-                let _ = stdout.flush();
+            if let Ok(mut line) = serde_json::to_string(&frame) {
+                line.push('\n');
+                if stdout.write_all(line.as_bytes()).await.is_err() || stdout.flush().await.is_err()
+                {
+                    break;
+                }
             }
         }
     });
