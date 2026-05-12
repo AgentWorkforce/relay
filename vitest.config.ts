@@ -3,6 +3,8 @@ import path from 'node:path';
 
 const workspacePackages = [
   'acp-bridge',
+  'agent-relay-events',
+  'agent-relay-agent',
   'cloud',
   'config',
   'gateway',
