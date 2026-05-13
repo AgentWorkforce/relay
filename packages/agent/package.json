@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/agent",
-  "version": "6.0.19",
+  "version": "6.0.20",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -19,7 +19,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@agent-relay/events": "6.0.19",
+    "@agent-relay/events": "6.0.20",
     "@relaycast/sdk": "1.1.2",
     "@relayfile/sdk": "^0.7.2"
   },
