@@ -94,7 +94,7 @@ $ jq -r '.id' $MOUNT/notion/pages/by-title/just-give-the-agent-files__c24642bb.j
 $ cat $MOUNT/notion/pages/3566800c-1c90-8035-a491-cdc3c24642bb/content.md
 ```
 
-Linear issues use `<identifier>__<uuid>` — ticket number first so the listing is immediately scannable. We picked up the filename shape after seeing it in [Mirage](https://github.com/strukto-ai/mirage)'s mount, and Mirage's broader "mount everything as one tree" framing is the closest prior art to relayfile:
+Linear issues use `<identifier>__<uuid>` — ticket number first so the listing is immediately scannable. [Mirage](https://github.com/strukto-ai/mirage) converged on a similar filename shape in their mount, and their broader "mount everything as one tree" framing is the closest thing in this space to what we're doing:
 
 ```bash
 $ ls $MOUNT/linear/issues/
