@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { spawn as spawnProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -93,9 +94,51 @@ async function createSdkClient(cwd: string, autoStart: boolean): Promise<AgentMa
     if (!autoStart) {
       throw new Error('No running broker found. Start one with: agent-relay up');
     }
-    const client = await AgentRelayClient.spawn({ cwd });
-    return client as unknown as AgentManagementClient;
   }
+
+  await startBackgroundBroker(cwd);
+  const client = await waitForBrokerClient(cwd);
+  return client as unknown as AgentManagementClient;
+}
+
+function startBackgroundBroker(cwd: string): void {
+  const cliScript = process.argv[1];
+  if (!cliScript) {
+    throw new Error('Unable to locate agent-relay CLI script for broker autostart');
+  }
+
+  const child = spawnProcess(
+    process.execPath,
+    [cliScript, 'up', '--background', '--no-dashboard', '--no-spawn'],
+    {
+      cwd,
+      detached: true,
+      stdio: 'ignore',
+      env: process.env,
+    }
+  );
+  child.unref();
+}
+
+async function waitForBrokerClient(
+  cwd: string,
+  timeoutMs = 15_000,
+  intervalMs = 250
+): Promise<AgentRelayClient> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+
+  while (Date.now() < deadline) {
+    try {
+      return AgentRelayClient.connect({ cwd });
+    } catch (err) {
+      lastError = err;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  const detail = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`Broker did not become ready after autostart: ${detail}`);
 }
 
 function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): AgentManagementDependencies {
@@ -209,7 +252,7 @@ export function registerAgentManagementCommands(
 
         let client: AgentManagementClient;
         try {
-          client = await deps.createAutostartClient(options.cwd || deps.getProjectRoot());
+          client = await deps.createAutostartClient(deps.getProjectRoot());
         } catch (err: any) {
           deps.error(`Failed to connect to broker: ${err?.message || String(err)}`);
           deps.exit(1);
