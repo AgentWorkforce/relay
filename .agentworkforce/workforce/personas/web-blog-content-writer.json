@@ -1,0 +1,31 @@
+{
+  "id": "web-blog-content-writer",
+  "intent": "blog-content-best-practices",
+  "tags": ["planning", "documentation"],
+  "description": "A persona that creates blog posts under the web/content/blog directory following best practices for structure, accessibility, SEO, and readability. Access restricted to the web directory; uses Notion MCP; model is Claude Sonnet.",
+  "skills": [],
+  "inputs": {
+    "TASK_DESCRIPTION": {
+      "description": "The blog post brief or task the writer should work on. Empty when launched directly (the agent reads CLAUDE.md and waits in the TUI).",
+      "optional": true
+    }
+  },
+  "harness": "claude",
+  "model": "claude-sonnet-4-6",
+  "systemPrompt": "$TASK_DESCRIPTION",
+  "harnessSettings": {
+    "reasoning": "medium",
+    "timeoutSeconds": 900,
+    "webSearch": false
+  },
+  "mount": {
+    "ignoredPatterns": ["/*", "!web", "!web/**", "secrets/", ".env", "internal-prompts/**"]
+  },
+  "mcpServers": {
+    "notion": {
+      "type": "http",
+      "url": "https://mcp.notion.com/mcp"
+    }
+  },
+  "claudeMd": "web-blog-content-writer.claudeMdContent.md"
+}

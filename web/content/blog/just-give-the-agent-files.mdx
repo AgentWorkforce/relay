@@ -1,0 +1,172 @@
+---
+title: 'Just Give the Agent Files'
+description: 'Most cloud agents wait to be asked. Relayfile changes that: connect your providers once and the agent wakes up automatically when something in the world changes.'
+date: '2026-05-13'
+author: 'Khaliq Gant'
+category: 'Engineering'
+tags:
+  - Relayfile
+  - Proactive agents
+  - MCP
+  - Integrations
+---
+
+The thing I keep running into with cloud agents is that they're really good at answering questions and really bad at knowing when to ask themselves one.
+
+Most agents are reactive. You call them, they respond, they go dormant. That's fine for a coding assistant sitting at your keyboard. It's a real limitation when you're shipping an agent as a product. A support agent that checks the ticket queue every 30 seconds isn't really an agent, it's a cron job with better marketing.
+
+The interesting question isn't how do you make agents smarter. It's how do you make them proactive — how does the agent know something happened in the outside world without you having to tell it?
+
+## The infrastructure problem nobody warns you about
+
+MCP is genuinely a step forward and I'm glad it exists. But I've found that when you stack many MCP tools, the agent starts every task carrying a catalog it may mostly never use. Anthropic has [written about](https://www.anthropic.com/engineering/advanced-tool-use) tool definitions consuming tens of thousands of tokens before any real work begins. [Composio](https://composio.dev/) and [Pipedream](http://pipedream.com/) have made similar points in their docs.
+
+That's the context bloat problem. There's a related but different one: MCP tools let the agent pull information. They're not how the outside world pushes a signal to the agent. For that you need webhooks, and webhooks are where things get painful fast.
+
+To make a single cloud agent proactive against Linear you need a public endpoint, HMAC verification, a queue, deduplication logic, retry handling, and registration with Linear's API. Then repeat for GitHub, Jira, and Slack, each with a different signature format and retry behavior. I've seen teams spend four to six weeks building this before they write a line of actual agent logic.
+
+## relaycron, relayfile, relaycast
+
+The way I think about making agents proactive is three primitives:
+
+- **relaycron** wakes the agent up on a schedule
+- **relayfile** wakes the agent up when something in the world changes
+- **relaycast** wakes the agent up when someone has something to say
+
+The clock, the watcher, and the inbox. Relayfile is the watcher — it absorbs everything between the provider webhook and the agent receiving a normalized signal about what changed.
+
+With relayfile, the agent code looks like this:
+
+```typescript
+import { RelayFileSync } from '@relayfile/sdk';
+
+const sync = new RelayFileSync({
+  workspace: 'acme/ops',
+  token: process.env.RELAYFILE_TOKEN,
+});
+
+sync.on('change', async (file) => {
+  await agent.handle(file);
+});
+```
+
+No endpoint to host. No signature verification. No queue. When a Linear issue moves to blocked or a GitHub PR gets reviewed, the agent gets a normalized file event:
+
+```typescript
+{
+  path: '/linear/issues/AGE-16__87389837-62b1-4e1a-a237-59218bab2974.json',
+  event: 'updated',
+  previous: { state_name: 'In Review',  assignee: 'alice' },
+  current:  { state_name: 'Blocked',    assignee: 'alice', blockedReason: 'waiting on design' },
+  occurredAt: '2026-05-13T14:32:01Z',
+}
+```
+
+The agent reads what changed and decides what to do. The rest is handled.
+
+## The workspace is also just files
+
+The change events are useful on their own but the full workspace is also navigable. Every connected provider is mounted at a well-known path and the agent can explore, search, and write back using tools it already knows.
+
+```bash
+$ ls $MOUNT
+LAYOUT.md  notion/  linear/  slack/  github/  confluence/
+```
+
+`LAYOUT.md` at the root (and at each provider root) describes the shape of the workspace. That's where the agent should start.
+
+Notion pages live under `notion/pages/`. Canonical records are keyed by UUID with a `by-title/` subtree for human-readable lookup:
+
+```bash
+# Find a page by title
+$ jq -r '.id' $MOUNT/notion/pages/by-title/just-give-the-agent-files__c24642bb.json
+3566800c-1c90-8035-a491-cdc3c24642bb
+
+# Read the body
+$ cat $MOUNT/notion/pages/3566800c-1c90-8035-a491-cdc3c24642bb/content.md
+```
+
+Linear issues use `<identifier>__<uuid>` — ticket number first so the listing is immediately scannable:
+
+```bash
+$ ls $MOUNT/linear/issues/
+AGE-9__2bb2c00f-ee93-4c73-a793-df5b725d9a1a.json
+AGE-10__8c313d70-9800-4539-820f-96a481c09ce0.json
+AGE-16__87389837-62b1-4e1a-a237-59218bab2974.json
+
+$ jq '.payload | {title, state_name, assignee_name}' \
+    $MOUNT/linear/issues/AGE-16__87389837-62b1-4e1a-a237-59218bab2974.json
+```
+
+## Writebacks are files too
+
+Reads are useful. Writes are where it gets interesting. The agent doesn't call a provider API to take action — it writes a file. Relayfile handles the provider auth, payload validation, retries, and audit trail on the other side.
+
+We tested this end to end during development. To validate GitHub writeback, the agent created a real issue by dropping a file:
+
+```bash
+$ cat > $MOUNT/github/repos/AgentWorkforce/relayfile-adapters/issues/relayfile-writeback-test-20260513T121247Z.json <<EOF
+{
+  "title": "Relayfile writeback test 20260513T121247Z",
+  "body": "Created by Relayfile writeback validation for rw_517d60b6."
+}
+EOF
+```
+
+That file write created an actual GitHub issue. The agent didn't touch the GitHub API. It wrote a file. Same pattern works for posting Linear comments, creating Confluence pages, sending Slack messages — whatever the provider supports, the agent interacts with through the filesystem.
+
+## Permissions when multiple agents share a workspace
+
+When you have multiple agents in the same workspace, Relayfile scopes access to paths so each agent gets exactly what it needs:
+
+```typescript
+scopes: [
+  'relayfile:fs:read:/notion/*',
+  'relayfile:fs:read:/slack/channels/C0ADE9B71CN__gtm-prospects/*',
+  'relayfile:fs:write:/linear/issues/*/comments/*',
+];
+```
+
+Each agent gets its own scoped token that can be revoked independently. One agent's write becomes another agent's change event — the workspace is the shared surface and you don't need a separate coordination layer on top of it.
+
+## Under the hood
+
+All the auth, refresh tokens, pagination, retries, and webhook payloads are handled by [Nango](https://www.nango.dev) under the hood. Nango is excellent integration infrastructure — I'd say that even if I weren't a former employee (I was the first engineer hired there, full disclosure). Relayfile sits on top and turns that layer into the file interface.
+
+It also works with [Composio](https://composio.dev/), [Pipedream](http://pipedream.com/), and [other providers](https://github.com/AgentWorkforce/relayfile-providers/tree/main/packages). Whichever integration layer you're already using, Relayfile controls what gets promoted into the workspace: which records become files, which paths are mounted, which writes go through.
+
+## Setting up a workspace
+
+```typescript
+import { RelayfileSetup } from '@relayfile/sdk';
+
+const setup = await RelayfileSetup.login({
+  onLoginUrl: (url) => {
+    console.log(`Sign in to Relayfile Cloud: ${url}`);
+  },
+  onTokens: async (tokens) => {
+    await saveTokenSet(tokens);
+  },
+});
+
+const workspace = await setup.createWorkspace({
+  name: 'acme-ops',
+  agentName: 'lead-agent',
+  scopes: ['relayfile:fs:read:/notion/*', 'relayfile:fs:write:/linear/issues/*/comments/*'],
+});
+
+const notion = await workspace.connectNotion();
+console.log(notion.connectLink);
+
+await workspace.waitForNotion({
+  connectionId: notion.connectionId,
+});
+```
+
+The thing that still gets me is how quickly it clicks when I show this to someone. Engineers who've spent years wiring up webhooks look at the workspace layout for about thirty seconds and just start typing commands. They already know `ls` and `rg` and `cat`. The integration knowledge was never really the barrier.
+
+There's obviously more to it than that (the permissions model, the change events, the audit trail) and not every agent workflow should run through a filesystem. MCP is useful. There are times where calling a specific function directly is the right call.
+
+But for the scenario where an agent needs to wake up when something changes, read context from a few places, and act without being asked, I've seen files work really well. The workspace is already shared. Once the change event lands, everything else is just the same tools the agent already knows how to use.
+
+Just files.
