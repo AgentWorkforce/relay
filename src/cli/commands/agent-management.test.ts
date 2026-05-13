@@ -120,10 +120,38 @@ describe('registerAgentManagementCommands', () => {
       cwd: undefined,
       shadowOf: undefined,
       shadowMode: undefined,
+      continueFrom: undefined,
     });
     expect(client.listAgents).toHaveBeenCalledTimes(1);
     expect(client.shutdown).toHaveBeenCalledTimes(1);
     expect(deps.log).toHaveBeenCalledWith('Spawned agent: WorkerA (pid: 4321)');
+  });
+
+  it('uses --cwd for the spawned agent without changing broker project scope', async () => {
+    const client = createClientMock({
+      listAgents: vi.fn(async () => [{ name: 'WorkerCwd', pid: 4322 }]),
+    });
+    const { program, deps } = createHarness({ client, projectRoot: '/tmp/control-project' });
+
+    const exitCode = await runCommand(program, [
+      'spawn',
+      'WorkerCwd',
+      'codex',
+      '--cwd',
+      '/tmp/worker-project',
+      'Ship tests',
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(deps.createAutostartClient).toHaveBeenCalledWith('/tmp/control-project');
+    expect(client.spawnPty).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'WorkerCwd',
+        cli: 'codex',
+        cwd: '/tmp/worker-project',
+        task: 'Ship tests',
+      })
+    );
   });
 
   it('uses stdin task for spawn when task argument is omitted', async () => {
