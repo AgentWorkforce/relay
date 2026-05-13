@@ -208,6 +208,9 @@ export function agent(definition: AgentDefinition): AgentHandle {
  */
 export { NoRetry, relayfileTools, deployAgent };
 
+export { createContextFactory } from './context.js';
+export type { CreateContextFactoryOptions, ContextFactory } from './context.js';
+
 export type {
   AgentDefinition,
   AgentHandle,
