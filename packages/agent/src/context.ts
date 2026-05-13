@@ -16,7 +16,7 @@ import type {
 import { tagWithCurrentBurnTags } from './burn.js';
 import { createPolicyGate } from './policy.js';
 
-interface CreateContextFactoryOptions {
+export interface CreateContextFactoryOptions {
   workspace: string;
   agentId: string;
   logger?: Logger;
@@ -35,7 +35,7 @@ interface CreateContextFactoryOptions {
   trackSchedule(id: string): void;
 }
 
-interface ContextFactory {
+export interface ContextFactory {
   base: Context;
   withEvent(signal: AbortSignal, event: AgentEvent): Context;
   withSignal(signal: AbortSignal): Context;
