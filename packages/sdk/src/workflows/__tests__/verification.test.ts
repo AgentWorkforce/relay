@@ -11,6 +11,7 @@ import {
   checkFileExists,
   checkCustom,
   execCustomVerification,
+  findPrUrl,
   type VerificationCheck,
   type VerificationResult,
   type VerificationOptions,
@@ -311,6 +312,70 @@ describe('verification logic', () => {
       const file = path.join(tmpDir, 'ok.txt');
       fs.writeFileSync(file, 'ok');
       expect(checkFileExists('ok.txt', tmpDir)).toBe(true);
+    });
+  });
+
+  describe('pr_url verification', () => {
+    it('passes when a github PR URL appears in the worker output', () => {
+      const result = run(
+        { type: 'pr_url', value: '' },
+        'shipped: https://github.com/AgentWorkforce/cloud/pull/606 ready for review'
+      );
+      expect(result.passed).toBe(true);
+      expect(result.completionReason).toBe('completed_verified');
+    });
+
+    it('fails with a WorkflowCompletionError when no PR URL is present', () => {
+      expect(() =>
+        run(
+          { type: 'pr_url', value: '' },
+          'All tests pass and the build is clean.\nfiles modified: foo.ts, bar.ts'
+        )
+      ).toThrow(WorkflowCompletionError);
+    });
+
+    it('rejects PR URLs for a different repository when a qualifier is provided', () => {
+      expect(() =>
+        run(
+          { type: 'pr_url', value: 'AgentWorkforce/relaycast' },
+          'Migration done: https://github.com/AgentWorkforce/cloud/pull/606'
+        )
+      ).toThrow(WorkflowCompletionError);
+    });
+
+    it('accepts a PR URL whose repo matches the qualifier case-insensitively', () => {
+      const result = run(
+        { type: 'pr_url', value: 'agentworkforce/relaycast' },
+        'See https://github.com/AgentWorkforce/relaycast/pull/128 for the SDK change.'
+      );
+      expect(result.passed).toBe(true);
+    });
+  });
+
+  describe('findPrUrl', () => {
+    it('returns the first matching URL when no qualifier is given', () => {
+      const url = findPrUrl(
+        'first https://github.com/foo/bar/pull/1 second https://github.com/foo/bar/pull/2'
+      );
+      expect(url).toBe('https://github.com/foo/bar/pull/1');
+    });
+
+    it('filters by repository qualifier', () => {
+      const url = findPrUrl(
+        'wrong https://github.com/foo/bar/pull/1 right https://github.com/baz/qux/pull/9',
+        'baz/qux'
+      );
+      expect(url).toBe('https://github.com/baz/qux/pull/9');
+    });
+
+    it('returns null when no PR URL is present', () => {
+      expect(findPrUrl('OWNER_DECISION: COMPLETE\nfiles modified: foo.ts')).toBeNull();
+    });
+
+    it('ignores PR URLs echoed inside the injected task text', () => {
+      const injected = 'Reference: https://github.com/foo/bar/pull/42';
+      const output = injected + '\nWorker said: tests pass, no PR opened, all good';
+      expect(findPrUrl(output, undefined, injected)).toBeNull();
     });
   });
 });
