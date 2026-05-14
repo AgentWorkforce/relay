@@ -8,6 +8,7 @@ import remarkGfm from 'remark-gfm';
 
 import { BlogTableOfContents } from '../../../components/blog/BlogTableOfContents';
 import styles from '../../../components/blog/blog.module.css';
+import { HighlightedPre } from '../../../components/docs/HighlightedCode';
 import { GitHubStarsBadge } from '../../../components/GitHubStars';
 import { SiteFooter } from '../../../components/SiteFooter';
 import { SiteNav } from '../../../components/SiteNav';
@@ -48,6 +49,7 @@ function HeadingWithId(level: 2 | 3) {
 }
 
 const mdxComponents = {
+  pre: HighlightedPre,
   h2: HeadingWithId(2),
   h3: HeadingWithId(3),
 };
