@@ -1,9 +1,11 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 
 import { FadeIn } from '../../components/FadeIn';
+import { SiteFooter } from '../../components/SiteFooter';
+import { SiteNav } from '../../components/SiteNav';
 
 import s from './relayfile.module.css';
 
@@ -329,7 +331,7 @@ function RelayfileAnimation() {
   );
 }
 
-export function RelayfileContent() {
+export function RelayfileContent({ navActions }: { navActions?: ReactNode }) {
   const [activeTab, setActiveTab] = useState<keyof typeof sdkTabs>('mount');
   const activeSdk = sdkTabs[activeTab];
   const highlightedSdk = useMemo(() => highlight(activeSdk.code, activeSdk.language), [activeSdk]);
@@ -337,6 +339,8 @@ export function RelayfileContent() {
 
   return (
     <div className={s.page}>
+      <SiteNav actions={navActions} />
+
       <div className={s.heroSection}>
         <svg
           className={s.heroBgSvg}
@@ -599,6 +603,8 @@ export function RelayfileContent() {
           </div>
         </FadeIn>
       </div>
+
+      <SiteFooter />
     </div>
   );
 }
