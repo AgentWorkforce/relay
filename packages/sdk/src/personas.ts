@@ -30,43 +30,35 @@ import {
 } from '@agentworkforce/harness-kit';
 import {
   HARNESS_VALUES,
-  PERSONA_TIERS,
   type Harness,
+  type HarnessSettings,
   type McpServerSpec,
   type PersonaPermissions,
-  type PersonaTier,
-} from '@agentworkforce/workload-router';
+} from '@agentworkforce/persona-kit';
 
 // ── Re-exports for callers ─────────────────────────────────────────────────
 
-export type { Harness, McpServerSpec, PersonaPermissions, PersonaTier };
-export { HARNESS_VALUES, PERSONA_TIERS };
+export type { Harness, HarnessSettings, McpServerSpec, PersonaPermissions };
+export { HARNESS_VALUES };
 
 // ── On-disk persona schema (permissive, like workforce's LocalPersonaOverride) ──
 
-export interface PersonaTierSpec {
-  harness?: Harness;
-  model?: string;
-  systemPrompt?: string;
-  /** Free-form harness settings (reasoning level, timeout) — not consumed by spawnPty today. */
-  harnessSettings?: Record<string, unknown>;
-}
-
-/** Raw persona file shape. */
+/** Raw persona file shape (flat — workforce v3 dropped the per-tier shape). */
 export interface PersonaFile {
   id: string;
   intent?: string;
   description?: string;
   tags?: string[];
-  /** Used for every tier when set without `tiers`. Ignored when `tiers` is set. */
-  systemPrompt?: string;
-  /** Top-level harness/model — used when there are no tiers. */
+  /** Top-level runtime config — the harness (CLI) to launch. */
   harness?: Harness;
+  /** Top-level runtime config — the model the harness should use. */
   model?: string;
+  /** Top-level runtime config — the system prompt injected into the agent. */
+  systemPrompt?: string;
+  /** Free-form harness settings (reasoning level, timeout) — not consumed by spawnPty today. */
+  harnessSettings?: HarnessSettings;
   permissions?: PersonaPermissions;
   mcpServers?: Record<string, McpServerSpec>;
-  /** Per-tier overrides. A tier set here takes precedence over the top-level fields. */
-  tiers?: Partial<Record<PersonaTier, PersonaTierSpec>>;
   /** Inherits from another persona id (looked up in the same search dirs). One level deep. */
   extends?: string;
 }
@@ -78,12 +70,11 @@ export interface DiscoveredPersona {
   spec: PersonaFile;
 }
 
-/** A persona resolved against a tier — ready for {@link buildPersonaSpawnSpec}. */
+/** A fully resolved persona — ready for {@link buildPersonaSpawnSpec}. */
 export interface ResolvedPersona {
   id: string;
   /** Absolute path to the JSON file the spec came from. */
   source: string;
-  tier: PersonaTier;
   harness: Harness;
   model: string;
   systemPrompt: string;
@@ -98,8 +89,6 @@ export interface PersonaLoadOptions {
   searchDirs?: string[];
   /** Extra dirs appended after the default cascade. */
   extraDirs?: string[];
-  /** Tier to resolve. Defaults to 'best'. */
-  tier?: PersonaTier;
 }
 
 /**
@@ -271,9 +260,10 @@ export function findPersona(
 // ── Resolution ─────────────────────────────────────────────────────────────
 
 /**
- * Load and resolve a persona by id. Searches the cascade, applies the
- * chosen tier, and resolves a single level of `extends` against the same
- * cascade. Throws if the persona is missing required fields for the tier.
+ * Load and resolve a persona by id. Searches the cascade, reads the flat
+ * runtime config (`harness` / `model` / `systemPrompt`), and resolves a
+ * single level of `extends` against the same cascade. Throws if the persona
+ * is missing required fields.
  */
 export function loadPersona(id: string, options: PersonaLoadOptions = {}): ResolvedPersona {
   const discovered = findPersona(id, options);
@@ -285,7 +275,6 @@ export function loadPersona(id: string, options: PersonaLoadOptions = {}): Resol
     );
   }
 
-  const tier: PersonaTier = options.tier ?? 'best';
   let spec = discovered.spec;
 
   if (spec.extends) {
@@ -298,37 +287,29 @@ export function loadPersona(id: string, options: PersonaLoadOptions = {}): Resol
     spec = mergeSpecs(base.spec, spec);
   }
 
-  const tierSpec = spec.tiers?.[tier];
-  const harness = (tierSpec?.harness ?? spec.harness) as Harness | undefined;
-  const model = tierSpec?.model ?? spec.model;
-  const systemPrompt = tierSpec?.systemPrompt ?? spec.systemPrompt;
+  const harness = spec.harness;
+  const model = spec.model;
+  const systemPrompt = spec.systemPrompt;
 
   if (!harness) {
-    throw new Error(
-      `Persona "${id}" tier "${tier}" has no harness; set tiers.${tier}.harness or top-level harness.`,
-    );
+    throw new Error(`Persona "${id}" has no harness; set a top-level harness.`);
   }
   if (!HARNESS_VALUES.includes(harness)) {
     throw new Error(
-      `Persona "${id}" tier "${tier}" uses unsupported harness "${String(harness)}". ` +
+      `Persona "${id}" uses unsupported harness "${String(harness)}". ` +
         `Supported: ${HARNESS_VALUES.join(', ')}.`,
     );
   }
   if (!model) {
-    throw new Error(
-      `Persona "${id}" tier "${tier}" has no model; set tiers.${tier}.model or top-level model.`,
-    );
+    throw new Error(`Persona "${id}" has no model; set a top-level model.`);
   }
   if (!systemPrompt) {
-    throw new Error(
-      `Persona "${id}" tier "${tier}" has no systemPrompt; set tiers.${tier}.systemPrompt or top-level systemPrompt.`,
-    );
+    throw new Error(`Persona "${id}" has no systemPrompt; set a top-level systemPrompt.`);
   }
 
   return {
     id: spec.id,
     source: discovered.path,
-    tier,
     harness,
     model,
     systemPrompt,
@@ -341,26 +322,17 @@ export function loadPersona(id: string, options: PersonaLoadOptions = {}): Resol
 // ── Merge (extends) ────────────────────────────────────────────────────────
 
 function mergeSpecs(base: PersonaFile, override: PersonaFile): PersonaFile {
-  const tiers: PersonaFile['tiers'] = {};
-  for (const tier of PERSONA_TIERS) {
-    const baseTier = base.tiers?.[tier];
-    const overrideTier = override.tiers?.[tier];
-    if (overrideTier || baseTier) {
-      tiers[tier] = { ...(baseTier ?? {}), ...(overrideTier ?? {}) };
-    }
-  }
-
   return {
     id: override.id,
     intent: override.intent ?? base.intent,
     description: override.description ?? base.description,
     tags: override.tags ?? base.tags,
-    systemPrompt: override.systemPrompt ?? base.systemPrompt,
     harness: override.harness ?? base.harness,
     model: override.model ?? base.model,
+    systemPrompt: override.systemPrompt ?? base.systemPrompt,
+    harnessSettings: override.harnessSettings ?? base.harnessSettings,
     permissions: mergePermissions(base.permissions, override.permissions),
     mcpServers: { ...(base.mcpServers ?? {}), ...(override.mcpServers ?? {}) },
-    tiers: Object.keys(tiers).length > 0 ? tiers : undefined,
   };
 }
 
@@ -391,30 +363,14 @@ function parsePersonaFile(value: unknown, source: string): PersonaFile {
   if (typeof value.id !== 'string' || !value.id.trim()) {
     throw new Error(`${source}: persona.id must be a non-empty string`);
   }
-  // Validate harness values up front so a typo in the file fails at load time
-  // rather than at spawn — the runtime check in loadPersona stays as a
+  // Validate the harness value up front so a typo in the file fails at load
+  // time rather than at spawn — the runtime check in loadPersona stays as a
   // defense-in-depth guard for callers that bypass parsing.
   const topHarness = (value as { harness?: unknown }).harness;
   if (topHarness !== undefined && !isValidHarness(topHarness)) {
     throw new Error(
       `${source}: persona.harness must be one of: ${HARNESS_VALUES.join(', ')} (got ${JSON.stringify(topHarness)})`,
     );
-  }
-  const tiers = (value as { tiers?: unknown }).tiers;
-  if (tiers !== undefined) {
-    if (!isPlainObject(tiers)) {
-      throw new Error(`${source}: persona.tiers must be an object if provided`);
-    }
-    for (const [tierName, tierSpec] of Object.entries(tiers)) {
-      if (!PERSONA_TIERS.includes(tierName as PersonaTier)) continue; // unknown tier names are ignored
-      if (!isPlainObject(tierSpec)) continue;
-      const harness = (tierSpec as { harness?: unknown }).harness;
-      if (harness !== undefined && !isValidHarness(harness)) {
-        throw new Error(
-          `${source}: persona.tiers.${tierName}.harness must be one of: ${HARNESS_VALUES.join(', ')} (got ${JSON.stringify(harness)})`,
-        );
-      }
-    }
   }
   return value as unknown as PersonaFile;
 }

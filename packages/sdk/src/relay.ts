@@ -37,7 +37,6 @@ import {
   materializePersonaConfigFiles,
   restorePersonaConfigFiles,
   type PersonaLoadOptions,
-  type PersonaTier,
   type ResolvedPersona,
 } from './personas.js';
 import { AgentRelayProtocolError } from './transport.js';
@@ -268,8 +267,6 @@ export interface SpawnPersonaOptions extends SpawnOptions {
   name?: string;
   /** Initial task / user prompt for the agent. */
   task?: string;
-  /** Persona tier to resolve. Defaults to 'best'. */
-  tier?: PersonaTier;
   /**
    * Override the persona search-dir cascade. When set, the default
    * directories (cwd/agentworkforce/personas, ~/.agentworkforce/...) are
@@ -756,7 +753,7 @@ export class AgentRelay {
    * Looks up the persona JSON in the search-dir cascade
    * (`<cwd>/agentworkforce/personas`, `<cwd>/.agentworkforce/workforce/personas`,
    * `~/.agentworkforce/workforce/personas`, plus `AGENT_WORKFORCE_HOME`),
-   * resolves the requested tier, and translates it to spawnPty args via
+   * reads its flat runtime config, and translates it to spawnPty args via
    * `@agentworkforce/harness-kit#buildInteractiveSpec`.
    *
    * For opencode, an `opencode.json` is materialized in the spawn cwd and
@@ -765,7 +762,7 @@ export class AgentRelay {
    * system-prompt flag). Translation warnings are surfaced via console.warn.
    *
    * @param personaId — id of the persona to load
-   * @param options — overrides for tier, search dirs, name, task, and the
+   * @param options — overrides for search dirs, name, task, and the
    *   underlying spawn options
    */
   async spawnPersona(personaId: string, options: SpawnPersonaOptions = {}): Promise<Agent> {
@@ -775,7 +772,6 @@ export class AgentRelay {
       cwd: personaCwd,
       ...(searchDirs ? { searchDirs } : {}),
       ...(options.extraDirs ? { extraDirs: options.extraDirs } : {}),
-      ...(options.tier ? { tier: options.tier } : {}),
     };
     const persona = options.persona ?? loadPersona(personaId, loadOpts);
     const spec = buildPersonaSpawnSpec(persona);

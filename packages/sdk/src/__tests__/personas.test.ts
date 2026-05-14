@@ -29,27 +29,37 @@ function makeFixture(): { cwd: string; cleanup: () => void } {
     JSON.stringify({
       id: 'frontend',
       description: 'frontend implementer',
-      tiers: {
-        best: {
-          harness: 'claude',
-          model: 'claude-opus-4-6',
-          systemPrompt: 'You are a senior frontend engineer.',
-        },
-        'best-value': {
-          harness: 'codex',
-          model: 'openai-codex/gpt-5-codex',
-          systemPrompt: 'You are an efficient frontend engineer.',
-        },
-        minimum: {
-          harness: 'opencode',
-          model: 'opencode/gpt-5-nano',
-          systemPrompt: 'You are a concise frontend engineer.',
-        },
-      },
+      harness: 'claude',
+      model: 'claude-opus-4-6',
+      systemPrompt: 'You are a senior frontend engineer.',
+      harnessSettings: { reasoning: 'high', timeoutSeconds: 1200 },
       permissions: {
         allow: ['Bash(npm test)'],
         mode: 'default',
       },
+    }),
+  );
+
+  // Flat codex + opencode personas to exercise each harness translation.
+  writeFileSync(
+    join(dir, 'frontend-codex.json'),
+    JSON.stringify({
+      id: 'frontend-codex',
+      description: 'efficient frontend implementer',
+      harness: 'codex',
+      model: 'openai-codex/gpt-5-codex',
+      systemPrompt: 'You are an efficient frontend engineer.',
+    }),
+  );
+
+  writeFileSync(
+    join(dir, 'frontend-opencode.json'),
+    JSON.stringify({
+      id: 'frontend-opencode',
+      description: 'concise frontend implementer',
+      harness: 'opencode',
+      model: 'opencode/gpt-5-nano',
+      systemPrompt: 'You are a concise frontend engineer.',
     }),
   );
 
@@ -82,9 +92,14 @@ test('defaultPersonaSearchDirs includes cwd-relative and home-relative dirs', ()
 test('listPersonas discovers JSON files under agentworkforce/personas', () => {
   const fix = makeFixture();
   try {
-    const personas = listPersonas({ cwd: fix.cwd });
+    // Scope to the fixture dir explicitly so a populated `AGENT_WORKFORCE_HOME`
+    // on the dev machine doesn't leak personas into the assertion.
+    const personas = listPersonas({
+      cwd: fix.cwd,
+      searchDirs: [join(fix.cwd, 'agentworkforce', 'personas')],
+    });
     const ids = personas.map((p) => p.id).sort();
-    assert.deepEqual(ids, ['frontend', 'frontend-strict']);
+    assert.deepEqual(ids, ['frontend', 'frontend-codex', 'frontend-opencode', 'frontend-strict']);
   } finally {
     fix.cleanup();
   }
@@ -102,22 +117,21 @@ test('findPersona returns spec by id, regardless of filename', () => {
   }
 });
 
-test('loadPersona resolves the requested tier', () => {
+test('loadPersona resolves the flat runtime config', () => {
   const fix = makeFixture();
   try {
-    const best = loadPersona('frontend', { cwd: fix.cwd });
-    assert.equal(best.tier, 'best');
-    assert.equal(best.harness, 'claude');
-    assert.equal(best.model, 'claude-opus-4-6');
-    assert.match(best.systemPrompt, /senior frontend engineer/);
+    const claude = loadPersona('frontend', { cwd: fix.cwd });
+    assert.equal(claude.harness, 'claude');
+    assert.equal(claude.model, 'claude-opus-4-6');
+    assert.match(claude.systemPrompt, /senior frontend engineer/);
 
-    const value = loadPersona('frontend', { cwd: fix.cwd, tier: 'best-value' });
-    assert.equal(value.harness, 'codex');
-    assert.equal(value.model, 'openai-codex/gpt-5-codex');
+    const codex = loadPersona('frontend-codex', { cwd: fix.cwd });
+    assert.equal(codex.harness, 'codex');
+    assert.equal(codex.model, 'openai-codex/gpt-5-codex');
 
-    const min = loadPersona('frontend', { cwd: fix.cwd, tier: 'minimum' });
-    assert.equal(min.harness, 'opencode');
-    assert.equal(min.model, 'opencode/gpt-5-nano');
+    const open = loadPersona('frontend-opencode', { cwd: fix.cwd });
+    assert.equal(open.harness, 'opencode');
+    assert.equal(open.model, 'opencode/gpt-5-nano');
   } finally {
     fix.cleanup();
   }
@@ -167,7 +181,7 @@ test('buildPersonaSpawnSpec for claude includes system prompt and MCP flags', ()
 test('buildPersonaSpawnSpec for codex strips provider prefix and exposes initialPrompt', () => {
   const fix = makeFixture();
   try {
-    const persona = loadPersona('frontend', { cwd: fix.cwd, tier: 'best-value' });
+    const persona = loadPersona('frontend-codex', { cwd: fix.cwd });
     const spec = buildPersonaSpawnSpec(persona);
     assert.equal(spec.cli, 'codex');
     // codex receives the stripped provider/model form via -m
@@ -185,15 +199,15 @@ test('buildPersonaSpawnSpec for codex strips provider prefix and exposes initial
 test('buildPersonaSpawnSpec for opencode emits an opencode.json config file', () => {
   const fix = makeFixture();
   try {
-    const persona = loadPersona('frontend', { cwd: fix.cwd, tier: 'minimum' });
+    const persona = loadPersona('frontend-opencode', { cwd: fix.cwd });
     const spec = buildPersonaSpawnSpec(persona);
     assert.equal(spec.cli, 'opencode');
-    assert.deepEqual(spec.args, ['--agent', 'frontend']);
+    assert.deepEqual(spec.args, ['--agent', 'frontend-opencode']);
     assert.equal(spec.configFiles.length, 1);
     assert.equal(spec.configFiles[0]?.path, 'opencode.json');
     const parsed = JSON.parse(spec.configFiles[0]?.contents ?? '{}');
-    assert.equal(parsed.agent.frontend.model, 'opencode/gpt-5-nano');
-    assert.match(parsed.agent.frontend.prompt, /concise frontend engineer/);
+    assert.equal(parsed.agent['frontend-opencode'].model, 'opencode/gpt-5-nano');
+    assert.match(parsed.agent['frontend-opencode'].prompt, /concise frontend engineer/);
   } finally {
     fix.cleanup();
   }
@@ -242,7 +256,7 @@ test('AgentRelay personaDirs option supplies default search dirs to spawnPersona
     let captured: { cli?: string; model?: string; args?: string[] } = {};
     // Stub out spawnPty so the test never touches the broker — we only care
     // that the persona was discovered and translated using the constructor's
-    // personaDirs / personaTier defaults.
+    // personaDirs default.
     (relay as unknown as { spawnPty: (input: unknown) => Promise<unknown> }).spawnPty = async (
       input: unknown,
     ) => {
@@ -263,9 +277,8 @@ test('AgentRelay personaDirs option supplies default search dirs to spawnPersona
       };
     };
 
-    await relay.spawnPersona('frontend', {
+    await relay.spawnPersona('frontend-codex', {
       cwd: fix.cwd, // spawn cwd; persona lookup uses constructor defaults
-      tier: 'best-value',
     });
 
     assert.equal(captured.cli, 'codex');
@@ -359,23 +372,23 @@ test('parsePersonaFile rejects an invalid top-level harness at load time', () =>
   }
 });
 
-test('parsePersonaFile rejects an invalid harness inside a tier at load time', () => {
+test('loadPersona accepts a flat persona with harnessSettings', () => {
   const fix = makeFixture();
   try {
     const dir = join(fix.cwd, 'agentworkforce', 'personas');
     writeFileSync(
-      join(dir, 'bad-tier.json'),
+      join(dir, 'tuned.json'),
       JSON.stringify({
-        id: 'bad-tier',
-        tiers: {
-          best: { harness: 'gpt-5', model: 'gpt-5', systemPrompt: 'x' },
-        },
+        id: 'tuned',
+        harness: 'codex',
+        model: 'openai-codex/gpt-5-codex',
+        systemPrompt: 'You are a tuned engineer.',
+        harnessSettings: { reasoning: 'high', timeoutSeconds: 900 },
       }),
     );
-    assert.throws(
-      () => loadPersona('bad-tier', { cwd: fix.cwd }),
-      /persona\.tiers\.best\.harness must be one of/,
-    );
+    const persona = loadPersona('tuned', { cwd: fix.cwd });
+    assert.equal(persona.harness, 'codex');
+    assert.equal(persona.model, 'openai-codex/gpt-5-codex');
   } finally {
     fix.cleanup();
   }
