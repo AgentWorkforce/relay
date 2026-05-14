@@ -1,6 +1,6 @@
 {
   "name": "agent-relay",
-  "version": "6.0.11",
+  "version": "6.0.20",
   "description": "Real-time agent-to-agent communication system",
   "type": "module",
   "main": "dist/index.cjs",
@@ -24,7 +24,8 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "agent-relay": "dist/src/cli/index.js"
+    "agent-relay": "dist/src/cli/index.js",
+    "relay": "dist/src/cli/index.js"
   },
   "workspaces": [
     "packages/*",
@@ -130,14 +131,14 @@
   },
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "dependencies": {
-    "@agent-relay/cloud": "6.0.11",
-    "@agent-relay/config": "6.0.11",
-    "@agent-relay/hooks": "6.0.11",
-    "@agent-relay/sdk": "6.0.11",
-    "@agent-relay/telemetry": "6.0.11",
-    "@agent-relay/trajectory": "6.0.11",
-    "@agent-relay/user-directory": "6.0.11",
-    "@agent-relay/utils": "6.0.11",
+    "@agent-relay/cloud": "6.0.20",
+    "@agent-relay/config": "6.0.20",
+    "@agent-relay/hooks": "6.0.20",
+    "@agent-relay/sdk": "6.0.20",
+    "@agent-relay/telemetry": "6.0.20",
+    "@agent-relay/trajectory": "6.0.20",
+    "@agent-relay/user-directory": "6.0.20",
+    "@agent-relay/utils": "6.0.20",
     "@aws-sdk/client-s3": "3.1020.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@relayauth/core": "^0.1.2",
@@ -147,7 +148,7 @@
     "@relayfile/local-mount": "^0.2.2",
     "@relayfile/sdk": "^0.6.0",
     "@sinclair/typebox": "^0.34.14",
-    "agent-trajectories": "^0.5.7",
+    "agent-trajectories": "^0.5.8",
     "chalk": "^4.1.2",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",

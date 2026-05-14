@@ -66,7 +66,7 @@
         {
           "ts": 1776106058085,
           "type": "completion-evidence",
-          "content": "\"update-tests\" verification-based completion — Verification passed (5 signal(s), 1 relevant channel post(s), 1 file change(s), exit=0; signals=0, Updated [src/cli/commands/messaging.test.ts](/Users/khaliqgant/Projects/AgentWorkforce/relay/src/cli/commands/messaging.test.ts:430) only., OpenAI Codex v0.116.0 (research preview), Verification passed, **[update-tests] Output:**; channel=**[update-tests] Output:**\n```\nUpdated [src/cli/commands/messaging.test.ts](/Users/khaliqgant/Projects/AgentWorkforce/relay/src/cli/commands/messaging.test.ts:4; files=modified:src/cli/commands/messaging.test.ts; exit=0)",
+          "content": "\"update-tests\" verification-based completion — Verification passed (5 signal(s), 1 relevant channel post(s), 1 file change(s), exit=0; signals=0, Updated [src/cli/commands/messaging.test.ts](<repo-root>/src/cli/commands/messaging.test.ts:430) only., OpenAI Codex v0.116.0 (research preview), Verification passed, **[update-tests] Output:**; channel=**[update-tests] Output:**\n```\nUpdated [src/cli/commands/messaging.test.ts](<repo-root>/src/cli/commands/messaging.test.ts:4; files=modified:src/cli/commands/messaging.test.ts; exit=0)",
           "raw": {
             "stepName": "update-tests",
             "completionMode": "verification",
@@ -75,13 +75,13 @@
               "summary": "5 signal(s), 1 relevant channel post(s), 1 file change(s), exit=0",
               "signals": [
                 "0",
-                "Updated [src/cli/commands/messaging.test.ts](/Users/khaliqgant/Projects/AgentWorkforce/relay/src/cli/commands/messaging.test.ts:430) only.",
+                "Updated [src/cli/commands/messaging.test.ts](<repo-root>/src/cli/commands/messaging.test.ts:430) only.",
                 "OpenAI Codex v0.116.0 (research preview)",
                 "Verification passed",
                 "**[update-tests] Output:**"
               ],
               "channelPosts": [
-                "**[update-tests] Output:**\n```\nUpdated [src/cli/commands/messaging.test.ts](/Users/khaliqgant/Projects/AgentWorkforce/relay/src/cli/commands/messaging.test.ts:4"
+                "**[update-tests] Output:**\n```\nUpdated [src/cli/commands/messaging.test.ts](<repo-root>/src/cli/commands/messaging.test.ts:4"
               ],
               "files": ["modified:src/cli/commands/messaging.test.ts"],
               "exitCode": 0

@@ -125,6 +125,7 @@ class AgentRelayClient:
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self._ws_task: Optional[asyncio.Task[None]] = None
         self._lease_task: Optional[asyncio.Task[None]] = None
+        self._stdout_task: Optional[asyncio.Task[None]] = None
         self._stderr_task: Optional[asyncio.Task[None]] = None
         self._process: Optional[asyncio.subprocess.Process] = None
         self._event_listeners: list[Callable[[BrokerEvent], None]] = []
@@ -188,8 +189,10 @@ class AgentRelayClient:
 
         # Parse API URL from stdout
         base_url = await _wait_for_api_url(process, startup_timeout_ms)
+        stdout_task = asyncio.create_task(_drain_stdout(process))
 
         client = cls(base_url=base_url, api_key=api_key)
+        client._stdout_task = stdout_task
         client._stderr_task = stderr_task
         client._process = process
 
@@ -503,6 +506,9 @@ class AgentRelayClient:
         if self._stderr_task and not self._stderr_task.done():
             self._stderr_task.cancel()
 
+        if self._stdout_task and not self._stdout_task.done():
+            self._stdout_task.cancel()
+
         if self._session and not self._session.closed:
             await self._session.close()
 
@@ -558,3 +564,11 @@ async def _wait_for_api_url(
         raise AgentRelayProcessError(
             f"Broker did not report API URL within {timeout_ms}ms"
         ) from None
+
+
+async def _drain_stdout(process: asyncio.subprocess.Process) -> None:
+    """Drain broker stdout after startup so the broker cannot block on a full pipe."""
+    if not process.stdout:
+        return
+    while await process.stdout.read(65536):
+        pass

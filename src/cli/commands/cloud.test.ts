@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const cloudMocks = vi.hoisted(() => ({
   runWorkflow: vi.fn(),
+  scheduleWorkflow: vi.fn(),
+  listWorkflowSchedules: vi.fn(),
   getRunStatus: vi.fn(),
   syncWorkflowPatch: vi.fn(),
 }));
@@ -20,8 +22,10 @@ vi.mock('@agent-relay/cloud', () => ({
     'anthropic (alias: claude), openai (alias: codex), google (alias: gemini), cursor, opencode, droid',
   getRunLogs: vi.fn(),
   getRunStatus: (...args: unknown[]) => cloudMocks.getRunStatus(...args),
+  listWorkflowSchedules: (...args: unknown[]) => cloudMocks.listWorkflowSchedules(...args),
   readStoredAuth: vi.fn(),
   runWorkflow: (...args: unknown[]) => cloudMocks.runWorkflow(...args),
+  scheduleWorkflow: (...args: unknown[]) => cloudMocks.scheduleWorkflow(...args),
   syncWorkflowPatch: (...args: unknown[]) => cloudMocks.syncWorkflowPatch(...args),
 }));
 
@@ -65,6 +69,8 @@ describe('registerCloudCommands', () => {
       'whoami',
       'connect',
       'run',
+      'schedule',
+      'schedules',
       'status',
       'logs',
       'sync',
@@ -107,6 +113,96 @@ describe('registerCloudCommands', () => {
     expect(status?.description()).toContain('workflow run status');
     const optionNames = status?.options.map((option) => option.long);
     expect(optionNames).toContain('--json');
+  });
+
+  it('schedule creates repeatable workflow schedules', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.scheduleWorkflow.mockResolvedValueOnce({
+      id: 'sched-1',
+      name: 'Hourly eval',
+      scheduleType: 'cron',
+      cronExpression: '0 * * * *',
+      timezone: 'UTC',
+      status: 'active',
+      lastTriggeredRunId: null,
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'schedule',
+      'workflow.yaml',
+      '--cron',
+      '0 * * * *',
+      '--name',
+      'Hourly eval',
+    ]);
+
+    expect(cloudMocks.scheduleWorkflow).toHaveBeenCalledWith(
+      'workflow.yaml',
+      expect.objectContaining({
+        cron: '0 * * * *',
+        name: 'Hourly eval',
+      })
+    );
+    expect(deps.log).toHaveBeenCalledWith('Schedule created: sched-1');
+  });
+
+  it('schedule creates one-time workflow schedules', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.scheduleWorkflow.mockResolvedValueOnce({
+      id: 'sched-at-1',
+      name: 'One-off eval',
+      scheduleType: 'once',
+      scheduledAt: '2026-05-10T09:00:00.000Z',
+      timezone: 'UTC',
+      status: 'active',
+      lastTriggeredRunId: null,
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'schedule',
+      'workflow.yaml',
+      '--at',
+      '2026-05-10T09:00:00Z',
+      '--name',
+      'One-off eval',
+    ]);
+
+    expect(cloudMocks.scheduleWorkflow).toHaveBeenCalledWith(
+      'workflow.yaml',
+      expect.objectContaining({
+        at: '2026-05-10T09:00:00Z',
+        name: 'One-off eval',
+      })
+    );
+    expect(cloudMocks.scheduleWorkflow.mock.calls[0][1]).not.toHaveProperty('cron');
+    expect(deps.log).toHaveBeenCalledWith('Schedule created: sched-at-1');
+  });
+
+  it('schedules lists repeatable workflow schedules', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.listWorkflowSchedules.mockResolvedValueOnce([
+      {
+        id: 'sched-1',
+        name: 'Hourly eval',
+        scheduleType: 'cron',
+        cronExpression: '0 * * * *',
+        timezone: 'UTC',
+        status: 'active',
+        lastTriggeredRunId: 'run-1',
+      },
+    ]);
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'schedules']);
+
+    expect(cloudMocks.listWorkflowSchedules).toHaveBeenCalledWith(expect.objectContaining({}));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('sched-1'));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('run-1'));
   });
 
   it('logs has --follow and --poll-interval options', () => {

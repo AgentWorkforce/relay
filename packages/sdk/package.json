@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/sdk",
-  "version": "6.0.11",
+  "version": "6.0.20",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -111,6 +111,11 @@
       "types": "./dist/github.d.ts",
       "import": "./dist/github.js",
       "default": "./dist/github.js"
+    },
+    "./slack": {
+      "types": "./dist/slack.d.ts",
+      "import": "./dist/slack.js",
+      "default": "./dist/slack.js"
     }
   },
   "files": [
@@ -125,7 +130,7 @@
     "directory": "packages/sdk"
   },
   "scripts": {
-    "prebuild": "npm --prefix ../workflow-types run build && npm --prefix ../github-primitive run build && npm --prefix ../config run build",
+    "prebuild": "npm --prefix ../workflow-types run build && npm --prefix ../github-primitive run build && npm --prefix ../slack-primitive run build && npm --prefix ../config run build && npm --prefix ../cloud run build",
     "build": "npx tsc -p tsconfig.build.json",
     "build:full": "tsc -p tsconfig.json && npm run bundle:binary",
     "bundle:binary": "node ./scripts/bundle-agent-relay.mjs",
@@ -144,9 +149,11 @@
     "@types/ws": "^8.5.10"
   },
   "dependencies": {
-    "@agent-relay/config": "6.0.11",
-    "@agent-relay/github-primitive": "6.0.11",
-    "@agent-relay/workflow-types": "6.0.11",
+    "@agent-relay/cloud": "6.0.20",
+    "@agent-relay/config": "6.0.20",
+    "@agent-relay/github-primitive": "6.0.20",
+    "@agent-relay/slack-primitive": "6.0.20",
+    "@agent-relay/workflow-types": "6.0.20",
     "@agentworkforce/harness-kit": "^0.11.0",
     "@agentworkforce/workload-router": "^0.11.0",
     "@relaycast/sdk": "^1.1.0",
@@ -161,14 +168,14 @@
     "yaml": "^2.7.0"
   },
   "optionalDependencies": {
-    "@agent-relay/broker-darwin-arm64": "6.0.11",
-    "@agent-relay/broker-darwin-x64": "6.0.11",
-    "@agent-relay/broker-linux-arm64": "6.0.11",
-    "@agent-relay/broker-linux-x64": "6.0.11",
-    "@agent-relay/broker-win32-x64": "6.0.11"
+    "@agent-relay/broker-darwin-arm64": "6.0.20",
+    "@agent-relay/broker-darwin-x64": "6.0.20",
+    "@agent-relay/broker-linux-arm64": "6.0.20",
+    "@agent-relay/broker-linux-x64": "6.0.20",
+    "@agent-relay/broker-win32-x64": "6.0.20"
   },
   "peerDependencies": {
-    "@agent-relay/credential-proxy": "6.0.11",
+    "@agent-relay/credential-proxy": "6.0.20",
     "@anthropic-ai/claude-agent-sdk": ">=0.1.0",
     "@google/adk": ">=0.5.0",
     "@langchain/langgraph": ">=1.2.0",

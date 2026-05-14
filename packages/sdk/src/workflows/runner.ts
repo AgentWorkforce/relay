@@ -384,10 +384,40 @@ interface DiagnosticResult {
   };
 }
 
+interface DeterministicRepairContext {
+  step: WorkflowStep;
+  agentDef: AgentDefinition;
+  attempt: number;
+  maxRetries: number;
+  command: string;
+  cwd: string;
+  error: string;
+  output: string;
+  exitCode?: number;
+  exitSignal?: string;
+}
+
+interface AgentStepRepairContext {
+  step: WorkflowStep;
+  agentDef: AgentDefinition;
+  attempt: number;
+  maxRetries: number;
+  cwd: string;
+  error: string;
+  output: string;
+  exitCode?: number;
+  exitSignal?: string;
+  completionReason?: WorkflowStepCompletionReason;
+}
+
 type DiagnosticVerificationCheck = VerificationCheck & {
   diagnosticAgent?: string;
   diagnosticTimeout?: number;
 };
+
+const DEFAULT_WORKFLOW_MAX_RETRIES = 2;
+const DEFAULT_WORKFLOW_REPAIR_RETRIES = 2;
+const DEFAULT_WORKFLOW_RETRY_DELAY_MS = 1000;
 
 interface ChannelEvidenceOptions {
   stepName?: string;
@@ -2067,6 +2097,35 @@ export class WorkflowRunner {
     return config;
   }
 
+  private applyReliabilityDefaults(config: RelayYamlConfig): RelayYamlConfig {
+    const existing = config.errorHandling;
+    if (existing?.strategy === 'fail-fast' || existing?.strategy === 'continue') {
+      return config;
+    }
+
+    const hasRepairAgentCandidate = (config.agents ?? []).length > 0;
+    const maxRetries =
+      existing?.maxRetries ??
+      existing?.repairRetries ??
+      (existing ? DEFAULT_WORKFLOW_MAX_RETRIES : DEFAULT_WORKFLOW_MAX_RETRIES);
+    const repairRetries =
+      existing?.repairRetries ??
+      (hasRepairAgentCandidate
+        ? existing?.maxRetries ?? DEFAULT_WORKFLOW_REPAIR_RETRIES
+        : existing?.repairRetries);
+
+    return {
+      ...config,
+      errorHandling: {
+        ...existing,
+        strategy: 'retry',
+        maxRetries,
+        retryDelayMs: existing?.retryDelayMs ?? DEFAULT_WORKFLOW_RETRY_DELAY_MS,
+        ...(repairRetries !== undefined ? { repairRetries } : {}),
+      },
+    };
+  }
+
   /** Validate a config object against the RelayYamlConfig shape. */
   validateConfig(config: unknown, source = '<config>'): asserts config is RelayYamlConfig {
     if (typeof config !== 'object' || config === null) {
@@ -2498,6 +2557,10 @@ export class WorkflowRunner {
         if (typeof s.command !== 'string') {
           throw new Error(`${source}: deterministic step "${s.name}" must have a "command" field`);
         }
+      } else if (s.type === 'worktree') {
+        if (typeof s.branch !== 'string' || s.branch.trim().length === 0) {
+          throw new Error(`${source}: worktree step "${s.name}" must have a "branch" string field`);
+        }
       } else if (s.type === 'integration') {
         // Integration steps require integration and action
         if (typeof s.integration !== 'string') {
@@ -2778,8 +2841,9 @@ export class WorkflowRunner {
 
     // Validate config (catches cycles, missing deps, invalid steps, etc.)
     this.validateConfig(resolved);
+    const runtimeConfig = this.applyReliabilityDefaults(resolved);
 
-    const permissionResult = this.validatePermissions(resolved.agents, resolved.permission_profiles);
+    const permissionResult = this.validatePermissions(runtimeConfig.agents, runtimeConfig.permission_profiles);
     if (permissionResult.errors.length > 0) {
       throw new Error(`Permission validation failed:\n  ${permissionResult.errors.join('\n  ')}`);
     }
@@ -2788,7 +2852,7 @@ export class WorkflowRunner {
     }
 
     // Resolve and validate named paths from the top-level `paths` config
-    const pathResult = this.resolvePathDefinitions(resolved.paths, this.cwd);
+    const pathResult = this.resolvePathDefinitions(runtimeConfig.paths, this.cwd);
     if (pathResult.errors.length > 0) {
       throw new Error(`Path validation failed:\n  ${pathResult.errors.join('\n  ')}`);
     }
@@ -2799,7 +2863,7 @@ export class WorkflowRunner {
       }
     }
 
-    const workflows = resolved.workflows ?? [];
+    const workflows = runtimeConfig.workflows ?? [];
 
     const workflow = workflowName ? workflows.find((w) => w.name === workflowName) : workflows[0];
 
@@ -2821,9 +2885,9 @@ export class WorkflowRunner {
       id: runId,
       workspaceId: this.workspaceId,
       workflowName: resolvedWorkflow.name,
-      pattern: resolved.swarm.pattern,
+      pattern: runtimeConfig.swarm.pattern,
       status: 'pending',
-      config: resolved,
+      config: runtimeConfig,
       startedAt: now,
       createdAt: now,
       updatedAt: now,
@@ -2908,7 +2972,7 @@ export class WorkflowRunner {
     return this.runWorkflowCore({
       run,
       workflow: resolvedWorkflow,
-      config: resolved,
+      config: runtimeConfig,
       stepStates,
       isResume: false,
     });
@@ -2941,7 +3005,7 @@ export class WorkflowRunner {
       throw new Error(`Run "${runId}" is in status "${run.status}" and cannot be resumed`);
     }
 
-    const resolvedConfig = vars ? this.resolveVariables(run.config, vars) : run.config;
+    const resolvedConfig = this.applyReliabilityDefaults(vars ? this.resolveVariables(run.config, vars) : run.config);
 
     // Resolve path definitions (same as execute()) so workdir lookups work on resume
     const pathResult = this.resolvePathDefinitions(resolvedConfig.paths, this.cwd);
@@ -3626,7 +3690,15 @@ export class WorkflowRunner {
   ): Promise<void> {
     // Branch: deterministic steps execute shell commands
     if (this.isDeterministicStep(step)) {
-      return this.executeDeterministicStep(step, state, stepStates, runId, errorHandling, lifecycle);
+      return this.executeDeterministicStep(
+        step,
+        state,
+        stepStates,
+        agentMap,
+        runId,
+        errorHandling,
+        lifecycle
+      );
     }
 
     // Branch: worktree steps set up git worktrees
@@ -3651,16 +3723,25 @@ export class WorkflowRunner {
     step: WorkflowStep,
     state: StepState,
     stepStates: Map<string, StepState>,
+    agentMap: Map<string, AgentDefinition>,
     runId: string,
     errorHandling: ErrorHandlingConfig | undefined,
     lifecycle: WorkflowStepLifecycleExecutor<StepState>
   ): Promise<void> {
-    const maxRetries = step.retries ?? errorHandling?.maxRetries ?? 0;
+    const repairRetries = errorHandling?.strategy === 'retry' ? errorHandling.repairRetries ?? 0 : 0;
+    const repairAgent =
+      repairRetries > 0
+        ? this.resolveWorkflowRepairAgent(step, stepStates, agentMap, errorHandling)
+        : undefined;
+    const maxRetries = step.retries ?? errorHandling?.maxRetries ?? (repairAgent ? repairRetries : 0);
     const retryDelay = errorHandling?.retryDelayMs ?? 1000;
     let lastError = 'Unknown error';
     let lastCompletionReason: WorkflowStepCompletionReason | undefined;
     let lastExitCode: number | undefined;
     let lastExitSignal: string | undefined;
+    let lastResolvedCommand = step.command ?? '';
+    let lastStepCwd = this.cwd;
+    let lastCommandOutput = '';
 
     const result = await lifecycle.monitorStep(step, state, {
       maxRetries,
@@ -3674,6 +3755,20 @@ export class WorkflowRunner {
           detail: `Retrying attempt ${attempt + 1}/${total + 1}`,
           raw: { attempt, maxRetries: total },
         });
+        if (repairAgent) {
+          await this.runDeterministicRepairAgent({
+            step,
+            agentDef: repairAgent,
+            attempt,
+            maxRetries: total,
+            command: lastResolvedCommand,
+            cwd: lastStepCwd,
+            error: lastError,
+            output: lastCommandOutput,
+            exitCode: lastExitCode,
+            exitSignal: lastExitSignal,
+          });
+        }
       },
       execute: async () => {
         const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
@@ -3686,6 +3781,8 @@ export class WorkflowRunner {
         });
 
         const stepCwd = this.resolveEffectiveCwd(step);
+        lastResolvedCommand = resolvedCommand;
+        lastStepCwd = stepCwd;
         this.beginStepEvidence(step.name, [stepCwd], state.row.startedAt);
         this.log(
           `[${step.name}] Running: ${resolvedCommand.slice(0, 200)}${resolvedCommand.length > 200 ? '...' : ''}`
@@ -3695,6 +3792,7 @@ export class WorkflowRunner {
           const executorResult = await this.executor.executeDeterministicStep(step, resolvedCommand, stepCwd);
           lastExitCode = executorResult.exitCode;
           lastExitSignal = undefined;
+          lastCommandOutput = executorResult.output;
           const failOnError = step.failOnError !== false;
           if (failOnError && executorResult.exitCode !== 0) {
             this.log(`[${step.name}] Command failed (exit code ${executorResult.exitCode})`);
@@ -3786,6 +3884,7 @@ export class WorkflowRunner {
             commandStderr = stderr;
             lastExitCode = code ?? undefined;
             lastExitSignal = signal ?? undefined;
+            lastCommandOutput = [stdout, stderr].filter(Boolean).join('\n');
 
             const failOnError = step.failOnError !== false;
             if (failOnError && code !== 0 && code !== null) {
@@ -3827,6 +3926,7 @@ export class WorkflowRunner {
         const verificationResult = step.verification
           ? this.runVerification(step.verification, output, step.name)
           : undefined;
+        lastCommandOutput = [commandStdout || output, commandStderr].filter(Boolean).join('\n');
 
         return {
           output,
@@ -3860,6 +3960,252 @@ export class WorkflowRunner {
       this.postToChannel(`**[${step.name}]** Failed: ${result.error ?? 'Unknown error'}`);
       throw new Error(`Step "${step.name}" failed: ${result.error ?? 'Unknown error'}`);
     }
+  }
+
+  private resolveWorkflowRepairAgent(
+    step: WorkflowStep,
+    stepStates: Map<string, StepState>,
+    agentMap: Map<string, AgentDefinition>,
+    errorHandling: ErrorHandlingConfig | undefined
+  ): AgentDefinition | undefined {
+    const explicitName = errorHandling?.repairAgent?.trim();
+    if (explicitName) {
+      const explicitAgent = agentMap.get(explicitName);
+      if (explicitAgent) return WorkflowRunner.resolveAgentDef(explicitAgent);
+      this.log(`[${step.name}] repairAgent "${explicitName}" not found; falling back to workflow agents`);
+    }
+
+    if (step.agent) {
+      const stepAgent = agentMap.get(step.agent);
+      if (stepAgent) return WorkflowRunner.resolveAgentDef(stepAgent);
+    }
+
+    for (const dependency of [...(step.dependsOn ?? [])].reverse()) {
+      const dependencyAgent = stepStates.get(dependency)?.row.agentName;
+      if (!dependencyAgent) continue;
+      const agent = agentMap.get(dependencyAgent);
+      if (agent) return WorkflowRunner.resolveAgentDef(agent);
+    }
+
+    const candidates = [...agentMap.values()].map((agent) => WorkflowRunner.resolveAgentDef(agent));
+    candidates.sort((a, b) => this.scoreRepairAgent(b) - this.scoreRepairAgent(a));
+    return candidates[0];
+  }
+
+  private scoreRepairAgent(agent: AgentDefinition): number {
+    const text = `${agent.name} ${agent.role ?? ''} ${agent.preset ?? ''}`.toLowerCase();
+    let score = 0;
+    if (
+      /\b(repair|fix|implement|implementation|engineer|developer|coder|worker|owner|lead|coordinator)\b/.test(
+        text
+      )
+    ) {
+      score += 10;
+    }
+    if (agent.interactive === false || ['worker', 'analyst'].includes(agent.preset ?? '')) {
+      score += 2;
+    }
+    if (/\b(review|reviewer|audit|security|analyst)\b/.test(text)) {
+      score -= 4;
+    }
+    if (agent.permissions?.access === 'readonly') {
+      score -= 20;
+    }
+    return score;
+  }
+
+  private async runDeterministicRepairAgent(context: DeterministicRepairContext): Promise<void> {
+    const repairAgent: AgentDefinition = {
+      ...context.agentDef,
+      interactive: false,
+    };
+    const repairPrompt = this.buildDeterministicRepairPrompt(context);
+    const repairStep: WorkflowStep = {
+      name: `${context.step.name}-repair-${context.attempt}`,
+      type: 'agent',
+      agent: repairAgent.name,
+      task: repairPrompt,
+      cwd: context.cwd,
+      workdir: undefined,
+      retries: 0,
+    };
+    const timeoutMs =
+      repairAgent.constraints?.timeoutMs ?? context.step.timeoutMs ?? this.currentConfig?.swarm?.timeoutMs;
+
+    this.log(
+      `[${context.step.name}] Deterministic gate failed; asking "${repairAgent.name}" to repair before retry ${context.attempt + 1}/${context.maxRetries + 1}`
+    );
+    this.postToChannel(
+      `**[${context.step.name}]** Deterministic gate failed; assigning repair to \`${repairAgent.name}\``
+    );
+    this.recordStepToolSideEffect(context.step.name, {
+      type: 'custom',
+      detail: `Assigned deterministic gate repair to ${repairAgent.name}`,
+      raw: {
+        repairAgent: repairAgent.name,
+        attempt: context.attempt,
+        maxRetries: context.maxRetries,
+        exitCode: context.exitCode,
+        exitSignal: context.exitSignal,
+      },
+    });
+
+    try {
+      this.ensureBudgetAllowsSpawn(context.step.name, repairAgent.name);
+      let repairOutput: string;
+      if (this.executor) {
+        repairOutput = await this.executor.executeAgentStep(repairStep, repairAgent, repairPrompt, timeoutMs);
+      } else if (repairAgent.cli === 'api') {
+        repairOutput = await executeApiStep(
+          repairAgent.constraints?.model ?? 'claude-sonnet-4-20250514',
+          repairPrompt,
+          {
+            envSecrets: this.envSecrets,
+            skills: repairAgent.skills,
+            defaultMaxTokens: repairAgent.constraints?.maxTokens,
+          }
+        );
+      } else {
+        const result = await this.execNonInteractive(repairAgent, repairStep, timeoutMs);
+        repairOutput = result.output;
+      }
+
+      this.recordStepToolSideEffect(context.step.name, {
+        type: 'custom',
+        detail: `Repair agent ${repairAgent.name} completed before deterministic retry`,
+        raw: { repairAgent: repairAgent.name, output: repairOutput.slice(0, 1000) },
+      });
+    } catch (error) {
+      if (error instanceof BudgetExceededError || this.abortController?.signal.aborted) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.log(`[${context.step.name}] Repair agent "${repairAgent.name}" failed: ${message}`);
+      this.postToChannel(
+        `**[${context.step.name}]** Repair agent \`${repairAgent.name}\` failed; retrying gate anyway`
+      );
+      this.recordStepToolSideEffect(context.step.name, {
+        type: 'custom',
+        detail: `Repair agent ${repairAgent.name} failed before deterministic retry: ${message}`,
+        raw: { repairAgent: repairAgent.name, error: message },
+      });
+    }
+  }
+
+  private buildDeterministicRepairPrompt(context: DeterministicRepairContext): string {
+    const output = context.output.trim();
+    const clippedOutput = output.length > 4000 ? output.slice(-4000) : output;
+    return (
+      `A deterministic workflow gate failed after an agent/team step. Fix the repository or workflow state so the same gate passes on the next retry.\n\n` +
+      `Step: ${context.step.name}\n` +
+      `Working directory: ${context.cwd}\n` +
+      `Command:\n${context.command}\n\n` +
+      `Failure:\n${context.error}\n` +
+      `Exit code: ${context.exitCode ?? 'unknown'}\n` +
+      `Exit signal: ${context.exitSignal ?? 'none'}\n\n` +
+      `Command output:\n${clippedOutput || '(no output captured)'}\n\n` +
+      `Repair only what is needed for this gate to pass. Preserve unrelated user changes. ` +
+      `After making the fix, report the files changed and the reason the gate should pass.`
+    );
+  }
+
+  private async runAgentStepRepairAgent(context: AgentStepRepairContext): Promise<void> {
+    const repairAgent: AgentDefinition = {
+      ...context.agentDef,
+      interactive: false,
+    };
+    const repairPrompt = this.buildAgentStepRepairPrompt(context);
+    const repairStep: WorkflowStep = {
+      name: `${context.step.name}-repair-${context.attempt}`,
+      type: 'agent',
+      agent: repairAgent.name,
+      task: repairPrompt,
+      cwd: context.cwd,
+      workdir: undefined,
+      retries: 0,
+    };
+    const timeoutMs =
+      repairAgent.constraints?.timeoutMs ?? context.step.timeoutMs ?? this.currentConfig?.swarm?.timeoutMs;
+
+    this.log(
+      `[${context.step.name}] Agent step failed; asking "${repairAgent.name}" to repair before retry ${context.attempt + 1}/${context.maxRetries + 1}`
+    );
+    this.postToChannel(
+      `**[${context.step.name}]** Agent step failed; assigning repair to \`${repairAgent.name}\``
+    );
+    this.recordStepToolSideEffect(context.step.name, {
+      type: 'custom',
+      detail: `Assigned agent-step repair to ${repairAgent.name}`,
+      raw: {
+        repairAgent: repairAgent.name,
+        attempt: context.attempt,
+        maxRetries: context.maxRetries,
+        completionReason: context.completionReason,
+        exitCode: context.exitCode,
+        exitSignal: context.exitSignal,
+      },
+    });
+
+    try {
+      this.ensureBudgetAllowsSpawn(context.step.name, repairAgent.name);
+      let repairOutput: string;
+      if (this.executor) {
+        repairOutput = await this.executor.executeAgentStep(repairStep, repairAgent, repairPrompt, timeoutMs);
+      } else if (repairAgent.cli === 'api') {
+        repairOutput = await executeApiStep(
+          repairAgent.constraints?.model ?? 'claude-sonnet-4-20250514',
+          repairPrompt,
+          {
+            envSecrets: this.envSecrets,
+            skills: repairAgent.skills,
+            defaultMaxTokens: repairAgent.constraints?.maxTokens,
+          }
+        );
+      } else {
+        const result = await this.execNonInteractive(repairAgent, repairStep, timeoutMs);
+        repairOutput = result.output;
+      }
+
+      this.recordStepToolSideEffect(context.step.name, {
+        type: 'custom',
+        detail: `Repair agent ${repairAgent.name} completed before agent retry`,
+        raw: { repairAgent: repairAgent.name, output: repairOutput.slice(0, 1000) },
+      });
+    } catch (error) {
+      if (error instanceof BudgetExceededError || this.abortController?.signal.aborted) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.log(`[${context.step.name}] Repair agent "${repairAgent.name}" failed: ${message}`);
+      this.postToChannel(
+        `**[${context.step.name}]** Repair agent \`${repairAgent.name}\` failed; retrying agent step anyway`
+      );
+      this.recordStepToolSideEffect(context.step.name, {
+        type: 'custom',
+        detail: `Repair agent ${repairAgent.name} failed before agent retry: ${message}`,
+        raw: { repairAgent: repairAgent.name, error: message },
+      });
+    }
+  }
+
+  private buildAgentStepRepairPrompt(context: AgentStepRepairContext): string {
+    const output = context.output.trim();
+    const clippedOutput = output.length > 4000 ? output.slice(-4000) : output;
+    const task = (context.step.task ?? '').trim();
+    const clippedTask = task.length > 3000 ? task.slice(0, 3000) : task;
+    return (
+      `A workflow agent step failed or produced an invalid artifact. Repair the repository, workflow state, or step instructions so the step can succeed on the next retry.\n\n` +
+      `Step: ${context.step.name}\n` +
+      `Working directory: ${context.cwd}\n` +
+      `Completion reason: ${context.completionReason ?? 'unknown'}\n` +
+      `Failure:\n${context.error}\n` +
+      `Exit code: ${context.exitCode ?? 'unknown'}\n` +
+      `Exit signal: ${context.exitSignal ?? 'none'}\n\n` +
+      `Step task:\n${clippedTask || '(no task captured)'}\n\n` +
+      `Previous output:\n${clippedOutput || '(no output captured)'}\n\n` +
+      `Repair only what is needed for this step to produce the required artifact or evidence. ` +
+      `Preserve unrelated user changes. After making the fix, report the files changed and why the retry should pass.`
+    );
   }
 
   /**
@@ -4133,63 +4479,7 @@ export class WorkflowRunner {
     }
     const specialistDef = WorkflowRunner.resolveAgentDef(rawAgentDef);
 
-    // API-mode agents: execute via direct API call instead of spawning a PTY/subprocess.
-    if (specialistDef.cli === 'api') {
-      this.ensureBudgetAllowsSpawn(step.name, agentName);
-      const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
-      const resolvedTask = this.interpolateStepTask(step.task ?? '', stepOutputContext);
-
-      state.row.status = 'running';
-      state.row.startedAt = new Date().toISOString();
-      await this.db.updateStep(state.row.id, {
-        status: 'running',
-        startedAt: state.row.startedAt,
-        updatedAt: new Date().toISOString(),
-      });
-      this.emit({ type: 'step:started', runId, stepName: step.name });
-      this.postToChannel(`**[${step.name}]** Started (api)`);
-
-      try {
-        const output = await executeApiStep(
-          specialistDef.constraints?.model ?? 'claude-sonnet-4-20250514',
-          resolvedTask,
-          {
-            envSecrets: this.envSecrets,
-            skills: specialistDef.skills,
-            defaultMaxTokens: specialistDef.constraints?.maxTokens,
-          }
-        );
-
-        state.row.status = 'completed';
-        state.row.output = output;
-        state.row.completedAt = new Date().toISOString();
-        await this.db.updateStep(state.row.id, {
-          status: 'completed',
-          output,
-          completedAt: state.row.completedAt,
-          updatedAt: new Date().toISOString(),
-        });
-        await this.persistStepOutput(runId, step.name, output);
-        this.emit({ type: 'step:completed', runId, stepName: step.name, output });
-      } catch (apiError) {
-        const errorMessage = apiError instanceof Error ? apiError.message : String(apiError);
-        state.row.status = 'failed';
-        state.row.error = errorMessage;
-        state.row.completedAt = new Date().toISOString();
-        await this.db.updateStep(state.row.id, {
-          status: 'failed',
-          error: errorMessage,
-          completedAt: state.row.completedAt,
-          updatedAt: new Date().toISOString(),
-        });
-        this.emit({ type: 'step:failed', runId, stepName: step.name, error: errorMessage });
-        this.postToChannel(`**[${step.name}]** Failed (api): ${errorMessage}`);
-        throw apiError;
-      }
-      return;
-    }
-
-    const usesOwnerFlow = specialistDef.interactive !== false;
+    const usesOwnerFlow = specialistDef.cli !== 'api' && specialistDef.interactive !== false;
     const currentPattern = this.currentConfig?.swarm?.pattern ?? '';
     const isHubPattern = WorkflowRunner.HUB_PATTERNS.has(currentPattern);
     const usesAutoHardening =
@@ -4217,6 +4507,11 @@ export class WorkflowRunner {
       ownerDef.constraints?.timeoutMs ??
       specialistDef.constraints?.timeoutMs ??
       this.currentConfig?.swarm?.timeoutMs;
+    const repairRetries = errorHandling?.strategy === 'retry' ? (errorHandling.repairRetries ?? 0) : 0;
+    const repairAgent =
+      repairRetries > 0
+        ? this.resolveWorkflowRepairAgent(step, stepStates, agentMap, errorHandling)
+        : undefined;
 
     let lastError: string | undefined;
     let lastExitCode: number | undefined;
@@ -4259,6 +4554,20 @@ export class WorkflowRunner {
           updatedAt: new Date().toISOString(),
         });
         await this.trajectory?.stepRetrying(step, attempt, maxRetries);
+        if (repairAgent && attempt <= repairRetries) {
+          await this.runAgentStepRepairAgent({
+            step,
+            agentDef: repairAgent,
+            attempt,
+            maxRetries,
+            cwd: lastEffectiveCwd ?? this.resolveEffectiveCwd(step, specialistDef),
+            error: lastError ?? 'Unknown error',
+            output: this.lastFailedStepOutput.get(step.name) ?? '',
+            exitCode: lastExitCode,
+            exitSignal: lastExitSignal,
+            completionReason: lastCompletionReason,
+          });
+        }
         await this.delay(retryDelay);
       }
 
@@ -4406,7 +4715,21 @@ export class WorkflowRunner {
           // executors still take precedence. See process-backend-executor.ts.
           const spawnResult = this.executor
             ? await this.executor.executeAgentStep(resolvedStep, effectiveOwner, ownerTask, timeoutMs)
-            : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
+            : effectiveOwner.cli === 'api'
+              ? {
+                  output: await executeApiStep(
+                    effectiveOwner.constraints?.model ?? 'claude-sonnet-4-20250514',
+                    ownerTask,
+                    {
+                      envSecrets: this.envSecrets,
+                      skills: effectiveOwner.skills,
+                      defaultMaxTokens: effectiveOwner.constraints?.maxTokens,
+                    }
+                  ),
+                  exitCode: 0,
+                  promptTaskText: ownerTask,
+                }
+              : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
                 retryAttempt: attempt,
                 evidenceStepName: step.name,
                 evidenceRole: usesOwnerFlow ? 'owner' : 'specialist',
@@ -4588,6 +4911,9 @@ export class WorkflowRunner {
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
         lastCompletionReason = err instanceof WorkflowCompletionError ? err.completionReason : undefined;
+        if (stepOutputForDiagnostic) {
+          this.lastFailedStepOutput.set(step.name, stepOutputForDiagnostic);
+        }
         const diagnosticVerification = step.verification as DiagnosticVerificationCheck | undefined;
         if (
           err instanceof WorkflowCompletionError &&
@@ -5089,23 +5415,38 @@ export class WorkflowRunner {
     const ownerStartTime = Date.now();
 
     try {
-      const ownerResultObj = await this.spawnAndWait(supervised.owner, ownerStep, timeoutMs, {
-        agentNameSuffix: 'owner',
-        retryAttempt,
-        evidenceStepName: step.name,
-        evidenceRole: 'owner',
-        logicalName: supervised.owner.name,
-        onSpawned: ({ actualName }) => {
-          this.supervisedRuntimeAgents.set(actualName, {
-            stepName: step.name,
-            role: 'owner',
-            logicalName: supervised.owner.name,
-          });
-        },
-        onChunk: ({ chunk }) => {
-          void this.recordOwnerMonitoringChunk(step, supervised.owner, chunk);
-        },
-      });
+      const ownerResultObj =
+        supervised.owner.cli === 'api'
+          ? {
+              output: await executeApiStep(
+                supervised.owner.constraints?.model ?? 'claude-sonnet-4-20250514',
+                supervisorTask,
+                {
+                  envSecrets: this.envSecrets,
+                  skills: supervised.owner.skills,
+                  defaultMaxTokens: supervised.owner.constraints?.maxTokens,
+                }
+              ),
+              exitCode: 0,
+              promptTaskText: supervisorTask,
+            }
+          : await this.spawnAndWait(supervised.owner, ownerStep, timeoutMs, {
+              agentNameSuffix: 'owner',
+              retryAttempt,
+              evidenceStepName: step.name,
+              evidenceRole: 'owner',
+              logicalName: supervised.owner.name,
+              onSpawned: ({ actualName }) => {
+                this.supervisedRuntimeAgents.set(actualName, {
+                  stepName: step.name,
+                  role: 'owner',
+                  logicalName: supervised.owner.name,
+                });
+              },
+              onChunk: ({ chunk }) => {
+                void this.recordOwnerMonitoringChunk(step, supervised.owner, chunk);
+              },
+            });
       const ownerElapsed = Date.now() - ownerStartTime;
       const ownerOutput = ownerResultObj.output;
       this.log(`[${step.name}] Owner "${supervised.owner.name}" exited`);

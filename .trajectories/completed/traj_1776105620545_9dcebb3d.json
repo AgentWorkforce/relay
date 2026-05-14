@@ -76,7 +76,7 @@
         {
           "ts": 1776105728928,
           "type": "finding",
-          "content": "\"implement-fixes\" completed → Completed the two requested fixes in [src/cli/commands/messaging.ts](/Users/khaliqgant/Projects/AgentWorkforce/relay/src",
+          "content": "\"implement-fixes\" completed → Completed the two requested fixes in [src/cli/commands/messaging.ts](<repo-root>/src",
           "significance": "medium"
         },
         {

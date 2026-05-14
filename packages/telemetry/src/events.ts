@@ -258,6 +258,24 @@ export interface CloudWorkflowRunEvent {
 }
 
 /**
+ * cloud_workflow_schedule - Emitted when `agent-relay cloud schedule` creates a workflow schedule.
+ */
+export interface CloudWorkflowScheduleEvent {
+  /** Schedule trigger type requested by the user */
+  schedule_type: 'cron' | 'once';
+  /** Whether --file-type was explicitly set by the user */
+  has_explicit_file_type: boolean;
+  /** True if --json output mode was requested */
+  json_output: boolean;
+  /** True if the schedule was created successfully */
+  success: boolean;
+  /** Wall-clock duration in milliseconds */
+  duration_ms: number;
+  /** Error constructor name on failure */
+  error_class?: string;
+}
+
+/**
  * provider_auth - Emitted for `agent-relay auth <provider>` (SSH-based provider login).
  */
 export interface ProviderAuthEvent {
@@ -340,6 +358,7 @@ export type TelemetryEventName =
   | 'workflow_run'
   | 'cloud_auth'
   | 'cloud_workflow_run'
+  | 'cloud_workflow_schedule'
   | 'provider_auth'
   | 'setup_init'
   | 'swarm_run'
@@ -358,6 +377,7 @@ export interface TelemetryEventMap {
   workflow_run: WorkflowRunEvent;
   cloud_auth: CloudAuthEvent;
   cloud_workflow_run: CloudWorkflowRunEvent;
+  cloud_workflow_schedule: CloudWorkflowScheduleEvent;
   provider_auth: ProviderAuthEvent;
   setup_init: SetupInitEvent;
   swarm_run: SwarmRunEvent;

@@ -1,0 +1,50 @@
+{
+  "name": "@agent-relay/slack-primitive",
+  "version": "6.0.20",
+  "description": "Slack workflow primitive for Agent Relay",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./workflow-step": {
+      "types": "./dist/workflow-step.d.ts",
+      "import": "./dist/workflow-step.js",
+      "default": "./dist/workflow-step.js"
+    }
+  },
+  "files": [
+    "dist",
+    "examples",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck:examples": "tsc -p tsconfig.examples.json --noEmit"
+  },
+  "dependencies": {
+    "@agent-relay/workflow-types": "6.0.20",
+    "@slack/web-api": "^7.15.2"
+  },
+  "devDependencies": {
+    "@agent-relay/github-primitive": "6.0.20",
+    "@types/node": "^22.19.3",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/slack-primitive"
+  }
+}

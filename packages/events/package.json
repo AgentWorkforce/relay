@@ -1,0 +1,76 @@
+{
+  "name": "@agent-relay/events",
+  "version": "6.0.20",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/context-async-hooks": "^2.2.0",
+    "@opentelemetry/core": "^2.2.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.207.0",
+    "@opentelemetry/resources": "^2.2.0",
+    "@opentelemetry/sdk-trace-base": "^2.2.0",
+    "@opentelemetry/sdk-trace-node": "^2.2.0",
+    "@opentelemetry/semantic-conventions": "^1.37.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.7.0",
+    "@relayfile/adapter-github": "^0.2.5",
+    "@relayfile/adapter-jira": "^0.2.8",
+    "@relayfile/adapter-linear": "^0.2.5",
+    "@relayfile/adapter-notion": "^0.2.7",
+    "@relayfile/adapter-slack": "^0.2.7"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/events"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@relayfile/adapter-github": "^0.2.5",
+    "@relayfile/adapter-jira": "^0.2.8",
+    "@relayfile/adapter-linear": "^0.2.5",
+    "@relayfile/adapter-notion": "^0.2.7",
+    "@relayfile/adapter-slack": "^0.2.7"
+  },
+  "peerDependenciesMeta": {
+    "@relayfile/adapter-github": {
+      "optional": true
+    },
+    "@relayfile/adapter-jira": {
+      "optional": true
+    },
+    "@relayfile/adapter-linear": {
+      "optional": true
+    },
+    "@relayfile/adapter-notion": {
+      "optional": true
+    },
+    "@relayfile/adapter-slack": {
+      "optional": true
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}

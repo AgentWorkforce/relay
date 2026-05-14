@@ -7,9 +7,13 @@
     "paths": {
       "@agent-relay/config": ["../config/dist/index.d.ts"],
       "@agent-relay/config/*": ["../config/dist/*"],
+      "@agent-relay/cloud": ["../cloud/dist/index.d.ts"],
+      "@agent-relay/cloud/*": ["../cloud/dist/*"],
       "@agent-relay/workflow-types": ["../workflow-types/dist/index.d.ts"],
       "@agent-relay/github-primitive": ["../github-primitive/dist/index.d.ts"],
-      "@agent-relay/github-primitive/workflow-step": ["../github-primitive/dist/workflow-step.d.ts"]
+      "@agent-relay/github-primitive/workflow-step": ["../github-primitive/dist/workflow-step.d.ts"],
+      "@agent-relay/slack-primitive": ["../slack-primitive/dist/index.d.ts"],
+      "@agent-relay/slack-primitive/workflow-step": ["../slack-primitive/dist/workflow-step.d.ts"]
     },
     "strict": true,
     "declaration": true,
@@ -21,7 +25,5 @@
     "skipLibCheck": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": [
-    "src/__tests__/**"
-  ]
+  "exclude": ["src/__tests__/**"]
 }

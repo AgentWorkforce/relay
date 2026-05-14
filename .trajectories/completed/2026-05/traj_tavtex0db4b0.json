@@ -1,0 +1,53 @@
+{
+  "id": "traj_tavtex0db4b0",
+  "version": 1,
+  "task": {
+    "title": "Make workflow failures repairable by agents"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-08T14:34:19.969Z",
+  "completedAt": "2026-05-08T14:44:45.719Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-08T14:37:00.948Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_wbxbbqc2c9eo",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-08T14:37:00.948Z",
+      "endedAt": "2026-05-08T14:44:45.719Z",
+      "events": [
+        {
+          "ts": 1778251020952,
+          "type": "decision",
+          "content": "Use a separate git worktree for the workflow repair runtime change: Use a separate git worktree for the workflow repair runtime change",
+          "raw": {
+            "question": "Use a separate git worktree for the workflow repair runtime change",
+            "chosen": "Use a separate git worktree for the workflow repair runtime change",
+            "alternatives": [],
+            "reasoning": "The user explicitly requested worktree isolation after the branch was created; keeping the dirty base checkout untouched avoids mixing this implementation with existing local edits."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Moved implementation into worktree codex/repairable-workflow-failures. Added bounded deterministic gate repair in the workflow runner so failed deterministic checks can be fixed by a workflow agent before retrying.",
+    "approach": "Standard approach",
+    "confidence": 0.82
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "<repo-root>",
+  "tags": [],
+  "_trace": {
+    "startRef": "b2f4cbb8d1117cf0be5ff50d47bfb1d6471c68a0",
+    "endRef": "b2f4cbb8d1117cf0be5ff50d47bfb1d6471c68a0"
+  }
+}
