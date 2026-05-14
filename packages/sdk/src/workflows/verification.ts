@@ -122,6 +122,18 @@ export function runVerification(
       break;
     }
 
+    case 'pr_url': {
+      const found = findPrUrl(output, check.value, injectedTaskText);
+      if (!found) {
+        const repoQualifier = check.value ? ` for repository "${check.value}"` : '';
+        return fail(
+          `Verification failed for "${stepName}": step output does not contain a GitHub PR URL${repoQualifier}. ` +
+            `Workers must open a pull request and include the URL in their output before reporting completion.`
+        );
+      }
+      break;
+    }
+
     default:
       break;
   }
@@ -189,6 +201,36 @@ export function checkOutputContains(output: string, token: string, injectedTaskT
     return false;
   }
   return stripInjectedTaskEcho(output, injectedTaskText).includes(token);
+}
+
+const PR_URL_PATTERN = /https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)\b/gi;
+
+/**
+ * Returns the first GitHub PR URL found in {@link output}. When
+ * {@link repoQualifier} is non-empty (format: `<owner>/<repo>`, case
+ * insensitive), only URLs belonging to that repository are accepted.
+ *
+ * Use via `verification: { type: 'pr_url', value: 'owner/repo' }` to require
+ * a step to publish a pull request before completing. The check exists so
+ * workflow runners can refuse `OWNER_DECISION: COMPLETE` from workers that
+ * shipped code locally but never opened a PR.
+ */
+export function findPrUrl(output: string, repoQualifier?: string, injectedTaskText?: string): string | null {
+  const sanitized = stripInjectedTaskEcho(output, injectedTaskText);
+  const qualifier = repoQualifier?.trim().toLowerCase();
+  PR_URL_PATTERN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = PR_URL_PATTERN.exec(sanitized))) {
+    if (!qualifier) {
+      return match[0];
+    }
+    const owner = match[1]?.toLowerCase();
+    const repo = match[2]?.toLowerCase();
+    if (`${owner}/${repo}` === qualifier) {
+      return match[0];
+    }
+  }
+  return null;
 }
 
 const DEFAULT_CUSTOM_VERIFY_TIMEOUT_MS = parseInt(process.env.CUSTOM_VERIFY_TIMEOUT_MS ?? '30000', 10);
