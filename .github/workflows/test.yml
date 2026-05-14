@@ -148,6 +148,8 @@ jobs:
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
 
       - name: Run Rust tests
         run: cargo test --release
