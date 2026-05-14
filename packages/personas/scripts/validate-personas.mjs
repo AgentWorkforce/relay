@@ -6,8 +6,10 @@ import { dirname, join, basename } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(here);
 const personasDir = join(root, 'personas');
-const KNOWN_TIERS = ['best', 'best-value', 'minimum'];
+const KNOWN_HARNESSES = ['claude', 'codex', 'opencode'];
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
+const isPlainObject = (value) =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 async function loadPersonaFiles() {
   const entries = await readdir(personasDir, { withFileTypes: true });
@@ -65,41 +67,28 @@ function validatePersona(filename, persona) {
     }
   }
 
-  if (typeof persona.tiers !== 'object' || persona.tiers === null || Array.isArray(persona.tiers)) {
-    errors.push('missing required object field: tiers');
-    return errors;
+  // Workforce v3 removed the per-tier persona shape — runtime config is now
+  // flat. Reject the legacy fields with a clear message.
+  if ('tiers' in persona) {
+    errors.push('field "tiers" is no longer supported — hoist harness/model/systemPrompt to the top level (workforce v3)');
+  }
+  if ('defaultTier' in persona) {
+    errors.push('field "defaultTier" is no longer supported (workforce v3)');
   }
 
-  const tierKeys = Object.keys(persona.tiers);
-  const validTierKeys = tierKeys.filter((k) => KNOWN_TIERS.includes(k));
-  if (validTierKeys.length === 0) {
-    errors.push(`tiers must include at least one of: ${KNOWN_TIERS.join(', ')}`);
+  if (!isNonEmptyString(persona.harness)) {
+    errors.push('missing required string field: harness');
+  } else if (!KNOWN_HARNESSES.includes(persona.harness)) {
+    errors.push(`harness must be one of: ${KNOWN_HARNESSES.join(', ')} (got "${persona.harness}")`);
   }
-
-  for (const [tierName, tier] of Object.entries(persona.tiers)) {
-    if (!KNOWN_TIERS.includes(tierName)) {
-      errors.push(`unknown tier "${tierName}" (expected one of: ${KNOWN_TIERS.join(', ')})`);
-      continue;
-    }
-    if (typeof tier !== 'object' || tier === null || Array.isArray(tier)) {
-      errors.push(`tiers.${tierName} must be an object`);
-      continue;
-    }
-    if (!isNonEmptyString(tier.harness)) {
-      errors.push(`tiers.${tierName}.harness must be a non-empty string`);
-    }
-    if (!isNonEmptyString(tier.model)) {
-      errors.push(`tiers.${tierName}.model must be a non-empty string`);
-    }
-    if (!isNonEmptyString(tier.systemPrompt)) {
-      errors.push(`tiers.${tierName}.systemPrompt must be a non-empty string`);
-    }
-    if (
-      tier.harnessSettings !== undefined &&
-      (typeof tier.harnessSettings !== 'object' || tier.harnessSettings === null || Array.isArray(tier.harnessSettings))
-    ) {
-      errors.push(`tiers.${tierName}.harnessSettings must be an object when present`);
-    }
+  if (!isNonEmptyString(persona.model)) {
+    errors.push('missing required string field: model');
+  }
+  if (!isNonEmptyString(persona.systemPrompt)) {
+    errors.push('missing required string field: systemPrompt');
+  }
+  if (persona.harnessSettings !== undefined && !isPlainObject(persona.harnessSettings)) {
+    errors.push('harnessSettings must be an object when present');
   }
 
   return errors;

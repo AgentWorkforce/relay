@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-13T11:00:43.267Z",
+  "lastUpdated": "2026-05-14T14:28:34.180Z",
   "trajectories": {
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -402,6 +402,12 @@
       "startedAt": "2026-05-13T10:57:02.796Z",
       "completedAt": "2026-05-13T11:00:43.100Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_whd40oxptlhn.json"
+    },
+    "traj_v87cyrs8dke9": {
+      "title": "Upgrade .agentworkforce personas to latest 3.x shape",
+      "status": "active",
+      "startedAt": "2026-05-14T14:28:34.155Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/active/traj_v87cyrs8dke9.json"
     }
   }
 }
