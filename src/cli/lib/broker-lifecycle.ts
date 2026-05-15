@@ -13,6 +13,7 @@ type UpOptions = {
   port?: string;
   spawn?: boolean;
   background?: boolean;
+  foreground?: boolean;
   verbose?: boolean;
   dashboardPath?: string;
   reuseExistingBroker?: boolean;
@@ -33,6 +34,8 @@ const MAX_PORT = 65535;
 
 /** The broker writes this file with URL, port, API key, and PID. */
 const CONNECTION_FILENAME = 'connection.json';
+const STATUS_POLL_INTERVAL_MS = 500;
+const DETACHED_START_READY_TIMEOUT_MS = 10_000;
 
 export interface BrokerConnection {
   url: string;
@@ -40,6 +43,25 @@ export interface BrokerConnection {
   api_key: string;
   pid: number;
 }
+
+type BrokerStatusDetails = {
+  status: Awaited<ReturnType<AgentRelayClient['getStatus']>>;
+  session: Awaited<ReturnType<AgentRelayClient['getSession']>>;
+};
+
+type BrokerReadiness =
+  | {
+      state: 'running';
+      conn: BrokerConnection;
+      statusDetails?: BrokerStatusDetails | null;
+    }
+  | {
+      state: 'starting';
+      conn: BrokerConnection;
+    }
+  | {
+      state: 'stopped';
+    };
 
 type BrokerConnectionReader = {
   readFileSync: (filePath: string, encoding: BufferEncoding) => string;
@@ -152,11 +174,7 @@ export function classifyBrokerStartError(err: unknown): string {
 }
 
 /** Exported for testing. */
-export function classifyBrokerStartStage(
-  err: unknown,
-  message: string,
-  wantsDashboard: boolean
-): string {
+export function classifyBrokerStartStage(err: unknown, message: string, wantsDashboard: boolean): string {
   if (errorCode(err) === 'EADDRINUSE' && wantsDashboard) return 'dashboard_port';
   if (isBrokerAlreadyRunningError(message)) return 'already_running';
   if (/fetch failed/i.test(message)) return 'connect';
@@ -370,6 +388,121 @@ function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): vo
   } catch {
     // Ignore read errors while cleaning up.
   }
+}
+
+function childUpArgsForDetachedStart(options: UpOptions, deps: CoreDependencies): string[] {
+  const args = cliUserArgs(deps)
+    .filter((arg) => !['--background', '--foreground'].some((name) => matchesCliOption(arg, name)));
+  if (options.dashboard === false && !args.includes('--no-dashboard')) {
+    args.push('--no-dashboard');
+  }
+  if (options.stateDir && !hasCliOption(args, '--state-dir')) {
+    args.push('--state-dir', path.resolve(options.stateDir));
+  }
+  if (options.workspaceKey && !hasCliOption(args, '--workspace-key')) {
+    args.push('--workspace-key', options.workspaceKey);
+  }
+  if (options.verbose === true && !args.includes('--verbose')) {
+    args.push('--verbose');
+  }
+  if (options.dashboard === false && !args.includes('--foreground')) {
+    args.push('--foreground');
+  }
+  return args;
+}
+
+function cliUserArgs(deps: CoreDependencies): string[] {
+  return hasEntrypointArgvSlot(deps) ? deps.argv.slice(2) : deps.argv.slice(1);
+}
+
+function detachedCliInvocation(
+  deps: CoreDependencies,
+  args: string[]
+): { command: string; args: string[] } {
+  if (shouldReexecThroughScript(deps)) {
+    return { command: deps.execPath, args: [deps.cliScript, ...args] };
+  }
+  return { command: deps.execPath, args };
+}
+
+function hasEntrypointArgvSlot(deps: CoreDependencies): boolean {
+  return isBundledBunExecutableEntrypoint(deps) || isCliScriptEntrypoint(deps);
+}
+
+function shouldReexecThroughScript(deps: CoreDependencies): boolean {
+  return isCliScriptEntrypoint(deps) && !sameCliPath(deps.execPath, deps.cliScript);
+}
+
+function isCliScriptEntrypoint(deps: CoreDependencies): boolean {
+  const cliScript = deps.cliScript.trim();
+  if (!cliScript) {
+    return false;
+  }
+  if (isBundledBunExecutableEntrypoint(deps)) {
+    return false;
+  }
+  if (sameCliPath(deps.execPath, cliScript)) {
+    return true;
+  }
+  return path.isAbsolute(cliScript) || cliScript.includes('/') || cliScript.includes('\\') || /\.[cm]?js$/i.test(cliScript);
+}
+
+function isBundledBunExecutableEntrypoint(deps: CoreDependencies): boolean {
+  // Bun --compile exposes argv[1] as a virtual path for the embedded executable.
+  return deps.argv[0] === 'bun' && deps.cliScript.startsWith('/$bunfs/root/');
+}
+
+function sameCliPath(left: string, right: string): boolean {
+  return path.resolve(left) === path.resolve(right);
+}
+
+function hasCliOption(args: string[], name: string): boolean {
+  return args.some((arg) => matchesCliOption(arg, name));
+}
+
+function matchesCliOption(arg: string, name: string): boolean {
+  return arg === name || arg.startsWith(`${name}=`);
+}
+
+async function checkBrokerReadiness(
+  paths: CoreProjectPaths,
+  deps: CoreDependencies,
+  requireApi: boolean
+): Promise<BrokerReadiness> {
+  const conn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
+  if (!conn || conn.pid <= 0) {
+    return { state: 'stopped' };
+  }
+  if (!isProcessRunning(conn.pid, deps)) {
+    safeUnlink(path.join(paths.dataDir, CONNECTION_FILENAME), deps);
+    return { state: 'stopped' };
+  }
+  if (!requireApi) {
+    return { state: 'running', conn };
+  }
+
+  const statusDetails = await readBrokerStatusDetails(conn);
+  if (statusDetails) {
+    return { state: 'running', conn, statusDetails };
+  }
+  return { state: 'starting', conn };
+}
+
+async function waitForBrokerReadiness(
+  paths: CoreProjectPaths,
+  deps: CoreDependencies,
+  waitMs: number,
+  requireApi: boolean
+): Promise<BrokerReadiness> {
+  const deadline = deps.now() + waitMs;
+  let latest = await checkBrokerReadiness(paths, deps, requireApi);
+
+  while (latest.state !== 'running' && waitMs > 0 && deps.now() < deadline) {
+    await deps.sleep(Math.min(STATUS_POLL_INTERVAL_MS, Math.max(0, deadline - deps.now())));
+    latest = await checkBrokerReadiness(paths, deps, requireApi);
+  }
+
+  return latest;
 }
 
 function pickDashboardStaticDir(candidates: string[], deps: CoreDependencies): string | null {
@@ -925,20 +1058,6 @@ async function shutdownUpResources(
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
   ensureBundledRelaycastMcpCommand(deps);
 
-  if (options.background) {
-    const args = deps.argv.slice(2).filter((arg) => arg !== '--background');
-    const child = deps.spawnProcess(deps.execPath, [deps.cliScript, ...args], {
-      detached: true,
-      stdio: 'ignore',
-      env: deps.env,
-    });
-    child.unref?.();
-    deps.log(`Broker started in background (pid: ${child.pid ?? 'unknown'})`);
-    deps.log('Stop with: agent-relay down');
-    deps.exit(0);
-    return;
-  }
-
   const paths = deps.getProjectPaths();
   // --state-dir overrides where the broker writes state / connection files
   if (options.stateDir) {
@@ -946,6 +1065,45 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     paths.dataDir = resolved;
     deps.env.AGENT_RELAY_STATE_DIR = resolved;
   }
+
+  if (options.background || (options.dashboard === false && !options.foreground)) {
+    const args = childUpArgsForDetachedStart(options, deps);
+    const invocation = detachedCliInvocation(deps, args);
+    let child: SpawnedProcess;
+    try {
+      child = deps.spawnProcess(invocation.command, invocation.args, {
+        detached: true,
+        stdio: 'ignore',
+        env: deps.env,
+      });
+    } catch (err: unknown) {
+      deps.error(`Failed to start broker in background: ${describeError(err)}`);
+      deps.exit(1);
+      return;
+    }
+    child.unref?.();
+    const readiness = await waitForBrokerReadiness(paths, deps, DETACHED_START_READY_TIMEOUT_MS, true);
+    if (readiness.state !== 'running') {
+      const pid = readiness.state === 'starting' ? readiness.conn.pid : child.pid;
+      deps.error(
+        pid
+          ? `Broker background start did not become ready within ${DETACHED_START_READY_TIMEOUT_MS / 1000}s (pid: ${pid}).`
+          : `Broker background start did not become ready within ${DETACHED_START_READY_TIMEOUT_MS / 1000}s.`
+      );
+      if (readiness.state === 'starting') {
+        deps.error('Broker process is running, but the API did not become ready.');
+      }
+      deps.error('Run `agent-relay status --wait-for=10` for details, or `agent-relay down --force` to clean up.');
+      deps.exit(1);
+      return;
+    }
+    deps.log('Broker started.');
+    deps.log(`Broker PID: ${readiness.conn.pid}`);
+    deps.log('Stop with: agent-relay down');
+    deps.exit(0);
+    return;
+  }
+
   const wantsDashboard = options.dashboard !== false;
   const requestedDashboardPort = Number.parseInt(options.port ?? '3888', 10) || 3888;
   const shouldReuseExistingBroker = options.reuseExistingBroker === true;
@@ -1342,56 +1500,66 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
 
 export async function runStatusCommand(
   deps: CoreDependencies,
-  options?: { stateDir?: string }
+  options?: { stateDir?: string; waitFor?: string }
 ): Promise<void> {
   const paths = deps.getProjectPaths();
   if (options?.stateDir) {
     paths.dataDir = path.resolve(options.stateDir);
   }
-  const conn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
+  const waitSeconds = Number.parseFloat(options?.waitFor ?? '0');
+  const waitMs = Number.isFinite(waitSeconds) && waitSeconds > 0 ? waitSeconds * 1000 : 0;
 
-  let running = false;
-  let brokerPid: number | undefined;
-
-  if (conn && conn.pid > 0 && isProcessRunning(conn.pid, deps)) {
-    brokerPid = conn.pid;
-    running = true;
-  } else if (conn) {
-    // Connection file exists but process is dead — clean up
-    safeUnlink(path.join(paths.dataDir, CONNECTION_FILENAME), deps);
+  const readiness = await waitForBrokerReadiness(paths, deps, waitMs, waitMs > 0);
+  if (readiness.state === 'stopped') {
+    deps.log('Status: STOPPED');
+    if (waitMs > 0) {
+      deps.exit(1);
+    }
+    return;
   }
 
-  if (!running) {
-    deps.log('Status: STOPPED');
+  if (readiness.state === 'starting') {
+    deps.log('Status: STARTING');
+    deps.log('Mode: broker (stdio)');
+    deps.log(`PID: ${readiness.conn.pid}`);
+    deps.log(`Project: ${paths.projectRoot}`);
+    deps.warn('Broker process is running, but the API did not become ready before timeout.');
+    deps.exit(1);
     return;
   }
 
   deps.log('Status: RUNNING');
   deps.log('Mode: broker (stdio)');
-  deps.log(`PID: ${brokerPid}`);
+  deps.log(`PID: ${readiness.conn.pid}`);
   deps.log(`Project: ${paths.projectRoot}`);
 
   // Query the running broker for additional status info
-  const connInfo = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
-  if (connInfo) {
-    const client = new AgentRelayClient({ baseUrl: connInfo.url, apiKey: connInfo.api_key });
-    try {
-      const status = await client.getStatus();
-      if (typeof status.agent_count === 'number') {
-        deps.log(`Agents: ${status.agent_count}`);
-      }
-      if (typeof status.pending_delivery_count === 'number' && status.pending_delivery_count > 0) {
-        deps.log(`Pending deliveries: ${status.pending_delivery_count}`);
-      }
-      const session = await client.getSession();
-      if (session.workspace_key) {
-        deps.log(`Workspace Key: ${session.workspace_key}`);
-        deps.log(`Observer: https://agentrelay.com/observer?key=${session.workspace_key}`);
-      }
-    } catch {
-      // PID-based status is enough when broker query fails.
-    } finally {
-      client.disconnect();
+  const statusDetails =
+    readiness.statusDetails ?? (waitMs > 0 ? null : await readBrokerStatusDetails(readiness.conn));
+  if (statusDetails) {
+    const { status, session } = statusDetails;
+    if (typeof status.agent_count === 'number') {
+      deps.log(`Agents: ${status.agent_count}`);
     }
+    if (typeof status.pending_delivery_count === 'number' && status.pending_delivery_count > 0) {
+      deps.log(`Pending deliveries: ${status.pending_delivery_count}`);
+    }
+    if (session.workspace_key) {
+      deps.log(`Workspace Key: ${session.workspace_key}`);
+      deps.log(`Observer: https://agentrelay.com/observer?key=${session.workspace_key}`);
+    }
+  }
+}
+
+async function readBrokerStatusDetails(conn: BrokerConnection): Promise<BrokerStatusDetails | null> {
+  const client = new AgentRelayClient({ baseUrl: conn.url, apiKey: conn.api_key });
+  try {
+    const status = await client.getStatus();
+    const session = await client.getSession();
+    return { status, session };
+  } catch {
+    return null;
+  } finally {
+    client.disconnect();
   }
 }

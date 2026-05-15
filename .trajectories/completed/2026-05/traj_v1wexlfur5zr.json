@@ -1,0 +1,65 @@
+{
+  "id": "traj_v1wexlfur5zr",
+  "version": 1,
+  "task": {
+    "title": "Fix broker headless reliability doc"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-15T09:04:51.316Z",
+  "completedAt": "2026-05-15T09:13:50.970Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-15T09:13:34.194Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_b3mn4r0wp8sw",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-15T09:13:34.194Z",
+      "endedAt": "2026-05-15T09:13:50.970Z",
+      "events": [
+        {
+          "ts": 1778836414195,
+          "type": "decision",
+          "content": "Treat docs/BROKER_HEADLESS_RELIABILITY.md as an issue brief and implement the missing reliability fixes: Treat docs/BROKER_HEADLESS_RELIABILITY.md as an issue brief and implement the missing reliability fixes",
+          "raw": {
+            "question": "Treat docs/BROKER_HEADLESS_RELIABILITY.md as an issue brief and implement the missing reliability fixes",
+            "chosen": "Treat docs/BROKER_HEADLESS_RELIABILITY.md as an issue brief and implement the missing reliability fixes",
+            "alternatives": [],
+            "reasoning": "The file was untracked in the original checkout and absent from latest main, so I copied its intent into the new worktree, corrected stale file references, and fixed the high-impact no-dashboard/status gaps in current main."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1778836414208,
+          "type": "reflection",
+          "content": "Core reliability patch is implemented, focused tests and TypeScript pass, remaining work is final trajectory completion and optional commit/stage if requested",
+          "raw": {
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Implemented headless broker reliability fixes: no-dashboard startup now detaches by default with a foreground escape hatch, status supports --wait-for polling, orchestration skills now recommend detached startup/readiness polling, and docs/BROKER_HEADLESS_RELIABILITY.md captures the corrected current-main plan and verification.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay-broker-headless-reliability-doc",
+  "tags": [],
+  "_trace": {
+    "startRef": "a7ef2fccd2cb971474f193edaba910a944545c3a",
+    "endRef": "a7ef2fccd2cb971474f193edaba910a944545c3a"
+  }
+}

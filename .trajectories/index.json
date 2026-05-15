@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-13T11:00:43.267Z",
+  "lastUpdated": "2026-05-15T11:11:52.427Z",
   "trajectories": {
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -402,6 +402,55 @@
       "startedAt": "2026-05-13T10:57:02.796Z",
       "completedAt": "2026-05-13T11:00:43.100Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_whd40oxptlhn.json"
+    },
+    "traj_v1wexlfur5zr": {
+      "title": "Fix broker headless reliability doc",
+      "status": "completed",
+      "startedAt": "2026-05-15T09:04:51.316Z",
+      "completedAt": "2026-05-15T09:13:50.970Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay-broker-headless-reliability-doc/.trajectories/completed/2026-05/traj_v1wexlfur5zr.json"
+    },
+    "traj_6sjeohtm3php": {
+      "title": "Address broker headless reliability review findings",
+      "status": "completed",
+      "startedAt": "2026-05-15T09:30:56.316Z",
+      "completedAt": "2026-05-15T09:32:47.870Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay-broker-headless-reliability-doc/.trajectories/completed/2026-05/traj_6sjeohtm3php.json"
+    },
+    "traj_4vucir4qvqa2": {
+      "title": "Harden headless broker readiness semantics",
+      "status": "completed",
+      "startedAt": "2026-05-15T09:46:07.617Z",
+      "completedAt": "2026-05-15T09:59:00.460Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay-broker-headless-reliability-doc/.trajectories/completed/2026-05/traj_4vucir4qvqa2.json"
+    },
+    "traj_erzd7j9nto9r": {
+      "title": "Strict review and PR prep for headless broker readiness",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:02:10.164Z",
+      "completedAt": "2026-05-15T10:06:38.127Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay-broker-headless-reliability-doc/.trajectories/completed/2026-05/traj_erzd7j9nto9r.json"
+    },
+    "traj_7uznwzoxbao6": {
+      "title": "Fix standalone detached headless startup",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:18:46.273Z",
+      "completedAt": "2026-05-15T10:25:00.598Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay-broker-headless-reliability-doc/.trajectories/completed/2026-05/traj_7uznwzoxbao6.json"
+    },
+    "traj_9fdv7hxm0b60": {
+      "title": "Strict standalone smoke follow-up",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:37:17.693Z",
+      "completedAt": "2026-05-15T10:43:11.587Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay-broker-headless-reliability-doc/.trajectories/completed/2026-05/traj_9fdv7hxm0b60.json"
+    },
+    "traj_0o6gb2wvk59t": {
+      "title": "Fresh end-to-end validation for headless readiness",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:55:49.188Z",
+      "completedAt": "2026-05-15T11:11:52.324Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay-broker-headless-reliability-doc/.trajectories/completed/2026-05/traj_0o6gb2wvk59t.json"
     }
   }
 }

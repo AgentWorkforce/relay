@@ -1,0 +1,75 @@
+{
+  "id": "traj_4vucir4qvqa2",
+  "version": 1,
+  "task": {
+    "title": "Harden headless broker readiness semantics"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-15T09:46:07.617Z",
+  "completedAt": "2026-05-15T09:59:00.460Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-15T09:53:03.774Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_kfz7mc7l9gg4",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-15T09:53:03.774Z",
+      "endedAt": "2026-05-15T09:59:00.460Z",
+      "events": [
+        {
+          "ts": 1778838783775,
+          "type": "decision",
+          "content": "Gate detached broker start on API readiness and report STARTING separately: Gate detached broker start on API readiness and report STARTING separately",
+          "raw": {
+            "question": "Gate detached broker start on API readiness and report STARTING separately",
+            "chosen": "Gate detached broker start on API readiness and report STARTING separately",
+            "alternatives": [],
+            "reasoning": "Headless orchestrators need command success to mean usable broker, and live-process/API-unready must not be collapsed into STOPPED."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1778839134173,
+          "type": "reflection",
+          "content": "Readiness hardening implemented and verified with focused command tests, typecheck, lint, and diff checks; remaining lint output is pre-existing complexity/depth warnings outside the new readiness helper.",
+          "raw": {
+            "focalPoints": [
+              "readiness semantics",
+              "detached start",
+              "status truthfulness",
+              "verification"
+            ],
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:readiness semantics",
+            "focal:detached start",
+            "focal:status truthfulness",
+            "focal:verification",
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Hardened headless broker startup so detached up waits for API readiness, status --wait-for distinguishes STARTING from STOPPED and exits non-zero on timeout, and docs/skills/tests now encode the readiness contract.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay-broker-headless-reliability-doc",
+  "tags": [],
+  "_trace": {
+    "startRef": "67d37e44cecdab1be65a8ee2bf3fb9a60e61c162",
+    "endRef": "67d37e44cecdab1be65a8ee2bf3fb9a60e61c162"
+  }
+}

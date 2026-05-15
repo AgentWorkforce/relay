@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const sdkStatusClient = {
   getStatus: vi.fn(async () => ({ agent_count: 0, pending_delivery_count: 0 })),
@@ -10,6 +10,14 @@ const sdkStatusClient = {
 vi.mock('@agent-relay/sdk', () => ({
   AgentRelayClient: vi.fn().mockImplementation(() => sdkStatusClient),
 }));
+
+beforeEach(() => {
+  sdkStatusClient.getStatus.mockReset();
+  sdkStatusClient.getStatus.mockResolvedValue({ agent_count: 0, pending_delivery_count: 0 });
+  sdkStatusClient.getSession.mockReset();
+  sdkStatusClient.getSession.mockResolvedValue({ workspace_key: '' });
+  sdkStatusClient.disconnect.mockClear();
+});
 
 import {
   registerCoreCommands,
@@ -77,6 +85,7 @@ function createFsMock(initialFiles: Record<string, string> = {}): CoreFileSystem
   };
 }
 
+// eslint-disable-next-line complexity
 function createHarness(options?: {
   fs?: CoreFileSystem;
   relay?: CoreRelay;
@@ -90,6 +99,11 @@ function createHarness(options?: {
   spawnedProcess?: SpawnedProcess;
   spawnImpl?: CoreDependencies['spawnProcess'];
   killImpl?: CoreDependencies['killProcess'];
+  nowImpl?: CoreDependencies['now'];
+  sleepImpl?: CoreDependencies['sleep'];
+  execPath?: string;
+  cliScript?: string;
+  argv?: string[];
   checkForUpdatesResult?: Awaited<ReturnType<CoreDependencies['checkForUpdates']>>;
 }) {
   const projectRoot = '/tmp/project';
@@ -134,14 +148,14 @@ function createHarness(options?: {
     ) as unknown as CoreDependencies['checkForUpdates'],
     getVersion: vi.fn(() => '1.2.3'),
     env: options?.env ?? {},
-    argv: ['node', '/tmp/agent-relay.js', 'up'],
-    execPath: '/usr/bin/node',
-    cliScript: '/tmp/agent-relay.js',
+    argv: options?.argv ?? ['node', '/tmp/agent-relay.js', 'up'],
+    execPath: options?.execPath ?? '/usr/bin/node',
+    cliScript: options?.cliScript ?? '/tmp/agent-relay.js',
     pid: 4242,
-    now: vi.fn(() => Date.now()),
+    now: options?.nowImpl ?? vi.fn(() => Date.now()),
     isPortInUse: vi.fn(async () => false),
     findBrokerApiPort: vi.fn(async () => 3889),
-    sleep: vi.fn(async () => undefined),
+    sleep: options?.sleepImpl ?? vi.fn(async () => undefined),
     onSignal: vi.fn(() => undefined),
     holdOpen: vi.fn(async () => undefined),
     log: vi.fn(() => undefined),
@@ -373,7 +387,7 @@ describe('registerCoreCommands', () => {
       },
     });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground']);
 
     expect(exitCode).toBeUndefined();
     expect(relay.spawn).toHaveBeenCalledWith({
@@ -438,12 +452,228 @@ describe('registerCoreCommands', () => {
     const relay = createRelayMock();
     const { program, deps } = createHarness({ relay });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--port', '3888']);
+    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground', '--port', '3888']);
 
     expect(exitCode).toBeUndefined();
     expect(deps.createRelay).toHaveBeenCalledTimes(1);
     expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889);
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('up --no-dashboard detaches by default for headless sessions', async () => {
+    const spawnedProcess = createSpawnedProcessMock();
+    let now = 0;
+    const fs = createFsMock();
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if ((pid === 9001 || pid === 4242) && signal === 0) return;
+      throw new Error('unexpected kill check');
+    });
+    const { program, deps, relay } = createHarness({
+      fs,
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+
+    expect(exitCode).toBe(0);
+    expect(deps.spawnProcess).toHaveBeenCalledWith(
+      '/usr/bin/node',
+      ['/tmp/agent-relay.js', 'up', '--no-dashboard', '--foreground'],
+      {
+        detached: true,
+        stdio: 'ignore',
+        env: deps.env,
+      }
+    );
+    expect(spawnedProcess.unref).toHaveBeenCalled();
+    expect(sleepImpl).toHaveBeenCalledWith(500);
+    expect(sdkStatusClient.getStatus).toHaveBeenCalledTimes(1);
+    expect(deps.log).toHaveBeenCalledWith('Broker started.');
+    expect(deps.log).toHaveBeenCalledWith('Broker PID: 4242');
+    expect(deps.log).toHaveBeenCalledWith('Stop with: agent-relay down');
+    expect(relay.getStatus).not.toHaveBeenCalled();
+  });
+
+  it('up --background --no-dashboard preserves state and workspace args in the foreground child', async () => {
+    const spawnedProcess = createSpawnedProcessMock();
+    let now = 0;
+    const fs = createFsMock();
+    const stateDir = '/tmp/custom-agent-relay-state';
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      fs.writeFileSync(`${stateDir}/connection.json`, connectionFile(5151));
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if ((pid === 9001 || pid === 5151) && signal === 0) return;
+      throw new Error('unexpected kill check');
+    });
+    const { program, deps } = createHarness({
+      fs,
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+    deps.argv = [
+      'node',
+      '/tmp/agent-relay.js',
+      'up',
+      '--background',
+      '--no-dashboard',
+      '--state-dir',
+      stateDir,
+      '--workspace-key',
+      'rk_live_custom',
+    ];
+
+    const exitCode = await runCommand(program, [
+      'up',
+      '--background',
+      '--no-dashboard',
+      '--state-dir',
+      stateDir,
+      '--workspace-key',
+      'rk_live_custom',
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(deps.spawnProcess).toHaveBeenCalledWith(
+      '/usr/bin/node',
+      [
+        '/tmp/agent-relay.js',
+        'up',
+        '--no-dashboard',
+        '--state-dir',
+        stateDir,
+        '--workspace-key',
+        'rk_live_custom',
+        '--foreground',
+      ],
+      {
+        detached: true,
+        stdio: 'ignore',
+        env: deps.env,
+      }
+    );
+    expect(deps.env.AGENT_RELAY_STATE_DIR).toBe(stateDir);
+    expect(deps.log).toHaveBeenCalledWith('Broker started.');
+    expect(deps.log).toHaveBeenCalledWith('Broker PID: 5151');
+  });
+
+  it('up --no-dashboard re-execs a Bun standalone binary without adding its virtual entrypoint', async () => {
+    const spawnedProcess = createSpawnedProcessMock();
+    let now = 0;
+    const fs = createFsMock();
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if ((pid === 9001 || pid === 4242) && signal === 0) return;
+      throw new Error('unexpected kill check');
+    });
+    const { program, deps } = createHarness({
+      fs,
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+      execPath: '/tmp/agent-relay-darwin-arm64',
+      cliScript: '/$bunfs/root/agent-relay-darwin-arm64',
+      argv: ['bun', '/$bunfs/root/agent-relay-darwin-arm64', 'up', '--no-dashboard'],
+    });
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+
+    expect(exitCode).toBe(0);
+    expect(deps.spawnProcess).toHaveBeenCalledWith(
+      '/tmp/agent-relay-darwin-arm64',
+      ['up', '--no-dashboard', '--foreground'],
+      {
+        detached: true,
+        stdio: 'ignore',
+        env: deps.env,
+      }
+    );
+  });
+
+  it('up --no-dashboard exits non-zero when the detached broker never becomes ready', async () => {
+    const spawnedProcess = createSpawnedProcessMock();
+    let now = 0;
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (pid === 9001 && signal === 0) return;
+      throw new Error('unexpected kill check');
+    });
+    const { program, deps } = createHarness({
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      'Broker background start did not become ready within 10s (pid: 9001).'
+    );
+    expect(deps.error).toHaveBeenCalledWith(
+      'Run `agent-relay status --wait-for=10` for details, or `agent-relay down --force` to clean up.'
+    );
+    expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
+  });
+
+  it('up --no-dashboard reports the broker PID when the detached broker is live but API-unready', async () => {
+    const spawnedProcess = createSpawnedProcessMock({ pid: 9001 });
+    let now = 0;
+    const fs = createFsMock({ ['/tmp/project/.agent-relay/connection.json']: connectionFile(4242) });
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if ((pid === 9001 || pid === 4242) && signal === 0) return;
+      throw new Error('unexpected kill check');
+    });
+    sdkStatusClient.getStatus.mockRejectedValue(new Error('503 Service Unavailable'));
+    const { program, deps } = createHarness({
+      fs,
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      'Broker background start did not become ready within 10s (pid: 4242).'
+    );
+    expect(deps.error).toHaveBeenCalledWith('Broker process is running, but the API did not become ready.');
+  });
+
+  it('up --no-dashboard reports spawn failures without claiming background success', async () => {
+    const { program, deps } = createHarness({
+      spawnImpl: vi.fn(() => {
+        throw new Error('spawn EACCES');
+      }) as unknown as CoreDependencies['spawnProcess'],
+    });
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('Failed to start broker in background: spawn EACCES');
+    expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
   });
 
   it('up force exits on repeated SIGINT during hung shutdown and suppresses expected dashboard signal noise', async () => {
@@ -596,6 +826,113 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Status: STOPPED');
   });
 
+  it('status --wait-for polls until broker connection metadata appears', async () => {
+    let now = 0;
+    const fs = createFsMock();
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (pid === 4242 && signal === 0) return;
+      throw new Error('unexpected kill check');
+    });
+    const { program, deps } = createHarness({
+      fs,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['status', '--wait-for', '1']);
+
+    expect(exitCode).toBeUndefined();
+    expect(sleepImpl).toHaveBeenCalledWith(500);
+    expect(deps.log).toHaveBeenCalledWith('Status: RUNNING');
+    expect(deps.log).toHaveBeenCalledWith('PID: 4242');
+  });
+
+  it('status --wait-for waits for the broker API after the PID appears', async () => {
+    let now = 0;
+    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (pid === 4242 && signal === 0) return;
+      throw new Error('unexpected kill check');
+    });
+    sdkStatusClient.getStatus
+      .mockRejectedValueOnce(new Error('503 Service Unavailable'))
+      .mockResolvedValueOnce({ agent_count: 1, pending_delivery_count: 0 });
+    sdkStatusClient.getSession.mockResolvedValueOnce({ workspace_key: 'rk_live_ready' });
+
+    const { program, deps } = createHarness({
+      fs,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['status', '--wait-for', '1']);
+
+    expect(exitCode).toBeUndefined();
+    expect(sleepImpl).toHaveBeenCalledWith(500);
+    expect(sdkStatusClient.getStatus).toHaveBeenCalledTimes(2);
+    expect(fs.unlinkSync).not.toHaveBeenCalledWith(connectionPath);
+    expect(deps.log).toHaveBeenCalledWith('Status: RUNNING');
+    expect(deps.log).toHaveBeenCalledWith('Agents: 1');
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_ready');
+  });
+
+  it('status --wait-for reports STARTING and exits non-zero when the PID is live but the API is unready', async () => {
+    let now = 0;
+    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (pid === 4242 && signal === 0) return;
+      throw new Error('unexpected kill check');
+    });
+    sdkStatusClient.getStatus.mockRejectedValue(new Error('503 Service Unavailable'));
+
+    const { program, deps } = createHarness({
+      fs,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['status', '--wait-for', '1']);
+
+    expect(exitCode).toBe(1);
+    expect(fs.unlinkSync).not.toHaveBeenCalledWith(connectionPath);
+    expect(deps.log).toHaveBeenCalledWith('Status: STARTING');
+    expect(deps.log).toHaveBeenCalledWith('PID: 4242');
+    expect(deps.warn).toHaveBeenCalledWith(
+      'Broker process is running, but the API did not become ready before timeout.'
+    );
+  });
+
+  it('status --wait-for exits non-zero when no broker becomes ready before timeout', async () => {
+    let now = 0;
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+    });
+    const { program, deps } = createHarness({
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['status', '--wait-for', '1']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.log).toHaveBeenCalledWith('Status: STOPPED');
+  });
+
   it('version prints current version', async () => {
     const { program, deps } = createHarness();
 
@@ -653,7 +990,7 @@ describe('registerCoreCommands', () => {
     const relay = createRelayMock();
     const { program, deps } = createHarness({ relay });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground']);
 
     expect(exitCode).toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_default');
@@ -674,7 +1011,13 @@ describe('registerCoreCommands', () => {
     const relay = createRelayMock({ workspaceKey: 'rk_live_custom' });
     const { program, deps } = createHarness({ relay, env });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--workspace-key', 'rk_live_custom']);
+    const exitCode = await runCommand(program, [
+      'up',
+      '--no-dashboard',
+      '--foreground',
+      '--workspace-key',
+      'rk_live_custom',
+    ]);
 
     expect(exitCode).toBeUndefined();
     expect(env.RELAY_API_KEY).toBe('rk_live_custom');
@@ -687,7 +1030,7 @@ describe('registerCoreCommands', () => {
     const relay = createRelayMock();
     const { program } = createHarness({ relay, env });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground']);
 
     expect(exitCode).toBeUndefined();
     expect(env.RELAY_API_KEY).toBeUndefined();
@@ -699,7 +1042,7 @@ describe('registerCoreCommands', () => {
     const relay = createRelayMock();
     const { program } = createHarness({ relay, env, fs });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground']);
 
     expect(exitCode).toBeUndefined();
     expect(env.RELAYCAST_MCP_COMMAND).toBe('/usr/bin/node /tmp/relaycast-mcp.js');
@@ -711,7 +1054,7 @@ describe('registerCoreCommands', () => {
     const relay = createRelayMock();
     const { program } = createHarness({ relay, env, fs });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground']);
 
     expect(exitCode).toBeUndefined();
     expect(env.RELAYCAST_MCP_COMMAND).toBe('node /custom/relaycast-mcp.js');
@@ -721,7 +1064,7 @@ describe('registerCoreCommands', () => {
     const relay = createRelayMock({ workspaceKey: undefined });
     const { program, deps } = createHarness({ relay });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground']);
 
     expect(exitCode).toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: unknown');
@@ -755,7 +1098,13 @@ describe('registerCoreCommands', () => {
     const relay = createRelayMock({ workspaceKey: 'rk_live_new' });
     const { program, deps } = createHarness({ relay, env });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--workspace-key', 'rk_live_new']);
+    const exitCode = await runCommand(program, [
+      'up',
+      '--no-dashboard',
+      '--foreground',
+      '--workspace-key',
+      'rk_live_new',
+    ]);
 
     expect(exitCode).toBeUndefined();
     expect(env.RELAY_API_KEY).toBe('rk_live_new');

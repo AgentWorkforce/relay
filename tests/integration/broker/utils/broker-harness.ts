@@ -36,6 +36,9 @@ export async function ensureApiKey(): Promise<string> {
   }
   const ws = await RelayCast.createWorkspace(`test-${Date.now().toString(36)}`);
   const apiKey = ws.apiKey;
+  if (!apiKey) {
+    throw new Error('Relaycast workspace did not return an API key');
+  }
   _cachedApiKey = apiKey;
   process.env.RELAY_API_KEY = apiKey;
   return apiKey;

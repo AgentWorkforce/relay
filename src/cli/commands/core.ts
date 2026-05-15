@@ -411,6 +411,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--spawn', 'Force spawn all agents from teams.json')
     .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
     .option('--background', 'Run broker in the background (detached)')
+    .option('--foreground', 'Run --no-dashboard attached to this terminal')
     .option('--verbose', 'Enable verbose logging')
     .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
     .option('--state-dir <path>', 'Directory for broker state and connection files (default: .agent-relay/)')
@@ -420,6 +421,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
         port?: string;
         spawn?: boolean;
         background?: boolean;
+        foreground?: boolean;
         verbose?: boolean;
         workspaceKey?: string;
         stateDir?: string;
@@ -471,7 +473,8 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .command('status')
     .description('Check broker status')
     .option('--state-dir <path>', 'Directory for broker state and connection files')
-    .action(async (options: { stateDir?: string }) => {
+    .option('--wait-for <seconds>', 'Poll for broker readiness for up to this many seconds')
+    .action(async (options: { stateDir?: string; waitFor?: string }) => {
       await runStatusCommand(deps, options);
     });
 
