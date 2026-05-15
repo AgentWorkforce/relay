@@ -30,7 +30,7 @@ A headless orchestrator is an agent that:
 | Verify installation               | `command -v agent-relay` or `npx agent-relay --version` |
 | Verify Node runtime if shim fails | `node --version` or fix mise/asdf first                 |
 | Start infrastructure              | `agent-relay up --no-dashboard --verbose`               |
-| Check status                      | `agent-relay status`                                    |
+| Check status                      | `agent-relay status --wait-for=10`                      |
 | Spawn worker                      | `agent-relay spawn Worker1 claude "task"`               |
 | List workers                      | `agent-relay who`                                       |
 | View worker logs                  | `agent-relay agents:logs Worker1`                       |
@@ -62,19 +62,22 @@ npx agent-relay --version
 
 ### Step 1: Start Infrastructure
 
-Prefer a **foreground stdio broker** first. Background mode can be flaky in some environments and may report "started" while `agent-relay status` still shows `STOPPED`.
-
 ```bash
-# Preferred: run broker in foreground/stdin mode and keep the session open
+# Starts a detached broker in headless mode and returns after API readiness
 agent-relay up --no-dashboard --verbose
 ```
 
 Verify broker readiness before spawning any workers:
 
 ```bash
-# Must show "running" before you spawn workers
-agent-relay status
+# Must show "RUNNING" before you spawn workers
+agent-relay status --wait-for=10
 ```
+
+When verifying from a source checkout or throwaway git worktree, run these
+commands from the project/worktree root. The CLI writes runtime state to
+`.agent-relay/` and may create `.mcp.json`; clean those files after validation
+if the worktree should remain clean.
 
 The broker:
 
@@ -243,7 +246,7 @@ If not found: npm install -g agent-relay
 
 ## Step 2: Start Infrastructure
 Run: agent-relay up --no-dashboard --verbose
-Verify: agent-relay status (should show "running")
+Verify: agent-relay status --wait-for=10 (should show "RUNNING")
 
 ## Step 3: Manage Your Team
 
@@ -290,21 +293,23 @@ The broker emits these events (available via SDK subscriptions):
 
 ## Common Mistakes
 
-| Mistake                                                    | Fix                                                                                                                                                                       |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent-relay: command not found` or mise/asdf shim error   | Ensure Node is available first (`node --version`); if a shim is broken, fix the runtime manager, then install/use `agent-relay`                                           |
-| "Nested session" error                                     | Broker handles this automatically; if running manually, unset `CLAUDECODE` env var                                                                                        |
-| Broker not starting                                        | Try `agent-relay down` first, then use foreground `agent-relay up --no-dashboard --verbose` to see readiness logs                                                         |
-| Background broker says started but status is STOPPED       | Prefer foreground mode for that project/session; background mode may have detached incorrectly                                                                            |
-| Spawn fails with `internal reply dropped`                  | Broker likely is not fully ready yet; wait for readiness, then spawn one worker first                                                                                     |
-| Workers not connecting                                     | Ensure broker started; check `agent-relay who` and worker logs                                                                                                            |
-| Not monitoring workers                                     | Use `agent-relay agents:logs <name>` frequently to track progress                                                                                                         |
-| Workers seem stuck                                         | Check logs with `agent-relay agents:logs <name>` for errors                                                                                                               |
-| Messages not delivered                                     | Check `agent-relay history --to '#general'` for channel messages; use `agent-relay inbox --agent <name>` for DMs                                                          |
-| Worker replies not showing in history                      | Expected — `history` only shows channel posts. Use `agent-relay inbox --agent <name>` (unread only) or `agent-relay history --to <name>` (full thread) to read DM replies |
-| `inbox_check` shows unread but can't see content           | `inbox_check` only returns counts. Use `mcp__relaycast__message_dm_list(as: "<name>")` to list conversations, or `agent-relay inbox --agent <name>` via CLI               |
-| `inbox --agent` showed messages once but now shows nothing | `inbox` only shows **unread** — already-read messages won't reappear. Use `agent-relay history --to <name>` to re-read the full conversation                              |
-| Sent to wrong destination                                  | `agent-relay send Worker1 "..."` = DM; `agent-relay send '#general' "..."` = channel broadcast. The `#` prefix is required for channels                                   |
+| Mistake                                                    | Fix                                                                                                                                                                                   |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent-relay: command not found` or mise/asdf shim error   | Ensure Node is available first (`node --version`); if a shim is broken, fix the runtime manager, then install/use `agent-relay`                                                       |
+| "Nested session" error                                     | Broker handles this automatically; if running manually, unset `CLAUDECODE` env var                                                                                                    |
+| Broker not starting                                        | Try `agent-relay down` first, then `agent-relay up --no-dashboard --verbose` and `agent-relay status --wait-for=10`                                                                   |
+| Broker shows STARTING after `status --wait-for`            | The process is alive but the broker API is not ready; inspect logs, retry readiness, or restart with `agent-relay down --force` if it remains stuck                                   |
+| Broker shows STOPPED immediately after start               | Check `ps aux \| grep agent-relay-broker` and `.agent-relay/connection.json`; if the process is alive but status is STOPPED, rerun status from the project root or pass `--state-dir` |
+| Worktree verification leaves git status dirty              | Run `agent-relay down --force`, then remove generated `.agent-relay/` and `.mcp.json` from throwaway validation worktrees before committing                                           |
+| Spawn fails with `internal reply dropped`                  | Broker likely is not fully ready yet; wait for readiness, then spawn one worker first                                                                                                 |
+| Workers not connecting                                     | Ensure broker started; check `agent-relay who` and worker logs                                                                                                                        |
+| Not monitoring workers                                     | Use `agent-relay agents:logs <name>` frequently to track progress                                                                                                                     |
+| Workers seem stuck                                         | Check logs with `agent-relay agents:logs <name>` for errors                                                                                                                           |
+| Messages not delivered                                     | Check `agent-relay history --to '#general'` for channel messages; use `agent-relay inbox --agent <name>` for DMs                                                                      |
+| Worker replies not showing in history                      | Expected — `history` only shows channel posts. Use `agent-relay inbox --agent <name>` (unread only) or `agent-relay history --to <name>` (full thread) to read DM replies             |
+| `inbox_check` shows unread but can't see content           | `inbox_check` only returns counts. Use `mcp__relaycast__message_dm_list(as: "<name>")` to list conversations, or `agent-relay inbox --agent <name>` via CLI                           |
+| `inbox --agent` showed messages once but now shows nothing | `inbox` only shows **unread** — already-read messages won't reappear. Use `agent-relay history --to <name>` to re-read the full conversation                                          |
+| Sent to wrong destination                                  | `agent-relay send Worker1 "..."` = DM; `agent-relay send '#general' "..."` = channel broadcast. The `#` prefix is required for channels                                               |
 
 ## Prerequisites
 

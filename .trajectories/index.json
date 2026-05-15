@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-15T13:00:15.473Z",
+  "lastUpdated": "2026-05-15T18:30:19.697Z",
   "trajectories": {
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -8,7 +8,7 @@
       "startedAt": "2026-04-11T13:28:53.873Z",
       "completedAt": "2026-05-08T13:33:48.161Z",
       "path": ".trajectories/completed/2026-05/traj_1775914133873_35667beb.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_1776073106646_1839be2d": {
       "title": "autofix-swarm-Agentworkforce-relay-workflow",
@@ -16,7 +16,7 @@
       "startedAt": "2026-04-13T09:38:26.646Z",
       "completedAt": "2026-05-08T13:33:45.944Z",
       "path": ".trajectories/completed/2026-05/traj_1776073106646_1839be2d.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_1776113772922_bc92f121": {
       "title": "autofix-swarm-Agentworkforce-relay-workflow",
@@ -24,7 +24,7 @@
       "startedAt": "2026-04-13T20:56:12.922Z",
       "completedAt": "2026-05-08T13:33:43.489Z",
       "path": ".trajectories/completed/2026-05/traj_1776113772922_bc92f121.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_3b3p1z4y7qlo": {
       "title": "add-mcp-args-subcommand-workflow",
@@ -32,7 +32,7 @@
       "startedAt": "2026-04-20T13:16:22.009Z",
       "completedAt": "2026-05-08T13:33:40.636Z",
       "path": ".trajectories/completed/2026-05/traj_3b3p1z4y7qlo.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_o9cx33xn5u39": {
       "title": "add-mcp-args-register-flag-workflow",
@@ -40,7 +40,7 @@
       "startedAt": "2026-04-20T15:06:23.387Z",
       "completedAt": "2026-05-08T13:33:35.341Z",
       "path": ".trajectories/completed/2026-05/traj_o9cx33xn5u39.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_0t92gxaz6igh": {
       "title": "Move docs sidebar into the mobile hamburger menu",
@@ -48,7 +48,7 @@
       "startedAt": "2026-04-10T16:29:40.674Z",
       "completedAt": "2026-04-10T16:32:14.544Z",
       "path": ".trajectories/completed/2026-04/traj_0t92gxaz6igh.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_1776105620545_9dcebb3d": {
       "title": "fix-inbox-agent-flag-workflow",
@@ -56,7 +56,7 @@
       "startedAt": "2026-04-13T18:40:20.545Z",
       "completedAt": "2026-04-13T18:41:52.831Z",
       "path": ".trajectories/completed/2026-04/traj_1776105620545_9dcebb3d.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_1776105988184_29f1270c": {
       "title": "fix-inbox-agent-flag-workflow",
@@ -64,7 +64,7 @@
       "startedAt": "2026-04-13T18:46:28.184Z",
       "completedAt": "2026-04-13T20:23:54.308Z",
       "path": ".trajectories/completed/2026-04/traj_1776105988184_29f1270c.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_222ha5671idc": {
       "title": "validate-cloud-connect-e2e-workflow",
@@ -72,7 +72,7 @@
       "startedAt": "2026-04-15T21:32:51.980Z",
       "completedAt": "2026-04-15T21:45:41.024Z",
       "path": ".trajectories/completed/2026-04/traj_222ha5671idc.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_4zqhfqw7g28l": {
       "title": "Investigate GitHub Actions failure for run 24255758219 job 70826792063",
@@ -80,7 +80,7 @@
       "startedAt": "2026-04-10T17:48:33.502Z",
       "completedAt": "2026-04-10T17:49:14.485Z",
       "path": ".trajectories/completed/2026-04/traj_4zqhfqw7g28l.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_703m7sqyq89t": {
       "title": "Fix production docs loader using build-machine absolute MDX paths",
@@ -88,7 +88,7 @@
       "startedAt": "2026-04-10T16:33:10.601Z",
       "completedAt": "2026-04-10T16:35:33.660Z",
       "path": ".trajectories/completed/2026-04/traj_703m7sqyq89t.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_9tt55is74dq5": {
       "title": "Pin TypeScript build resolution for acp-bridge, memory, trajectory, and cloud",
@@ -96,7 +96,7 @@
       "startedAt": "2026-04-11T13:34:46.304Z",
       "completedAt": "2026-04-11T13:35:22.677Z",
       "path": ".trajectories/completed/2026-04/traj_9tt55is74dq5.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_abjovknvcijv": {
       "title": "Scope CI so web-only changes do not run unrelated relay and SDK tests",
@@ -104,7 +104,7 @@
       "startedAt": "2026-04-10T16:08:30.070Z",
       "completedAt": "2026-04-10T16:11:08.673Z",
       "path": ".trajectories/completed/2026-04/traj_abjovknvcijv.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_d48czxmgx4ac": {
       "title": "Shift dark-mode footer from black to Relay blue",
@@ -112,7 +112,7 @@
       "startedAt": "2026-04-10T16:12:27.477Z",
       "completedAt": "2026-04-10T16:13:14.348Z",
       "path": ".trajectories/completed/2026-04/traj_d48czxmgx4ac.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_dw8ihhdb8ip7": {
       "title": "fix-dm-history-workflow",
@@ -127,7 +127,7 @@
       "startedAt": "2026-04-13T09:40:42.044Z",
       "completedAt": "2026-04-13T09:41:07.789Z",
       "path": ".trajectories/completed/2026-04/traj_e5i62wdjx0jd.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_g3muawdq6bsb": {
       "title": "Invert dark footer gradient so the lighter blue is at the top",
@@ -135,7 +135,7 @@
       "startedAt": "2026-04-10T16:13:19.744Z",
       "completedAt": "2026-04-10T16:13:43.289Z",
       "path": ".trajectories/completed/2026-04/traj_g3muawdq6bsb.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_mk0t0cgn4ytq": {
       "title": "Merge origin/main into better-nav and resolve trajectory conflicts",
@@ -143,7 +143,7 @@
       "startedAt": "2026-04-10T15:10:03.877Z",
       "completedAt": "2026-04-10T15:10:29.410Z",
       "path": ".trajectories/completed/2026-04/traj_mk0t0cgn4ytq.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_o8kgzhfu6jth": {
       "title": "Add /cloud link to footer",
@@ -151,7 +151,7 @@
       "startedAt": "2026-04-10T16:07:15.131Z",
       "completedAt": "2026-04-10T16:07:42.930Z",
       "path": ".trajectories/completed/2026-04/traj_o8kgzhfu6jth.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_qb54w47qwod6": {
       "title": "fix-history-from-workflow",
@@ -159,7 +159,7 @@
       "startedAt": "2026-04-13T20:16:10.459Z",
       "completedAt": "2026-04-13T20:25:09.219Z",
       "path": ".trajectories/completed/2026-04/traj_qb54w47qwod6.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_rs2bt3x0fqba": {
       "title": "Compare failed web deploy to prior deploys and identify no-downtime fix",
@@ -167,7 +167,7 @@
       "startedAt": "2026-04-10T17:50:43.088Z",
       "completedAt": "2026-04-10T18:00:44.095Z",
       "path": ".trajectories/completed/2026-04/traj_rs2bt3x0fqba.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_tjadoebpscps": {
       "title": "fix-dm-history-workflow",
@@ -175,7 +175,7 @@
       "startedAt": "2026-04-13T20:02:27.719Z",
       "completedAt": "2026-04-13T20:02:35.662Z",
       "path": ".trajectories/completed/2026-04/traj_tjadoebpscps.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_w0xpsaoxuiyw": {
       "title": "Pin TypeScript compiler version and build invocation in selected packages",
@@ -183,7 +183,7 @@
       "startedAt": "2026-04-11T13:35:52.600Z",
       "completedAt": "2026-04-11T13:36:48.341Z",
       "path": ".trajectories/completed/2026-04/traj_w0xpsaoxuiyw.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_1775914296101_a4397efe": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -191,7 +191,7 @@
       "startedAt": "2026-04-11T13:31:36.101Z",
       "completedAt": "2026-04-11T13:39:53.105Z",
       "path": ".trajectories/completed/traj_1775914296101_a4397efe.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_1776024661304_cfc829b9": {
       "title": "fix-workflow-resume-elegant-workflow",
@@ -206,7 +206,7 @@
       "startedAt": "2026-04-10T14:56:33.229Z",
       "completedAt": "2026-04-10T15:05:14.660Z",
       "path": ".trajectories/completed/2026-04/traj_05xg7j388bc4.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_530xmbfeljyb": {
       "title": "Implement GitHub primitive adapter base layer",
@@ -214,7 +214,7 @@
       "startedAt": "2026-04-10T15:16:25.682Z",
       "completedAt": "2026-04-10T15:25:16.937Z",
       "path": ".trajectories/completed/2026-04/traj_530xmbfeljyb.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_8oh4r5km5eic": {
       "title": "Implement GitHub primitive actions",
@@ -222,7 +222,7 @@
       "startedAt": "2026-04-10T15:26:11.355Z",
       "completedAt": "2026-04-10T15:33:35.150Z",
       "path": ".trajectories/completed/2026-04/traj_8oh4r5km5eic.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_avmkyoo2s3rt": {
       "title": "Implement Browser primitive client",
@@ -230,7 +230,7 @@
       "startedAt": "2026-04-10T14:42:17.242Z",
       "completedAt": "2026-04-10T14:55:45.196Z",
       "path": ".trajectories/completed/2026-04/traj_avmkyoo2s3rt.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_tv1x9pamkqad": {
       "title": "Add GitHub primitive workflow step integration",
@@ -238,7 +238,7 @@
       "startedAt": "2026-04-10T15:34:36.611Z",
       "completedAt": "2026-04-10T15:42:17.590Z",
       "path": ".trajectories/completed/2026-04/traj_tv1x9pamkqad.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_ui5omrgz819d": {
       "title": "cloud-run-start-from-workflow",
@@ -246,77 +246,87 @@
       "startedAt": "2026-04-27T20:00:33.269Z",
       "completedAt": "2026-04-27T20:08:46.379Z",
       "path": ".trajectories/completed/2026-04/traj_ui5omrgz819d.json",
-      "compactedInto": "compact_j5u7qhaw4q6a"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_itgr2w8qs3xn": {
       "title": "Make workflow deterministic failures repairable by agents",
       "status": "completed",
       "startedAt": "2026-05-08T14:44:45.732Z",
       "completedAt": "2026-05-08T14:44:45.984Z",
-      "path": ".trajectories/completed/2026-05/traj_itgr2w8qs3xn.json"
+      "path": ".trajectories/completed/2026-05/traj_itgr2w8qs3xn.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_m7mpv7j8n78h": {
       "title": "Address Relay PR 826 review feedback",
       "status": "completed",
       "startedAt": "2026-05-08T15:17:53.113Z",
       "completedAt": "2026-05-08T15:24:32.409Z",
-      "path": ".trajectories/completed/2026-05/traj_m7mpv7j8n78h.json"
+      "path": ".trajectories/completed/2026-05/traj_m7mpv7j8n78h.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_2tqxnib25omk": {
       "title": "Add workflow reliability contract coverage",
       "status": "completed",
       "startedAt": "2026-05-08T15:27:50.875Z",
       "completedAt": "2026-05-08T15:28:02.639Z",
-      "path": ".trajectories/completed/2026-05/traj_2tqxnib25omk.json"
+      "path": ".trajectories/completed/2026-05/traj_2tqxnib25omk.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_60qc24ufr96g": {
       "title": "Expand workflow reliability contract matrix",
       "status": "completed",
       "startedAt": "2026-05-08T15:40:11.699Z",
       "completedAt": "2026-05-08T15:40:22.521Z",
-      "path": ".trajectories/completed/2026-05/traj_60qc24ufr96g.json"
+      "path": ".trajectories/completed/2026-05/traj_60qc24ufr96g.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_vkozdglobkyg": {
       "title": "Address Relay PR 826 review comments",
       "status": "completed",
       "startedAt": "2026-05-08T15:50:35.978Z",
       "completedAt": "2026-05-08T15:51:38.854Z",
-      "path": ".trajectories/completed/2026-05/traj_vkozdglobkyg.json"
+      "path": ".trajectories/completed/2026-05/traj_vkozdglobkyg.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_bdrlknyl8twj": {
       "title": "Add workflow reliability defaults and E2E matrix",
       "status": "completed",
       "startedAt": "2026-05-08T17:54:45.069Z",
       "completedAt": "2026-05-08T18:05:37.305Z",
-      "path": ".trajectories/completed/2026-05/traj_bdrlknyl8twj.json"
+      "path": ".trajectories/completed/2026-05/traj_bdrlknyl8twj.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_34b1u84b19gz": {
       "title": "Address PR 827 review feedback",
       "status": "completed",
       "startedAt": "2026-05-08T18:29:34.717Z",
       "completedAt": "2026-05-08T18:33:55.607Z",
-      "path": ".trajectories/completed/2026-05/traj_34b1u84b19gz.json"
+      "path": ".trajectories/completed/2026-05/traj_34b1u84b19gz.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_6ujzpx82gqs9": {
       "title": "ricky-slack-primitive-implementation-workflow-status-r-workflow",
       "status": "completed",
       "startedAt": "2026-05-08T16:06:54.844Z",
       "completedAt": "2026-05-08T16:18:16.119Z",
-      "path": ".trajectories/completed/2026-05/traj_6ujzpx82gqs9.json"
+      "path": ".trajectories/completed/2026-05/traj_6ujzpx82gqs9.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_k7njijv51iq4": {
       "title": "ricky-slack-primitive-implementation-workflow-status-r-workflow",
       "status": "completed",
       "startedAt": "2026-05-08T16:18:55.300Z",
       "completedAt": "2026-05-08T16:26:03.266Z",
-      "path": ".trajectories/completed/2026-05/traj_k7njijv51iq4.json"
+      "path": ".trajectories/completed/2026-05/traj_k7njijv51iq4.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_tavtex0db4b0": {
       "title": "Make workflow failures repairable by agents",
       "status": "completed",
       "startedAt": "2026-05-08T14:34:19.969Z",
       "completedAt": "2026-05-08T14:44:45.719Z",
-      "path": ".trajectories/completed/2026-05/traj_tavtex0db4b0.json"
+      "path": ".trajectories/completed/2026-05/traj_tavtex0db4b0.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_lieyyspidhfj": {
       "title": "Fix PR 823 conflicts checks and comments",
@@ -324,63 +334,71 @@
       "startedAt": "2026-05-09T08:37:17.563Z",
       "completedAt": "2026-05-09T08:47:54.686Z",
       "path": ".trajectories/completed/2026-05/traj_lieyyspidhfj.json",
-      "compactedInto": "compact_iueavxbs31gn"
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_u4ixmbqqm2y1": {
       "title": "Add cloud workflow schedule CLI",
       "status": "completed",
       "startedAt": "2026-05-09T19:26:42.106Z",
       "completedAt": "2026-05-09T19:29:18.024Z",
-      "path": ".trajectories/completed/2026-05/traj_u4ixmbqqm2y1.json"
+      "path": ".trajectories/completed/2026-05/traj_u4ixmbqqm2y1.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_oyc528j7suvo": {
       "title": "Expose cloud workflow scheduling through Relay SDK",
       "status": "completed",
       "startedAt": "2026-05-09T19:43:34.805Z",
       "completedAt": "2026-05-09T19:44:00.107Z",
-      "path": ".trajectories/completed/2026-05/traj_oyc528j7suvo.json"
+      "path": ".trajectories/completed/2026-05/traj_oyc528j7suvo.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_uf8y40ewrfh0": {
       "title": "Address PR 831 review feedback and conflicts",
       "status": "completed",
       "startedAt": "2026-05-09T19:59:24.197Z",
       "completedAt": "2026-05-09T19:59:24.403Z",
-      "path": ".trajectories/completed/2026-05/traj_uf8y40ewrfh0.json"
+      "path": ".trajectories/completed/2026-05/traj_uf8y40ewrfh0.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_iole5zdt9orr": {
       "title": "Fix PR 831 CI conflicts",
       "status": "completed",
       "startedAt": "2026-05-10T15:18:12.326Z",
       "completedAt": "2026-05-10T15:29:41.840Z",
-      "path": ".trajectories/completed/2026-05/traj_iole5zdt9orr.json"
+      "path": ".trajectories/completed/2026-05/traj_iole5zdt9orr.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_mz5m5ysjj31e": {
       "title": "Fix Relay SDK broker stdout drain",
       "status": "completed",
       "startedAt": "2026-05-10T20:24:43.831Z",
       "completedAt": "2026-05-10T20:35:47.359Z",
-      "path": ".trajectories/completed/2026-05/traj_mz5m5ysjj31e.json"
+      "path": ".trajectories/completed/2026-05/traj_mz5m5ysjj31e.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_aw7stgf4qau0": {
       "title": "Fix publish smoke cloud tarball dependency",
       "status": "completed",
       "startedAt": "2026-05-11T07:49:42.778Z",
       "completedAt": "2026-05-11T07:50:37.848Z",
-      "path": ".trajectories/completed/2026-05/traj_aw7stgf4qau0.json"
+      "path": ".trajectories/completed/2026-05/traj_aw7stgf4qau0.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_z171lng2fbbi": {
       "title": "Address PR 840 review feedback",
       "status": "completed",
       "startedAt": "2026-05-11T08:06:37.977Z",
       "completedAt": "2026-05-11T08:07:48.097Z",
-      "path": ".trajectories/completed/2026-05/traj_z171lng2fbbi.json"
+      "path": ".trajectories/completed/2026-05/traj_z171lng2fbbi.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_dpgn0am1jq1c": {
       "title": "Implement M1 relay CLI bootstrap commands",
       "status": "completed",
       "startedAt": "2026-05-11T18:43:20.429Z",
       "completedAt": "2026-05-11T18:43:20.733Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-05/traj_dpgn0am1jq1c.json"
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-05/traj_dpgn0am1jq1c.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_mi9eqd4rjfea": {
       "title": "Address stdio fresh review findings",
@@ -394,189 +412,216 @@
       "status": "completed",
       "startedAt": "2026-05-13T10:49:12.464Z",
       "completedAt": "2026-05-13T10:53:03.748Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_wx00tjvpptvg.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_wx00tjvpptvg.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_whd40oxptlhn": {
       "title": "Review spawn persistence fix and open PR",
       "status": "completed",
       "startedAt": "2026-05-13T10:57:02.796Z",
       "completedAt": "2026-05-13T11:00:43.100Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_whd40oxptlhn.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_whd40oxptlhn.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_v1wexlfur5zr": {
       "title": "Fix broker headless reliability doc",
       "status": "completed",
       "startedAt": "2026-05-15T09:04:51.316Z",
       "completedAt": "2026-05-15T09:13:50.970Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_v1wexlfur5zr.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_v1wexlfur5zr.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_6sjeohtm3php": {
       "title": "Address broker headless reliability review findings",
       "status": "completed",
       "startedAt": "2026-05-15T09:30:56.316Z",
       "completedAt": "2026-05-15T09:32:47.870Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_6sjeohtm3php.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_6sjeohtm3php.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_4vucir4qvqa2": {
       "title": "Harden headless broker readiness semantics",
       "status": "completed",
       "startedAt": "2026-05-15T09:46:07.617Z",
       "completedAt": "2026-05-15T09:59:00.460Z",
-      "path": ".trajectories/completed/2026-05/traj_4vucir4qvqa2.json"
+      "path": ".trajectories/completed/2026-05/traj_4vucir4qvqa2.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_erzd7j9nto9r": {
       "title": "Strict review and PR prep for headless broker readiness",
       "status": "completed",
       "startedAt": "2026-05-15T10:02:10.164Z",
       "completedAt": "2026-05-15T10:06:38.127Z",
-      "path": ".trajectories/completed/2026-05/traj_erzd7j9nto9r.json"
+      "path": ".trajectories/completed/2026-05/traj_erzd7j9nto9r.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_7uznwzoxbao6": {
       "title": "Fix standalone detached headless startup",
       "status": "completed",
       "startedAt": "2026-05-15T10:18:46.273Z",
       "completedAt": "2026-05-15T10:25:00.598Z",
-      "path": ".trajectories/completed/2026-05/traj_7uznwzoxbao6.json"
+      "path": ".trajectories/completed/2026-05/traj_7uznwzoxbao6.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_9fdv7hxm0b60": {
       "title": "Strict standalone smoke follow-up",
       "status": "completed",
       "startedAt": "2026-05-15T10:37:17.693Z",
       "completedAt": "2026-05-15T10:43:11.587Z",
-      "path": ".trajectories/completed/2026-05/traj_9fdv7hxm0b60.json"
+      "path": ".trajectories/completed/2026-05/traj_9fdv7hxm0b60.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_0o6gb2wvk59t": {
       "title": "Fresh end-to-end validation for headless readiness",
       "status": "completed",
       "startedAt": "2026-05-15T10:55:49.188Z",
       "completedAt": "2026-05-15T11:11:52.324Z",
-      "path": ".trajectories/completed/2026-05/traj_0o6gb2wvk59t.json"
+      "path": ".trajectories/completed/2026-05/traj_0o6gb2wvk59t.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_4chzkm724ufo": {
       "title": "Fix headless orchestrator worktree CLI E2E issues",
       "status": "completed",
       "startedAt": "2026-05-15T11:44:28.338Z",
       "completedAt": "2026-05-15T11:51:05.319Z",
-      "path": ".trajectories/completed/2026-05/traj_4chzkm724ufo.json"
+      "path": ".trajectories/completed/2026-05/traj_4chzkm724ufo.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_f3arvbmmlomn": {
       "title": "Address PR feedback for headless broker reliability",
       "status": "completed",
       "startedAt": "2026-05-15T12:09:02.122Z",
       "completedAt": "2026-05-15T12:15:11.435Z",
-      "path": ".trajectories/completed/2026-05/traj_f3arvbmmlomn.json"
+      "path": ".trajectories/completed/2026-05/traj_f3arvbmmlomn.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_n8duofq5vq1a": {
       "title": "Update Codex registry for GPT-5.5",
       "status": "completed",
       "startedAt": "2026-05-15T10:27:57.532Z",
       "completedAt": "2026-05-15T10:33:19.705Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_n8duofq5vq1a.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_n8duofq5vq1a.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_7zu7et53ph3l": {
       "title": "Harden Codex GPT-5.5 local CLI compatibility",
       "status": "completed",
       "startedAt": "2026-05-15T10:35:25.212Z",
       "completedAt": "2026-05-15T10:40:53.355Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_7zu7et53ph3l.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_7zu7et53ph3l.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_2yicjxgajt0a": {
       "title": "Review GPT-5.5 hardening",
       "status": "completed",
       "startedAt": "2026-05-15T10:54:19.300Z",
       "completedAt": "2026-05-15T10:54:19.476Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_2yicjxgajt0a.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_2yicjxgajt0a.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_hrsndfzk0qay": {
       "title": "Tighten Codex 5.5 fallback coverage",
       "status": "completed",
       "startedAt": "2026-05-15T10:57:41.681Z",
       "completedAt": "2026-05-15T10:57:41.827Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_hrsndfzk0qay.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_hrsndfzk0qay.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_4t07itef99ug": {
       "title": "Implement relay CLI bootstrap commands for proactive runtime M1",
       "status": "completed",
       "startedAt": "2026-05-11T21:47:37.805Z",
       "completedAt": "2026-05-11T21:49:49.859Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_4t07itef99ug.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_4t07itef99ug.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_947wzpddsg9j": {
       "title": "Implement relay CLI bootstrap commands for proactive runtime M1",
       "status": "completed",
       "startedAt": "2026-05-11T23:11:57.326Z",
       "completedAt": "2026-05-11T23:14:23.136Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_947wzpddsg9j.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_947wzpddsg9j.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_fh8oosbijpwc": {
       "title": "Track A: relaycast subscribe + @self DM routing",
       "status": "completed",
       "startedAt": "2026-05-12T06:28:56.427Z",
       "completedAt": "2026-05-12T11:21:33.352Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_fh8oosbijpwc.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_fh8oosbijpwc.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_gh05rj5gwsap": {
       "title": "Bump relaycast Rust SDK in relay",
       "status": "completed",
       "startedAt": "2026-05-14T16:41:17.430Z",
       "completedAt": "2026-05-14T16:42:32.485Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_gh05rj5gwsap.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_gh05rj5gwsap.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_tgism98me5na": {
       "title": "Implement relay CLI proactive runtime bootstrap commands",
       "status": "completed",
       "startedAt": "2026-05-11T20:04:48.053Z",
       "completedAt": "2026-05-11T20:05:54.956Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_tgism98me5na.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_tgism98me5na.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_zfa6skfr32vy": {
       "title": "Implement relay CLI M1 bootstrap commands",
       "status": "completed",
       "startedAt": "2026-05-11T19:31:44.734Z",
       "completedAt": "2026-05-11T19:34:54.971Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_zfa6skfr32vy.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_zfa6skfr32vy.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_3gjtcykvybt5": {
       "title": "Fix PR CI failures",
       "status": "completed",
       "startedAt": "2026-05-15T11:24:06.054Z",
       "completedAt": "2026-05-15T11:25:49.087Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_3gjtcykvybt5.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_3gjtcykvybt5.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_o251whkvy9rl": {
       "title": "Fix Codex GPT-5.5 E2E rough edges",
       "status": "completed",
       "startedAt": "2026-05-15T11:59:26.764Z",
       "completedAt": "2026-05-15T12:12:25.515Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_o251whkvy9rl.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_o251whkvy9rl.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_d89s38ddu7cj": {
       "title": "Review Codex GPT-5.5 spawn fix",
       "status": "completed",
       "startedAt": "2026-05-15T12:25:39.946Z",
       "completedAt": "2026-05-15T12:25:40.708Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_d89s38ddu7cj.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_d89s38ddu7cj.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_0e8i20oitwvz": {
       "title": "Final fresh-eyes review Codex GPT-5.5 fix",
       "status": "completed",
       "startedAt": "2026-05-15T12:46:11.342Z",
       "completedAt": "2026-05-15T12:46:11.500Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_0e8i20oitwvz.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_0e8i20oitwvz.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_wzzboitm85ee": {
       "title": "Resolve PR conflicts around platform tradeoff copy",
       "status": "completed",
       "startedAt": "2026-05-15T12:47:36.508Z",
       "completedAt": "2026-05-15T12:50:14.358Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_wzzboitm85ee.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_wzzboitm85ee.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     },
     "traj_hfkww5z7trxn": {
       "title": "Fresh comprehensive review of PR 856",
       "status": "completed",
       "startedAt": "2026-05-15T12:56:14.439Z",
       "completedAt": "2026-05-15T13:00:15.366Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_hfkww5z7trxn.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_hfkww5z7trxn.json",
+      "compactedInto": "compact_56o4pdayyvzb"
     }
   }
 }
