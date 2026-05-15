@@ -638,7 +638,7 @@ async fn apply_codex_model_arg_fallback(
     resolved_cli: &str,
     normalized_cli: &str,
     worker_name: &str,
-    args: &mut Vec<String>,
+    args: &mut [String],
 ) {
     const GPT_5_5: &str = "gpt-5.5";
 
