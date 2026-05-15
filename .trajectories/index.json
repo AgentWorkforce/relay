@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-15T11:25:49.204Z",
+  "lastUpdated": "2026-05-15T12:46:11.609Z",
   "trajectories": {
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -493,6 +493,27 @@
       "startedAt": "2026-05-15T11:24:06.054Z",
       "completedAt": "2026-05-15T11:25:49.087Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_3gjtcykvybt5.json"
+    },
+    "traj_o251whkvy9rl": {
+      "title": "Fix Codex GPT-5.5 E2E rough edges",
+      "status": "completed",
+      "startedAt": "2026-05-15T11:59:26.764Z",
+      "completedAt": "2026-05-15T12:12:25.515Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_o251whkvy9rl.json"
+    },
+    "traj_d89s38ddu7cj": {
+      "title": "Review Codex GPT-5.5 spawn fix",
+      "status": "completed",
+      "startedAt": "2026-05-15T12:25:39.946Z",
+      "completedAt": "2026-05-15T12:25:40.708Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_d89s38ddu7cj.json"
+    },
+    "traj_0e8i20oitwvz": {
+      "title": "Final fresh-eyes review Codex GPT-5.5 fix",
+      "status": "completed",
+      "startedAt": "2026-05-15T12:46:11.342Z",
+      "completedAt": "2026-05-15T12:46:11.500Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_0e8i20oitwvz.json"
     }
   }
 }

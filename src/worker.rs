@@ -165,7 +165,7 @@ impl WorkerRegistry {
         worker_relay_api_key: Option<String>,
         skip_relay_prompt: bool,
         workspace_id: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<AgentSpec> {
         let mut spec = spec;
         if self.workers.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' already exists", spec.name);
@@ -204,13 +204,16 @@ impl WorkerRegistry {
                 let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
                 let is_codex = cli_lower == "codex";
                 let is_gemini = cli_lower == "gemini";
-                apply_codex_model_arg_fallback(
+                if let Some(model) = apply_codex_model_arg_fallback(
                     &resolved_cli,
                     &cli_lower,
                     &spec.name,
                     &mut effective_args,
                 )
-                .await;
+                .await
+                {
+                    spec.model = Some(model);
+                }
                 // NOTE: Permission-bypass flags are auto-injected for all spawned agents.
                 // This means any actor who can trigger agent.add gets agents with no permission
                 // guardrails. Future work should make this an explicit opt-in per step/agent.
@@ -293,13 +296,16 @@ impl WorkerRegistry {
                 command.arg("--agent-name").arg(&spec.name);
                 let provider_cli = headless_provider_cli_name(provider);
                 command.arg(provider_cli);
-                apply_codex_model_arg_fallback(
+                if let Some(model) = apply_codex_model_arg_fallback(
                     provider_cli,
                     provider_cli,
                     &spec.name,
                     &mut spec.args,
                 )
-                .await;
+                .await
+                {
+                    spec.model = Some(model);
+                }
 
                 let mcp_args = self
                     .build_mcp_args(
@@ -411,7 +417,7 @@ impl WorkerRegistry {
             "worker spawned and initialised"
         );
 
-        Ok(())
+        Ok(spec)
     }
 
     pub(crate) async fn send_to_worker(
@@ -639,16 +645,14 @@ async fn apply_codex_model_arg_fallback(
     normalized_cli: &str,
     worker_name: &str,
     args: &mut [String],
-) {
+) -> Option<String> {
     const GPT_5_5: &str = "gpt-5.5";
 
     if !normalized_cli.eq_ignore_ascii_case("codex") || !args_reference_model(args, GPT_5_5) {
-        return;
+        return None;
     }
 
-    let Some(fallback) = codex_local_fallback_model(resolved_cli, GPT_5_5).await else {
-        return;
-    };
+    let fallback = codex_local_fallback_model(resolved_cli, GPT_5_5).await?;
 
     if replace_model_arg(args, GPT_5_5, fallback) {
         tracing::warn!(
@@ -657,6 +661,9 @@ async fn apply_codex_model_arg_fallback(
             fallback_model = %fallback,
             "local Codex CLI model catalog does not confirm explicit model arg; rewriting to fallback"
         );
+        Some(fallback.to_string())
+    } else {
+        None
     }
 }
 
@@ -1022,5 +1029,78 @@ mod tests {
             codex_models_json_contains_model(b"not json", "gpt-5.5"),
             None
         );
+    }
+
+    #[cfg(unix)]
+    fn write_fake_codex(catalog_json: &str) -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("codex");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"debug\" ] && [ \"$2\" = \"models\" ]; then\n  printf '%s\\n' '{}'\n  exit 0\nfi\nexit 1\n",
+                catalog_json
+            ),
+        )
+        .expect("write fake codex");
+        let mut permissions = std::fs::metadata(&script)
+            .expect("fake codex metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("chmod fake codex");
+        dir
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_arg_fallback_rewrites_explicit_model_and_reports_effective_model() {
+        let dir = write_fake_codex(
+            r#"{"models":[{"slug":"gpt-5.5","upgrade":{"message":"requires a newer version"}},{"slug":"gpt-5.4","upgrade":null}]}"#,
+        );
+        let fake_codex = dir.path().join("codex");
+        let mut args = vec![
+            "--model".to_string(),
+            "gpt-5.5".to_string(),
+            "--foo".to_string(),
+        ];
+
+        let fallback = apply_codex_model_arg_fallback(
+            fake_codex.to_str().expect("utf-8 fake codex path"),
+            "codex",
+            "worker-a",
+            &mut args,
+        )
+        .await;
+
+        assert_eq!(fallback.as_deref(), Some("gpt-5.4"));
+        assert_eq!(
+            args,
+            vec![
+                "--model".to_string(),
+                "gpt-5.4".to_string(),
+                "--foo".to_string(),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_arg_fallback_keeps_supported_explicit_model() {
+        let dir = write_fake_codex(r#"{"models":[{"slug":"gpt-5.5","upgrade":null}]}"#);
+        let fake_codex = dir.path().join("codex");
+        let mut args = vec!["--model=gpt-5.5".to_string()];
+
+        let fallback = apply_codex_model_arg_fallback(
+            fake_codex.to_str().expect("utf-8 fake codex path"),
+            "codex",
+            "worker-a",
+            &mut args,
+        )
+        .await;
+
+        assert_eq!(fallback, None);
+        assert_eq!(args, vec!["--model=gpt-5.5".to_string()]);
     }
 }
