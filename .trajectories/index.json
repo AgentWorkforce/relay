@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-15T10:57:41.920Z",
+  "lastUpdated": "2026-05-15T11:22:34.951Z",
   "trajectories": {
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -430,6 +430,62 @@
       "startedAt": "2026-05-15T10:57:41.681Z",
       "completedAt": "2026-05-15T10:57:41.827Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_hrsndfzk0qay.json"
+    },
+    "traj_4t07itef99ug": {
+      "title": "Implement relay CLI bootstrap commands for proactive runtime M1",
+      "status": "completed",
+      "startedAt": "2026-05-11T21:47:37.805Z",
+      "completedAt": "2026-05-11T21:49:49.859Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_4t07itef99ug.json"
+    },
+    "traj_6sjeohtm3php": {
+      "title": "Address broker headless reliability review findings",
+      "status": "completed",
+      "startedAt": "2026-05-15T09:30:56.316Z",
+      "completedAt": "2026-05-15T09:32:47.870Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_6sjeohtm3php.json"
+    },
+    "traj_947wzpddsg9j": {
+      "title": "Implement relay CLI bootstrap commands for proactive runtime M1",
+      "status": "completed",
+      "startedAt": "2026-05-11T23:11:57.326Z",
+      "completedAt": "2026-05-11T23:14:23.136Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_947wzpddsg9j.json"
+    },
+    "traj_fh8oosbijpwc": {
+      "title": "Track A: relaycast subscribe + @self DM routing",
+      "status": "completed",
+      "startedAt": "2026-05-12T06:28:56.427Z",
+      "completedAt": "2026-05-12T11:21:33.352Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_fh8oosbijpwc.json"
+    },
+    "traj_gh05rj5gwsap": {
+      "title": "Bump relaycast Rust SDK in relay",
+      "status": "completed",
+      "startedAt": "2026-05-14T16:41:17.430Z",
+      "completedAt": "2026-05-14T16:42:32.485Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_gh05rj5gwsap.json"
+    },
+    "traj_tgism98me5na": {
+      "title": "Implement relay CLI proactive runtime bootstrap commands",
+      "status": "completed",
+      "startedAt": "2026-05-11T20:04:48.053Z",
+      "completedAt": "2026-05-11T20:05:54.956Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_tgism98me5na.json"
+    },
+    "traj_v1wexlfur5zr": {
+      "title": "Fix broker headless reliability doc",
+      "status": "completed",
+      "startedAt": "2026-05-15T09:04:51.316Z",
+      "completedAt": "2026-05-15T09:13:50.970Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_v1wexlfur5zr.json"
+    },
+    "traj_zfa6skfr32vy": {
+      "title": "Implement relay CLI M1 bootstrap commands",
+      "status": "completed",
+      "startedAt": "2026-05-11T19:31:44.734Z",
+      "completedAt": "2026-05-11T19:34:54.971Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_zfa6skfr32vy.json"
     }
   }
 }
