@@ -15,6 +15,7 @@ mod routing;
 mod spawner;
 mod swarm;
 mod swarm_tui;
+mod wait;
 mod worker;
 mod wrap;
 
