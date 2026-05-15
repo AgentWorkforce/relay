@@ -1,0 +1,65 @@
+{
+  "id": "traj_9fdv7hxm0b60",
+  "version": 1,
+  "task": {
+    "title": "Strict standalone smoke follow-up"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-15T10:37:17.693Z",
+  "completedAt": "2026-05-15T10:43:11.587Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-15T10:37:18.176Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_orqi2e5m9fp1",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-15T10:37:18.176Z",
+      "endedAt": "2026-05-15T10:43:11.587Z",
+      "events": [
+        {
+          "ts": 1778841438177,
+          "type": "decision",
+          "content": "Treat Bun //root argv as a virtual executable entrypoint: Treat Bun //root argv as a virtual executable entrypoint",
+          "raw": {
+            "question": "Treat Bun //root argv as a virtual executable entrypoint",
+            "chosen": "Treat Bun //root argv as a virtual executable entrypoint",
+            "alternatives": [],
+            "reasoning": "CI showed compiled standalone still timed out; Bun compiled binaries report argv[1] as a virtual //root path while execPath is the real binary, so detached re-exec must preserve user args from argv[2] but omit the virtual path when spawning the child."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1778841667818,
+          "type": "decision",
+          "content": "Align headless success output with standalone smoke readiness contract: Align headless success output with standalone smoke readiness contract",
+          "raw": {
+            "question": "Align headless success output with standalone smoke readiness contract",
+            "chosen": "Align headless success output with standalone smoke readiness contract",
+            "alternatives": [],
+            "reasoning": "The fixed Bun re-exec path started the broker locally, but the CI smoke contract asserts exactly one 'Broker started.' readiness line. The detached path now emits that stable line and logs the PID separately."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed the remaining standalone macOS smoke failure by detecting Bun compiled binary argv shape, omitting the virtual //root entrypoint during detached re-exec, and aligning detached startup success output with the smoke readiness contract.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay-broker-headless-reliability-doc",
+  "tags": [],
+  "_trace": {
+    "startRef": "28234d39ac210dad49ddcb979f28924dd8f93e6f",
+    "endRef": "28234d39ac210dad49ddcb979f28924dd8f93e6f"
+  }
+}
