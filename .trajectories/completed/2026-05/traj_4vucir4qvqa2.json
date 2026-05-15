@@ -39,12 +39,7 @@
           "type": "reflection",
           "content": "Readiness hardening implemented and verified with focused command tests, typecheck, lint, and diff checks; remaining lint output is pre-existing complexity/depth warnings outside the new readiness helper.",
           "raw": {
-            "focalPoints": [
-              "readiness semantics",
-              "detached start",
-              "status truthfulness",
-              "verification"
-            ],
+            "focalPoints": ["readiness semantics", "detached start", "status truthfulness", "verification"],
             "confidence": 0.9
           },
           "significance": "high",

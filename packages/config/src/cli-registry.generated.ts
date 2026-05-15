@@ -14,8 +14,8 @@
 export const CLIVersions = {
   /** Claude Code v2.1.72 */
   CLAUDE: '2.1.72',
-  /** Codex CLI v0.124.0 */
-  CODEX: '0.124.0',
+  /** Codex CLI v0.130.0 */
+  CODEX: '0.130.0',
   /** Gemini CLI v0.39.1 */
   GEMINI: '0.39.1',
   /** Cursor v2026.02.27-e7d2ef6 */
@@ -64,7 +64,9 @@ export type ClaudeModel = (typeof ClaudeModels)[keyof typeof ClaudeModels];
  * Codex CLI model identifiers.
  */
 export const CodexModels = {
-  /** GPT-5.4 — Frontier model for complex coding, research, and real-world work. (default) */
+  /** GPT-5.5 — Frontier model for complex coding, research, and real-world work. (default) */
+  GPT_5_5: 'gpt-5.5',
+  /** GPT-5.4 — More affordable model for complex coding and professional work. */
   GPT_5_4: 'gpt-5.4',
   /** GPT-5.3 Codex — Frontier agentic coding model */
   GPT_5_3_CODEX: 'gpt-5.3-codex',
@@ -392,6 +394,8 @@ export const OpencodeModels = {
   OPENAI_GPT_5_4: 'openai/gpt-5.4',
   /** GPT-5.4 Pro */
   OPENAI_GPT_5_4_PRO: 'openai/gpt-5.4-pro',
+  /** GPT-5.5 */
+  OPENAI_GPT_5_5: 'openai/gpt-5.5',
   /** O1 */
   OPENAI_O1: 'openai/o1',
   /** O1 Mini */
@@ -447,7 +451,8 @@ export const CLAUDE_MODEL_OPTIONS: ModelOption[] = [
  * Codex CLI model options for UI dropdowns.
  */
 export const CODEX_MODEL_OPTIONS: ModelOption[] = [
-  { value: 'gpt-5.4', label: 'GPT-5.4 — Frontier model for complex coding, research, and real-world work.', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  { value: 'gpt-5.5', label: 'GPT-5.5 — Frontier model for complex coding, research, and real-world work.', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'medium' },
+  { value: 'gpt-5.4', label: 'GPT-5.4 — More affordable model for complex coding and professional work.', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
   { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
   { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark — Ultra-fast coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
   { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
@@ -619,6 +624,7 @@ export const OPENCODE_MODEL_OPTIONS: ModelOption[] = [
   { value: 'openai/gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
   { value: 'openai/gpt-5.4', label: 'GPT-5.4' },
   { value: 'openai/gpt-5.4-pro', label: 'GPT-5.4 Pro' },
+  { value: 'openai/gpt-5.5', label: 'GPT-5.5' },
   { value: 'openai/o1', label: 'O1' },
   { value: 'openai/o1-mini', label: 'O1 Mini' },
   { value: 'openai/o1-preview', label: 'O1 Preview' },
@@ -644,7 +650,8 @@ export const CLAUDE_MODEL_METADATA: Record<ClaudeModel, ModelOption> = {
  * Codex CLI model metadata keyed by model id.
  */
 export const CODEX_MODEL_METADATA: Record<CodexModel, ModelOption> = {
-  'gpt-5.4': { value: 'gpt-5.4', label: 'GPT-5.4 — Frontier model for complex coding, research, and real-world work.', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  'gpt-5.5': { value: 'gpt-5.5', label: 'GPT-5.5 — Frontier model for complex coding, research, and real-world work.', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'medium' },
+  'gpt-5.4': { value: 'gpt-5.4', label: 'GPT-5.4 — More affordable model for complex coding and professional work.', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
   'gpt-5.3-codex': { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
   'gpt-5.3-codex-spark': { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark — Ultra-fast coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
   'gpt-5.2-codex': { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
@@ -816,6 +823,7 @@ export const OPENCODE_MODEL_METADATA: Record<OpencodeModel, ModelOption> = {
   'openai/gpt-5.3-codex-spark': { value: 'openai/gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
   'openai/gpt-5.4': { value: 'openai/gpt-5.4', label: 'GPT-5.4' },
   'openai/gpt-5.4-pro': { value: 'openai/gpt-5.4-pro', label: 'GPT-5.4 Pro' },
+  'openai/gpt-5.5': { value: 'openai/gpt-5.5', label: 'GPT-5.5' },
   'openai/o1': { value: 'openai/o1', label: 'O1' },
   'openai/o1-mini': { value: 'openai/o1-mini', label: 'O1 Mini' },
   'openai/o1-preview': { value: 'openai/o1-preview', label: 'O1 Preview' },
@@ -961,7 +969,7 @@ export const CLIRegistry = {
   codex: {
     name: 'Codex CLI',
     package: '@openai/codex',
-    version: '0.124.0',
+    version: '0.130.0',
     install: 'npm install -g @openai/codex',
     npmLink: 'https://www.npmjs.com/package/@openai/codex',
   },
@@ -1014,7 +1022,7 @@ export const CLIRegistry = {
  */
 export const DefaultModels = {
   claude: 'sonnet',
-  codex: 'gpt-5.4',
+  codex: 'gpt-5.5',
   gemini: 'gemini-3.1-pro-preview',
   cursor: 'composer-2-fast',
   droid: 'opus-4.6-fast',

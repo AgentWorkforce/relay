@@ -19,14 +19,14 @@ await workflow('design-relay-clean-room-e2e-validation')
     cli: 'codex',
     preset: 'analyst',
     role: 'Research clean-environment options and relay install/runtime failure modes',
-    model: CodexModels.GPT_5_4,
+    model: CodexModels.GPT_5_5,
     retries: 2,
   })
   .agent('research-b', {
     cli: 'codex',
     preset: 'analyst',
     role: 'Research workflow pattern choice, validation phases, and evidence design',
-    model: CodexModels.GPT_5_4,
+    model: CodexModels.GPT_5_5,
     retries: 2,
   })
   .agent('author', {

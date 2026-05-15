@@ -18,6 +18,7 @@ Fixed standalone detached headless startup by avoiding an extra script argv for 
 ## Key Decisions
 
 ### Use invocation-shape aware detached re-exec
+
 - **Chose:** Use invocation-shape aware detached re-exec
 - **Reasoning:** Standalone Bun binaries do not have a separate Node script path; spawning execPath with cliScript as an extra argv item prevents the foreground child from running the intended up command.
 
@@ -26,7 +27,8 @@ Fixed standalone detached headless startup by avoiding an extra script argv for 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Use invocation-shape aware detached re-exec: Use invocation-shape aware detached re-exec
 - Strict pass found and fixed the standalone binary regression surfaced by CI: detached start now builds child argv based on whether the current invocation is a Node script or a compiled executable.

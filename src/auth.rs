@@ -827,6 +827,11 @@ fn is_workspace_name_conflict(error: &RelayError) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // These tests intentionally hold the process-env mutex across awaits so
+    // concurrent async tests cannot mutate RELAY_* variables underneath each
+    // other.
+    #![allow(clippy::await_holding_lock)]
+
     use std::sync::{Mutex, MutexGuard};
 
     use httpmock::Method::{GET, POST};
@@ -1082,7 +1087,7 @@ mod tests {
         let second_workspace = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/workspaces")
-                .body_contains(&format!("\"name\":\"{workspace_name}-"));
+                .body_contains(format!("\"name\":\"{workspace_name}-"));
             then.status(200)
                 .header("content-type", "application/json")
                 .body(r#"{"ok":true,"data":{"workspace_id":"ws_fallback","api_key":"rk_live_fallback","created_at":"2025-01-01T00:00:00Z"}}"#);

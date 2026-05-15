@@ -18,6 +18,7 @@ Addressed review findings: status --wait-for now waits for broker HTTP API readi
 ## Key Decisions
 
 ### Require broker API readiness for status --wait-for
+
 - **Chose:** Require broker API readiness for status --wait-for
 - **Reasoning:** connection.json is written before Relaycast handshake and ready router setup, so PID-only polling can report RUNNING before spawn/control endpoints are usable.
 
@@ -26,6 +27,7 @@ Addressed review findings: status --wait-for now waits for broker HTTP API readi
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Require broker API readiness for status --wait-for: Require broker API readiness for status --wait-for

@@ -18,6 +18,7 @@ Implemented headless broker reliability fixes: no-dashboard startup now detaches
 ## Key Decisions
 
 ### Treat docs/BROKER_HEADLESS_RELIABILITY.md as an issue brief and implement the missing reliability fixes
+
 - **Chose:** Treat docs/BROKER_HEADLESS_RELIABILITY.md as an issue brief and implement the missing reliability fixes
 - **Reasoning:** The file was untracked in the original checkout and absent from latest main, so I copied its intent into the new worktree, corrected stale file references, and fixed the high-impact no-dashboard/status gaps in current main.
 
@@ -26,7 +27,8 @@ Implemented headless broker reliability fixes: no-dashboard startup now detaches
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Treat docs/BROKER_HEADLESS_RELIABILITY.md as an issue brief and implement the missing reliability fixes: Treat docs/BROKER_HEADLESS_RELIABILITY.md as an issue brief and implement the missing reliability fixes
 - Core reliability patch is implemented, focused tests and TypeScript pass, remaining work is final trajectory completion and optional commit/stage if requested

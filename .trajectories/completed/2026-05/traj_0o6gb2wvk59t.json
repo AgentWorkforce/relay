@@ -42,9 +42,7 @@
             "confidence": 0.85
           },
           "significance": "high",
-          "tags": [
-            "confidence:0.85"
-          ]
+          "tags": ["confidence:0.85"]
         },
         {
           "ts": 1778842685777,
@@ -66,9 +64,7 @@
             "confidence": 0.88
           },
           "significance": "high",
-          "tags": [
-            "confidence:0.88"
-          ]
+          "tags": ["confidence:0.88"]
         }
       ]
     }

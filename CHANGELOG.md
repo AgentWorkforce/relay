@@ -41,11 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.21] - 2026-05-14
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Add pr_url verification check (#852)** (#852)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.21
 
 ---
@@ -53,11 +57,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.20] - 2026-05-13
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Persist spawned agents across cwd (#846) (#846)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.20
 
 ---
@@ -65,11 +73,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.19] - 2026-05-13
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Export createContextFactory + its option/return interfaces (#845)** (#845)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.19
 
 ---
@@ -77,11 +89,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.18] - 2026-05-12
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Proactive-runtime — agent-relay CLI bootstrap + DLQ + cloud SDK (#843)** (#843)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.18
 
 ---

@@ -18,6 +18,7 @@ Hardened headless broker startup so detached up waits for API readiness, status 
 ## Key Decisions
 
 ### Gate detached broker start on API readiness and report STARTING separately
+
 - **Chose:** Gate detached broker start on API readiness and report STARTING separately
 - **Reasoning:** Headless orchestrators need command success to mean usable broker, and live-process/API-unready must not be collapsed into STOPPED.
 
@@ -26,7 +27,8 @@ Hardened headless broker startup so detached up waits for API readiness, status 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Gate detached broker start on API readiness and report STARTING separately: Gate detached broker start on API readiness and report STARTING separately
 - Readiness hardening implemented and verified with focused command tests, typecheck, lint, and diff checks; remaining lint output is pre-existing complexity/depth warnings outside the new readiness helper.

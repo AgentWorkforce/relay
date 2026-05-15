@@ -39,11 +39,7 @@
           "type": "reflection",
           "content": "Strict pass completed: removed the standalone reliability doc, moved skill guidance to the skills repo, and tightened timeout diagnostics to report the broker PID rather than the wrapper PID.",
           "raw": {
-            "focalPoints": [
-              "relay branch scope",
-              "skill repo split",
-              "diagnostics"
-            ],
+            "focalPoints": ["relay branch scope", "skill repo split", "diagnostics"],
             "confidence": 0.9
           },
           "significance": "high",

@@ -18,10 +18,12 @@ Ran a fresh end-to-end validation pass for headless broker readiness. Fixed the 
 ## Key Decisions
 
 ### Validate via four independent surfaces
+
 - **Chose:** Validate via four independent surfaces
 - **Reasoning:** For a fresh end-to-end pass, unit tests alone are not enough. Run the full Vitest suite, broker integration tests, direct built-CLI headless lifecycle, and packaged Bun standalone smoke so both Node and compiled binary invocation shapes are exercised.
 
 ### Fix broker integration harness strict typing before running E2E
+
 - **Chose:** Fix broker integration harness strict typing before running E2E
 - **Reasoning:** Fresh validation uncovered that the broker integration suite could not compile because createWorkspace().apiKey is typed optional. The harness now throws if the workspace response lacks an API key instead of assigning undefined to RELAY_API_KEY.
 
@@ -30,7 +32,8 @@ Ran a fresh end-to-end validation pass for headless broker readiness. Fixed the 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Validate via four independent surfaces: Validate via four independent surfaces
 - Full Vitest suite passed: 66 files, 849 tests. Continuing into built CLI and broker integration surfaces.

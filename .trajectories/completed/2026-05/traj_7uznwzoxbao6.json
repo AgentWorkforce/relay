@@ -39,20 +39,11 @@
           "type": "reflection",
           "content": "Strict pass found and fixed the standalone binary regression surfaced by CI: detached start now builds child argv based on whether the current invocation is a Node script or a compiled executable.",
           "raw": {
-            "focalPoints": [
-              "standalone smoke",
-              "re-exec argv",
-              "CI failure"
-            ],
+            "focalPoints": ["standalone smoke", "re-exec argv", "CI failure"],
             "confidence": 0.9
           },
           "significance": "high",
-          "tags": [
-            "focal:standalone smoke",
-            "focal:re-exec argv",
-            "focal:CI failure",
-            "confidence:0.9"
-          ]
+          "tags": ["focal:standalone smoke", "focal:re-exec argv", "focal:CI failure", "confidence:0.9"]
         }
       ]
     }
