@@ -568,6 +568,16 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Broker PID: 5151');
   });
 
+  it('up rejects mutually exclusive background and foreground flags', async () => {
+    const { program, deps } = createHarness();
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--background', '--foreground']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('Cannot use --background and --foreground together.');
+    expect(deps.spawnProcess).not.toHaveBeenCalled();
+  });
+
   it('up --no-dashboard re-execs a Bun standalone binary without adding its virtual entrypoint', async () => {
     const spawnedProcess = createSpawnedProcessMock();
     let now = 0;
@@ -635,15 +645,28 @@ describe('registerCoreCommands', () => {
   });
 
   it('down --force only kills actual orphaned broker executables for the project', async () => {
-    const execCommand = vi.fn(async () => ({
-      stdout: [
-        'USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND',
-        'khaliqgant 111 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /bin/zsh -lc BROKER=/tmp/project/target/release/agent-relay-broker node /tmp/agent-relay.js down --force',
-        'khaliqgant 222 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --name project --channels general --persist',
-        'khaliqgant 333 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --name other-project --channels general --persist',
-      ].join('\n'),
-      stderr: '',
-    }));
+    const execCommand = vi.fn(async (command: string) => {
+      if (command === 'ps aux') {
+        return {
+          stdout: [
+            'USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND',
+            'khaliqgant 111 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /bin/zsh -lc BROKER=/tmp/project/target/release/agent-relay-broker node /tmp/agent-relay.js down --force',
+            'khaliqgant 222 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --name project --channels general --persist',
+            'khaliqgant 333 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --name project --channels general --persist',
+            'khaliqgant 444 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project/.agent-relay --persist',
+            'khaliqgant 555 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project-other/.agent-relay --persist',
+          ].join('\n'),
+          stderr: '',
+        };
+      }
+      if (command.includes('-p 222 ')) {
+        return { stdout: 'p222\nfcwd\nn/tmp/project\n', stderr: '' };
+      }
+      if (command.includes('-p 333 ')) {
+        return { stdout: 'p333\nfcwd\nn/tmp/project-other\n', stderr: '' };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
     const killImpl = vi.fn(() => undefined);
     const { program, deps } = createHarness({ execCommand, killImpl });
 
@@ -651,9 +674,12 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
+    expect(killImpl).toHaveBeenCalledWith(444, 'SIGTERM');
     expect(killImpl).not.toHaveBeenCalledWith(111, 'SIGTERM');
     expect(killImpl).not.toHaveBeenCalledWith(333, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(555, 'SIGTERM');
     expect(deps.warn).toHaveBeenCalledWith('Killing orphaned broker process (pid: 222)');
+    expect(deps.warn).toHaveBeenCalledWith('Killing orphaned broker process (pid: 444)');
     expect(deps.log).toHaveBeenCalledWith('Cleaned up (was not running)');
   });
 
@@ -908,6 +934,43 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Status: RUNNING');
     expect(deps.log).toHaveBeenCalledWith('Agents: 1');
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_ready');
+  });
+
+  it('status --wait-for treats getStatus success as ready even when session lookup fails', async () => {
+    const now = 0;
+    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (pid === 4242 && signal === 0) return;
+      throw new Error('unexpected kill check');
+    });
+    sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 2, pending_delivery_count: 0 });
+    sdkStatusClient.getSession.mockRejectedValueOnce(new Error('503 Service Unavailable'));
+
+    const { program, deps } = createHarness({
+      fs,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+    });
+
+    const exitCode = await runCommand(program, ['status', '--wait-for', '1']);
+
+    expect(exitCode).toBeUndefined();
+    expect(sdkStatusClient.getStatus).toHaveBeenCalledTimes(1);
+    expect(sdkStatusClient.getSession).toHaveBeenCalledTimes(1);
+    expect(deps.log).toHaveBeenCalledWith('Status: RUNNING');
+    expect(deps.log).toHaveBeenCalledWith('Agents: 2');
+    expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('Workspace Key:'));
+  });
+
+  it.each(['10s', 'foo', '-1', ''])('status rejects invalid --wait-for value %j', async (waitFor) => {
+    const { program, deps } = createHarness();
+
+    const exitCode = await runCommand(program, ['status', '--wait-for', waitFor]);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('--wait-for must be a non-negative number of seconds.');
+    expect(deps.log).not.toHaveBeenCalledWith('Status: STOPPED');
   });
 
   it('status --wait-for reports STARTING and exits non-zero when the PID is live but the API is unready', async () => {

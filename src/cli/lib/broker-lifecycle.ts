@@ -46,7 +46,7 @@ export interface BrokerConnection {
 
 type BrokerStatusDetails = {
   status: Awaited<ReturnType<AgentRelayClient['getStatus']>>;
-  session: Awaited<ReturnType<AgentRelayClient['getSession']>>;
+  session: Awaited<ReturnType<AgentRelayClient['getSession']>> | null;
 };
 
 type BrokerReadiness =
@@ -330,33 +330,61 @@ function commandHasBrokerName(command: string, brokerName: string): boolean {
   return new RegExp(`(?:^|\\s)--name(?:\\s+|=)${escapedName}(?:\\s|$)`).test(command);
 }
 
+function commandHasProjectRoot(command: string, projectRoot: string): boolean {
+  const escapedRoot = escapeRegExp(path.resolve(projectRoot));
+  return new RegExp(`(?:^|\\s|=|["'])${escapedRoot}(?:$|\\s|["']|${escapeRegExp(path.sep)})`).test(command);
+}
+
+async function processCwdMatchesProjectRoot(
+  processInfo: ProcessInfo,
+  projectRoot: string,
+  deps: CoreDependencies
+): Promise<boolean> {
+  try {
+    const cwdDetails = await deps.execCommand(`lsof -nP -a -p ${processInfo.pid} -d cwd -Fn`);
+    return cwdDetails.stdout
+      .split('\n')
+      .filter((line) => line.startsWith('n'))
+      .some((line) => path.resolve(line.slice(1)) === projectRoot);
+  } catch {
+    return false;
+  }
+}
+
 async function killOrphanedBrokerProcesses(projectRoot: string, deps: CoreDependencies): Promise<void> {
   try {
-    const brokerName = path.basename(projectRoot) || 'project';
-    let candidates: ProcessInfo[] = [];
+    const resolvedProjectRoot = path.resolve(projectRoot);
+    const brokerName = path.basename(resolvedProjectRoot) || 'project';
+    const candidates: ProcessInfo[] = [];
     try {
-      const byName = await deps.execCommand('ps aux');
-      candidates = byName.stdout
+      const processList = await deps.execCommand('ps aux');
+      const brokerProcesses = processList.stdout
         .split('\n')
         .map(parsePsAuxLine)
         .filter((process): process is ProcessInfo => process !== null)
-        .filter((process) => isBrokerExecutableCommand(process.command))
-        .filter((process) => commandHasBrokerName(process.command, brokerName));
+        .filter((process) => isBrokerExecutableCommand(process.command));
+
+      const matchedPids = new Set<number>();
+      for (const processInfo of brokerProcesses) {
+        if (commandHasProjectRoot(processInfo.command, resolvedProjectRoot)) {
+          candidates.push(processInfo);
+          matchedPids.add(processInfo.pid);
+        }
+      }
+
+      for (const processInfo of brokerProcesses) {
+        if (
+          matchedPids.has(processInfo.pid) ||
+          !commandHasBrokerName(processInfo.command, brokerName) ||
+          !(await processCwdMatchesProjectRoot(processInfo, resolvedProjectRoot, deps))
+        ) {
+          continue;
+        }
+        candidates.push(processInfo);
+        matchedPids.add(processInfo.pid);
+      }
     } catch {
       // Expected if ps is unavailable; fall through to no matches.
-    }
-    if (candidates.length === 0) {
-      try {
-        const byPath = await deps.execCommand('ps aux');
-        candidates = byPath.stdout
-          .split('\n')
-          .map(parsePsAuxLine)
-          .filter((process): process is ProcessInfo => process !== null)
-          .filter((process) => isBrokerExecutableCommand(process.command))
-          .filter((process) => process.command.includes(projectRoot));
-      } catch {
-        // Expected if ps is unavailable; fall through to no matches.
-      }
     }
     for (const { pid } of candidates) {
       if (pid === deps.pid) {
@@ -1103,6 +1131,12 @@ async function shutdownUpResources(
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
   ensureBundledRelaycastMcpCommand(deps);
 
+  if (options.background && options.foreground) {
+    deps.error('Cannot use --background and --foreground together.');
+    deps.exit(1);
+    return;
+  }
+
   const paths = deps.getProjectPaths();
   // --state-dir overrides where the broker writes state / connection files
   if (options.stateDir) {
@@ -1553,8 +1587,10 @@ export async function runStatusCommand(
   if (options?.stateDir) {
     paths.dataDir = path.resolve(options.stateDir);
   }
-  const waitSeconds = Number.parseFloat(options?.waitFor ?? '0');
-  const waitMs = Number.isFinite(waitSeconds) && waitSeconds > 0 ? waitSeconds * 1000 : 0;
+  const waitMs = parseWaitForMs(options?.waitFor, deps);
+  if (waitMs === null) {
+    return;
+  }
 
   const readiness = await waitForBrokerReadiness(paths, deps, waitMs, waitMs > 0);
   if (readiness.state === 'stopped') {
@@ -1591,18 +1627,29 @@ export async function runStatusCommand(
     if (typeof status.pending_delivery_count === 'number' && status.pending_delivery_count > 0) {
       deps.log(`Pending deliveries: ${status.pending_delivery_count}`);
     }
-    if (session.workspace_key) {
+    if (session?.workspace_key) {
       deps.log(`Workspace Key: ${session.workspace_key}`);
       deps.log(`Observer: https://agentrelay.com/observer?key=${session.workspace_key}`);
     }
   }
 }
 
+function parseWaitForMs(rawValue: string | undefined, deps: CoreDependencies): number | null {
+  const rawWaitFor = rawValue?.trim();
+  if (rawWaitFor !== undefined && !/^\d+(?:\.\d+)?$/.test(rawWaitFor)) {
+    deps.error('--wait-for must be a non-negative number of seconds.');
+    deps.exit(1);
+    return null;
+  }
+  const waitSeconds = rawWaitFor === undefined ? 0 : Number.parseFloat(rawWaitFor);
+  return waitSeconds > 0 ? waitSeconds * 1000 : 0;
+}
+
 async function readBrokerStatusDetails(conn: BrokerConnection): Promise<BrokerStatusDetails | null> {
   const client = new AgentRelayClient({ baseUrl: conn.url, apiKey: conn.api_key });
   try {
     const status = await client.getStatus();
-    const session = await client.getSession();
+    const session = await client.getSession().catch(() => null);
     return { status, session };
   } catch {
     return null;
