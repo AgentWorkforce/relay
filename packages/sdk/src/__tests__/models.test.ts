@@ -19,7 +19,7 @@ import {
 
 test('codex model options include reasoning effort metadata', () => {
   const mini = ModelOptions.Codex.find((model) => model.value === Models.Codex.GPT_5_1_CODEX_MINI);
-  const frontier = ModelOptions.Codex.find((model) => model.value === Models.Codex.GPT_5_4);
+  const frontier = ModelOptions.Codex.find((model) => model.value === Models.Codex.GPT_5_5);
 
   assert.deepEqual(mini?.reasoningEfforts, [ReasoningEfforts.MEDIUM, ReasoningEfforts.HIGH]);
   assert.equal(mini?.defaultReasoningEffort, ReasoningEfforts.HIGH);
@@ -35,7 +35,7 @@ test('codex model options include reasoning effort metadata', () => {
 
 test('reasoning helper lookups return codex defaults and supported values', () => {
   assert.equal(getDefaultReasoningEffort('codex', Models.Codex.GPT_5_1_CODEX_MINI), ReasoningEfforts.HIGH);
-  assert.equal(getDefaultReasoningEffort('codex', Models.Codex.GPT_5_4), ReasoningEfforts.XHIGH);
+  assert.equal(getDefaultReasoningEffort('codex', Models.Codex.GPT_5_5), ReasoningEfforts.XHIGH);
   assert.deepEqual(getSupportedReasoningEfforts('codex', Models.Codex.GPT_5_1_CODEX_MINI), [
     ReasoningEfforts.MEDIUM,
     ReasoningEfforts.HIGH,

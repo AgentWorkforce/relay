@@ -10,7 +10,7 @@ from typing import Final, TypedDict, List
 class CLIVersions:
     """CLI tool versions. Update packages/shared/cli-registry.yaml to change versions."""
     CLAUDE: Final[str] = "2.1.72"  # Claude Code
-    CODEX: Final[str] = "0.124.0"  # Codex CLI
+    CODEX: Final[str] = "0.130.0"  # Codex CLI
     GEMINI: Final[str] = "0.39.1"  # Gemini CLI
     CURSOR: Final[str] = "2026.02.27-e7d2ef6"  # Cursor
     DROID: Final[str] = "0.1.0"  # Droid
@@ -40,7 +40,8 @@ class ClaudeModels:
 
 class CodexModels:
     """Codex CLI model identifiers."""
-    GPT_5_4: Final[str] = "gpt-5.4"  # GPT-5.4 — Frontier model for complex coding, research, and real-world work. (default)
+    GPT_5_5: Final[str] = "gpt-5.5"  # GPT-5.5 — Frontier model for complex coding, research, and real-world work. (default)
+    GPT_5_4: Final[str] = "gpt-5.4"  # GPT-5.4 — More affordable model for complex coding and professional work.
     GPT_5_3_CODEX: Final[str] = "gpt-5.3-codex"  # GPT-5.3 Codex — Frontier agentic coding model
     GPT_5_3_CODEX_SPARK: Final[str] = "gpt-5.3-codex-spark"  # GPT-5.3 Codex Spark — Ultra-fast coding model
     GPT_5_2_CODEX: Final[str] = "gpt-5.2-codex"  # GPT-5.2 Codex — Frontier agentic coding model
@@ -204,6 +205,7 @@ class OpencodeModels:
     OPENAI_GPT_5_3_CODEX_SPARK: Final[str] = "openai/gpt-5.3-codex-spark"  # GPT-5.3 Codex Spark
     OPENAI_GPT_5_4: Final[str] = "openai/gpt-5.4"  # GPT-5.4
     OPENAI_GPT_5_4_PRO: Final[str] = "openai/gpt-5.4-pro"  # GPT-5.4 Pro
+    OPENAI_GPT_5_5: Final[str] = "openai/gpt-5.5"  # GPT-5.5
     OPENAI_O1: Final[str] = "openai/o1"  # O1
     OPENAI_O1_MINI: Final[str] = "openai/o1-mini"  # O1 Mini
     OPENAI_O1_PREVIEW: Final[str] = "openai/o1-preview"  # O1 Preview
@@ -229,7 +231,8 @@ CLAUDE_MODEL_OPTIONS: Final[List[ModelOption]] = [
 ]
 
 CODEX_MODEL_OPTIONS: Final[List[ModelOption]] = [
-    {"value": "gpt-5.4", "label": "GPT-5.4 — Frontier model for complex coding, research, and real-world work."},
+    {"value": "gpt-5.5", "label": "GPT-5.5 — Frontier model for complex coding, research, and real-world work."},
+    {"value": "gpt-5.4", "label": "GPT-5.4 — More affordable model for complex coding and professional work."},
     {"value": "gpt-5.3-codex", "label": "GPT-5.3 Codex — Frontier agentic coding model"},
     {"value": "gpt-5.3-codex-spark", "label": "GPT-5.3 Codex Spark — Ultra-fast coding model"},
     {"value": "gpt-5.2-codex", "label": "GPT-5.2 Codex — Frontier agentic coding model"},
@@ -389,6 +392,7 @@ OPENCODE_MODEL_OPTIONS: Final[List[ModelOption]] = [
     {"value": "openai/gpt-5.3-codex-spark", "label": "GPT-5.3 Codex Spark"},
     {"value": "openai/gpt-5.4", "label": "GPT-5.4"},
     {"value": "openai/gpt-5.4-pro", "label": "GPT-5.4 Pro"},
+    {"value": "openai/gpt-5.5", "label": "GPT-5.5"},
     {"value": "openai/o1", "label": "O1"},
     {"value": "openai/o1-mini", "label": "O1 Mini"},
     {"value": "openai/o1-preview", "label": "O1 Preview"},
@@ -437,7 +441,7 @@ class SwarmPatterns:
 
 DEFAULT_MODELS: Final[dict] = {
     "claude": "sonnet",
-    "codex": "gpt-5.4",
+    "codex": "gpt-5.5",
     "gemini": "gemini-3.1-pro-preview",
     "cursor": "composer-2-fast",
     "droid": "opus-4.6-fast",
@@ -454,7 +458,7 @@ CLI_REGISTRY: Final[dict] = {
     "codex": {
         "name": "Codex CLI",
         "package": "@openai/codex",
-        "version": "0.124.0",
+        "version": "0.130.0",
         "install": "npm install -g @openai/codex",
     },
     "gemini": {

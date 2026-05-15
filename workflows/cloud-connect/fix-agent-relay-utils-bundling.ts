@@ -122,21 +122,21 @@ async function main() {
 
     .agent('impl', {
       cli: 'codex',
-      model: CodexModels.GPT_5_4,
+      model: CodexModels.GPT_5_5,
       preset: 'worker',
       role: 'Writes the materialize + verify scripts and wires prepack/prepublishOnly',
       retries: 2,
     })
     .agent('tester', {
       cli: 'codex',
-      model: CodexModels.GPT_5_4,
+      model: CodexModels.GPT_5_5,
       preset: 'worker',
       role: 'Enhances post-publish verification to exercise @agent-relay/utils import path',
       retries: 2,
     })
     .agent('fixer', {
       cli: 'codex',
-      model: CodexModels.GPT_5_4,
+      model: CodexModels.GPT_5_5,
       preset: 'worker',
       role: 'Fixes type errors, script failures, and packing issues',
       retries: 2,

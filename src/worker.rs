@@ -17,6 +17,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
     sync::mpsc,
+    time::timeout,
 };
 
 use crate::{
@@ -165,6 +166,7 @@ impl WorkerRegistry {
         skip_relay_prompt: bool,
         workspace_id: Option<String>,
     ) -> Result<()> {
+        let mut spec = spec;
         if self.workers.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' already exists", spec.name);
         }
@@ -202,6 +204,13 @@ impl WorkerRegistry {
                 let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
                 let is_codex = cli_lower == "codex";
                 let is_gemini = cli_lower == "gemini";
+                apply_codex_model_arg_fallback(
+                    &resolved_cli,
+                    &cli_lower,
+                    &spec.name,
+                    &mut effective_args,
+                )
+                .await;
                 // NOTE: Permission-bypass flags are auto-injected for all spawned agents.
                 // This means any actor who can trigger agent.add gets agents with no permission
                 // guardrails. Future work should make this an explicit opt-in per step/agent.
@@ -242,17 +251,17 @@ impl WorkerRegistry {
                     )
                     .await?;
 
-                let model_flag = spec.model.as_deref().and_then(|m| {
-                    if m.is_empty()
-                        || effective_args
-                            .iter()
-                            .any(|a| a == "--model" || a.starts_with("--model=") || a == "-m")
-                    {
-                        None
-                    } else {
-                        Some(m.to_string())
-                    }
-                });
+                let model_flag = resolve_model_flag_for_cli(
+                    &resolved_cli,
+                    &cli_lower,
+                    &spec.name,
+                    spec.model.as_deref(),
+                    &effective_args,
+                )
+                .await;
+                if let Some(ref model) = model_flag {
+                    spec.model = Some(model.clone());
+                }
 
                 let has_extra = bypass_flag.is_some()
                     || model_flag.is_some()
@@ -284,6 +293,13 @@ impl WorkerRegistry {
                 command.arg("--agent-name").arg(&spec.name);
                 let provider_cli = headless_provider_cli_name(provider);
                 command.arg(provider_cli);
+                apply_codex_model_arg_fallback(
+                    provider_cli,
+                    provider_cli,
+                    &spec.name,
+                    &mut spec.args,
+                )
+                .await;
 
                 let mcp_args = self
                     .build_mcp_args(
@@ -296,16 +312,17 @@ impl WorkerRegistry {
                     )
                     .await?;
 
-                let model_arg =
-                    spec.model.as_deref().and_then(|model| {
-                        if spec.args.iter().any(|arg| {
-                            arg == "--model" || arg.starts_with("--model=") || arg == "-m"
-                        }) {
-                            None
-                        } else {
-                            Some(model.to_string())
-                        }
-                    });
+                let model_arg = resolve_model_flag_for_cli(
+                    provider_cli,
+                    provider_cli,
+                    &spec.name,
+                    spec.model.as_deref(),
+                    &spec.args,
+                )
+                .await;
+                if let Some(ref model) = model_arg {
+                    spec.model = Some(model.clone());
+                }
 
                 if model_arg.is_some() || !spec.args.is_empty() || !mcp_args.is_empty() {
                     command.arg("--");
@@ -611,6 +628,160 @@ impl WorkerRegistry {
     }
 }
 
+fn args_include_model_override(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        arg == "--model" || arg.starts_with("--model=") || arg == "-m" || arg.starts_with("-m=")
+    })
+}
+
+async fn apply_codex_model_arg_fallback(
+    resolved_cli: &str,
+    normalized_cli: &str,
+    worker_name: &str,
+    args: &mut Vec<String>,
+) {
+    const GPT_5_5: &str = "gpt-5.5";
+
+    if !normalized_cli.eq_ignore_ascii_case("codex") || !args_reference_model(args, GPT_5_5) {
+        return;
+    }
+
+    let Some(fallback) = codex_local_fallback_model(resolved_cli, GPT_5_5).await else {
+        return;
+    };
+
+    if replace_model_arg(args, GPT_5_5, fallback) {
+        tracing::warn!(
+            worker = %worker_name,
+            requested_model = %GPT_5_5,
+            fallback_model = %fallback,
+            "local Codex CLI model catalog does not confirm explicit model arg; rewriting to fallback"
+        );
+    }
+}
+
+fn args_reference_model(args: &[String], model: &str) -> bool {
+    args.iter().enumerate().any(|(index, arg)| {
+        if arg == "--model" || arg == "-m" {
+            return args.get(index + 1).is_some_and(|value| value == model);
+        }
+        arg.strip_prefix("--model=")
+            .or_else(|| arg.strip_prefix("-m="))
+            .is_some_and(|value| value == model)
+    })
+}
+
+fn replace_model_arg(args: &mut [String], requested: &str, replacement: &str) -> bool {
+    let mut changed = false;
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--model" || args[index] == "-m" {
+            if let Some(value) = args.get_mut(index + 1) {
+                if value == requested {
+                    *value = replacement.to_string();
+                    changed = true;
+                }
+            }
+            index += 2;
+            continue;
+        }
+
+        if let Some(value) = args[index].strip_prefix("--model=") {
+            if value == requested {
+                args[index] = format!("--model={replacement}");
+                changed = true;
+            }
+        } else if let Some(value) = args[index].strip_prefix("-m=") {
+            if value == requested {
+                args[index] = format!("-m={replacement}");
+                changed = true;
+            }
+        }
+        index += 1;
+    }
+    changed
+}
+
+async fn resolve_model_flag_for_cli(
+    resolved_cli: &str,
+    normalized_cli: &str,
+    worker_name: &str,
+    requested_model: Option<&str>,
+    existing_args: &[String],
+) -> Option<String> {
+    let requested = requested_model?.trim();
+    if requested.is_empty() || args_include_model_override(existing_args) {
+        return None;
+    }
+
+    if normalized_cli.eq_ignore_ascii_case("codex") {
+        if let Some(fallback) = codex_local_fallback_model(resolved_cli, requested).await {
+            tracing::warn!(
+                worker = %worker_name,
+                requested_model = %requested,
+                fallback_model = %fallback,
+                "local Codex CLI model catalog does not confirm requested model; using fallback"
+            );
+            return Some(fallback.to_string());
+        }
+    }
+
+    Some(requested.to_string())
+}
+
+async fn codex_local_fallback_model(
+    resolved_cli: &str,
+    requested_model: &str,
+) -> Option<&'static str> {
+    const GPT_5_5: &str = "gpt-5.5";
+    const GPT_5_5_FALLBACK: &str = "gpt-5.4";
+
+    if requested_model != GPT_5_5 {
+        return None;
+    }
+
+    match codex_debug_models_contains_model(resolved_cli, requested_model).await {
+        Some(true) => None,
+        Some(false) | None => Some(GPT_5_5_FALLBACK),
+    }
+}
+
+async fn codex_debug_models_contains_model(resolved_cli: &str, model: &str) -> Option<bool> {
+    let output = timeout(
+        Duration::from_millis(1_500),
+        Command::new(resolved_cli)
+            .arg("debug")
+            .arg("models")
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    codex_models_json_contains_model(&output.stdout, model)
+}
+
+fn codex_models_json_contains_model(bytes: &[u8], model: &str) -> Option<bool> {
+    let value = serde_json::from_slice::<Value>(bytes).ok()?;
+    let models = value.get("models")?.as_array()?;
+    Some(models.iter().any(|entry| {
+        let matches_model = entry
+            .get("slug")
+            .or_else(|| entry.get("id"))
+            .or_else(|| entry.get("model"))
+            .and_then(Value::as_str)
+            .is_some_and(|slug| slug == model);
+        let requires_upgrade = entry
+            .get("upgrade")
+            .is_some_and(|upgrade| !upgrade.is_null());
+        matches_model && !requires_upgrade
+    }))
+}
+
 fn spawn_worker_reader<R>(
     tx: mpsc::Sender<WorkerEvent>,
     name: String,
@@ -760,4 +931,96 @@ fn spawn_worker_reader<R>(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn args_include_model_override_detects_supported_forms() {
+        assert!(args_include_model_override(&[
+            "--model".to_string(),
+            "gpt-5.4".to_string()
+        ]));
+        assert!(args_include_model_override(
+            &["--model=gpt-5.4".to_string()]
+        ));
+        assert!(args_include_model_override(&[
+            "-m".to_string(),
+            "gpt-5.4".to_string()
+        ]));
+        assert!(args_include_model_override(&["-m=gpt-5.4".to_string()]));
+        assert!(!args_include_model_override(&["--search".to_string()]));
+    }
+
+    #[test]
+    fn model_arg_helpers_detect_and_replace_supported_forms() {
+        let mut args = vec![
+            "--model".to_string(),
+            "gpt-5.5".to_string(),
+            "--foo".to_string(),
+            "--model=gpt-5.5".to_string(),
+            "-m=gpt-5.5".to_string(),
+        ];
+
+        assert!(args_reference_model(&args, "gpt-5.5"));
+        assert!(replace_model_arg(&mut args, "gpt-5.5", "gpt-5.4"));
+        assert_eq!(
+            args,
+            vec![
+                "--model".to_string(),
+                "gpt-5.4".to_string(),
+                "--foo".to_string(),
+                "--model=gpt-5.4".to_string(),
+                "-m=gpt-5.4".to_string(),
+            ]
+        );
+        assert!(!args_reference_model(&args, "gpt-5.5"));
+    }
+
+    #[test]
+    fn codex_models_json_contains_slug_model() {
+        let catalog = br#"{
+          "models": [
+            { "slug": "gpt-5.4", "upgrade": null },
+            { "slug": "gpt-5.5", "upgrade": null }
+          ]
+        }"#;
+
+        assert_eq!(
+            codex_models_json_contains_model(catalog, "gpt-5.5"),
+            Some(true)
+        );
+        assert_eq!(
+            codex_models_json_contains_model(catalog, "gpt-5.3-codex"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn codex_models_json_treats_upgrade_requirement_as_unsupported() {
+        let catalog = br#"{
+          "models": [
+            { "slug": "gpt-5.5", "upgrade": { "message": "requires a newer version" } }
+          ]
+        }"#;
+
+        assert_eq!(
+            codex_models_json_contains_model(catalog, "gpt-5.5"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn codex_models_json_requires_models_array() {
+        assert_eq!(
+            codex_models_json_contains_model(br#"{"models":{}}"#, "gpt-5.5"),
+            None
+        );
+        assert_eq!(
+            codex_models_json_contains_model(b"not json", "gpt-5.5"),
+            None
+        );
+    }
 }

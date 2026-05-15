@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-13T11:00:43.267Z",
+  "lastUpdated": "2026-05-15T10:57:41.920Z",
   "trajectories": {
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -402,6 +402,34 @@
       "startedAt": "2026-05-13T10:57:02.796Z",
       "completedAt": "2026-05-13T11:00:43.100Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_whd40oxptlhn.json"
+    },
+    "traj_n8duofq5vq1a": {
+      "title": "Update Codex registry for GPT-5.5",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:27:57.532Z",
+      "completedAt": "2026-05-15T10:33:19.705Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_n8duofq5vq1a.json"
+    },
+    "traj_7zu7et53ph3l": {
+      "title": "Harden Codex GPT-5.5 local CLI compatibility",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:35:25.212Z",
+      "completedAt": "2026-05-15T10:40:53.355Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_7zu7et53ph3l.json"
+    },
+    "traj_2yicjxgajt0a": {
+      "title": "Review GPT-5.5 hardening",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:54:19.300Z",
+      "completedAt": "2026-05-15T10:54:19.476Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_2yicjxgajt0a.json"
+    },
+    "traj_hrsndfzk0qay": {
+      "title": "Tighten Codex 5.5 fallback coverage",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:57:41.681Z",
+      "completedAt": "2026-05-15T10:57:41.827Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_hrsndfzk0qay.json"
     }
   }
 }
