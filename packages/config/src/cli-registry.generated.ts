@@ -451,7 +451,7 @@ export const CLAUDE_MODEL_OPTIONS: ModelOption[] = [
  * Codex CLI model options for UI dropdowns.
  */
 export const CODEX_MODEL_OPTIONS: ModelOption[] = [
-  { value: 'gpt-5.5', label: 'GPT-5.5 — Frontier model for complex coding, research, and real-world work.', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  { value: 'gpt-5.5', label: 'GPT-5.5 — Frontier model for complex coding, research, and real-world work.', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'medium' },
   { value: 'gpt-5.4', label: 'GPT-5.4 — More affordable model for complex coding and professional work.', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
   { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
   { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark — Ultra-fast coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
@@ -650,7 +650,7 @@ export const CLAUDE_MODEL_METADATA: Record<ClaudeModel, ModelOption> = {
  * Codex CLI model metadata keyed by model id.
  */
 export const CODEX_MODEL_METADATA: Record<CodexModel, ModelOption> = {
-  'gpt-5.5': { value: 'gpt-5.5', label: 'GPT-5.5 — Frontier model for complex coding, research, and real-world work.', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
+  'gpt-5.5': { value: 'gpt-5.5', label: 'GPT-5.5 — Frontier model for complex coding, research, and real-world work.', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'medium' },
   'gpt-5.4': { value: 'gpt-5.4', label: 'GPT-5.4 — More affordable model for complex coding and professional work.', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
   'gpt-5.3-codex': { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex — Frontier agentic coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },
   'gpt-5.3-codex-spark': { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark — Ultra-fast coding model', reasoningEfforts: ["low","medium","high","xhigh"], defaultReasoningEffort: 'xhigh' },

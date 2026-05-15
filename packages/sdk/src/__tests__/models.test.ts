@@ -30,12 +30,12 @@ test('codex model options include reasoning effort metadata', () => {
     ReasoningEfforts.HIGH,
     ReasoningEfforts.XHIGH,
   ]);
-  assert.equal(frontier?.defaultReasoningEffort, ReasoningEfforts.XHIGH);
+  assert.equal(frontier?.defaultReasoningEffort, ReasoningEfforts.MEDIUM);
 });
 
 test('reasoning helper lookups return codex defaults and supported values', () => {
   assert.equal(getDefaultReasoningEffort('codex', Models.Codex.GPT_5_1_CODEX_MINI), ReasoningEfforts.HIGH);
-  assert.equal(getDefaultReasoningEffort('codex', Models.Codex.GPT_5_5), ReasoningEfforts.XHIGH);
+  assert.equal(getDefaultReasoningEffort('codex', Models.Codex.GPT_5_5), ReasoningEfforts.MEDIUM);
   assert.deepEqual(getSupportedReasoningEfforts('codex', Models.Codex.GPT_5_1_CODEX_MINI), [
     ReasoningEfforts.MEDIUM,
     ReasoningEfforts.HIGH,

@@ -38,7 +38,7 @@ clis:
         label: 'GPT-5.5 — Frontier model for complex coding, research, and real-world work.'
         default: true
         reasoning_efforts: ['low', 'medium', 'high', 'xhigh']
-        default_reasoning_effort: 'xhigh'
+        default_reasoning_effort: 'medium'
       gpt_5_4:
         id: 'gpt-5.4'
         label: 'GPT-5.4 — More affordable model for complex coding and professional work.'
