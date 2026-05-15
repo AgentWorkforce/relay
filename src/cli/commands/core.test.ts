@@ -98,6 +98,7 @@ function createHarness(options?: {
   missingBridgeProjects?: BridgeProject[];
   spawnedProcess?: SpawnedProcess;
   spawnImpl?: CoreDependencies['spawnProcess'];
+  execCommand?: CoreDependencies['execCommand'];
   killImpl?: CoreDependencies['killProcess'];
   nowImpl?: CoreDependencies['now'];
   sleepImpl?: CoreDependencies['sleep'];
@@ -139,7 +140,7 @@ function createHarness(options?: {
     findDashboardBinary: vi.fn(() => options?.dashboardBinary ?? '/usr/local/bin/relay-dashboard-server'),
     spawnProcess:
       options?.spawnImpl ?? (vi.fn(() => spawnedProcess) as unknown as CoreDependencies['spawnProcess']),
-    execCommand: vi.fn(async () => ({ stdout: '', stderr: '' })),
+    execCommand: options?.execCommand ?? vi.fn(async () => ({ stdout: '', stderr: '' })),
     killProcess: options?.killImpl ?? vi.fn(() => undefined),
     fs,
     generateAgentName: vi.fn(() => 'AutoAgent'),
@@ -631,6 +632,29 @@ describe('registerCoreCommands', () => {
       'Run `agent-relay status --wait-for=10` for details, or `agent-relay down --force` to clean up.'
     );
     expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
+  });
+
+  it('down --force only kills actual orphaned broker executables for the project', async () => {
+    const execCommand = vi.fn(async () => ({
+      stdout: [
+        'USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND',
+        'khaliqgant 111 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /bin/zsh -lc BROKER=/tmp/project/target/release/agent-relay-broker node /tmp/agent-relay.js down --force',
+        'khaliqgant 222 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --name project --channels general --persist',
+        'khaliqgant 333 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --name other-project --channels general --persist',
+      ].join('\n'),
+      stderr: '',
+    }));
+    const killImpl = vi.fn(() => undefined);
+    const { program, deps } = createHarness({ execCommand, killImpl });
+
+    const exitCode = await runCommand(program, ['down', '--force']);
+
+    expect(exitCode).toBeUndefined();
+    expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(111, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(333, 'SIGTERM');
+    expect(deps.warn).toHaveBeenCalledWith('Killing orphaned broker process (pid: 222)');
+    expect(deps.log).toHaveBeenCalledWith('Cleaned up (was not running)');
   });
 
   it('up --no-dashboard reports the broker PID when the detached broker is live but API-unready', async () => {

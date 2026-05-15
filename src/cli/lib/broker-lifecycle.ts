@@ -291,48 +291,90 @@ function isProcessRunning(pid: number, deps: CoreDependencies): boolean {
   }
 }
 
+type ProcessInfo = {
+  pid: number;
+  command: string;
+};
+
+function parsePsAuxLine(line: string): ProcessInfo | null {
+  const fields = line.trim().split(/\s+/);
+  if (fields.length < 11 || fields[0] === 'USER') {
+    return null;
+  }
+  const pid = Number.parseInt(fields[1], 10);
+  if (Number.isNaN(pid) || pid <= 0) {
+    return null;
+  }
+  return {
+    pid,
+    command: fields.slice(10).join(' '),
+  };
+}
+
+function commandExecutableBasename(command: string): string {
+  const executable = command.trim().split(/\s+/)[0] ?? '';
+  return path.basename(executable.replace(/^["']|["']$/g, ''));
+}
+
+function isBrokerExecutableCommand(command: string): boolean {
+  const basename = commandExecutableBasename(command);
+  return basename === 'agent-relay-broker' || basename.startsWith('agent-relay-broker-');
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function commandHasBrokerName(command: string, brokerName: string): boolean {
+  const escapedName = escapeRegExp(brokerName);
+  return new RegExp(`(?:^|\\s)--name(?:\\s+|=)${escapedName}(?:\\s|$)`).test(command);
+}
+
 async function killOrphanedBrokerProcesses(projectRoot: string, deps: CoreDependencies): Promise<void> {
   try {
-    const shellQuote = (s: string): string => "'" + s.replace(/'/g, "'\\''") + "'";
     const brokerName = path.basename(projectRoot) || 'project';
-    let stdout = '';
+    let candidates: ProcessInfo[] = [];
     try {
-      const byName = await deps.execCommand(
-        `ps aux | grep '[a]gent-relay-broker' | grep -F ${shellQuote('--name ' + brokerName)}`
-      );
-      stdout = byName.stdout;
+      const byName = await deps.execCommand('ps aux');
+      candidates = byName.stdout
+        .split('\n')
+        .map(parsePsAuxLine)
+        .filter((process): process is ProcessInfo => process !== null)
+        .filter((process) => isBrokerExecutableCommand(process.command))
+        .filter((process) => commandHasBrokerName(process.command, brokerName));
     } catch {
-      // Name filter may not match older process invocations; try legacy path-based filter.
+      // Expected if ps is unavailable; fall through to no matches.
     }
-    if (!stdout.trim()) {
+    if (candidates.length === 0) {
       try {
-        const byPath = await deps.execCommand(
-          `ps aux | grep '[a]gent-relay-broker' | grep -F ${shellQuote(projectRoot)}`
-        );
-        stdout = byPath.stdout;
+        const byPath = await deps.execCommand('ps aux');
+        candidates = byPath.stdout
+          .split('\n')
+          .map(parsePsAuxLine)
+          .filter((process): process is ProcessInfo => process !== null)
+          .filter((process) => isBrokerExecutableCommand(process.command))
+          .filter((process) => process.command.includes(projectRoot));
       } catch {
-        // Expected when no orphaned processes are matched by either strategy.
+        // Expected if ps is unavailable; fall through to no matches.
       }
     }
-    const lines = stdout.trim().split('\n').filter(Boolean);
-    for (const line of lines) {
-      const parts = line.trim().split(/\s+/);
-      const pid = Number.parseInt(parts[1], 10);
-      if (!Number.isNaN(pid) && pid > 0 && pid !== deps.pid) {
-        deps.warn(`Killing orphaned broker process (pid: ${pid})`);
-        try {
-          deps.killProcess(pid, 'SIGTERM');
-        } catch {
-          // Process may have already exited.
-        }
+    for (const { pid } of candidates) {
+      if (pid === deps.pid) {
+        continue;
+      }
+      deps.warn(`Killing orphaned broker process (pid: ${pid})`);
+      try {
+        deps.killProcess(pid, 'SIGTERM');
+      } catch {
+        // Process may have already exited.
       }
     }
     // Give killed processes a moment to exit.
-    if (lines.length > 0) {
+    if (candidates.length > 0) {
       await deps.sleep(300);
     }
   } catch {
-    // grep returns exit code 1 when no matches found — this is expected.
+    // Best-effort orphan cleanup.
   }
 }
 
@@ -391,8 +433,9 @@ function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): vo
 }
 
 function childUpArgsForDetachedStart(options: UpOptions, deps: CoreDependencies): string[] {
-  const args = cliUserArgs(deps)
-    .filter((arg) => !['--background', '--foreground'].some((name) => matchesCliOption(arg, name)));
+  const args = cliUserArgs(deps).filter(
+    (arg) => !['--background', '--foreground'].some((name) => matchesCliOption(arg, name))
+  );
   if (options.dashboard === false && !args.includes('--no-dashboard')) {
     args.push('--no-dashboard');
   }
@@ -415,10 +458,7 @@ function cliUserArgs(deps: CoreDependencies): string[] {
   return hasEntrypointArgvSlot(deps) ? deps.argv.slice(2) : deps.argv.slice(1);
 }
 
-function detachedCliInvocation(
-  deps: CoreDependencies,
-  args: string[]
-): { command: string; args: string[] } {
+function detachedCliInvocation(deps: CoreDependencies, args: string[]): { command: string; args: string[] } {
   if (shouldReexecThroughScript(deps)) {
     return { command: deps.execPath, args: [deps.cliScript, ...args] };
   }
@@ -444,7 +484,12 @@ function isCliScriptEntrypoint(deps: CoreDependencies): boolean {
   if (sameCliPath(deps.execPath, cliScript)) {
     return true;
   }
-  return path.isAbsolute(cliScript) || cliScript.includes('/') || cliScript.includes('\\') || /\.[cm]?js$/i.test(cliScript);
+  return (
+    path.isAbsolute(cliScript) ||
+    cliScript.includes('/') ||
+    cliScript.includes('\\') ||
+    /\.[cm]?js$/i.test(cliScript)
+  );
 }
 
 function isBundledBunExecutableEntrypoint(deps: CoreDependencies): boolean {
@@ -1093,7 +1138,9 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       if (readiness.state === 'starting') {
         deps.error('Broker process is running, but the API did not become ready.');
       }
-      deps.error('Run `agent-relay status --wait-for=10` for details, or `agent-relay down --force` to clean up.');
+      deps.error(
+        'Run `agent-relay status --wait-for=10` for details, or `agent-relay down --force` to clean up.'
+      );
       deps.exit(1);
       return;
     }
