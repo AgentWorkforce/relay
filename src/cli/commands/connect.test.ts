@@ -103,6 +103,23 @@ describe('registerConnectCommands', () => {
     expect(h.connect).not.toHaveBeenCalled();
   });
 
+  it('still accepts legacy cloud-connect options before printing the deprecation banner', async () => {
+    const h = createHarness();
+    const code = await run(h.program, [
+      'connect',
+      'anthropic',
+      '--timeout',
+      '300',
+      '--language',
+      'typescript',
+      '--cloud-url',
+      'https://cloud.example.test',
+    ]);
+    expect(code).toBe(1);
+    expect(h.errors.join('\n')).toContain('agent-relay cloud connect anthropic');
+    expect(h.connect).not.toHaveBeenCalled();
+  });
+
   it('surfaces NEEDS_CLI_INSTALL via stderr and exits 2', async () => {
     const h = createHarness(async () => {
       throw new CliDetectError(

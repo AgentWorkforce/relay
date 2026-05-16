@@ -36,6 +36,9 @@ export function registerConnectCommands(
       `Connect a local AI CLI (${SUPPORTED_CLIS.join(' | ')}). Detects on PATH, version-checks, and writes ~/.config/agent-relay/connections.json. ` +
         'Other provider arguments still print the legacy deprecation banner.',
     )
+    .option('--timeout <seconds>', 'Deprecated cloud connect timeout option')
+    .option('--language <lang>', 'Deprecated cloud connect language/image option')
+    .option('--cloud-url <url>', 'Deprecated cloud connect API URL option')
     .action(async (cliArg: string) => {
       const normalized = cliArg.toLowerCase().trim();
       if (!isSupportedCli(normalized)) {
