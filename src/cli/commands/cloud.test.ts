@@ -10,7 +10,7 @@ const cloudMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@agent-relay/cloud', () => ({
-  AUTH_FILE_PATH: '/tmp/cloud-auth.json',
+  AUTH_FILE_PATH: '/tmp/.config/agent-relay/cloud.json',
   REFRESH_WINDOW_MS: 60_000,
   authorizedApiFetch: vi.fn(),
   cancelWorkflow: vi.fn(),

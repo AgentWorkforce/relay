@@ -13,6 +13,7 @@ vi.mock('node:fs/promises', () => ({
 }));
 
 import { ensureAuthenticated, readStoredAuth, refreshStoredAuth } from './auth.js';
+import { AUTH_FILE_PATH, LEGACY_AUTH_FILE_PATH } from './types.js';
 import type { StoredAuth } from './types.js';
 
 const FILE_AUTH: StoredAuth = {
@@ -41,6 +42,7 @@ function createEnvAuth(overrides: Partial<StoredAuth> = {}): NodeJS.ProcessEnv {
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
 
@@ -90,6 +92,37 @@ describe('readStoredAuth', () => {
 
     await expect(readStoredAuth({})).resolves.toEqual(FILE_AUTH);
     expect(fsMocks.readFile).toHaveBeenCalledOnce();
+  });
+
+  it('maps the new cloud.json file shape to runtime auth', async () => {
+    fsMocks.readFile.mockResolvedValue(
+      JSON.stringify({
+        apiUrl: 'https://cloud.example',
+        cloudToken: 'cloud-token',
+        expiresAt: '2026-04-13T12:00:00.000Z',
+        userId: 'user_123',
+        workspaces: [{ id: 'workspace_123', name: 'Support' }],
+      })
+    );
+
+    await expect(readStoredAuth({})).resolves.toEqual({
+      apiUrl: 'https://cloud.example',
+      accessToken: 'cloud-token',
+      refreshToken: '',
+      accessTokenExpiresAt: '2026-04-13T12:00:00.000Z',
+      userId: 'user_123',
+      workspaces: [{ id: 'workspace_123', name: 'Support' }],
+    });
+  });
+
+  it('falls back to the legacy auth file path', async () => {
+    fsMocks.readFile
+      .mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+      .mockResolvedValueOnce(JSON.stringify(FILE_AUTH));
+
+    await expect(readStoredAuth({})).resolves.toEqual(FILE_AUTH);
+    expect(fsMocks.readFile).toHaveBeenNthCalledWith(1, AUTH_FILE_PATH, 'utf8');
+    expect(fsMocks.readFile).toHaveBeenNthCalledWith(2, LEGACY_AUTH_FILE_PATH, 'utf8');
   });
 
   it('prefers env auth over file auth when both are available', async () => {
@@ -179,6 +212,54 @@ describe('ensureAuthenticated', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const calledUrl = String(fetchSpy.mock.calls[0][0]);
     expect(calledUrl).toContain('origin.example');
+  });
+
+  it('logs in with a one-time code poll and writes the new cloud config path', async () => {
+    fsMocks.readFile.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.stubEnv('AGENT_RELAY_NO_BROWSER', '1');
+
+    const fetchSpy = vi.fn(async (input: string | URL) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe('/api/v1/auth/cli-login/poll');
+      expect(url.searchParams.get('code')).toMatch(/^c_[A-Za-z0-9_-]+$/);
+
+      return new Response(
+        JSON.stringify({
+          cloudToken: 'cloud-token-test',
+          userId: 'user_123',
+          workspaces: [{ id: 'workspace_123', name: 'Support' }],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const result = await ensureAuthenticated('https://cloud.test', { force: true });
+
+    expect(result).toEqual({
+      apiUrl: 'https://cloud.test',
+      accessToken: 'cloud-token-test',
+      refreshToken: '',
+      accessTokenExpiresAt: expect.any(String),
+      userId: 'user_123',
+      workspaces: [{ id: 'workspace_123', name: 'Support' }],
+    });
+    expect(consoleLog).toHaveBeenCalledWith(expect.stringMatching(/^Opening browser for cloud login: /));
+    expect(fsMocks.mkdir).toHaveBeenCalledWith(expect.stringContaining('.config/agent-relay'), {
+      recursive: true,
+      mode: 0o700,
+    });
+    expect(fsMocks.writeFile).toHaveBeenCalledWith(
+      AUTH_FILE_PATH,
+      expect.stringContaining('"cloudToken": "cloud-token-test"'),
+      {
+        encoding: 'utf8',
+        mode: 0o600,
+      }
+    );
+
+    consoleLog.mockRestore();
   });
 });
 

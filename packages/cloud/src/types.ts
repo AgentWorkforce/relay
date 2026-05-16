@@ -6,6 +6,36 @@ export type StoredAuth = {
   refreshToken: string;
   accessTokenExpiresAt: string;
   apiUrl: string;
+  userId?: string;
+  workspaces?: CloudLoginWorkspace[];
+};
+
+export type CloudAuthFile = {
+  apiUrl: string;
+  cloudToken: string;
+  userId?: string;
+  workspaces?: CloudLoginWorkspace[];
+  expiresAt: string;
+};
+
+export type CloudLoginWorkspace = {
+  id: string;
+  slug?: string;
+  name?: string;
+  [key: string]: unknown;
+};
+
+export type CliLoginPollResponse = {
+  cloudToken?: string;
+  accessToken?: string;
+  token?: string | { value?: string; expiresAt?: string };
+  userId?: string;
+  workspaces?: CloudLoginWorkspace[];
+  accessTokenExpiresAt?: string;
+  expiresAt?: string;
+  status?: string;
+  error?: string;
+  message?: string;
 };
 
 export type WhoAmIResponse = {
@@ -207,7 +237,12 @@ export type GetPatchesResponse = {
 export const SUPPORTED_PROVIDERS = ['anthropic', 'openai', 'google', 'cursor', 'opencode', 'droid'] as const;
 
 export const REFRESH_WINDOW_MS = 60_000;
-export const AUTH_FILE_PATH = path.join(os.homedir(), '.agent-relay', 'cloud-auth.json');
+export const AUTH_FILE_PATH = path.join(
+  process.env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), '.config'),
+  'agent-relay',
+  'cloud.json'
+);
+export const LEGACY_AUTH_FILE_PATH = path.join(os.homedir(), '.agent-relay', 'cloud-auth.json');
 
 export function defaultApiUrl(): string {
   return process.env.CLOUD_API_URL?.trim() || 'https://agentrelay.com/cloud';

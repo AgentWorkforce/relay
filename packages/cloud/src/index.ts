@@ -84,6 +84,10 @@ export {
   SUPPORTED_PROVIDERS,
   REFRESH_WINDOW_MS,
   AUTH_FILE_PATH,
+  LEGACY_AUTH_FILE_PATH,
   defaultApiUrl,
   isSupportedProvider,
+  type CloudAuthFile,
+  type CliLoginPollResponse,
+  type CloudLoginWorkspace,
 } from './types.js';

@@ -185,8 +185,11 @@ test('login prints a success message after fresh OAuth', async () => {
   const { program } = createHarness(collector.deps);
   const { lines, errors } = collector;
   const originalConsoleLog = console.log;
+  const originalFetch = globalThis.fetch;
   const loginUrls: string[] = [];
+  const consoleLines: string[] = [];
   let previousAuthFile: string | null = null;
+  const previousNoBrowser = process.env.AGENT_RELAY_NO_BROWSER;
 
   try {
     previousAuthFile = await fs.readFile(AUTH_FILE_PATH, 'utf8');
@@ -199,10 +202,29 @@ test('login prints a success message after fresh OAuth', async () => {
     if (line.startsWith('Opening browser for cloud login: ')) {
       loginUrls.push(line.slice('Opening browser for cloud login: '.length));
     }
+    consoleLines.push(line);
   }) as typeof console.log;
 
+  process.env.AGENT_RELAY_NO_BROWSER = '1';
+  globalThis.fetch = (async (input) => {
+    const requestUrl = new URL(String(input));
+    assert.equal(requestUrl.origin, 'https://cloud.test');
+    assert.equal(requestUrl.pathname, '/api/v1/auth/cli-login/poll');
+    assert.match(requestUrl.searchParams.get('code') ?? '', /^c_[A-Za-z0-9_-]+$/);
+
+    return Response.json(
+      {
+        cloudToken: 'access_token_test',
+        userId: 'user_test',
+        workspaces: [{ id: 'workspace_test', name: 'Test Workspace' }],
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+      { status: 200 }
+    );
+  }) as typeof globalThis.fetch;
+
   try {
-    const loginPromise = program.parseAsync([
+    await program.parseAsync([
       'node',
       'agent-relay',
       'login',
@@ -211,38 +233,35 @@ test('login prints a success message after fresh OAuth', async () => {
       '--force',
     ]);
 
-    for (let attempt = 0; attempt < 300; attempt += 1) {
-      if (loginUrls.length > 0) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-
     assert.ok(loginUrls[0], 'expected browser login URL to be emitted');
     const loginUrl = new URL(loginUrls[0]);
-    const redirectUri = loginUrl.searchParams.get('redirect_uri');
-    const state = loginUrl.searchParams.get('state');
-
-    assert.ok(redirectUri, 'expected redirect_uri in login URL');
-    assert.ok(state, 'expected state in login URL');
-
-    const callbackUrl = new URL(redirectUri);
-    callbackUrl.searchParams.set('state', state);
-    callbackUrl.searchParams.set('access_token', 'access_token_test');
-    callbackUrl.searchParams.set('refresh_token', 'refresh_token_test');
-    callbackUrl.searchParams.set('access_token_expires_at', new Date(Date.now() + 60_000).toISOString());
-    callbackUrl.searchParams.set('api_url', 'https://cloud.test');
-
-    const callbackResponse = await fetch(callbackUrl, { redirect: 'manual' });
-    assert.equal(callbackResponse.status, 302);
-
-    await loginPromise;
+    assert.equal(loginUrl.origin, 'https://cloud.test');
+    assert.equal(loginUrl.pathname, '/cli-login');
+    assert.match(loginUrl.searchParams.get('code') ?? '', /^c_[A-Za-z0-9_-]+$/);
 
     assert.deepEqual(errors, []);
-    assert.deepEqual(lines, ['Logged in to https://cloud.test']);
+    assert.deepEqual(lines, []);
+    assert.ok(consoleLines.includes('Logged in to https://cloud.test'));
+
+    const storedAuth = JSON.parse(await fs.readFile(AUTH_FILE_PATH, 'utf8')) as {
+      cloudToken?: string;
+      expiresAt?: string;
+      apiUrl?: string;
+      userId?: string;
+    };
+    assert.equal(storedAuth.cloudToken, 'access_token_test');
+    assert.equal(typeof storedAuth.expiresAt, 'string');
+    assert.equal(storedAuth.apiUrl, 'https://cloud.test');
+    assert.equal(storedAuth.userId, 'user_test');
   } finally {
     console.log = originalConsoleLog;
+    globalThis.fetch = originalFetch;
     await restoreAuthFile(previousAuthFile);
+    if (previousNoBrowser === undefined) {
+      delete process.env.AGENT_RELAY_NO_BROWSER;
+    } else {
+      process.env.AGENT_RELAY_NO_BROWSER = previousNoBrowser;
+    }
     delete process.env.CLOUD_API_URL;
     delete process.env.CLOUD_API_ACCESS_TOKEN;
     delete process.env.CLOUD_API_REFRESH_TOKEN;
