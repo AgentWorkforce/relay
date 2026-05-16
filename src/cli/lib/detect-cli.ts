@@ -49,7 +49,7 @@ export interface SpawnFn {
   (
     command: string,
     args: readonly string[],
-    options: { cwd: string; env: NodeJS.ProcessEnv; stdio: 'pipe' },
+    options: { cwd: string; env: NodeJS.ProcessEnv; stdio: 'pipe'; shell?: boolean | string },
   ): SpawnLike;
 }
 
@@ -171,11 +171,28 @@ export async function probeVersion(
   const timeoutMs = deps.versionTimeoutMs ?? DEFAULT_VERSION_TIMEOUT_MS;
   const cwd = deps.tmpDir ?? os.tmpdir();
   const env = buildChildEnv();
+  const platform = deps.platform ?? process.platform;
+
+  // On Windows, `child_process.spawn` can't execute `.cmd` / `.bat` shims
+  // (which is how npm-installed CLIs like `claude.cmd` / `codex.cmd` ship)
+  // unless we go through the shell. Without `shell: true`, the spawn fails
+  // with EINVAL / ENOENT and the user sees "CLI_VERSION_FAILED: failed to
+  // spawn …" on every connect attempt. Only enable shell mode on Windows so
+  // the POSIX path keeps its argv-array safety (`binPath` here comes from
+  // detect-cli's PATH walk and is already an absolute file path).
+  const useShell =
+    platform === 'win32' && /\.(cmd|bat)$/i.test(binPath);
 
   return new Promise<ProbeVersionResult>((resolve, reject) => {
     let child: SpawnLike;
     try {
-      child = spawnImpl(binPath, ['--version'], { cwd, env, stdio: 'pipe' });
+      child = spawnImpl(
+        binPath,
+        ['--version'],
+        useShell
+          ? { cwd, env, stdio: 'pipe', shell: true }
+          : { cwd, env, stdio: 'pipe' },
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       reject(

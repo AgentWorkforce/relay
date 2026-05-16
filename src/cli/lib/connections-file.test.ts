@@ -187,6 +187,45 @@ describe('upsertConnectionsManifest', () => {
     expect(body).toContain('  "clis"');
   });
 
+  it('preserves a higher existing manifest version rather than downgrading it on upsert', async () => {
+    // Forward-compat: if a future agent-relay release has bumped the manifest
+    // version and written additional fields, an older binary that upserts here
+    // must not regress the version back to its own (smaller) value.
+    // readConnectionsManifest already preserves it on read; upsert must
+    // preserve it on write too.
+    const opts = { xdgConfigHome: tmpRoot, now: () => '2026-05-16T00:00:00.000Z' };
+    await upsertConnectionsManifest(
+      {
+        cli: 'claude',
+        binPath: '/bin/claude',
+        version: '1.0.0',
+        rawVersionOutput: 'claude 1.0.0',
+        connectedAt: '2026-05-16T00:00:00.000Z',
+      },
+      opts,
+    );
+    // Hand-bump the on-disk version to a future value.
+    const fs = await import('node:fs/promises');
+    const manifestPath = connectionsFilePath(opts);
+    const existing = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    existing.version = 999;
+    await fs.writeFile(manifestPath, JSON.stringify(existing));
+    // Re-upsert with the same CLI; manifest.version must stay at 999.
+    const { manifest } = await upsertConnectionsManifest(
+      {
+        cli: 'codex',
+        binPath: '/bin/codex',
+        version: '0.5.0',
+        rawVersionOutput: 'codex 0.5.0',
+        connectedAt: '2026-05-16T00:00:01.000Z',
+      },
+      opts,
+    );
+    expect(manifest.version).toBe(999);
+    const onDisk = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    expect(onDisk.version).toBe(999);
+  });
+
   it('refreshes updatedAt on each upsert', async () => {
     const opts = (now: string) => ({ xdgConfigHome: tmpRoot, now: () => now });
     await upsertConnectionsManifest(

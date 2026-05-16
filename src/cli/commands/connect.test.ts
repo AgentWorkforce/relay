@@ -120,6 +120,25 @@ describe('registerConnectCommands', () => {
     expect(h.connect).not.toHaveBeenCalled();
   });
 
+  it('accepts arbitrary legacy unknown options without crashing before the deprecation banner', async () => {
+    // commander rejects unknown options at parse time by default. Scripted
+    // callers may still pass forgotten legacy flags beyond --timeout /
+    // --language / --cloud-url; allowUnknownOption(true) lets the action
+    // run, then the unknown-cli check below fires the deprecation banner.
+    const h = createHarness();
+    const code = await run(h.program, [
+      'connect',
+      'anthropic',
+      '--region',
+      'us-east-1',
+      '--really-old-flag',
+    ]);
+    expect(code).toBe(1);
+    expect(h.errors.join('\n')).toContain('[DEPRECATED]');
+    expect(h.errors.join('\n')).toContain('agent-relay cloud connect anthropic');
+    expect(h.connect).not.toHaveBeenCalled();
+  });
+
   it('surfaces NEEDS_CLI_INSTALL via stderr and exits 2', async () => {
     const h = createHarness(async () => {
       throw new CliDetectError(

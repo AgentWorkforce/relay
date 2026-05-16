@@ -136,13 +136,23 @@ describe('findCli', () => {
 
 describe('probeVersion', () => {
   let child: FakeChild;
-  let spawnCalls: Array<{ command: string; args: readonly string[]; cwd: string; env: NodeJS.ProcessEnv }>;
+  let spawnCalls: Array<{
+    command: string;
+    args: readonly string[];
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    shell?: boolean | string;
+  }>;
 
   const stubSpawn = () => {
     child = new FakeChild();
     spawnCalls = [];
-    return ((command: string, args: readonly string[], opts: { cwd: string; env: NodeJS.ProcessEnv }) => {
-      spawnCalls.push({ command, args, cwd: opts.cwd, env: opts.env });
+    return ((
+      command: string,
+      args: readonly string[],
+      opts: { cwd: string; env: NodeJS.ProcessEnv; shell?: boolean | string },
+    ) => {
+      spawnCalls.push({ command, args, cwd: opts.cwd, env: opts.env, shell: opts.shell });
       return child as unknown as ReturnType<typeof child.kill> extends never ? never : any;
     }) as any;
   };
@@ -232,5 +242,65 @@ describe('probeVersion', () => {
       child.emit('error', new Error('ENOENT'));
     });
     await expect(promise).rejects.toMatchObject({ code: 'CLI_VERSION_FAILED' });
+  });
+
+  it('spawns .cmd shims through the shell on win32 so npm-installed CLIs work', async () => {
+    // child_process.spawn cannot execute .cmd/.bat directly on Windows
+    // without `shell: true`; the previous direct-spawn would fail with
+    // EINVAL/ENOENT before probing the version at all.
+    const spawn = stubSpawn();
+    const promise = probeVersion('C:\\Users\\agent\\AppData\\npm\\codex.cmd', {
+      spawn,
+      platform: 'win32',
+      tmpDir: 'C:\\tmp',
+    });
+    process.nextTick(() => {
+      child.stdout.emit('data', Buffer.from('codex 0.4.2\n'));
+      child.emit('close', 0, null);
+    });
+    await promise;
+    expect(spawnCalls[0]?.shell).toBe(true);
+  });
+
+  it('spawns .bat shims through the shell on win32', async () => {
+    const spawn = stubSpawn();
+    const promise = probeVersion('C:\\bin\\gemini.bat', {
+      spawn,
+      platform: 'win32',
+    });
+    process.nextTick(() => {
+      child.stdout.emit('data', Buffer.from('gemini 1.0.0\n'));
+      child.emit('close', 0, null);
+    });
+    await promise;
+    expect(spawnCalls[0]?.shell).toBe(true);
+  });
+
+  it('does not enable shell mode on POSIX so argv-array safety is preserved', async () => {
+    const spawn = stubSpawn();
+    const promise = probeVersion('/usr/local/bin/claude', {
+      spawn,
+      platform: 'linux',
+    });
+    process.nextTick(() => {
+      child.stdout.emit('data', Buffer.from('claude 1.0.0\n'));
+      child.emit('close', 0, null);
+    });
+    await promise;
+    expect(spawnCalls[0]?.shell).toBeUndefined();
+  });
+
+  it('does not enable shell mode for non-.cmd/.bat shims on win32', async () => {
+    const spawn = stubSpawn();
+    const promise = probeVersion('C:\\bin\\claude.exe', {
+      spawn,
+      platform: 'win32',
+    });
+    process.nextTick(() => {
+      child.stdout.emit('data', Buffer.from('claude 1.0.0\n'));
+      child.emit('close', 0, null);
+    });
+    await promise;
+    expect(spawnCalls[0]?.shell).toBeUndefined();
   });
 });

@@ -39,6 +39,13 @@ export function registerConnectCommands(
     .option('--timeout <seconds>', 'Deprecated cloud connect timeout option')
     .option('--language <lang>', 'Deprecated cloud connect language/image option')
     .option('--cloud-url <url>', 'Deprecated cloud connect API URL option')
+    // commander rejects unknown options before `.action` runs by default, so
+    // scripted callers passing any other legacy `agent-relay cloud connect`
+    // flag (beyond the three we explicitly handle above) would crash with
+    // "error: unknown option ..." instead of seeing the deprecation banner.
+    // Accept unknown options at parse time and surface them through the
+    // existing `<cli>` validation path so the banner can fire.
+    .allowUnknownOption(true)
     .action(async (cliArg: string) => {
       const normalized = cliArg.toLowerCase().trim();
       if (!isSupportedCli(normalized)) {

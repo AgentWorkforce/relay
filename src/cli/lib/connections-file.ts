@@ -141,7 +141,13 @@ export async function upsertConnectionsManifest(
 
   const existing = await readConnectionsManifest(deps);
   const merged: ConnectionsManifest = {
-    version: CONNECTIONS_MANIFEST_VERSION,
+    // Never downgrade an existing manifest. If a future agent-relay release
+    // bumps CONNECTIONS_MANIFEST_VERSION and writes extra fields, an older
+    // binary running upsert here would otherwise reset the version back to
+    // its own (smaller) value and trick the future binary into ignoring its
+    // own forward-compatible fields. readConnectionsManifest already
+    // preserves the higher version on read; we now preserve it on write too.
+    version: Math.max(existing.version, CONNECTIONS_MANIFEST_VERSION),
     updatedAt: now,
     clis: {
       ...existing.clis,
