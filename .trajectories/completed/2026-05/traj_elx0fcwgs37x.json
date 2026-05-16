@@ -151,13 +151,7 @@
             "reason": "Legacy STEP_COMPLETE marker observed",
             "evidence": {
               "summary": "5 signal(s), 6 file change(s)",
-              "signals": [
-                "implement-slice",
-                "COMPLETE",
-                "COMPLETE",
-                ">7u",
-                "0"
-              ],
+              "signals": ["implement-slice", "COMPLETE", "COMPLETE", ">7u", "0"],
               "files": [
                 "modified:.relay/workspaces.json",
                 "modified:.turbo/cache/2c4cf9da12a12daf-manifest.json",
@@ -628,6 +622,6 @@
   },
   "commits": [],
   "filesChanged": [],
-  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay",
+  "projectId": "<repo-root>",
   "tags": []
 }

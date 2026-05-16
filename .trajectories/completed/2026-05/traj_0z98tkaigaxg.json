@@ -150,13 +150,7 @@
             "reason": "Legacy STEP_COMPLETE marker observed",
             "evidence": {
               "summary": "5 signal(s), 6 file change(s)",
-              "signals": [
-                "implement-slice",
-                "COMPLETE",
-                "COMPLETE",
-                ">7u",
-                "0"
-              ],
+              "signals": ["implement-slice", "COMPLETE", "COMPLETE", ">7u", "0"],
               "files": [
                 "modified:.relay/workspaces.json",
                 "modified:.workflow-artifacts/generated/reading-worker-dm-replies-design-spec-status-draft-date-2026-05-15-issue-860-hea-children/update-2/lead-plan.md",
@@ -629,6 +623,6 @@
   },
   "commits": [],
   "filesChanged": [],
-  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay",
+  "projectId": "<repo-root>",
   "tags": []
 }

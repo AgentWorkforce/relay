@@ -147,14 +147,7 @@
             "reason": "Legacy STEP_COMPLETE marker observed",
             "evidence": {
               "summary": "6 signal(s), 1 relevant channel post(s), 6 file change(s)",
-              "signals": [
-                "implement-slice",
-                "COMPLETE",
-                "COMPLETE",
-                "COMPLETE",
-                "0",
-                "COMPLETE"
-              ],
+              "signals": ["implement-slice", "COMPLETE", "COMPLETE", "COMPLETE", "0", "COMPLETE"],
               "channelPosts": [
                 "**[implement-slice] Output:**\n```\nrc/cli/commands/messaging.test.ts\n    ?? .trajectories/active/\n• Ran git diff --stat -- src/cli/commands/messaging.test.ts .tr"
               ],
@@ -635,6 +628,6 @@
   },
   "commits": [],
   "filesChanged": [],
-  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay",
+  "projectId": "<repo-root>",
   "tags": []
 }

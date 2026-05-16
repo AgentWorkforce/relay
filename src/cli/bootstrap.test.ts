@@ -24,6 +24,7 @@ const expectedLeafCommands = [
   'read',
   'history',
   'inbox',
+  'replies',
   'login',
   'metrics',
   'health',

@@ -146,14 +146,7 @@
             "reason": "Legacy STEP_COMPLETE marker observed",
             "evidence": {
               "summary": "6 signal(s), 1 relevant channel post(s), 6 file change(s)",
-              "signals": [
-                "COMPLETE",
-                "COMPLETE",
-                "COMPLETE",
-                ">7u",
-                "0",
-                "COMPLETE"
-              ],
+              "signals": ["COMPLETE", "COMPLETE", "COMPLETE", ">7u", "0", "COMPLETE"],
               "channelPosts": [
                 "**[implement-slice] Output:**\n```\nli/commands/\n  │ messaging.test.ts .workflow-artifacts/generated/\n  │ reading-worker-dm-replies-design-spec-status-draft-date-"
               ],
@@ -620,6 +613,6 @@
   },
   "commits": [],
   "filesChanged": [],
-  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay",
+  "projectId": "<repo-root>",
   "tags": []
 }
