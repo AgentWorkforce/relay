@@ -1872,7 +1872,7 @@ For long rollouts, keep the critical path evidence-based:
 })
 .step('implementation-reconcile', {
   type: 'deterministic',
-  dependsOn: ['context'],
+  dependsOn: ['runtime-implementation', 'adapter-implementation'],
   command: `git status --short -- packages/core packages/*/src/writeback.ts scripts tests .workflow-artifacts
 test -f scripts/verify-e2e.mjs || echo "MISSING_E2E"
 test -f packages/core/src/runtime/router.ts || echo "MISSING_ROUTER"`,
@@ -2013,7 +2013,7 @@ When you set `.pattern('supervisor')` (or `hub-spoke`, `fan-out`), the runner au
 | Thinking `agent-relay run` inspects exports                                                                                        | It executes the file as a subprocess. Only `.run()` invocations trigger steps                                                                                                                                                            |
 | `pattern('single')` on cloud runner                                                                                                | Not supported — use `dag`                                                                                                                                                                                                                |
 | `pattern('supervisor')` with one agent                                                                                             | Same agent is owner + specialist. Use `dag`                                                                                                                                                                                              |
-| Invalid verification type (`type: 'deterministic'`)                                                                                | Only `exit_code`, `output_contains`, `file_exists`, `custom` are valid                                                                                                                                                                   |
+| Invalid verification type (`type: 'deterministic'`)                                                                                | Only `exit_code`, `output_contains`, `file_exists`, `custom`, and `pr_url` are valid                                                                                                                                                     |
 | Chaining `{{steps.X.output}}` from interactive agents                                                                              | PTY output is garbled. Use deterministic steps or `preset: 'worker'`                                                                                                                                                                     |
 | Single step editing 4+ files                                                                                                       | Agents modify 1-2 then exit. Split to one file per step with verify gates                                                                                                                                                                |
 | Relying on agents to `git commit`                                                                                                  | Agents emit markers without running git. Use deterministic commit step                                                                                                                                                                   |

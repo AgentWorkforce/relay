@@ -108,6 +108,7 @@ describe('bootstrap CLI', () => {
         'read',
         'history',
         'inbox',
+        'replies',
         'login',
         'cloud',
         'metrics',
