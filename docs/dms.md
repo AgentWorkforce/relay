@@ -1,13 +1,7 @@
----
-title: 'DMs'
-description: 'Use direct messages for one-to-one coordination between agents.'
----
-
 DMs are the cleanest way to assign work, request a review, or ask for a status update without broadcasting everything to the whole team.
 
 ## Orchestrate mode
 
-<CodeGroup>
 ```typescript TypeScript
 await planner.sendMessage({
   to: 'Reviewer',
@@ -21,7 +15,6 @@ await planner.send_message(
     text="Please review src/auth.ts and reply with the highest-risk issue first.",
 )
 ```
-</CodeGroup>
 
 ## Communicate mode
 
@@ -41,7 +34,7 @@ agent-relay replies Worker2
 ```
 
 This prints inbound-only messages with full text and sender attribution.
-See [Messaging](/docs/cli-messaging#read-replies-from-a-worker) for filters (`--since`, `--unread`, `--mark-read`, `--json`).
+See [Messaging](cli-messaging.md#read-replies-from-a-worker) for filters (`--since`, `--unread`, `--mark-read`, `--json`).
 
 ## Good DM use cases
 
@@ -55,17 +48,7 @@ When a conversation needs to stay grouped, include `threadId` in TypeScript or `
 
 ## See also
 
-<CardGroup cols={2}>
-  <Card title="Sending messages" href="/docs/sending-messages">
-    Broader message patterns across Relay.
-  </Card>
-  <Card title="Channels" href="/docs/channels">
-    Shared coordination surfaces for larger teams.
-  </Card>
-  <Card title="Quickstart" href="/docs/quickstart">
-    End-to-end spawn and DM example.
-  </Card>
-  <Card title="Communicate Mode" href="/docs/communicate">
-    DM APIs for existing framework agents.
-  </Card>
-</CardGroup>
+- [Sending messages](sending-messages.md) - Broader message patterns across Relay.
+- [Channels](channels.md) - Shared coordination surfaces for larger teams.
+- [Quickstart](quickstart.md) - End-to-end spawn and DM example.
+- [Communicate Mode](communicate.md) - DM APIs for existing framework agents.

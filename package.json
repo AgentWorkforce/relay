@@ -40,6 +40,7 @@
   },
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
+    "typecheck": "npm run build:config && npm --prefix packages/workflow-types run build && npm --prefix packages/github-primitive run build && npm --prefix packages/slack-primitive run build && npm --prefix packages/cloud run build && npm run build:utils && npm run build:trajectory && npm run build:policy && npm run build:sdk && npm run build:hooks && npm run build:memory && npm run build:telemetry && tsc --noEmit",
     "build": "npm run clean && npm run build:rust && turbo run build --filter='./packages/*' && tsc",
     "build:sequential": "npm run clean && npm run build:rust && turbo run build --filter='./packages/*' && tsc",
     "build:workspace": "npm run clean && npm run build:rust && turbo run build --filter='./packages/*' && tsc",

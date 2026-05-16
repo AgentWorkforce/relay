@@ -116,13 +116,23 @@ export function ensureLocalSdkWorkflowRuntime(
   if (fs.existsSync(workflowsEntry)) return;
 
   console.log(
-    '[agent-relay] Detected local @agent-relay/sdk workspace without built workflows runtime; building packages/sdk...'
+    '[agent-relay] Detected local @agent-relay/sdk workspace without built workflows runtime; building SDK workflow dependencies...'
   );
-  execRunner('npm', ['run', 'build:sdk'], {
-    cwd: workspace.rootDir,
-    stdio: 'inherit',
-    env: process.env,
-  });
+  const buildCommands: string[][] = [
+    ['run', 'build:config'],
+    ['--prefix', 'packages/workflow-types', 'run', 'build'],
+    ['--prefix', 'packages/github-primitive', 'run', 'build'],
+    ['--prefix', 'packages/slack-primitive', 'run', 'build'],
+    ['--prefix', 'packages/cloud', 'run', 'build'],
+    ['run', 'build:sdk'],
+  ];
+  for (const args of buildCommands) {
+    execRunner('npm', args, {
+      cwd: workspace.rootDir,
+      stdio: 'inherit',
+      env: process.env,
+    });
+  }
 
   if (!fs.existsSync(workflowsEntry)) {
     throw new Error(`Local SDK workflows runtime is still missing after build: ${workflowsEntry}`);

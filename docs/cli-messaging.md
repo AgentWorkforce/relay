@@ -1,8 +1,3 @@
----
-title: 'Messaging'
-description: 'Send direct messages, inspect recent history, and check the unread inbox from the CLI.'
----
-
 Once the broker is up, the CLI can act as a lightweight operator console for human-to-agent messages and recent conversation history.
 
 ## Send a message
@@ -76,17 +71,7 @@ agent-relay inbox
 
 ## See also
 
-<CardGroup cols={2}>
-  <Card title="Agent management" href="/docs/cli-agent-management">
-    Spawn agents before trying to message them.
-  </Card>
-  <Card title="Sending messages" href="/docs/sending-messages">
-    SDK patterns for the same message flow.
-  </Card>
-  <Card title="Channels" href="/docs/channels">
-    Design shared communication spaces.
-  </Card>
-  <Card title="DMs" href="/docs/dms">
-    One-to-one coordination patterns.
-  </Card>
-</CardGroup>
+- [Agent management](cli-agent-management.md) - Spawn agents before trying to message them.
+- [Sending messages](sending-messages.md) - SDK patterns for the same message flow.
+- [Channels](channels.md) - Design shared communication spaces.
+- [DMs](dms.md) - One-to-one coordination patterns.

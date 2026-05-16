@@ -37,8 +37,11 @@ interface RelaycastMention {
 interface RelaycastLastMessage {
   id: string;
   text: string;
+  agentName?: string;
+  agent_name?: string;
   createdAt?: string;
   created_at?: string;
+  direction?: DmDirection;
 }
 
 interface RelaycastUnreadDm {
@@ -46,6 +49,7 @@ interface RelaycastUnreadDm {
   conversationId?: string;
   unreadCount?: number;
   lastMessage?: RelaycastLastMessage | null;
+  messages?: RelaycastLastMessage[];
   conversation_id?: string;
   unread_count?: number;
   last_message?: RelaycastLastMessage | null;
@@ -80,6 +84,8 @@ interface DmConversationParticipant {
 
 interface DmConversationSummary {
   id: string;
+  type?: string;
+  dm_type?: string;
   participants: DmConversationParticipant[];
   lastMessage?: {
     id: string;
@@ -110,7 +116,15 @@ interface DmMessageItem {
   text: string;
   createdAt?: string;
   created_at?: string;
+  unread?: boolean;
+  isUnread?: boolean;
+  is_unread?: boolean;
+  read?: boolean;
+  isRead?: boolean;
+  is_read?: boolean;
 }
+
+type DmDirection = 'inbound' | 'outbound';
 
 interface NormalizedRelaycastMessage {
   id: string;
@@ -136,6 +150,8 @@ interface NormalizedRelaycastLastMessage {
   id: string;
   text: string;
   createdAt: string;
+  agentName?: string;
+  direction?: DmDirection;
 }
 
 interface NormalizedRelaycastUnreadDm {
@@ -143,6 +159,7 @@ interface NormalizedRelaycastUnreadDm {
   from: string;
   unreadCount: number;
   lastMessage: NormalizedRelaycastLastMessage | null;
+  messages: NormalizedRelaycastLastMessage[];
 }
 
 interface NormalizedRelaycastRecentReaction {
@@ -167,11 +184,12 @@ export interface MessagingRelaycastClient {
     options?: { limit?: number; before?: string; after?: string }
   ): Promise<RelaycastMessage[]>;
   inbox(): Promise<RelaycastInbox>;
+  markRead?: (messageId: string) => Promise<unknown>;
   dm(to: string, text: string): Promise<void>;
   post(channel: string, text: string): Promise<void>;
   dms: {
     conversations(): Promise<DmConversationSummary[]>;
-    messages(conversationId: string, opts?: { limit?: number }): Promise<DmMessageItem[]>;
+    messages(conversationId: string, opts?: { limit?: number; markRead?: boolean }): Promise<DmMessageItem[]>;
   };
 }
 
@@ -211,6 +229,53 @@ function readNumber(...values: unknown[]): number | undefined {
   return undefined;
 }
 
+function readBoolean(...values: unknown[]): boolean | undefined {
+  for (const value of values) {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function getDefaultOrchestratorName(): string {
+  return process.env.AGENT_RELAY_ORCHESTRATOR_NAME?.trim() || 'orchestrator';
+}
+
+function getDmParticipantName(participant: DmConversationParticipant): string | undefined {
+  return readString(participant.agentName, participant.agent_name);
+}
+
+function getDmParticipantNames(conversation: DmConversationSummary): string[] {
+  return conversation.participants.map(getDmParticipantName).filter(isPresent);
+}
+
+function hasExactDmParticipants(
+  conversation: DmConversationSummary,
+  readerName: string,
+  agentName: string
+): boolean {
+  const participantNames = new Set(getDmParticipantNames(conversation));
+  return participantNames.size === 2 && participantNames.has(readerName) && participantNames.has(agentName);
+}
+
+function findDirectDmConversation(
+  conversations: DmConversationSummary[],
+  readerName: string,
+  agentName: string
+): DmConversationSummary | undefined {
+  return (
+    conversations.find((conversation) => {
+      const dmType = readString(conversation.type, conversation.dm_type);
+      return dmType === '1:1' && hasExactDmParticipants(conversation, readerName, agentName);
+    }) ??
+    conversations.find((conversation) => {
+      const dmType = readString(conversation.type, conversation.dm_type);
+      return !dmType && hasExactDmParticipants(conversation, readerName, agentName);
+    })
+  );
+}
+
 function normalizeIsoTimestamp(value: unknown): string | undefined {
   if (typeof value !== 'string' || !value.trim()) {
     return undefined;
@@ -235,6 +300,108 @@ function normalizeMessage(message: RelaycastMessage): NormalizedRelaycastMessage
     text: message.text,
     createdAt,
   };
+}
+
+interface NormalizedDmMessage {
+  id: string;
+  agentName: string;
+  text: string;
+  createdAt: string;
+  unread?: boolean;
+}
+
+function normalizeDmMessage(message: DmMessageItem): NormalizedDmMessage | null {
+  const agentName = readString(message.agentName, message.agent_name);
+  const createdAt = normalizeIsoTimestamp(readString(message.createdAt, message.created_at));
+  if (!agentName || !createdAt) {
+    return null;
+  }
+
+  const explicitUnread = readBoolean(message.unread, message.isUnread, message.is_unread);
+  const explicitRead = readBoolean(message.read, message.isRead, message.is_read);
+
+  return {
+    id: message.id,
+    agentName,
+    text: message.text,
+    createdAt,
+    unread: explicitUnread ?? (explicitRead === undefined ? undefined : !explicitRead),
+  };
+}
+
+function sortDmMessagesChronologically<T extends Pick<NormalizedDmMessage, 'createdAt'>>(messages: T[]): T[] {
+  return [...messages].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+}
+
+function renderTranscriptMessage(
+  log: MessagingDependencies['log'],
+  message: Pick<NormalizedDmMessage, 'agentName' | 'text' | 'createdAt'>
+): void {
+  const lines = message.text.split(/\r?\n/);
+  if (lines.length === 1) {
+    log(`[${message.createdAt}] ${message.agentName}: ${message.text}`);
+    return;
+  }
+
+  log(`[${message.createdAt}] ${message.agentName}:`);
+  for (const line of lines) {
+    log(`  ${line}`);
+  }
+}
+
+type UnreadDmDisplayMessage = Pick<NormalizedDmMessage, 'id' | 'text' | 'createdAt'> & {
+  agentName?: string;
+  direction?: DmDirection;
+};
+
+function isInboundUnreadDmMessage(message: UnreadDmDisplayMessage, senderName: string): boolean {
+  if (message.direction === 'outbound') {
+    return false;
+  }
+  return !message.agentName || message.agentName === senderName;
+}
+
+function sortUnreadDmMessagesMostRecentFirst(messages: UnreadDmDisplayMessage[]): UnreadDmDisplayMessage[] {
+  return [...messages].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+}
+
+function getFilteredDmFetchLimit(displayLimit: number, unreadCount = 0): number {
+  return Math.max(displayLimit * 2, unreadCount, 100);
+}
+
+function renderUnreadDmMessage(
+  log: MessagingDependencies['log'],
+  message: UnreadDmDisplayMessage,
+  senderName: string
+): void {
+  const lines = message.text.split(/\r?\n/);
+  const displaySender = message.agentName || senderName;
+  if (lines.length === 1) {
+    log(`    [${message.createdAt}] ${displaySender}: ${message.text}`);
+    return;
+  }
+
+  log(`    [${message.createdAt}] ${displaySender}:`);
+  for (const line of lines) {
+    log(`      ${line}`);
+  }
+}
+
+function getLastMessageDirection(
+  message: NormalizedRelaycastLastMessage,
+  dmFrom: string,
+  readerName: string
+): DmDirection {
+  if (message.direction) {
+    return message.direction;
+  }
+  if (!message.agentName || message.agentName === dmFrom) {
+    return 'inbound';
+  }
+  if (message.agentName === readerName) {
+    return 'outbound';
+  }
+  return 'outbound';
 }
 
 function normalizeUnreadChannel(channel: RelaycastUnreadChannel): NormalizedRelaycastUnreadChannel | null {
@@ -283,6 +450,8 @@ function normalizeLastMessage(
     id: message.id,
     text: message.text,
     createdAt,
+    agentName: readString(message.agentName, message.agent_name),
+    direction: message.direction,
   };
 }
 
@@ -298,6 +467,7 @@ function normalizeUnreadDm(dm: RelaycastUnreadDm): NormalizedRelaycastUnreadDm |
     from: dm.from,
     unreadCount,
     lastMessage: normalizeLastMessage(dm.lastMessage ?? dm.last_message),
+    messages: (Array.isArray(dm.messages) ? dm.messages : []).map(normalizeLastMessage).filter(isPresent),
   };
 }
 
@@ -337,6 +507,42 @@ function normalizeInbox(inbox: RelaycastInbox | null | undefined): NormalizedRel
       .map(normalizeRecentReaction)
       .filter(isPresent),
   };
+}
+
+async function getUnreadDmDisplayMessages(
+  relaycast: MessagingRelaycastClient,
+  dm: NormalizedRelaycastUnreadDm
+): Promise<UnreadDmDisplayMessage[]> {
+  const embeddedMessages = dm.messages.length > 0 ? dm.messages : dm.lastMessage ? [dm.lastMessage] : [];
+  const inboundEmbedded = sortUnreadDmMessagesMostRecentFirst(
+    embeddedMessages.filter((message) => isInboundUnreadDmMessage(message, dm.from))
+  );
+  const targetVisibleCount = Math.min(3, dm.unreadCount);
+  if (inboundEmbedded.length >= targetVisibleCount || dm.unreadCount === 0) {
+    return inboundEmbedded;
+  }
+
+  try {
+    const fetchedMessages = (
+      await relaycast.dms.messages(dm.conversationId, {
+        limit: getFilteredDmFetchLimit(3, dm.unreadCount),
+      })
+    )
+      .map(normalizeDmMessage)
+      .filter(isPresent)
+      .filter((message) => message.agentName === dm.from);
+    const hasUnreadFlags = fetchedMessages.some((message) => message.unread !== undefined);
+    const candidateMessages = hasUnreadFlags
+      ? fetchedMessages.filter((message) => message.unread)
+      : fetchedMessages;
+    const mergedMessages = new Map<string, UnreadDmDisplayMessage>();
+    for (const message of [...inboundEmbedded, ...candidateMessages]) {
+      mergedMessages.set(message.id, message);
+    }
+    return sortUnreadDmMessagesMostRecentFirst([...mergedMessages.values()]);
+  } catch {
+    return inboundEmbedded;
+  }
 }
 
 async function createDefaultClient(cwd: string): Promise<MessagingBrokerClient> {
@@ -430,10 +636,13 @@ export function registerMessagingCommands(
     .description('Send a message to an agent')
     .argument('<agent>', 'Target agent name (or * for broadcast, #channel for channel)')
     .argument('<message>', 'Message to send')
-    .option('--from <name>', 'Sender name (registered identity in relaycast, defaults to "relay")')
+    .option(
+      '--from <name>',
+      'Sender name (registered identity in relaycast). Default: $AGENT_RELAY_ORCHESTRATOR_NAME or "orchestrator"; use this identity with `agent-relay replies <worker>`.'
+    )
     .option('--thread <id>', 'Thread identifier')
     .action(async (agent: string, message: string, options: { from?: string; thread?: string }) => {
-      const senderName = options.from?.trim() || 'relay';
+      const senderName = options.from?.trim() || getDefaultOrchestratorName();
       const isChannel = agent.startsWith('#');
 
       // Primary path: send via relaycast SDK so messages are stored and queryable
@@ -471,7 +680,7 @@ export function registerMessagingCommands(
         await brokerClient.sendMessage({
           to: agent,
           text: message,
-          from: options.from?.trim() ? options.from.trim() : undefined,
+          from: senderName,
           threadId: options.thread,
         });
         deps.log(`Message sent to ${agent}`);
@@ -629,11 +838,12 @@ export function registerMessagingCommands(
         }
 
         if (options.to && !options.to.startsWith('#')) {
-          // DM history mode: register as the target agent and show their conversations
+          const toName = options.to;
+          const readerName = getDefaultOrchestratorName();
           let dmClient: MessagingRelaycastClient;
           try {
             dmClient = await deps.createRelaycastClient({
-              agentName: options.to,
+              agentName: readerName,
               cwd: deps.getProjectRoot(),
             });
           } catch (err: any) {
@@ -644,63 +854,55 @@ export function registerMessagingCommands(
 
           try {
             const conversations = await dmClient.dms.conversations();
+            const conversation = findDirectDmConversation(conversations, readerName, toName);
 
-            if (options.from) {
-              // Show messages in the specific conversation with --from agent
-              const conv = conversations.find((c) =>
-                c.participants.some((p) => (p.agentName || p.agent_name) === options.from)
+            if (!conversation) {
+              deps.log(`No DM conversation found between ${readerName} and ${toName}.`);
+              return;
+            }
+
+            const collected: Array<NormalizedDmMessage & { to: string }> = [];
+            const rawFetchLimit =
+              options.from || sinceTs ? getFilteredDmFetchLimit(limit) : limit;
+            const dmMessages = await dmClient.dms.messages(conversation.id, { limit: rawFetchLimit });
+            for (const message of dmMessages) {
+              const normalized = normalizeDmMessage(message);
+              if (!normalized) continue;
+              if (options.from && normalized.agentName !== options.from) continue;
+              if (sinceTs && Date.parse(normalized.createdAt) < sinceTs) continue;
+              collected.push({
+                ...normalized,
+                to: normalized.agentName === readerName ? toName : readerName,
+              });
+            }
+
+            const messages = sortDmMessagesChronologically(collected).slice(-limit);
+
+            if (options.json) {
+              deps.log(
+                JSON.stringify(
+                  messages.map((message) => ({
+                    id: message.id,
+                    from: message.agentName,
+                    to: message.to,
+                    text: message.text,
+                    createdAt: message.createdAt,
+                    direction: message.agentName === readerName ? 'outbound' : 'inbound',
+                  })),
+                  null,
+                  2
+                )
               );
-              if (!conv) {
-                deps.log(`No DM conversation found between ${options.to} and ${options.from}.`);
-                return;
-              }
-              const messages = await dmClient.dms.messages(conv.id, { limit });
-              if (options.json) {
-                deps.log(
-                  JSON.stringify(
-                    messages.map((m) => ({
-                      id: m.id,
-                      from: m.agentName || m.agent_name || 'unknown',
-                      text: m.text,
-                      createdAt: m.createdAt || m.created_at,
-                    })),
-                    null,
-                    2
-                  )
-                );
-                return;
-              }
-              if (!messages.length) {
-                deps.log('No messages found.');
-                return;
-              }
-              messages.forEach((m) => {
-                const sender = m.agentName || m.agent_name || 'unknown';
-                const ts = m.createdAt || m.created_at || '';
-                const body = m.text.length > 200 ? `${m.text.slice(0, 197)}...` : m.text;
-                deps.log(`[${ts}] ${sender}: ${body}`);
-              });
-            } else {
-              // Show all conversations summary
-              if (options.json) {
-                deps.log(JSON.stringify(conversations, null, 2));
-                return;
-              }
-              if (!conversations.length) {
-                deps.log(`No DM conversations found for ${options.to}.`);
-                return;
-              }
-              deps.log(`DM conversations for ${options.to}:`);
-              conversations.forEach((conv) => {
-                const others = conv.participants
-                  .filter((p) => (p.agentName || p.agent_name) !== options.to)
-                  .map((p) => p.agentName || p.agent_name)
-                  .join(', ');
-                const lastText = (conv.lastMessage || conv.last_message)?.text ?? '(no messages)';
-                const preview = lastText.length > 60 ? `${lastText.slice(0, 57)}...` : lastText;
-                const unread = conv.unreadCount ?? conv.unread_count ?? 0;
-                deps.log(`  ${others || '(self)'}: "${preview}" [${unread} unread]`);
-              });
+              return;
+            }
+
+            if (!messages.length) {
+              deps.log('No messages found.');
+              return;
+            }
+
+            for (const message of messages) {
+              renderTranscriptMessage(deps.log, message);
             }
           } catch (err: any) {
             deps.error(`Failed to fetch DM history: ${err?.message || String(err)}`);
@@ -780,10 +982,11 @@ export function registerMessagingCommands(
     .option('--agent <name>', 'Agent whose inbox to check (defaults to cli user)')
     .option('--json', 'Output as JSON')
     .action(async (options: { agent?: string; json?: boolean }) => {
+      const readerName = options.agent?.trim() || '__cli_inbox__';
       let relaycast: MessagingRelaycastClient;
       try {
         relaycast = await deps.createRelaycastClient({
-          agentName: options.agent?.trim() || '__cli_inbox__',
+          agentName: readerName,
           cwd: deps.getProjectRoot(),
         });
       } catch (err: any) {
@@ -816,6 +1019,7 @@ export function registerMessagingCommands(
                     id: dm.lastMessage.id,
                     text: dm.lastMessage.text,
                     created_at: dm.lastMessage.createdAt,
+                    direction: getLastMessageDirection(dm.lastMessage, dm.from, readerName),
                   }
                 : null,
             })),
@@ -862,7 +1066,17 @@ export function registerMessagingCommands(
         if (inbox.unreadDms.length > 0) {
           deps.log('Unread DMs:');
           for (const dm of inbox.unreadDms) {
-            deps.log(`  ${dm.from}: ${dm.unreadCount}`);
+            deps.log(`  ${dm.from} → ${readerName} (${dm.unreadCount} unread):`);
+            const visibleMessages = (await getUnreadDmDisplayMessages(relaycast, dm)).slice(0, 3);
+            for (const message of visibleMessages) {
+              renderUnreadDmMessage(deps.log, message, dm.from);
+            }
+            if (dm.unreadCount > visibleMessages.length) {
+              const remaining = dm.unreadCount - visibleMessages.length;
+              deps.log(
+                `    … (${remaining} more — run \`agent-relay replies ${dm.from} --unread\` to see all)`
+              );
+            }
           }
           deps.log('');
         }
@@ -880,4 +1094,111 @@ export function registerMessagingCommands(
         deps.exit(1);
       }
     });
+
+  program
+    .command('replies')
+    .description('Show DM replies received from an agent')
+    .argument('<agent>', 'Agent whose replies to show')
+    .option('-n, --limit <count>', 'Number of messages to show', '50')
+    .option('--since <time>', 'Only messages after time (e.g., "5m", "1h", ISO-8601)')
+    .option('--unread', 'Only unread messages')
+    .option('--mark-read', 'Mark printed messages as read after printing')
+    .option('--as <name>', 'Read as this orchestrator identity')
+    .option('--json', 'Output as JSON')
+    .option('--full', 'Disable truncation; text is always printed in full')
+    .action(
+      async (
+        agent: string,
+        options: {
+          limit?: string;
+          since?: string;
+          unread?: boolean;
+          markRead?: boolean;
+          as?: string;
+          json?: boolean;
+          full?: boolean;
+        }
+      ) => {
+        const limit = Number.parseInt(options.limit ?? '50', 10) || 50;
+        const sinceTs = parseSince(options.since);
+        const readerName = options.as?.trim() || getDefaultOrchestratorName();
+
+        let relaycast: MessagingRelaycastClient;
+        try {
+          relaycast = await deps.createRelaycastClient({
+            agentName: readerName,
+            cwd: deps.getProjectRoot(),
+          });
+        } catch (err: any) {
+          deps.error(`Failed to initialize relaycast client: ${err?.message || String(err)}`);
+          deps.exit(1);
+          return;
+        }
+
+        try {
+          const conversations = await relaycast.dms.conversations();
+          const conversation = findDirectDmConversation(conversations, readerName, agent);
+
+          if (!conversation) {
+            deps.log(`No DM conversation with ${agent}.`);
+            return;
+          }
+
+          const unreadCount = readNumber(conversation.unreadCount, conversation.unread_count) ?? 0;
+          const messages = sortDmMessagesChronologically(
+            (
+              await relaycast.dms.messages(conversation.id, {
+                limit: getFilteredDmFetchLimit(limit, unreadCount),
+              })
+            )
+              .map(normalizeDmMessage)
+              .filter(isPresent)
+              .filter((message) => message.agentName === agent)
+              .filter((message) => !sinceTs || Date.parse(message.createdAt) >= sinceTs)
+          );
+
+          const hasUnreadFlags = messages.some((message) => message.unread !== undefined);
+          const filteredMessages = (
+            options.unread
+              ? hasUnreadFlags
+                ? messages.filter((message) => message.unread)
+                : messages.slice(-unreadCount)
+              : messages
+          ).slice(-limit);
+
+          if (options.json) {
+            deps.log(
+              JSON.stringify(
+                filteredMessages.map((message) => ({
+                  id: message.id,
+                  from: message.agentName,
+                  to: readerName,
+                  text: message.text,
+                  createdAt: message.createdAt,
+                  direction: 'inbound',
+                  ...(message.unread !== undefined ? { unread: options.unread ? true : message.unread } : {}),
+                })),
+                null,
+                2
+              )
+            );
+          } else if (!filteredMessages.length) {
+            deps.log('No messages found.');
+          } else {
+            for (const message of filteredMessages) {
+              renderTranscriptMessage(deps.log, message);
+            }
+          }
+
+          if (options.markRead && relaycast.markRead && filteredMessages.length > 0) {
+            for (const message of filteredMessages) {
+              await relaycast.markRead(message.id);
+            }
+          }
+        } catch (err: any) {
+          deps.error(`Failed to fetch replies for ${agent}: ${err?.message || String(err)}`);
+          deps.exit(1);
+        }
+      }
+    );
 }

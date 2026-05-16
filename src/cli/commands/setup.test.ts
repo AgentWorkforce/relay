@@ -87,7 +87,15 @@ describe('local SDK workflow runtime bootstrapping', () => {
 
     ensureLocalSdkWorkflowRuntime(nestedDir, execRunner as never);
 
-    expect(execRunner).toHaveBeenCalledWith(
+    expect(execRunner).toHaveBeenCalledTimes(6);
+    expect(execRunner).toHaveBeenNthCalledWith(
+      1,
+      'npm',
+      ['run', 'build:config'],
+      expect.objectContaining({ cwd: tempRoot, stdio: 'inherit' })
+    );
+    expect(execRunner).toHaveBeenNthCalledWith(
+      6,
       'npm',
       ['run', 'build:sdk'],
       expect.objectContaining({ cwd: tempRoot, stdio: 'inherit' })

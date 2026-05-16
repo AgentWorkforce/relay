@@ -1,8 +1,3 @@
----
-title: 'CLI Overview'
-description: 'Use the agent-relay CLI to run the broker, manage agents, send messages, and execute workflows.'
----
-
 The `agent-relay` CLI is the operational layer for local broker management, agent spawning, messaging, workflow execution, and cloud runs.
 
 ## Install
