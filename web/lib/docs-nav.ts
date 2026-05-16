@@ -58,6 +58,7 @@ export const docsNav: NavGroup[] = [
       { title: 'Cloud commands', slug: 'cli-cloud-commands' },
       { title: 'On the relay', slug: 'cli-on-the-relay' },
       { title: 'CLI reference', slug: 'reference-cli' },
+      { title: 'Broker HTTP / WS API', slug: 'reference-broker-api' },
     ],
   },
   {
