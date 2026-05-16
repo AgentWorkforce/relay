@@ -13,6 +13,14 @@ export type StoredAuth = {
 export type CloudAuthFile = {
   apiUrl: string;
   cloudToken: string;
+  /**
+   * Persisted refresh token. Optional for backward compatibility with files
+   * written by older agent-relay builds that only stored `cloudToken`. When
+   * absent, the stored login becomes non-refreshable and the CLI will fall
+   * back to an interactive browser login as soon as the access token nears
+   * expiry.
+   */
+  refreshToken?: string;
   userId?: string;
   workspaces?: CloudLoginWorkspace[];
   expiresAt: string;
@@ -28,7 +36,14 @@ export type CloudLoginWorkspace = {
 export type CliLoginPollResponse = {
   cloudToken?: string;
   accessToken?: string;
-  token?: string | { value?: string; expiresAt?: string };
+  /**
+   * Optional refresh token from the poll payload. When the cloud poll API
+   * surfaces a refresh token (alongside `cloudToken` / `accessToken`),
+   * `storedAuthFromPollPayload` round-trips it into `StoredAuth` so the
+   * stored login can be refreshed non-interactively after a process restart.
+   */
+  refreshToken?: string;
+  token?: string | { value?: string; expiresAt?: string; refreshToken?: string };
   userId?: string;
   workspaces?: CloudLoginWorkspace[];
   accessTokenExpiresAt?: string;
@@ -237,11 +252,17 @@ export type GetPatchesResponse = {
 export const SUPPORTED_PROVIDERS = ['anthropic', 'openai', 'google', 'cursor', 'opencode', 'droid'] as const;
 
 export const REFRESH_WINDOW_MS = 60_000;
-export const AUTH_FILE_PATH = path.join(
-  process.env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), '.config'),
-  'agent-relay',
-  'cloud.json'
-);
+// Per the XDG Base Directory spec, `XDG_CONFIG_HOME` only takes effect when
+// it is an absolute path. A relative or otherwise unusable value (e.g. set
+// to "" by accident or to a relative path by a malicious shell rcfile) must
+// fall back to `~/.config` so we never write auth tokens to an unintended
+// relative path under the current working directory.
+const xdgConfigHomeRaw = process.env.XDG_CONFIG_HOME?.trim();
+const xdgConfigHome =
+  xdgConfigHomeRaw && path.isAbsolute(xdgConfigHomeRaw)
+    ? xdgConfigHomeRaw
+    : path.join(os.homedir(), '.config');
+export const AUTH_FILE_PATH = path.join(xdgConfigHome, 'agent-relay', 'cloud.json');
 export const LEGACY_AUTH_FILE_PATH = path.join(os.homedir(), '.agent-relay', 'cloud-auth.json');
 
 export function defaultApiUrl(): string {

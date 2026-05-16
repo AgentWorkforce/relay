@@ -91,25 +91,55 @@ function isValidCloudAuthFile(value: unknown): value is CloudAuthFile {
   );
 }
 
+/**
+ * Validates that `apiUrl` parses as a well-formed http/https URL. The auth
+ * file is user-writable (`~/.config/agent-relay/cloud.json`) and its
+ * `apiUrl` feeds directly into `fetch()` via `buildApiUrl`, so we must
+ * reject untrusted shapes — `file://`, `javascript:`, malformed strings —
+ * before letting them flow into an outbound network request. CodeQL flags
+ * this as "file data in outbound network request"; this validator is the
+ * mitigation. Env-backed auth already runs the same check in `readEnvAuth`.
+ */
+function isAcceptableApiUrl(apiUrl: unknown): apiUrl is string {
+  if (typeof apiUrl !== 'string' || apiUrl.trim() === '') return false;
+  try {
+    const parsed = new URL(apiUrl);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function storedAuthFromDisk(value: unknown): StoredAuth | null {
   if (isValidCloudAuthFile(value)) {
+    if (!isAcceptableApiUrl(value.apiUrl)) return null;
     return {
       apiUrl: value.apiUrl,
       accessToken: value.cloudToken,
-      refreshToken: '',
+      // Round-trip the refresh token when present. Older auth files written
+      // before the round-trip fix have no refreshToken field; default to ''
+      // so the existing "no refresh token → interactive login" guard fires
+      // instead of throwing on a missing property.
+      refreshToken: typeof value.refreshToken === 'string' ? value.refreshToken : '',
       accessTokenExpiresAt: value.expiresAt,
       userId: value.userId,
       workspaces: readWorkspaces(value.workspaces),
     };
   }
 
-  return isValidStoredAuth(value) ? value : null;
+  if (isValidStoredAuth(value) && isAcceptableApiUrl(value.apiUrl)) return value;
+  return null;
 }
 
 function cloudAuthFileFromStoredAuth(auth: StoredAuth): CloudAuthFile {
   return {
     apiUrl: auth.apiUrl,
     cloudToken: auth.accessToken,
+    // Persist the refresh token so the next process start can refresh the
+    // access token non-interactively. Omit the field entirely when no
+    // refresh token is available (env-backed auth, or pre-refresh-token
+    // poll responses) to keep the on-disk shape clean.
+    ...(auth.refreshToken ? { refreshToken: auth.refreshToken } : {}),
     userId: auth.userId,
     workspaces: auth.workspaces,
     expiresAt: auth.accessTokenExpiresAt,
@@ -130,8 +160,18 @@ export async function readStoredAuth(env: NodeJS.ProcessEnv = process.env): Prom
       if (auth) {
         return auth;
       }
-    } catch {
-      // Try the next path. The legacy path keeps older installs readable.
+    } catch (error) {
+      // Only fall back to the legacy path when the primary file is simply
+      // absent. A malformed JSON file, an EACCES permission failure, or any
+      // other read error must surface (return null here) instead of silently
+      // resurrecting stale credentials from LEGACY_AUTH_FILE_PATH — that
+      // would mask the real problem from the user.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        return null;
+      }
+      // ENOENT → try the next path. The legacy path keeps older installs
+      // readable.
     }
   }
 
@@ -147,6 +187,13 @@ export async function writeStoredAuth(auth: StoredAuth): Promise<void> {
     encoding: 'utf8',
     mode: 0o600,
   });
+  // `fs.writeFile`'s `mode` option only applies when the file is being
+  // created — it is a no-op when the file already exists. An explicit chmod
+  // after the write guarantees existing token files are tightened to 0o600
+  // even when the prior file was world-readable (e.g. left over from a
+  // user-driven `chmod 644`, or written by an older agent-relay version
+  // that did not pass the mode option at all).
+  await fs.chmod(AUTH_FILE_PATH, 0o600);
 }
 
 export async function clearStoredAuth(): Promise<void> {
@@ -227,10 +274,20 @@ function storedAuthFromPollPayload(apiUrl: string, payload: CliLoginPollResponse
     (payload.token && typeof payload.token === 'object' ? readString(payload.token.expiresAt) : undefined) ??
     new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
 
+  // Preserve the refresh token when the poll response surfaces one, so the
+  // file round-trip (storedAuthFromDisk → writeStoredAuth → ...) can later
+  // refresh the access token non-interactively. Older cloud API builds did
+  // not return a refresh token, in which case we keep refreshToken: '' and
+  // the existing "no refresh token → interactive login" guard fires.
+  const refreshToken =
+    readString(payload.refreshToken) ??
+    (payload.token && typeof payload.token === 'object' ? readString(payload.token.refreshToken) : undefined) ??
+    '';
+
   return {
     apiUrl,
     accessToken: cloudToken,
-    refreshToken: '',
+    refreshToken,
     accessTokenExpiresAt: tokenExpiresAt,
     userId: readString(payload.userId),
     workspaces: readWorkspaces(payload.workspaces),
@@ -243,20 +300,44 @@ async function pollCliLoginCode(
   options: {
     timeoutMs?: number;
     pollIntervalMs?: number;
+    perRequestTimeoutMs?: number;
   } = {}
 ): Promise<StoredAuth> {
   const timeoutMs = options.timeoutMs ?? 5 * 60_000;
   const pollIntervalMs = options.pollIntervalMs ?? 1_000;
+  // Each poll request gets its own timeout so a single stuck fetch can't
+  // block past the overall login deadline. Default 10s per request, capped
+  // by the remaining deadline so the last poll never outlives `timeoutMs`.
+  const perRequestTimeoutMs = options.perRequestTimeoutMs ?? 10_000;
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
     const pollUrl = buildApiUrl(apiUrl, '/api/v1/auth/cli-login/poll');
     pollUrl.searchParams.set('code', code);
 
-    const response = await fetch(pollUrl, {
-      method: 'GET',
-      headers: { accept: 'application/json' },
-    });
+    const remaining = deadline - Date.now();
+    const requestBudget = Math.max(0, Math.min(perRequestTimeoutMs, remaining));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), requestBudget);
+    let response: Response;
+    try {
+      response = await fetch(pollUrl, {
+        method: 'GET',
+        headers: { accept: 'application/json' },
+        signal: controller.signal,
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      // AbortError → this single poll exceeded its budget. Continue the
+      // outer loop so the deadline check decides whether to keep going.
+      if (error instanceof Error && error.name === 'AbortError') {
+        if (Date.now() >= deadline) break;
+        await new Promise((resolveSleep) => setTimeout(resolveSleep, pollIntervalMs));
+        continue;
+      }
+      throw error;
+    }
+    clearTimeout(timer);
     const payload = (await response.json().catch(() => null)) as CliLoginPollResponse | null;
 
     if (isPendingCliLoginResponse(response, payload)) {
